@@ -7,6 +7,43 @@ use rove::interfaces::api::{ApiState, CreateJobResponse, JobStateResponse, route
 use tower::ServiceExt;
 
 #[tokio::test]
+async fn api_serves_embedded_web_ui() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let app = router(ApiState::new(workspace, test_config()));
+
+    let index = app
+        .clone()
+        .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(index.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(index.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let html = String::from_utf8(body.to_vec()).unwrap();
+    assert!(html.contains("id=\"job-form\""));
+    assert!(html.contains("/web/app.js"));
+
+    let app_js = app
+        .oneshot(
+            Request::builder()
+                .uri("/web/app.js")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(app_js.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(app_js.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let js = String::from_utf8(body.to_vec()).unwrap();
+    assert!(js.contains("new EventSource"));
+    assert!(js.contains("/jobs"));
+}
+
+#[tokio::test]
 async fn api_creates_job_streams_events_and_reports_state() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();

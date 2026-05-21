@@ -4,8 +4,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::http::{StatusCode, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
+use axum::response::{Html, IntoResponse};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use futures::{Stream, StreamExt};
@@ -31,6 +32,9 @@ use crate::tools::registry::ToolRegistry;
 use crate::tools::shell::ShellTool;
 
 const EVENT_BUFFER: usize = 256;
+const WEB_INDEX: &str = include_str!("../../../web/index.html");
+const WEB_APP: &str = include_str!("../../../web/app.js");
+const WEB_STYLES: &str = include_str!("../../../web/styles.css");
 
 #[derive(Clone)]
 pub struct ApiState {
@@ -77,11 +81,35 @@ pub struct JobStateResponse {
 
 pub fn router(state: ApiState) -> Router {
     Router::new()
+        .route("/", get(web_index))
+        .route("/web/app.js", get(web_app))
+        .route("/web/styles.css", get(web_styles))
         .route("/jobs", post(create_job))
         .route("/jobs/{job_id}/events", get(job_events))
         .route("/jobs/{job_id}/state", get(job_state))
         .route("/jobs/{job_id}/cancel", post(cancel_job))
         .with_state(state)
+}
+
+async fn web_index() -> Html<&'static str> {
+    Html(WEB_INDEX)
+}
+
+async fn web_app() -> impl IntoResponse {
+    (
+        [(
+            header::CONTENT_TYPE,
+            "application/javascript; charset=utf-8",
+        )],
+        WEB_APP,
+    )
+}
+
+async fn web_styles() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "text/css; charset=utf-8")],
+        WEB_STYLES,
+    )
 }
 
 pub async fn serve(addr: SocketAddr, cwd: PathBuf) -> anyhow::Result<()> {
