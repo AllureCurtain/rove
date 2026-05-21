@@ -1,0 +1,59 @@
+use serde::Serialize;
+
+use super::types::{CallId, JobId, RunId, TerminationReason, ToolResult, Usage};
+use crate::errors::ToolError;
+
+/// All events emitted by the engine's streaming main loop.
+///
+/// Consumers (CLI, API/SSE, Web) pattern-match on these to render output.
+/// Adding a new variant forces all consumers to handle it (exhaustive match).
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum StreamEvent {
+    /// A new run has started.
+    RunStarted {
+        run_id: RunId,
+        job_id: JobId,
+        user_message: String,
+    },
+
+    /// A chunk of streaming text from the LLM.
+    LlmChunk { delta: String },
+
+    /// The LLM finished producing a complete message.
+    LlmMessage { full: String, usage: Usage },
+
+    /// A tool call has been requested by the LLM.
+    ToolCallStarted {
+        call_id: CallId,
+        name: String,
+        args: serde_json::Value,
+    },
+
+    /// A tool call completed successfully.
+    ToolCallCompleted { call_id: CallId, result: ToolResult },
+
+    /// A tool call failed.
+    ToolCallFailed { call_id: CallId, error: ToolError },
+
+    /// The run has completed.
+    RunCompleted {
+        reason: TerminationReason,
+        output: Option<String>,
+    },
+}
+
+impl StreamEvent {
+    /// Returns the event name string (for SSE `event:` field).
+    pub fn event_name(&self) -> &'static str {
+        match self {
+            Self::RunStarted { .. } => "run_started",
+            Self::LlmChunk { .. } => "llm_chunk",
+            Self::LlmMessage { .. } => "llm_message",
+            Self::ToolCallStarted { .. } => "tool_call_started",
+            Self::ToolCallCompleted { .. } => "tool_call_completed",
+            Self::ToolCallFailed { .. } => "tool_call_failed",
+            Self::RunCompleted { .. } => "run_completed",
+        }
+    }
+}
