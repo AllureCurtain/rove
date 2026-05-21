@@ -15,6 +15,8 @@ pub struct AppConfig {
     pub max_steps: u32,
     /// Path to the system prompt file.
     pub system_prompt_path: PathBuf,
+    /// Optional MCP server configuration file.
+    pub mcp_config_path: PathBuf,
 }
 
 impl AppConfig {
@@ -26,6 +28,7 @@ impl AppConfig {
     /// - ROVE_MODEL (default: gpt-4o)
     /// - ROVE_MAX_STEPS (default: 20)
     /// - ROVE_SYSTEM_PROMPT (default: prompts/system.md)
+    /// - ROVE_MCP_CONFIG (default: .rove/mcp_servers.json)
     pub fn from_env() -> anyhow::Result<Self> {
         // Load .env if present
         let _ = dotenvy::dotenv();
@@ -47,12 +50,17 @@ impl AppConfig {
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from("prompts/system.md"));
 
+        let mcp_config_path = std::env::var("ROVE_MCP_CONFIG")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from(".rove/mcp_servers.json"));
+
         Ok(Self {
             api_base,
             api_key,
             model,
             max_steps,
             system_prompt_path,
+            mcp_config_path,
         })
     }
 

@@ -14,6 +14,7 @@ use rove::models::traits::ModelClient;
 use rove::state::store::StateStore;
 use rove::tools::echo::EchoTool;
 use rove::tools::fs::{FsReadTool, FsWriteTool};
+use rove::tools::mcp_proxy::register_mcp_tools_from_file;
 #[cfg(feature = "rag")]
 use rove::tools::rag::RagRetrieveTool;
 use rove::tools::registry::ToolRegistry;
@@ -85,6 +86,15 @@ async fn main() -> anyhow::Result<()> {
     #[cfg(feature = "rag")]
     registry.register(Box::new(RagRetrieveTool::docs(workspace.root.clone())));
     registry.register(Box::new(ShellTool::new(workspace.root.clone())));
+    let mcp_config_path = if config.mcp_config_path.is_absolute() {
+        config.mcp_config_path.clone()
+    } else {
+        workspace.root.join(&config.mcp_config_path)
+    };
+    let mcp_tool_count = register_mcp_tools_from_file(&mut registry, mcp_config_path).await?;
+    if mcp_tool_count > 0 {
+        tracing::info!(mcp_tool_count, "Registered MCP tools");
+    }
 
     // Build context manager
     let system_prompt = config.load_system_prompt();
