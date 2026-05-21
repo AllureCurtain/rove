@@ -1,6 +1,8 @@
 use serde::Serialize;
 
-use super::types::{CallId, JobId, RunId, TerminationReason, ToolResult, Usage};
+use super::types::{
+    CallId, JobId, PlanStep, RunId, TaskPlan, TerminationReason, ToolResult, Usage,
+};
 use crate::errors::ToolError;
 
 /// All events emitted by the engine's streaming main loop.
@@ -36,6 +38,15 @@ pub enum StreamEvent {
     /// A tool call failed.
     ToolCallFailed { call_id: CallId, error: ToolError },
 
+    /// A plan has been drafted for this run.
+    PlanCreated { plan: TaskPlan },
+
+    /// A persisted plan step is about to run.
+    PlanStepStarted { step: PlanStep, index: usize },
+
+    /// A persisted plan step completed.
+    PlanStepCompleted { step: PlanStep, index: usize },
+
     /// The run has completed.
     RunCompleted {
         reason: TerminationReason,
@@ -53,6 +64,9 @@ impl StreamEvent {
             Self::ToolCallStarted { .. } => "tool_call_started",
             Self::ToolCallCompleted { .. } => "tool_call_completed",
             Self::ToolCallFailed { .. } => "tool_call_failed",
+            Self::PlanCreated { .. } => "plan_created",
+            Self::PlanStepStarted { .. } => "plan_step_started",
+            Self::PlanStepCompleted { .. } => "plan_step_completed",
             Self::RunCompleted { .. } => "run_completed",
         }
     }

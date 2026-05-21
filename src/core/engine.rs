@@ -5,6 +5,7 @@ use crate::core::context::ContextManager;
 use crate::core::events::StreamEvent;
 use crate::core::executor::Executor;
 use crate::core::parser::parse_action;
+use crate::core::planner::Planner;
 use crate::core::types::{
     Action, ApprovalPolicy, JobId, Message, Role, RunId, RunRequest, TerminationReason,
     ToolContext, Usage,
@@ -18,11 +19,15 @@ use crate::tools::registry::ToolRegistry;
 #[derive(Debug, Clone)]
 pub struct EngineConfig {
     pub max_steps: u32,
+    pub plan_enabled: bool,
 }
 
 impl Default for EngineConfig {
     fn default() -> Self {
-        Self { max_steps: 20 }
+        Self {
+            max_steps: 20,
+            plan_enabled: false,
+        }
     }
 }
 
@@ -129,6 +134,221 @@ impl Engine {
                 .map(|state| state.history.clone())
                 .unwrap_or_default();
             let mut step: u32 = resume_state.as_ref().map(|state| state.step).unwrap_or(0);
+            let mut plan = resume_state.as_ref().and_then(|state| state.plan.clone());
+
+            if self.config.plan_enabled {
+                if plan.is_none() {
+                    let planner = Planner::new();
+                    match planner.draft(self.model.as_ref(), &user_message, &history).await {
+                        Ok(drafted) => {
+                            let event = StreamEvent::PlanCreated {
+                                plan: drafted.clone(),
+                            };
+                            if let Some(ref tw) = trace_writer {
+                                let _ = tw.append(&event);
+                            }
+                            yield event;
+                            plan = Some(drafted);
+                        }
+                        Err(err) => {
+                            let event = StreamEvent::RunCompleted {
+                                reason: TerminationReason::Error,
+                                output: Some(format!("Planner error: {err}")),
+                            };
+                            if let Some(ref tw) = trace_writer {
+                                let _ = tw.append(&event);
+                            }
+                            yield event;
+                            return;
+                        }
+                    }
+                }
+
+                let mut final_output: Option<String> = None;
+                while let Some(ref mut active_plan) = plan {
+                    if active_plan.is_complete() {
+                        break;
+                    }
+
+                    if step >= self.config.max_steps {
+                        let event = StreamEvent::RunCompleted {
+                            reason: TerminationReason::StepLimit,
+                            output: final_output,
+                        };
+                        if let Some(ref tw) = trace_writer {
+                            let _ = tw.append(&event);
+                        }
+                        yield event;
+                        return;
+                    }
+
+                    let Some(current_step) = active_plan.current_step().cloned() else {
+                        break;
+                    };
+                    let current_index = active_plan.current_step;
+                    let started = StreamEvent::PlanStepStarted {
+                        step: current_step.clone(),
+                        index: current_index,
+                    };
+                    if let Some(ref tw) = trace_writer {
+                        let _ = tw.append(&started);
+                    }
+                    yield started;
+
+                    step += 1;
+                    let step_prompt = format!(
+                        "Goal: {}\nCurrent step {}: {}\nComplete this step and report the result.",
+                        active_plan.goal, current_step.id, current_step.title
+                    );
+                    let working_memory: Vec<Message> = Vec::new();
+                    let messages = self.context_manager.build(&step_prompt, &working_memory, &history);
+                    let mut full_response = String::new();
+                    let mut usage = Usage::default();
+                    let mut model_stream: BoxStream<'_, _> = self.model.stream(
+                        &messages,
+                        &self.registry.schemas(),
+                    );
+
+                    while let Some(chunk_result) = model_stream.next().await {
+                        match chunk_result {
+                            Ok(chunk) => {
+                                if !chunk.delta.is_empty() {
+                                    full_response.push_str(&chunk.delta);
+                                    let event = StreamEvent::LlmChunk {
+                                        delta: chunk.delta,
+                                    };
+                                    if let Some(ref tw) = trace_writer {
+                                        let _ = tw.append(&event);
+                                    }
+                                    yield event;
+                                }
+                                if let Some(u) = chunk.usage {
+                                    usage = u;
+                                }
+                            }
+                            Err(e) => {
+                                let event = StreamEvent::RunCompleted {
+                                    reason: TerminationReason::Error,
+                                    output: Some(format!("Model error: {}", e)),
+                                };
+                                if let Some(ref tw) = trace_writer {
+                                    let _ = tw.append(&event);
+                                }
+                                yield event;
+                                return;
+                            }
+                        }
+                    }
+
+                    let msg_event = StreamEvent::LlmMessage {
+                        full: full_response.clone(),
+                        usage,
+                    };
+                    if let Some(ref tw) = trace_writer {
+                        let _ = tw.append(&msg_event);
+                    }
+                    yield msg_event;
+
+                    match parse_action(&full_response) {
+                        Action::ToolCall { call_id, name, args } => {
+                            let start_event = StreamEvent::ToolCallStarted {
+                                call_id,
+                                name: name.clone(),
+                                args: args.clone(),
+                            };
+                            if let Some(ref tw) = trace_writer {
+                                let _ = tw.append(&start_event);
+                            }
+                            yield start_event;
+
+                            let executor = Executor::new(&self.registry);
+                            let tool_context = ToolContext {
+                                workspace: &self.workspace,
+                                approval_policy: self.approval_policy,
+                            };
+                            match executor.run(&tool_context, &name, args, call_id).await {
+                                Ok(result) => {
+                                    history.push(Message {
+                                        role: Role::Assistant,
+                                        content: full_response.clone(),
+                                    });
+                                    history.push(Message {
+                                        role: Role::Tool,
+                                        content: result.output.clone(),
+                                    });
+
+                                    let event = StreamEvent::ToolCallCompleted {
+                                        call_id,
+                                        result,
+                                    };
+                                    if let Some(ref tw) = trace_writer {
+                                        let _ = tw.append(&event);
+                                    }
+                                    yield event;
+                                }
+                                Err(e) => {
+                                    history.push(Message {
+                                        role: Role::Assistant,
+                                        content: full_response.clone(),
+                                    });
+                                    history.push(Message {
+                                        role: Role::Tool,
+                                        content: format!("Error: {}", e),
+                                    });
+
+                                    let event = StreamEvent::ToolCallFailed {
+                                        call_id,
+                                        error: e,
+                                    };
+                                    if let Some(ref tw) = trace_writer {
+                                        let _ = tw.append(&event);
+                                    }
+                                    yield event;
+                                }
+                            }
+                        }
+                        Action::Final { text } => {
+                            history.push(Message {
+                                role: Role::Assistant,
+                                content: text.clone(),
+                            });
+                            final_output = Some(text);
+                            active_plan.mark_current_done();
+                            let completed = StreamEvent::PlanStepCompleted {
+                                step: current_step,
+                                index: current_index,
+                            };
+                            if let Some(ref tw) = trace_writer {
+                                let _ = tw.append(&completed);
+                            }
+                            yield completed;
+                        }
+                        Action::Malformed { reason } => {
+                            history.push(Message {
+                                role: Role::Assistant,
+                                content: full_response.clone(),
+                            });
+                            history.push(Message {
+                                role: Role::User,
+                                content: format!(
+                                    "Your previous output could not be parsed: {}. Please try again.",
+                                    reason
+                                ),
+                            });
+                        }
+                    }
+                }
+
+                let event = StreamEvent::RunCompleted {
+                    reason: TerminationReason::Final,
+                    output: final_output,
+                };
+                if let Some(ref tw) = trace_writer {
+                    let _ = tw.append(&event);
+                }
+                yield event;
+                return;
+            }
 
             loop {
                 if step >= self.config.max_steps {

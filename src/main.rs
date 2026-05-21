@@ -87,6 +87,7 @@ async fn main() -> anyhow::Result<()> {
     // Build engine
     let engine_config = EngineConfig {
         max_steps: args.max_steps.unwrap_or(config.max_steps),
+        plan_enabled: true,
     };
     let approval_policy = match args.approval {
         CliApprovalPolicy::Ask => ApprovalPolicy::Ask,

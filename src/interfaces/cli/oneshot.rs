@@ -5,7 +5,7 @@ use futures::StreamExt;
 
 use crate::core::engine::Engine;
 use crate::core::events::StreamEvent;
-use crate::core::types::{RunId, RunRequest, TaskState, TerminationReason, Usage};
+use crate::core::types::{RunId, RunRequest, TaskPlan, TaskState, TerminationReason, Usage};
 use crate::state::report::{RunReport, write_report};
 use crate::state::store::StateStore;
 use crate::state::trace::TraceWriter;
@@ -38,6 +38,7 @@ pub async fn run_oneshot(
     let initial_summary = resume_state
         .as_ref()
         .and_then(|state| state.summary.clone());
+    let mut plan: Option<TaskPlan> = resume_state.as_ref().and_then(|state| state.plan.clone());
 
     let req = RunRequest {
         session_id,
@@ -79,6 +80,52 @@ pub async fn run_oneshot(
                 tool_failures += 1;
                 eprintln!("  [error] {}", error);
             }
+            StreamEvent::PlanCreated { plan: new_plan } => {
+                eprintln!("\n  [plan] {} steps", new_plan.steps.len());
+                plan = Some(new_plan);
+                write_task_snapshot(SnapshotWrite {
+                    state_store,
+                    session_id,
+                    job_id,
+                    run_id,
+                    goal: &message,
+                    step: initial_step + steps,
+                    history: &history,
+                    summary: initial_summary.clone(),
+                    plan: plan.clone(),
+                })
+                .await;
+            }
+            StreamEvent::PlanStepStarted { step, index } => {
+                eprintln!("  [step {}] {}", index + 1, step.title);
+            }
+            StreamEvent::PlanStepCompleted { step, .. } => {
+                if let Some(active_plan) = plan.as_mut()
+                    && let Some(saved_step) = active_plan
+                        .steps
+                        .iter_mut()
+                        .find(|saved_step| saved_step.id == step.id)
+                {
+                    saved_step.done = true;
+                    active_plan.current_step = active_plan
+                        .steps
+                        .iter()
+                        .position(|saved_step| !saved_step.done)
+                        .unwrap_or(active_plan.steps.len());
+                }
+                write_task_snapshot(SnapshotWrite {
+                    state_store,
+                    session_id,
+                    job_id,
+                    run_id,
+                    goal: &message,
+                    step: initial_step + steps,
+                    history: &history,
+                    summary: initial_summary.clone(),
+                    plan: plan.clone(),
+                })
+                .await;
+            }
             StreamEvent::RunCompleted { reason, output } => {
                 if let Some(ref text) = output
                     && !matches!(reason, TerminationReason::Final)
@@ -95,6 +142,7 @@ pub async fn run_oneshot(
     }
     println!();
 
+    let goal = message.clone();
     history.push(crate::core::types::Message {
         role: crate::core::types::Role::User,
         content: message,
@@ -106,23 +154,18 @@ pub async fn run_oneshot(
         });
     }
 
-    let state = TaskState {
-        schema_version: 1,
+    write_task_snapshot(SnapshotWrite {
+        state_store,
         session_id,
         job_id,
         run_id,
-        goal: history
-            .iter()
-            .find(|message| matches!(message.role, crate::core::types::Role::User))
-            .map(|message| message.content.clone())
-            .unwrap_or_default(),
+        goal: &goal,
         step: initial_step + steps,
-        history,
+        history: &history,
         summary: initial_summary,
-    };
-    if let Err(e) = state_store.write_task_state(&state).await {
-        tracing::warn!("Failed to write task_state.json: {}", e);
-    }
+        plan,
+    })
+    .await;
 
     // Write report.json
     let mut report = RunReport::new(run_id, final_reason);
@@ -134,6 +177,40 @@ pub async fn run_oneshot(
 
     if let Err(e) = write_report(&run_dir, &report) {
         tracing::warn!("Failed to write report.json: {}", e);
+    }
+}
+
+struct SnapshotWrite<'a> {
+    state_store: &'a StateStore,
+    session_id: crate::core::types::SessionId,
+    job_id: crate::core::types::JobId,
+    run_id: RunId,
+    goal: &'a str,
+    step: u32,
+    history: &'a [crate::core::types::Message],
+    summary: Option<String>,
+    plan: Option<TaskPlan>,
+}
+
+async fn write_task_snapshot(args: SnapshotWrite<'_>) {
+    let state = TaskState {
+        schema_version: 1,
+        session_id: args.session_id,
+        job_id: args.job_id,
+        run_id: args.run_id,
+        goal: args
+            .history
+            .iter()
+            .find(|message| matches!(message.role, crate::core::types::Role::User))
+            .map(|message| message.content.clone())
+            .unwrap_or_else(|| args.goal.to_string()),
+        step: args.step,
+        history: args.history.to_vec(),
+        summary: args.summary,
+        plan: args.plan,
+    };
+    if let Err(e) = args.state_store.write_task_state(&state).await {
+        tracing::warn!("Failed to write task_state.json: {}", e);
     }
 }
 

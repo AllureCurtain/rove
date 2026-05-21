@@ -40,6 +40,43 @@ pub struct TaskState {
     pub step: u32,
     pub history: Vec<Message>,
     pub summary: Option<String>,
+    #[serde(default)]
+    pub plan: Option<TaskPlan>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PlanStep {
+    pub id: String,
+    pub title: String,
+    pub done: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TaskPlan {
+    pub goal: String,
+    pub steps: Vec<PlanStep>,
+    pub current_step: usize,
+}
+
+impl TaskPlan {
+    pub fn current_step(&self) -> Option<&PlanStep> {
+        self.steps.get(self.current_step)
+    }
+
+    pub fn mark_current_done(&mut self) {
+        if let Some(step) = self.steps.get_mut(self.current_step) {
+            step.done = true;
+        }
+        self.current_step = self
+            .steps
+            .iter()
+            .position(|step| !step.done)
+            .unwrap_or(self.steps.len());
+    }
+
+    pub fn is_complete(&self) -> bool {
+        self.current_step >= self.steps.len() || self.steps.iter().all(|step| step.done)
+    }
 }
 
 impl SessionId {

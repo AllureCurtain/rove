@@ -6,8 +6,8 @@ use rove::core::context::ContextManager;
 use rove::core::engine::{Engine, EngineConfig};
 use rove::core::events::StreamEvent;
 use rove::core::types::{
-    ApprovalPolicy, CallId, JobId, Message, RunId, RunRequest, SessionId, TaskState, ToolContext,
-    ToolSchema, Usage,
+    ApprovalPolicy, CallId, JobId, Message, PlanStep, RunId, RunRequest, SessionId, TaskPlan,
+    TaskState, ToolContext, ToolSchema, Usage,
 };
 use rove::core::workspace::Workspace;
 use rove::errors::{ModelError, ToolError};
@@ -101,7 +101,22 @@ fn build_test_engine(responses: Vec<String>) -> Engine {
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(EchoTool));
     let context_manager = ContextManager::new("You are a test agent.".to_string());
-    let config = EngineConfig { max_steps: 5 };
+    let config = EngineConfig {
+        max_steps: 5,
+        plan_enabled: false,
+    };
+    Engine::new(model, registry, context_manager, config)
+}
+
+fn build_planner_test_engine(responses: Vec<String>) -> Engine {
+    let model = Box::new(FakeModelClient::new(responses));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(EchoTool));
+    let context_manager = ContextManager::new("You are a test agent.".to_string());
+    let config = EngineConfig {
+        max_steps: 5,
+        plan_enabled: true,
+    };
     Engine::new(model, registry, context_manager, config)
 }
 
@@ -162,12 +177,99 @@ async fn latest_task_state_is_loaded_for_resume() {
         step: 3,
         history: vec![user_message("continue")],
         summary: Some("working summary".to_string()),
+        plan: None,
     };
 
     store.write_task_state(&state).await.unwrap();
     let loaded = store.load_latest_task_state().await.unwrap().unwrap();
     assert_eq!(loaded.step, 3);
     assert_eq!(loaded.summary.as_deref(), Some("working summary"));
+}
+
+#[tokio::test]
+async fn planner_persists_steps_and_resumes_mid_plan() {
+    let engine = build_planner_test_engine(vec![
+        r#"{"goal":"fix docs","steps":[{"id":"1","title":"inspect docs"},{"id":"2","title":"write summary"}]}"#.to_string(),
+        "step 1 done".to_string(),
+        "step 2 done".to_string(),
+    ]);
+
+    let events = collect_events(&engine, "fix the docs").await;
+
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, StreamEvent::PlanCreated { .. })),
+        "missing PlanCreated event"
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, StreamEvent::PlanStepCompleted { .. }))
+            .count(),
+        2
+    );
+    assert!(matches!(
+        events.last(),
+        Some(StreamEvent::RunCompleted {
+            reason: rove::core::types::TerminationReason::Final,
+            ..
+        })
+    ));
+}
+
+#[tokio::test]
+async fn planner_resumes_at_current_step() {
+    let mut plan = TaskPlan {
+        goal: "fix docs".to_string(),
+        steps: vec![
+            PlanStep {
+                id: "1".to_string(),
+                title: "inspect docs".to_string(),
+                done: true,
+            },
+            PlanStep {
+                id: "2".to_string(),
+                title: "write summary".to_string(),
+                done: false,
+            },
+        ],
+        current_step: 1,
+    };
+    plan.steps[0].done = true;
+
+    let req = RunRequest {
+        session_id: SessionId::new(),
+        job_id: JobId::new(),
+        run_id: RunId::new(),
+        user_message: "fix the docs".to_string(),
+        resume_state: Some(TaskState {
+            schema_version: 1,
+            session_id: SessionId::new(),
+            job_id: JobId::new(),
+            run_id: RunId::new(),
+            goal: "fix docs".to_string(),
+            step: 1,
+            history: vec![],
+            summary: None,
+            plan: Some(plan),
+        }),
+    };
+    let engine = build_planner_test_engine(vec!["step 2 done".to_string()]);
+
+    let events = collect_events_with_request(&engine, req).await;
+
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, StreamEvent::PlanCreated { .. }))
+    );
+    assert!(events.iter().any(|event| {
+        matches!(
+            event,
+            StreamEvent::PlanStepStarted { step, .. } if step.id == "2"
+        )
+    }));
 }
 
 #[tokio::test]

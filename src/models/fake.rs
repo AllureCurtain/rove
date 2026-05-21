@@ -20,10 +20,27 @@ impl FakeModelClient {
 impl ModelClient for FakeModelClient {
     fn stream(
         &self,
-        _messages: &[Message],
+        messages: &[Message],
         _tools: &[ToolSchema],
     ) -> BoxStream<'_, Result<StreamChunk, ModelError>> {
-        let response = self.response.clone();
+        let response = if messages
+            .first()
+            .map(|message| message.content.contains("You are the planner for rove."))
+            .unwrap_or(false)
+        {
+            serde_json::json!({
+                "goal": messages
+                    .get(1)
+                    .map(|message| message.content.trim_start_matches("Goal: ").to_string())
+                    .unwrap_or_else(|| "fake goal".to_string()),
+                "steps": [
+                    { "id": "1", "title": "answer the request" }
+                ]
+            })
+            .to_string()
+        } else {
+            self.response.clone()
+        };
         Box::pin(futures::stream::once(async move {
             Ok(StreamChunk {
                 delta: response,
