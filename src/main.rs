@@ -14,6 +14,7 @@ use rove::models::traits::ModelClient;
 use rove::state::store::StateStore;
 use rove::tools::echo::EchoTool;
 use rove::tools::fs::{FsReadTool, FsWriteTool};
+use rove::tools::rag::RagRetrieveTool;
 use rove::tools::registry::ToolRegistry;
 use rove::tools::shell::ShellTool;
 
@@ -78,6 +79,8 @@ async fn main() -> anyhow::Result<()> {
     registry.register(Box::new(EchoTool));
     registry.register(Box::new(FsReadTool::new(workspace.root.clone())));
     registry.register(Box::new(FsWriteTool::new(workspace.root.clone())));
+    registry.register(Box::new(RagRetrieveTool::code(workspace.root.clone())));
+    registry.register(Box::new(RagRetrieveTool::docs(workspace.root.clone())));
     registry.register(Box::new(ShellTool::new(workspace.root.clone())));
 
     // Build context manager

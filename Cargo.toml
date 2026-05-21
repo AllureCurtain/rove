@@ -8,6 +8,10 @@ description = "A local-first, stateful, observable general-purpose agent runtime
 name = "rove"
 path = "src/main.rs"
 
+[[bin]]
+name = "rove-index"
+path = "src/bin/rove-index.rs"
+
 [lib]
 name = "rove"
 path = "src/lib.rs"
@@ -45,6 +49,10 @@ chrono = { version = "0.4.44", features = ["serde"] }
 
 # Config
 dotenvy = "0.15.7"
+lancedb = "0.29.0"
+arrow-array = "58.3.0"
+arrow-schema = "58.3.0"
+walkdir = "2.5.0"
 
 [dev-dependencies]
 tokio-test = "0.4"
