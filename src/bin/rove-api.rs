@@ -1,0 +1,33 @@
+use std::net::SocketAddr;
+use std::path::PathBuf;
+
+use clap::Parser;
+use rove::interfaces::api::serve;
+
+#[derive(Debug, Parser)]
+#[command(name = "rove-api", about = "Serve the rove HTTP API")]
+struct Args {
+    /// Address to bind.
+    #[arg(long, default_value = "127.0.0.1:8787")]
+    addr: SocketAddr,
+
+    /// Working directory for jobs.
+    #[arg(short = 'C', long)]
+    cwd: Option<PathBuf>,
+}
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::from_default_env()
+                .add_directive("rove=info".parse().unwrap()),
+        )
+        .init();
+
+    let args = Args::parse();
+    let cwd = args
+        .cwd
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    serve(args.addr, cwd).await
+}

@@ -13,6 +13,10 @@ name = "rove-index"
 path = "src/bin/rove-index.rs"
 required-features = ["rag"]
 
+[[bin]]
+name = "rove-api"
+path = "src/bin/rove-api.rs"
+
 [lib]
 name = "rove"
 path = "src/lib.rs"
@@ -24,7 +28,7 @@ rag = ["dep:arrow-array", "dep:arrow-schema", "dep:lancedb", "dep:walkdir"]
 [dependencies]
 # Async runtime
 tokio = { version = "1.52", features = ["full"] }
-tokio-stream = "0.1"
+tokio-stream = { version = "0.1", features = ["sync"] }
 async-stream = "0.3.6"
 async-trait = "0.1.89"
 futures = "0.3.32"
@@ -32,6 +36,8 @@ futures = "0.3.32"
 # HTTP + LLM
 reqwest = { version = "0.13.3", features = ["json", "stream"] }
 eventsource-stream = "0.2.3"
+axum = "0.8"
+tower = { version = "0.5", features = ["util"] }
 
 # Serialization
 serde = { version = "1.0.228", features = ["derive"] }
