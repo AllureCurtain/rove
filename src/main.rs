@@ -4,15 +4,18 @@ use clap::Parser;
 use rove::config::AppConfig;
 use rove::core::context::ContextManager;
 use rove::core::engine::{Engine, EngineConfig};
+use rove::core::types::ApprovalPolicy;
 use rove::core::workspace::Workspace;
-use rove::interfaces::cli::args::Args;
+use rove::interfaces::cli::args::{Args, CliApprovalPolicy};
 use rove::interfaces::cli::oneshot::run_oneshot;
 use rove::models::fake::FakeModelClient;
 use rove::models::openai::OpenAiClient;
 use rove::models::traits::ModelClient;
 use rove::state::store::StateStore;
 use rove::tools::echo::EchoTool;
+use rove::tools::fs::{FsReadTool, FsWriteTool};
 use rove::tools::registry::ToolRegistry;
+use rove::tools::shell::ShellTool;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -73,6 +76,9 @@ async fn main() -> anyhow::Result<()> {
     // Build tool registry
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(EchoTool));
+    registry.register(Box::new(FsReadTool::new(workspace.root.clone())));
+    registry.register(Box::new(FsWriteTool::new(workspace.root.clone())));
+    registry.register(Box::new(ShellTool::new(workspace.root.clone())));
 
     // Build context manager
     let system_prompt = config.load_system_prompt();
@@ -82,10 +88,27 @@ async fn main() -> anyhow::Result<()> {
     let engine_config = EngineConfig {
         max_steps: args.max_steps.unwrap_or(config.max_steps),
     };
-    let engine = Engine::new(model, registry, context_manager, engine_config);
+    let approval_policy = match args.approval {
+        CliApprovalPolicy::Ask => ApprovalPolicy::Ask,
+        CliApprovalPolicy::Auto => ApprovalPolicy::Auto,
+        CliApprovalPolicy::Never => ApprovalPolicy::Never,
+    };
+    let engine = Engine::with_workspace(
+        model,
+        registry,
+        context_manager,
+        engine_config,
+        workspace.clone(),
+        approval_policy,
+    );
 
     // Set up state store + trace
     let state_store = StateStore::new(&workspace.state_dir);
+    let resume_state = match args.resume.as_deref() {
+        Some("latest") => state_store.load_latest_task_state().await?,
+        Some(other) => anyhow::bail!("unsupported --resume value: {other}; use --resume latest"),
+        None => None,
+    };
     let run_id = state_store.new_run();
     let run_dir = state_store.run_store.run_dir(&run_id);
     let trace_writer = state_store.run_store.create_trace(&run_id).ok();
@@ -93,7 +116,16 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(%run_id, "Starting run");
 
     // Run
-    run_oneshot(&engine, message, trace_writer, run_id, run_dir).await;
+    run_oneshot(
+        &engine,
+        message,
+        trace_writer,
+        run_id,
+        run_dir,
+        resume_state,
+        &state_store,
+    )
+    .await;
 
     Ok(())
 }

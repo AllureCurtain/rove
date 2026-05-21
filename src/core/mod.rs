@@ -1,3 +1,4 @@
+pub mod boundary;
 pub mod context;
 pub mod engine;
 pub mod events;

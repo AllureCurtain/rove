@@ -5,11 +5,25 @@ use futures::stream::BoxStream;
 use rove::core::context::ContextManager;
 use rove::core::engine::{Engine, EngineConfig};
 use rove::core::events::StreamEvent;
-use rove::core::types::{JobId, Message, RunId, RunRequest, SessionId, ToolSchema, Usage};
-use rove::errors::ModelError;
+use rove::core::types::{
+    ApprovalPolicy, CallId, JobId, Message, RunId, RunRequest, SessionId, TaskState, ToolContext,
+    ToolSchema, Usage,
+};
+use rove::core::workspace::Workspace;
+use rove::errors::{ModelError, ToolError};
 use rove::models::traits::{ModelClient, StreamChunk};
 use rove::tools::echo::EchoTool;
+use rove::tools::fs::{FsReadTool, FsWriteTool};
 use rove::tools::registry::ToolRegistry;
+use rove::tools::shell::ShellTool;
+use rove::tools::traits::{Tool, ToolOutput};
+
+fn user_message(content: &str) -> Message {
+    Message {
+        role: rove::core::types::Role::User,
+        content: content.to_string(),
+    }
+}
 
 /// A fake model client that returns predetermined responses.
 struct FakeModelClient {
@@ -59,6 +73,29 @@ impl ModelClient for FakeModelClient {
     }
 }
 
+struct FakeDestructiveTool;
+
+#[async_trait]
+impl Tool for FakeDestructiveTool {
+    fn schema(&self) -> ToolSchema {
+        ToolSchema {
+            name: "danger".to_string(),
+            description: "A destructive tool used only for boundary tests.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {}
+            }),
+            destructive: true,
+        }
+    }
+
+    async fn execute(&self, _args: serde_json::Value) -> Result<ToolOutput, ToolError> {
+        Ok(ToolOutput {
+            content: "should never run".to_string(),
+        })
+    }
+}
+
 fn build_test_engine(responses: Vec<String>) -> Engine {
     let model = Box::new(FakeModelClient::new(responses));
     let mut registry = ToolRegistry::new();
@@ -90,6 +127,136 @@ async fn collect_events_with_request(engine: &Engine, req: RunRequest) -> Vec<St
 }
 
 #[tokio::test]
+async fn destructive_tool_is_blocked_when_policy_is_never() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(FakeDestructiveTool));
+
+    let executor = rove::core::executor::Executor::new(&registry);
+    let ctx = ToolContext {
+        workspace: &workspace,
+        approval_policy: ApprovalPolicy::Never,
+    };
+
+    let err = executor
+        .run(&ctx, "danger", serde_json::json!({}), CallId::new())
+        .await
+        .unwrap_err();
+
+    assert!(matches!(err, ToolError::PermissionDenied { .. }));
+}
+
+#[tokio::test]
+async fn latest_task_state_is_loaded_for_resume() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let store = rove::state::store::StateStore::new(tmp.path());
+
+    let state = TaskState {
+        schema_version: 1,
+        session_id: SessionId::new(),
+        job_id: JobId::new(),
+        run_id: RunId::new(),
+        goal: "continue".to_string(),
+        step: 3,
+        history: vec![user_message("continue")],
+        summary: Some("working summary".to_string()),
+    };
+
+    store.write_task_state(&state).await.unwrap();
+    let loaded = store.load_latest_task_state().await.unwrap().unwrap();
+    assert_eq!(loaded.step, 3);
+    assert_eq!(loaded.summary.as_deref(), Some("working summary"));
+}
+
+#[tokio::test]
+async fn file_tools_read_and_write_inside_workspace() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(FsWriteTool::new(workspace.root.clone())));
+    registry.register(Box::new(FsReadTool::new(workspace.root.clone())));
+
+    let executor = rove::core::executor::Executor::new(&registry);
+    let ctx = ToolContext {
+        workspace: &workspace,
+        approval_policy: ApprovalPolicy::Auto,
+    };
+
+    executor
+        .run(
+            &ctx,
+            "fs_write",
+            serde_json::json!({"path": "note.txt", "content": "hello"}),
+            CallId::new(),
+        )
+        .await
+        .unwrap();
+    let result = executor
+        .run(
+            &ctx,
+            "fs_read",
+            serde_json::json!({"path": "note.txt"}),
+            CallId::new(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(result.output, "hello");
+}
+
+#[tokio::test]
+async fn shell_tool_is_blocked_when_policy_is_never() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(ShellTool::new(workspace.root.clone())));
+
+    let executor = rove::core::executor::Executor::new(&registry);
+    let ctx = ToolContext {
+        workspace: &workspace,
+        approval_policy: ApprovalPolicy::Never,
+    };
+
+    let err = executor
+        .run(
+            &ctx,
+            "shell",
+            serde_json::json!({"command": "echo should-not-run"}),
+            CallId::new(),
+        )
+        .await
+        .unwrap_err();
+
+    assert!(matches!(err, ToolError::PermissionDenied { .. }));
+}
+
+#[test]
+fn context_manager_orders_memory_before_trimmed_history_and_current_message() {
+    let context = ContextManager::with_max_history("system".to_string(), 2);
+    let memory = vec![user_message("memory")];
+    let history = vec![
+        user_message("old"),
+        user_message("recent one"),
+        user_message("recent two"),
+    ];
+
+    let messages = context.build("current", &memory, &history);
+    let contents: Vec<_> = messages
+        .iter()
+        .map(|message| message.content.as_str())
+        .collect();
+
+    assert_eq!(
+        contents,
+        vec!["system", "memory", "recent one", "recent two", "current"]
+    );
+}
+
+#[tokio::test]
 async fn run_started_event_uses_request_ids() {
     let engine = build_test_engine(vec!["done".to_string()]);
     let req = RunRequest {
@@ -97,6 +264,7 @@ async fn run_started_event_uses_request_ids() {
         job_id: JobId::new(),
         run_id: RunId::new(),
         user_message: "say hello".to_string(),
+        resume_state: None,
     };
 
     let events = collect_events_with_request(&engine, req.clone()).await;

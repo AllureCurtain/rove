@@ -6,8 +6,10 @@ use crate::core::events::StreamEvent;
 use crate::core::executor::Executor;
 use crate::core::parser::parse_action;
 use crate::core::types::{
-    Action, JobId, Message, Role, RunId, RunRequest, TerminationReason, Usage,
+    Action, ApprovalPolicy, JobId, Message, Role, RunId, RunRequest, TerminationReason,
+    ToolContext, Usage,
 };
+use crate::core::workspace::Workspace;
 use crate::models::traits::ModelClient;
 use crate::state::trace::TraceWriter;
 use crate::tools::registry::ToolRegistry;
@@ -33,6 +35,8 @@ pub struct Engine {
     registry: ToolRegistry,
     context_manager: ContextManager,
     config: EngineConfig,
+    workspace: Workspace,
+    approval_policy: ApprovalPolicy,
 }
 
 impl Engine {
@@ -42,11 +46,38 @@ impl Engine {
         context_manager: ContextManager,
         config: EngineConfig,
     ) -> Self {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let workspace = Workspace::detect(&cwd).unwrap_or_else(|_| Workspace {
+            root: cwd.clone(),
+            kind: crate::core::workspace::WorkspaceKind::Folder,
+            state_dir: cwd.join(".rove"),
+        });
+
+        Self::with_workspace(
+            model,
+            registry,
+            context_manager,
+            config,
+            workspace,
+            ApprovalPolicy::Auto,
+        )
+    }
+
+    pub fn with_workspace(
+        model: Box<dyn ModelClient>,
+        registry: ToolRegistry,
+        context_manager: ContextManager,
+        config: EngineConfig,
+        workspace: Workspace,
+        approval_policy: ApprovalPolicy,
+    ) -> Self {
         Self {
             model,
             registry,
             context_manager,
             config,
+            workspace,
+            approval_policy,
         }
     }
 
@@ -63,6 +94,7 @@ impl Engine {
             job_id: JobId::new(),
             run_id: RunId::new(),
             user_message,
+            resume_state: None,
         };
 
         self.run(req, trace_writer)
@@ -79,6 +111,7 @@ impl Engine {
         let job_id = req.job_id;
         let run_id = req.run_id;
         let user_message = req.user_message;
+        let resume_state = req.resume_state;
 
         stream! {
             let start_event = StreamEvent::RunStarted {
@@ -91,8 +124,11 @@ impl Engine {
             }
             yield start_event;
 
-            let mut history: Vec<Message> = Vec::new();
-            let mut step: u32 = 0;
+            let mut history: Vec<Message> = resume_state
+                .as_ref()
+                .map(|state| state.history.clone())
+                .unwrap_or_default();
+            let mut step: u32 = resume_state.as_ref().map(|state| state.step).unwrap_or(0);
 
             loop {
                 if step >= self.config.max_steps {
@@ -109,7 +145,8 @@ impl Engine {
                 step += 1;
 
                 // 1. Build prompt
-                let messages = self.context_manager.build(&user_message, &history);
+                let working_memory: Vec<Message> = Vec::new();
+                let messages = self.context_manager.build(&user_message, &working_memory, &history);
 
                 // 2. Call model (streaming)
                 let mut full_response = String::new();
@@ -188,7 +225,11 @@ impl Engine {
                         yield start_event;
 
                         let executor = Executor::new(&self.registry);
-                        match executor.run(&name, args, call_id).await {
+                        let tool_context = ToolContext {
+                            workspace: &self.workspace,
+                            approval_policy: self.approval_policy,
+                        };
+                        match executor.run(&tool_context, &name, args, call_id).await {
                             Ok(result) => {
                                 // Add assistant message + tool result to history
                                 history.push(Message {

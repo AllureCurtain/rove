@@ -5,8 +5,9 @@ use futures::StreamExt;
 
 use crate::core::engine::Engine;
 use crate::core::events::StreamEvent;
-use crate::core::types::{JobId, RunId, RunRequest, SessionId, TerminationReason, Usage};
+use crate::core::types::{RunId, RunRequest, TaskState, TerminationReason, Usage};
 use crate::state::report::{RunReport, write_report};
+use crate::state::store::StateStore;
 use crate::state::trace::TraceWriter;
 
 /// Run a one-shot command: send user message, stream output, exit.
@@ -18,12 +19,32 @@ pub async fn run_oneshot(
     trace_writer: Option<TraceWriter>,
     run_id: RunId,
     run_dir: PathBuf,
+    resume_state: Option<TaskState>,
+    state_store: &StateStore,
 ) {
+    let session_id = resume_state
+        .as_ref()
+        .map(|state| state.session_id)
+        .unwrap_or_default();
+    let job_id = resume_state
+        .as_ref()
+        .map(|state| state.job_id)
+        .unwrap_or_default();
+    let initial_history = resume_state
+        .as_ref()
+        .map(|state| state.history.clone())
+        .unwrap_or_default();
+    let initial_step = resume_state.as_ref().map(|state| state.step).unwrap_or(0);
+    let initial_summary = resume_state
+        .as_ref()
+        .and_then(|state| state.summary.clone());
+
     let req = RunRequest {
-        session_id: SessionId::new(),
-        job_id: JobId::new(),
+        session_id,
+        job_id,
         run_id,
-        user_message: message,
+        user_message: message.clone(),
+        resume_state,
     };
     let mut stream = std::pin::pin!(engine.run(req, trace_writer));
 
@@ -33,6 +54,7 @@ pub async fn run_oneshot(
     let mut total_usage = Usage::default();
     let mut final_reason = TerminationReason::Error;
     let mut final_output: Option<String> = None;
+    let mut history = initial_history;
 
     while let Some(event) = stream.next().await {
         match event {
@@ -72,6 +94,35 @@ pub async fn run_oneshot(
         }
     }
     println!();
+
+    history.push(crate::core::types::Message {
+        role: crate::core::types::Role::User,
+        content: message,
+    });
+    if let Some(output) = &final_output {
+        history.push(crate::core::types::Message {
+            role: crate::core::types::Role::Assistant,
+            content: output.clone(),
+        });
+    }
+
+    let state = TaskState {
+        schema_version: 1,
+        session_id,
+        job_id,
+        run_id,
+        goal: history
+            .iter()
+            .find(|message| matches!(message.role, crate::core::types::Role::User))
+            .map(|message| message.content.clone())
+            .unwrap_or_default(),
+        step: initial_step + steps,
+        history,
+        summary: initial_summary,
+    };
+    if let Err(e) = state_store.write_task_state(&state).await {
+        tracing::warn!("Failed to write task_state.json: {}", e);
+    }
 
     // Write report.json
     let mut report = RunReport::new(run_id, final_reason);

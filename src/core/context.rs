@@ -22,8 +22,20 @@ impl ContextManager {
         }
     }
 
+    pub fn with_max_history(system_prompt: String, max_history: usize) -> Self {
+        Self {
+            system_prompt,
+            max_history,
+        }
+    }
+
     /// Build the full message list to send to the LLM.
-    pub fn build(&self, user_message: &str, history: &[Message]) -> Vec<Message> {
+    pub fn build(
+        &self,
+        user_message: &str,
+        working_memory: &[Message],
+        history: &[Message],
+    ) -> Vec<Message> {
         let mut messages = Vec::new();
 
         // System prompt
@@ -31,6 +43,9 @@ impl ContextManager {
             role: crate::core::types::Role::System,
             content: self.system_prompt.clone(),
         });
+
+        // Memory sections always precede trimmed history.
+        messages.extend_from_slice(working_memory);
 
         // History (truncated to budget)
         let start = if history.len() > self.max_history {

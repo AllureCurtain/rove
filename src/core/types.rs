@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use ulid::Ulid;
 
+use crate::core::workspace::Workspace;
+
 /// Unique identifier for a session (user-level, spans multiple jobs).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SessionId(pub Ulid);
@@ -24,6 +26,20 @@ pub struct RunRequest {
     pub job_id: JobId,
     pub run_id: RunId,
     pub user_message: String,
+    pub resume_state: Option<TaskState>,
+}
+
+/// Persisted task snapshot used for resume.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskState {
+    pub schema_version: u32,
+    pub session_id: SessionId,
+    pub job_id: JobId,
+    pub run_id: RunId,
+    pub goal: String,
+    pub step: u32,
+    pub history: Vec<Message>,
+    pub summary: Option<String>,
 }
 
 impl SessionId {
@@ -182,4 +198,21 @@ pub struct ToolSchema {
     pub name: String,
     pub description: String,
     pub parameters: serde_json::Value,
+    pub destructive: bool,
+}
+
+/// Tool approval policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalPolicy {
+    Ask,
+    Auto,
+    Never,
+}
+
+/// Context passed through the tool execution boundary.
+#[derive(Debug, Clone, Copy)]
+pub struct ToolContext<'a> {
+    pub workspace: &'a Workspace,
+    pub approval_policy: ApprovalPolicy,
 }

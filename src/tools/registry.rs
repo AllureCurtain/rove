@@ -30,6 +30,14 @@ impl ToolRegistry {
         self.tools.values().map(|t| t.schema()).collect()
     }
 
+    /// Get one tool schema by name.
+    pub fn schema(&self, name: &str) -> Result<ToolSchema, ToolError> {
+        let tool = self.tools.get(name).ok_or_else(|| ToolError::UnknownTool {
+            name: name.to_string(),
+        })?;
+        Ok(tool.schema())
+    }
+
     /// Execute a tool by name.
     pub async fn execute(
         &self,
