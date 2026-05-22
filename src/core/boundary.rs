@@ -7,6 +7,9 @@ pub fn check_tool_allowed(schema: &ToolSchema, policy: ApprovalPolicy) -> Result
         (true, ApprovalPolicy::Never) => Err(ToolError::PermissionDenied {
             reason: "destructive tool blocked by policy".to_string(),
         }),
+        (true, ApprovalPolicy::Ask) => Err(ToolError::PermissionDenied {
+            reason: "destructive tool requires explicit approval".to_string(),
+        }),
         _ => Ok(()),
     }
 }

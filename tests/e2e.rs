@@ -215,6 +215,28 @@ async fn destructive_tool_is_blocked_when_policy_is_never() {
 }
 
 #[tokio::test]
+async fn destructive_tool_requires_explicit_approval_when_policy_is_ask() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(FakeDestructiveTool));
+
+    let executor = rove::core::executor::Executor::new(&registry);
+    let ctx = ToolContext {
+        workspace: &workspace,
+        approval_policy: ApprovalPolicy::Ask,
+    };
+
+    let err = executor
+        .run(&ctx, "danger", serde_json::json!({}), CallId::new())
+        .await
+        .unwrap_err();
+
+    assert!(matches!(err, ToolError::PermissionDenied { .. }));
+}
+
+#[tokio::test]
 async fn executor_rejects_wrong_argument_type_before_tool_runs() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
