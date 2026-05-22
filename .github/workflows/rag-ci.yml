@@ -57,5 +57,8 @@ jobs:
       - name: cargo clippy --features rag
         run: cargo clippy --all-targets --features rag -- -D warnings
 
-      - name: cargo test --features rag
-        run: cargo test --features rag
+      - name: cargo check rove-index --features rag
+        run: cargo check --features rag --bin rove-index
+
+      - name: cargo test rag --features rag
+        run: cargo test --features rag --test rag
