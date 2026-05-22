@@ -14,7 +14,7 @@ on:
       - "tests/rag.rs"
       - ".github/workflows/rag-ci.yml"
   pull_request:
-    branches: [master]
+    branches: [main]
     paths:
       - "Cargo.toml"
       - "Cargo.lock"

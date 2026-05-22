@@ -11,12 +11,12 @@ First, read all project docs:
 - docs/05-下一步-统一执行内核.md
 - docs/06-请求生命周期.md
 
-Current state: M0 baseline complete on master (commit acb463c). All 6 tests pass.
+Current state: M0 baseline complete on main (commit acb463c). All 6 tests pass.
 
 ## Branch Strategy
 
 Each milestone gets its own branch, forked from the previous milestone's branch:
-1. feat/m1-stateful-tools (from master)
+1. feat/m1-stateful-tools (from main)
 2. feat/m2-planner (from feat/m1)
 3. feat/m3-rag (from feat/m2)
 4. feat/m4-mcp (from feat/m3)
@@ -114,11 +114,11 @@ Key deliverables:
 - All types use Rust enums (sum types), not strings
 - Schema version on task_state.json from day 1
 - Every commit must pass cargo fmt + clippy + test
-- DO NOT merge any branch to master
+- DO NOT merge any branch to main
 
 ## Verification
 
 After completing all phases, run a final verification:
 1. Check each branch passes CI
-2. Verify no branch has been merged to master
+2. Verify no branch has been merged to main
 3. Summarize what was implemented in each milestone
