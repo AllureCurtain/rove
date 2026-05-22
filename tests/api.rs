@@ -173,6 +173,129 @@ async fn api_can_cancel_job() {
     assert_eq!(state.status, RunStatus::Cancelled);
 }
 
+#[tokio::test]
+async fn api_approves_pending_destructive_tool_call() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let output_path = workspace.root.join("approved.txt");
+    let app = router(ApiState::new(workspace, test_config()));
+
+    let create = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/jobs")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"message":"{\"tool\":\"fs_write\",\"args\":{\"path\":\"approved.txt\",\"content\":\"ok\"}}","model":"fake-raw","approval":"ask","max_steps":1}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(create.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let created: CreateJobResponse = serde_json::from_slice(&body).unwrap();
+
+    let pending = wait_for_pending_approval(app.clone(), created.job_id.to_string()).await;
+    let approval = pending.pending_approvals.first().unwrap();
+    assert_eq!(approval.name, "fs_write");
+    assert!(!output_path.exists(), "tool should wait before approval");
+
+    let approve = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/jobs/{}/approvals/{}",
+                    created.job_id, approval.call_id
+                ))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"decision":"approve"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(approve.status(), StatusCode::OK);
+
+    let state = wait_for_done(app.clone(), created.job_id.to_string()).await;
+    assert_eq!(state.status, RunStatus::Done);
+    assert_eq!(std::fs::read_to_string(output_path).unwrap(), "ok");
+}
+
+#[tokio::test]
+async fn api_rejects_pending_destructive_tool_call() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let output_path = workspace.root.join("rejected.txt");
+    let app = router(ApiState::new(workspace, test_config()));
+
+    let create = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/jobs")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"message":"{\"tool\":\"fs_write\",\"args\":{\"path\":\"rejected.txt\",\"content\":\"no\"}}","model":"fake-raw","approval":"ask","max_steps":1}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(create.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let created: CreateJobResponse = serde_json::from_slice(&body).unwrap();
+
+    let pending = wait_for_pending_approval(app.clone(), created.job_id.to_string()).await;
+    let approval = pending.pending_approvals.first().unwrap();
+    assert_eq!(approval.name, "fs_write");
+
+    let reject = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/jobs/{}/approvals/{}",
+                    created.job_id, approval.call_id
+                ))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"decision":"reject"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(reject.status(), StatusCode::OK);
+
+    let state = wait_for_done(app.clone(), created.job_id.to_string()).await;
+    assert_eq!(state.status, RunStatus::Done);
+    assert!(!output_path.exists(), "rejected tool should not run");
+
+    let events = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/jobs/{}/events", created.job_id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = axum::body::to_bytes(events.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let text = String::from_utf8(body.to_vec()).unwrap();
+    assert!(text.contains("event: tool_call_failed"));
+}
+
 async fn wait_for_done(app: axum::Router, job_id: String) -> JobStateResponse {
     for _ in 0..20 {
         let response = app
@@ -196,6 +319,31 @@ async fn wait_for_done(app: axum::Router, job_id: String) -> JobStateResponse {
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     }
     panic!("job did not finish");
+}
+
+async fn wait_for_pending_approval(app: axum::Router, job_id: String) -> JobStateResponse {
+    for _ in 0..20 {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/jobs/{job_id}/state"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let state: JobStateResponse = serde_json::from_slice(&body).unwrap();
+        if !state.pending_approvals.is_empty() {
+            return state;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    panic!("job did not wait for approval");
 }
 
 fn test_config() -> AppConfig {

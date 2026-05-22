@@ -1,3 +1,4 @@
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use ulid::Ulid;
 
@@ -253,6 +254,21 @@ pub enum ApprovalPolicy {
 pub enum ApprovalDecision {
     Approve,
     Reject,
+}
+
+/// Approval request sent from core to an interface before a destructive tool runs.
+#[derive(Debug, Clone)]
+pub struct ToolApprovalRequest {
+    pub call_id: CallId,
+    pub name: String,
+    pub args: serde_json::Value,
+    pub reason: String,
+}
+
+/// Interface-provided approval channel.
+#[async_trait]
+pub trait ToolApprovalProvider: Send + Sync {
+    async fn decide(&self, request: ToolApprovalRequest) -> ApprovalDecision;
 }
 
 /// Context passed through the tool execution boundary.

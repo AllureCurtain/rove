@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use async_stream::stream;
 use futures::stream::{BoxStream, Stream, StreamExt};
 
@@ -8,7 +10,7 @@ use crate::core::parser::parse_action;
 use crate::core::planner::Planner;
 use crate::core::types::{
     Action, ApprovalDecision, ApprovalPolicy, JobId, Message, Role, RunId, RunRequest,
-    TerminationReason, ToolContext, Usage,
+    TerminationReason, ToolApprovalProvider, ToolApprovalRequest, ToolContext, Usage,
 };
 use crate::core::workspace::Workspace;
 use crate::models::traits::ModelClient;
@@ -43,6 +45,7 @@ pub struct Engine {
     workspace: Workspace,
     approval_policy: ApprovalPolicy,
     approval_decision: ApprovalDecision,
+    approval_provider: Option<Arc<dyn ToolApprovalProvider>>,
 }
 
 impl Engine {
@@ -106,7 +109,16 @@ impl Engine {
             workspace,
             approval_policy,
             approval_decision,
+            approval_provider: None,
         }
+    }
+
+    pub fn with_approval_provider(
+        mut self,
+        approval_provider: Arc<dyn ToolApprovalProvider>,
+    ) -> Self {
+        self.approval_provider = Some(approval_provider);
+        self
     }
 
     pub fn model_id(&self) -> &str {
@@ -117,14 +129,48 @@ impl Engine {
         &self.workspace
     }
 
-    fn effective_approval_policy(&self, tool_name: &str) -> ApprovalPolicy {
+    fn tool_requires_approval(&self, tool_name: &str) -> bool {
+        self.approval_policy == ApprovalPolicy::Ask
+            && self
+                .registry
+                .schema(tool_name)
+                .map(|schema| schema.destructive)
+                .unwrap_or(false)
+    }
+
+    async fn resolve_approval(
+        &self,
+        call_id: crate::core::types::CallId,
+        name: &str,
+        args: &serde_json::Value,
+        reason: &str,
+    ) -> ApprovalDecision {
+        if let Some(provider) = &self.approval_provider {
+            provider
+                .decide(ToolApprovalRequest {
+                    call_id,
+                    name: name.to_string(),
+                    args: args.clone(),
+                    reason: reason.to_string(),
+                })
+                .await
+        } else {
+            self.approval_decision
+        }
+    }
+
+    fn effective_approval_policy(
+        &self,
+        tool_name: &str,
+        approval_decision: ApprovalDecision,
+    ) -> ApprovalPolicy {
         if self.approval_policy == ApprovalPolicy::Ask
             && self
                 .registry
                 .schema(tool_name)
                 .map(|schema| schema.destructive)
                 .unwrap_or(false)
-            && self.approval_decision == ApprovalDecision::Approve
+            && approval_decision == ApprovalDecision::Approve
         {
             ApprovalPolicy::Auto
         } else {
@@ -307,29 +353,29 @@ impl Engine {
                             }
                             yield start_event;
 
-                            if self.approval_policy == ApprovalPolicy::Ask
-                                && self
-                                    .registry
-                                    .schema(&name)
-                                    .map(|schema| schema.destructive)
-                                    .unwrap_or(false)
-                            {
+                            let approval_reason = "destructive tool requires explicit approval";
+                            let approval_decision = if self.tool_requires_approval(&name) {
                                 let approval_event = StreamEvent::ToolCallApprovalNeeded {
                                     call_id,
                                     name: name.clone(),
                                     args: args.clone(),
-                                    reason: "destructive tool requires explicit approval".to_string(),
+                                    reason: approval_reason.to_string(),
                                 };
                                 if let Some(ref tw) = trace_writer {
                                     let _ = tw.append(&approval_event);
                                 }
                                 yield approval_event;
-                            }
+                                self.resolve_approval(call_id, &name, &args, approval_reason)
+                                    .await
+                            } else {
+                                self.approval_decision
+                            };
 
                             let executor = Executor::new(&self.registry);
                             let tool_context = ToolContext {
                                 workspace: &self.workspace,
-                                approval_policy: self.effective_approval_policy(&name),
+                                approval_policy: self
+                                    .effective_approval_policy(&name, approval_decision),
                             };
                             match executor.run(&tool_context, &name, args, call_id).await {
                                 Ok(result) => {
@@ -509,29 +555,28 @@ impl Engine {
                         }
                         yield start_event;
 
-                        if self.approval_policy == ApprovalPolicy::Ask
-                            && self
-                                .registry
-                                .schema(&name)
-                                .map(|schema| schema.destructive)
-                                .unwrap_or(false)
-                        {
+                        let approval_reason = "destructive tool requires explicit approval";
+                        let approval_decision = if self.tool_requires_approval(&name) {
                             let approval_event = StreamEvent::ToolCallApprovalNeeded {
                                 call_id,
                                 name: name.clone(),
                                 args: args.clone(),
-                                reason: "destructive tool requires explicit approval".to_string(),
+                                reason: approval_reason.to_string(),
                             };
                             if let Some(ref tw) = trace_writer {
                                 let _ = tw.append(&approval_event);
                             }
                             yield approval_event;
-                        }
+                            self.resolve_approval(call_id, &name, &args, approval_reason)
+                                .await
+                        } else {
+                            self.approval_decision
+                        };
 
                         let executor = Executor::new(&self.registry);
                         let tool_context = ToolContext {
                             workspace: &self.workspace,
-                            approval_policy: self.effective_approval_policy(&name),
+                            approval_policy: self.effective_approval_policy(&name, approval_decision),
                         };
                         match executor.run(&tool_context, &name, args, call_id).await {
                             Ok(result) => {

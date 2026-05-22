@@ -3,6 +3,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -10,14 +11,17 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use futures::{Stream, StreamExt};
 use serde::{Deserialize, Serialize};
-use tokio::sync::{Mutex, RwLock, broadcast};
+use tokio::sync::{Mutex, RwLock, broadcast, oneshot};
 use tokio_stream::wrappers::BroadcastStream;
 
 use crate::config::AppConfig;
 use crate::core::context::ContextManager;
 use crate::core::engine::{Engine, EngineConfig};
 use crate::core::events::StreamEvent;
-use crate::core::types::{ApprovalPolicy, JobId, RunId, RunRequest, RunStatus, SessionId};
+use crate::core::types::{
+    ApprovalDecision, ApprovalPolicy, CallId, JobId, RunId, RunRequest, RunStatus, SessionId,
+    ToolApprovalProvider, ToolApprovalRequest,
+};
 use crate::core::workspace::Workspace;
 use crate::models::fake::FakeModelClient;
 use crate::models::openai::OpenAiClient;
@@ -50,8 +54,22 @@ struct JobRecord {
     message: String,
     status: Mutex<RunStatus>,
     events: Mutex<Vec<StreamEvent>>,
+    pending_approvals: Mutex<HashMap<CallId, PendingApproval>>,
     tx: broadcast::Sender<StreamEvent>,
     handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
+}
+
+struct PendingApproval {
+    request: ToolApprovalRequest,
+    tx: oneshot::Sender<ApprovalDecision>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingApprovalResponse {
+    pub call_id: CallId,
+    pub name: String,
+    pub args: serde_json::Value,
+    pub reason: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -59,6 +77,12 @@ pub struct CreateJobRequest {
     pub message: String,
     pub model: Option<String>,
     pub max_steps: Option<u32>,
+    pub approval: Option<ApprovalPolicy>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SubmitApprovalRequest {
+    pub decision: ApprovalDecision,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -73,6 +97,7 @@ pub struct JobStateResponse {
     pub run_id: RunId,
     pub status: RunStatus,
     pub event_count: usize,
+    pub pending_approvals: Vec<PendingApprovalResponse>,
 }
 
 pub fn router(state: ApiState) -> Router {
@@ -81,6 +106,7 @@ pub fn router(state: ApiState) -> Router {
         .route("/jobs/{job_id}/events", get(job_events))
         .route("/jobs/{job_id}/state", get(job_state))
         .route("/jobs/{job_id}/cancel", post(cancel_job))
+        .route("/jobs/{job_id}/approvals/{call_id}", post(submit_approval))
         .with_state(state)
 }
 
@@ -125,6 +151,7 @@ async fn create_job(
         message: req.message.clone(),
         status: Mutex::new(RunStatus::Init),
         events: Mutex::new(Vec::new()),
+        pending_approvals: Mutex::new(HashMap::new()),
         tx,
         handle: Mutex::new(None),
     });
@@ -173,11 +200,13 @@ async fn job_state(
     Path(job_id): Path<JobId>,
 ) -> Result<Json<JobStateResponse>, ApiError> {
     let record = find_job(&state, job_id).await?;
+    let pending_approvals = pending_approvals_response(&record).await;
     Ok(Json(JobStateResponse {
         job_id: record.job_id,
         run_id: record.run_id,
         status: record.status.lock().await.clone(),
         event_count: record.events.lock().await.len(),
+        pending_approvals,
     }))
 }
 
@@ -195,6 +224,29 @@ async fn cancel_job(
         run_id: record.run_id,
         status: RunStatus::Cancelled,
         event_count: record.events.lock().await.len(),
+        pending_approvals: pending_approvals_response(&record).await,
+    }))
+}
+
+async fn submit_approval(
+    State(state): State<ApiState>,
+    Path((job_id, call_id)): Path<(JobId, CallId)>,
+    Json(req): Json<SubmitApprovalRequest>,
+) -> Result<Json<JobStateResponse>, ApiError> {
+    let record = find_job(&state, job_id).await?;
+    let pending = record
+        .pending_approvals
+        .lock()
+        .await
+        .remove(&call_id)
+        .ok_or_else(|| ApiError::not_found("pending approval not found"))?;
+    let _ = pending.tx.send(req.decision);
+    Ok(Json(JobStateResponse {
+        job_id: record.job_id,
+        run_id: record.run_id,
+        status: record.status.lock().await.clone(),
+        event_count: record.events.lock().await.len(),
+        pending_approvals: pending_approvals_response(&record).await,
     }))
 }
 
@@ -212,7 +264,7 @@ async fn run_job_inner(
     record: &Arc<JobRecord>,
     req: &CreateJobRequest,
 ) -> anyhow::Result<()> {
-    let engine = build_engine(state, &record.message, req)?;
+    let engine = build_engine(state, &record.message, req, record.clone())?;
     let state_store = StateStore::new(&state.inner.workspace.state_dir);
     let run_dir = state_store.run_store.run_dir(&record.run_id);
     let trace_writer = state_store.run_store.create_trace(&record.run_id).ok();
@@ -253,17 +305,22 @@ async fn run_job_inner(
     Ok(())
 }
 
-fn build_engine(state: &ApiState, message: &str, req: &CreateJobRequest) -> anyhow::Result<Engine> {
+fn build_engine(
+    state: &ApiState,
+    message: &str,
+    req: &CreateJobRequest,
+    record: Arc<JobRecord>,
+) -> anyhow::Result<Engine> {
     let config = &state.inner.config;
     let model_id = req.model.clone().unwrap_or_else(|| config.model.clone());
-    let model: Box<dyn ModelClient> = if model_id == "fake" {
-        Box::new(FakeModelClient::new(format!("fake response: {message}")))
-    } else {
-        Box::new(OpenAiClient::new(
+    let model: Box<dyn ModelClient> = match model_id.as_str() {
+        "fake" => Box::new(FakeModelClient::new(format!("fake response: {message}"))),
+        "fake-raw" => Box::new(FakeModelClient::new(message.to_string())),
+        _ => Box::new(OpenAiClient::new(
             config.api_base.clone(),
             config.api_key.clone(),
             model_id,
-        ))
+        )),
     };
 
     let workspace = state.inner.workspace.clone();
@@ -277,7 +334,8 @@ fn build_engine(state: &ApiState, message: &str, req: &CreateJobRequest) -> anyh
     registry.register(Box::new(RagRetrieveTool::docs(workspace.root.clone())));
     registry.register(Box::new(ShellTool::new(workspace.root.clone())));
 
-    Ok(Engine::with_workspace(
+    let approval_policy = req.approval.unwrap_or(ApprovalPolicy::Auto);
+    let engine = Engine::with_workspace(
         model,
         registry,
         ContextManager::new(config.load_system_prompt()),
@@ -286,8 +344,13 @@ fn build_engine(state: &ApiState, message: &str, req: &CreateJobRequest) -> anyh
             plan_enabled: true,
         },
         workspace,
-        ApprovalPolicy::Auto,
-    ))
+        approval_policy,
+    );
+    if approval_policy == ApprovalPolicy::Ask {
+        Ok(engine.with_approval_provider(Arc::new(ApiApprovalProvider { record })))
+    } else {
+        Ok(engine)
+    }
 }
 
 async fn find_job(state: &ApiState, job_id: JobId) -> Result<Arc<JobRecord>, ApiError> {
@@ -299,6 +362,38 @@ async fn find_job(state: &ApiState, job_id: JobId) -> Result<Arc<JobRecord>, Api
         .get(&job_id)
         .cloned()
         .ok_or_else(|| ApiError::not_found("job not found"))
+}
+
+struct ApiApprovalProvider {
+    record: Arc<JobRecord>,
+}
+
+#[async_trait]
+impl ToolApprovalProvider for ApiApprovalProvider {
+    async fn decide(&self, request: ToolApprovalRequest) -> ApprovalDecision {
+        let (tx, rx) = oneshot::channel();
+        self.record
+            .pending_approvals
+            .lock()
+            .await
+            .insert(request.call_id, PendingApproval { request, tx });
+        rx.await.unwrap_or(ApprovalDecision::Reject)
+    }
+}
+
+async fn pending_approvals_response(record: &JobRecord) -> Vec<PendingApprovalResponse> {
+    record
+        .pending_approvals
+        .lock()
+        .await
+        .values()
+        .map(|pending| PendingApprovalResponse {
+            call_id: pending.request.call_id,
+            name: pending.request.name.clone(),
+            args: pending.request.args.clone(),
+            reason: pending.request.reason.clone(),
+        })
+        .collect()
 }
 
 fn sse_event(event: StreamEvent) -> Result<Event, serde_json::Error> {
