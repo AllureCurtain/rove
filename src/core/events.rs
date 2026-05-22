@@ -32,6 +32,14 @@ pub enum StreamEvent {
         args: serde_json::Value,
     },
 
+    /// A destructive tool call requires explicit approval before it may run.
+    ToolCallApprovalNeeded {
+        call_id: CallId,
+        name: String,
+        args: serde_json::Value,
+        reason: String,
+    },
+
     /// A tool call completed successfully.
     ToolCallCompleted { call_id: CallId, result: ToolResult },
 
@@ -62,6 +70,7 @@ impl StreamEvent {
             Self::LlmChunk { .. } => "llm_chunk",
             Self::LlmMessage { .. } => "llm_message",
             Self::ToolCallStarted { .. } => "tool_call_started",
+            Self::ToolCallApprovalNeeded { .. } => "tool_call_approval_needed",
             Self::ToolCallCompleted { .. } => "tool_call_completed",
             Self::ToolCallFailed { .. } => "tool_call_failed",
             Self::PlanCreated { .. } => "plan_created",

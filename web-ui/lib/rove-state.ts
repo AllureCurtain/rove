@@ -15,7 +15,7 @@ export interface ChatMessage {
 export interface ToolCallView {
   id: string;
   name: string;
-  status: "running" | "done" | "error";
+  status: "running" | "waiting" | "done" | "error";
   details: string;
 }
 
@@ -157,6 +157,21 @@ function applyStreamEvent(state: WorkbenchState, event: StreamEvent): WorkbenchS
           state.trace,
           event.type,
           `${event.name} ${formatValue(event.args)}`,
+        ),
+      };
+    case "tool_call_approval_needed":
+      return {
+        ...next,
+        tools: upsertTool(state.tools, {
+          id: event.call_id,
+          name: event.name,
+          status: "waiting",
+          details: event.reason,
+        }),
+        trace: prependTrace(
+          state.trace,
+          event.type,
+          `${event.name} ${event.reason}`,
         ),
       };
     case "tool_call_completed":

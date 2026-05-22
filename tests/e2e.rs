@@ -171,6 +171,29 @@ fn build_test_engine_with_workspace(responses: Vec<String>, workspace: Workspace
     )
 }
 
+fn build_engine_with_destructive_tool(
+    responses: Vec<String>,
+    workspace: Workspace,
+    approval_policy: ApprovalPolicy,
+) -> Engine {
+    let model = Box::new(FakeModelClient::new(responses));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(FakeDestructiveTool));
+    let context_manager = ContextManager::new("You are a test agent.".to_string());
+    let config = EngineConfig {
+        max_steps: 2,
+        plan_enabled: false,
+    };
+    Engine::with_workspace(
+        model,
+        registry,
+        context_manager,
+        config,
+        workspace,
+        approval_policy,
+    )
+}
+
 /// Collect all events from a run into a Vec.
 async fn collect_events(engine: &Engine, message: &str) -> Vec<StreamEvent> {
     let stream = engine.ask(message.to_string(), None);
@@ -234,6 +257,38 @@ async fn destructive_tool_requires_explicit_approval_when_policy_is_ask() {
         .unwrap_err();
 
     assert!(matches!(err, ToolError::PermissionDenied { .. }));
+}
+
+#[tokio::test]
+async fn engine_emits_approval_needed_before_blocking_destructive_tool() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let engine = build_engine_with_destructive_tool(
+        vec![
+            r#"{"tool":"danger","args":{}}"#.to_string(),
+            "blocked".to_string(),
+        ],
+        workspace,
+        ApprovalPolicy::Ask,
+    );
+
+    let events = collect_events(&engine, "run danger").await;
+
+    assert!(events.iter().any(|event| {
+        matches!(
+            event,
+            StreamEvent::ToolCallApprovalNeeded { name, .. } if name == "danger"
+        )
+    }));
+    assert!(events.iter().any(|event| {
+        matches!(
+            event,
+            StreamEvent::ToolCallFailed {
+                error: ToolError::PermissionDenied { .. },
+                ..
+            }
+        )
+    }));
 }
 
 #[tokio::test]

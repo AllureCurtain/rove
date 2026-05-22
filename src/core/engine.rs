@@ -269,6 +269,25 @@ impl Engine {
                             }
                             yield start_event;
 
+                            if self.approval_policy == ApprovalPolicy::Ask
+                                && self
+                                    .registry
+                                    .schema(&name)
+                                    .map(|schema| schema.destructive)
+                                    .unwrap_or(false)
+                            {
+                                let approval_event = StreamEvent::ToolCallApprovalNeeded {
+                                    call_id,
+                                    name: name.clone(),
+                                    args: args.clone(),
+                                    reason: "destructive tool requires explicit approval".to_string(),
+                                };
+                                if let Some(ref tw) = trace_writer {
+                                    let _ = tw.append(&approval_event);
+                                }
+                                yield approval_event;
+                            }
+
                             let executor = Executor::new(&self.registry);
                             let tool_context = ToolContext {
                                 workspace: &self.workspace,
@@ -451,6 +470,25 @@ impl Engine {
                             let _ = tw.append(&start_event);
                         }
                         yield start_event;
+
+                        if self.approval_policy == ApprovalPolicy::Ask
+                            && self
+                                .registry
+                                .schema(&name)
+                                .map(|schema| schema.destructive)
+                                .unwrap_or(false)
+                        {
+                            let approval_event = StreamEvent::ToolCallApprovalNeeded {
+                                call_id,
+                                name: name.clone(),
+                                args: args.clone(),
+                                reason: "destructive tool requires explicit approval".to_string(),
+                            };
+                            if let Some(ref tw) = trace_writer {
+                                let _ = tw.append(&approval_event);
+                            }
+                            yield approval_event;
+                        }
 
                         let executor = Executor::new(&self.registry);
                         let tool_context = ToolContext {

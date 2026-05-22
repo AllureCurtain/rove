@@ -54,6 +54,13 @@ export type StreamEvent =
       args: unknown;
     }
   | {
+      type: "tool_call_approval_needed";
+      call_id: string;
+      name: string;
+      args: unknown;
+      reason: string;
+    }
+  | {
       type: "tool_call_completed";
       call_id: string;
       result: ToolResult;
@@ -106,6 +113,7 @@ export const STREAM_EVENT_NAMES = [
   "llm_chunk",
   "llm_message",
   "tool_call_started",
+  "tool_call_approval_needed",
   "tool_call_completed",
   "tool_call_failed",
   "plan_created",
