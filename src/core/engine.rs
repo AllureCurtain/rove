@@ -3,16 +3,17 @@ use std::sync::Arc;
 use async_stream::stream;
 use futures::stream::{BoxStream, Stream, StreamExt};
 
-use crate::core::context::ContextManager;
+use crate::core::context::{ContextManager, session_summary_message};
 use crate::core::events::StreamEvent;
 use crate::core::executor::Executor;
 use crate::core::parser::parse_action;
-use crate::core::planner::Planner;
+use crate::core::planner::{Planner, PlannerError};
 use crate::core::types::{
-    Action, ApprovalDecision, ApprovalPolicy, JobId, Message, Role, RunId, RunRequest,
+    Action, ApprovalDecision, ApprovalPolicy, JobId, Message, Role, RunId, RunRequest, TaskPlan,
     TerminationReason, ToolApprovalProvider, ToolApprovalRequest, ToolContext, Usage,
 };
 use crate::core::workspace::Workspace;
+use crate::hooks::HookRegistry;
 use crate::models::traits::ModelClient;
 use crate::state::trace::TraceWriter;
 use crate::tools::registry::ToolRegistry;
@@ -46,6 +47,7 @@ pub struct Engine {
     approval_policy: ApprovalPolicy,
     approval_decision: ApprovalDecision,
     approval_provider: Option<Arc<dyn ToolApprovalProvider>>,
+    hooks: HookRegistry,
 }
 
 impl Engine {
@@ -110,7 +112,13 @@ impl Engine {
             approval_policy,
             approval_decision,
             approval_provider: None,
+            hooks: HookRegistry::default(),
         }
+    }
+
+    pub fn with_hooks(mut self, hooks: HookRegistry) -> Self {
+        self.hooks = hooks;
+        self
     }
 
     pub fn with_approval_provider(
@@ -178,6 +186,26 @@ impl Engine {
         }
     }
 
+    async fn draft_plan(&self, goal: &str, history: &[Message]) -> Result<TaskPlan, PlannerError> {
+        Planner::new()
+            .draft(self.model.as_ref(), goal, history)
+            .await
+    }
+
+    async fn replan_after_step_failure(
+        &self,
+        goal: &str,
+        step_title: &str,
+        reason: &str,
+        history: &mut Vec<Message>,
+    ) -> Result<TaskPlan, PlannerError> {
+        history.push(Message {
+            role: Role::User,
+            content: planned_step_failure_message(step_title, reason),
+        });
+        self.draft_plan(goal, history).await
+    }
+
     /// Run the agent loop for a user message.
     ///
     /// Returns a stream of events. The stream completes when the run terminates.
@@ -225,13 +253,17 @@ impl Engine {
                 .as_ref()
                 .map(|state| state.history.clone())
                 .unwrap_or_default();
+            let working_memory: Vec<Message> = resume_state
+                .as_ref()
+                .and_then(|state| state.summary.as_ref())
+                .map(|summary| vec![session_summary_message(summary)])
+                .unwrap_or_default();
             let mut step: u32 = resume_state.as_ref().map(|state| state.step).unwrap_or(0);
             let mut plan = resume_state.as_ref().and_then(|state| state.plan.clone());
 
             if self.config.plan_enabled {
                 if plan.is_none() {
-                    let planner = Planner::new();
-                    match planner.draft(self.model.as_ref(), &user_message, &history).await {
+                    match self.draft_plan(&user_message, &history).await {
                         Ok(drafted) => {
                             let event = StreamEvent::PlanCreated {
                                 plan: drafted.clone(),
@@ -292,7 +324,6 @@ impl Engine {
                         "Goal: {}\nCurrent step {}: {}\nComplete this step and report the result.",
                         active_plan.goal, current_step.id, current_step.title
                     );
-                    let working_memory: Vec<Message> = Vec::new();
                     let messages = self.context_manager.build(&step_prompt, &working_memory, &history);
                     let mut full_response = String::new();
                     let mut usage = Usage::default();
@@ -371,7 +402,8 @@ impl Engine {
                                 self.approval_decision
                             };
 
-                            let executor = Executor::new(&self.registry);
+                            let executor =
+                                Executor::with_hooks(&self.registry, self.hooks.clone());
                             let tool_context = ToolContext {
                                 workspace: &self.workspace,
                                 approval_policy: self
@@ -398,13 +430,14 @@ impl Engine {
                                     yield event;
                                 }
                                 Err(e) => {
+                                    let reason = e.to_string();
                                     history.push(Message {
                                         role: Role::Assistant,
                                         content: full_response.clone(),
                                     });
                                     history.push(Message {
                                         role: Role::Tool,
-                                        content: format!("Error: {}", e),
+                                        content: format!("Error: {reason}"),
                                     });
 
                                     let event = StreamEvent::ToolCallFailed {
@@ -415,6 +448,48 @@ impl Engine {
                                         let _ = tw.append(&event);
                                     }
                                     yield event;
+
+                                    let failed = StreamEvent::PlanStepFailed {
+                                        step: current_step.clone(),
+                                        index: current_index,
+                                        reason: reason.clone(),
+                                    };
+                                    if let Some(ref tw) = trace_writer {
+                                        let _ = tw.append(&failed);
+                                    }
+                                    yield failed;
+
+                                    match self
+                                        .replan_after_step_failure(
+                                            &active_plan.goal,
+                                            &current_step.title,
+                                            &reason,
+                                            &mut history,
+                                        )
+                                        .await
+                                    {
+                                        Ok(drafted) => {
+                                            let event = StreamEvent::PlanCreated {
+                                                plan: drafted.clone(),
+                                            };
+                                            if let Some(ref tw) = trace_writer {
+                                                let _ = tw.append(&event);
+                                            }
+                                            yield event;
+                                            *active_plan = drafted;
+                                        }
+                                        Err(err) => {
+                                            let event = StreamEvent::RunCompleted {
+                                                reason: TerminationReason::Error,
+                                                output: Some(format!("Planner error: {err}")),
+                                            };
+                                            if let Some(ref tw) = trace_writer {
+                                                let _ = tw.append(&event);
+                                            }
+                                            yield event;
+                                            return;
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -446,6 +521,47 @@ impl Engine {
                                     reason
                                 ),
                             });
+                            let failed = StreamEvent::PlanStepFailed {
+                                step: current_step.clone(),
+                                index: current_index,
+                                reason: reason.clone(),
+                            };
+                            if let Some(ref tw) = trace_writer {
+                                let _ = tw.append(&failed);
+                            }
+                            yield failed;
+
+                            match self
+                                .replan_after_step_failure(
+                                    &active_plan.goal,
+                                    &current_step.title,
+                                    &reason,
+                                    &mut history,
+                                )
+                                .await
+                            {
+                                Ok(drafted) => {
+                                    let event = StreamEvent::PlanCreated {
+                                        plan: drafted.clone(),
+                                    };
+                                    if let Some(ref tw) = trace_writer {
+                                        let _ = tw.append(&event);
+                                    }
+                                    yield event;
+                                    *active_plan = drafted;
+                                }
+                                Err(err) => {
+                                    let event = StreamEvent::RunCompleted {
+                                        reason: TerminationReason::Error,
+                                        output: Some(format!("Planner error: {err}")),
+                                    };
+                                    if let Some(ref tw) = trace_writer {
+                                        let _ = tw.append(&event);
+                                    }
+                                    yield event;
+                                    return;
+                                }
+                            }
                         }
                     }
                 }
@@ -476,7 +592,6 @@ impl Engine {
                 step += 1;
 
                 // 1. Build prompt
-                let working_memory: Vec<Message> = Vec::new();
                 let messages = self.context_manager.build(&user_message, &working_memory, &history);
 
                 // 2. Call model (streaming)
@@ -573,7 +688,7 @@ impl Engine {
                             self.approval_decision
                         };
 
-                        let executor = Executor::new(&self.registry);
+                        let executor = Executor::with_hooks(&self.registry, self.hooks.clone());
                         let tool_context = ToolContext {
                             workspace: &self.workspace,
                             approval_policy: self.effective_approval_policy(&name, approval_decision),
@@ -639,4 +754,8 @@ impl Engine {
             }
         }
     }
+}
+
+pub(crate) fn planned_step_failure_message(step_title: &str, reason: &str) -> String {
+    format!("Planned step failed: {step_title}. Reason: {reason}. Re-plan the remaining work.")
 }

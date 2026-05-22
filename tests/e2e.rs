@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use futures::StreamExt;
 use futures::stream::BoxStream;
+use std::sync::{Arc, Mutex};
 
 use rove::core::context::ContextManager;
 use rove::core::engine::{Engine, EngineConfig};
@@ -11,6 +12,7 @@ use rove::core::types::{
 };
 use rove::core::workspace::{Workspace, WorkspaceKind};
 use rove::errors::{ModelError, ToolError};
+use rove::hooks::{HookRegistry, PostToolHook, PostToolHookContext, PreToolHook};
 use rove::interfaces::cli::oneshot::run_oneshot;
 use rove::models::traits::{ModelClient, StreamChunk};
 use rove::state::report::RunReport;
@@ -76,6 +78,41 @@ impl ModelClient for FakeModelClient {
     }
 }
 
+struct RecordingModelClient {
+    captured_messages: Arc<Mutex<Option<Vec<Message>>>>,
+}
+
+impl RecordingModelClient {
+    fn new(captured_messages: Arc<Mutex<Option<Vec<Message>>>>) -> Self {
+        Self { captured_messages }
+    }
+}
+
+#[async_trait]
+impl ModelClient for RecordingModelClient {
+    fn stream(
+        &self,
+        messages: &[Message],
+        _tools: &[ToolSchema],
+    ) -> BoxStream<'_, Result<StreamChunk, ModelError>> {
+        *self.captured_messages.lock().unwrap() = Some(messages.to_vec());
+        Box::pin(futures::stream::once(async {
+            Ok(StreamChunk {
+                delta: "done".to_string(),
+                usage: Some(Usage {
+                    prompt_tokens: 1,
+                    completion_tokens: 1,
+                    total_tokens: 2,
+                }),
+            })
+        }))
+    }
+
+    fn model_id(&self) -> &str {
+        "recording-model"
+    }
+}
+
 struct FakeDestructiveTool;
 
 #[async_trait]
@@ -125,6 +162,37 @@ impl Tool for CountingTool {
         Ok(ToolOutput {
             content: "executed".to_string(),
         })
+    }
+}
+
+struct BlockingPreHook;
+
+#[async_trait]
+impl PreToolHook for BlockingPreHook {
+    async fn before_tool(
+        &self,
+        _ctx: &ToolContext<'_>,
+        name: &str,
+        _args: &serde_json::Value,
+    ) -> Result<(), ToolError> {
+        Err(ToolError::HookBlocked {
+            reason: format!("{name} blocked by test hook"),
+        })
+    }
+}
+
+struct RecordingPostHook {
+    records: Arc<Mutex<Vec<String>>>,
+}
+
+#[async_trait]
+impl PostToolHook for RecordingPostHook {
+    async fn after_tool(&self, ctx: &PostToolHookContext<'_>) -> Result<(), ToolError> {
+        self.records
+            .lock()
+            .unwrap()
+            .push(format!("{}:{}", ctx.name, ctx.result.output));
+        Ok(())
     }
 }
 
@@ -194,6 +262,31 @@ fn build_engine_with_destructive_tool(
         approval_policy,
         approval_decision,
     )
+}
+
+fn build_engine_with_counting_tool_and_hooks(
+    responses: Vec<String>,
+    workspace: Workspace,
+    calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    hooks: HookRegistry,
+) -> Engine {
+    let model = Box::new(FakeModelClient::new(responses));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(CountingTool { calls }));
+    let context_manager = ContextManager::new("You are a test agent.".to_string());
+    let config = EngineConfig {
+        max_steps: 2,
+        plan_enabled: false,
+    };
+    Engine::with_workspace(
+        model,
+        registry,
+        context_manager,
+        config,
+        workspace,
+        ApprovalPolicy::Auto,
+    )
+    .with_hooks(hooks)
 }
 
 /// Collect all events from a run into a Vec.
@@ -395,6 +488,133 @@ async fn executor_rejects_wrong_argument_type_before_tool_runs() {
 }
 
 #[tokio::test]
+async fn empty_hook_registry_preserves_tool_result() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(CountingTool {
+        calls: calls.clone(),
+    }));
+
+    let executor = rove::core::executor::Executor::with_hooks(&registry, HookRegistry::default());
+    let ctx = ToolContext {
+        workspace: &workspace,
+        approval_policy: ApprovalPolicy::Auto,
+    };
+
+    let result = executor
+        .run(
+            &ctx,
+            "counting",
+            serde_json::json!({"path": "src/lib.rs"}),
+            CallId::new(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(result.output, "executed");
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn pre_tool_hook_can_block_before_tool_runs() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(CountingTool {
+        calls: calls.clone(),
+    }));
+    let hooks = HookRegistry::default().with_pre_tool(Box::new(BlockingPreHook));
+    let executor = rove::core::executor::Executor::with_hooks(&registry, hooks);
+    let ctx = ToolContext {
+        workspace: &workspace,
+        approval_policy: ApprovalPolicy::Auto,
+    };
+
+    let err = executor
+        .run(
+            &ctx,
+            "counting",
+            serde_json::json!({"path": "src/lib.rs"}),
+            CallId::new(),
+        )
+        .await
+        .unwrap_err();
+
+    assert!(matches!(
+        err,
+        ToolError::HookBlocked { reason } if reason.contains("counting blocked")
+    ));
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn post_tool_hook_observes_successful_tool_result() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let records = Arc::new(Mutex::new(Vec::new()));
+
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(CountingTool {
+        calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+    }));
+    let hooks = HookRegistry::default().with_post_tool(Box::new(RecordingPostHook {
+        records: records.clone(),
+    }));
+    let executor = rove::core::executor::Executor::with_hooks(&registry, hooks);
+    let ctx = ToolContext {
+        workspace: &workspace,
+        approval_policy: ApprovalPolicy::Auto,
+    };
+
+    let result = executor
+        .run(
+            &ctx,
+            "counting",
+            serde_json::json!({"path": "src/lib.rs"}),
+            CallId::new(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(result.output, "executed");
+    assert_eq!(records.lock().unwrap().as_slice(), ["counting:executed"]);
+}
+
+#[tokio::test]
+async fn engine_runs_tool_calls_through_pre_tool_hooks() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let engine = build_engine_with_counting_tool_and_hooks(
+        vec![
+            r#"{"tool":"counting","args":{"path":"src/lib.rs"}}"#.to_string(),
+            "blocked".to_string(),
+        ],
+        workspace,
+        calls.clone(),
+        HookRegistry::default().with_pre_tool(Box::new(BlockingPreHook)),
+    );
+
+    let events = collect_events(&engine, "run counting").await;
+
+    assert!(events.iter().any(|event| {
+        matches!(
+            event,
+            StreamEvent::ToolCallFailed {
+                error: ToolError::HookBlocked { reason },
+                ..
+            } if reason.contains("counting blocked")
+        )
+    }));
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
 async fn latest_task_state_is_loaded_for_resume() {
     let tmp = tempfile::TempDir::new().unwrap();
     let store = rove::state::store::StateStore::new(tmp.path());
@@ -415,6 +635,287 @@ async fn latest_task_state_is_loaded_for_resume() {
     let loaded = store.load_latest_task_state().await.unwrap().unwrap();
     assert_eq!(loaded.step, 3);
     assert_eq!(loaded.summary.as_deref(), Some("working summary"));
+}
+
+#[tokio::test]
+async fn latest_task_state_rejects_unsupported_schema_version() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let store = rove::state::store::StateStore::new(tmp.path());
+
+    let state = TaskState {
+        schema_version: 99,
+        session_id: SessionId::new(),
+        job_id: JobId::new(),
+        run_id: RunId::new(),
+        goal: "future state".to_string(),
+        step: 1,
+        history: vec![],
+        summary: None,
+        plan: None,
+    };
+
+    store.write_task_state(&state).await.unwrap();
+    let err = store.load_latest_task_state().await.unwrap_err();
+
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    assert!(
+        err.to_string()
+            .contains("unsupported task_state schema_version 99")
+    );
+}
+
+#[tokio::test]
+async fn list_resumable_task_states_filters_by_session_and_newest_first() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let store = rove::state::store::StateStore::new(tmp.path());
+    let target_session = SessionId::new();
+    let other_session = SessionId::new();
+
+    let older = TaskState {
+        schema_version: 1,
+        session_id: target_session,
+        job_id: JobId::new(),
+        run_id: RunId::new(),
+        goal: "older".to_string(),
+        step: 1,
+        history: vec![],
+        summary: None,
+        plan: None,
+    };
+    let unrelated = TaskState {
+        schema_version: 1,
+        session_id: other_session,
+        job_id: JobId::new(),
+        run_id: RunId::new(),
+        goal: "other".to_string(),
+        step: 1,
+        history: vec![],
+        summary: None,
+        plan: None,
+    };
+    let newer = TaskState {
+        schema_version: 1,
+        session_id: target_session,
+        job_id: JobId::new(),
+        run_id: RunId::new(),
+        goal: "newer".to_string(),
+        step: 2,
+        history: vec![],
+        summary: None,
+        plan: None,
+    };
+
+    store.write_task_state(&older).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    store.write_task_state(&unrelated).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    store.write_task_state(&newer).await.unwrap();
+
+    let states = store
+        .list_resumable_task_states(target_session)
+        .await
+        .unwrap();
+
+    assert_eq!(states.len(), 2);
+    assert_eq!(states[0].goal, "newer");
+    assert_eq!(states[1].goal, "older");
+    assert!(
+        states
+            .iter()
+            .all(|state| state.session_id == target_session)
+    );
+}
+
+#[tokio::test]
+async fn load_task_state_reads_exact_run_id() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let store = rove::state::store::StateStore::new(tmp.path());
+    let session_id = SessionId::new();
+    let target_run_id = RunId::new();
+    let other_run_id = RunId::new();
+
+    let target = TaskState {
+        schema_version: 1,
+        session_id,
+        job_id: JobId::new(),
+        run_id: target_run_id,
+        goal: "target".to_string(),
+        step: 7,
+        history: vec![user_message("target")],
+        summary: Some("target summary".to_string()),
+        plan: None,
+    };
+    let other = TaskState {
+        schema_version: 1,
+        session_id,
+        job_id: JobId::new(),
+        run_id: other_run_id,
+        goal: "other".to_string(),
+        step: 1,
+        history: vec![],
+        summary: None,
+        plan: None,
+    };
+
+    store.write_task_state(&target).await.unwrap();
+    store.write_task_state(&other).await.unwrap();
+
+    let loaded = store.load_task_state(target_run_id).await.unwrap();
+
+    assert_eq!(loaded.run_id, target_run_id);
+    assert_eq!(loaded.goal, "target");
+    assert_eq!(loaded.step, 7);
+    assert_eq!(loaded.summary.as_deref(), Some("target summary"));
+}
+
+#[tokio::test]
+async fn load_task_state_returns_not_found_for_missing_run() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let store = rove::state::store::StateStore::new(tmp.path());
+
+    let err = store.load_task_state(RunId::new()).await.unwrap_err();
+
+    assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+}
+
+#[test]
+fn start_run_binds_identity_and_filesystem_paths() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let store = StateStore::new(tmp.path());
+    let run_id = RunId::new();
+    let handle = store
+        .start_run(SessionId::new(), JobId::new(), run_id)
+        .unwrap();
+
+    assert_eq!(handle.run_id, run_id);
+    assert_eq!(
+        handle.run_dir,
+        tmp.path().join("runs").join(run_id.to_string())
+    );
+    assert!(handle.run_dir.exists());
+    assert!(handle.trace_writer.path().ends_with("trace.jsonl"));
+
+    let request = handle.request("hello".to_string(), None);
+    assert_eq!(request.run_id, run_id);
+    assert_eq!(request.user_message, "hello");
+}
+
+#[tokio::test]
+async fn oneshot_persists_final_output_as_task_summary() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let state_store = StateStore::new(&workspace.state_dir);
+    let run_id = RunId::new();
+    let run = state_store
+        .start_run(SessionId::new(), JobId::new(), run_id)
+        .unwrap();
+    let engine = build_test_engine_with_workspace(vec!["done".to_string()], workspace.clone());
+
+    run_oneshot(&engine, "say done".to_string(), run, None, &state_store).await;
+
+    let task_state: TaskState = serde_json::from_slice(
+        &std::fs::read(
+            workspace
+                .state_dir
+                .join("runs")
+                .join(run_id.to_string())
+                .join("task_state.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(task_state.summary.as_deref(), Some("done"));
+    let run_dir = workspace.state_dir.join("runs").join(run_id.to_string());
+    assert!(!run_dir.join("task_state.json.tmp").exists());
+    assert!(!run_dir.join("report.json.tmp").exists());
+}
+
+#[tokio::test]
+async fn oneshot_writes_task_state_before_completion() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let state_store = StateStore::new(&workspace.state_dir);
+    let run_id = RunId::new();
+    let run = state_store
+        .start_run(SessionId::new(), JobId::new(), run_id)
+        .unwrap();
+    let engine = build_test_engine_with_workspace(vec!["done".to_string()], workspace.clone());
+
+    run_oneshot(&engine, "say done".to_string(), run, None, &state_store).await;
+
+    let run_dir = workspace.state_dir.join("runs").join(run_id.to_string());
+    let task_state: TaskState =
+        serde_json::from_slice(&std::fs::read(run_dir.join("task_state.json")).unwrap()).unwrap();
+    assert_eq!(task_state.goal, "say done");
+    assert_eq!(task_state.summary.as_deref(), Some("done"));
+    assert!(
+        task_state
+            .history
+            .iter()
+            .any(|message| message.content == "say done")
+    );
+    assert!(
+        task_state
+            .history
+            .iter()
+            .any(|message| message.content == "done")
+    );
+}
+
+#[tokio::test]
+async fn resumed_run_includes_session_summary_in_prompt() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let captured_messages = Arc::new(Mutex::new(None));
+    let model = Box::new(RecordingModelClient::new(captured_messages.clone()));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(EchoTool));
+    let context_manager = ContextManager::with_max_history("system".to_string(), 2);
+    let config = EngineConfig {
+        max_steps: 1,
+        plan_enabled: false,
+    };
+    let engine = Engine::with_workspace(
+        model,
+        registry,
+        context_manager,
+        config,
+        workspace,
+        ApprovalPolicy::Auto,
+    );
+
+    let req = RunRequest {
+        session_id: SessionId::new(),
+        job_id: JobId::new(),
+        run_id: RunId::new(),
+        user_message: "current task".to_string(),
+        resume_state: Some(TaskState {
+            schema_version: 1,
+            session_id: SessionId::new(),
+            job_id: JobId::new(),
+            run_id: RunId::new(),
+            goal: "resume".to_string(),
+            step: 0,
+            history: vec![],
+            summary: Some("previous session summary".to_string()),
+            plan: None,
+        }),
+    };
+
+    let events = collect_events_with_request(&engine, req).await;
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, StreamEvent::RunCompleted { .. }))
+    );
+
+    let messages = captured_messages.lock().unwrap().clone().unwrap();
+    assert_eq!(messages[0].content, "system");
+    assert_eq!(
+        messages[1].content,
+        "Session summary: previous session summary"
+    );
+    assert_eq!(messages.last().unwrap().content, "current task");
 }
 
 #[tokio::test]
@@ -447,6 +948,30 @@ async fn planner_persists_steps_and_resumes_mid_plan() {
             ..
         })
     ));
+}
+
+#[tokio::test]
+async fn planner_accepts_json_inside_markdown_fence() {
+    let engine = build_planner_test_engine(vec![
+        "```json\n{\"goal\":\"fix docs\",\"steps\":[{\"id\":\"1\",\"title\":\"inspect docs\"}]}\n```"
+            .to_string(),
+        "step 1 done".to_string(),
+    ]);
+
+    let events = collect_events(&engine, "fix the docs").await;
+
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, StreamEvent::PlanCreated { .. })),
+        "missing PlanCreated event"
+    );
+    assert!(events.iter().any(|event| {
+        matches!(
+            event,
+            StreamEvent::PlanStepCompleted { step, .. } if step.id == "1"
+        )
+    }));
 }
 
 #[tokio::test]
@@ -499,6 +1024,170 @@ async fn planner_resumes_at_current_step() {
         matches!(
             event,
             StreamEvent::PlanStepStarted { step, .. } if step.id == "2"
+        )
+    }));
+}
+
+#[tokio::test]
+async fn planner_emits_step_failed_for_malformed_step_output() {
+    let engine = build_planner_test_engine(vec![
+        r#"{"goal":"fix docs","steps":[{"id":"1","title":"inspect docs"}]}"#.to_string(),
+        r#"{"tool":"echo","args":"wrong"}"#.to_string(),
+        r#"{"goal":"fix docs","steps":[{"id":"1","title":"inspect docs"}]}"#.to_string(),
+        "step 1 done".to_string(),
+    ]);
+
+    let events = collect_events(&engine, "fix the docs").await;
+
+    assert!(events.iter().any(|event| {
+        matches!(
+            event,
+            StreamEvent::PlanStepFailed { step, reason, .. }
+                if step.id == "1" && reason.contains("tool arguments must be")
+        )
+    }));
+    assert!(events.iter().any(|event| {
+        matches!(
+            event,
+            StreamEvent::PlanStepCompleted { step, .. } if step.id == "1"
+        )
+    }));
+}
+
+#[tokio::test]
+async fn planner_replans_after_step_failure() {
+    let engine = build_planner_test_engine(vec![
+        r#"{"goal":"fix docs","steps":[{"id":"1","title":"inspect docs"}]}"#.to_string(),
+        r#"{"tool":"echo","args":"wrong"}"#.to_string(),
+        r#"{"goal":"fix docs","steps":[{"id":"2","title":"inspect docs without a tool"}]}"#
+            .to_string(),
+        "replanned step done".to_string(),
+    ]);
+
+    let events = collect_events(&engine, "fix the docs").await;
+
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, StreamEvent::PlanCreated { .. }))
+            .count(),
+        2
+    );
+    assert!(events.iter().any(|event| {
+        matches!(
+            event,
+            StreamEvent::PlanStepStarted { step, .. } if step.id == "2"
+        )
+    }));
+    assert!(events.iter().any(|event| {
+        matches!(
+            event,
+            StreamEvent::PlanStepCompleted { step, .. } if step.id == "2"
+        )
+    }));
+}
+
+#[tokio::test]
+async fn oneshot_persists_replanned_task_state() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let state_store = StateStore::new(&workspace.state_dir);
+    let run_id = RunId::new();
+    let run = state_store
+        .start_run(SessionId::new(), JobId::new(), run_id)
+        .unwrap();
+    let engine = build_planner_test_engine(vec![
+        r#"{"goal":"fix docs","steps":[{"id":"1","title":"inspect docs"}]}"#.to_string(),
+        r#"{"tool":"echo","args":"wrong"}"#.to_string(),
+        r#"{"goal":"fix docs","steps":[{"id":"2","title":"inspect docs without a tool"}]}"#
+            .to_string(),
+        "replanned step done".to_string(),
+    ]);
+
+    run_oneshot(&engine, "fix the docs".to_string(), run, None, &state_store).await;
+
+    let task_state: TaskState = serde_json::from_slice(
+        &std::fs::read(
+            workspace
+                .state_dir
+                .join("runs")
+                .join(run_id.to_string())
+                .join("task_state.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let plan = task_state
+        .plan
+        .expect("re-planned task state should persist a plan");
+
+    assert_eq!(plan.steps.len(), 1);
+    assert_eq!(plan.steps[0].id, "2");
+    assert!(plan.steps[0].done);
+    assert_eq!(plan.current_step, 1);
+    assert!(
+        task_state.history.iter().any(|message| {
+            message
+                .content
+                .contains("Planned step failed: inspect docs")
+        }),
+        "task_state should preserve why the original plan was replaced"
+    );
+}
+
+#[tokio::test]
+async fn resumed_run_uses_persisted_replanned_task_state() {
+    let mut plan = TaskPlan {
+        goal: "fix docs".to_string(),
+        steps: vec![PlanStep {
+            id: "2".to_string(),
+            title: "inspect docs without a tool".to_string(),
+            done: false,
+        }],
+        current_step: 0,
+    };
+    plan.steps[0].done = false;
+
+    let req = RunRequest {
+        session_id: SessionId::new(),
+        job_id: JobId::new(),
+        run_id: RunId::new(),
+        user_message: "fix the docs".to_string(),
+        resume_state: Some(TaskState {
+            schema_version: 1,
+            session_id: SessionId::new(),
+            job_id: JobId::new(),
+            run_id: RunId::new(),
+            goal: "fix docs".to_string(),
+            step: 1,
+            history: vec![Message {
+                role: rove::core::types::Role::User,
+                content: "previous step failed and was re-planned".to_string(),
+            }],
+            summary: None,
+            plan: Some(plan),
+        }),
+    };
+    let engine = build_planner_test_engine(vec!["resumed replanned step done".to_string()]);
+
+    let events = collect_events_with_request(&engine, req).await;
+
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, StreamEvent::PlanCreated { .. })),
+        "resume should use the persisted re-planned plan without drafting a new one"
+    );
+    assert!(events.iter().any(|event| {
+        matches!(
+            event,
+            StreamEvent::PlanStepStarted { step, .. } if step.id == "2"
+        )
+    }));
+    assert!(events.iter().any(|event| {
+        matches!(
+            event,
+            StreamEvent::PlanStepCompleted { step, .. } if step.id == "2"
         )
     }));
 }
@@ -567,6 +1256,98 @@ async fn shell_tool_is_blocked_when_policy_is_never() {
     assert!(matches!(err, ToolError::PermissionDenied { .. }));
 }
 
+#[tokio::test]
+async fn shell_tool_rejects_empty_command() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(ShellTool::new(workspace.root.clone())));
+
+    let executor = rove::core::executor::Executor::new(&registry);
+    let ctx = ToolContext {
+        workspace: &workspace,
+        approval_policy: ApprovalPolicy::Auto,
+    };
+
+    let err = executor
+        .run(
+            &ctx,
+            "shell",
+            serde_json::json!({"command": "   \t\n"}),
+            CallId::new(),
+        )
+        .await
+        .unwrap_err();
+
+    assert!(matches!(
+        err,
+        ToolError::InvalidInput { reason } if reason.contains("empty shell commands")
+    ));
+}
+
+#[tokio::test]
+async fn shell_tool_rejects_nul_byte_command() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(ShellTool::new(workspace.root.clone())));
+
+    let executor = rove::core::executor::Executor::new(&registry);
+    let ctx = ToolContext {
+        workspace: &workspace,
+        approval_policy: ApprovalPolicy::Auto,
+    };
+
+    let err = executor
+        .run(
+            &ctx,
+            "shell",
+            serde_json::json!({"command": "echo before\u{0}echo after"}),
+            CallId::new(),
+        )
+        .await
+        .unwrap_err();
+
+    assert!(matches!(
+        err,
+        ToolError::InvalidInput { reason } if reason.contains("NUL bytes")
+    ));
+}
+
+#[tokio::test]
+async fn shell_tool_runs_non_empty_command_when_approved() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(ShellTool::new(workspace.root.clone())));
+
+    let executor = rove::core::executor::Executor::new(&registry);
+    let ctx = ToolContext {
+        workspace: &workspace,
+        approval_policy: ApprovalPolicy::Auto,
+    };
+
+    let command = if cfg!(windows) {
+        "Write-Output shell-ok"
+    } else {
+        "printf shell-ok"
+    };
+    let result = executor
+        .run(
+            &ctx,
+            "shell",
+            serde_json::json!({"command": command}),
+            CallId::new(),
+        )
+        .await
+        .unwrap();
+
+    assert!(result.output.contains("shell-ok"));
+}
+
 #[test]
 fn context_manager_orders_memory_before_trimmed_history_and_current_message() {
     let context = ContextManager::with_max_history("system".to_string(), 2);
@@ -622,22 +1403,15 @@ async fn oneshot_report_includes_workspace_and_identity_metadata() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
     let state_store = StateStore::new(&workspace.state_dir);
-    let run_id = state_store.new_run();
-    let run_dir = state_store.run_store.run_dir(&run_id);
-    let trace_writer = state_store.run_store.create_trace(&run_id).ok();
+    let run_id = RunId::new();
+    let run = state_store
+        .start_run(SessionId::new(), JobId::new(), run_id)
+        .unwrap();
     let engine = build_test_engine_with_workspace(vec!["done".to_string()], workspace.clone());
 
-    run_oneshot(
-        &engine,
-        "say done".to_string(),
-        trace_writer,
-        run_id,
-        run_dir.clone(),
-        None,
-        &state_store,
-    )
-    .await;
+    run_oneshot(&engine, "say done".to_string(), run, None, &state_store).await;
 
+    let run_dir = workspace.state_dir.join("runs").join(run_id.to_string());
     let report: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(run_dir.join("report.json")).unwrap())
             .unwrap();

@@ -1,5 +1,7 @@
 import type {
+  ApprovalDecision,
   PlanStep,
+  PendingApproval,
   StreamEvent,
   TaskPlan,
   ToolError,
@@ -17,6 +19,8 @@ export interface ToolCallView {
   name: string;
   status: "running" | "waiting" | "done" | "error";
   details: string;
+  reason?: string;
+  pendingApproval?: PendingApproval;
 }
 
 export interface TraceEntry {
@@ -46,6 +50,7 @@ export type WorkbenchAction =
   | { type: "set_busy"; busy: boolean }
   | { type: "set_status"; statusText: string }
   | { type: "set_error"; error: string | null }
+  | { type: "approval_decision"; callId: string; decision: ApprovalDecision }
   | { type: "stream_event"; event: StreamEvent };
 
 export function createWorkbenchState(): WorkbenchState {
@@ -111,6 +116,21 @@ export function workbenchReducer(
         statusText: action.error ? "Run interrupted" : state.statusText,
         lastSignal: action.error ? "Error" : state.lastSignal,
       };
+    case "approval_decision":
+      return {
+        ...state,
+        tools: state.tools.map((tool) =>
+          tool.id === action.callId
+            ? {
+                ...tool,
+                status: action.decision === "approve" ? "running" : "error",
+                details:
+                  action.decision === "approve" ? "Approval submitted" : "Rejected by user",
+                pendingApproval: undefined,
+              }
+            : tool,
+        ),
+      };
     case "stream_event":
       return applyStreamEvent(state, action.event);
   }
@@ -167,6 +187,13 @@ function applyStreamEvent(state: WorkbenchState, event: StreamEvent): WorkbenchS
           name: event.name,
           status: "waiting",
           details: event.reason,
+          reason: event.reason,
+          pendingApproval: {
+            call_id: event.call_id,
+            name: event.name,
+            args: event.args,
+            reason: event.reason,
+          },
         }),
         trace: prependTrace(
           state.trace,
@@ -221,6 +248,16 @@ function applyStreamEvent(state: WorkbenchState, event: StreamEvent): WorkbenchS
         ...next,
         plan: updatePlan(state.plan, event.index, event.step, true),
         trace: prependTrace(state.trace, event.type, event.step.title),
+      };
+    case "plan_step_failed":
+      return {
+        ...next,
+        plan: updatePlan(state.plan, event.index, event.step, false),
+        trace: prependTrace(
+          state.trace,
+          event.type,
+          `${event.step.title}: ${event.reason}`,
+        ),
       };
     case "run_completed":
       return {

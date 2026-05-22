@@ -85,6 +85,12 @@ export type StreamEvent =
       index: number;
     }
   | {
+      type: "plan_step_failed";
+      step: PlanStep;
+      index: number;
+      reason: string;
+    }
+  | {
       type: "run_completed";
       reason: string;
       output?: string | null;
@@ -94,6 +100,7 @@ export interface CreateJobRequest {
   message: string;
   model?: string;
   max_steps?: number;
+  approval?: ApprovalPolicy;
 }
 
 export interface CreateJobResponse {
@@ -106,7 +113,19 @@ export interface JobStateResponse {
   run_id: string;
   status: RunStatus;
   event_count: number;
+  pending_approvals: PendingApproval[];
 }
+
+export interface PendingApproval {
+  call_id: string;
+  name: string;
+  args: unknown;
+  reason: string;
+}
+
+export type ApprovalDecision = "approve" | "reject";
+
+export type ApprovalPolicy = "ask" | "auto" | "never";
 
 export const STREAM_EVENT_NAMES = [
   "run_started",
@@ -119,6 +138,7 @@ export const STREAM_EVENT_NAMES = [
   "plan_created",
   "plan_step_started",
   "plan_step_completed",
+  "plan_step_failed",
   "run_completed",
 ] as const;
 

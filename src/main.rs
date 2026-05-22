@@ -4,10 +4,11 @@ use clap::Parser;
 use rove::config::AppConfig;
 use rove::core::context::ContextManager;
 use rove::core::engine::{Engine, EngineConfig};
-use rove::core::types::ApprovalPolicy;
+use rove::core::types::{ApprovalPolicy, RunId};
 use rove::core::workspace::Workspace;
+use rove::interfaces::cli::approval::stdin_approval_provider;
 use rove::interfaces::cli::args::{Args, CliApprovalPolicy};
-use rove::interfaces::cli::oneshot::run_oneshot;
+use rove::interfaces::cli::oneshot::{resolve_resume_state, run_oneshot};
 use rove::models::fake::FakeModelClient;
 use rove::models::openai::OpenAiClient;
 use rove::models::traits::ModelClient;
@@ -118,31 +119,32 @@ async fn main() -> anyhow::Result<()> {
         workspace.clone(),
         approval_policy,
     );
+    let engine = if approval_policy == ApprovalPolicy::Ask {
+        engine.with_approval_provider(stdin_approval_provider())
+    } else {
+        engine
+    };
 
     // Set up state store + trace
     let state_store = StateStore::new(&workspace.state_dir);
-    let resume_state = match args.resume.as_deref() {
-        Some("latest") => state_store.load_latest_task_state().await?,
-        Some(other) => anyhow::bail!("unsupported --resume value: {other}; use --resume latest"),
-        None => None,
-    };
-    let run_id = state_store.new_run();
-    let run_dir = state_store.run_store.run_dir(&run_id);
-    let trace_writer = state_store.run_store.create_trace(&run_id).ok();
+    let resume_state = resolve_resume_state(&state_store, args.resume.as_deref()).await?;
+    let run_id = RunId::new();
+    let run_handle = state_store.start_run(
+        resume_state
+            .as_ref()
+            .map(|state| state.session_id)
+            .unwrap_or_default(),
+        resume_state
+            .as_ref()
+            .map(|state| state.job_id)
+            .unwrap_or_default(),
+        run_id,
+    )?;
 
-    tracing::info!(%run_id, "Starting run");
+    tracing::info!(%run_handle.run_id, "Starting run");
 
     // Run
-    run_oneshot(
-        &engine,
-        message,
-        trace_writer,
-        run_id,
-        run_dir,
-        resume_state,
-        &state_store,
-    )
-    .await;
+    run_oneshot(&engine, message, run_handle, resume_state, &state_store).await;
 
     Ok(())
 }

@@ -19,8 +19,8 @@ use crate::core::context::ContextManager;
 use crate::core::engine::{Engine, EngineConfig};
 use crate::core::events::StreamEvent;
 use crate::core::types::{
-    ApprovalDecision, ApprovalPolicy, CallId, JobId, RunId, RunRequest, RunStatus, SessionId,
-    ToolApprovalProvider, ToolApprovalRequest,
+    ApprovalDecision, ApprovalPolicy, CallId, JobId, RunId, RunStatus, SessionId,
+    TerminationReason, ToolApprovalProvider, ToolApprovalRequest,
 };
 use crate::core::workspace::Workspace;
 use crate::models::fake::FakeModelClient;
@@ -215,10 +215,23 @@ async fn cancel_job(
     Path(job_id): Path<JobId>,
 ) -> Result<Json<JobStateResponse>, ApiError> {
     let record = find_job(&state, job_id).await?;
+    let current_status = record.status.lock().await.clone();
+    if is_terminal(&current_status) {
+        return Ok(Json(JobStateResponse {
+            job_id: record.job_id,
+            run_id: record.run_id,
+            status: current_status,
+            event_count: record.events.lock().await.len(),
+            pending_approvals: pending_approvals_response(&record).await,
+        }));
+    }
+
     if let Some(handle) = record.handle.lock().await.take() {
         handle.abort();
+        let _ = handle.await;
     }
-    *record.status.lock().await = RunStatus::Cancelled;
+    reject_pending_approvals(&record).await;
+    finalize_cancelled_job(&state, &record).await;
     Ok(Json(JobStateResponse {
         job_id: record.job_id,
         run_id: record.run_id,
@@ -266,8 +279,7 @@ async fn run_job_inner(
 ) -> anyhow::Result<()> {
     let engine = build_engine(state, &record.message, req, record.clone())?;
     let state_store = StateStore::new(&state.inner.workspace.state_dir);
-    let run_dir = state_store.run_store.run_dir(&record.run_id);
-    let trace_writer = state_store.run_store.create_trace(&record.run_id).ok();
+    let run = state_store.start_run(record.session_id, record.job_id, record.run_id)?;
     let mut recorder = RunArtifactRecorder::new(
         record.session_id,
         record.job_id,
@@ -277,14 +289,8 @@ async fn run_job_inner(
     );
     let model_id = engine.model_id().to_string();
     let workspace = engine.workspace().clone();
-    let request = RunRequest {
-        session_id: record.session_id,
-        job_id: record.job_id,
-        run_id: record.run_id,
-        user_message: record.message.clone(),
-        resume_state: None,
-    };
-    let mut stream = std::pin::pin!(engine.run(request, trace_writer));
+    let request = run.request(record.message.clone(), None);
+    let mut stream = std::pin::pin!(engine.run(request, Some(run.trace_writer)));
     let mut completed = false;
     while let Some(event) = stream.next().await {
         recorder.record_event(&event, &state_store).await;
@@ -295,7 +301,7 @@ async fn run_job_inner(
         let _ = record.tx.send(event);
     }
     recorder
-        .finalize(&state_store, &workspace, &model_id, &run_dir)
+        .finalize(&state_store, &workspace, &model_id, &run.run_dir)
         .await;
     *record.status.lock().await = if completed {
         RunStatus::Done
@@ -303,6 +309,51 @@ async fn run_job_inner(
         RunStatus::Error
     };
     Ok(())
+}
+
+async fn finalize_cancelled_job(state: &ApiState, record: &Arc<JobRecord>) {
+    let cancel_event = StreamEvent::RunCompleted {
+        reason: TerminationReason::Cancelled,
+        output: None,
+    };
+
+    let events_for_recorder = {
+        let mut events = record.events.lock().await;
+        if !events
+            .iter()
+            .any(|event| matches!(event, StreamEvent::RunCompleted { .. }))
+        {
+            events.push(cancel_event.clone());
+            let _ = record.tx.send(cancel_event.clone());
+        }
+        events.clone()
+    };
+
+    let state_store = StateStore::new(&state.inner.workspace.state_dir);
+    if let Ok(trace_writer) = state_store.run_store.create_trace(&record.run_id) {
+        let _ = trace_writer.append(&cancel_event);
+    }
+
+    let mut recorder = RunArtifactRecorder::new(
+        record.session_id,
+        record.job_id,
+        record.run_id,
+        record.message.clone(),
+        None,
+    );
+    for event in &events_for_recorder {
+        recorder.record_event(event, &state_store).await;
+    }
+    let run_dir = state_store.run_store.run_dir(&record.run_id);
+    recorder
+        .finalize(
+            &state_store,
+            &state.inner.workspace,
+            state.inner.config.model.as_str(),
+            &run_dir,
+        )
+        .await;
+    *record.status.lock().await = RunStatus::Cancelled;
 }
 
 fn build_engine(
@@ -334,7 +385,7 @@ fn build_engine(
     registry.register(Box::new(RagRetrieveTool::docs(workspace.root.clone())));
     registry.register(Box::new(ShellTool::new(workspace.root.clone())));
 
-    let approval_policy = req.approval.unwrap_or(ApprovalPolicy::Auto);
+    let approval_policy = req.approval.unwrap_or(ApprovalPolicy::Ask);
     let engine = Engine::with_workspace(
         model,
         registry,
@@ -394,6 +445,13 @@ async fn pending_approvals_response(record: &JobRecord) -> Vec<PendingApprovalRe
             reason: pending.request.reason.clone(),
         })
         .collect()
+}
+
+async fn reject_pending_approvals(record: &JobRecord) {
+    let pending = std::mem::take(&mut *record.pending_approvals.lock().await);
+    for (_, approval) in pending {
+        let _ = approval.tx.send(ApprovalDecision::Reject);
+    }
 }
 
 fn sse_event(event: StreamEvent) -> Result<Event, serde_json::Error> {

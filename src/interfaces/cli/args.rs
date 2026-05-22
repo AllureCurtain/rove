@@ -21,7 +21,7 @@ pub struct Args {
     pub resume: Option<String>,
 
     /// Tool approval policy.
-    #[arg(long, value_enum, default_value_t = CliApprovalPolicy::Auto)]
+    #[arg(long, value_enum, default_value_t = CliApprovalPolicy::Ask)]
     pub approval: CliApprovalPolicy,
 
     /// Working directory (defaults to current directory).
@@ -34,4 +34,17 @@ pub enum CliApprovalPolicy {
     Ask,
     Auto,
     Never,
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::{Args, CliApprovalPolicy};
+
+    #[test]
+    fn approval_defaults_to_ask() {
+        let args = Args::parse_from(["rove", "inspect"]);
+        assert!(matches!(args.approval, CliApprovalPolicy::Ask));
+    }
 }

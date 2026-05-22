@@ -1,6 +1,7 @@
 use crate::core::boundary::check_tool_allowed;
 use crate::core::types::{CallId, ToolContext, ToolResult};
 use crate::errors::ToolError;
+use crate::hooks::{HookRegistry, PostToolHookContext};
 use crate::tools::registry::ToolRegistry;
 
 /// The executor runs tools through the pipeline.
@@ -13,11 +14,16 @@ use crate::tools::registry::ToolRegistry;
 ///   schema → validate_input → pre-hook → permission → exec → post-hook → diff
 pub struct Executor<'a> {
     registry: &'a ToolRegistry,
+    hooks: HookRegistry,
 }
 
 impl<'a> Executor<'a> {
     pub fn new(registry: &'a ToolRegistry) -> Self {
-        Self { registry }
+        Self::with_hooks(registry, HookRegistry::default())
+    }
+
+    pub fn with_hooks(registry: &'a ToolRegistry, hooks: HookRegistry) -> Self {
+        Self { registry, hooks }
     }
 
     /// Execute a tool call through the pipeline.
@@ -34,17 +40,32 @@ impl<'a> Executor<'a> {
         // Step 2: input validation
         validate_args(&schema.parameters, &args)?;
 
-        // Step 3: permission boundary
+        // Step 3: pre-tool hooks
+        self.hooks.run_pre_tool(ctx, name, &args).await?;
+
+        // Step 4: permission boundary
         check_tool_allowed(&schema, ctx.approval_policy)?;
 
-        // Step 4: execute
-        let output = self.registry.execute(name, args).await?;
+        // Step 5: execute
+        let output = self.registry.execute(name, args.clone()).await?;
 
-        // Step 5: result wrapping
-        Ok(ToolResult {
+        // Step 6: result wrapping
+        let result = ToolResult {
             call_id,
             output: output.content,
-        })
+        };
+
+        // Step 7: post-tool hooks
+        self.hooks
+            .run_post_tool(&PostToolHookContext {
+                tool_context: ctx,
+                name,
+                args: &args,
+                result: &result,
+            })
+            .await;
+
+        Ok(result)
     }
 }
 

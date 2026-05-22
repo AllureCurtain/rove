@@ -46,10 +46,10 @@ impl Tool for ShellTool {
             .ok_or_else(|| ToolError::InvalidArgs {
                 reason: "Missing required argument: command".to_string(),
             })?;
+        validate_shell_command(command)?;
 
-        let output = Command::new("sh")
-            .arg("-lc")
-            .arg(command)
+        let mut process = shell_command(command);
+        let output = process
             .current_dir(&self.root)
             .output()
             .await
@@ -70,4 +70,34 @@ impl Tool for ShellTool {
 
         Ok(ToolOutput { content })
     }
+}
+
+fn validate_shell_command(command: &str) -> Result<(), ToolError> {
+    if command.trim().is_empty() {
+        return Err(ToolError::InvalidInput {
+            reason: "empty shell commands are not allowed".to_string(),
+        });
+    }
+
+    if command.contains('\0') {
+        return Err(ToolError::InvalidInput {
+            reason: "shell commands may not contain NUL bytes".to_string(),
+        });
+    }
+
+    Ok(())
+}
+
+#[cfg(windows)]
+fn shell_command(command: &str) -> Command {
+    let mut process = Command::new("powershell");
+    process.args(["-NoProfile", "-NonInteractive", "-Command", command]);
+    process
+}
+
+#[cfg(not(windows))]
+fn shell_command(command: &str) -> Command {
+    let mut process = Command::new("sh");
+    process.args(["-lc", command]);
+    process
 }

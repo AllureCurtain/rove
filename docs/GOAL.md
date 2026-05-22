@@ -1,4 +1,5 @@
 Complete rove milestones M1 through M6, each on a separate feature branch.
+Note: this is the original milestone plan. The repository has since been consolidated on `main`, so the status below is historical reference rather than the live branch layout.
 
 ## Setup
 
@@ -11,9 +12,11 @@ First, read all project docs:
 - docs/05-下一步-统一执行内核.md
 - docs/06-请求生命周期.md
 
-Current state: M0 baseline complete on main (commit acb463c). All 6 tests pass.
+Current state: `main` now includes the kernel milestones, the M5 API, and the M6 workbench approval surface is in progress. The branch plan below is preserved for reference.
 
 ## Branch Strategy
+
+Historical reference only: the repo is currently consolidated on `main`.
 
 Each milestone gets its own branch, forked from the previous milestone's branch:
 1. feat/m1-stateful-tools (from main)
@@ -104,10 +107,11 @@ Key deliverables:
 - Plan progress view
 - Trace timeline
 - Connects to M5 API via SSE
+- Current workbench shell already exists in `web-ui/`; approval actions are being wired into the tool rail.
 
 ## Constraints
 
-- No RAG, MCP, API, Web UI before M1 is stable
+- Historical guardrail from the original rollout: no RAG, MCP, API, Web UI before M1 is stable
 - Single file max 800 lines
 - Core never imports interfaces
 - Prompt files in prompts/ directory, loaded at runtime

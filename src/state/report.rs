@@ -66,5 +66,11 @@ pub fn write_report(run_dir: &Path, report: &RunReport) -> std::io::Result<()> {
     fs::create_dir_all(run_dir)?;
     let path = run_dir.join("report.json");
     let json = serde_json::to_string_pretty(report).map_err(std::io::Error::other)?;
-    fs::write(path, json)
+    atomic_write(&path, json.as_bytes())
+}
+
+fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let tmp_path = path.with_extension("json.tmp");
+    fs::write(&tmp_path, bytes)?;
+    fs::rename(tmp_path, path)
 }

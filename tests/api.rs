@@ -174,6 +174,58 @@ async fn api_can_cancel_job() {
 }
 
 #[tokio::test]
+async fn api_cancel_does_not_rewrite_completed_job() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let run_store = rove::state::store::StateStore::new(&workspace.state_dir).run_store;
+    let app = router(ApiState::new(workspace, test_config()));
+
+    let create = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/jobs")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"message":"already done","model":"fake"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(create.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let created: CreateJobResponse = serde_json::from_slice(&body).unwrap();
+
+    let state = wait_for_done(app.clone(), created.job_id.to_string()).await;
+    assert_eq!(state.status, RunStatus::Done);
+
+    let cancel = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/jobs/{}/cancel", created.job_id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(cancel.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(cancel.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let state: JobStateResponse = serde_json::from_slice(&body).unwrap();
+    assert_eq!(state.status, RunStatus::Done);
+
+    let report_path = run_store.run_dir(&created.run_id).join("report.json");
+    let report: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(report_path).unwrap()).unwrap();
+    assert_eq!(report["status"], "success");
+    assert_eq!(report["termination_reason"], "final");
+}
+
+#[tokio::test]
 async fn api_approves_pending_destructive_tool_call() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
@@ -294,6 +346,137 @@ async fn api_rejects_pending_destructive_tool_call() {
         .unwrap();
     let text = String::from_utf8(body.to_vec()).unwrap();
     assert!(text.contains("event: tool_call_failed"));
+}
+
+#[tokio::test]
+async fn api_cancel_clears_pending_destructive_tool_approval() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let output_path = workspace.root.join("cancelled.txt");
+    let run_store = rove::state::store::StateStore::new(&workspace.state_dir).run_store;
+    let app = router(ApiState::new(workspace, test_config()));
+
+    let create = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/jobs")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"message":"{\"tool\":\"fs_write\",\"args\":{\"path\":\"cancelled.txt\",\"content\":\"no\"}}","model":"fake-raw","approval":"ask","max_steps":1}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(create.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let created: CreateJobResponse = serde_json::from_slice(&body).unwrap();
+
+    let pending = wait_for_pending_approval(app.clone(), created.job_id.to_string()).await;
+    assert_eq!(pending.pending_approvals[0].name, "fs_write");
+
+    let cancel = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/jobs/{}/cancel", created.job_id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(cancel.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(cancel.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let state: JobStateResponse = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(state.status, RunStatus::Cancelled);
+    assert!(state.pending_approvals.is_empty());
+    assert!(
+        !output_path.exists(),
+        "cancelled pending tool should not run"
+    );
+
+    let run_dir = run_store.run_dir(&created.run_id);
+    let report_path = run_dir.join("report.json");
+    assert!(
+        report_path.exists(),
+        "cancelled jobs should still write report.json"
+    );
+    let report: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(report_path).unwrap()).unwrap();
+    assert_eq!(report["status"], "cancelled");
+    assert_eq!(report["termination_reason"], "cancelled");
+}
+
+#[tokio::test]
+async fn api_defaults_to_ask_for_destructive_tool_calls() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let output_path = workspace.root.join("default-ask.txt");
+    let app = router(ApiState::new(workspace, test_config()));
+
+    let create = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/jobs")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"message":"{\"tool\":\"fs_write\",\"args\":{\"path\":\"default-ask.txt\",\"content\":\"safe\"}}","model":"fake-raw","max_steps":1}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(create.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let created: CreateJobResponse = serde_json::from_slice(&body).unwrap();
+
+    let pending = wait_for_pending_approval(app.clone(), created.job_id.to_string()).await;
+    assert_eq!(pending.pending_approvals[0].name, "fs_write");
+    assert!(!output_path.exists(), "default approval should wait");
+}
+
+#[tokio::test]
+async fn api_auto_approval_runs_destructive_tool_without_pending_approval() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let output_path = workspace.root.join("auto.txt");
+    let app = router(ApiState::new(workspace, test_config()));
+
+    let create = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/jobs")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"message":"{\"tool\":\"fs_write\",\"args\":{\"path\":\"auto.txt\",\"content\":\"ok\"}}","model":"fake-raw","approval":"auto","max_steps":1}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(create.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let created: CreateJobResponse = serde_json::from_slice(&body).unwrap();
+
+    let state = wait_for_done(app.clone(), created.job_id.to_string()).await;
+    assert_eq!(state.status, RunStatus::Done);
+    assert!(state.pending_approvals.is_empty());
+    assert_eq!(std::fs::read_to_string(output_path).unwrap(), "ok");
 }
 
 async fn wait_for_done(app: axum::Router, job_id: String) -> JobStateResponse {

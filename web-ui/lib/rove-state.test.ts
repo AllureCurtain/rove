@@ -1,0 +1,79 @@
+import { describe, expect, it } from "vitest";
+
+import { createWorkbenchState, workbenchReducer } from "./rove-state";
+
+describe("workbenchReducer", () => {
+  it("marks an approved waiting tool as running and clears the pending approval", () => {
+    const withWaitingTool = workbenchReducer(createWorkbenchState(), {
+      type: "stream_event",
+      event: {
+        type: "tool_call_approval_needed",
+        call_id: "call-1",
+        name: "fs_write",
+        args: { path: "foo.txt" },
+        reason: "destructive tool requires explicit approval",
+      },
+    });
+
+    const approved = workbenchReducer(withWaitingTool, {
+      type: "approval_decision",
+      callId: "call-1",
+      decision: "approve",
+    });
+
+    expect(approved.tools[0]).toMatchObject({
+      id: "call-1",
+      status: "running",
+    });
+    expect(approved.tools[0].pendingApproval).toBeUndefined();
+  });
+
+  it("marks a rejected waiting tool as errored and clears the pending approval", () => {
+    const withWaitingTool = workbenchReducer(createWorkbenchState(), {
+      type: "stream_event",
+      event: {
+        type: "tool_call_approval_needed",
+        call_id: "call-1",
+        name: "fs_write",
+        args: { path: "foo.txt" },
+        reason: "destructive tool requires explicit approval",
+      },
+    });
+
+    const rejected = workbenchReducer(withWaitingTool, {
+      type: "approval_decision",
+      callId: "call-1",
+      decision: "reject",
+    });
+
+    expect(rejected.tools[0]).toMatchObject({
+      id: "call-1",
+      status: "error",
+      details: "Rejected by user",
+    });
+    expect(rejected.tools[0].pendingApproval).toBeUndefined();
+  });
+
+  it("preserves pending approval details on approval-needed events", () => {
+    const state = workbenchReducer(createWorkbenchState(), {
+      type: "stream_event",
+      event: {
+        type: "tool_call_approval_needed",
+        call_id: "call-2",
+        name: "shell",
+        args: { command: "rm -rf /tmp/test" },
+        reason: "destructive tool requires explicit approval",
+      },
+    });
+
+    expect(state.tools[0]).toMatchObject({
+      id: "call-2",
+      status: "waiting",
+      pendingApproval: {
+        call_id: "call-2",
+        name: "shell",
+        reason: "destructive tool requires explicit approval",
+      },
+    });
+  });
+});

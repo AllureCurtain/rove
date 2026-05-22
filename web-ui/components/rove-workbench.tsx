@@ -2,6 +2,7 @@
 
 import {
   ActivityLogIcon,
+  CheckIcon,
   ClockIcon,
   CubeIcon,
   DotFilledIcon,
@@ -9,6 +10,7 @@ import {
   PlayIcon,
   ReloadIcon,
   StopIcon,
+  Cross2Icon,
 } from "@radix-ui/react-icons";
 import {
   type FormEvent,
@@ -20,9 +22,9 @@ import {
   useState,
 } from "react";
 
-import { cancelJob, createJob, openJobStream } from "../lib/rove-client";
+import { cancelJob, createJob, openJobStream, submitApproval } from "../lib/rove-client";
 import { STREAM_EVENT_NAMES, type StreamEvent } from "../lib/rove-types";
-import { createWorkbenchState, workbenchReducer } from "../lib/rove-state";
+import { createWorkbenchState, workbenchReducer, type ToolCallView } from "../lib/rove-state";
 
 export function RoveWorkbench() {
   const [state, dispatch] = useReducer(
@@ -34,6 +36,7 @@ export function RoveWorkbench() {
   const [model, setModel] = useState("fake");
   const [maxSteps, setMaxSteps] = useState("8");
   const [submitting, setSubmitting] = useState(false);
+  const [approvalBusy, setApprovalBusy] = useState<string | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
 
   const isBusy = submitting || state.busy;
@@ -82,6 +85,7 @@ export function RoveWorkbench() {
         message: trimmed,
         model: model.trim() || undefined,
         max_steps: Number(maxSteps) || undefined,
+        approval: "ask",
       });
 
       dispatch({ type: "job_created", jobId: job.job_id, runId: job.run_id });
@@ -107,6 +111,26 @@ export function RoveWorkbench() {
       closeStream();
       dispatch({ type: "set_busy", busy: false });
       dispatch({ type: "set_status", statusText: "Run cancelled" });
+    }
+  }
+
+  async function handleApproval(tool: ToolCallView, decision: "approve" | "reject") {
+    if (!state.activeJobId || approvalBusy || !tool.pendingApproval) {
+      return;
+    }
+
+    setApprovalBusy(tool.id);
+    try {
+      await submitApproval(state.activeJobId, tool.id, decision);
+      dispatch({
+        type: "approval_decision",
+        callId: tool.id,
+        decision,
+      });
+    } catch (error) {
+      dispatch({ type: "set_error", error: describeError(error) });
+    } finally {
+      setApprovalBusy(null);
     }
   }
 
@@ -336,6 +360,33 @@ export function RoveWorkbench() {
                         <span>{tool.status}</span>
                       </div>
                       <p>{tool.details}</p>
+                      {tool.pendingApproval ? (
+                        <div className="approval-panel">
+                          <div className="approval-panel__meta">
+                            <span>pending approval</span>
+                            <strong>{tool.pendingApproval.reason}</strong>
+                          </div>
+                          <div className="approval-panel__actions">
+                            <button
+                              type="button"
+                              onClick={() => handleApproval(tool, "approve")}
+                              disabled={approvalBusy === tool.id}
+                            >
+                              <CheckIcon width={15} height={15} />
+                              Approve
+                            </button>
+                            <button
+                              type="button"
+                              className="danger"
+                              onClick={() => handleApproval(tool, "reject")}
+                              disabled={approvalBusy === tool.id}
+                            >
+                              <Cross2Icon width={15} height={15} />
+                              Reject
+                            </button>
+                          </div>
+                        </div>
+                      ) : null}
                     </article>
                   ))}
                 </div>

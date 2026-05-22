@@ -69,3 +69,10 @@ impl ContextManager {
         &self.system_prompt
     }
 }
+
+pub fn session_summary_message(summary: &str) -> Message {
+    Message {
+        role: crate::core::types::Role::System,
+        content: format!("Session summary: {summary}"),
+    }
+}

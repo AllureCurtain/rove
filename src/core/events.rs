@@ -55,6 +55,13 @@ pub enum StreamEvent {
     /// A persisted plan step completed.
     PlanStepCompleted { step: PlanStep, index: usize },
 
+    /// A persisted plan step failed but the run may continue or retry.
+    PlanStepFailed {
+        step: PlanStep,
+        index: usize,
+        reason: String,
+    },
+
     /// The run has completed.
     RunCompleted {
         reason: TerminationReason,
@@ -76,6 +83,7 @@ impl StreamEvent {
             Self::PlanCreated { .. } => "plan_created",
             Self::PlanStepStarted { .. } => "plan_step_started",
             Self::PlanStepCompleted { .. } => "plan_step_completed",
+            Self::PlanStepFailed { .. } => "plan_step_failed",
             Self::RunCompleted { .. } => "run_completed",
         }
     }

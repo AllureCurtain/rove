@@ -57,6 +57,9 @@ pub enum ToolError {
     #[error("Invalid input: {reason}")]
     InvalidInput { reason: String },
 
+    #[error("Hook blocked tool call: {reason}")]
+    HookBlocked { reason: String },
+
     #[error("Permission denied: {reason}")]
     PermissionDenied { reason: String },
 

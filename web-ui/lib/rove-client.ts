@@ -1,4 +1,5 @@
 import type {
+  ApprovalDecision,
   CreateJobRequest,
   CreateJobResponse,
   JobStateResponse,
@@ -39,6 +40,24 @@ export async function cancelJob(jobId: string): Promise<JobStateResponse> {
 
 export async function fetchJobState(jobId: string): Promise<JobStateResponse> {
   const response = await fetch(apiUrl(`/jobs/${encodeURIComponent(jobId)}/state`));
+  return parseJson<JobStateResponse>(response);
+}
+
+export async function submitApproval(
+  jobId: string,
+  callId: string,
+  decision: ApprovalDecision,
+): Promise<JobStateResponse> {
+  const response = await fetch(
+    apiUrl(`/jobs/${encodeURIComponent(jobId)}/approvals/${encodeURIComponent(callId)}`),
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ decision }),
+    },
+  );
   return parseJson<JobStateResponse>(response);
 }
 

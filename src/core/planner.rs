@@ -84,8 +84,10 @@ fn parse_plan(raw: &str) -> Result<TaskPlan, PlannerError> {
         title: String,
     }
 
-    let raw_plan: RawPlan = serde_json::from_str(raw.trim())
-        .map_err(|err| PlannerError::InvalidJson(err.to_string()))?;
+    let json = extract_json_object(raw)
+        .ok_or_else(|| PlannerError::InvalidJson("planner returned no JSON object".to_string()))?;
+    let raw_plan: RawPlan =
+        serde_json::from_str(json).map_err(|err| PlannerError::InvalidJson(err.to_string()))?;
     if raw_plan.steps.is_empty() {
         return Err(PlannerError::EmptyPlan);
     }
@@ -103,4 +105,51 @@ fn parse_plan(raw: &str) -> Result<TaskPlan, PlannerError> {
             .collect(),
         current_step: 0,
     })
+}
+
+fn extract_json_object(raw: &str) -> Option<&str> {
+    let start = raw.find('{')?;
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for (offset, ch) in raw[start..].char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+
+        match ch {
+            '\\' if in_string => escaped = true,
+            '"' => in_string = !in_string,
+            '{' if !in_string => depth += 1,
+            '}' if !in_string => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    let end = start + offset + ch.len_utf8();
+                    return Some(&raw[start..end]);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_plan;
+
+    #[test]
+    fn parse_plan_accepts_json_surrounded_by_prose() {
+        let plan = parse_plan(
+            "Here is the plan:\n{\"goal\":\"fix docs\",\"steps\":[{\"id\":\"1\",\"title\":\"inspect\"}]}\nDone.",
+        )
+        .unwrap();
+
+        assert_eq!(plan.goal, "fix docs");
+        assert_eq!(plan.steps[0].id, "1");
+        assert_eq!(plan.steps[0].title, "inspect");
+    }
 }

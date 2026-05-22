@@ -2,7 +2,7 @@
 
 `rove` 的设计文档集合。
 
-**当前阶段:纸上思想 + 决策沉淀,尚未开始写代码。**
+**当前阶段:代码已经进入实现期,核心内核、API 和 Web workbench 都在推进中。**
 
 ---
 
@@ -11,7 +11,7 @@
 - **名字**: rove /roʊv/ (漫游、探索)
 - **语言**: Rust
 - **形态演进**: CLI → API → Web
-- **位置**: `D:/Study/project/agent/rove/` (目录已创建,尚未初始化 Rust 项目)
+- **位置**: `D:/Study/project/agent/rove/` (Rust 项目已初始化,CLI/API/Web workbench 均在实现中)
 
 ---
 
@@ -29,7 +29,7 @@
 | ✅ | 产品定位与 Workspace 抽象 |
 | ✅ | 统一执行内核详细设计(站 1-12 v1 完整) |
 | ✅ | Layer 5 数据类型详设计(分散在各站) |
-| ⏳ | 项目初始化 (M0 启动) |
+| ⏳ | 文档与当前实现对齐 |
 
 ---
 
@@ -80,3 +80,4 @@
 - 2026-05-17:初版,完成 M0 之前的纸上设计 (Python 路径)
 - 2026-05-17:**重大决策切换 —— 语言从 Python 改为 Rust**,项目命名定为 rove。原因详见 [01 决策 1]。01/03/04/05 同步更新
 - 2026-05-18:新增 [07 产品定位与 Workspace](./07-产品定位与Workspace.md),确认 rove 是 Workspace runtime,第一阶段先做 Folder/Repo Workspace。
+- 2026-05-22:更新当前状态,代码已推进到 API / Web workbench 阶段,文档开始对齐实际实现。
