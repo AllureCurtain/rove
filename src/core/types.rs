@@ -247,6 +247,14 @@ pub enum ApprovalPolicy {
     Never,
 }
 
+/// A concrete approval decision supplied by an interface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalDecision {
+    Approve,
+    Reject,
+}
+
 /// Context passed through the tool execution boundary.
 #[derive(Debug, Clone, Copy)]
 pub struct ToolContext<'a> {

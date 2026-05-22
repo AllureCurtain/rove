@@ -7,8 +7,8 @@ use crate::core::executor::Executor;
 use crate::core::parser::parse_action;
 use crate::core::planner::Planner;
 use crate::core::types::{
-    Action, ApprovalPolicy, JobId, Message, Role, RunId, RunRequest, TerminationReason,
-    ToolContext, Usage,
+    Action, ApprovalDecision, ApprovalPolicy, JobId, Message, Role, RunId, RunRequest,
+    TerminationReason, ToolContext, Usage,
 };
 use crate::core::workspace::Workspace;
 use crate::models::traits::ModelClient;
@@ -42,6 +42,7 @@ pub struct Engine {
     config: EngineConfig,
     workspace: Workspace,
     approval_policy: ApprovalPolicy,
+    approval_decision: ApprovalDecision,
 }
 
 impl Engine {
@@ -58,13 +59,14 @@ impl Engine {
             state_dir: cwd.join(".rove"),
         });
 
-        Self::with_workspace(
+        Self::with_workspace_and_approval_decision(
             model,
             registry,
             context_manager,
             config,
             workspace,
             ApprovalPolicy::Auto,
+            ApprovalDecision::Approve,
         )
     }
 
@@ -76,6 +78,26 @@ impl Engine {
         workspace: Workspace,
         approval_policy: ApprovalPolicy,
     ) -> Self {
+        Self::with_workspace_and_approval_decision(
+            model,
+            registry,
+            context_manager,
+            config,
+            workspace,
+            approval_policy,
+            ApprovalDecision::Reject,
+        )
+    }
+
+    pub fn with_workspace_and_approval_decision(
+        model: Box<dyn ModelClient>,
+        registry: ToolRegistry,
+        context_manager: ContextManager,
+        config: EngineConfig,
+        workspace: Workspace,
+        approval_policy: ApprovalPolicy,
+        approval_decision: ApprovalDecision,
+    ) -> Self {
         Self {
             model,
             registry,
@@ -83,6 +105,7 @@ impl Engine {
             config,
             workspace,
             approval_policy,
+            approval_decision,
         }
     }
 
@@ -92,6 +115,21 @@ impl Engine {
 
     pub fn workspace(&self) -> &Workspace {
         &self.workspace
+    }
+
+    fn effective_approval_policy(&self, tool_name: &str) -> ApprovalPolicy {
+        if self.approval_policy == ApprovalPolicy::Ask
+            && self
+                .registry
+                .schema(tool_name)
+                .map(|schema| schema.destructive)
+                .unwrap_or(false)
+            && self.approval_decision == ApprovalDecision::Approve
+        {
+            ApprovalPolicy::Auto
+        } else {
+            self.approval_policy
+        }
     }
 
     /// Run the agent loop for a user message.
@@ -291,7 +329,7 @@ impl Engine {
                             let executor = Executor::new(&self.registry);
                             let tool_context = ToolContext {
                                 workspace: &self.workspace,
-                                approval_policy: self.approval_policy,
+                                approval_policy: self.effective_approval_policy(&name),
                             };
                             match executor.run(&tool_context, &name, args, call_id).await {
                                 Ok(result) => {
@@ -493,7 +531,7 @@ impl Engine {
                         let executor = Executor::new(&self.registry);
                         let tool_context = ToolContext {
                             workspace: &self.workspace,
-                            approval_policy: self.approval_policy,
+                            approval_policy: self.effective_approval_policy(&name),
                         };
                         match executor.run(&tool_context, &name, args, call_id).await {
                             Ok(result) => {

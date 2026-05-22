@@ -6,8 +6,8 @@ use rove::core::context::ContextManager;
 use rove::core::engine::{Engine, EngineConfig};
 use rove::core::events::StreamEvent;
 use rove::core::types::{
-    ApprovalPolicy, CallId, JobId, Message, PlanStep, RunId, RunRequest, SessionId, TaskPlan,
-    TaskState, ToolContext, ToolSchema, Usage,
+    ApprovalDecision, ApprovalPolicy, CallId, JobId, Message, PlanStep, RunId, RunRequest,
+    SessionId, TaskPlan, TaskState, ToolContext, ToolSchema, Usage,
 };
 use rove::core::workspace::{Workspace, WorkspaceKind};
 use rove::errors::{ModelError, ToolError};
@@ -175,6 +175,7 @@ fn build_engine_with_destructive_tool(
     responses: Vec<String>,
     workspace: Workspace,
     approval_policy: ApprovalPolicy,
+    approval_decision: ApprovalDecision,
 ) -> Engine {
     let model = Box::new(FakeModelClient::new(responses));
     let mut registry = ToolRegistry::new();
@@ -184,13 +185,14 @@ fn build_engine_with_destructive_tool(
         max_steps: 2,
         plan_enabled: false,
     };
-    Engine::with_workspace(
+    Engine::with_workspace_and_approval_decision(
         model,
         registry,
         context_manager,
         config,
         workspace,
         approval_policy,
+        approval_decision,
     )
 }
 
@@ -270,6 +272,7 @@ async fn engine_emits_approval_needed_before_blocking_destructive_tool() {
         ],
         workspace,
         ApprovalPolicy::Ask,
+        ApprovalDecision::Reject,
     );
 
     let events = collect_events(&engine, "run danger").await;
@@ -287,6 +290,75 @@ async fn engine_emits_approval_needed_before_blocking_destructive_tool() {
                 error: ToolError::PermissionDenied { .. },
                 ..
             }
+        )
+    }));
+}
+
+#[tokio::test]
+async fn approved_destructive_tool_runs_when_policy_is_ask() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let engine = build_engine_with_destructive_tool(
+        vec![
+            r#"{"tool":"danger","args":{}}"#.to_string(),
+            "finished".to_string(),
+        ],
+        workspace,
+        ApprovalPolicy::Ask,
+        ApprovalDecision::Approve,
+    );
+
+    let events = collect_events(&engine, "run danger").await;
+
+    assert!(events.iter().any(|event| {
+        matches!(
+            event,
+            StreamEvent::ToolCallApprovalNeeded { name, .. } if name == "danger"
+        )
+    }));
+    assert!(events.iter().any(|event| {
+        matches!(
+            event,
+            StreamEvent::ToolCallCompleted {
+                result,
+                ..
+            } if result.output == "should never run"
+        )
+    }));
+}
+
+#[tokio::test]
+async fn rejected_destructive_tool_does_not_run_when_policy_is_ask() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let engine = build_engine_with_destructive_tool(
+        vec![
+            r#"{"tool":"danger","args":{}}"#.to_string(),
+            "blocked".to_string(),
+        ],
+        workspace,
+        ApprovalPolicy::Ask,
+        ApprovalDecision::Reject,
+    );
+
+    let events = collect_events(&engine, "run danger").await;
+
+    assert!(events.iter().any(|event| {
+        matches!(
+            event,
+            StreamEvent::ToolCallFailed {
+                error: ToolError::PermissionDenied { .. },
+                ..
+            }
+        )
+    }));
+    assert!(!events.iter().any(|event| {
+        matches!(
+            event,
+            StreamEvent::ToolCallCompleted {
+                result,
+                ..
+            } if result.output == "should never run"
         )
     }));
 }
