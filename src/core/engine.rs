@@ -86,6 +86,14 @@ impl Engine {
         }
     }
 
+    pub fn model_id(&self) -> &str {
+        self.model.model_id()
+    }
+
+    pub fn workspace(&self) -> &Workspace {
+        &self.workspace
+    }
+
     /// Run the agent loop for a user message.
     ///
     /// Returns a stream of events. The stream completes when the run terminates.

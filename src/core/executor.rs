@@ -70,5 +70,36 @@ fn validate_args(schema: &serde_json::Value, args: &serde_json::Value) -> Result
         }
     }
 
+    let Some(properties) = schema.get("properties").and_then(|value| value.as_object()) else {
+        return Ok(());
+    };
+
+    for (field_name, field_schema) in properties {
+        let Some(value) = args.get(field_name) else {
+            continue;
+        };
+        let Some(expected_type) = field_schema.get("type").and_then(|value| value.as_str()) else {
+            continue;
+        };
+
+        if !value_matches_schema_type(value, expected_type) {
+            return Err(ToolError::InvalidArgs {
+                reason: format!("Argument {field_name} must be {expected_type}"),
+            });
+        }
+    }
+
     Ok(())
+}
+
+fn value_matches_schema_type(value: &serde_json::Value, expected_type: &str) -> bool {
+    match expected_type {
+        "array" => value.is_array(),
+        "boolean" => value.is_boolean(),
+        "integer" => value.as_i64().is_some() || value.as_u64().is_some(),
+        "number" => value.is_number(),
+        "object" => value.is_object(),
+        "string" => value.is_string(),
+        _ => true,
+    }
 }

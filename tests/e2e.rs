@@ -9,9 +9,12 @@ use rove::core::types::{
     ApprovalPolicy, CallId, JobId, Message, PlanStep, RunId, RunRequest, SessionId, TaskPlan,
     TaskState, ToolContext, ToolSchema, Usage,
 };
-use rove::core::workspace::Workspace;
+use rove::core::workspace::{Workspace, WorkspaceKind};
 use rove::errors::{ModelError, ToolError};
+use rove::interfaces::cli::oneshot::run_oneshot;
 use rove::models::traits::{ModelClient, StreamChunk};
+use rove::state::report::RunReport;
+use rove::state::store::StateStore;
 use rove::tools::echo::EchoTool;
 use rove::tools::fs::{FsReadTool, FsWriteTool};
 use rove::tools::registry::ToolRegistry;
@@ -96,6 +99,35 @@ impl Tool for FakeDestructiveTool {
     }
 }
 
+struct CountingTool {
+    calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[async_trait]
+impl Tool for CountingTool {
+    fn schema(&self) -> ToolSchema {
+        ToolSchema {
+            name: "counting".to_string(),
+            description: "A tool used to verify executor validation.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string" }
+                },
+                "required": ["path"]
+            }),
+            destructive: false,
+        }
+    }
+
+    async fn execute(&self, _args: serde_json::Value) -> Result<ToolOutput, ToolError> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(ToolOutput {
+            content: "executed".to_string(),
+        })
+    }
+}
+
 fn build_test_engine(responses: Vec<String>) -> Engine {
     let model = Box::new(FakeModelClient::new(responses));
     let mut registry = ToolRegistry::new();
@@ -118,6 +150,25 @@ fn build_planner_test_engine(responses: Vec<String>) -> Engine {
         plan_enabled: true,
     };
     Engine::new(model, registry, context_manager, config)
+}
+
+fn build_test_engine_with_workspace(responses: Vec<String>, workspace: Workspace) -> Engine {
+    let model = Box::new(FakeModelClient::new(responses));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(EchoTool));
+    let context_manager = ContextManager::new("You are a test agent.".to_string());
+    let config = EngineConfig {
+        max_steps: 5,
+        plan_enabled: false,
+    };
+    Engine::with_workspace(
+        model,
+        registry,
+        context_manager,
+        config,
+        workspace,
+        ApprovalPolicy::Auto,
+    )
 }
 
 /// Collect all events from a run into a Vec.
@@ -161,6 +212,37 @@ async fn destructive_tool_is_blocked_when_policy_is_never() {
         .unwrap_err();
 
     assert!(matches!(err, ToolError::PermissionDenied { .. }));
+}
+
+#[tokio::test]
+async fn executor_rejects_wrong_argument_type_before_tool_runs() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(CountingTool {
+        calls: calls.clone(),
+    }));
+
+    let executor = rove::core::executor::Executor::new(&registry);
+    let ctx = ToolContext {
+        workspace: &workspace,
+        approval_policy: ApprovalPolicy::Auto,
+    };
+
+    let err = executor
+        .run(
+            &ctx,
+            "counting",
+            serde_json::json!({"path": 123}),
+            CallId::new(),
+        )
+        .await
+        .unwrap_err();
+
+    assert!(matches!(err, ToolError::InvalidArgs { .. }));
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
 }
 
 #[tokio::test]
@@ -356,6 +438,70 @@ fn context_manager_orders_memory_before_trimmed_history_and_current_message() {
         contents,
         vec!["system", "memory", "recent one", "recent two", "current"]
     );
+}
+
+#[test]
+fn report_serializes_workspace_and_identity_metadata() {
+    let session_id = SessionId::new();
+    let job_id = JobId::new();
+    let run_id = RunId::new();
+    let workspace_root = std::path::PathBuf::from("D:/Study/project/agent/rove");
+
+    let report = RunReport::new(
+        session_id,
+        job_id,
+        run_id,
+        workspace_root.clone(),
+        WorkspaceKind::Folder,
+        "fake-model".to_string(),
+        rove::core::types::TerminationReason::Final,
+    );
+
+    let json = serde_json::to_value(&report).unwrap();
+
+    assert_eq!(json["session_id"], session_id.to_string());
+    assert_eq!(json["job_id"], job_id.to_string());
+    assert_eq!(json["run_id"], run_id.to_string());
+    assert_eq!(json["workspace_root"], workspace_root.display().to_string());
+    assert_eq!(json["workspace_kind"], "folder");
+    assert_eq!(json["model_id"], "fake-model");
+    assert_eq!(json["status"], "success");
+}
+
+#[tokio::test]
+async fn oneshot_report_includes_workspace_and_identity_metadata() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let state_store = StateStore::new(&workspace.state_dir);
+    let run_id = state_store.new_run();
+    let run_dir = state_store.run_store.run_dir(&run_id);
+    let trace_writer = state_store.run_store.create_trace(&run_id).ok();
+    let engine = build_test_engine_with_workspace(vec!["done".to_string()], workspace.clone());
+
+    run_oneshot(
+        &engine,
+        "say done".to_string(),
+        trace_writer,
+        run_id,
+        run_dir.clone(),
+        None,
+        &state_store,
+    )
+    .await;
+
+    let report: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(run_dir.join("report.json")).unwrap())
+            .unwrap();
+
+    assert_eq!(report["run_id"], run_id.to_string());
+    assert!(report["session_id"].as_str().is_some());
+    assert!(report["job_id"].as_str().is_some());
+    assert_eq!(
+        report["workspace_root"],
+        workspace.root.display().to_string()
+    );
+    assert_eq!(report["workspace_kind"], "folder");
+    assert_eq!(report["model_id"], "fake-model");
 }
 
 #[tokio::test]

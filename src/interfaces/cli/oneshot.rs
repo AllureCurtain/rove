@@ -168,7 +168,16 @@ pub async fn run_oneshot(
     .await;
 
     // Write report.json
-    let mut report = RunReport::new(run_id, final_reason);
+    let workspace = engine.workspace();
+    let mut report = RunReport::new(
+        session_id,
+        job_id,
+        run_id,
+        workspace.root.clone(),
+        workspace.kind.clone(),
+        engine.model_id().to_string(),
+        final_reason,
+    );
     report.steps = steps;
     report.total_usage = total_usage;
     report.tool_calls = tool_calls;

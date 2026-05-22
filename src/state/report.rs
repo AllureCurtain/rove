@@ -1,16 +1,22 @@
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
-use crate::core::types::{RunId, TerminationReason, Usage};
+use crate::core::types::{JobId, RunId, SessionId, TerminationReason, Usage};
+use crate::core::workspace::WorkspaceKind;
 
 /// Summary report for a completed run.
 ///
 /// Written to `.rove/runs/<run_id>/report.json` after the run finishes.
 #[derive(Debug, Clone, Serialize)]
 pub struct RunReport {
+    pub session_id: SessionId,
+    pub job_id: JobId,
     pub run_id: RunId,
+    pub workspace_root: PathBuf,
+    pub workspace_kind: WorkspaceKind,
+    pub model_id: String,
     pub status: String,
     pub termination_reason: TerminationReason,
     pub steps: u32,
@@ -22,9 +28,22 @@ pub struct RunReport {
 }
 
 impl RunReport {
-    pub fn new(run_id: RunId, reason: TerminationReason) -> Self {
+    pub fn new(
+        session_id: SessionId,
+        job_id: JobId,
+        run_id: RunId,
+        workspace_root: PathBuf,
+        workspace_kind: WorkspaceKind,
+        model_id: String,
+        reason: TerminationReason,
+    ) -> Self {
         Self {
+            session_id,
+            job_id,
             run_id,
+            workspace_root,
+            workspace_kind,
+            model_id,
             status: match &reason {
                 TerminationReason::Final => "success".to_string(),
                 TerminationReason::Error => "error".to_string(),
