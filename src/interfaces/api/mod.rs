@@ -22,6 +22,7 @@ use crate::core::workspace::Workspace;
 use crate::models::fake::FakeModelClient;
 use crate::models::openai::OpenAiClient;
 use crate::models::traits::ModelClient;
+use crate::state::artifacts::RunArtifactRecorder;
 use crate::state::store::StateStore;
 use crate::tools::echo::EchoTool;
 use crate::tools::fs::{FsReadTool, FsWriteTool};
@@ -213,7 +214,17 @@ async fn run_job_inner(
 ) -> anyhow::Result<()> {
     let engine = build_engine(state, &record.message, req)?;
     let state_store = StateStore::new(&state.inner.workspace.state_dir);
+    let run_dir = state_store.run_store.run_dir(&record.run_id);
     let trace_writer = state_store.run_store.create_trace(&record.run_id).ok();
+    let mut recorder = RunArtifactRecorder::new(
+        record.session_id,
+        record.job_id,
+        record.run_id,
+        record.message.clone(),
+        None,
+    );
+    let model_id = engine.model_id().to_string();
+    let workspace = engine.workspace().clone();
     let request = RunRequest {
         session_id: record.session_id,
         job_id: record.job_id,
@@ -222,13 +233,23 @@ async fn run_job_inner(
         resume_state: None,
     };
     let mut stream = std::pin::pin!(engine.run(request, trace_writer));
+    let mut completed = false;
     while let Some(event) = stream.next().await {
+        recorder.record_event(&event, &state_store).await;
         if matches!(event, StreamEvent::RunCompleted { .. }) {
-            *record.status.lock().await = RunStatus::Done;
+            completed = true;
         }
         record.events.lock().await.push(event.clone());
         let _ = record.tx.send(event);
     }
+    recorder
+        .finalize(&state_store, &workspace, &model_id, &run_dir)
+        .await;
+    *record.status.lock().await = if completed {
+        RunStatus::Done
+    } else {
+        RunStatus::Error
+    };
     Ok(())
 }
 

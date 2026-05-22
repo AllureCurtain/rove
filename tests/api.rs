@@ -79,6 +79,60 @@ async fn api_creates_job_streams_events_and_reports_state() {
 }
 
 #[tokio::test]
+async fn api_writes_run_artifacts_for_completed_job() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let run_store = rove::state::store::StateStore::new(&workspace.state_dir).run_store;
+    let app = router(ApiState::new(workspace, test_config()));
+
+    let create = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/jobs")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"message":"artifact api","model":"fake"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(create.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let created: CreateJobResponse = serde_json::from_slice(&body).unwrap();
+
+    let state = wait_for_done(app.clone(), created.job_id.to_string()).await;
+    assert_eq!(state.status, RunStatus::Done);
+
+    let run_dir = run_store.run_dir(&created.run_id);
+    let trace_path = run_dir.join("trace.jsonl");
+    let task_state_path = run_dir.join("task_state.json");
+    let report_path = run_dir.join("report.json");
+
+    assert!(trace_path.exists(), "trace.jsonl should be written");
+    assert!(
+        task_state_path.exists(),
+        "task_state.json should be written"
+    );
+    assert!(report_path.exists(), "report.json should be written");
+
+    let task_state: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(task_state_path).unwrap()).unwrap();
+    assert_eq!(task_state["job_id"], created.job_id.to_string());
+    assert_eq!(task_state["run_id"], created.run_id.to_string());
+    assert_eq!(task_state["goal"], "artifact api");
+
+    let report: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(report_path).unwrap()).unwrap();
+    assert_eq!(report["job_id"], created.job_id.to_string());
+    assert_eq!(report["run_id"], created.run_id.to_string());
+    assert_eq!(report["status"], "success");
+    assert_eq!(report["output"], "fake response: artifact api");
+}
+
+#[tokio::test]
 async fn api_can_cancel_job() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
