@@ -1,3 +1,5 @@
+#![cfg(feature = "rag")]
+
 use rove::tools::rag::{DeterministicEmbedder, RagIndex, RetrieveKind};
 
 #[tokio::test]

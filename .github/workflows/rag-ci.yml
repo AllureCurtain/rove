@@ -1,0 +1,61 @@
+name: RAG CI
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["**"]
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "src/main.rs"
+      - "src/tools/mod.rs"
+      - "src/tools/rag.rs"
+      - "src/bin/rove-index.rs"
+      - "tests/rag.rs"
+      - ".github/workflows/rag-ci.yml"
+  pull_request:
+    branches: [master]
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "src/main.rs"
+      - "src/tools/mod.rs"
+      - "src/tools/rag.rs"
+      - "src/bin/rove-index.rs"
+      - "tests/rag.rs"
+      - ".github/workflows/rag-ci.yml"
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  rag:
+    name: rag feature clippy + test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Install native build tools
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Cache cargo registry + build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-rag-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-rag-
+
+      - name: cargo clippy --features rag
+        run: cargo clippy --all-targets --features rag -- -D warnings
+
+      - name: cargo test --features rag
+        run: cargo test --features rag

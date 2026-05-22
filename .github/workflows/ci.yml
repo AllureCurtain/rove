@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: ["*"]
+    branches: ["**"]
   pull_request:
     branches: [master]
 
@@ -12,7 +12,7 @@ env:
 
 jobs:
   check:
-    name: fmt + clippy + test
+    name: default fmt + clippy + test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -21,9 +21,6 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-
-      - name: Install native build tools
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
       - name: Cache cargo registry + build
         uses: actions/cache@v4
@@ -39,7 +36,7 @@ jobs:
         run: cargo fmt --all --check
 
       - name: cargo clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --all-targets -- -D warnings
 
       - name: cargo test
         run: cargo test

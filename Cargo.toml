@@ -11,10 +11,15 @@ path = "src/main.rs"
 [[bin]]
 name = "rove-index"
 path = "src/bin/rove-index.rs"
+required-features = ["rag"]
 
 [lib]
 name = "rove"
 path = "src/lib.rs"
+
+[features]
+default = []
+rag = ["dep:arrow-array", "dep:arrow-schema", "dep:lancedb", "dep:walkdir"]
 
 [dependencies]
 # Async runtime
@@ -49,10 +54,10 @@ chrono = { version = "0.4.44", features = ["serde"] }
 
 # Config
 dotenvy = "0.15.7"
-lancedb = "0.29.0"
-arrow-array = "58.3.0"
-arrow-schema = "58.3.0"
-walkdir = "2.5.0"
+arrow-array = { version = "58.3.0", optional = true }
+arrow-schema = { version = "58.3.0", optional = true }
+lancedb = { version = "0.29.0", optional = true }
+walkdir = { version = "2.5.0", optional = true }
 
 [dev-dependencies]
 tokio-test = "0.4"
