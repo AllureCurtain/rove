@@ -1,2 +1,10 @@
 /target
 /.rove
+/web-ui/node_modules
+/web-ui/.next
+/web-ui/out
+/web-ui/.turbo
+/web-ui/.env*
+/web-ui/.vercel
+/web-ui/.rove
+/web-ui/tsconfig.tsbuildinfo

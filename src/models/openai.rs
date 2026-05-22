@@ -26,7 +26,7 @@ impl OpenAiClient {
         }
     }
 
-    fn build_request_body(&self, messages: &[Message], _tools: &[ToolSchema]) -> serde_json::Value {
+    fn build_request_body(&self, messages: &[Message], tools: &[ToolSchema]) -> serde_json::Value {
         let msgs: Vec<serde_json::Value> = messages
             .iter()
             .map(|m| {
@@ -37,11 +37,38 @@ impl OpenAiClient {
             })
             .collect();
 
-        serde_json::json!({
+        let tool_defs: Vec<serde_json::Value> = tools
+            .iter()
+            .map(|tool| {
+                serde_json::json!({
+                    "type": "function",
+                    "function": {
+                        "name": tool.name,
+                        "description": tool.description,
+                        "parameters": tool.parameters,
+                    }
+                })
+            })
+            .collect();
+
+        let mut body = serde_json::json!({
             "model": self.model,
             "messages": msgs,
             "stream": true,
         })
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+
+        if !tool_defs.is_empty() {
+            body.insert("tools".to_string(), serde_json::Value::Array(tool_defs));
+            body.insert(
+                "tool_choice".to_string(),
+                serde_json::Value::String("auto".to_string()),
+            );
+        }
+
+        serde_json::Value::Object(body)
     }
 }
 
@@ -157,5 +184,43 @@ impl ModelClient for OpenAiClient {
 
     fn model_id(&self) -> &str {
         &self.model
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::core::types::{Message, Role, ToolSchema};
+
+    #[test]
+    fn request_body_includes_tool_schemas_when_present() {
+        let client = OpenAiClient::new(
+            "https://example.invalid/v1".to_string(),
+            "secret".to_string(),
+            "gpt-4o".to_string(),
+        );
+        let body = client.build_request_body(
+            &[Message {
+                role: Role::User,
+                content: "inspect".to_string(),
+            }],
+            &[ToolSchema {
+                name: "fs_read".to_string(),
+                description: "Read a file".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string" }
+                    }
+                }),
+                destructive: false,
+            }],
+        );
+
+        assert_eq!(body["tools"][0]["type"], "function");
+        assert_eq!(body["tools"][0]["function"]["name"], "fs_read");
+        assert_eq!(body["tools"][0]["function"]["description"], "Read a file");
+        assert_eq!(body["tool_choice"], "auto");
     }
 }
