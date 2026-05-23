@@ -1,6 +1,6 @@
 use rove::core::types::{ApprovalPolicy, ToolContext};
 use rove::core::workspace::Workspace;
-use rove::tools::mcp_proxy::{McpServerConfig, register_mcp_tools};
+use rove::tools::mcp_proxy::{McpServerConfig, McpTransport, register_mcp_tools};
 use rove::tools::registry::ToolRegistry;
 use tokio_util::sync::CancellationToken;
 
@@ -21,9 +21,11 @@ async fn mcp_proxy_registers_and_calls_stdio_tools() {
         &mut registry,
         vec![McpServerConfig {
             name: "mock-server".to_string(),
+            transport: McpTransport::Stdio,
             command: python_command(),
             args: vec!["tests/fixtures/mcp_mock_server.py".to_string()],
             env: Default::default(),
+            url: String::new(),
         }],
     )
     .await

@@ -21,11 +21,26 @@ const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpServerConfig {
     pub name: String,
+    #[serde(default)]
+    pub transport: McpTransport,
+    /// Command to spawn (stdio transport only).
+    #[serde(default)]
     pub command: String,
     #[serde(default)]
     pub args: Vec<String>,
     #[serde(default)]
     pub env: HashMap<String, String>,
+    /// SSE endpoint URL (sse transport only).
+    #[serde(default)]
+    pub url: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum McpTransport {
+    #[default]
+    Stdio,
+    Sse,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -60,10 +75,27 @@ pub async fn register_mcp_tools(
 ) -> anyhow::Result<usize> {
     let mut registered = 0;
     for server in servers {
-        let client = Arc::new(StdioMcpClient::connect(server).await?);
-        for tool in client.list_tools().await? {
-            registry.register(Box::new(McpProxyTool::new(client.clone(), tool)));
-            registered += 1;
+        match server.transport {
+            McpTransport::Stdio => {
+                let client = Arc::new(StdioMcpClient::connect(server).await?);
+                for tool in client.list_tools().await? {
+                    registry.register(Box::new(McpProxyTool {
+                        client: client.clone(),
+                        tool,
+                    }));
+                    registered += 1;
+                }
+            }
+            McpTransport::Sse => {
+                let client = Arc::new(SseMcpClient::connect(server).await?);
+                for tool in client.list_tools().await? {
+                    registry.register(Box::new(McpSseProxyTool {
+                        client: client.clone(),
+                        tool,
+                    }));
+                    registered += 1;
+                }
+            }
         }
     }
     Ok(registered)
@@ -72,12 +104,6 @@ pub async fn register_mcp_tools(
 pub struct McpProxyTool {
     client: Arc<StdioMcpClient>,
     tool: McpToolInfo,
-}
-
-impl McpProxyTool {
-    pub fn new(client: Arc<StdioMcpClient>, tool: McpToolInfo) -> Self {
-        Self { client, tool }
-    }
 }
 
 #[async_trait]
@@ -299,6 +325,205 @@ fn mcp_call_result_to_text(result: Value) -> String {
         result.to_string()
     } else {
         parts.join("\n")
+    }
+}
+
+// --- SSE Transport ---
+
+pub struct SseMcpClient {
+    server_name: String,
+    http: reqwest::Client,
+    endpoint: String,
+    next_id: AtomicU64,
+}
+
+impl SseMcpClient {
+    pub async fn connect(config: McpServerConfig) -> anyhow::Result<Self> {
+        let http = reqwest::Client::new();
+        let endpoint = discover_endpoint(&http, &config.url).await?;
+
+        let client = Self {
+            server_name: config.name,
+            http,
+            endpoint,
+            next_id: AtomicU64::new(1),
+        };
+        client.initialize().await?;
+        Ok(client)
+    }
+
+    async fn initialize(&self) -> anyhow::Result<()> {
+        self.request(
+            "initialize",
+            json!({
+                "protocolVersion": MCP_PROTOCOL_VERSION,
+                "capabilities": {},
+                "clientInfo": {
+                    "name": "rove",
+                    "version": env!("CARGO_PKG_VERSION")
+                }
+            }),
+        )
+        .await?;
+        self.notify("notifications/initialized", json!({})).await?;
+        Ok(())
+    }
+
+    pub async fn list_tools(&self) -> anyhow::Result<Vec<McpToolInfo>> {
+        let result = self.request("tools/list", json!({})).await?;
+        let tools = result
+            .get("tools")
+            .and_then(Value::as_array)
+            .ok_or_else(|| anyhow::anyhow!("MCP tools/list response missing tools array"))?;
+        tools
+            .iter()
+            .map(|tool| self.parse_tool(tool))
+            .collect::<anyhow::Result<Vec<_>>>()
+    }
+
+    pub async fn call_tool(&self, name: &str, arguments: Value) -> anyhow::Result<Value> {
+        self.request(
+            "tools/call",
+            json!({
+                "name": name,
+                "arguments": arguments,
+            }),
+        )
+        .await
+    }
+
+    async fn request(&self, method: &str, params: Value) -> anyhow::Result<Value> {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": method,
+            "params": params,
+        });
+        let response = self
+            .http
+            .post(&self.endpoint)
+            .header("content-type", "application/json")
+            .json(&request)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let text = response.text().await.unwrap_or_default();
+            anyhow::bail!("MCP SSE request failed: {text}");
+        }
+
+        let body: Value = response.json().await?;
+        if let Some(error) = body.get("error") {
+            anyhow::bail!("MCP error response: {error}");
+        }
+        Ok(body.get("result").cloned().unwrap_or_else(|| json!({})))
+    }
+
+    async fn notify(&self, method: &str, params: Value) -> anyhow::Result<()> {
+        let notification = json!({
+            "jsonrpc": "2.0",
+            "method": method,
+            "params": params,
+        });
+        self.http
+            .post(&self.endpoint)
+            .header("content-type", "application/json")
+            .json(&notification)
+            .send()
+            .await?;
+        Ok(())
+    }
+
+    fn parse_tool(&self, tool: &Value) -> anyhow::Result<McpToolInfo> {
+        let remote_name = tool
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("MCP tool missing name"))?
+            .to_string();
+        let description = tool
+            .get("description")
+            .and_then(Value::as_str)
+            .unwrap_or("MCP server tool")
+            .to_string();
+        let parameters = tool
+            .get("inputSchema")
+            .cloned()
+            .unwrap_or_else(|| json!({ "type": "object" }));
+        let destructive = tool
+            .get("annotations")
+            .and_then(|annotations| annotations.get("destructiveHint"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let name = format!("mcp__{}__{}", sanitize_name(&self.server_name), remote_name);
+
+        Ok(McpToolInfo {
+            server_name: self.server_name.clone(),
+            remote_name,
+            schema: ToolSchema {
+                name,
+                description,
+                parameters,
+                destructive,
+            },
+        })
+    }
+}
+
+async fn discover_endpoint(http: &reqwest::Client, sse_url: &str) -> anyhow::Result<String> {
+    let response = http.get(sse_url).send().await?;
+    if !response.status().is_success() {
+        anyhow::bail!("MCP SSE endpoint returned HTTP {}", response.status());
+    }
+
+    use futures::StreamExt;
+    let mut byte_stream = response.bytes_stream();
+    let mut buffer = String::new();
+
+    while let Some(chunk) = byte_stream.next().await {
+        let chunk = chunk?;
+        buffer.push_str(&String::from_utf8_lossy(&chunk));
+
+        while let Some(line_end) = buffer.find('\n') {
+            let line = buffer[..line_end].trim().to_string();
+            buffer = buffer[line_end + 1..].to_string();
+
+            if let Some(data) = line.strip_prefix("data: ") {
+                let endpoint = data.trim().to_string();
+                if endpoint.starts_with("http://") || endpoint.starts_with("https://") {
+                    return Ok(endpoint);
+                }
+                let base = sse_url.rfind('/').map(|i| &sse_url[..i]).unwrap_or(sse_url);
+                return Ok(format!("{}/{}", base, endpoint.trim_start_matches('/')));
+            }
+        }
+    }
+
+    anyhow::bail!("MCP SSE stream closed without providing an endpoint URL")
+}
+
+pub struct McpSseProxyTool {
+    client: Arc<SseMcpClient>,
+    tool: McpToolInfo,
+}
+
+#[async_trait]
+impl Tool for McpSseProxyTool {
+    fn schema(&self) -> ToolSchema {
+        self.tool.schema.clone()
+    }
+
+    async fn execute(&self, args: Value, _ctx: &ToolContext<'_>) -> Result<ToolOutput, ToolError> {
+        let result = self
+            .client
+            .call_tool(&self.tool.remote_name, args)
+            .await
+            .map_err(|err| ToolError::ExecutionFailed {
+                reason: err.to_string(),
+            })?;
+        Ok(ToolOutput {
+            content: mcp_call_result_to_text(result),
+        })
     }
 }
 
