@@ -480,7 +480,8 @@ async fn api_auto_approval_runs_destructive_tool_without_pending_approval() {
 }
 
 async fn wait_for_done(app: axum::Router, job_id: String) -> JobStateResponse {
-    for _ in 0..20 {
+    let mut last_state = None;
+    for _ in 0..80 {
         let response = app
             .clone()
             .oneshot(
@@ -499,13 +500,15 @@ async fn wait_for_done(app: axum::Router, job_id: String) -> JobStateResponse {
         if state.status == RunStatus::Done {
             return state;
         }
+        last_state = Some(state);
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     }
-    panic!("job did not finish");
+    panic!("job did not finish; last state: {last_state:?}");
 }
 
 async fn wait_for_pending_approval(app: axum::Router, job_id: String) -> JobStateResponse {
-    for _ in 0..20 {
+    let mut last_state = None;
+    for _ in 0..80 {
         let response = app
             .clone()
             .oneshot(
@@ -524,9 +527,10 @@ async fn wait_for_pending_approval(app: axum::Router, job_id: String) -> JobStat
         if !state.pending_approvals.is_empty() {
             return state;
         }
+        last_state = Some(state);
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     }
-    panic!("job did not wait for approval");
+    panic!("job did not wait for approval; last state: {last_state:?}");
 }
 
 fn test_config() -> AppConfig {

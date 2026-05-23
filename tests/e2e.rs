@@ -1469,6 +1469,79 @@ async fn run_with_cancel_completes_cancelled_while_tool_is_waiting() {
 }
 
 #[test]
+fn run_stream_exposes_request_ids_immediately() {
+    let engine = build_test_engine(vec!["done".to_string()]);
+    let req = RunRequest {
+        session_id: SessionId::new(),
+        job_id: JobId::new(),
+        run_id: RunId::new(),
+        user_message: "inspect ids".to_string(),
+        resume_state: None,
+    };
+
+    let stream = engine.run(req.clone(), None);
+
+    assert_eq!(stream.session_id(), req.session_id);
+    assert_eq!(stream.job_id(), req.job_id);
+    assert_eq!(stream.run_id(), req.run_id);
+}
+
+#[tokio::test]
+async fn run_stream_cancel_completes_cancelled_while_tool_is_waiting() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let model = Box::new(FakeModelClient::new(vec![
+        r#"{"tool":"wait_forever","args":{}}"#.to_string(),
+    ]));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(NeverCompletesTool));
+    let engine = Engine::with_workspace(
+        model,
+        registry,
+        ContextManager::new("You are a test agent.".to_string()),
+        EngineConfig {
+            max_steps: 2,
+            plan_enabled: false,
+        },
+        workspace,
+        ApprovalPolicy::Auto,
+    );
+    let req = RunRequest {
+        session_id: SessionId::new(),
+        job_id: JobId::new(),
+        run_id: RunId::new(),
+        user_message: "wait".to_string(),
+        resume_state: None,
+    };
+    let mut stream = engine.run(req, None);
+
+    let mut saw_tool_start = false;
+    while let Some(event) = tokio::time::timeout(Duration::from_secs(2), stream.next())
+        .await
+        .expect("stream should reach the tool call")
+    {
+        if matches!(event, StreamEvent::ToolCallStarted { name, .. } if name == "wait_forever") {
+            saw_tool_start = true;
+            stream.cancel();
+            break;
+        }
+    }
+
+    assert!(saw_tool_start, "tool call should start before cancellation");
+    let event = tokio::time::timeout(Duration::from_secs(2), stream.next())
+        .await
+        .expect("cancelled run should finish promptly")
+        .expect("cancelled run should emit a terminal event");
+    assert!(matches!(
+        event,
+        StreamEvent::RunCompleted {
+            reason: rove::core::types::TerminationReason::Cancelled,
+            output: None,
+        }
+    ));
+}
+
+#[test]
 fn context_manager_orders_memory_before_trimmed_history_and_current_message() {
     let context = ContextManager::with_max_history("system".to_string(), 2);
     let memory = vec![user_message("memory")];
