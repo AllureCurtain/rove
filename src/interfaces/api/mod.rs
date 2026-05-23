@@ -45,6 +45,7 @@ pub struct ApiState {
 struct ApiStateInner {
     workspace: Workspace,
     config: AppConfig,
+    shutdown_token: CancellationToken,
     jobs: RwLock<HashMap<JobId, Arc<JobRecord>>>,
 }
 
@@ -132,7 +133,7 @@ pub async fn serve_with_shutdown(
     let config = AppConfig::from_env()?;
     let workspace = Workspace::detect(&cwd)?;
     workspace.ensure_state_dir()?;
-    let state = ApiState::new(workspace, config);
+    let state = ApiState::with_shutdown(workspace, config, shutdown.clone());
     let listener = tokio::net::TcpListener::bind(addr).await?;
     serve_listener(listener, router(state), shutdown).await
 }
@@ -153,10 +154,19 @@ pub async fn serve_listener(
 
 impl ApiState {
     pub fn new(workspace: Workspace, config: AppConfig) -> Self {
+        Self::with_shutdown(workspace, config, CancellationToken::new())
+    }
+
+    pub fn with_shutdown(
+        workspace: Workspace,
+        config: AppConfig,
+        shutdown_token: CancellationToken,
+    ) -> Self {
         Self {
             inner: Arc::new(ApiStateInner {
                 workspace,
                 config,
+                shutdown_token,
                 jobs: RwLock::new(HashMap::new()),
             }),
         }
@@ -185,7 +195,7 @@ async fn create_job(
         pending_approvals: Mutex::new(HashMap::new()),
         tx,
         handle: Mutex::new(None),
-        cancel_token: CancellationToken::new(),
+        cancel_token: state.inner.shutdown_token.child_token(),
     });
 
     state
@@ -348,6 +358,9 @@ async fn run_job_inner(
     recorder
         .finalize(&state_store, &workspace, &model_id, &run.run_dir)
         .await;
+    if matches!(terminal_status, RunStatus::Cancelled | RunStatus::Error) {
+        reject_pending_approvals(record).await;
+    }
     *record.status.lock().await = if completed {
         terminal_status
     } else {

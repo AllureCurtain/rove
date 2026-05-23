@@ -40,7 +40,7 @@ This compares the current `main` implementation with the original design in:
 | Model providers | OpenAI, Anthropic, Ollama, DeepSeek, routing/fallback | OpenAI-compatible client plus fake model | Anthropic/Ollama/routing/circuit-breaker work remains open. |
 | Tool call parsing | Protocol-specific tool-use normalized in model layer | Text parser handles final text or JSON `{ "tool": ..., "args": ... }` | Simpler and testable, but not yet the documented Anthropic/OpenAI tool-use abstraction. |
 | Context management | 7-section budget, cache breakpoints, compaction | Deterministic prompt ordering with session summary and trimmed history | Covers early M1/M2 needs, not the full station-5 design. |
-| API cancellation/shutdown | Graceful cancellation token tree | API stores a per-job `CancellationToken`, passes it to `Engine::run_with_cancel`, and serves with `with_graceful_shutdown` through a shutdown token | More cooperative than task aborting, but still not the full app-level parent token tree or in-flight job drain. |
+| API cancellation/shutdown | Graceful cancellation token tree | API stores an API shutdown token, gives jobs child tokens, passes them to `Engine::run_with_cancel`, and serves with `with_graceful_shutdown` | API shutdown now cancels pending jobs and clears approvals; still missing deeper ToolContext/post-run cancellation and explicit job-broker drain semantics. |
 | Web delivery | Roadmap recommended independent Next.js project or temporary axum HTML | Independent Next.js workbench proxies to `/api` | Matches the preferred direction more than the historical `GOAL.md` Path B note. |
 
 ## Not Yet Implemented
@@ -48,7 +48,7 @@ This compares the current `main` implementation with the original design in:
 | Gap | Source design | Current missing piece |
 |---|---|---|
 | REPL mode and slash commands | `docs/06` station 11 | No `rustyline` REPL, `/session`, `/memory`, `/history`, `/cancel`, etc. |
-| Cancellation token tree completion | `docs/06` stations 2, 3, 12 | `Engine::run_with_cancel` and API job tokens exist, but there is no app-level parent token, CLI SIGINT/SIGTERM exit-code mapping, ToolContext token, or post-run hook cancellation token. |
+| Cancellation token tree completion | `docs/06` stations 2, 3, 12 | `Engine::run_with_cancel`, `RunStream::cancel`, and API parent/child job tokens exist, but CLI SIGINT/SIGTERM exit-code mapping, ToolContext token, and post-run hook cancellation token remain open. |
 | Prompt cache and compaction | `docs/06` station 5 | No cache breakpoint metadata or compact model flow. |
 | Durable/session memory stores | `docs/06` station 8 | Working/session summaries exist through snapshots, but no durable `MEMORY.md`, save-memory tools, or memory index. |
 | Anthropic/Ollama/DeepSeek providers | `docs/04` M1 and `docs/06` station 4 | Only OpenAI-compatible and fake clients are present. |
@@ -111,3 +111,8 @@ This continuation also closes the direct API graceful-shutdown gap:
 
 - `src/interfaces/api/mod.rs`: adds `serve_listener` / `serve_with_shutdown` and wires `serve` through a Ctrl+C-driven shutdown token.
 - `tests/api.rs`: covers token-triggered graceful server shutdown and keeps longer async-job polling diagnostics for Windows all-features runs.
+
+This continuation then links API shutdown to job cancellation:
+
+- `src/interfaces/api/mod.rs`: adds `ApiState::with_shutdown`, stores the parent shutdown token, and creates child cancellation tokens for jobs.
+- `tests/api.rs`: covers parent-token cancellation of a pending approval job, including approval cleanup and cancelled report artifacts.
