@@ -1277,6 +1277,57 @@ async fn resumed_run_includes_session_summary_in_prompt() {
 }
 
 #[tokio::test]
+async fn engine_includes_session_memory_file_in_prompt() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let session_id = SessionId::new();
+    let sessions_dir = workspace.root.join(".rove").join("memory").join("sessions");
+    std::fs::create_dir_all(&sessions_dir).unwrap();
+    std::fs::write(
+        sessions_dir.join(format!("{session_id}.md")),
+        "ongoing session preference",
+    )
+    .unwrap();
+    let captured_messages = Arc::new(Mutex::new(None));
+    let model = Box::new(RecordingModelClient::new(captured_messages.clone()));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(EchoTool));
+    let engine = Engine::with_workspace(
+        model,
+        registry,
+        ContextManager::with_max_history("system".to_string(), 2),
+        EngineConfig {
+            max_steps: 1,
+            plan_enabled: false,
+        },
+        workspace,
+        ApprovalPolicy::Auto,
+    );
+    let req = RunRequest {
+        session_id,
+        job_id: JobId::new(),
+        run_id: RunId::new(),
+        user_message: "current task".to_string(),
+        resume_state: None,
+    };
+
+    let events = collect_events_with_request(&engine, req).await;
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, StreamEvent::RunCompleted { .. }))
+    );
+
+    let messages = captured_messages.lock().unwrap().clone().unwrap();
+    assert_eq!(messages[0].content, "system");
+    assert_eq!(
+        messages[1].content,
+        "Session summary: ongoing session preference"
+    );
+    assert_eq!(messages.last().unwrap().content, "current task");
+}
+
+#[tokio::test]
 async fn engine_includes_durable_memory_index_in_prompt() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();

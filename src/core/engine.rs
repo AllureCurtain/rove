@@ -20,6 +20,7 @@ use crate::core::types::{
 use crate::core::workspace::Workspace;
 use crate::hooks::{HookRegistry, PostRunHookContext};
 use crate::memory::durable::read_memory_index_sync;
+use crate::memory::session::read_session_summary_sync;
 use crate::models::traits::ModelClient;
 use crate::state::trace::TraceWriter;
 use crate::tools::registry::ToolRegistry;
@@ -383,11 +384,21 @@ impl Engine {
                         Vec::new()
                     }
                 };
-                if let Some(summary) = resume_state
+                let resume_summary = resume_state
                     .as_ref()
-                    .and_then(|state| state.summary.as_ref())
-                {
+                    .and_then(|state| state.summary.as_ref());
+                if let Some(summary) = resume_summary {
                     working_memory.push(session_summary_message(summary));
+                } else {
+                    match read_session_summary_sync(&self.workspace, session_id) {
+                        Ok(Some(summary)) => {
+                            working_memory.push(session_summary_message(&summary));
+                        }
+                        Ok(None) => {}
+                        Err(err) => {
+                            tracing::warn!(error = %err, "failed to read session memory");
+                        }
+                    }
                 }
                 let mut step: u32 = resume_state.as_ref().map(|state| state.step).unwrap_or(0);
                 let mut plan = resume_state.as_ref().and_then(|state| state.plan.clone());
