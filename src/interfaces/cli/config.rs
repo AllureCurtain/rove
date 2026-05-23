@@ -19,8 +19,10 @@ pub fn format_effective_config(config: &AppConfig) -> String {
         })
         .collect();
     let value = serde_json::json!({
+        "provider": config.provider,
         "api_base": config.api_base,
         "api_key_set": !config.api_key.is_empty(),
+        "anthropic_api_key_set": !config.anthropic_api_key.is_empty(),
         "model": config.model,
         "fallback_models": config.fallback_models,
         "fallback_providers": fallback_providers,

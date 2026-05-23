@@ -6,8 +6,10 @@ use rove::interfaces::cli::config::format_effective_config;
 #[test]
 fn format_effective_config_prints_json_without_secret_value() {
     let config = AppConfig {
+        provider: "openai".to_string(),
         api_base: "https://example.test/v1".to_string(),
         api_key: "secret-token".to_string(),
+        anthropic_api_key: "anthropic-secret".to_string(),
         model: "model-a".to_string(),
         fallback_models: vec!["model-b".to_string(), "model-c".to_string()],
         fallback_providers: vec![FallbackProviderConfig {
@@ -25,8 +27,10 @@ fn format_effective_config_prints_json_without_secret_value() {
     let output = format_effective_config(&config);
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
 
+    assert_eq!(json["provider"], "openai");
     assert_eq!(json["api_base"], "https://example.test/v1");
     assert_eq!(json["api_key_set"], true);
+    assert_eq!(json["anthropic_api_key_set"], true);
     assert_eq!(json["model"], "model-a");
     assert_eq!(json["fallback_models"][0], "model-b");
     assert_eq!(json["fallback_models"][1], "model-c");
@@ -46,4 +50,5 @@ fn format_effective_config_prints_json_without_secret_value() {
     assert_eq!(json["mcp_config_path"], ".rove/custom-mcp.json");
     assert!(!output.contains("secret-token"));
     assert!(!output.contains("fallback-secret"));
+    assert!(!output.contains("anthropic-secret"));
 }

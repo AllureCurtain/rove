@@ -15,7 +15,7 @@ use rove::interfaces::cli::index::{self as cli_index, IndexOptions};
 use rove::interfaces::cli::input::stdin_input_provider;
 use rove::interfaces::cli::oneshot::{resolve_resume_state, run_oneshot_with_cancel};
 use rove::interfaces::cli::sessions;
-use rove::models::factory::build_openai_model_client;
+use rove::models::factory::build_model_client;
 use rove::models::fake::FakeModelClient;
 use rove::models::traits::ModelClient;
 use rove::state::store::StateStore;
@@ -96,7 +96,7 @@ async fn main() -> anyhow::Result<()> {
     let model: Box<dyn ModelClient> = if model_id == "fake" {
         Box::new(FakeModelClient::new(format!("fake response: {}", message)))
     } else {
-        build_openai_model_client(&config, model_id)
+        build_model_client(&config, model_id)
     };
 
     // Build tool registry

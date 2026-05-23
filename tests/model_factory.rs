@@ -6,8 +6,10 @@ use rove::models::factory::build_openai_model_client;
 #[test]
 fn build_openai_model_client_uses_configured_fallback_models() {
     let config = AppConfig {
+        provider: "openai".to_string(),
         api_base: "https://example.test/v1".to_string(),
         api_key: "secret-token".to_string(),
+        anthropic_api_key: String::new(),
         model: "primary-model".to_string(),
         fallback_models: vec!["fallback-a".to_string(), "fallback-b".to_string()],
         fallback_providers: Vec::new(),
@@ -29,8 +31,10 @@ fn build_openai_model_client_uses_configured_fallback_models() {
 #[test]
 fn build_openai_model_client_uses_configured_fallback_providers() {
     let config = AppConfig {
+        provider: "openai".to_string(),
         api_base: "https://example.test/v1".to_string(),
         api_key: "secret-token".to_string(),
+        anthropic_api_key: String::new(),
         model: "primary-model".to_string(),
         fallback_models: Vec::new(),
         fallback_providers: vec![

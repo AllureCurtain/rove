@@ -12,10 +12,14 @@ pub struct FallbackProviderConfig {
 /// Loaded from environment variables and `.rove/config.toml` (when it exists).
 #[derive(Debug, Clone)]
 pub struct AppConfig {
+    /// Provider type: "openai", "anthropic", or "ollama".
+    pub provider: String,
     /// OpenAI-compatible API base URL.
     pub api_base: String,
     /// API key for the model provider.
     pub api_key: String,
+    /// Anthropic API key (used when provider is "anthropic").
+    pub anthropic_api_key: String,
     /// Model identifier to use.
     pub model: String,
     /// Fallback model identifiers to try if the primary model fails before streaming.
@@ -38,8 +42,10 @@ impl AppConfig {
     /// Load configuration from environment variables.
     ///
     /// Supports:
+    /// - ROVE_PROVIDER (default: openai) — "openai", "anthropic", or "ollama"
     /// - OPENAI_API_BASE / OPENAI_BASE_URL
     /// - OPENAI_API_KEY
+    /// - ANTHROPIC_API_KEY
     /// - ROVE_MODEL (default: gpt-4o)
     /// - ROVE_FALLBACK_MODELS (comma-separated, default: empty)
     /// - ROVE_FALLBACK_PROVIDERS (JSON array, default: empty)
@@ -52,11 +58,15 @@ impl AppConfig {
         // Load .env if present
         let _ = dotenvy::dotenv();
 
+        let provider = std::env::var("ROVE_PROVIDER").unwrap_or_else(|_| "openai".to_string());
+
         let api_base = std::env::var("OPENAI_API_BASE")
             .or_else(|_| std::env::var("OPENAI_BASE_URL"))
             .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
 
         let api_key = std::env::var("OPENAI_API_KEY").unwrap_or_default();
+
+        let anthropic_api_key = std::env::var("ANTHROPIC_API_KEY").unwrap_or_default();
 
         let model = std::env::var("ROVE_MODEL").unwrap_or_else(|_| "gpt-4o".to_string());
 
@@ -93,8 +103,10 @@ impl AppConfig {
             .unwrap_or_else(|_| PathBuf::from(".rove/mcp_servers.json"));
 
         Ok(Self {
+            provider,
             api_base,
             api_key,
+            anthropic_api_key,
             model,
             fallback_models,
             fallback_providers,

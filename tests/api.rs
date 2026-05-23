@@ -1019,8 +1019,10 @@ async fn wait_for_status(
 
 fn test_config() -> AppConfig {
     AppConfig {
+        provider: "openai".to_string(),
         api_base: "http://127.0.0.1".to_string(),
         api_key: String::new(),
+        anthropic_api_key: String::new(),
         model: "fake".to_string(),
         fallback_models: Vec::new(),
         fallback_providers: Vec::new(),
