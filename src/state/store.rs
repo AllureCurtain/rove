@@ -103,6 +103,18 @@ impl StateStore {
         Ok(states)
     }
 
+    pub async fn list_task_states(&self) -> std::io::Result<Vec<TaskState>> {
+        let mut states = Vec::new();
+        let mut entries = self.task_state_entries().await?;
+        sort_newest_first(&mut entries);
+
+        for entry in entries {
+            states.push(self.load_task_state_path(&entry.path).await?);
+        }
+
+        Ok(states)
+    }
+
     async fn task_state_entries(&self) -> std::io::Result<Vec<TaskStateEntry>> {
         let runs_dir = self.state_dir.join("runs");
         let mut entries = match tokio::fs::read_dir(&runs_dir).await {

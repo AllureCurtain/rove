@@ -727,6 +727,45 @@ async fn list_resumable_task_states_filters_by_session_and_newest_first() {
 }
 
 #[tokio::test]
+async fn list_task_states_returns_all_snapshots_newest_first() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let store = rove::state::store::StateStore::new(tmp.path());
+
+    let older = TaskState {
+        schema_version: 1,
+        session_id: SessionId::new(),
+        job_id: JobId::new(),
+        run_id: RunId::new(),
+        goal: "older".to_string(),
+        step: 1,
+        history: vec![],
+        summary: None,
+        plan: None,
+    };
+    let newer = TaskState {
+        schema_version: 1,
+        session_id: SessionId::new(),
+        job_id: JobId::new(),
+        run_id: RunId::new(),
+        goal: "newer".to_string(),
+        step: 2,
+        history: vec![],
+        summary: None,
+        plan: None,
+    };
+
+    store.write_task_state(&older).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    store.write_task_state(&newer).await.unwrap();
+
+    let states = store.list_task_states().await.unwrap();
+
+    assert_eq!(states.len(), 2);
+    assert_eq!(states[0].goal, "newer");
+    assert_eq!(states[1].goal, "older");
+}
+
+#[tokio::test]
 async fn load_task_state_reads_exact_run_id() {
     let tmp = tempfile::TempDir::new().unwrap();
     let store = rove::state::store::StateStore::new(tmp.path());

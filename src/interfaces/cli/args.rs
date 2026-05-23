@@ -1,4 +1,4 @@
-use clap::{Parser, ValueEnum};
+use clap::{Parser, Subcommand, ValueEnum};
 
 /// rove — a local-first, stateful, observable agent runtime
 #[derive(Parser, Debug)]
@@ -27,6 +27,9 @@ pub struct Args {
     /// Working directory (defaults to current directory).
     #[arg(short = 'C', long)]
     pub cwd: Option<String>,
+
+    #[command(subcommand)]
+    pub command: Option<Command>,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -36,15 +39,29 @@ pub enum CliApprovalPolicy {
     Never,
 }
 
+#[derive(Clone, Debug, Subcommand)]
+pub enum Command {
+    /// List resumable local task states.
+    Sessions,
+}
+
 #[cfg(test)]
 mod tests {
     use clap::Parser;
 
-    use super::{Args, CliApprovalPolicy};
+    use super::{Args, CliApprovalPolicy, Command};
 
     #[test]
     fn approval_defaults_to_ask() {
         let args = Args::parse_from(["rove", "inspect"]);
         assert!(matches!(args.approval, CliApprovalPolicy::Ask));
+    }
+
+    #[test]
+    fn sessions_subcommand_parses_without_message() {
+        let args = Args::parse_from(["rove", "sessions"]);
+
+        assert!(args.message.is_none());
+        assert!(matches!(args.command, Some(Command::Sessions)));
     }
 }

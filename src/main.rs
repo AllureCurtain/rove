@@ -7,8 +7,9 @@ use rove::core::engine::{Engine, EngineConfig};
 use rove::core::types::{ApprovalPolicy, RunId};
 use rove::core::workspace::Workspace;
 use rove::interfaces::cli::approval::stdin_approval_provider;
-use rove::interfaces::cli::args::{Args, CliApprovalPolicy};
+use rove::interfaces::cli::args::{Args, CliApprovalPolicy, Command};
 use rove::interfaces::cli::oneshot::{resolve_resume_state, run_oneshot};
+use rove::interfaces::cli::sessions;
 use rove::models::fake::FakeModelClient;
 use rove::models::openai::OpenAiClient;
 use rove::models::traits::ModelClient;
@@ -32,6 +33,10 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let args = Args::parse();
+
+    if matches!(args.command, Some(Command::Sessions)) {
+        return sessions::run(args.cwd).await;
+    }
 
     // Fast path: no message = show help
     let message = match args.message {
