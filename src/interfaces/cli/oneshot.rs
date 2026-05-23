@@ -1,6 +1,7 @@
 use std::io::Write;
 
 use futures::StreamExt;
+use tokio_util::sync::CancellationToken;
 
 use crate::core::engine::Engine;
 use crate::core::events::StreamEvent;
@@ -18,7 +19,26 @@ pub async fn run_oneshot(
     run: RunHandle,
     resume_state: Option<TaskState>,
     state_store: &StateStore,
-) {
+) -> TerminationReason {
+    run_oneshot_with_cancel(
+        engine,
+        message,
+        run,
+        resume_state,
+        state_store,
+        CancellationToken::new(),
+    )
+    .await
+}
+
+pub async fn run_oneshot_with_cancel(
+    engine: &Engine,
+    message: String,
+    run: RunHandle,
+    resume_state: Option<TaskState>,
+    state_store: &StateStore,
+    cancel: CancellationToken,
+) -> TerminationReason {
     let resume_state_for_recorder = resume_state.clone();
     let req = run.request(message.clone(), resume_state);
     let RunHandle {
@@ -36,7 +56,8 @@ pub async fn run_oneshot(
         message.clone(),
         resume_state_for_recorder.as_ref(),
     );
-    let mut stream = std::pin::pin!(engine.run(req, Some(trace_writer)));
+    let mut stream = std::pin::pin!(engine.run_with_cancel(req, Some(trace_writer), cancel));
+    let mut terminal_reason = TerminationReason::Error;
 
     while let Some(event) = stream.next().await {
         recorder.record_event(&event, state_store).await;
@@ -61,6 +82,7 @@ pub async fn run_oneshot(
                 eprintln!("  [step {}] {}", index + 1, step.title);
             }
             StreamEvent::RunCompleted { reason, output } => {
+                terminal_reason = reason.clone();
                 if let Some(ref text) = output
                     && !matches!(reason, TerminationReason::Final)
                 {
@@ -77,6 +99,7 @@ pub async fn run_oneshot(
     recorder
         .finalize(state_store, engine.workspace(), engine.model_id(), &run_dir)
         .await;
+    terminal_reason
 }
 
 pub async fn resolve_resume_state(

@@ -10,12 +10,12 @@ use rove::core::engine::{Engine, EngineConfig};
 use rove::core::events::StreamEvent;
 use rove::core::types::{
     ApprovalDecision, ApprovalPolicy, CallId, JobId, Message, PlanStep, RunId, RunRequest,
-    SessionId, TaskPlan, TaskState, ToolContext, ToolSchema, Usage,
+    SessionId, TaskPlan, TaskState, TerminationReason, ToolContext, ToolSchema, Usage,
 };
 use rove::core::workspace::{Workspace, WorkspaceKind};
 use rove::errors::{ModelError, ToolError};
 use rove::hooks::{HookRegistry, PostToolHook, PostToolHookContext, PreToolHook};
-use rove::interfaces::cli::oneshot::run_oneshot;
+use rove::interfaces::cli::oneshot::{run_oneshot, run_oneshot_with_cancel};
 use rove::memory::durable::read_memory_index_sync;
 use rove::models::traits::{ModelClient, StreamChunk};
 use rove::state::report::RunReport;
@@ -1531,6 +1531,37 @@ async fn run_with_cancel_completes_cancelled_while_tool_is_waiting() {
             output: None,
         }
     ));
+}
+
+#[tokio::test]
+async fn oneshot_with_cancel_returns_cancelled_reason_and_report() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let state_store = StateStore::new(&workspace.state_dir);
+    let run_id = RunId::new();
+    let run = state_store
+        .start_run(SessionId::new(), JobId::new(), run_id)
+        .unwrap();
+    let engine = build_test_engine_with_workspace(vec!["should not run".to_string()], workspace);
+    let cancel = CancellationToken::new();
+    cancel.cancel();
+
+    let reason = run_oneshot_with_cancel(
+        &engine,
+        "cancel before model".to_string(),
+        run,
+        None,
+        &state_store,
+        cancel,
+    )
+    .await;
+
+    assert_eq!(reason, TerminationReason::Cancelled);
+    let report_path = state_store.run_store.run_dir(&run_id).join("report.json");
+    let report: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(report_path).unwrap()).unwrap();
+    assert_eq!(report["status"], "cancelled");
+    assert_eq!(report["termination_reason"], "cancelled");
 }
 
 #[test]

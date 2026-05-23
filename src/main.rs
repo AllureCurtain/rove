@@ -1,16 +1,18 @@
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicI32, Ordering};
 
 use clap::Parser;
 use rove::config::AppConfig;
 use rove::core::context::ContextManager;
 use rove::core::engine::{Engine, EngineConfig};
-use rove::core::types::{ApprovalPolicy, RunId};
+use rove::core::types::{ApprovalPolicy, RunId, TerminationReason};
 use rove::core::workspace::Workspace;
 use rove::interfaces::cli::approval::stdin_approval_provider;
 use rove::interfaces::cli::args::{Args, CliApprovalPolicy, Command};
 use rove::interfaces::cli::config as cli_config;
 use rove::interfaces::cli::index::{self as cli_index, IndexOptions};
-use rove::interfaces::cli::oneshot::{resolve_resume_state, run_oneshot};
+use rove::interfaces::cli::oneshot::{resolve_resume_state, run_oneshot_with_cancel};
 use rove::interfaces::cli::sessions;
 use rove::models::fake::FakeModelClient;
 use rove::models::openai::OpenAiClient;
@@ -24,6 +26,7 @@ use rove::tools::memory::{ReadMemoryTopicTool, SaveMemoryTool, UpdateMemoryIndex
 use rove::tools::rag::RagRetrieveTool;
 use rove::tools::registry::ToolRegistry;
 use rove::tools::shell::ShellTool;
+use tokio_util::sync::CancellationToken;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -169,7 +172,58 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(%run_handle.run_id, "Starting run");
 
     // Run
-    run_oneshot(&engine, message, run_handle, resume_state, &state_store).await;
+    let cli_cancel = CancellationToken::new();
+    let signal_exit_code = spawn_cli_signal_listener(cli_cancel.clone());
+    let termination = run_oneshot_with_cancel(
+        &engine,
+        message,
+        run_handle,
+        resume_state,
+        &state_store,
+        cli_cancel,
+    )
+    .await;
+    if matches!(termination, TerminationReason::Cancelled) {
+        std::process::exit(signal_exit_code.load(Ordering::SeqCst));
+    }
 
     Ok(())
+}
+
+fn spawn_cli_signal_listener(cancel: CancellationToken) -> Arc<AtomicI32> {
+    let exit_code = Arc::new(AtomicI32::new(130));
+    let exit_code_for_task = exit_code.clone();
+    tokio::spawn(async move {
+        let code = wait_for_cli_signal().await;
+        exit_code_for_task.store(code, Ordering::SeqCst);
+        cancel.cancel();
+    });
+    exit_code
+}
+
+#[cfg(unix)]
+async fn wait_for_cli_signal() -> i32 {
+    use tokio::signal::unix::{SignalKind, signal};
+
+    match signal(SignalKind::terminate()) {
+        Ok(mut terminate) => {
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => 130,
+                _ = terminate.recv() => 143,
+            }
+        }
+        Err(err) => {
+            tracing::warn!("failed to install SIGTERM handler: {err}");
+            let _ = tokio::signal::ctrl_c().await;
+            130
+        }
+    }
+}
+
+#[cfg(not(unix))]
+async fn wait_for_cli_signal() -> i32 {
+    if let Err(err) = tokio::signal::ctrl_c().await {
+        tracing::warn!("failed to listen for Ctrl+C: {err}");
+    }
+    130
 }
