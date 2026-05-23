@@ -1,5 +1,9 @@
 use async_trait::async_trait;
 use futures::stream::BoxStream;
+use reqwest::{
+    StatusCode,
+    header::{HeaderMap, RETRY_AFTER},
+};
 
 use crate::core::types::{Message, ToolSchema, Usage};
 use crate::errors::ModelError;
@@ -72,6 +76,41 @@ impl OpenAiClient {
     }
 }
 
+fn classify_http_error(status: StatusCode, headers: &HeaderMap, body: &str) -> ModelError {
+    if matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) {
+        return ModelError::AuthFailed;
+    }
+
+    if status == StatusCode::TOO_MANY_REQUESTS {
+        return ModelError::RateLimited {
+            retry_after_ms: retry_after_ms(headers).unwrap_or(1000),
+        };
+    }
+
+    if is_context_length_error(body) {
+        return ModelError::ContextLengthExceeded { used: 0, max: 0 };
+    }
+
+    ModelError::RequestFailed(format!("HTTP {}: {}", status, body))
+}
+
+fn retry_after_ms(headers: &HeaderMap) -> Option<u64> {
+    headers
+        .get(RETRY_AFTER)?
+        .to_str()
+        .ok()?
+        .parse::<u64>()
+        .ok()
+        .map(|seconds| seconds.saturating_mul(1000))
+}
+
+fn is_context_length_error(body: &str) -> bool {
+    let lower = body.to_ascii_lowercase();
+    lower.contains("context_length_exceeded")
+        || lower.contains("maximum context length")
+        || lower.contains("context length exceeded")
+}
+
 #[async_trait]
 impl ModelClient for OpenAiClient {
     fn stream(
@@ -96,16 +135,9 @@ impl ModelClient for OpenAiClient {
 
             if !response.status().is_success() {
                 let status = response.status();
+                let headers = response.headers().clone();
                 let text = response.text().await.unwrap_or_default();
-                if status.as_u16() == 429 {
-                    yield Err(ModelError::RateLimited { retry_after_ms: 1000 });
-                } else if status.as_u16() == 401 {
-                    yield Err(ModelError::AuthFailed);
-                } else {
-                    yield Err(ModelError::RequestFailed(
-                        format!("HTTP {}: {}", status, text),
-                    ));
-                }
+                yield Err(classify_http_error(status, &headers, &text));
                 return;
             }
 
@@ -192,6 +224,10 @@ mod tests {
     use super::*;
 
     use crate::core::types::{Message, Role, ToolSchema};
+    use reqwest::{
+        StatusCode,
+        header::{HeaderMap, HeaderValue, RETRY_AFTER},
+    };
 
     #[test]
     fn request_body_includes_tool_schemas_when_present() {
@@ -222,5 +258,47 @@ mod tests {
         assert_eq!(body["tools"][0]["function"]["name"], "fs_read");
         assert_eq!(body["tools"][0]["function"]["description"], "Read a file");
         assert_eq!(body["tool_choice"], "auto");
+    }
+
+    #[test]
+    fn classify_http_error_maps_auth_statuses() {
+        assert!(matches!(
+            classify_http_error(StatusCode::UNAUTHORIZED, &HeaderMap::new(), "bad key"),
+            ModelError::AuthFailed
+        ));
+        assert!(matches!(
+            classify_http_error(StatusCode::FORBIDDEN, &HeaderMap::new(), "forbidden"),
+            ModelError::AuthFailed
+        ));
+    }
+
+    #[test]
+    fn classify_http_error_uses_retry_after_for_rate_limits() {
+        let mut headers = HeaderMap::new();
+        headers.insert(RETRY_AFTER, HeaderValue::from_static("3"));
+
+        assert!(matches!(
+            classify_http_error(StatusCode::TOO_MANY_REQUESTS, &headers, "rate limited"),
+            ModelError::RateLimited {
+                retry_after_ms: 3000
+            }
+        ));
+    }
+
+    #[test]
+    fn classify_http_error_detects_context_length_errors() {
+        let body = serde_json::json!({
+            "error": {
+                "message": "This model's maximum context length was exceeded.",
+                "type": "invalid_request_error",
+                "code": "context_length_exceeded"
+            }
+        })
+        .to_string();
+
+        assert!(matches!(
+            classify_http_error(StatusCode::BAD_REQUEST, &HeaderMap::new(), &body),
+            ModelError::ContextLengthExceeded { .. }
+        ));
     }
 }
