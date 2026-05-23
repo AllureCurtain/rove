@@ -70,3 +70,6 @@ tokio-test = "0.4"
 pretty_assertions = "1"
 insta = "1"
 tempfile = "3"
+
+[profile.test]
+debug = 0

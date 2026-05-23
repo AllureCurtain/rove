@@ -22,6 +22,7 @@ This compares the current `main` implementation with the original design in:
 | Tool pipeline | schema -> validate -> hooks -> approval/boundary -> exec -> post-hook | `src/core/executor.rs`, `src/core/boundary.rs`, `src/hooks/mod.rs` | Implemented with pre/post hooks and destructive-tool approval policy. |
 | File and shell tools | Built-in workspace tools with boundary checks | `src/tools/fs.rs`, `src/tools/shell.rs`, `tests/e2e.rs` | File tools stay inside workspace; shell rejects empty/NUL commands and destructive calls obey policy. |
 | Resume snapshots | `task_state.json` supports resume | `src/state/store.rs`, `src/interfaces/cli/oneshot.rs`, `tests/e2e.rs` | Supports `--resume latest` and `--resume <run_id>`. |
+| CLI fast paths | Lightweight subcommands avoid full engine setup | `src/interfaces/cli/config.rs`, `src/interfaces/cli/sessions.rs`, `src/main.rs`, `tests/cli_config.rs`, `tests/cli_sessions.rs` | `dump-config` and `sessions` now run before workspace/model/tool setup. |
 | Planner | Persisted plan and step events | `src/core/planner.rs`, `src/core/engine.rs`, `prompts/planner.md`, `tests/e2e.rs` | Includes replanning after failed planned steps. |
 | M5 API | Axum jobs API with SSE and cancel | `src/interfaces/api/mod.rs`, `src/bin/rove-api.rs`, `tests/api.rs` | Implements `POST /jobs`, `GET /jobs/{id}/events`, `GET /jobs/{id}/state`, and `POST /jobs/{id}/cancel`. |
 | API approval flow | Pending destructive-tool approval over HTTP | `src/interfaces/api/mod.rs`, `tests/api.rs` | Adds `POST /jobs/{id}/approvals/{call_id}`, which is beyond the original M5 baseline. |
@@ -33,7 +34,7 @@ This compares the current `main` implementation with the original design in:
 |---|---|---|---|
 | `RunStream` handle | `Engine::run(req) -> RunStream` with IDs and `cancel()` | `Engine::run(req, trace_writer) -> impl Stream<Item = StreamEvent>` | Simpler. API owns the job task handle and aborts it directly; no core-level cancel token yet. |
 | DI container | `EngineDeps` with `Arc<dyn ...>` dependencies | `Engine` directly owns `Box<dyn ModelClient>`, `ToolRegistry`, `ContextManager`, `Workspace`, config, hooks | Works for single crate, but less close to the documented dependency graph. |
-| CLI entry | Planned subcommands: `dump-config`, `sessions`, `index` | Main CLI has oneshot plus `sessions`; RAG index is a separate `rove-index` binary behind the `rag` feature | `sessions` is now implemented; `dump-config` and integrated `index` subcommand are still absent. |
+| CLI entry | Planned subcommands: `dump-config`, `sessions`, `index` | Main CLI has oneshot plus `dump-config` and `sessions`; RAG index is a separate `rove-index` binary behind the `rag` feature | The integrated `index` subcommand is still absent. |
 | M3 RAG availability | `retrieve_code` / `retrieve_docs` tools plus ingestion | Implemented behind Cargo feature `rag`; ingestion is `rove-index` binary | Useful but not always available in default build. |
 | M4 MCP transport | JSON-RPC over stdio/SSE | Stdio JSON-RPC only | Mock-server tests cover stdio; SSE transport and broader server config are not implemented. |
 | Model providers | OpenAI, Anthropic, Ollama, DeepSeek, routing/fallback | OpenAI-compatible client plus fake model | Anthropic/Ollama/routing/circuit-breaker work remains open. |
@@ -46,7 +47,6 @@ This compares the current `main` implementation with the original design in:
 
 | Gap | Source design | Current missing piece |
 |---|---|---|
-| `dump-config` CLI fast path | `docs/06` station 1 | No `dump-config` subcommand or config file merge display. |
 | REPL mode and slash commands | `docs/06` station 11 | No `rustyline` REPL, `/session`, `/memory`, `/history`, `/cancel`, etc. |
 | Core-level cancellation token tree | `docs/06` stations 2, 3, 12 | No `CancellationToken` in `Engine` or `RunRequest`; no SIGINT/SIGTERM exit-code mapping. |
 | `RunStream` combined handle | `docs/06` station 2 | No stream type exposing `run_id()`, `job_id()`, `session_id()`, and `cancel()`. |
@@ -67,7 +67,7 @@ This compares the current `main` implementation with the original design in:
 | Milestone | Status | Evidence |
 |---|---|---|
 | M0 skeleton | Implemented | Workspace detection, streaming engine, CLI oneshot, trace/report tests. |
-| M1 core loop | Mostly implemented | Multi-step loop, file/shell tools, approval policy, hooks, state/report, context trimming, fake benchmarks/tests. Missing Anthropic provider and richer retry/time-budget behavior. |
+| M1 core loop | Mostly implemented | Multi-step loop, file/shell tools, approval policy, hooks, state/report, context trimming, CLI fast paths, fake benchmarks/tests. Missing Anthropic provider and richer retry/time-budget behavior. |
 | M2 planner | Mostly implemented | Persisted `TaskPlan`, resume-at-step, replanning after failed steps. Missing richer long-task controls and cooperative cancellation. |
 | M3 RAG | Partially implemented | `src/tools/rag.rs`, `src/bin/rove-index.rs`, `tests/rag.rs`; feature-gated and deterministic runtime retrieval by default. |
 | M4 MCP | Partially implemented | Stdio MCP proxy and mock-server test exist; SSE transport and real GitHub/filesystem server validation remain. |
@@ -82,3 +82,10 @@ To continue hardening the early milestones, this turn adds the missing `rove ses
 - `src/interfaces/cli/sessions.rs`: formats and prints resumable task states.
 - `src/state/store.rs`: adds `list_task_states()` for newest-first local snapshot listing.
 - `tests/cli_sessions.rs` and `tests/e2e.rs`: cover command parsing, formatting, empty output, and store ordering.
+
+The next continuation adds the `dump-config` fast path from the same lifecycle design:
+
+- `src/interfaces/cli/args.rs`: adds a `dump-config` subcommand.
+- `src/interfaces/cli/config.rs`: prints the effective runtime config as JSON.
+- `src/main.rs`: routes `dump-config` before task, workspace, model, and tool setup.
+- `tests/cli_config.rs`: verifies the formatted JSON and confirms API key values are not printed.

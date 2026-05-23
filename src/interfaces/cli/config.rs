@@ -1,0 +1,19 @@
+use crate::config::AppConfig;
+
+pub fn run() -> anyhow::Result<()> {
+    let config = AppConfig::from_env()?;
+    println!("{}", format_effective_config(&config));
+    Ok(())
+}
+
+pub fn format_effective_config(config: &AppConfig) -> String {
+    let value = serde_json::json!({
+        "api_base": config.api_base,
+        "api_key_set": !config.api_key.is_empty(),
+        "model": config.model,
+        "max_steps": config.max_steps,
+        "system_prompt_path": config.system_prompt_path.to_string_lossy(),
+        "mcp_config_path": config.mcp_config_path.to_string_lossy(),
+    });
+    serde_json::to_string_pretty(&value).expect("effective config snapshot should serialize")
+}

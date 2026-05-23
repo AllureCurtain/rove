@@ -41,6 +41,8 @@ pub enum CliApprovalPolicy {
 
 #[derive(Clone, Debug, Subcommand)]
 pub enum Command {
+    /// Print the effective runtime configuration.
+    DumpConfig,
     /// List resumable local task states.
     Sessions,
 }
@@ -63,5 +65,13 @@ mod tests {
 
         assert!(args.message.is_none());
         assert!(matches!(args.command, Some(Command::Sessions)));
+    }
+
+    #[test]
+    fn dump_config_subcommand_parses_without_message() {
+        let args = Args::parse_from(["rove", "dump-config"]);
+
+        assert!(args.message.is_none());
+        assert!(matches!(args.command, Some(Command::DumpConfig)));
     }
 }
