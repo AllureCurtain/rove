@@ -22,7 +22,7 @@ This compares the current `main` implementation with the original design in:
 | Tool pipeline | schema -> validate -> hooks -> approval/boundary -> exec -> post-hook | `src/core/executor.rs`, `src/core/boundary.rs`, `src/hooks/mod.rs` | Implemented with pre/post hooks and destructive-tool approval policy. |
 | File and shell tools | Built-in workspace tools with boundary checks | `src/tools/fs.rs`, `src/tools/shell.rs`, `tests/e2e.rs` | File tools stay inside workspace; shell rejects empty/NUL commands and destructive calls obey policy. |
 | Resume snapshots | `task_state.json` supports resume | `src/state/store.rs`, `src/interfaces/cli/oneshot.rs`, `tests/e2e.rs` | Supports `--resume latest` and `--resume <run_id>`. |
-| CLI fast paths | Lightweight subcommands avoid full engine setup | `src/interfaces/cli/config.rs`, `src/interfaces/cli/sessions.rs`, `src/main.rs`, `tests/cli_config.rs`, `tests/cli_sessions.rs` | `dump-config` and `sessions` now run before workspace/model/tool setup. |
+| CLI fast paths | Lightweight subcommands avoid full engine setup | `src/interfaces/cli/config.rs`, `src/interfaces/cli/index.rs`, `src/interfaces/cli/sessions.rs`, `src/main.rs`, `tests/cli_config.rs`, `tests/cli_index.rs`, `tests/cli_sessions.rs` | `dump-config`, `index`, and `sessions` now run before workspace/model/tool setup. |
 | Planner | Persisted plan and step events | `src/core/planner.rs`, `src/core/engine.rs`, `prompts/planner.md`, `tests/e2e.rs` | Includes replanning after failed planned steps. |
 | M5 API | Axum jobs API with SSE and cancel | `src/interfaces/api/mod.rs`, `src/bin/rove-api.rs`, `tests/api.rs` | Implements `POST /jobs`, `GET /jobs/{id}/events`, `GET /jobs/{id}/state`, and `POST /jobs/{id}/cancel`. |
 | API approval flow | Pending destructive-tool approval over HTTP | `src/interfaces/api/mod.rs`, `tests/api.rs` | Adds `POST /jobs/{id}/approvals/{call_id}`, which is beyond the original M5 baseline. |
@@ -34,8 +34,8 @@ This compares the current `main` implementation with the original design in:
 |---|---|---|---|
 | `RunStream` handle | `Engine::run(req) -> RunStream` with IDs and `cancel()` | `Engine::run(req, trace_writer) -> impl Stream<Item = StreamEvent>` | Simpler. API owns the job task handle and aborts it directly; no core-level cancel token yet. |
 | DI container | `EngineDeps` with `Arc<dyn ...>` dependencies | `Engine` directly owns `Box<dyn ModelClient>`, `ToolRegistry`, `ContextManager`, `Workspace`, config, hooks | Works for single crate, but less close to the documented dependency graph. |
-| CLI entry | Planned subcommands: `dump-config`, `sessions`, `index` | Main CLI has oneshot plus `dump-config` and `sessions`; RAG index is a separate `rove-index` binary behind the `rag` feature | The integrated `index` subcommand is still absent. |
-| M3 RAG availability | `retrieve_code` / `retrieve_docs` tools plus ingestion | Implemented behind Cargo feature `rag`; ingestion is `rove-index` binary | Useful but not always available in default build. |
+| CLI entry | Planned subcommands: `dump-config`, `sessions`, `index` | Main CLI has oneshot plus `dump-config`, `index`, and `sessions`; `index` and `rove-index` share the same implementation behind the `rag` feature | The main CLI surface now matches the planned station-1 subcommands. |
+| M3 RAG availability | `retrieve_code` / `retrieve_docs` tools plus ingestion | Implemented behind Cargo feature `rag`; ingestion is available through `rove index` and the legacy `rove-index` binary | Useful but not always available in default build. |
 | M4 MCP transport | JSON-RPC over stdio/SSE | Stdio JSON-RPC only | Mock-server tests cover stdio; SSE transport and broader server config are not implemented. |
 | Model providers | OpenAI, Anthropic, Ollama, DeepSeek, routing/fallback | OpenAI-compatible client plus fake model | Anthropic/Ollama/routing/circuit-breaker work remains open. |
 | Tool call parsing | Protocol-specific tool-use normalized in model layer | Text parser handles final text or JSON `{ "tool": ..., "args": ... }` | Simpler and testable, but not yet the documented Anthropic/OpenAI tool-use abstraction. |
@@ -89,3 +89,10 @@ The next continuation adds the `dump-config` fast path from the same lifecycle d
 - `src/interfaces/cli/config.rs`: prints the effective runtime config as JSON.
 - `src/main.rs`: routes `dump-config` before task, workspace, model, and tool setup.
 - `tests/cli_config.rs`: verifies the formatted JSON and confirms API key values are not printed.
+
+This continuation then closes the remaining station-1 CLI entry gap by integrating RAG indexing into the main binary:
+
+- `src/interfaces/cli/args.rs`: adds an `index` subcommand with path, deterministic, and embedding-model options.
+- `src/interfaces/cli/index.rs`: shares indexing behavior between `rove index` and `rove-index`.
+- `src/bin/rove-index.rs`: delegates to the shared CLI index module.
+- `tests/cli_index.rs`: covers output formatting, default-build feature messaging, and feature-enabled deterministic ingestion.

@@ -9,6 +9,7 @@ use rove::core::workspace::Workspace;
 use rove::interfaces::cli::approval::stdin_approval_provider;
 use rove::interfaces::cli::args::{Args, CliApprovalPolicy, Command};
 use rove::interfaces::cli::config as cli_config;
+use rove::interfaces::cli::index::{self as cli_index, IndexOptions};
 use rove::interfaces::cli::oneshot::{resolve_resume_state, run_oneshot};
 use rove::interfaces::cli::sessions;
 use rove::models::fake::FakeModelClient;
@@ -37,6 +38,18 @@ async fn main() -> anyhow::Result<()> {
 
     match args.command {
         Some(Command::DumpConfig) => return cli_config::run(),
+        Some(Command::Index {
+            path,
+            deterministic,
+            embedding_model,
+        }) => {
+            return cli_index::run(IndexOptions {
+                cwd: path.or_else(|| args.cwd.map(PathBuf::from)),
+                deterministic,
+                embedding_model,
+            })
+            .await;
+        }
         Some(Command::Sessions) => return sessions::run(args.cwd).await,
         None => {}
     }

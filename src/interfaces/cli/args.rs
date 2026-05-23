@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use clap::{Parser, Subcommand, ValueEnum};
 
 /// rove — a local-first, stateful, observable agent runtime
@@ -43,12 +45,28 @@ pub enum CliApprovalPolicy {
 pub enum Command {
     /// Print the effective runtime configuration.
     DumpConfig,
+    /// Index a workspace for RAG retrieval.
+    Index {
+        /// Workspace path to index. Defaults to the current working directory.
+        #[arg(value_name = "PATH")]
+        path: Option<PathBuf>,
+
+        /// Use deterministic local embeddings instead of the OpenAI embedding API.
+        #[arg(long)]
+        deterministic: bool,
+
+        /// OpenAI-compatible embedding model.
+        #[arg(long)]
+        embedding_model: Option<String>,
+    },
     /// List resumable local task states.
     Sessions,
 }
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use clap::Parser;
 
     use super::{Args, CliApprovalPolicy, Command};
@@ -73,5 +91,31 @@ mod tests {
 
         assert!(args.message.is_none());
         assert!(matches!(args.command, Some(Command::DumpConfig)));
+    }
+
+    #[test]
+    fn index_subcommand_parses_options_without_message() {
+        let args = Args::parse_from([
+            "rove",
+            "index",
+            "src",
+            "--deterministic",
+            "--embedding-model",
+            "text-embedding-3-large",
+        ]);
+
+        assert!(args.message.is_none());
+        match args.command {
+            Some(Command::Index {
+                path,
+                deterministic,
+                embedding_model,
+            }) => {
+                assert_eq!(path, Some(PathBuf::from("src")));
+                assert!(deterministic);
+                assert_eq!(embedding_model.as_deref(), Some("text-embedding-3-large"));
+            }
+            other => panic!("expected index subcommand, got {other:?}"),
+        }
     }
 }
