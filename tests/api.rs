@@ -3,7 +3,10 @@ use axum::http::{Request, StatusCode};
 use rove::config::AppConfig;
 use rove::core::types::RunStatus;
 use rove::core::workspace::Workspace;
-use rove::interfaces::api::{ApiState, CreateJobResponse, JobStateResponse, router};
+use rove::interfaces::api::{
+    ApiState, CreateJobResponse, JobStateResponse, router, serve_listener,
+};
+use tokio_util::sync::CancellationToken;
 use tower::ServiceExt;
 
 #[tokio::test]
@@ -29,6 +32,27 @@ async fn api_does_not_serve_embedded_web_ui_anymore() {
         .await
         .unwrap();
     assert_eq!(app_js.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn api_server_stops_when_shutdown_token_is_cancelled() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let shutdown = CancellationToken::new();
+    let server = tokio::spawn(serve_listener(
+        listener,
+        router(ApiState::new(workspace, test_config())),
+        shutdown.clone(),
+    ));
+
+    shutdown.cancel();
+
+    tokio::time::timeout(std::time::Duration::from_secs(2), server)
+        .await
+        .expect("server should stop after shutdown token is cancelled")
+        .expect("server task should not panic")
+        .unwrap();
 }
 
 #[tokio::test]

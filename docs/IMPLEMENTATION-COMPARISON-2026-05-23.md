@@ -40,7 +40,7 @@ This compares the current `main` implementation with the original design in:
 | Model providers | OpenAI, Anthropic, Ollama, DeepSeek, routing/fallback | OpenAI-compatible client plus fake model | Anthropic/Ollama/routing/circuit-breaker work remains open. |
 | Tool call parsing | Protocol-specific tool-use normalized in model layer | Text parser handles final text or JSON `{ "tool": ..., "args": ... }` | Simpler and testable, but not yet the documented Anthropic/OpenAI tool-use abstraction. |
 | Context management | 7-section budget, cache breakpoints, compaction | Deterministic prompt ordering with session summary and trimmed history | Covers early M1/M2 needs, not the full station-5 design. |
-| API cancellation | Graceful cancellation token tree | API stores a per-job `CancellationToken`, passes it to `Engine::run_with_cancel`, and keeps artifact finalization as a fallback | More cooperative than task aborting, but still not the full app-level parent token tree or graceful server shutdown path. |
+| API cancellation/shutdown | Graceful cancellation token tree | API stores a per-job `CancellationToken`, passes it to `Engine::run_with_cancel`, and serves with `with_graceful_shutdown` through a shutdown token | More cooperative than task aborting, but still not the full app-level parent token tree or in-flight job drain. |
 | Web delivery | Roadmap recommended independent Next.js project or temporary axum HTML | Independent Next.js workbench proxies to `/api` | Matches the preferred direction more than the historical `GOAL.md` Path B note. |
 
 ## Not Yet Implemented
@@ -56,7 +56,6 @@ This compares the current `main` implementation with the original design in:
 | Native OpenAI/Anthropic tool-use normalization | `docs/06` station 6 | Model layer does not emit structured `ModelChunk::ToolUse`; parser remains JSON-text based. |
 | Concurrent tool calls | `docs/05` D7 and `docs/06` station 7 | Tool calls execute serially. |
 | `request_input` tool | `docs/06` station 7 | Not present. |
-| API graceful shutdown | `docs/06` station 12 | `axum::serve` runs without `with_graceful_shutdown`. |
 | MCP SSE transport | `docs/04` M4 | Stdio transport exists; SSE transport does not. |
 | Always-on RAG tool registration | `docs/04` M3 | RAG requires `--features rag`; default build excludes it. |
 | Cargo workspace split | `docs/04` M5 optional | Still a single Rust crate plus separate `web-ui` package. |
@@ -107,3 +106,8 @@ This continuation then adds the station-2 stream handle shape:
 
 - `src/core/engine.rs`: adds `RunStream`, with ID accessors, `cancel()`, `Stream` implementation, and drop-to-cancel behavior.
 - `tests/e2e.rs`: covers immediate ID access and handle-driven cancellation during a pending tool call.
+
+This continuation also closes the direct API graceful-shutdown gap:
+
+- `src/interfaces/api/mod.rs`: adds `serve_listener` / `serve_with_shutdown` and wires `serve` through a Ctrl+C-driven shutdown token.
+- `tests/api.rs`: covers token-triggered graceful server shutdown and keeps longer async-job polling diagnostics for Windows all-features runs.

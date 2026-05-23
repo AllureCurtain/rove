@@ -113,12 +113,41 @@ pub fn router(state: ApiState) -> Router {
 }
 
 pub async fn serve(addr: SocketAddr, cwd: PathBuf) -> anyhow::Result<()> {
+    let shutdown = CancellationToken::new();
+    let signal_shutdown = shutdown.clone();
+    tokio::spawn(async move {
+        if let Err(err) = tokio::signal::ctrl_c().await {
+            tracing::warn!("failed to listen for Ctrl+C: {err}");
+        }
+        signal_shutdown.cancel();
+    });
+    serve_with_shutdown(addr, cwd, shutdown).await
+}
+
+pub async fn serve_with_shutdown(
+    addr: SocketAddr,
+    cwd: PathBuf,
+    shutdown: CancellationToken,
+) -> anyhow::Result<()> {
     let config = AppConfig::from_env()?;
     let workspace = Workspace::detect(&cwd)?;
     workspace.ensure_state_dir()?;
     let state = ApiState::new(workspace, config);
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, router(state)).await?;
+    serve_listener(listener, router(state), shutdown).await
+}
+
+pub async fn serve_listener(
+    listener: tokio::net::TcpListener,
+    app: Router,
+    shutdown: CancellationToken,
+) -> anyhow::Result<()> {
+    axum::serve(listener, app)
+        .with_graceful_shutdown(async move {
+            shutdown.cancelled().await;
+            tracing::info!("API graceful shutdown initiated");
+        })
+        .await?;
     Ok(())
 }
 
