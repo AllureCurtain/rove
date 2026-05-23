@@ -11,6 +11,7 @@ use rove::core::events::StreamEvent;
 use rove::core::types::{
     ApprovalDecision, ApprovalPolicy, CallId, JobId, Message, PlanStep, RunId, RunRequest,
     SessionId, TaskPlan, TaskState, TerminationReason, ToolContext, ToolSchema, Usage,
+    UserInputProvider, UserInputRequest,
 };
 use rove::core::workspace::{Workspace, WorkspaceKind};
 use rove::errors::{ModelError, ToolError};
@@ -25,6 +26,7 @@ use rove::state::store::StateStore;
 use rove::tools::echo::EchoTool;
 use rove::tools::fs::{FsReadTool, FsWriteTool};
 use rove::tools::registry::ToolRegistry;
+use rove::tools::request_input::RequestInputTool;
 use rove::tools::shell::ShellTool;
 use rove::tools::traits::{Tool, ToolOutput};
 
@@ -320,6 +322,19 @@ struct PanickingPostRunHook;
 impl PostRunHook for PanickingPostRunHook {
     async fn after_run(&self, _ctx: &PostRunHookContext<'_>) -> anyhow::Result<()> {
         panic!("post-run panic from test hook")
+    }
+}
+
+struct RecordingInputProvider {
+    answer: String,
+    prompts: Arc<Mutex<Vec<String>>>,
+}
+
+#[async_trait]
+impl UserInputProvider for RecordingInputProvider {
+    async fn request_input(&self, request: UserInputRequest) -> Result<String, ToolError> {
+        self.prompts.lock().unwrap().push(request.prompt);
+        Ok(self.answer.clone())
     }
 }
 
@@ -2200,6 +2215,53 @@ async fn engine_handles_tool_call() {
             reason: rove::core::types::TerminationReason::Final,
             ..
         }
+    ));
+}
+
+#[tokio::test]
+async fn engine_routes_request_input_tool_to_input_provider() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let prompts = Arc::new(Mutex::new(Vec::new()));
+    let model = Box::new(FakeModelClient::new(vec![
+        r#"{"tool": "request_input", "args": {"prompt": "Which branch should I use?"}}"#
+            .to_string(),
+        "I will use main.".to_string(),
+    ]));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(RequestInputTool));
+    let engine = Engine::with_workspace(
+        model,
+        registry,
+        ContextManager::new("You are a test agent.".to_string()),
+        EngineConfig {
+            max_steps: 5,
+            plan_enabled: false,
+        },
+        workspace,
+        ApprovalPolicy::Auto,
+    )
+    .with_input_provider(Arc::new(RecordingInputProvider {
+        answer: "Use main.".to_string(),
+        prompts: prompts.clone(),
+    }));
+
+    let events = collect_events(&engine, "ask a clarifying question").await;
+
+    assert_eq!(
+        prompts.lock().unwrap().as_slice(),
+        ["Which branch should I use?"]
+    );
+    assert!(events.iter().any(|event| matches!(
+        event,
+        StreamEvent::ToolCallCompleted { result, .. } if result.output == "Use main."
+    )));
+    assert!(matches!(
+        events.last(),
+        Some(StreamEvent::RunCompleted {
+            reason: rove::core::types::TerminationReason::Final,
+            output: Some(output),
+        }) if output == "I will use main."
     ));
 }
 

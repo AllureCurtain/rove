@@ -16,6 +16,7 @@ use crate::core::planner::{Planner, PlannerError};
 use crate::core::types::{
     Action, ApprovalDecision, ApprovalPolicy, JobId, Message, Role, RunId, RunRequest, SessionId,
     TaskPlan, TerminationReason, ToolApprovalProvider, ToolApprovalRequest, ToolContext, Usage,
+    UserInputProvider,
 };
 use crate::core::workspace::Workspace;
 use crate::hooks::{HookRegistry, PostRunHookContext};
@@ -113,6 +114,7 @@ pub struct Engine {
     approval_policy: ApprovalPolicy,
     approval_decision: ApprovalDecision,
     approval_provider: Option<Arc<dyn ToolApprovalProvider>>,
+    input_provider: Option<Arc<dyn UserInputProvider>>,
     hooks: HookRegistry,
 }
 
@@ -178,6 +180,7 @@ impl Engine {
             approval_policy,
             approval_decision,
             approval_provider: None,
+            input_provider: None,
             hooks: HookRegistry::with_default_post_run_hooks(),
         }
     }
@@ -192,6 +195,11 @@ impl Engine {
         approval_provider: Arc<dyn ToolApprovalProvider>,
     ) -> Self {
         self.approval_provider = Some(approval_provider);
+        self
+    }
+
+    pub fn with_input_provider(mut self, input_provider: Arc<dyn UserInputProvider>) -> Self {
+        self.input_provider = Some(input_provider);
         self
     }
 
@@ -559,7 +567,7 @@ impl Engine {
                                     approval_policy: self
                                         .effective_approval_policy(&name, approval_decision),
                                     cancel_token: stream_cancel.clone(),
-                                    input_provider: None,
+                                    input_provider: self.input_provider.clone(),
                                 };
                                 let tool_result = tokio::select! {
                                     biased;
@@ -840,7 +848,7 @@ impl Engine {
                                 workspace: &self.workspace,
                                 approval_policy: self.effective_approval_policy(&name, approval_decision),
                                 cancel_token: stream_cancel.clone(),
-                                input_provider: None,
+                                input_provider: self.input_provider.clone(),
                             };
                             let tool_result = tokio::select! {
                                 biased;
