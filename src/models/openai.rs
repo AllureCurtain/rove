@@ -88,7 +88,8 @@ fn classify_http_error(status: StatusCode, headers: &HeaderMap, body: &str) -> M
     }
 
     if is_context_length_error(body) {
-        return ModelError::ContextLengthExceeded { used: 0, max: 0 };
+        let (used, max) = context_length_token_counts(body);
+        return ModelError::ContextLengthExceeded { used, max };
     }
 
     ModelError::RequestFailed(format!("HTTP {}: {}", status, body))
@@ -109,6 +110,53 @@ fn is_context_length_error(body: &str) -> bool {
     lower.contains("context_length_exceeded")
         || lower.contains("maximum context length")
         || lower.contains("context length exceeded")
+}
+
+fn context_length_token_counts(body: &str) -> (u32, u32) {
+    let text = provider_error_message(body).unwrap_or_else(|| body.to_string());
+    let lower = text.to_ascii_lowercase();
+    let numbers = unsigned_numbers(&text);
+
+    if lower.contains("maximum context length")
+        && lower.contains("resulted in")
+        && numbers.len() >= 2
+    {
+        return (numbers[1], numbers[0]);
+    }
+
+    (0, 0)
+}
+
+fn provider_error_message(body: &str) -> Option<String> {
+    let json = serde_json::from_str::<serde_json::Value>(body).ok()?;
+    json.get("error")?
+        .get("message")?
+        .as_str()
+        .map(str::to_string)
+}
+
+fn unsigned_numbers(text: &str) -> Vec<u32> {
+    let mut numbers = Vec::new();
+    let mut current = String::new();
+
+    for ch in text.chars() {
+        if ch.is_ascii_digit() {
+            current.push(ch);
+        } else if !current.is_empty() {
+            if let Ok(number) = current.parse::<u32>() {
+                numbers.push(number);
+            }
+            current.clear();
+        }
+    }
+
+    if !current.is_empty()
+        && let Ok(number) = current.parse::<u32>()
+    {
+        numbers.push(number);
+    }
+
+    numbers
 }
 
 #[async_trait]
@@ -299,6 +347,26 @@ mod tests {
         assert!(matches!(
             classify_http_error(StatusCode::BAD_REQUEST, &HeaderMap::new(), &body),
             ModelError::ContextLengthExceeded { .. }
+        ));
+    }
+
+    #[test]
+    fn classify_http_error_extracts_context_length_token_counts() {
+        let body = serde_json::json!({
+            "error": {
+                "message": "This model's maximum context length is 8192 tokens. However, your messages resulted in 9001 tokens.",
+                "type": "invalid_request_error",
+                "code": "context_length_exceeded"
+            }
+        })
+        .to_string();
+
+        assert!(matches!(
+            classify_http_error(StatusCode::BAD_REQUEST, &HeaderMap::new(), &body),
+            ModelError::ContextLengthExceeded {
+                used: 9001,
+                max: 8192
+            }
         ));
     }
 }
