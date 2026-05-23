@@ -564,6 +564,64 @@ async fn api_auto_approval_runs_destructive_tool_without_pending_approval() {
     assert_eq!(std::fs::read_to_string(output_path).unwrap(), "ok");
 }
 
+#[tokio::test]
+async fn api_registers_save_memory_tool_for_jobs() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let topic_path = workspace
+        .root
+        .join(".rove")
+        .join("memory")
+        .join("topics")
+        .join("api-facts.md");
+    let index_path = workspace
+        .root
+        .join(".rove")
+        .join("memory")
+        .join("MEMORY.md");
+    let app = router(ApiState::new(workspace, test_config()));
+    let message = serde_json::json!({
+        "tool": "save_memory",
+        "args": {
+            "topic": "API Facts",
+            "content": "API jobs can persist durable memory.",
+            "type": "project"
+        }
+    })
+    .to_string();
+    let body = serde_json::json!({
+        "message": message,
+        "model": "fake-raw",
+        "max_steps": 1
+    });
+
+    let create = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/jobs")
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create.status(), StatusCode::OK);
+    let create_body = axum::body::to_bytes(create.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let created: CreateJobResponse = serde_json::from_slice(&create_body).unwrap();
+
+    let state = wait_for_done(app.clone(), created.job_id.to_string()).await;
+    assert_eq!(state.status, RunStatus::Done);
+
+    let topic = std::fs::read_to_string(topic_path).unwrap();
+    assert!(topic.contains("API jobs can persist durable memory."));
+    let index = std::fs::read_to_string(index_path).unwrap();
+    assert!(index.contains("[API Facts](topics/api-facts.md)"));
+}
+
 async fn wait_for_done(app: axum::Router, job_id: String) -> JobStateResponse {
     let mut last_state = None;
     for _ in 0..80 {

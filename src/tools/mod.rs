@@ -1,6 +1,7 @@
 pub mod echo;
 pub mod fs;
 pub mod mcp_proxy;
+pub mod memory;
 #[cfg(feature = "rag")]
 pub mod rag;
 pub mod registry;

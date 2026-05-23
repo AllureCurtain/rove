@@ -19,6 +19,7 @@ use rove::state::store::StateStore;
 use rove::tools::echo::EchoTool;
 use rove::tools::fs::{FsReadTool, FsWriteTool};
 use rove::tools::mcp_proxy::register_mcp_tools_from_file;
+use rove::tools::memory::SaveMemoryTool;
 #[cfg(feature = "rag")]
 use rove::tools::rag::RagRetrieveTool;
 use rove::tools::registry::ToolRegistry;
@@ -103,6 +104,7 @@ async fn main() -> anyhow::Result<()> {
     registry.register(Box::new(EchoTool));
     registry.register(Box::new(FsReadTool::new(workspace.root.clone())));
     registry.register(Box::new(FsWriteTool::new(workspace.root.clone())));
+    registry.register(Box::new(SaveMemoryTool::new(workspace.root.clone())));
     #[cfg(feature = "rag")]
     registry.register(Box::new(RagRetrieveTool::code(workspace.root.clone())));
     #[cfg(feature = "rag")]

@@ -8,7 +8,7 @@ This compares the current `main` implementation with the original design in:
 
 ## Summary
 
-`main` is already beyond the original M0-M2 kernel plan and includes partial M3, M4, M5, and M6 surfaces. The largest difference is shape: the original docs describe an eventual `EngineDeps` dependency graph and richer provider routing, while the current implementation remains a simpler single-crate engine. `RunStream` and cooperative cancellation now exist, but the full app-level token tree and provider-routing design are still open.
+`main` is already beyond the original M0-M2 kernel plan and includes partial M3, M4, M5, and M6 surfaces. The largest difference is shape: the original docs describe an eventual `EngineDeps` dependency graph and richer provider routing, while the current implementation remains a simpler single-crate engine. `RunStream`, cooperative cancellation, and the first durable-memory write tool now exist, but the full app-level token tree, layered memory store, and provider-routing design are still open.
 
 ## Implemented Close To The Design
 
@@ -22,6 +22,7 @@ This compares the current `main` implementation with the original design in:
 | Trace/state/report artifacts | `.rove/runs/<run_id>/{trace.jsonl,task_state.json,report.json}` | `src/state/trace.rs`, `src/state/store.rs`, `src/state/artifacts.rs`, `tests/e2e.rs`, `tests/api.rs` | Snapshot writes are schema-versioned; report includes workspace and identity metadata. |
 | Tool pipeline | schema -> validate -> hooks -> approval/boundary -> exec -> post-hook | `src/core/executor.rs`, `src/core/boundary.rs`, `src/hooks/mod.rs` | Implemented with pre/post hooks and destructive-tool approval policy. |
 | File and shell tools | Built-in workspace tools with boundary checks | `src/tools/fs.rs`, `src/tools/shell.rs`, `tests/e2e.rs` | File tools stay inside workspace; shell rejects empty/NUL commands and destructive calls obey policy. |
+| Durable memory write tool | `save_memory` writes `.rove/memory/MEMORY.md` and `topics/*.md` | `src/tools/memory.rs`, `tests/memory_tool.rs`, `tests/api.rs` | Adds YAML-frontmatter topic files, rebuilds a capped index, rejects unsafe topics, and is registered for CLI/API engine runs. |
 | Resume snapshots | `task_state.json` supports resume | `src/state/store.rs`, `src/interfaces/cli/oneshot.rs`, `tests/e2e.rs` | Supports `--resume latest` and `--resume <run_id>`. |
 | CLI fast paths | Lightweight subcommands avoid full engine setup | `src/interfaces/cli/config.rs`, `src/interfaces/cli/index.rs`, `src/interfaces/cli/sessions.rs`, `src/main.rs`, `tests/cli_config.rs`, `tests/cli_index.rs`, `tests/cli_sessions.rs` | `dump-config`, `index`, and `sessions` now run before workspace/model/tool setup. |
 | Planner | Persisted plan and step events | `src/core/planner.rs`, `src/core/engine.rs`, `prompts/planner.md`, `tests/e2e.rs` | Includes replanning after failed planned steps. |
@@ -50,7 +51,7 @@ This compares the current `main` implementation with the original design in:
 | REPL mode and slash commands | `docs/06` station 11 | No `rustyline` REPL, `/session`, `/memory`, `/history`, `/cancel`, etc. |
 | Cancellation token tree completion | `docs/06` stations 2, 3, 12 | `Engine::run_with_cancel`, `RunStream::cancel`, and API parent/child job tokens exist, but CLI SIGINT/SIGTERM exit-code mapping, ToolContext token, and post-run hook cancellation token remain open. |
 | Prompt cache and compaction | `docs/06` station 5 | No cache breakpoint metadata or compact model flow. |
-| Durable/session memory stores | `docs/06` station 8 | Working/session summaries exist through snapshots, but no durable `MEMORY.md`, save-memory tools, or memory index. |
+| Durable/session memory stores | `docs/06` station 8 | `save_memory` now writes durable topic files and a capped `MEMORY.md` index. Remaining gaps: full `LayeredMemory`/`MemoryStore`, session memory files, explicit `update_memory_index` and `read_memory_topic` tools, prompt-time memory loading, and relevant-memory retrieval. |
 | Anthropic/Ollama/DeepSeek providers | `docs/04` M1 and `docs/06` station 4 | Only OpenAI-compatible and fake clients are present. |
 | Routing model client and circuit breaker | `docs/06` station 4 | No fallback provider routing, TTFB probe, or three-state circuit breaker. |
 | Native OpenAI/Anthropic tool-use normalization | `docs/06` station 6 | Model layer does not emit structured `ModelChunk::ToolUse`; parser remains JSON-text based. |
@@ -66,7 +67,7 @@ This compares the current `main` implementation with the original design in:
 |---|---|---|
 | M0 skeleton | Implemented | Workspace detection, streaming engine, CLI oneshot, trace/report tests. |
 | M1 core loop | Mostly implemented | Multi-step loop, file/shell tools, approval policy, hooks, state/report, context trimming, CLI fast paths, fake benchmarks/tests. Missing Anthropic provider and richer retry/time-budget behavior. |
-| M2 planner | Mostly implemented | Persisted `TaskPlan`, resume-at-step, replanning after failed steps, `RunStream` identity/cancel handle, and cooperative engine/API cancellation. Missing richer long-task controls and the full cancellation token tree. |
+| M2 planner | Mostly implemented | Persisted `TaskPlan`, resume-at-step, replanning after failed steps, `RunStream` identity/cancel handle, cooperative engine/API cancellation, and the initial `save_memory` durable-memory tool. Missing richer long-task controls, the full cancellation token tree, and the full layered memory store. |
 | M3 RAG | Partially implemented | `src/tools/rag.rs`, `src/bin/rove-index.rs`, `tests/rag.rs`; feature-gated and deterministic runtime retrieval by default. |
 | M4 MCP | Partially implemented | Stdio MCP proxy and mock-server test exist; SSE transport and real GitHub/filesystem server validation remain. |
 | M5 HTTP API | Implemented with additions | Job create/events/state/cancel and approval endpoints have integration coverage. |
@@ -116,3 +117,9 @@ This continuation then links API shutdown to job cancellation:
 
 - `src/interfaces/api/mod.rs`: adds `ApiState::with_shutdown`, stores the parent shutdown token, and creates child cancellation tokens for jobs.
 - `tests/api.rs`: covers parent-token cancellation of a pending approval job, including approval cleanup and cancelled report artifacts.
+
+This continuation starts the station-8 durable-memory surface:
+
+- `src/tools/memory.rs`: adds the `save_memory` tool, safe topic normalization, YAML-frontmatter topic writes, and capped `MEMORY.md` index rebuilding.
+- `src/main.rs` and `src/interfaces/api/mod.rs`: register `save_memory` for CLI and API engine runs.
+- `tests/memory_tool.rs` and `tests/api.rs`: cover topic/index writes, unsafe topic rejection, hard index limits, and API job registration.
