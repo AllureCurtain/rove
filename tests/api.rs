@@ -1022,6 +1022,7 @@ fn test_config() -> AppConfig {
         api_base: "http://127.0.0.1".to_string(),
         api_key: String::new(),
         model: "fake".to_string(),
+        fallback_models: Vec::new(),
         max_steps: 4,
         system_prompt_path: "prompts/system.md".into(),
         mcp_config_path: ".rove/mcp_servers.json".into(),

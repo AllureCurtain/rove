@@ -9,6 +9,7 @@ fn format_effective_config_prints_json_without_secret_value() {
         api_base: "https://example.test/v1".to_string(),
         api_key: "secret-token".to_string(),
         model: "model-a".to_string(),
+        fallback_models: vec!["model-b".to_string(), "model-c".to_string()],
         max_steps: 42,
         system_prompt_path: PathBuf::from("prompts/custom.md"),
         mcp_config_path: PathBuf::from(".rove/custom-mcp.json"),
@@ -20,6 +21,8 @@ fn format_effective_config_prints_json_without_secret_value() {
     assert_eq!(json["api_base"], "https://example.test/v1");
     assert_eq!(json["api_key_set"], true);
     assert_eq!(json["model"], "model-a");
+    assert_eq!(json["fallback_models"][0], "model-b");
+    assert_eq!(json["fallback_models"][1], "model-c");
     assert_eq!(json["max_steps"], 42);
     assert_eq!(json["system_prompt_path"], "prompts/custom.md");
     assert_eq!(json["mcp_config_path"], ".rove/custom-mcp.json");

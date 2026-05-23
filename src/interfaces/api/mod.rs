@@ -26,8 +26,8 @@ use crate::core::types::{
 };
 use crate::core::workspace::Workspace;
 use crate::errors::ToolError;
+use crate::models::factory::build_openai_model_client;
 use crate::models::fake::FakeModelClient;
-use crate::models::openai::OpenAiClient;
 use crate::models::traits::ModelClient;
 use crate::state::artifacts::RunArtifactRecorder;
 use crate::state::store::StateStore;
@@ -440,11 +440,7 @@ fn build_engine(
     let model: Box<dyn ModelClient> = match model_id.as_str() {
         "fake" => Box::new(FakeModelClient::new(format!("fake response: {message}"))),
         "fake-raw" => Box::new(FakeModelClient::new(message.to_string())),
-        _ => Box::new(OpenAiClient::new(
-            config.api_base.clone(),
-            config.api_key.clone(),
-            model_id,
-        )),
+        _ => build_openai_model_client(config, model_id),
     };
 
     let workspace = state.inner.workspace.clone();

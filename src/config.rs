@@ -11,6 +11,8 @@ pub struct AppConfig {
     pub api_key: String,
     /// Model identifier to use.
     pub model: String,
+    /// Fallback model identifiers to try if the primary model fails before streaming.
+    pub fallback_models: Vec<String>,
     /// Maximum steps per run.
     pub max_steps: u32,
     /// Path to the system prompt file.
@@ -26,6 +28,7 @@ impl AppConfig {
     /// - OPENAI_API_BASE / OPENAI_BASE_URL
     /// - OPENAI_API_KEY
     /// - ROVE_MODEL (default: gpt-4o)
+    /// - ROVE_FALLBACK_MODELS (comma-separated, default: empty)
     /// - ROVE_MAX_STEPS (default: 20)
     /// - ROVE_SYSTEM_PROMPT (default: prompts/system.md)
     /// - ROVE_MCP_CONFIG (default: .rove/mcp_servers.json)
@@ -40,6 +43,10 @@ impl AppConfig {
         let api_key = std::env::var("OPENAI_API_KEY").unwrap_or_default();
 
         let model = std::env::var("ROVE_MODEL").unwrap_or_else(|_| "gpt-4o".to_string());
+
+        let fallback_models = std::env::var("ROVE_FALLBACK_MODELS")
+            .map(|raw| parse_fallback_models(&raw))
+            .unwrap_or_default();
 
         let max_steps: u32 = std::env::var("ROVE_MAX_STEPS")
             .ok()
@@ -58,6 +65,7 @@ impl AppConfig {
             api_base,
             api_key,
             model,
+            fallback_models,
             max_steps,
             system_prompt_path,
             mcp_config_path,
@@ -69,5 +77,26 @@ impl AppConfig {
         std::fs::read_to_string(&self.system_prompt_path).unwrap_or_else(|_| {
             "You are rove, a helpful assistant that can use tools to accomplish tasks.".to_string()
         })
+    }
+}
+
+fn parse_fallback_models(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_fallback_models;
+
+    #[test]
+    fn parse_fallback_models_trims_empty_entries() {
+        assert_eq!(
+            parse_fallback_models(" fallback-a, ,fallback-b,, fallback-c "),
+            vec!["fallback-a", "fallback-b", "fallback-c"]
+        );
     }
 }
