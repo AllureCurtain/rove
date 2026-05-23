@@ -39,7 +39,7 @@ This compares the current `main` implementation with the original design in:
 |---|---|---|---|
 | DI container | `EngineDeps` with `Arc<dyn ...>` dependencies | `Engine` directly owns `Box<dyn ModelClient>`, `ToolRegistry`, `ContextManager`, `Workspace`, config, hooks | Works for single crate, but less close to the documented dependency graph. |
 | CLI entry | Planned subcommands: `dump-config`, `sessions`, `index` | Main CLI has oneshot plus `dump-config`, `index`, and `sessions`; `index` and `rove-index` share the same implementation behind the `rag` feature | The main CLI surface now matches the planned station-1 subcommands. |
-| M3 RAG availability | `retrieve_code` / `retrieve_docs` tools plus ingestion | Implemented behind Cargo feature `rag`; ingestion is available through `rove index` and the legacy `rove-index` binary | Useful but not always available in default build. |
+| M3 RAG availability | `retrieve_code` / `retrieve_docs` tools plus ingestion | Tool schemas are always registered; default builds return a clear `rag` feature-required message, while real ingestion/retrieval remains behind Cargo feature `rag` | The LLM-visible tool surface is stable in default builds, but real retrieval still requires a RAG-enabled binary. |
 | M4 MCP transport | JSON-RPC over stdio/SSE | Stdio JSON-RPC only | Mock-server tests cover stdio; SSE transport and broader server config are not implemented. |
 | Model providers | OpenAI, Anthropic, Ollama, DeepSeek, routing/fallback | OpenAI-compatible client plus fake model | Anthropic/Ollama/routing/circuit-breaker work remains open. |
 | Tool call parsing | Protocol-specific tool-use normalized in model layer | Text parser handles final text or JSON `{ "tool": ..., "args": ... }` | Simpler and testable, but not yet the documented Anthropic/OpenAI tool-use abstraction. |
@@ -61,7 +61,6 @@ This compares the current `main` implementation with the original design in:
 | Concurrent tool calls | `docs/05` D7 and `docs/06` station 7 | Tool calls execute serially. |
 | `request_input` tool | `docs/06` station 7 | Not present. |
 | MCP SSE transport | `docs/04` M4 | Stdio transport exists; SSE transport does not. |
-| Always-on RAG tool registration | `docs/04` M3 | RAG requires `--features rag`; default build excludes it. |
 | Cargo workspace split | `docs/04` M5 optional | Still a single Rust crate plus separate `web-ui` package. |
 
 ## Milestone Status
@@ -71,7 +70,7 @@ This compares the current `main` implementation with the original design in:
 | M0 skeleton | Implemented | Workspace detection, streaming engine, CLI oneshot, trace/report tests. |
 | M1 core loop | Mostly implemented | Multi-step loop, file/shell tools, approval policy, hooks, state/report, context trimming, CLI fast paths, fake benchmarks/tests. Missing Anthropic provider and richer retry/time-budget behavior. |
 | M2 planner | Mostly implemented | Persisted `TaskPlan`, resume-at-step, replanning after failed steps, `RunStream` identity/cancel handle, cooperative engine/CLI/API cancellation, ToolContext cancellation propagation, and durable-memory tools. Missing richer long-task controls, post-run cancellation propagation, and the full layered memory store. |
-| M3 RAG | Partially implemented | `src/tools/rag.rs`, `src/bin/rove-index.rs`, `tests/rag.rs`; feature-gated and deterministic runtime retrieval by default. |
+| M3 RAG | Partially implemented | `src/tools/rag.rs`, `src/tools/rag_stub.rs`, `src/bin/rove-index.rs`, `tests/rag.rs`, `tests/rag_default.rs`; tool schemas are always present, but real indexing/retrieval remains feature-gated. |
 | M4 MCP | Partially implemented | Stdio MCP proxy and mock-server test exist; SSE transport and real GitHub/filesystem server validation remain. |
 | M5 HTTP API | Implemented with additions | Job create/events/state/cancel and approval endpoints have integration coverage. |
 | M6 Web UI | In progress | Next.js workbench has chat, plan, tools, trace, cancel, and approval controls; still needs broader runtime polish and deployment story. |
@@ -150,3 +149,9 @@ This continuation propagates cancellation through `ToolContext`:
 - `src/core/types.rs` and `src/core/engine.rs`: add the active `CancellationToken` to `ToolContext` and pass it from each engine tool-call path.
 - `tests/e2e.rs` and `tests/memory_tool.rs`: update direct executor contexts and cover pre-tool hooks observing a cancelled token.
 - `docs/IMPLEMENTATION-COMPARISON-2026-05-23.md`: narrows the cancellation gap to post-run hook cancellation.
+
+This continuation makes the RAG tool surface always registered:
+
+- `src/tools/rag_stub.rs` and `src/tools/mod.rs`: expose default-build `retrieve_code` / `retrieve_docs` stubs with the same schemas as the feature-enabled tools.
+- `src/main.rs` and `src/interfaces/api/mod.rs`: register RAG tools unconditionally.
+- `tests/rag_default.rs` and `tests/api.rs`: cover default-build schemas, feature-required output, and API job registration.

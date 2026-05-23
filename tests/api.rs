@@ -716,6 +716,60 @@ async fn api_registers_memory_index_and_topic_read_tools_for_jobs() {
     assert!(text.contains("Manual durable fact from API."));
 }
 
+#[cfg(not(feature = "rag"))]
+#[tokio::test]
+async fn api_registers_rag_stub_tools_without_rag_feature() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let app = router(ApiState::new(workspace, test_config()));
+    let message = serde_json::json!({
+        "tool": "retrieve_code",
+        "args": { "query": "authentication token" }
+    })
+    .to_string();
+    let body = serde_json::json!({
+        "message": message,
+        "model": "fake-raw",
+        "max_steps": 1
+    });
+
+    let create = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/jobs")
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(create.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let created: CreateJobResponse = serde_json::from_slice(&body).unwrap();
+
+    let state = wait_for_done(app.clone(), created.job_id.to_string()).await;
+    assert_eq!(state.status, RunStatus::Done);
+    let events = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/jobs/{}/events", created.job_id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(events.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(events.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let text = String::from_utf8(body.to_vec()).unwrap();
+    assert!(text.contains("requires the `rag` feature"));
+}
+
 async fn wait_for_done(app: axum::Router, job_id: String) -> JobStateResponse {
     let mut last_state = None;
     for _ in 0..80 {

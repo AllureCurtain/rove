@@ -32,7 +32,6 @@ use crate::state::store::StateStore;
 use crate::tools::echo::EchoTool;
 use crate::tools::fs::{FsReadTool, FsWriteTool};
 use crate::tools::memory::{ReadMemoryTopicTool, SaveMemoryTool, UpdateMemoryIndexTool};
-#[cfg(feature = "rag")]
 use crate::tools::rag::RagRetrieveTool;
 use crate::tools::registry::ToolRegistry;
 use crate::tools::shell::ShellTool;
@@ -441,9 +440,7 @@ fn build_engine(
     registry.register(Box::new(ReadMemoryTopicTool::new(workspace.root.clone())));
     registry.register(Box::new(SaveMemoryTool::new(workspace.root.clone())));
     registry.register(Box::new(UpdateMemoryIndexTool::new(workspace.root.clone())));
-    #[cfg(feature = "rag")]
     registry.register(Box::new(RagRetrieveTool::code(workspace.root.clone())));
-    #[cfg(feature = "rag")]
     registry.register(Box::new(RagRetrieveTool::docs(workspace.root.clone())));
     registry.register(Box::new(ShellTool::new(workspace.root.clone())));
 

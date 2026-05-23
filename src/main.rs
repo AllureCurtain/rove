@@ -22,7 +22,6 @@ use rove::tools::echo::EchoTool;
 use rove::tools::fs::{FsReadTool, FsWriteTool};
 use rove::tools::mcp_proxy::register_mcp_tools_from_file;
 use rove::tools::memory::{ReadMemoryTopicTool, SaveMemoryTool, UpdateMemoryIndexTool};
-#[cfg(feature = "rag")]
 use rove::tools::rag::RagRetrieveTool;
 use rove::tools::registry::ToolRegistry;
 use rove::tools::shell::ShellTool;
@@ -110,9 +109,7 @@ async fn main() -> anyhow::Result<()> {
     registry.register(Box::new(ReadMemoryTopicTool::new(workspace.root.clone())));
     registry.register(Box::new(SaveMemoryTool::new(workspace.root.clone())));
     registry.register(Box::new(UpdateMemoryIndexTool::new(workspace.root.clone())));
-    #[cfg(feature = "rag")]
     registry.register(Box::new(RagRetrieveTool::code(workspace.root.clone())));
-    #[cfg(feature = "rag")]
     registry.register(Box::new(RagRetrieveTool::docs(workspace.root.clone())));
     registry.register(Box::new(ShellTool::new(workspace.root.clone())));
     let mcp_config_path = if config.mcp_config_path.is_absolute() {

@@ -4,6 +4,9 @@ pub mod mcp_proxy;
 pub mod memory;
 #[cfg(feature = "rag")]
 pub mod rag;
+#[cfg(not(feature = "rag"))]
+#[path = "rag_stub.rs"]
+pub mod rag;
 pub mod registry;
 pub mod shell;
 pub mod traits;
