@@ -16,6 +16,7 @@ use rove::core::workspace::{Workspace, WorkspaceKind};
 use rove::errors::{ModelError, ToolError};
 use rove::hooks::{HookRegistry, PostToolHook, PostToolHookContext, PreToolHook};
 use rove::interfaces::cli::oneshot::run_oneshot;
+use rove::memory::durable::read_memory_index_sync;
 use rove::models::traits::{ModelClient, StreamChunk};
 use rove::state::report::RunReport;
 use rove::state::store::StateStore;
@@ -979,6 +980,70 @@ async fn resumed_run_includes_session_summary_in_prompt() {
         "Session summary: previous session summary"
     );
     assert_eq!(messages.last().unwrap().content, "current task");
+}
+
+#[tokio::test]
+async fn engine_includes_durable_memory_index_in_prompt() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let memory_dir = workspace.root.join(".rove").join("memory");
+    std::fs::create_dir_all(&memory_dir).unwrap();
+    std::fs::write(
+        memory_dir.join("MEMORY.md"),
+        "# rove Memory\n\n- [Project Facts](topics/project-facts.md) - project memory\n",
+    )
+    .unwrap();
+    let captured_messages = Arc::new(Mutex::new(None));
+    let model = Box::new(RecordingModelClient::new(captured_messages.clone()));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(EchoTool));
+    let engine = Engine::with_workspace(
+        model,
+        registry,
+        ContextManager::with_max_history("system".to_string(), 2),
+        EngineConfig {
+            max_steps: 1,
+            plan_enabled: false,
+        },
+        workspace,
+        ApprovalPolicy::Auto,
+    );
+
+    let events = collect_events(&engine, "current task").await;
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, StreamEvent::RunCompleted { .. }))
+    );
+
+    let messages = captured_messages.lock().unwrap().clone().unwrap();
+    assert_eq!(messages[0].content, "system");
+    assert!(messages[1].content.starts_with("Durable memory:\n"));
+    assert!(messages[1].content.contains("# rove Memory"));
+    assert!(messages[1].content.contains("Project Facts"));
+    assert_eq!(messages.last().unwrap().content, "current task");
+}
+
+#[test]
+fn read_memory_index_sync_enforces_hard_limits() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let memory_dir = workspace.root.join(".rove").join("memory");
+    std::fs::create_dir_all(&memory_dir).unwrap();
+    let mut content = "# rove Memory\n\n".to_string();
+    for topic in 0..250 {
+        content.push_str(&format!(
+            "- [topic {topic:03}](topics/topic-{topic:03}.md) - {}\n",
+            "x".repeat(140)
+        ));
+    }
+    std::fs::write(memory_dir.join("MEMORY.md"), content).unwrap();
+
+    let loaded = read_memory_index_sync(&workspace).unwrap().unwrap();
+
+    assert!(loaded.starts_with("# rove Memory"));
+    assert!(loaded.lines().count() <= 200);
+    assert!(loaded.len() <= 25_000);
 }
 
 #[tokio::test]

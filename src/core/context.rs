@@ -76,3 +76,10 @@ pub fn session_summary_message(summary: &str) -> Message {
         content: format!("Session summary: {summary}"),
     }
 }
+
+pub fn durable_memory_message(index: &str) -> Message {
+    Message {
+        role: crate::core::types::Role::System,
+        content: format!("Durable memory:\n{}", index.trim_end()),
+    }
+}

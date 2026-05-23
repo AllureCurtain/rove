@@ -8,7 +8,7 @@ use async_stream::stream;
 use futures::stream::{BoxStream, Stream, StreamExt};
 use tokio_util::sync::CancellationToken;
 
-use crate::core::context::{ContextManager, session_summary_message};
+use crate::core::context::{ContextManager, durable_memory_message, session_summary_message};
 use crate::core::events::StreamEvent;
 use crate::core::executor::Executor;
 use crate::core::parser::parse_action;
@@ -19,6 +19,7 @@ use crate::core::types::{
 };
 use crate::core::workspace::Workspace;
 use crate::hooks::HookRegistry;
+use crate::memory::durable::read_memory_index_sync;
 use crate::models::traits::ModelClient;
 use crate::state::trace::TraceWriter;
 use crate::tools::registry::ToolRegistry;
@@ -333,11 +334,20 @@ impl Engine {
                     .as_ref()
                     .map(|state| state.history.clone())
                     .unwrap_or_default();
-                let working_memory: Vec<Message> = resume_state
+                let mut working_memory: Vec<Message> = match read_memory_index_sync(&self.workspace) {
+                    Ok(Some(index)) => vec![durable_memory_message(&index)],
+                    Ok(None) => Vec::new(),
+                    Err(err) => {
+                        tracing::warn!(error = %err, "failed to read durable memory index");
+                        Vec::new()
+                    }
+                };
+                if let Some(summary) = resume_state
                     .as_ref()
                     .and_then(|state| state.summary.as_ref())
-                    .map(|summary| vec![session_summary_message(summary)])
-                    .unwrap_or_default();
+                {
+                    working_memory.push(session_summary_message(summary));
+                }
                 let mut step: u32 = resume_state.as_ref().map(|state| state.step).unwrap_or(0);
                 let mut plan = resume_state.as_ref().and_then(|state| state.plan.clone());
 
