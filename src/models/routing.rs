@@ -1,5 +1,7 @@
 use async_stream::stream;
 use futures::{StreamExt, stream::BoxStream};
+use std::time::Duration;
+use tokio::time::timeout;
 
 use crate::core::types::{Message, ToolSchema};
 use crate::errors::ModelError;
@@ -10,9 +12,12 @@ use crate::models::traits::{ModelClient, StreamChunk};
 pub struct RoutingModelClient {
     clients: Vec<Box<dyn ModelClient>>,
     model_id: String,
+    probe_timeout: Duration,
 }
 
 impl RoutingModelClient {
+    const DEFAULT_PROBE_TIMEOUT: Duration = Duration::from_secs(60);
+
     pub fn new(primary: Box<dyn ModelClient>, fallbacks: Vec<Box<dyn ModelClient>>) -> Self {
         let mut clients = Vec::with_capacity(1 + fallbacks.len());
         clients.push(primary);
@@ -25,7 +30,16 @@ impl RoutingModelClient {
                 .collect::<Vec<_>>()
                 .join(",")
         );
-        Self { clients, model_id }
+        Self {
+            clients,
+            model_id,
+            probe_timeout: Self::DEFAULT_PROBE_TIMEOUT,
+        }
+    }
+
+    pub fn with_probe_timeout(mut self, probe_timeout: Duration) -> Self {
+        self.probe_timeout = probe_timeout;
+        self
     }
 }
 
@@ -39,22 +53,35 @@ impl ModelClient for RoutingModelClient {
         let tools = tools.to_vec();
         Box::pin(stream! {
             let mut last_error = None;
+            let probe_timeout = self.probe_timeout;
             for client in &self.clients {
                 let mut chunks = client.stream(&messages, &tools);
-                let mut emitted_chunk = false;
+                match timeout(probe_timeout, chunks.next()).await {
+                    Ok(Some(Ok(chunk))) => {
+                        yield Ok(chunk);
+                    }
+                    Ok(Some(Err(err))) => {
+                        last_error = Some(err);
+                        continue;
+                    }
+                    Ok(None) => return,
+                    Err(_) => {
+                        last_error = Some(ModelError::StreamInterrupted(format!(
+                            "first chunk probe timed out after {}ms",
+                            probe_timeout.as_millis()
+                        )));
+                        continue;
+                    }
+                }
+
                 loop {
                     match chunks.next().await {
                         Some(Ok(chunk)) => {
-                            emitted_chunk = true;
                             yield Ok(chunk);
                         }
                         Some(Err(err)) => {
-                            if emitted_chunk {
-                                yield Err(err);
-                                return;
-                            }
-                            last_error = Some(err);
-                            break;
+                            yield Err(err);
+                            return;
                         }
                         None => return,
                     }
@@ -166,6 +193,33 @@ mod tests {
         }
     }
 
+    struct SlowFirstChunkClient {
+        id: &'static str,
+        calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl ModelClient for SlowFirstChunkClient {
+        fn stream(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolSchema],
+        ) -> BoxStream<'_, Result<StreamChunk, ModelError>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Box::pin(stream::once(async {
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                Ok(StreamChunk {
+                    delta: "too late".to_string(),
+                    usage: None,
+                })
+            }))
+        }
+
+        fn model_id(&self) -> &str {
+            self.id
+        }
+    }
+
     #[tokio::test]
     async fn falls_back_when_primary_errors_before_streaming() {
         let primary_calls = Arc::new(AtomicUsize::new(0));
@@ -221,5 +275,32 @@ mod tests {
             Err(ModelError::StreamInterrupted(ref message))
                 if message == "primary interrupted"
         ));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn falls_back_when_primary_first_chunk_probe_times_out() {
+        let primary_calls = Arc::new(AtomicUsize::new(0));
+        let fallback_calls = Arc::new(AtomicUsize::new(0));
+        let model = RoutingModelClient::new(
+            Box::new(SlowFirstChunkClient {
+                id: "primary",
+                calls: primary_calls.clone(),
+            }),
+            vec![Box::new(StaticClient {
+                id: "fallback",
+                response: "fallback answer",
+                calls: fallback_calls.clone(),
+            })],
+        )
+        .with_probe_timeout(std::time::Duration::from_secs(1));
+        let messages: Vec<Message> = Vec::new();
+        let tools: Vec<ToolSchema> = Vec::new();
+
+        let chunks = model.stream(&messages, &tools).collect::<Vec<_>>().await;
+
+        assert_eq!(primary_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(fallback_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].as_ref().unwrap().delta, "fallback answer");
     }
 }
