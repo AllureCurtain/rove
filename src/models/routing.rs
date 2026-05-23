@@ -174,7 +174,7 @@ impl ModelClient for RoutingModelClient {
                         yield Ok(chunk);
                     }
                     Ok(Some(Err(err))) => {
-                        if counts_as_health_failure(&err) {
+                        if err.counts_as_health_failure() {
                             self.health.mark_failure(&client_id);
                         }
                         last_error = Some(err);
@@ -205,7 +205,7 @@ impl ModelClient for RoutingModelClient {
                             yield Ok(chunk);
                         }
                         Some(Err(err)) => {
-                            if counts_as_health_failure(&err) {
+                            if err.counts_as_health_failure() {
                                 self.health.mark_failure(&client_id);
                             }
                             yield Err(err);
@@ -224,15 +224,6 @@ impl ModelClient for RoutingModelClient {
     fn model_id(&self) -> &str {
         &self.model_id
     }
-}
-
-fn counts_as_health_failure(err: &ModelError) -> bool {
-    matches!(
-        err,
-        ModelError::RequestFailed(_)
-            | ModelError::StreamInterrupted(_)
-            | ModelError::RateLimited { .. }
-    )
 }
 
 #[cfg(test)]
