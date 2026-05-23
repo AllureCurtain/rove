@@ -221,6 +221,26 @@ impl PostToolHook for RecordingPostHook {
     }
 }
 
+struct RecordingCancelTokenHook {
+    states: Arc<Mutex<Vec<bool>>>,
+}
+
+#[async_trait]
+impl PreToolHook for RecordingCancelTokenHook {
+    async fn before_tool(
+        &self,
+        ctx: &ToolContext<'_>,
+        _name: &str,
+        _args: &serde_json::Value,
+    ) -> Result<(), ToolError> {
+        self.states
+            .lock()
+            .unwrap()
+            .push(ctx.cancel_token.is_cancelled());
+        Ok(())
+    }
+}
+
 fn build_test_engine(responses: Vec<String>) -> Engine {
     let model = Box::new(FakeModelClient::new(responses));
     let mut registry = ToolRegistry::new();
@@ -347,6 +367,7 @@ async fn destructive_tool_is_blocked_when_policy_is_never() {
     let ctx = ToolContext {
         workspace: &workspace,
         approval_policy: ApprovalPolicy::Never,
+        cancel_token: CancellationToken::new(),
     };
 
     let err = executor
@@ -369,6 +390,7 @@ async fn destructive_tool_requires_explicit_approval_when_policy_is_ask() {
     let ctx = ToolContext {
         workspace: &workspace,
         approval_policy: ApprovalPolicy::Ask,
+        cancel_token: CancellationToken::new(),
     };
 
     let err = executor
@@ -496,6 +518,7 @@ async fn executor_rejects_wrong_argument_type_before_tool_runs() {
     let ctx = ToolContext {
         workspace: &workspace,
         approval_policy: ApprovalPolicy::Auto,
+        cancel_token: CancellationToken::new(),
     };
 
     let err = executor
@@ -527,6 +550,7 @@ async fn empty_hook_registry_preserves_tool_result() {
     let ctx = ToolContext {
         workspace: &workspace,
         approval_policy: ApprovalPolicy::Auto,
+        cancel_token: CancellationToken::new(),
     };
 
     let result = executor
@@ -558,6 +582,7 @@ async fn pre_tool_hook_can_block_before_tool_runs() {
     let ctx = ToolContext {
         workspace: &workspace,
         approval_policy: ApprovalPolicy::Auto,
+        cancel_token: CancellationToken::new(),
     };
 
     let err = executor
@@ -578,6 +603,40 @@ async fn pre_tool_hook_can_block_before_tool_runs() {
 }
 
 #[tokio::test]
+async fn pre_tool_hook_receives_cancellation_token_in_context() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let states = Arc::new(Mutex::new(Vec::new()));
+
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(CountingTool { calls }));
+    let hooks = HookRegistry::default().with_pre_tool(Box::new(RecordingCancelTokenHook {
+        states: states.clone(),
+    }));
+    let executor = rove::core::executor::Executor::with_hooks(&registry, hooks);
+    let cancel = CancellationToken::new();
+    let ctx = ToolContext {
+        workspace: &workspace,
+        approval_policy: ApprovalPolicy::Auto,
+        cancel_token: cancel.clone(),
+    };
+    cancel.cancel();
+
+    executor
+        .run(
+            &ctx,
+            "counting",
+            serde_json::json!({"path": "src/lib.rs"}),
+            CallId::new(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(states.lock().unwrap().as_slice(), [true]);
+}
+
+#[tokio::test]
 async fn post_tool_hook_observes_successful_tool_result() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
@@ -594,6 +653,7 @@ async fn post_tool_hook_observes_successful_tool_result() {
     let ctx = ToolContext {
         workspace: &workspace,
         approval_policy: ApprovalPolicy::Auto,
+        cancel_token: CancellationToken::new(),
     };
 
     let result = executor
@@ -1333,6 +1393,7 @@ async fn file_tools_read_and_write_inside_workspace() {
     let ctx = ToolContext {
         workspace: &workspace,
         approval_policy: ApprovalPolicy::Auto,
+        cancel_token: CancellationToken::new(),
     };
 
     executor
@@ -1369,6 +1430,7 @@ async fn shell_tool_is_blocked_when_policy_is_never() {
     let ctx = ToolContext {
         workspace: &workspace,
         approval_policy: ApprovalPolicy::Never,
+        cancel_token: CancellationToken::new(),
     };
 
     let err = executor
@@ -1396,6 +1458,7 @@ async fn shell_tool_rejects_empty_command() {
     let ctx = ToolContext {
         workspace: &workspace,
         approval_policy: ApprovalPolicy::Auto,
+        cancel_token: CancellationToken::new(),
     };
 
     let err = executor
@@ -1426,6 +1489,7 @@ async fn shell_tool_rejects_nul_byte_command() {
     let ctx = ToolContext {
         workspace: &workspace,
         approval_policy: ApprovalPolicy::Auto,
+        cancel_token: CancellationToken::new(),
     };
 
     let err = executor
@@ -1456,6 +1520,7 @@ async fn shell_tool_runs_non_empty_command_when_approved() {
     let ctx = ToolContext {
         workspace: &workspace,
         approval_policy: ApprovalPolicy::Auto,
+        cancel_token: CancellationToken::new(),
     };
 
     let command = if cfg!(windows) {

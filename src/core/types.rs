@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use tokio_util::sync::CancellationToken;
 use ulid::Ulid;
 
 use crate::core::workspace::Workspace;
@@ -272,8 +273,9 @@ pub trait ToolApprovalProvider: Send + Sync {
 }
 
 /// Context passed through the tool execution boundary.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct ToolContext<'a> {
     pub workspace: &'a Workspace,
     pub approval_policy: ApprovalPolicy,
+    pub cancel_token: CancellationToken,
 }

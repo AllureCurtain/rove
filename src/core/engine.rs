@@ -536,6 +536,7 @@ impl Engine {
                                     workspace: &self.workspace,
                                     approval_policy: self
                                         .effective_approval_policy(&name, approval_decision),
+                                    cancel_token: stream_cancel.clone(),
                                 };
                                 let tool_result = tokio::select! {
                                     biased;
@@ -872,6 +873,7 @@ impl Engine {
                             let tool_context = ToolContext {
                                 workspace: &self.workspace,
                                 approval_policy: self.effective_approval_policy(&name, approval_decision),
+                                cancel_token: stream_cancel.clone(),
                             };
                             let tool_result = tokio::select! {
                                 biased;

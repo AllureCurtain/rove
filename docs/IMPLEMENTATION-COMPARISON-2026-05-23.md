@@ -8,7 +8,7 @@ This compares the current `main` implementation with the original design in:
 
 ## Summary
 
-`main` is already beyond the original M0-M2 kernel plan and includes partial M3, M4, M5, and M6 surfaces. The largest difference is shape: the original docs describe an eventual `EngineDeps` dependency graph and richer provider routing, while the current implementation remains a simpler single-crate engine. `RunStream`, cooperative cancellation, CLI signal cancellation, and prompt-time durable memory now exist, but the full app-level token tree, layered memory store, and provider-routing design are still open.
+`main` is already beyond the original M0-M2 kernel plan and includes partial M3, M4, M5, and M6 surfaces. The largest difference is shape: the original docs describe an eventual `EngineDeps` dependency graph and richer provider routing, while the current implementation remains a simpler single-crate engine. `RunStream`, cooperative cancellation, CLI signal cancellation, ToolContext cancellation propagation, and prompt-time durable memory now exist, but the full app-level token tree, layered memory store, and provider-routing design are still open.
 
 ## Implemented Close To The Design
 
@@ -20,6 +20,7 @@ This compares the current `main` implementation with the original design in:
 | Run identity | ULID newtypes for session/job/run/call | `src/core/types.rs` | Current `RunRequest` carries explicit `session_id`, `job_id`, and `run_id`. |
 | `RunStream` handle | `Engine::run(req) -> RunStream` with IDs and `cancel()` | `src/core/engine.rs`, `tests/e2e.rs` | `RunStream` exposes `session_id()`, `job_id()`, `run_id()`, `cancel()`, and cancels on drop. |
 | CLI cancellation | SIGINT/SIGTERM cancels the engine run and maps cancelled exit codes | `src/main.rs`, `src/interfaces/cli/oneshot.rs`, `tests/e2e.rs` | CLI uses `Engine::run_with_cancel`; Ctrl+C exits 130 and Unix SIGTERM exits 143 after cancelled artifacts are finalized. |
+| ToolContext cancellation | Active run cancellation token is available at the tool boundary | `src/core/types.rs`, `src/core/engine.rs`, `src/hooks/mod.rs`, `tests/e2e.rs` | Pre/post tool hooks receive the same token through `ToolContext`; tool futures are still interrupted by the engine's select boundary. |
 | Trace/state/report artifacts | `.rove/runs/<run_id>/{trace.jsonl,task_state.json,report.json}` | `src/state/trace.rs`, `src/state/store.rs`, `src/state/artifacts.rs`, `tests/e2e.rs`, `tests/api.rs` | Snapshot writes are schema-versioned; report includes workspace and identity metadata. |
 | Tool pipeline | schema -> validate -> hooks -> approval/boundary -> exec -> post-hook | `src/core/executor.rs`, `src/core/boundary.rs`, `src/hooks/mod.rs` | Implemented with pre/post hooks and destructive-tool approval policy. |
 | File and shell tools | Built-in workspace tools with boundary checks | `src/tools/fs.rs`, `src/tools/shell.rs`, `tests/e2e.rs` | File tools stay inside workspace; shell rejects empty/NUL commands and destructive calls obey policy. |
@@ -51,7 +52,7 @@ This compares the current `main` implementation with the original design in:
 | Gap | Source design | Current missing piece |
 |---|---|---|
 | REPL mode and slash commands | `docs/06` station 11 | No `rustyline` REPL, `/session`, `/memory`, `/history`, `/cancel`, etc. |
-| Cancellation token tree completion | `docs/06` stations 2, 3, 12 | `Engine::run_with_cancel`, `RunStream::cancel`, CLI signal cancellation, and API parent/child job tokens exist, but ToolContext token and post-run hook cancellation token remain open. |
+| Cancellation token tree completion | `docs/06` stations 2, 3, 12 | `Engine::run_with_cancel`, `RunStream::cancel`, CLI signal cancellation, ToolContext token propagation, and API parent/child job tokens exist, but post-run hook cancellation token remains open. |
 | Prompt cache and compaction | `docs/06` station 5 | No cache breakpoint metadata or compact model flow. |
 | Durable/session memory stores | `docs/06` station 8 | Durable topic files, capped `MEMORY.md`, prompt-time index loading, `save_memory`, `update_memory_index`, and `read_memory_topic` now exist. Remaining gaps: full `LayeredMemory`/`MemoryStore`, session memory files, and relevant-memory retrieval. |
 | Anthropic/Ollama/DeepSeek providers | `docs/04` M1 and `docs/06` station 4 | Only OpenAI-compatible and fake clients are present. |
@@ -69,7 +70,7 @@ This compares the current `main` implementation with the original design in:
 |---|---|---|
 | M0 skeleton | Implemented | Workspace detection, streaming engine, CLI oneshot, trace/report tests. |
 | M1 core loop | Mostly implemented | Multi-step loop, file/shell tools, approval policy, hooks, state/report, context trimming, CLI fast paths, fake benchmarks/tests. Missing Anthropic provider and richer retry/time-budget behavior. |
-| M2 planner | Mostly implemented | Persisted `TaskPlan`, resume-at-step, replanning after failed steps, `RunStream` identity/cancel handle, cooperative engine/CLI/API cancellation, and durable-memory tools. Missing richer long-task controls, ToolContext/post-run cancellation propagation, and the full layered memory store. |
+| M2 planner | Mostly implemented | Persisted `TaskPlan`, resume-at-step, replanning after failed steps, `RunStream` identity/cancel handle, cooperative engine/CLI/API cancellation, ToolContext cancellation propagation, and durable-memory tools. Missing richer long-task controls, post-run cancellation propagation, and the full layered memory store. |
 | M3 RAG | Partially implemented | `src/tools/rag.rs`, `src/bin/rove-index.rs`, `tests/rag.rs`; feature-gated and deterministic runtime retrieval by default. |
 | M4 MCP | Partially implemented | Stdio MCP proxy and mock-server test exist; SSE transport and real GitHub/filesystem server validation remain. |
 | M5 HTTP API | Implemented with additions | Job create/events/state/cancel and approval endpoints have integration coverage. |
@@ -143,3 +144,9 @@ This continuation wires cancellation into the CLI oneshot path:
 - `src/interfaces/cli/oneshot.rs`: adds `run_oneshot_with_cancel`, returns the terminal reason, and finalizes cancelled artifacts.
 - `src/main.rs`: listens for Ctrl+C and Unix SIGTERM, cancels the run token, and maps cancelled exits to 130/143.
 - `tests/e2e.rs`: covers pre-cancelled oneshot runs returning `Cancelled` and writing cancelled reports.
+
+This continuation propagates cancellation through `ToolContext`:
+
+- `src/core/types.rs` and `src/core/engine.rs`: add the active `CancellationToken` to `ToolContext` and pass it from each engine tool-call path.
+- `tests/e2e.rs` and `tests/memory_tool.rs`: update direct executor contexts and cover pre-tool hooks observing a cancelled token.
+- `docs/IMPLEMENTATION-COMPARISON-2026-05-23.md`: narrows the cancellation gap to post-run hook cancellation.

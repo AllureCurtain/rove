@@ -4,6 +4,7 @@ use rove::core::workspace::Workspace;
 use rove::errors::ToolError;
 use rove::tools::memory::{ReadMemoryTopicTool, SaveMemoryTool, UpdateMemoryIndexTool};
 use rove::tools::registry::ToolRegistry;
+use tokio_util::sync::CancellationToken;
 
 #[tokio::test]
 async fn save_memory_writes_topic_and_index_inside_workspace() {
@@ -15,6 +16,7 @@ async fn save_memory_writes_topic_and_index_inside_workspace() {
     let ctx = ToolContext {
         workspace: &workspace,
         approval_policy: ApprovalPolicy::Never,
+        cancel_token: CancellationToken::new(),
     };
 
     let result = executor
@@ -67,6 +69,7 @@ async fn save_memory_rejects_unsafe_topic_without_writing() {
     let ctx = ToolContext {
         workspace: &workspace,
         approval_policy: ApprovalPolicy::Never,
+        cancel_token: CancellationToken::new(),
     };
 
     let err = executor
@@ -101,6 +104,7 @@ async fn save_memory_keeps_index_within_hard_limits() {
     let ctx = ToolContext {
         workspace: &workspace,
         approval_policy: ApprovalPolicy::Never,
+        cancel_token: CancellationToken::new(),
     };
 
     for topic in 0..205 {
@@ -157,6 +161,7 @@ async fn update_memory_index_rebuilds_index_from_existing_topics() {
     let ctx = ToolContext {
         workspace: &workspace,
         approval_policy: ApprovalPolicy::Never,
+        cancel_token: CancellationToken::new(),
     };
 
     let result = executor
@@ -201,6 +206,7 @@ async fn read_memory_topic_reads_only_named_topic() {
     let ctx = ToolContext {
         workspace: &workspace,
         approval_policy: ApprovalPolicy::Never,
+        cancel_token: CancellationToken::new(),
     };
 
     let result = executor
@@ -228,6 +234,7 @@ async fn read_memory_topic_rejects_unsafe_name() {
     let ctx = ToolContext {
         workspace: &workspace,
         approval_policy: ApprovalPolicy::Never,
+        cancel_token: CancellationToken::new(),
     };
 
     let err = executor
