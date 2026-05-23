@@ -95,6 +95,100 @@ impl Tool for SaveMemoryTool {
     }
 }
 
+/// Rebuild `.rove/memory/MEMORY.md` from existing topic files.
+pub struct UpdateMemoryIndexTool {
+    root: PathBuf,
+}
+
+impl UpdateMemoryIndexTool {
+    pub fn new(root: PathBuf) -> Self {
+        Self { root }
+    }
+}
+
+#[async_trait]
+impl Tool for UpdateMemoryIndexTool {
+    fn schema(&self) -> ToolSchema {
+        ToolSchema {
+            name: "update_memory_index".to_string(),
+            description: "Rebuild the durable memory index from saved topic files.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {}
+            }),
+            destructive: false,
+        }
+    }
+
+    async fn execute(&self, _args: Value) -> Result<ToolOutput, ToolError> {
+        let memory_dir = self.root.join(".rove").join("memory");
+        tokio::fs::create_dir_all(&memory_dir)
+            .await
+            .map_err(execution_failed)?;
+        update_memory_index(&memory_dir).await?;
+
+        Ok(ToolOutput {
+            content: "updated memory index".to_string(),
+        })
+    }
+}
+
+/// Read a durable memory topic from `.rove/memory/topics/`.
+pub struct ReadMemoryTopicTool {
+    root: PathBuf,
+}
+
+impl ReadMemoryTopicTool {
+    pub fn new(root: PathBuf) -> Self {
+        Self { root }
+    }
+}
+
+#[async_trait]
+impl Tool for ReadMemoryTopicTool {
+    fn schema(&self) -> ToolSchema {
+        ToolSchema {
+            name: "read_memory_topic".to_string(),
+            description: "Read a durable memory topic by name from the memory topics directory."
+                .to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Topic name to read"
+                    }
+                },
+                "required": ["name"]
+            }),
+            destructive: false,
+        }
+    }
+
+    async fn execute(&self, args: Value) -> Result<ToolOutput, ToolError> {
+        let raw_name = required_string(&args, "name")?;
+        let slug = normalize_topic(raw_name)?;
+        let topic_path = self
+            .root
+            .join(".rove")
+            .join("memory")
+            .join("topics")
+            .join(format!("{slug}.md"));
+
+        let content = tokio::fs::read_to_string(topic_path).await.map_err(|err| {
+            if err.kind() == ErrorKind::NotFound {
+                ToolError::InvalidInput {
+                    reason: format!("memory topic not found: {slug}"),
+                }
+            } else {
+                execution_failed(err)
+            }
+        })?;
+
+        Ok(ToolOutput { content })
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 enum MemoryType {
     User,

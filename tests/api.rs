@@ -622,6 +622,100 @@ async fn api_registers_save_memory_tool_for_jobs() {
     assert!(index.contains("[API Facts](topics/api-facts.md)"));
 }
 
+#[tokio::test]
+async fn api_registers_memory_index_and_topic_read_tools_for_jobs() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let memory_dir = workspace.root.join(".rove").join("memory");
+    let topics_dir = memory_dir.join("topics");
+    std::fs::create_dir_all(&topics_dir).unwrap();
+    std::fs::write(
+        topics_dir.join("manual-topic.md"),
+        "---\ntitle: Manual Topic\ntype: reference\ncreated_at: 2026-05-23T00:00:00Z\nupdated_at: 2026-05-23T00:00:00Z\n---\n\nManual durable fact from API.\n",
+    )
+    .unwrap();
+    let app = router(ApiState::new(workspace, test_config()));
+
+    let update_message = serde_json::json!({
+        "tool": "update_memory_index",
+        "args": {}
+    })
+    .to_string();
+    let update_body = serde_json::json!({
+        "message": update_message,
+        "model": "fake-raw",
+        "max_steps": 1
+    });
+    let update = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/jobs")
+                .header("content-type", "application/json")
+                .body(Body::from(update_body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(update.status(), StatusCode::OK);
+    let update_body = axum::body::to_bytes(update.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let updated: CreateJobResponse = serde_json::from_slice(&update_body).unwrap();
+
+    let state = wait_for_done(app.clone(), updated.job_id.to_string()).await;
+    assert_eq!(state.status, RunStatus::Done);
+    let index = std::fs::read_to_string(memory_dir.join("MEMORY.md")).unwrap();
+    assert!(index.contains("[Manual Topic](topics/manual-topic.md)"));
+
+    let read_message = serde_json::json!({
+        "tool": "read_memory_topic",
+        "args": { "name": "Manual Topic" }
+    })
+    .to_string();
+    let read_body = serde_json::json!({
+        "message": read_message,
+        "model": "fake-raw",
+        "max_steps": 1
+    });
+    let read = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/jobs")
+                .header("content-type", "application/json")
+                .body(Body::from(read_body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(read.status(), StatusCode::OK);
+    let read_body = axum::body::to_bytes(read.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let read_created: CreateJobResponse = serde_json::from_slice(&read_body).unwrap();
+
+    let state = wait_for_done(app.clone(), read_created.job_id.to_string()).await;
+    assert_eq!(state.status, RunStatus::Done);
+    let events = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/jobs/{}/events", read_created.job_id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(events.status(), StatusCode::OK);
+    let events_body = axum::body::to_bytes(events.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let text = String::from_utf8(events_body.to_vec()).unwrap();
+    assert!(text.contains("Manual durable fact from API."));
+}
+
 async fn wait_for_done(app: axum::Router, job_id: String) -> JobStateResponse {
     let mut last_state = None;
     for _ in 0..80 {

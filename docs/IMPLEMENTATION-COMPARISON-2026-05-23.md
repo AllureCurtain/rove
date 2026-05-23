@@ -22,7 +22,7 @@ This compares the current `main` implementation with the original design in:
 | Trace/state/report artifacts | `.rove/runs/<run_id>/{trace.jsonl,task_state.json,report.json}` | `src/state/trace.rs`, `src/state/store.rs`, `src/state/artifacts.rs`, `tests/e2e.rs`, `tests/api.rs` | Snapshot writes are schema-versioned; report includes workspace and identity metadata. |
 | Tool pipeline | schema -> validate -> hooks -> approval/boundary -> exec -> post-hook | `src/core/executor.rs`, `src/core/boundary.rs`, `src/hooks/mod.rs` | Implemented with pre/post hooks and destructive-tool approval policy. |
 | File and shell tools | Built-in workspace tools with boundary checks | `src/tools/fs.rs`, `src/tools/shell.rs`, `tests/e2e.rs` | File tools stay inside workspace; shell rejects empty/NUL commands and destructive calls obey policy. |
-| Durable memory write tool | `save_memory` writes `.rove/memory/MEMORY.md` and `topics/*.md` | `src/tools/memory.rs`, `tests/memory_tool.rs`, `tests/api.rs` | Adds YAML-frontmatter topic files, rebuilds a capped index, rejects unsafe topics, and is registered for CLI/API engine runs. |
+| Durable memory tools | `save_memory`, `update_memory_index`, and `read_memory_topic` operate on `.rove/memory/` | `src/tools/memory.rs`, `tests/memory_tool.rs`, `tests/api.rs` | Adds YAML-frontmatter topic files, capped index rebuilding, constrained topic reads, unsafe-topic rejection, and CLI/API registration. |
 | Resume snapshots | `task_state.json` supports resume | `src/state/store.rs`, `src/interfaces/cli/oneshot.rs`, `tests/e2e.rs` | Supports `--resume latest` and `--resume <run_id>`. |
 | CLI fast paths | Lightweight subcommands avoid full engine setup | `src/interfaces/cli/config.rs`, `src/interfaces/cli/index.rs`, `src/interfaces/cli/sessions.rs`, `src/main.rs`, `tests/cli_config.rs`, `tests/cli_index.rs`, `tests/cli_sessions.rs` | `dump-config`, `index`, and `sessions` now run before workspace/model/tool setup. |
 | Planner | Persisted plan and step events | `src/core/planner.rs`, `src/core/engine.rs`, `prompts/planner.md`, `tests/e2e.rs` | Includes replanning after failed planned steps. |
@@ -51,7 +51,7 @@ This compares the current `main` implementation with the original design in:
 | REPL mode and slash commands | `docs/06` station 11 | No `rustyline` REPL, `/session`, `/memory`, `/history`, `/cancel`, etc. |
 | Cancellation token tree completion | `docs/06` stations 2, 3, 12 | `Engine::run_with_cancel`, `RunStream::cancel`, and API parent/child job tokens exist, but CLI SIGINT/SIGTERM exit-code mapping, ToolContext token, and post-run hook cancellation token remain open. |
 | Prompt cache and compaction | `docs/06` station 5 | No cache breakpoint metadata or compact model flow. |
-| Durable/session memory stores | `docs/06` station 8 | `save_memory` now writes durable topic files and a capped `MEMORY.md` index. Remaining gaps: full `LayeredMemory`/`MemoryStore`, session memory files, explicit `update_memory_index` and `read_memory_topic` tools, prompt-time memory loading, and relevant-memory retrieval. |
+| Durable/session memory stores | `docs/06` station 8 | Durable topic files, capped `MEMORY.md`, `save_memory`, `update_memory_index`, and `read_memory_topic` now exist. Remaining gaps: full `LayeredMemory`/`MemoryStore`, session memory files, prompt-time memory loading, and relevant-memory retrieval. |
 | Anthropic/Ollama/DeepSeek providers | `docs/04` M1 and `docs/06` station 4 | Only OpenAI-compatible and fake clients are present. |
 | Routing model client and circuit breaker | `docs/06` station 4 | No fallback provider routing, TTFB probe, or three-state circuit breaker. |
 | Native OpenAI/Anthropic tool-use normalization | `docs/06` station 6 | Model layer does not emit structured `ModelChunk::ToolUse`; parser remains JSON-text based. |
@@ -123,3 +123,9 @@ This continuation starts the station-8 durable-memory surface:
 - `src/tools/memory.rs`: adds the `save_memory` tool, safe topic normalization, YAML-frontmatter topic writes, and capped `MEMORY.md` index rebuilding.
 - `src/main.rs` and `src/interfaces/api/mod.rs`: register `save_memory` for CLI and API engine runs.
 - `tests/memory_tool.rs` and `tests/api.rs`: cover topic/index writes, unsafe topic rejection, hard index limits, and API job registration.
+
+This continuation fills the remaining explicit station-8 durable-memory tools:
+
+- `src/tools/memory.rs`: adds `update_memory_index` and `read_memory_topic`, reusing the same safe topic boundary and index builder.
+- `src/main.rs` and `src/interfaces/api/mod.rs`: register both tools for CLI and API engine runs.
+- `tests/memory_tool.rs` and `tests/api.rs`: cover index rebuilding from existing topics, constrained topic reads, unsafe read rejection, and API job registration for both tools.
