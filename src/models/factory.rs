@@ -1,5 +1,6 @@
 use crate::config::AppConfig;
 use crate::models::anthropic::AnthropicClient;
+use crate::models::ollama::OllamaClient;
 use crate::models::openai::OpenAiClient;
 use crate::models::routing::{HealthConfig, RoutingModelClient};
 use crate::models::traits::ModelClient;
@@ -8,6 +9,7 @@ use std::time::Duration;
 pub fn build_model_client(config: &AppConfig, model_id: String) -> Box<dyn ModelClient> {
     match config.provider.as_str() {
         "anthropic" => build_anthropic_model_client(config, model_id),
+        "ollama" => build_ollama_model_client(config, model_id),
         _ => build_openai_model_client(config, model_id),
     }
 }
@@ -51,6 +53,15 @@ pub fn build_anthropic_model_client(config: &AppConfig, model_id: String) -> Box
         config.anthropic_api_key.clone()
     };
     Box::new(AnthropicClient::new(api_base, api_key, model_id))
+}
+
+pub fn build_ollama_model_client(config: &AppConfig, model_id: String) -> Box<dyn ModelClient> {
+    let api_base = if config.api_base.contains("openai") {
+        String::new()
+    } else {
+        config.api_base.clone()
+    };
+    Box::new(OllamaClient::new(api_base, model_id))
 }
 
 fn openai_client(api_base: String, api_key: String, model_id: String) -> Box<dyn ModelClient> {
