@@ -1023,6 +1023,8 @@ fn test_config() -> AppConfig {
         api_key: String::new(),
         model: "fake".to_string(),
         fallback_models: Vec::new(),
+        routing_failure_threshold: 3,
+        routing_open_cooldown_ms: 30_000,
         max_steps: 4,
         system_prompt_path: "prompts/system.md".into(),
         mcp_config_path: ".rove/mcp_servers.json".into(),

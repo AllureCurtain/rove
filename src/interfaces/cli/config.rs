@@ -12,6 +12,8 @@ pub fn format_effective_config(config: &AppConfig) -> String {
         "api_key_set": !config.api_key.is_empty(),
         "model": config.model,
         "fallback_models": config.fallback_models,
+        "routing_failure_threshold": config.routing_failure_threshold,
+        "routing_open_cooldown_ms": config.routing_open_cooldown_ms,
         "max_steps": config.max_steps,
         "system_prompt_path": config.system_prompt_path.to_string_lossy(),
         "mcp_config_path": config.mcp_config_path.to_string_lossy(),

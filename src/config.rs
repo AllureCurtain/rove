@@ -13,6 +13,10 @@ pub struct AppConfig {
     pub model: String,
     /// Fallback model identifiers to try if the primary model fails before streaming.
     pub fallback_models: Vec<String>,
+    /// Number of pre-commit failures before a routing candidate circuit opens.
+    pub routing_failure_threshold: u32,
+    /// Cooldown before an open routing circuit allows a half-open probe.
+    pub routing_open_cooldown_ms: u64,
     /// Maximum steps per run.
     pub max_steps: u32,
     /// Path to the system prompt file.
@@ -29,6 +33,8 @@ impl AppConfig {
     /// - OPENAI_API_KEY
     /// - ROVE_MODEL (default: gpt-4o)
     /// - ROVE_FALLBACK_MODELS (comma-separated, default: empty)
+    /// - ROVE_ROUTING_FAILURE_THRESHOLD (default: 3)
+    /// - ROVE_ROUTING_OPEN_COOLDOWN_MS (default: 30000)
     /// - ROVE_MAX_STEPS (default: 20)
     /// - ROVE_SYSTEM_PROMPT (default: prompts/system.md)
     /// - ROVE_MCP_CONFIG (default: .rove/mcp_servers.json)
@@ -48,6 +54,16 @@ impl AppConfig {
             .map(|raw| parse_fallback_models(&raw))
             .unwrap_or_default();
 
+        let routing_failure_threshold = std::env::var("ROVE_ROUTING_FAILURE_THRESHOLD")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(3);
+
+        let routing_open_cooldown_ms = std::env::var("ROVE_ROUTING_OPEN_COOLDOWN_MS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(30_000);
+
         let max_steps: u32 = std::env::var("ROVE_MAX_STEPS")
             .ok()
             .and_then(|s| s.parse().ok())
@@ -66,6 +82,8 @@ impl AppConfig {
             api_key,
             model,
             fallback_models,
+            routing_failure_threshold,
+            routing_open_cooldown_ms,
             max_steps,
             system_prompt_path,
             mcp_config_path,

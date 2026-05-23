@@ -10,6 +10,8 @@ fn format_effective_config_prints_json_without_secret_value() {
         api_key: "secret-token".to_string(),
         model: "model-a".to_string(),
         fallback_models: vec!["model-b".to_string(), "model-c".to_string()],
+        routing_failure_threshold: 5,
+        routing_open_cooldown_ms: 45_000,
         max_steps: 42,
         system_prompt_path: PathBuf::from("prompts/custom.md"),
         mcp_config_path: PathBuf::from(".rove/custom-mcp.json"),
@@ -23,6 +25,8 @@ fn format_effective_config_prints_json_without_secret_value() {
     assert_eq!(json["model"], "model-a");
     assert_eq!(json["fallback_models"][0], "model-b");
     assert_eq!(json["fallback_models"][1], "model-c");
+    assert_eq!(json["routing_failure_threshold"], 5);
+    assert_eq!(json["routing_open_cooldown_ms"], 45_000);
     assert_eq!(json["max_steps"], 42);
     assert_eq!(json["system_prompt_path"], "prompts/custom.md");
     assert_eq!(json["mcp_config_path"], ".rove/custom-mcp.json");
