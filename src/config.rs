@@ -1,5 +1,12 @@
 use std::path::PathBuf;
 
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct FallbackProviderConfig {
+    pub api_base: String,
+    pub api_key: String,
+    pub model: String,
+}
+
 /// Application configuration.
 ///
 /// Loaded from environment variables and `.rove/config.toml` (when it exists).
@@ -13,6 +20,8 @@ pub struct AppConfig {
     pub model: String,
     /// Fallback model identifiers to try if the primary model fails before streaming.
     pub fallback_models: Vec<String>,
+    /// Full fallback provider configs with independent base URL, API key, and model.
+    pub fallback_providers: Vec<FallbackProviderConfig>,
     /// Number of pre-commit failures before a routing candidate circuit opens.
     pub routing_failure_threshold: u32,
     /// Cooldown before an open routing circuit allows a half-open probe.
@@ -33,6 +42,7 @@ impl AppConfig {
     /// - OPENAI_API_KEY
     /// - ROVE_MODEL (default: gpt-4o)
     /// - ROVE_FALLBACK_MODELS (comma-separated, default: empty)
+    /// - ROVE_FALLBACK_PROVIDERS (JSON array, default: empty)
     /// - ROVE_ROUTING_FAILURE_THRESHOLD (default: 3)
     /// - ROVE_ROUTING_OPEN_COOLDOWN_MS (default: 30000)
     /// - ROVE_MAX_STEPS (default: 20)
@@ -53,6 +63,11 @@ impl AppConfig {
         let fallback_models = std::env::var("ROVE_FALLBACK_MODELS")
             .map(|raw| parse_fallback_models(&raw))
             .unwrap_or_default();
+
+        let fallback_providers = match std::env::var("ROVE_FALLBACK_PROVIDERS") {
+            Ok(raw) if !raw.trim().is_empty() => serde_json::from_str(&raw)?,
+            _ => Vec::new(),
+        };
 
         let routing_failure_threshold = std::env::var("ROVE_ROUTING_FAILURE_THRESHOLD")
             .ok()
@@ -82,6 +97,7 @@ impl AppConfig {
             api_key,
             model,
             fallback_models,
+            fallback_providers,
             routing_failure_threshold,
             routing_open_cooldown_ms,
             max_steps,

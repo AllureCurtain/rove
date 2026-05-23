@@ -1023,6 +1023,7 @@ fn test_config() -> AppConfig {
         api_key: String::new(),
         model: "fake".to_string(),
         fallback_models: Vec::new(),
+        fallback_providers: Vec::new(),
         routing_failure_threshold: 3,
         routing_open_cooldown_ms: 30_000,
         max_steps: 4,

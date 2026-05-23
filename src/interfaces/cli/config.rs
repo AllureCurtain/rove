@@ -7,11 +7,23 @@ pub fn run() -> anyhow::Result<()> {
 }
 
 pub fn format_effective_config(config: &AppConfig) -> String {
+    let fallback_providers: Vec<_> = config
+        .fallback_providers
+        .iter()
+        .map(|provider| {
+            serde_json::json!({
+                "api_base": provider.api_base,
+                "api_key_set": !provider.api_key.is_empty(),
+                "model": provider.model,
+            })
+        })
+        .collect();
     let value = serde_json::json!({
         "api_base": config.api_base,
         "api_key_set": !config.api_key.is_empty(),
         "model": config.model,
         "fallback_models": config.fallback_models,
+        "fallback_providers": fallback_providers,
         "routing_failure_threshold": config.routing_failure_threshold,
         "routing_open_cooldown_ms": config.routing_open_cooldown_ms,
         "max_steps": config.max_steps,
