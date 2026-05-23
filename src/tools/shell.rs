@@ -5,7 +5,7 @@ use serde_json::Value;
 use tokio::process::Command;
 
 use super::traits::{Tool, ToolOutput};
-use crate::core::types::ToolSchema;
+use crate::core::types::{ToolContext, ToolSchema};
 use crate::errors::ToolError;
 
 /// Execute a shell command in the workspace.
@@ -39,7 +39,7 @@ impl Tool for ShellTool {
         }
     }
 
-    async fn execute(&self, args: Value) -> Result<ToolOutput, ToolError> {
+    async fn execute(&self, args: Value, _ctx: &ToolContext<'_>) -> Result<ToolOutput, ToolError> {
         let command = args
             .get("command")
             .and_then(|value| value.as_str())

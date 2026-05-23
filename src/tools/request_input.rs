@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use super::traits::{Tool, ToolOutput};
-use crate::core::types::ToolSchema;
+use crate::core::types::{ToolContext, ToolSchema, UserInputRequest};
 use crate::errors::ToolError;
 
 /// Ask the user for input mid-task.
@@ -31,7 +31,7 @@ impl Tool for RequestInputTool {
         }
     }
 
-    async fn execute(&self, args: Value) -> Result<ToolOutput, ToolError> {
+    async fn execute(&self, args: Value, ctx: &ToolContext<'_>) -> Result<ToolOutput, ToolError> {
         let prompt = args
             .get("prompt")
             .and_then(|value| value.as_str())
@@ -39,6 +39,15 @@ impl Tool for RequestInputTool {
                 reason: "Missing required argument: prompt".to_string(),
             })?;
         let prompt = validate_prompt(prompt)?;
+
+        if let Some(provider) = &ctx.input_provider {
+            let answer = provider
+                .request_input(UserInputRequest {
+                    prompt: prompt.clone(),
+                })
+                .await?;
+            return Ok(ToolOutput { content: answer });
+        }
 
         Ok(ToolOutput {
             content: format!(

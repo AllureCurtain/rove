@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::core::types::ToolSchema;
+use crate::core::types::{ToolContext, ToolSchema};
 use crate::errors::ToolError;
 
 use super::traits::{Tool, ToolOutput};
@@ -43,11 +43,12 @@ impl ToolRegistry {
         &self,
         name: &str,
         args: serde_json::Value,
+        ctx: &ToolContext<'_>,
     ) -> Result<ToolOutput, ToolError> {
         let tool = self.tools.get(name).ok_or_else(|| ToolError::UnknownTool {
             name: name.to_string(),
         })?;
-        tool.execute(args).await
+        tool.execute(args, ctx).await
     }
 
     /// Check if a tool exists.

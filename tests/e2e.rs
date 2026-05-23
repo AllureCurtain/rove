@@ -134,7 +134,11 @@ impl Tool for FakeDestructiveTool {
         }
     }
 
-    async fn execute(&self, _args: serde_json::Value) -> Result<ToolOutput, ToolError> {
+    async fn execute(
+        &self,
+        _args: serde_json::Value,
+        _ctx: &ToolContext<'_>,
+    ) -> Result<ToolOutput, ToolError> {
         Ok(ToolOutput {
             content: "should never run".to_string(),
         })
@@ -162,7 +166,11 @@ impl Tool for CountingTool {
         }
     }
 
-    async fn execute(&self, _args: serde_json::Value) -> Result<ToolOutput, ToolError> {
+    async fn execute(
+        &self,
+        _args: serde_json::Value,
+        _ctx: &ToolContext<'_>,
+    ) -> Result<ToolOutput, ToolError> {
         self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Ok(ToolOutput {
             content: "executed".to_string(),
@@ -186,7 +194,11 @@ impl Tool for NeverCompletesTool {
         }
     }
 
-    async fn execute(&self, _args: serde_json::Value) -> Result<ToolOutput, ToolError> {
+    async fn execute(
+        &self,
+        _args: serde_json::Value,
+        _ctx: &ToolContext<'_>,
+    ) -> Result<ToolOutput, ToolError> {
         futures::future::pending::<()>().await;
         unreachable!("pending tool should only finish by cancellation")
     }
@@ -438,6 +450,7 @@ async fn destructive_tool_is_blocked_when_policy_is_never() {
         workspace: &workspace,
         approval_policy: ApprovalPolicy::Never,
         cancel_token: CancellationToken::new(),
+        input_provider: None,
     };
 
     let err = executor
@@ -461,6 +474,7 @@ async fn destructive_tool_requires_explicit_approval_when_policy_is_ask() {
         workspace: &workspace,
         approval_policy: ApprovalPolicy::Ask,
         cancel_token: CancellationToken::new(),
+        input_provider: None,
     };
 
     let err = executor
@@ -589,6 +603,7 @@ async fn executor_rejects_wrong_argument_type_before_tool_runs() {
         workspace: &workspace,
         approval_policy: ApprovalPolicy::Auto,
         cancel_token: CancellationToken::new(),
+        input_provider: None,
     };
 
     let err = executor
@@ -621,6 +636,7 @@ async fn empty_hook_registry_preserves_tool_result() {
         workspace: &workspace,
         approval_policy: ApprovalPolicy::Auto,
         cancel_token: CancellationToken::new(),
+        input_provider: None,
     };
 
     let result = executor
@@ -653,6 +669,7 @@ async fn pre_tool_hook_can_block_before_tool_runs() {
         workspace: &workspace,
         approval_policy: ApprovalPolicy::Auto,
         cancel_token: CancellationToken::new(),
+        input_provider: None,
     };
 
     let err = executor
@@ -690,6 +707,7 @@ async fn pre_tool_hook_receives_cancellation_token_in_context() {
         workspace: &workspace,
         approval_policy: ApprovalPolicy::Auto,
         cancel_token: cancel.clone(),
+        input_provider: None,
     };
     cancel.cancel();
 
@@ -724,6 +742,7 @@ async fn post_tool_hook_observes_successful_tool_result() {
         workspace: &workspace,
         approval_policy: ApprovalPolicy::Auto,
         cancel_token: CancellationToken::new(),
+        input_provider: None,
     };
 
     let result = executor
@@ -1716,6 +1735,7 @@ async fn file_tools_read_and_write_inside_workspace() {
         workspace: &workspace,
         approval_policy: ApprovalPolicy::Auto,
         cancel_token: CancellationToken::new(),
+        input_provider: None,
     };
 
     executor
@@ -1753,6 +1773,7 @@ async fn shell_tool_is_blocked_when_policy_is_never() {
         workspace: &workspace,
         approval_policy: ApprovalPolicy::Never,
         cancel_token: CancellationToken::new(),
+        input_provider: None,
     };
 
     let err = executor
@@ -1781,6 +1802,7 @@ async fn shell_tool_rejects_empty_command() {
         workspace: &workspace,
         approval_policy: ApprovalPolicy::Auto,
         cancel_token: CancellationToken::new(),
+        input_provider: None,
     };
 
     let err = executor
@@ -1812,6 +1834,7 @@ async fn shell_tool_rejects_nul_byte_command() {
         workspace: &workspace,
         approval_policy: ApprovalPolicy::Auto,
         cancel_token: CancellationToken::new(),
+        input_provider: None,
     };
 
     let err = executor
@@ -1843,6 +1866,7 @@ async fn shell_tool_runs_non_empty_command_when_approved() {
         workspace: &workspace,
         approval_policy: ApprovalPolicy::Auto,
         cancel_token: CancellationToken::new(),
+        input_provider: None,
     };
 
     let command = if cfg!(windows) {

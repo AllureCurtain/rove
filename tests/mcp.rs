@@ -1,5 +1,8 @@
+use rove::core::types::{ApprovalPolicy, ToolContext};
+use rove::core::workspace::Workspace;
 use rove::tools::mcp_proxy::{McpServerConfig, register_mcp_tools};
 use rove::tools::registry::ToolRegistry;
+use tokio_util::sync::CancellationToken;
 
 fn python_command() -> String {
     if cfg!(windows) {
@@ -11,6 +14,8 @@ fn python_command() -> String {
 
 #[tokio::test]
 async fn mcp_proxy_registers_and_calls_stdio_tools() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
     let mut registry = ToolRegistry::new();
     let count = register_mcp_tools(
         &mut registry,
@@ -38,6 +43,12 @@ async fn mcp_proxy_registers_and_calls_stdio_tools() {
         .execute(
             "mcp__mock_server__echo_remote",
             serde_json::json!({ "message": "hello" }),
+            &ToolContext {
+                workspace: &workspace,
+                approval_policy: ApprovalPolicy::Auto,
+                cancel_token: CancellationToken::new(),
+                input_provider: None,
+            },
         )
         .await
         .unwrap();

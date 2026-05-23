@@ -17,6 +17,7 @@ async fn save_memory_writes_topic_and_index_inside_workspace() {
         workspace: &workspace,
         approval_policy: ApprovalPolicy::Never,
         cancel_token: CancellationToken::new(),
+        input_provider: None,
     };
 
     let result = executor
@@ -70,6 +71,7 @@ async fn save_memory_rejects_unsafe_topic_without_writing() {
         workspace: &workspace,
         approval_policy: ApprovalPolicy::Never,
         cancel_token: CancellationToken::new(),
+        input_provider: None,
     };
 
     let err = executor
@@ -105,6 +107,7 @@ async fn save_memory_keeps_index_within_hard_limits() {
         workspace: &workspace,
         approval_policy: ApprovalPolicy::Never,
         cancel_token: CancellationToken::new(),
+        input_provider: None,
     };
 
     for topic in 0..205 {
@@ -162,6 +165,7 @@ async fn update_memory_index_rebuilds_index_from_existing_topics() {
         workspace: &workspace,
         approval_policy: ApprovalPolicy::Never,
         cancel_token: CancellationToken::new(),
+        input_provider: None,
     };
 
     let result = executor
@@ -207,6 +211,7 @@ async fn read_memory_topic_reads_only_named_topic() {
         workspace: &workspace,
         approval_policy: ApprovalPolicy::Never,
         cancel_token: CancellationToken::new(),
+        input_provider: None,
     };
 
     let result = executor
@@ -235,6 +240,7 @@ async fn read_memory_topic_rejects_unsafe_name() {
         workspace: &workspace,
         approval_policy: ApprovalPolicy::Never,
         cancel_token: CancellationToken::new(),
+        input_provider: None,
     };
 
     let err = executor

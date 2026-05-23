@@ -1,6 +1,25 @@
+use std::sync::{Arc, Mutex};
+
+use async_trait::async_trait;
+use rove::core::types::{ApprovalPolicy, ToolContext, UserInputProvider, UserInputRequest};
+use rove::core::workspace::Workspace;
 use rove::errors::ToolError;
 use rove::tools::request_input::RequestInputTool;
 use rove::tools::traits::Tool;
+use tokio_util::sync::CancellationToken;
+
+struct StaticInputProvider {
+    answer: &'static str,
+    prompts: Arc<Mutex<Vec<String>>>,
+}
+
+#[async_trait]
+impl UserInputProvider for StaticInputProvider {
+    async fn request_input(&self, request: UserInputRequest) -> Result<String, ToolError> {
+        self.prompts.lock().unwrap().push(request.prompt);
+        Ok(self.answer.to_string())
+    }
+}
 
 #[test]
 fn request_input_tool_schema_exposes_prompt_input() {
@@ -14,8 +33,16 @@ fn request_input_tool_schema_exposes_prompt_input() {
 
 #[tokio::test]
 async fn request_input_tool_requires_prompt_argument() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let ctx = ToolContext {
+        workspace: &workspace,
+        approval_policy: ApprovalPolicy::Auto,
+        cancel_token: CancellationToken::new(),
+        input_provider: None,
+    };
     let err = RequestInputTool
-        .execute(serde_json::json!({}))
+        .execute(serde_json::json!({}), &ctx)
         .await
         .unwrap_err();
 
@@ -27,8 +54,19 @@ async fn request_input_tool_requires_prompt_argument() {
 
 #[tokio::test]
 async fn request_input_tool_explains_interactive_provider_requirement() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let ctx = ToolContext {
+        workspace: &workspace,
+        approval_policy: ApprovalPolicy::Auto,
+        cancel_token: CancellationToken::new(),
+        input_provider: None,
+    };
     let output = RequestInputTool
-        .execute(serde_json::json!({"prompt": "Which branch should I use?"}))
+        .execute(
+            serde_json::json!({"prompt": "Which branch should I use?"}),
+            &ctx,
+        )
         .await
         .unwrap();
 
@@ -38,4 +76,35 @@ async fn request_input_tool_explains_interactive_provider_requirement() {
             .contains("requires an interactive input provider")
     );
     assert!(output.content.contains("Which branch should I use?"));
+}
+
+#[tokio::test]
+async fn request_input_tool_returns_interactive_provider_answer() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let prompts = Arc::new(Mutex::new(Vec::new()));
+    let provider = Arc::new(StaticInputProvider {
+        answer: "Use main.",
+        prompts: prompts.clone(),
+    });
+    let ctx = ToolContext {
+        workspace: &workspace,
+        approval_policy: ApprovalPolicy::Auto,
+        cancel_token: CancellationToken::new(),
+        input_provider: Some(provider),
+    };
+
+    let output = RequestInputTool
+        .execute(
+            serde_json::json!({"prompt": "Which branch should I use?"}),
+            &ctx,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(output.content, "Use main.");
+    assert_eq!(
+        prompts.lock().unwrap().as_slice(),
+        ["Which branch should I use?"]
+    );
 }

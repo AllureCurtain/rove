@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use super::traits::{Tool, ToolOutput};
-use crate::core::types::ToolSchema;
+use crate::core::types::{ToolContext, ToolSchema};
 use crate::errors::ToolError;
 
 /// A minimal echo tool for testing.
@@ -30,7 +30,7 @@ impl Tool for EchoTool {
         }
     }
 
-    async fn execute(&self, args: Value) -> Result<ToolOutput, ToolError> {
+    async fn execute(&self, args: Value, _ctx: &ToolContext<'_>) -> Result<ToolOutput, ToolError> {
         let message = args
             .get("message")
             .and_then(|v| v.as_str())
@@ -46,13 +46,33 @@ impl Tool for EchoTool {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
+    use crate::core::types::{ApprovalPolicy, ToolContext};
+    use crate::core::workspace::{Workspace, WorkspaceKind};
+    use tokio_util::sync::CancellationToken;
+
+    fn test_workspace() -> Workspace {
+        Workspace {
+            root: PathBuf::from("."),
+            kind: WorkspaceKind::Folder,
+            state_dir: PathBuf::from(".rove"),
+        }
+    }
 
     #[tokio::test]
     async fn echo_tool_returns_message() {
         let tool = EchoTool;
         let args = serde_json::json!({"message": "hello world"});
-        let result = tool.execute(args).await.unwrap();
+        let workspace = test_workspace();
+        let ctx = ToolContext {
+            workspace: &workspace,
+            approval_policy: ApprovalPolicy::Auto,
+            cancel_token: CancellationToken::new(),
+            input_provider: None,
+        };
+        let result = tool.execute(args, &ctx).await.unwrap();
         assert_eq!(result.content, "hello world");
     }
 
@@ -60,7 +80,14 @@ mod tests {
     async fn echo_tool_missing_message() {
         let tool = EchoTool;
         let args = serde_json::json!({});
-        let result = tool.execute(args).await;
+        let workspace = test_workspace();
+        let ctx = ToolContext {
+            workspace: &workspace,
+            approval_policy: ApprovalPolicy::Auto,
+            cancel_token: CancellationToken::new(),
+            input_provider: None,
+        };
+        let result = tool.execute(args, &ctx).await;
         assert!(result.is_err());
     }
 }

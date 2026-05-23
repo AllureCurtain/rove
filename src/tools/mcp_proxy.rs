@@ -13,7 +13,7 @@ use tokio::sync::Mutex;
 
 use super::registry::ToolRegistry;
 use super::traits::{Tool, ToolOutput};
-use crate::core::types::ToolSchema;
+use crate::core::types::{ToolContext, ToolSchema};
 use crate::errors::ToolError;
 
 const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
@@ -86,7 +86,7 @@ impl Tool for McpProxyTool {
         self.tool.schema.clone()
     }
 
-    async fn execute(&self, args: Value) -> Result<ToolOutput, ToolError> {
+    async fn execute(&self, args: Value, _ctx: &ToolContext<'_>) -> Result<ToolOutput, ToolError> {
         let result = self
             .client
             .call_tool(&self.tool.remote_name, args)

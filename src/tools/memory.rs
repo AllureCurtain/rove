@@ -6,7 +6,7 @@ use chrono::Utc;
 use serde_json::Value;
 
 use super::traits::{Tool, ToolOutput};
-use crate::core::types::ToolSchema;
+use crate::core::types::{ToolContext, ToolSchema};
 use crate::errors::ToolError;
 
 const MAX_MEMORY_INDEX_LINES: usize = 200;
@@ -54,7 +54,7 @@ impl Tool for SaveMemoryTool {
         }
     }
 
-    async fn execute(&self, args: Value) -> Result<ToolOutput, ToolError> {
+    async fn execute(&self, args: Value, _ctx: &ToolContext<'_>) -> Result<ToolOutput, ToolError> {
         let raw_topic = required_string(&args, "topic")?;
         let raw_content = required_string(&args, "content")?;
         let raw_type = required_string(&args, "type")?;
@@ -120,7 +120,7 @@ impl Tool for UpdateMemoryIndexTool {
         }
     }
 
-    async fn execute(&self, _args: Value) -> Result<ToolOutput, ToolError> {
+    async fn execute(&self, _args: Value, _ctx: &ToolContext<'_>) -> Result<ToolOutput, ToolError> {
         let memory_dir = self.root.join(".rove").join("memory");
         tokio::fs::create_dir_all(&memory_dir)
             .await
@@ -165,7 +165,7 @@ impl Tool for ReadMemoryTopicTool {
         }
     }
 
-    async fn execute(&self, args: Value) -> Result<ToolOutput, ToolError> {
+    async fn execute(&self, args: Value, _ctx: &ToolContext<'_>) -> Result<ToolOutput, ToolError> {
         let raw_name = required_string(&args, "name")?;
         let slug = normalize_topic(raw_name)?;
         let topic_path = self

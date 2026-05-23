@@ -1,9 +1,12 @@
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 use ulid::Ulid;
 
 use crate::core::workspace::Workspace;
+use crate::errors::ToolError;
 
 /// Unique identifier for a session (user-level, spans multiple jobs).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -272,10 +275,34 @@ pub trait ToolApprovalProvider: Send + Sync {
     async fn decide(&self, request: ToolApprovalRequest) -> ApprovalDecision;
 }
 
-/// Context passed through the tool execution boundary.
+/// User input request sent from a tool to an interface.
 #[derive(Debug, Clone)]
+pub struct UserInputRequest {
+    pub prompt: String,
+}
+
+/// Interface-provided channel for tools that need mid-task user input.
+#[async_trait]
+pub trait UserInputProvider: Send + Sync {
+    async fn request_input(&self, request: UserInputRequest) -> Result<String, ToolError>;
+}
+
+/// Context passed through the tool execution boundary.
+#[derive(Clone)]
 pub struct ToolContext<'a> {
     pub workspace: &'a Workspace,
     pub approval_policy: ApprovalPolicy,
     pub cancel_token: CancellationToken,
+    pub input_provider: Option<Arc<dyn UserInputProvider>>,
+}
+
+impl std::fmt::Debug for ToolContext<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ToolContext")
+            .field("workspace", &self.workspace)
+            .field("approval_policy", &self.approval_policy)
+            .field("cancel_token", &self.cancel_token)
+            .field("input_provider", &self.input_provider.is_some())
+            .finish()
+    }
 }

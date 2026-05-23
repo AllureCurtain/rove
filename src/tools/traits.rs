@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use serde_json::Value;
 
-use crate::core::types::ToolSchema;
+use crate::core::types::{ToolContext, ToolSchema};
 use crate::errors::ToolError;
 
 /// Result of a tool execution.
@@ -19,5 +19,5 @@ pub trait Tool: Send + Sync {
     fn schema(&self) -> ToolSchema;
 
     /// Execute the tool with the given arguments.
-    async fn execute(&self, args: Value) -> Result<ToolOutput, ToolError>;
+    async fn execute(&self, args: Value, ctx: &ToolContext<'_>) -> Result<ToolOutput, ToolError>;
 }

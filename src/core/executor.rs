@@ -47,7 +47,7 @@ impl<'a> Executor<'a> {
         check_tool_allowed(&schema, ctx.approval_policy)?;
 
         // Step 5: execute
-        let output = self.registry.execute(name, args.clone()).await?;
+        let output = self.registry.execute(name, args.clone(), ctx).await?;
 
         // Step 6: result wrapping
         let result = ToolResult {

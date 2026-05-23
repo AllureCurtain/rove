@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use super::traits::{Tool, ToolOutput};
-use crate::core::types::ToolSchema;
+use crate::core::types::{ToolContext, ToolSchema};
 use crate::errors::ToolError;
 
 #[derive(Debug, Clone, Copy)]
@@ -71,7 +71,7 @@ impl Tool for RagRetrieveTool {
         }
     }
 
-    async fn execute(&self, args: Value) -> Result<ToolOutput, ToolError> {
+    async fn execute(&self, args: Value, _ctx: &ToolContext<'_>) -> Result<ToolOutput, ToolError> {
         let _query = args
             .get("query")
             .and_then(|value| value.as_str())

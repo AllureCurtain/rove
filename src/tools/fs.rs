@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use super::traits::{Tool, ToolOutput};
-use crate::core::types::ToolSchema;
+use crate::core::types::{ToolContext, ToolSchema};
 use crate::errors::ToolError;
 
 fn resolve_workspace_path(root: &Path, raw_path: &str) -> Result<PathBuf, ToolError> {
@@ -61,7 +61,7 @@ impl Tool for FsReadTool {
         }
     }
 
-    async fn execute(&self, args: Value) -> Result<ToolOutput, ToolError> {
+    async fn execute(&self, args: Value, _ctx: &ToolContext<'_>) -> Result<ToolOutput, ToolError> {
         let raw_path = args
             .get("path")
             .and_then(|value| value.as_str())
@@ -114,7 +114,7 @@ impl Tool for FsWriteTool {
         }
     }
 
-    async fn execute(&self, args: Value) -> Result<ToolOutput, ToolError> {
+    async fn execute(&self, args: Value, _ctx: &ToolContext<'_>) -> Result<ToolOutput, ToolError> {
         let raw_path = args
             .get("path")
             .and_then(|value| value.as_str())
