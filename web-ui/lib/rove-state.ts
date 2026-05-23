@@ -1,5 +1,6 @@
 import type {
   ApprovalDecision,
+  PendingInput,
   PlanStep,
   PendingApproval,
   StreamEvent,
@@ -41,6 +42,7 @@ export interface WorkbenchState {
   plan: TaskPlan | null;
   tools: ToolCallView[];
   trace: TraceEntry[];
+  pendingInputs: PendingInput[];
 }
 
 export type WorkbenchAction =
@@ -51,6 +53,7 @@ export type WorkbenchAction =
   | { type: "set_status"; statusText: string }
   | { type: "set_error"; error: string | null }
   | { type: "approval_decision"; callId: string; decision: ApprovalDecision }
+  | { type: "input_submitted"; inputId: string }
   | { type: "stream_event"; event: StreamEvent };
 
 export function createWorkbenchState(): WorkbenchState {
@@ -66,6 +69,7 @@ export function createWorkbenchState(): WorkbenchState {
     plan: null,
     tools: [],
     trace: [],
+    pendingInputs: [],
   };
 }
 
@@ -129,6 +133,13 @@ export function workbenchReducer(
                 pendingApproval: undefined,
               }
             : tool,
+        ),
+      };
+    case "input_submitted":
+      return {
+        ...state,
+        pendingInputs: state.pendingInputs.filter(
+          (input) => input.input_id !== action.inputId,
         ),
       };
     case "stream_event":
@@ -230,6 +241,15 @@ function applyStreamEvent(state: WorkbenchState, event: StreamEvent): WorkbenchS
           event.type,
           formatToolError(event.error),
         ),
+      };
+    case "input_needed":
+      return {
+        ...next,
+        pendingInputs: [
+          ...state.pendingInputs,
+          { input_id: event.input_id, prompt: event.prompt },
+        ],
+        trace: prependTrace(state.trace, event.type, event.prompt),
       };
     case "plan_created":
       return {

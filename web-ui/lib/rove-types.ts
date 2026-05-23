@@ -71,6 +71,11 @@ export type StreamEvent =
       error: ToolError;
     }
   | {
+      type: "input_needed";
+      input_id: string;
+      prompt: string;
+    }
+  | {
       type: "plan_created";
       plan: TaskPlan;
     }
@@ -114,6 +119,7 @@ export interface JobStateResponse {
   status: RunStatus;
   event_count: number;
   pending_approvals: PendingApproval[];
+  pending_inputs: PendingInput[];
 }
 
 export interface PendingApproval {
@@ -121,6 +127,11 @@ export interface PendingApproval {
   name: string;
   args: unknown;
   reason: string;
+}
+
+export interface PendingInput {
+  input_id: string;
+  prompt: string;
 }
 
 export type ApprovalDecision = "approve" | "reject";
@@ -135,6 +146,7 @@ export const STREAM_EVENT_NAMES = [
   "tool_call_approval_needed",
   "tool_call_completed",
   "tool_call_failed",
+  "input_needed",
   "plan_created",
   "plan_step_started",
   "plan_step_completed",

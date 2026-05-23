@@ -61,6 +61,24 @@ export async function submitApproval(
   return parseJson<JobStateResponse>(response);
 }
 
+export async function submitInput(
+  jobId: string,
+  inputId: string,
+  answer: string,
+): Promise<JobStateResponse> {
+  const response = await fetch(
+    apiUrl(`/jobs/${encodeURIComponent(jobId)}/inputs/${encodeURIComponent(inputId)}`),
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ answer }),
+    },
+  );
+  return parseJson<JobStateResponse>(response);
+}
+
 export function openJobStream(jobId: string): EventSource {
   return new EventSource(apiUrl(`/jobs/${encodeURIComponent(jobId)}/events`));
 }

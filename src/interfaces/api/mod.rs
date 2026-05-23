@@ -515,11 +515,16 @@ impl UserInputProvider for ApiInputProvider {
     async fn request_input(&self, request: UserInputRequest) -> Result<String, ToolError> {
         let input_id = CallId::new();
         let (tx, rx) = oneshot::channel();
+        let prompt = request.prompt.clone();
         self.record
             .pending_inputs
             .lock()
             .await
             .insert(input_id, PendingInput { request, tx });
+        let _ = self
+            .record
+            .tx
+            .send(StreamEvent::InputNeeded { input_id, prompt });
         rx.await.map_err(|_| ToolError::ExecutionFailed {
             reason: "input request cancelled".to_string(),
         })

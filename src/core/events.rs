@@ -46,6 +46,9 @@ pub enum StreamEvent {
     /// A tool call failed.
     ToolCallFailed { call_id: CallId, error: ToolError },
 
+    /// The `request_input` tool is waiting for user input.
+    InputNeeded { input_id: CallId, prompt: String },
+
     /// A plan has been drafted for this run.
     PlanCreated { plan: TaskPlan },
 
@@ -80,6 +83,7 @@ impl StreamEvent {
             Self::ToolCallApprovalNeeded { .. } => "tool_call_approval_needed",
             Self::ToolCallCompleted { .. } => "tool_call_completed",
             Self::ToolCallFailed { .. } => "tool_call_failed",
+            Self::InputNeeded { .. } => "input_needed",
             Self::PlanCreated { .. } => "plan_created",
             Self::PlanStepStarted { .. } => "plan_step_started",
             Self::PlanStepCompleted { .. } => "plan_step_completed",

@@ -76,4 +76,40 @@ describe("workbenchReducer", () => {
       },
     });
   });
+
+  it("adds pending input on input_needed event", () => {
+    const state = workbenchReducer(createWorkbenchState(), {
+      type: "stream_event",
+      event: {
+        type: "input_needed",
+        input_id: "input-1",
+        prompt: "What is your name?",
+      },
+    });
+
+    expect(state.pendingInputs).toHaveLength(1);
+    expect(state.pendingInputs[0]).toEqual({
+      input_id: "input-1",
+      prompt: "What is your name?",
+    });
+    expect(state.trace[0].label).toBe("input_needed");
+  });
+
+  it("removes pending input on input_submitted action", () => {
+    const withInput = workbenchReducer(createWorkbenchState(), {
+      type: "stream_event",
+      event: {
+        type: "input_needed",
+        input_id: "input-1",
+        prompt: "What is your name?",
+      },
+    });
+
+    const submitted = workbenchReducer(withInput, {
+      type: "input_submitted",
+      inputId: "input-1",
+    });
+
+    expect(submitted.pendingInputs).toHaveLength(0);
+  });
 });

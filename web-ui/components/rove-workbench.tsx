@@ -22,7 +22,7 @@ import {
   useState,
 } from "react";
 
-import { cancelJob, createJob, openJobStream, submitApproval } from "../lib/rove-client";
+import { cancelJob, createJob, openJobStream, submitApproval, submitInput } from "../lib/rove-client";
 import { STREAM_EVENT_NAMES, type StreamEvent } from "../lib/rove-types";
 import { createWorkbenchState, workbenchReducer, type ToolCallView } from "../lib/rove-state";
 
@@ -37,6 +37,7 @@ export function RoveWorkbench() {
   const [maxSteps, setMaxSteps] = useState("8");
   const [submitting, setSubmitting] = useState(false);
   const [approvalBusy, setApprovalBusy] = useState<string | null>(null);
+  const [inputBusy, setInputBusy] = useState<string | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
 
   const isBusy = submitting || state.busy;
@@ -131,6 +132,22 @@ export function RoveWorkbench() {
       dispatch({ type: "set_error", error: describeError(error) });
     } finally {
       setApprovalBusy(null);
+    }
+  }
+
+  async function handleInputSubmit(inputId: string, answer: string) {
+    if (!state.activeJobId || inputBusy) {
+      return;
+    }
+
+    setInputBusy(inputId);
+    try {
+      await submitInput(state.activeJobId, inputId, answer);
+      dispatch({ type: "input_submitted", inputId });
+    } catch (error) {
+      dispatch({ type: "set_error", error: describeError(error) });
+    } finally {
+      setInputBusy(null);
     }
   }
 
@@ -280,6 +297,19 @@ export function RoveWorkbench() {
             </div>
 
             <div className="message-stream" aria-live="polite" aria-busy={isBusy}>
+              {state.pendingInputs.length > 0 && (
+                <div className="pending-inputs">
+                  {state.pendingInputs.map((input) => (
+                    <PendingInputCard
+                      key={input.input_id}
+                      inputId={input.input_id}
+                      prompt={input.prompt}
+                      busy={inputBusy === input.input_id}
+                      onSubmit={handleInputSubmit}
+                    />
+                  ))}
+                </div>
+              )}
               {state.messages.length === 0 ? (
                 <EmptyStage
                   busy={isBusy}
@@ -519,6 +549,52 @@ function EmptyBlock({ label, busy }: { label: string; busy: boolean }) {
   }
 
   return <div className="empty-block">{label}</div>;
+}
+
+function PendingInputCard({
+  inputId,
+  prompt,
+  busy,
+  onSubmit,
+}: {
+  inputId: string;
+  prompt: string;
+  busy: boolean;
+  onSubmit: (inputId: string, answer: string) => void;
+}) {
+  const [answer, setAnswer] = useState("");
+
+  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const trimmed = answer.trim();
+    if (!trimmed || busy) {
+      return;
+    }
+    onSubmit(inputId, trimmed);
+  }
+
+  return (
+    <article className="input-card">
+      <div className="input-card__prompt">
+        <span>Input requested</span>
+        <p>{prompt}</p>
+      </div>
+      <form className="input-card__form" onSubmit={handleSubmit}>
+        <input
+          type="text"
+          value={answer}
+          onChange={(event) => setAnswer(event.target.value)}
+          placeholder="Type your answer"
+          disabled={busy}
+          aria-label={prompt}
+        />
+        <button type="submit" disabled={busy || !answer.trim()}>
+          <CheckIcon width={15} height={15} />
+          Send
+        </button>
+      </form>
+    </article>
+  );
 }
 
 function shortId(value: string | null): string {
