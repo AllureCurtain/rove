@@ -1,6 +1,7 @@
-use std::sync::Arc;
+use std::{panic::AssertUnwindSafe, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
+use futures::FutureExt;
 use tokio_util::sync::CancellationToken;
 
 use crate::core::types::{JobId, RunId, SessionId, TerminationReason, ToolContext, ToolResult};
@@ -41,6 +42,10 @@ pub struct PostRunHookContext<'a> {
 
 #[async_trait]
 pub trait PostRunHook: Send + Sync {
+    fn timeout(&self) -> Duration {
+        Duration::from_secs(30)
+    }
+
     async fn after_run(&self, ctx: &PostRunHookContext<'_>) -> anyhow::Result<()>;
 }
 
@@ -105,6 +110,8 @@ impl HookRegistry {
 
     pub async fn run_post_run(&self, ctx: &PostRunHookContext<'_>) {
         for hook in &self.post_run {
+            let timeout = hook.timeout();
+            let hook_future = AssertUnwindSafe(hook.after_run(ctx)).catch_unwind();
             tokio::select! {
                 biased;
                 _ = ctx.cancel_token.cancelled() => {
@@ -114,12 +121,28 @@ impl HookRegistry {
                     );
                     return;
                 }
-                result = hook.after_run(ctx) => {
-                    if let Err(err) = result {
-                        tracing::warn!(
-                            run_id = %ctx.run_id,
-                            "post-run hook failed: {err}"
-                        );
+                result = tokio::time::timeout(timeout, hook_future) => {
+                    match result {
+                        Ok(Ok(Ok(()))) => {}
+                        Ok(Ok(Err(err))) => {
+                            tracing::warn!(
+                                run_id = %ctx.run_id,
+                                "post-run hook failed: {err}"
+                            );
+                        }
+                        Ok(Err(_panic)) => {
+                            tracing::error!(
+                                run_id = %ctx.run_id,
+                                "post-run hook panicked"
+                            );
+                        }
+                        Err(_) => {
+                            tracing::warn!(
+                                run_id = %ctx.run_id,
+                                timeout_ms = timeout.as_millis(),
+                                "post-run hook timed out"
+                            );
+                        }
                     }
                 }
             }

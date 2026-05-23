@@ -285,6 +285,32 @@ impl PostRunHook for NeverCompletesPostRunHook {
     }
 }
 
+struct TimedOutPostRunHook {
+    calls: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[async_trait]
+impl PostRunHook for TimedOutPostRunHook {
+    fn timeout(&self) -> Duration {
+        Duration::from_millis(10)
+    }
+
+    async fn after_run(&self, _ctx: &PostRunHookContext<'_>) -> anyhow::Result<()> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        futures::future::pending::<()>().await;
+        unreachable!("pending post-run hook should only finish by timeout")
+    }
+}
+
+struct PanickingPostRunHook;
+
+#[async_trait]
+impl PostRunHook for PanickingPostRunHook {
+    async fn after_run(&self, _ctx: &PostRunHookContext<'_>) -> anyhow::Result<()> {
+        panic!("post-run panic from test hook")
+    }
+}
+
 fn build_test_engine(responses: Vec<String>) -> Engine {
     let model = Box::new(FakeModelClient::new(responses));
     let mut registry = ToolRegistry::new();
@@ -804,6 +830,78 @@ async fn post_run_hook_wait_is_cancelled_before_stream_closes() {
         .await
         .expect("cancelled post-run hook should let the stream close promptly");
     assert!(completed.is_none());
+}
+
+#[tokio::test]
+async fn timed_out_post_run_hook_does_not_block_later_hooks() {
+    let timed_out_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let records = Arc::new(Mutex::new(Vec::new()));
+    let hooks = HookRegistry::default()
+        .with_post_run(Box::new(TimedOutPostRunHook {
+            calls: timed_out_calls.clone(),
+        }))
+        .with_post_run(Box::new(RecordingPostRunHook {
+            records: records.clone(),
+        }));
+    let engine = build_test_engine(vec!["done".to_string()]).with_hooks(hooks);
+    let req = RunRequest {
+        session_id: SessionId::new(),
+        job_id: JobId::new(),
+        run_id: RunId::new(),
+        user_message: "finish".to_string(),
+        resume_state: None,
+    };
+
+    let events = tokio::time::timeout(
+        Duration::from_secs(2),
+        collect_events_with_request(&engine, req),
+    )
+    .await
+    .expect("timed-out post-run hook should not keep the stream open");
+
+    assert!(matches!(
+        events.last(),
+        Some(StreamEvent::RunCompleted {
+            reason: TerminationReason::Final,
+            output: Some(output),
+        }) if output == "done"
+    ));
+    assert_eq!(timed_out_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(records.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn panicking_post_run_hook_does_not_block_later_hooks() {
+    let records = Arc::new(Mutex::new(Vec::new()));
+    let hooks = HookRegistry::default()
+        .with_post_run(Box::new(PanickingPostRunHook))
+        .with_post_run(Box::new(RecordingPostRunHook {
+            records: records.clone(),
+        }));
+    let engine = build_test_engine(vec!["done".to_string()]).with_hooks(hooks);
+    let req = RunRequest {
+        session_id: SessionId::new(),
+        job_id: JobId::new(),
+        run_id: RunId::new(),
+        user_message: "finish".to_string(),
+        resume_state: None,
+    };
+
+    let events = tokio::time::timeout(
+        Duration::from_secs(2),
+        collect_events_with_request(&engine, req),
+    )
+    .await
+    .expect("panicking post-run hook should be isolated");
+
+    assert!(matches!(
+        events.last(),
+        Some(StreamEvent::RunCompleted {
+            reason: TerminationReason::Final,
+            output: Some(output),
+        }) if output == "done"
+    ));
+    assert_eq!(records.lock().unwrap().len(), 1);
 }
 
 #[tokio::test]

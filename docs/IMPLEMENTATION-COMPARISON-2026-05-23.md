@@ -21,7 +21,7 @@ This compares the current `main` implementation with the original design in:
 | `RunStream` handle | `Engine::run(req) -> RunStream` with IDs and `cancel()` | `src/core/engine.rs`, `tests/e2e.rs` | `RunStream` exposes `session_id()`, `job_id()`, `run_id()`, `cancel()`, and cancels on drop. |
 | CLI cancellation | SIGINT/SIGTERM cancels the engine run and maps cancelled exit codes | `src/main.rs`, `src/interfaces/cli/oneshot.rs`, `tests/e2e.rs` | CLI uses `Engine::run_with_cancel`; Ctrl+C exits 130 and Unix SIGTERM exits 143 after cancelled artifacts are finalized. |
 | ToolContext cancellation | Active run cancellation token is available at the tool boundary | `src/core/types.rs`, `src/core/engine.rs`, `src/hooks/mod.rs`, `tests/e2e.rs` | Pre/post tool hooks receive the same token through `ToolContext`; tool futures are still interrupted by the engine's select boundary. |
-| Post-run hook boundary | `RunCompleted` is yielded before post-run hooks, and hooks receive the run cancellation token | `src/hooks/mod.rs`, `src/core/engine.rs`, `tests/e2e.rs` | `HookRegistry` supports post-run hooks with run/workspace/result context; the stream closes after hooks finish or cancellation interrupts them. |
+| Post-run hook boundary | `RunCompleted` is yielded before post-run hooks, and hooks receive the run cancellation token | `src/hooks/mod.rs`, `src/core/engine.rs`, `tests/e2e.rs` | `HookRegistry` supports post-run hooks with run/workspace/result context; the stream closes after hooks finish, cancellation interrupts them, or per-hook timeout/panic isolation advances to the next hook. |
 | Trace/state/report artifacts | `.rove/runs/<run_id>/{trace.jsonl,task_state.json,report.json}` | `src/state/trace.rs`, `src/state/store.rs`, `src/state/artifacts.rs`, `tests/e2e.rs`, `tests/api.rs` | Snapshot writes are schema-versioned; report includes workspace and identity metadata. |
 | Tool pipeline | schema -> validate -> hooks -> approval/boundary -> exec -> post-hook | `src/core/executor.rs`, `src/core/boundary.rs`, `src/hooks/mod.rs` | Implemented with pre/post hooks and destructive-tool approval policy. |
 | File and shell tools | Built-in workspace tools with boundary checks | `src/tools/fs.rs`, `src/tools/shell.rs`, `tests/e2e.rs` | File tools stay inside workspace; shell rejects empty/NUL commands and destructive calls obey policy. |
@@ -62,7 +62,7 @@ This compares the current `main` implementation with the original design in:
 | Concurrent tool calls | `docs/05` D7 and `docs/06` station 7 | Tool calls execute serially. |
 | `request_input` tool | `docs/06` station 7 | Not present. |
 | MCP SSE transport | `docs/04` M4 | Stdio transport exists; SSE transport does not. |
-| Post-run hook hardening | `docs/06` station 10 | Core hook boundary exists; built-in memory-promotion/session-summary hooks, user-configured hooks, per-hook timeout, and panic isolation are not implemented. |
+| Post-run hook hardening | `docs/06` station 10 | Core hook boundary, cancellation, per-hook timeout, and panic isolation exist. Remaining gaps: built-in memory-promotion/session-summary hooks and user-configured hooks. |
 | Cargo workspace split | `docs/04` M5 optional | Still a single Rust crate plus separate `web-ui` package. |
 
 ## Milestone Status
@@ -71,7 +71,7 @@ This compares the current `main` implementation with the original design in:
 |---|---|---|
 | M0 skeleton | Implemented | Workspace detection, streaming engine, CLI oneshot, trace/report tests. |
 | M1 core loop | Mostly implemented | Multi-step loop, file/shell tools, approval policy, hooks, state/report, context trimming, CLI fast paths, fake benchmarks/tests. Missing Anthropic provider and richer retry/time-budget behavior. |
-| M2 planner | Mostly implemented | Persisted `TaskPlan`, resume-at-step, replanning after failed steps, `RunStream` identity/cancel handle, cooperative engine/CLI/API cancellation, ToolContext and post-run cancellation propagation, and durable-memory tools. Missing richer long-task controls and the full layered memory store. |
+| M2 planner | Mostly implemented | Persisted `TaskPlan`, resume-at-step, replanning after failed steps, `RunStream` identity/cancel handle, cooperative engine/CLI/API cancellation, ToolContext and post-run cancellation propagation, post-run timeout/panic isolation, and durable-memory tools. Missing richer long-task controls and the full layered memory store. |
 | M3 RAG | Partially implemented | `src/tools/rag.rs`, `src/tools/rag_stub.rs`, `src/bin/rove-index.rs`, `tests/rag.rs`, `tests/rag_default.rs`; tool schemas are always present, but real indexing/retrieval remains feature-gated. |
 | M4 MCP | Partially implemented | Stdio MCP proxy and mock-server test exist; SSE transport and real GitHub/filesystem server validation remain. |
 | M5 HTTP API | Implemented with additions | Job create/events/state/cancel and approval endpoints have integration coverage. |
@@ -163,3 +163,8 @@ This continuation wires the station-10 post-run hook boundary:
 - `src/hooks/mod.rs`: adds `PostRunHook`, `PostRunHookContext`, post-run registration, and cancellation-aware hook execution.
 - `src/core/engine.rs`: routes terminal `RunCompleted` paths through post-run hooks after yielding the terminal event and before stream close.
 - `tests/e2e.rs`: covers completed-run context and cancelling a pending post-run hook before the stream closes.
+
+This continuation hardens the station-10 post-run hook runner:
+
+- `src/hooks/mod.rs`: adds per-hook timeout defaults and catches hook panics without stopping later hooks.
+- `tests/e2e.rs`: covers timed-out and panicking post-run hooks continuing to subsequent hooks and closing the stream.
