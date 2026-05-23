@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use async_stream::stream;
 use futures::stream::{BoxStream, Stream, StreamExt};
+use tokio_util::sync::CancellationToken;
 
 use crate::core::context::{ContextManager, session_summary_message};
 use crate::core::events::StreamEvent;
@@ -233,6 +234,16 @@ impl Engine {
         req: RunRequest,
         trace_writer: Option<TraceWriter>,
     ) -> impl Stream<Item = StreamEvent> + '_ {
+        self.run_with_cancel(req, trace_writer, CancellationToken::new())
+    }
+
+    /// Run the agent loop with an interface-owned cancellation token.
+    pub fn run_with_cancel(
+        &self,
+        req: RunRequest,
+        trace_writer: Option<TraceWriter>,
+        cancel: CancellationToken,
+    ) -> impl Stream<Item = StreamEvent> + '_ {
         let job_id = req.job_id;
         let run_id = req.run_id;
         let user_message = req.user_message;
@@ -249,6 +260,13 @@ impl Engine {
             }
             yield start_event;
 
+            if cancel.is_cancelled() {
+                let event = cancelled_event();
+                append_trace(&trace_writer, &event);
+                yield event;
+                return;
+            }
+
             let mut history: Vec<Message> = resume_state
                 .as_ref()
                 .map(|state| state.history.clone())
@@ -263,7 +281,17 @@ impl Engine {
 
             if self.config.plan_enabled {
                 if plan.is_none() {
-                    match self.draft_plan(&user_message, &history).await {
+                    let draft_result = tokio::select! {
+                        biased;
+                        _ = cancel.cancelled() => {
+                            let event = cancelled_event();
+                            append_trace(&trace_writer, &event);
+                            yield event;
+                            return;
+                        }
+                        result = self.draft_plan(&user_message, &history) => result,
+                    };
+                    match draft_result {
                         Ok(drafted) => {
                             let event = StreamEvent::PlanCreated {
                                 plan: drafted.clone(),
@@ -290,6 +318,13 @@ impl Engine {
 
                 let mut final_output: Option<String> = None;
                 while let Some(ref mut active_plan) = plan {
+                    if cancel.is_cancelled() {
+                        let event = cancelled_event();
+                        append_trace(&trace_writer, &event);
+                        yield event;
+                        return;
+                    }
+
                     if active_plan.is_complete() {
                         break;
                     }
@@ -332,7 +367,20 @@ impl Engine {
                         &self.registry.schemas(),
                     );
 
-                    while let Some(chunk_result) = model_stream.next().await {
+                    loop {
+                        let chunk_result = tokio::select! {
+                            biased;
+                            _ = cancel.cancelled() => {
+                                let event = cancelled_event();
+                                append_trace(&trace_writer, &event);
+                                yield event;
+                                return;
+                            }
+                            chunk = model_stream.next() => chunk,
+                        };
+                        let Some(chunk_result) = chunk_result else {
+                            break;
+                        };
                         match chunk_result {
                             Ok(chunk) => {
                                 if !chunk.delta.is_empty() {
@@ -396,8 +444,16 @@ impl Engine {
                                     let _ = tw.append(&approval_event);
                                 }
                                 yield approval_event;
-                                self.resolve_approval(call_id, &name, &args, approval_reason)
-                                    .await
+                                tokio::select! {
+                                    biased;
+                                    _ = cancel.cancelled() => {
+                                        let event = cancelled_event();
+                                        append_trace(&trace_writer, &event);
+                                        yield event;
+                                        return;
+                                    }
+                                    decision = self.resolve_approval(call_id, &name, &args, approval_reason) => decision,
+                                }
                             } else {
                                 self.approval_decision
                             };
@@ -409,7 +465,17 @@ impl Engine {
                                 approval_policy: self
                                     .effective_approval_policy(&name, approval_decision),
                             };
-                            match executor.run(&tool_context, &name, args, call_id).await {
+                            let tool_result = tokio::select! {
+                                biased;
+                                _ = cancel.cancelled() => {
+                                    let event = cancelled_event();
+                                    append_trace(&trace_writer, &event);
+                                    yield event;
+                                    return;
+                                }
+                                result = executor.run(&tool_context, &name, args, call_id) => result,
+                            };
+                            match tool_result {
                                 Ok(result) => {
                                     history.push(Message {
                                         role: Role::Assistant,
@@ -459,15 +525,22 @@ impl Engine {
                                     }
                                     yield failed;
 
-                                    match self
-                                        .replan_after_step_failure(
+                                    let replan_result = tokio::select! {
+                                        biased;
+                                        _ = cancel.cancelled() => {
+                                            let event = cancelled_event();
+                                            append_trace(&trace_writer, &event);
+                                            yield event;
+                                            return;
+                                        }
+                                        result = self.replan_after_step_failure(
                                             &active_plan.goal,
                                             &current_step.title,
                                             &reason,
                                             &mut history,
-                                        )
-                                        .await
-                                    {
+                                        ) => result,
+                                    };
+                                    match replan_result {
                                         Ok(drafted) => {
                                             let event = StreamEvent::PlanCreated {
                                                 plan: drafted.clone(),
@@ -531,15 +604,22 @@ impl Engine {
                             }
                             yield failed;
 
-                            match self
-                                .replan_after_step_failure(
+                            let replan_result = tokio::select! {
+                                biased;
+                                _ = cancel.cancelled() => {
+                                    let event = cancelled_event();
+                                    append_trace(&trace_writer, &event);
+                                    yield event;
+                                    return;
+                                }
+                                result = self.replan_after_step_failure(
                                     &active_plan.goal,
                                     &current_step.title,
                                     &reason,
                                     &mut history,
-                                )
-                                .await
-                            {
+                                ) => result,
+                            };
+                            match replan_result {
                                 Ok(drafted) => {
                                     let event = StreamEvent::PlanCreated {
                                         plan: drafted.clone(),
@@ -578,6 +658,13 @@ impl Engine {
             }
 
             loop {
+                if cancel.is_cancelled() {
+                    let event = cancelled_event();
+                    append_trace(&trace_writer, &event);
+                    yield event;
+                    return;
+                }
+
                 if step >= self.config.max_steps {
                     let event = StreamEvent::RunCompleted {
                         reason: TerminationReason::StepLimit,
@@ -602,7 +689,20 @@ impl Engine {
                     &self.registry.schemas(),
                 );
 
-                while let Some(chunk_result) = model_stream.next().await {
+                loop {
+                    let chunk_result = tokio::select! {
+                        biased;
+                        _ = cancel.cancelled() => {
+                            let event = cancelled_event();
+                            append_trace(&trace_writer, &event);
+                            yield event;
+                            return;
+                        }
+                        chunk = model_stream.next() => chunk,
+                    };
+                    let Some(chunk_result) = chunk_result else {
+                        break;
+                    };
                     match chunk_result {
                         Ok(chunk) => {
                             if !chunk.delta.is_empty() {
@@ -682,8 +782,16 @@ impl Engine {
                                 let _ = tw.append(&approval_event);
                             }
                             yield approval_event;
-                            self.resolve_approval(call_id, &name, &args, approval_reason)
-                                .await
+                            tokio::select! {
+                                biased;
+                                _ = cancel.cancelled() => {
+                                    let event = cancelled_event();
+                                    append_trace(&trace_writer, &event);
+                                    yield event;
+                                    return;
+                                }
+                                decision = self.resolve_approval(call_id, &name, &args, approval_reason) => decision,
+                            }
                         } else {
                             self.approval_decision
                         };
@@ -693,7 +801,17 @@ impl Engine {
                             workspace: &self.workspace,
                             approval_policy: self.effective_approval_policy(&name, approval_decision),
                         };
-                        match executor.run(&tool_context, &name, args, call_id).await {
+                        let tool_result = tokio::select! {
+                            biased;
+                            _ = cancel.cancelled() => {
+                                let event = cancelled_event();
+                                append_trace(&trace_writer, &event);
+                                yield event;
+                                return;
+                            }
+                            result = executor.run(&tool_context, &name, args, call_id) => result,
+                        };
+                        match tool_result {
                             Ok(result) => {
                                 // Add assistant message + tool result to history
                                 history.push(Message {
@@ -758,4 +876,17 @@ impl Engine {
 
 pub(crate) fn planned_step_failure_message(step_title: &str, reason: &str) -> String {
     format!("Planned step failed: {step_title}. Reason: {reason}. Re-plan the remaining work.")
+}
+
+fn cancelled_event() -> StreamEvent {
+    StreamEvent::RunCompleted {
+        reason: TerminationReason::Cancelled,
+        output: None,
+    }
+}
+
+fn append_trace(trace_writer: &Option<TraceWriter>, event: &StreamEvent) {
+    if let Some(tw) = trace_writer {
+        let _ = tw.append(event);
+    }
 }

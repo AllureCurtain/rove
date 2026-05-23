@@ -8,7 +8,7 @@ This compares the current `main` implementation with the original design in:
 
 ## Summary
 
-`main` is already beyond the original M0-M2 kernel plan and includes partial M3, M4, M5, and M6 surfaces. The largest difference is shape: the original docs describe an eventual `EngineDeps` / `RunStream` handle architecture with cancellation tokens and richer provider routing, while the current implementation keeps a simpler single-crate `Engine::run(req, trace_writer) -> impl Stream<Item = StreamEvent>` flow and lets interfaces own job handles, cancellation, and persistence.
+`main` is already beyond the original M0-M2 kernel plan and includes partial M3, M4, M5, and M6 surfaces. The largest difference is shape: the original docs describe an eventual `EngineDeps` / `RunStream` handle architecture with cancellation tokens and richer provider routing, while the current implementation keeps a simpler single-crate `Engine::run(req, trace_writer) -> impl Stream<Item = StreamEvent>` flow. Cooperative cancellation now exists through `Engine::run_with_cancel(...)`, but the full token tree and combined `RunStream` handle are still open.
 
 ## Implemented Close To The Design
 
@@ -32,7 +32,7 @@ This compares the current `main` implementation with the original design in:
 
 | Area | Original design | Current implementation | Impact |
 |---|---|---|---|
-| `RunStream` handle | `Engine::run(req) -> RunStream` with IDs and `cancel()` | `Engine::run(req, trace_writer) -> impl Stream<Item = StreamEvent>` | Simpler. API owns the job task handle and aborts it directly; no core-level cancel token yet. |
+| `RunStream` handle | `Engine::run(req) -> RunStream` with IDs and `cancel()` | `Engine::run(req, trace_writer) -> impl Stream<Item = StreamEvent>` plus `run_with_cancel(..., CancellationToken)` | Simpler. API can now cancel cooperatively through core, but there is still no combined stream/handle type exposing IDs and `cancel()`. |
 | DI container | `EngineDeps` with `Arc<dyn ...>` dependencies | `Engine` directly owns `Box<dyn ModelClient>`, `ToolRegistry`, `ContextManager`, `Workspace`, config, hooks | Works for single crate, but less close to the documented dependency graph. |
 | CLI entry | Planned subcommands: `dump-config`, `sessions`, `index` | Main CLI has oneshot plus `dump-config`, `index`, and `sessions`; `index` and `rove-index` share the same implementation behind the `rag` feature | The main CLI surface now matches the planned station-1 subcommands. |
 | M3 RAG availability | `retrieve_code` / `retrieve_docs` tools plus ingestion | Implemented behind Cargo feature `rag`; ingestion is available through `rove index` and the legacy `rove-index` binary | Useful but not always available in default build. |
@@ -40,7 +40,7 @@ This compares the current `main` implementation with the original design in:
 | Model providers | OpenAI, Anthropic, Ollama, DeepSeek, routing/fallback | OpenAI-compatible client plus fake model | Anthropic/Ollama/routing/circuit-breaker work remains open. |
 | Tool call parsing | Protocol-specific tool-use normalized in model layer | Text parser handles final text or JSON `{ "tool": ..., "args": ... }` | Simpler and testable, but not yet the documented Anthropic/OpenAI tool-use abstraction. |
 | Context management | 7-section budget, cache breakpoints, compaction | Deterministic prompt ordering with session summary and trimmed history | Covers early M1/M2 needs, not the full station-5 design. |
-| API cancellation | Graceful cancellation token tree | API aborts spawned job handle and finalizes cancelled artifacts | Produces cancellation artifacts, but not cooperative cancellation through core/tool layers. |
+| API cancellation | Graceful cancellation token tree | API stores a per-job `CancellationToken`, passes it to `Engine::run_with_cancel`, and keeps artifact finalization as a fallback | More cooperative than task aborting, but still not the full app-level parent token tree or graceful server shutdown path. |
 | Web delivery | Roadmap recommended independent Next.js project or temporary axum HTML | Independent Next.js workbench proxies to `/api` | Matches the preferred direction more than the historical `GOAL.md` Path B note. |
 
 ## Not Yet Implemented
@@ -48,7 +48,7 @@ This compares the current `main` implementation with the original design in:
 | Gap | Source design | Current missing piece |
 |---|---|---|
 | REPL mode and slash commands | `docs/06` station 11 | No `rustyline` REPL, `/session`, `/memory`, `/history`, `/cancel`, etc. |
-| Core-level cancellation token tree | `docs/06` stations 2, 3, 12 | No `CancellationToken` in `Engine` or `RunRequest`; no SIGINT/SIGTERM exit-code mapping. |
+| Cancellation token tree completion | `docs/06` stations 2, 3, 12 | `Engine::run_with_cancel` and API job tokens exist, but there is no app-level parent token, CLI SIGINT/SIGTERM exit-code mapping, ToolContext token, or post-run hook cancellation token. |
 | `RunStream` combined handle | `docs/06` station 2 | No stream type exposing `run_id()`, `job_id()`, `session_id()`, and `cancel()`. |
 | Prompt cache and compaction | `docs/06` station 5 | No cache breakpoint metadata or compact model flow. |
 | Durable/session memory stores | `docs/06` station 8 | Working/session summaries exist through snapshots, but no durable `MEMORY.md`, save-memory tools, or memory index. |
@@ -68,7 +68,7 @@ This compares the current `main` implementation with the original design in:
 |---|---|---|
 | M0 skeleton | Implemented | Workspace detection, streaming engine, CLI oneshot, trace/report tests. |
 | M1 core loop | Mostly implemented | Multi-step loop, file/shell tools, approval policy, hooks, state/report, context trimming, CLI fast paths, fake benchmarks/tests. Missing Anthropic provider and richer retry/time-budget behavior. |
-| M2 planner | Mostly implemented | Persisted `TaskPlan`, resume-at-step, replanning after failed steps. Missing richer long-task controls and cooperative cancellation. |
+| M2 planner | Mostly implemented | Persisted `TaskPlan`, resume-at-step, replanning after failed steps, and cooperative engine/API cancellation. Missing richer long-task controls and the full cancellation token tree. |
 | M3 RAG | Partially implemented | `src/tools/rag.rs`, `src/bin/rove-index.rs`, `tests/rag.rs`; feature-gated and deterministic runtime retrieval by default. |
 | M4 MCP | Partially implemented | Stdio MCP proxy and mock-server test exist; SSE transport and real GitHub/filesystem server validation remain. |
 | M5 HTTP API | Implemented with additions | Job create/events/state/cancel and approval endpoints have integration coverage. |
@@ -96,3 +96,10 @@ This continuation then closes the remaining station-1 CLI entry gap by integrati
 - `src/interfaces/cli/index.rs`: shares indexing behavior between `rove index` and `rove-index`.
 - `src/bin/rove-index.rs`: delegates to the shared CLI index module.
 - `tests/cli_index.rs`: covers output formatting, default-build feature messaging, and feature-enabled deterministic ingestion.
+
+The next continuation starts the station-2/3/12 cancellation gap without changing the public stream shape yet:
+
+- `Cargo.toml`: adds a direct `tokio-util` dependency for `CancellationToken`.
+- `src/core/engine.rs`: adds `run_with_cancel` and checks cancellation around planner, model, approval, and tool waits.
+- `src/interfaces/api/mod.rs`: gives each API job a cancellation token and lets the engine emit the cancelled terminal event.
+- `tests/e2e.rs`: covers cancellation while a tool future is still pending.

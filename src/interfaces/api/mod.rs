@@ -13,6 +13,7 @@ use futures::{Stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock, broadcast, oneshot};
 use tokio_stream::wrappers::BroadcastStream;
+use tokio_util::sync::CancellationToken;
 
 use crate::config::AppConfig;
 use crate::core::context::ContextManager;
@@ -57,6 +58,7 @@ struct JobRecord {
     pending_approvals: Mutex<HashMap<CallId, PendingApproval>>,
     tx: broadcast::Sender<StreamEvent>,
     handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    cancel_token: CancellationToken,
 }
 
 struct PendingApproval {
@@ -154,6 +156,7 @@ async fn create_job(
         pending_approvals: Mutex::new(HashMap::new()),
         tx,
         handle: Mutex::new(None),
+        cancel_token: CancellationToken::new(),
     });
 
     state
@@ -226,16 +229,23 @@ async fn cancel_job(
         }));
     }
 
+    record.cancel_token.cancel();
+    reject_pending_approvals(&record).await;
+
     if let Some(handle) = record.handle.lock().await.take() {
-        handle.abort();
         let _ = handle.await;
     }
-    reject_pending_approvals(&record).await;
-    finalize_cancelled_job(&state, &record).await;
+
+    let mut status = record.status.lock().await.clone();
+    if !is_terminal(&status) {
+        finalize_cancelled_job(&state, &record).await;
+        status = RunStatus::Cancelled;
+    }
+
     Ok(Json(JobStateResponse {
         job_id: record.job_id,
         run_id: record.run_id,
-        status: RunStatus::Cancelled,
+        status,
         event_count: record.events.lock().await.len(),
         pending_approvals: pending_approvals_response(&record).await,
     }))
@@ -290,12 +300,18 @@ async fn run_job_inner(
     let model_id = engine.model_id().to_string();
     let workspace = engine.workspace().clone();
     let request = run.request(record.message.clone(), None);
-    let mut stream = std::pin::pin!(engine.run(request, Some(run.trace_writer)));
+    let mut stream = std::pin::pin!(engine.run_with_cancel(
+        request,
+        Some(run.trace_writer),
+        record.cancel_token.clone(),
+    ));
     let mut completed = false;
+    let mut terminal_status = RunStatus::Error;
     while let Some(event) = stream.next().await {
         recorder.record_event(&event, &state_store).await;
-        if matches!(event, StreamEvent::RunCompleted { .. }) {
+        if let StreamEvent::RunCompleted { reason, .. } = &event {
             completed = true;
+            terminal_status = status_for_reason(reason);
         }
         record.events.lock().await.push(event.clone());
         let _ = record.tx.send(event);
@@ -304,7 +320,7 @@ async fn run_job_inner(
         .finalize(&state_store, &workspace, &model_id, &run.run_dir)
         .await;
     *record.status.lock().await = if completed {
-        RunStatus::Done
+        terminal_status
     } else {
         RunStatus::Error
     };
@@ -466,6 +482,17 @@ fn is_terminal(status: &RunStatus) -> bool {
         status,
         RunStatus::Done | RunStatus::Error | RunStatus::Cancelled
     )
+}
+
+fn status_for_reason(reason: &TerminationReason) -> RunStatus {
+    match reason {
+        TerminationReason::Final
+        | TerminationReason::StepLimit
+        | TerminationReason::TokenLimit
+        | TerminationReason::TimeLimit => RunStatus::Done,
+        TerminationReason::Error => RunStatus::Error,
+        TerminationReason::Cancelled => RunStatus::Cancelled,
+    }
 }
 
 #[derive(Debug)]

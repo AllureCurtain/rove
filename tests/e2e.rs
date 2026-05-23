@@ -2,6 +2,8 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use tokio_util::sync::CancellationToken;
 
 use rove::core::context::ContextManager;
 use rove::core::engine::{Engine, EngineConfig};
@@ -162,6 +164,28 @@ impl Tool for CountingTool {
         Ok(ToolOutput {
             content: "executed".to_string(),
         })
+    }
+}
+
+struct NeverCompletesTool;
+
+#[async_trait]
+impl Tool for NeverCompletesTool {
+    fn schema(&self) -> ToolSchema {
+        ToolSchema {
+            name: "wait_forever".to_string(),
+            description: "A tool that stays pending until the run is cancelled.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {}
+            }),
+            destructive: false,
+        }
+    }
+
+    async fn execute(&self, _args: serde_json::Value) -> Result<ToolOutput, ToolError> {
+        futures::future::pending::<()>().await;
+        unreachable!("pending tool should only finish by cancellation")
     }
 }
 
@@ -1385,6 +1409,63 @@ async fn shell_tool_runs_non_empty_command_when_approved() {
         .unwrap();
 
     assert!(result.output.contains("shell-ok"));
+}
+
+#[tokio::test]
+async fn run_with_cancel_completes_cancelled_while_tool_is_waiting() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let model = Box::new(FakeModelClient::new(vec![
+        r#"{"tool":"wait_forever","args":{}}"#.to_string(),
+    ]));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(NeverCompletesTool));
+    let engine = Engine::with_workspace(
+        model,
+        registry,
+        ContextManager::new("You are a test agent.".to_string()),
+        EngineConfig {
+            max_steps: 2,
+            plan_enabled: false,
+        },
+        workspace,
+        ApprovalPolicy::Auto,
+    );
+    let req = RunRequest {
+        session_id: SessionId::new(),
+        job_id: JobId::new(),
+        run_id: RunId::new(),
+        user_message: "wait".to_string(),
+        resume_state: None,
+    };
+    let cancel = CancellationToken::new();
+    let stream = engine.run_with_cancel(req, None, cancel.clone());
+    futures::pin_mut!(stream);
+
+    let mut saw_tool_start = false;
+    while let Some(event) = tokio::time::timeout(Duration::from_secs(2), stream.next())
+        .await
+        .expect("stream should reach the tool call")
+    {
+        if matches!(event, StreamEvent::ToolCallStarted { name, .. } if name == "wait_forever") {
+            saw_tool_start = true;
+            cancel.cancel();
+            break;
+        }
+    }
+
+    assert!(saw_tool_start, "tool call should start before cancellation");
+    let event = tokio::time::timeout(Duration::from_secs(2), stream.next())
+        .await
+        .expect("cancelled run should finish promptly")
+        .expect("cancelled run should emit a terminal event");
+    assert!(matches!(
+        event,
+        StreamEvent::RunCompleted {
+            reason: rove::core::types::TerminationReason::Cancelled,
+            output: None,
+        }
+    ));
 }
 
 #[test]
