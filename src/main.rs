@@ -12,6 +12,7 @@ use rove::interfaces::cli::approval::stdin_approval_provider;
 use rove::interfaces::cli::args::{Args, CliApprovalPolicy, Command};
 use rove::interfaces::cli::config as cli_config;
 use rove::interfaces::cli::index::{self as cli_index, IndexOptions};
+use rove::interfaces::cli::input::stdin_input_provider;
 use rove::interfaces::cli::oneshot::{resolve_resume_state, run_oneshot_with_cancel};
 use rove::interfaces::cli::sessions;
 use rove::models::fake::FakeModelClient;
@@ -145,7 +146,8 @@ async fn main() -> anyhow::Result<()> {
         engine_config,
         workspace.clone(),
         approval_policy,
-    );
+    )
+    .with_input_provider(stdin_input_provider());
     let engine = if approval_policy == ApprovalPolicy::Ask {
         engine.with_approval_provider(stdin_approval_provider())
     } else {
