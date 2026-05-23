@@ -8,5 +8,6 @@ pub mod rag;
 #[path = "rag_stub.rs"]
 pub mod rag;
 pub mod registry;
+pub mod request_input;
 pub mod shell;
 pub mod traits;

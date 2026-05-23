@@ -34,6 +34,7 @@ use crate::tools::fs::{FsReadTool, FsWriteTool};
 use crate::tools::memory::{ReadMemoryTopicTool, SaveMemoryTool, UpdateMemoryIndexTool};
 use crate::tools::rag::RagRetrieveTool;
 use crate::tools::registry::ToolRegistry;
+use crate::tools::request_input::RequestInputTool;
 use crate::tools::shell::ShellTool;
 
 const EVENT_BUFFER: usize = 256;
@@ -442,6 +443,7 @@ fn build_engine(
     registry.register(Box::new(UpdateMemoryIndexTool::new(workspace.root.clone())));
     registry.register(Box::new(RagRetrieveTool::code(workspace.root.clone())));
     registry.register(Box::new(RagRetrieveTool::docs(workspace.root.clone())));
+    registry.register(Box::new(RequestInputTool));
     registry.register(Box::new(ShellTool::new(workspace.root.clone())));
 
     let approval_policy = req.approval.unwrap_or(ApprovalPolicy::Ask);

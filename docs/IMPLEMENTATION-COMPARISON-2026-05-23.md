@@ -44,6 +44,7 @@ This compares the current `main` implementation with the original design in:
 | M4 MCP transport | JSON-RPC over stdio/SSE | Stdio JSON-RPC only | Mock-server tests cover stdio; SSE transport and broader server config are not implemented. |
 | Model providers | OpenAI, Anthropic, Ollama, DeepSeek, routing/fallback | OpenAI-compatible client plus fake model | Anthropic/Ollama/routing/circuit-breaker work remains open. |
 | Tool call parsing | Protocol-specific tool-use normalized in model layer | Text parser handles final text or JSON `{ "tool": ..., "args": ... }` | Simpler and testable, but not yet the documented Anthropic/OpenAI tool-use abstraction. |
+| `request_input` flow | `request_input` asks the user via `ToolContext` and returns the answer | Tool schema is registered in CLI/API; current execution validates `prompt` and returns a clear interactive-provider-required message | Gives the LLM a stable tool contract, but real user-response channels remain open. |
 | Context management | 7-section budget, cache breakpoints, compaction | Deterministic prompt ordering with session summary and trimmed history | Covers early M1/M2 needs, not the full station-5 design. |
 | API cancellation/shutdown | Graceful cancellation token tree | API stores an API shutdown token, gives jobs child tokens, passes them to `Engine::run_with_cancel`, and serves with `with_graceful_shutdown` | API shutdown now cancels pending jobs and clears approvals; still missing explicit job-broker drain semantics and the fuller app-level token container from the docs. |
 | Web delivery | Roadmap recommended independent Next.js project or temporary axum HTML | Independent Next.js workbench proxies to `/api` | Matches the preferred direction more than the historical `GOAL.md` Path B note. |
@@ -60,7 +61,7 @@ This compares the current `main` implementation with the original design in:
 | Routing model client and circuit breaker | `docs/06` station 4 | No fallback provider routing, TTFB probe, or three-state circuit breaker. |
 | Native OpenAI/Anthropic tool-use normalization | `docs/06` station 6 | Model layer does not emit structured `ModelChunk::ToolUse`; parser remains JSON-text based. |
 | Concurrent tool calls | `docs/05` D7 and `docs/06` station 7 | Tool calls execute serially. |
-| `request_input` tool | `docs/06` station 7 | Not present. |
+| `request_input` interactive flow | `docs/06` station 7 | Tool surface and fallback output exist. Missing: `ToolContext` input provider, CLI/API response channel, and returning actual user answers to the tool caller. |
 | MCP SSE transport | `docs/04` M4 | Stdio transport exists; SSE transport does not. |
 | Post-run hook hardening | `docs/06` station 10 | Core hook boundary, cancellation, per-hook timeout, and panic isolation exist. Remaining gaps: built-in memory-promotion/session-summary hooks and user-configured hooks. |
 | Cargo workspace split | `docs/04` M5 optional | Still a single Rust crate plus separate `web-ui` package. |
@@ -168,3 +169,9 @@ This continuation hardens the station-10 post-run hook runner:
 
 - `src/hooks/mod.rs`: adds per-hook timeout defaults and catches hook panics without stopping later hooks.
 - `tests/e2e.rs`: covers timed-out and panicking post-run hooks continuing to subsequent hooks and closing the stream.
+
+This continuation starts the station-7 `request_input` surface:
+
+- `src/tools/request_input.rs` and `src/tools/mod.rs`: add the `request_input` tool schema, prompt validation, and a clear interactive-provider-required fallback.
+- `src/main.rs` and `src/interfaces/api/mod.rs`: register `request_input` for CLI and API engine runs.
+- `tests/request_input_tool.rs` and `tests/api.rs`: cover schema/fallback behavior and API job registration.

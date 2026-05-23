@@ -24,6 +24,7 @@ use rove::tools::mcp_proxy::register_mcp_tools_from_file;
 use rove::tools::memory::{ReadMemoryTopicTool, SaveMemoryTool, UpdateMemoryIndexTool};
 use rove::tools::rag::RagRetrieveTool;
 use rove::tools::registry::ToolRegistry;
+use rove::tools::request_input::RequestInputTool;
 use rove::tools::shell::ShellTool;
 use tokio_util::sync::CancellationToken;
 
@@ -111,6 +112,7 @@ async fn main() -> anyhow::Result<()> {
     registry.register(Box::new(UpdateMemoryIndexTool::new(workspace.root.clone())));
     registry.register(Box::new(RagRetrieveTool::code(workspace.root.clone())));
     registry.register(Box::new(RagRetrieveTool::docs(workspace.root.clone())));
+    registry.register(Box::new(RequestInputTool));
     registry.register(Box::new(ShellTool::new(workspace.root.clone())));
     let mcp_config_path = if config.mcp_config_path.is_absolute() {
         config.mcp_config_path.clone()
