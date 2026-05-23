@@ -18,7 +18,7 @@ use crate::core::types::{
     TaskPlan, TerminationReason, ToolApprovalProvider, ToolApprovalRequest, ToolContext, Usage,
 };
 use crate::core::workspace::Workspace;
-use crate::hooks::HookRegistry;
+use crate::hooks::{HookRegistry, PostRunHookContext};
 use crate::memory::durable::read_memory_index_sync;
 use crate::models::traits::ModelClient;
 use crate::state::trace::TraceWriter;
@@ -271,6 +271,27 @@ impl Engine {
         self.draft_plan(goal, history).await
     }
 
+    async fn run_post_run_hooks(
+        &self,
+        session_id: SessionId,
+        job_id: JobId,
+        run_id: RunId,
+        reason: TerminationReason,
+        output: Option<String>,
+        cancel_token: CancellationToken,
+    ) {
+        let ctx = PostRunHookContext {
+            workspace: &self.workspace,
+            session_id,
+            job_id,
+            run_id,
+            reason,
+            output,
+            cancel_token,
+        };
+        self.hooks.run_post_run(&ctx).await;
+    }
+
     /// Run the agent loop for a user message.
     ///
     /// Returns a stream of events. The stream completes when the run terminates.
@@ -313,6 +334,29 @@ impl Engine {
             run_id,
             cancel,
             stream! {
+                macro_rules! complete_run {
+                    ($reason:expr, $output:expr) => {{
+                        let reason = $reason;
+                        let output = $output;
+                        let event = StreamEvent::RunCompleted {
+                            reason: reason.clone(),
+                            output: output.clone(),
+                        };
+                        append_trace(&trace_writer, &event);
+                        yield event;
+                        self.run_post_run_hooks(
+                            session_id,
+                            job_id,
+                            run_id,
+                            reason,
+                            output,
+                            stream_cancel.clone(),
+                        )
+                        .await;
+                        return;
+                    }};
+                }
+
                 let start_event = StreamEvent::RunStarted {
                     run_id,
                     job_id,
@@ -324,10 +368,7 @@ impl Engine {
                 yield start_event;
 
                 if stream_cancel.is_cancelled() {
-                    let event = cancelled_event();
-                    append_trace(&trace_writer, &event);
-                    yield event;
-                    return;
+                    complete_run!(TerminationReason::Cancelled, None);
                 }
 
                 let mut history: Vec<Message> = resume_state
@@ -356,10 +397,7 @@ impl Engine {
                         let draft_result = tokio::select! {
                             biased;
                             _ = stream_cancel.cancelled() => {
-                                let event = cancelled_event();
-                                append_trace(&trace_writer, &event);
-                                yield event;
-                                return;
+                                complete_run!(TerminationReason::Cancelled, None);
                             }
                             result = self.draft_plan(&user_message, &history) => result,
                         };
@@ -375,15 +413,10 @@ impl Engine {
                                 plan = Some(drafted);
                             }
                             Err(err) => {
-                                let event = StreamEvent::RunCompleted {
-                                    reason: TerminationReason::Error,
-                                    output: Some(format!("Planner error: {err}")),
-                                };
-                                if let Some(ref tw) = trace_writer {
-                                    let _ = tw.append(&event);
-                                }
-                                yield event;
-                                return;
+                                complete_run!(
+                                    TerminationReason::Error,
+                                    Some(format!("Planner error: {err}"))
+                                );
                             }
                         }
                     }
@@ -391,10 +424,7 @@ impl Engine {
                     let mut final_output: Option<String> = None;
                     while let Some(ref mut active_plan) = plan {
                         if stream_cancel.is_cancelled() {
-                            let event = cancelled_event();
-                            append_trace(&trace_writer, &event);
-                            yield event;
-                            return;
+                            complete_run!(TerminationReason::Cancelled, None);
                         }
 
                         if active_plan.is_complete() {
@@ -402,15 +432,7 @@ impl Engine {
                         }
 
                         if step >= self.config.max_steps {
-                            let event = StreamEvent::RunCompleted {
-                                reason: TerminationReason::StepLimit,
-                                output: final_output,
-                            };
-                            if let Some(ref tw) = trace_writer {
-                                let _ = tw.append(&event);
-                            }
-                            yield event;
-                            return;
+                            complete_run!(TerminationReason::StepLimit, final_output);
                         }
 
                         let Some(current_step) = active_plan.current_step().cloned() else {
@@ -443,10 +465,7 @@ impl Engine {
                             let chunk_result = tokio::select! {
                                 biased;
                                 _ = stream_cancel.cancelled() => {
-                                    let event = cancelled_event();
-                                    append_trace(&trace_writer, &event);
-                                    yield event;
-                                    return;
+                                    complete_run!(TerminationReason::Cancelled, None);
                                 }
                                 chunk = model_stream.next() => chunk,
                             };
@@ -470,15 +489,10 @@ impl Engine {
                                     }
                                 }
                                 Err(e) => {
-                                    let event = StreamEvent::RunCompleted {
-                                        reason: TerminationReason::Error,
-                                        output: Some(format!("Model error: {}", e)),
-                                    };
-                                    if let Some(ref tw) = trace_writer {
-                                        let _ = tw.append(&event);
-                                    }
-                                    yield event;
-                                    return;
+                                    complete_run!(
+                                        TerminationReason::Error,
+                                        Some(format!("Model error: {}", e))
+                                    );
                                 }
                             }
                         }
@@ -519,10 +533,7 @@ impl Engine {
                                     tokio::select! {
                                         biased;
                                         _ = stream_cancel.cancelled() => {
-                                            let event = cancelled_event();
-                                            append_trace(&trace_writer, &event);
-                                            yield event;
-                                            return;
+                                            complete_run!(TerminationReason::Cancelled, None);
                                         }
                                         decision = self.resolve_approval(call_id, &name, &args, approval_reason) => decision,
                                     }
@@ -541,10 +552,7 @@ impl Engine {
                                 let tool_result = tokio::select! {
                                     biased;
                                     _ = stream_cancel.cancelled() => {
-                                        let event = cancelled_event();
-                                        append_trace(&trace_writer, &event);
-                                        yield event;
-                                        return;
+                                        complete_run!(TerminationReason::Cancelled, None);
                                     }
                                     result = executor.run(&tool_context, &name, args, call_id) => result,
                                 };
@@ -601,10 +609,7 @@ impl Engine {
                                         let replan_result = tokio::select! {
                                             biased;
                                             _ = stream_cancel.cancelled() => {
-                                                let event = cancelled_event();
-                                                append_trace(&trace_writer, &event);
-                                                yield event;
-                                                return;
+                                                complete_run!(TerminationReason::Cancelled, None);
                                             }
                                             result = self.replan_after_step_failure(
                                                 &active_plan.goal,
@@ -625,15 +630,10 @@ impl Engine {
                                                 *active_plan = drafted;
                                             }
                                             Err(err) => {
-                                                let event = StreamEvent::RunCompleted {
-                                                    reason: TerminationReason::Error,
-                                                    output: Some(format!("Planner error: {err}")),
-                                                };
-                                                if let Some(ref tw) = trace_writer {
-                                                    let _ = tw.append(&event);
-                                                }
-                                                yield event;
-                                                return;
+                                                complete_run!(
+                                                    TerminationReason::Error,
+                                                    Some(format!("Planner error: {err}"))
+                                                );
                                             }
                                         }
                                     }
@@ -680,10 +680,7 @@ impl Engine {
                                 let replan_result = tokio::select! {
                                     biased;
                                     _ = stream_cancel.cancelled() => {
-                                        let event = cancelled_event();
-                                        append_trace(&trace_writer, &event);
-                                        yield event;
-                                        return;
+                                        complete_run!(TerminationReason::Cancelled, None);
                                     }
                                     result = self.replan_after_step_failure(
                                         &active_plan.goal,
@@ -704,50 +701,26 @@ impl Engine {
                                         *active_plan = drafted;
                                     }
                                     Err(err) => {
-                                        let event = StreamEvent::RunCompleted {
-                                            reason: TerminationReason::Error,
-                                            output: Some(format!("Planner error: {err}")),
-                                        };
-                                        if let Some(ref tw) = trace_writer {
-                                            let _ = tw.append(&event);
-                                        }
-                                        yield event;
-                                        return;
+                                        complete_run!(
+                                            TerminationReason::Error,
+                                            Some(format!("Planner error: {err}"))
+                                        );
                                     }
                                 }
                             }
                         }
                     }
 
-                    let event = StreamEvent::RunCompleted {
-                        reason: TerminationReason::Final,
-                        output: final_output,
-                    };
-                    if let Some(ref tw) = trace_writer {
-                        let _ = tw.append(&event);
-                    }
-                    yield event;
-                    return;
+                    complete_run!(TerminationReason::Final, final_output);
                 }
 
                 loop {
                     if stream_cancel.is_cancelled() {
-                        let event = cancelled_event();
-                        append_trace(&trace_writer, &event);
-                        yield event;
-                        return;
+                        complete_run!(TerminationReason::Cancelled, None);
                     }
 
                     if step >= self.config.max_steps {
-                        let event = StreamEvent::RunCompleted {
-                            reason: TerminationReason::StepLimit,
-                            output: None,
-                        };
-                        if let Some(ref tw) = trace_writer {
-                            let _ = tw.append(&event);
-                        }
-                        yield event;
-                        return;
+                        complete_run!(TerminationReason::StepLimit, None);
                     }
                     step += 1;
 
@@ -766,10 +739,7 @@ impl Engine {
                         let chunk_result = tokio::select! {
                             biased;
                             _ = stream_cancel.cancelled() => {
-                                let event = cancelled_event();
-                                append_trace(&trace_writer, &event);
-                                yield event;
-                                return;
+                                complete_run!(TerminationReason::Cancelled, None);
                             }
                             chunk = model_stream.next() => chunk,
                         };
@@ -793,15 +763,10 @@ impl Engine {
                                 }
                             }
                             Err(e) => {
-                                let event = StreamEvent::RunCompleted {
-                                    reason: TerminationReason::Error,
-                                    output: Some(format!("Model error: {}", e)),
-                                };
-                                if let Some(ref tw) = trace_writer {
-                                    let _ = tw.append(&event);
-                                }
-                                yield event;
-                                return;
+                                complete_run!(
+                                    TerminationReason::Error,
+                                    Some(format!("Model error: {}", e))
+                                );
                             }
                         }
                     }
@@ -822,15 +787,7 @@ impl Engine {
                     // 4. Handle action
                     match action {
                         Action::Final { text } => {
-                            let event = StreamEvent::RunCompleted {
-                                reason: TerminationReason::Final,
-                                output: Some(text),
-                            };
-                            if let Some(ref tw) = trace_writer {
-                                let _ = tw.append(&event);
-                            }
-                            yield event;
-                            return;
+                            complete_run!(TerminationReason::Final, Some(text));
                         }
                         Action::ToolCall { call_id, name, args } => {
                             let start_event = StreamEvent::ToolCallStarted {
@@ -858,10 +815,7 @@ impl Engine {
                                 tokio::select! {
                                     biased;
                                     _ = stream_cancel.cancelled() => {
-                                        let event = cancelled_event();
-                                        append_trace(&trace_writer, &event);
-                                        yield event;
-                                        return;
+                                        complete_run!(TerminationReason::Cancelled, None);
                                     }
                                     decision = self.resolve_approval(call_id, &name, &args, approval_reason) => decision,
                                 }
@@ -878,10 +832,7 @@ impl Engine {
                             let tool_result = tokio::select! {
                                 biased;
                                 _ = stream_cancel.cancelled() => {
-                                    let event = cancelled_event();
-                                    append_trace(&trace_writer, &event);
-                                    yield event;
-                                    return;
+                                    complete_run!(TerminationReason::Cancelled, None);
                                 }
                                 result = executor.run(&tool_context, &name, args, call_id) => result,
                             };
@@ -951,13 +902,6 @@ impl Engine {
 
 pub(crate) fn planned_step_failure_message(step_title: &str, reason: &str) -> String {
     format!("Planned step failed: {step_title}. Reason: {reason}. Re-plan the remaining work.")
-}
-
-fn cancelled_event() -> StreamEvent {
-    StreamEvent::RunCompleted {
-        reason: TerminationReason::Cancelled,
-        output: None,
-    }
 }
 
 fn append_trace(trace_writer: &Option<TraceWriter>, event: &StreamEvent) {

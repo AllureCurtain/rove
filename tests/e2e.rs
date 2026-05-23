@@ -14,7 +14,9 @@ use rove::core::types::{
 };
 use rove::core::workspace::{Workspace, WorkspaceKind};
 use rove::errors::{ModelError, ToolError};
-use rove::hooks::{HookRegistry, PostToolHook, PostToolHookContext, PreToolHook};
+use rove::hooks::{
+    HookRegistry, PostRunHook, PostRunHookContext, PostToolHook, PostToolHookContext, PreToolHook,
+};
 use rove::interfaces::cli::oneshot::{run_oneshot, run_oneshot_with_cancel};
 use rove::memory::durable::read_memory_index_sync;
 use rove::models::traits::{ModelClient, StreamChunk};
@@ -238,6 +240,48 @@ impl PreToolHook for RecordingCancelTokenHook {
             .unwrap()
             .push(ctx.cancel_token.is_cancelled());
         Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+struct PostRunRecord {
+    session_id: SessionId,
+    job_id: JobId,
+    run_id: RunId,
+    reason: TerminationReason,
+    output: Option<String>,
+    cancel_token_was_cancelled: bool,
+}
+
+struct RecordingPostRunHook {
+    records: Arc<Mutex<Vec<PostRunRecord>>>,
+}
+
+#[async_trait]
+impl PostRunHook for RecordingPostRunHook {
+    async fn after_run(&self, ctx: &PostRunHookContext<'_>) -> anyhow::Result<()> {
+        self.records.lock().unwrap().push(PostRunRecord {
+            session_id: ctx.session_id,
+            job_id: ctx.job_id,
+            run_id: ctx.run_id,
+            reason: ctx.reason.clone(),
+            output: ctx.output.clone(),
+            cancel_token_was_cancelled: ctx.cancel_token.is_cancelled(),
+        });
+        Ok(())
+    }
+}
+
+struct NeverCompletesPostRunHook {
+    entered: Arc<tokio::sync::Notify>,
+}
+
+#[async_trait]
+impl PostRunHook for NeverCompletesPostRunHook {
+    async fn after_run(&self, _ctx: &PostRunHookContext<'_>) -> anyhow::Result<()> {
+        self.entered.notify_one();
+        futures::future::pending::<()>().await;
+        unreachable!("pending post-run hook should only finish by cancellation")
     }
 }
 
@@ -668,6 +712,98 @@ async fn post_tool_hook_observes_successful_tool_result() {
 
     assert_eq!(result.output, "executed");
     assert_eq!(records.lock().unwrap().as_slice(), ["counting:executed"]);
+}
+
+#[tokio::test]
+async fn post_run_hook_observes_completed_run_context() {
+    let records = Arc::new(Mutex::new(Vec::new()));
+    let hooks = HookRegistry::default().with_post_run(Box::new(RecordingPostRunHook {
+        records: records.clone(),
+    }));
+    let engine = build_test_engine(vec!["done".to_string()]).with_hooks(hooks);
+    let req = RunRequest {
+        session_id: SessionId::new(),
+        job_id: JobId::new(),
+        run_id: RunId::new(),
+        user_message: "finish".to_string(),
+        resume_state: None,
+    };
+
+    let events = collect_events_with_request(&engine, req.clone()).await;
+
+    assert!(matches!(
+        events.last(),
+        Some(StreamEvent::RunCompleted {
+            reason: TerminationReason::Final,
+            output: Some(output),
+        }) if output == "done"
+    ));
+    let records = records.lock().unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].session_id, req.session_id);
+    assert_eq!(records[0].job_id, req.job_id);
+    assert_eq!(records[0].run_id, req.run_id);
+    assert_eq!(records[0].reason, TerminationReason::Final);
+    assert_eq!(records[0].output.as_deref(), Some("done"));
+    assert!(!records[0].cancel_token_was_cancelled);
+}
+
+#[tokio::test]
+async fn post_run_hook_wait_is_cancelled_before_stream_closes() {
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let hooks = HookRegistry::default().with_post_run(Box::new(NeverCompletesPostRunHook {
+        entered: entered.clone(),
+    }));
+    let engine = build_test_engine(vec!["done".to_string()]).with_hooks(hooks);
+    let req = RunRequest {
+        session_id: SessionId::new(),
+        job_id: JobId::new(),
+        run_id: RunId::new(),
+        user_message: "finish".to_string(),
+        resume_state: None,
+    };
+    let cancel = CancellationToken::new();
+    let mut stream = engine.run_with_cancel(req, None, cancel.clone());
+
+    let mut saw_terminal_event = false;
+    while let Some(event) = tokio::time::timeout(Duration::from_secs(2), stream.next())
+        .await
+        .expect("stream should reach a terminal event")
+    {
+        if matches!(
+            event,
+            StreamEvent::RunCompleted {
+                reason: TerminationReason::Final,
+                ..
+            }
+        ) {
+            saw_terminal_event = true;
+            break;
+        }
+    }
+
+    assert!(
+        saw_terminal_event,
+        "run should complete before post-run hooks"
+    );
+    let next = stream.next();
+    futures::pin_mut!(next);
+    tokio::select! {
+        _ = entered.notified() => {
+            cancel.cancel();
+        }
+        result = &mut next => {
+            panic!("stream should wait for post-run hook before closing, got {result:?}");
+        }
+        _ = tokio::time::sleep(Duration::from_secs(2)) => {
+            panic!("post-run hook should start after the terminal event");
+        }
+    }
+
+    let completed = tokio::time::timeout(Duration::from_secs(2), next)
+        .await
+        .expect("cancelled post-run hook should let the stream close promptly");
+    assert!(completed.is_none());
 }
 
 #[tokio::test]
