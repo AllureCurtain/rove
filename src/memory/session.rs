@@ -30,6 +30,23 @@ pub fn read_session_summary_sync(
     }
 }
 
+/// Write `.rove/memory/sessions/<session_id>.md` for future prompt construction.
+pub fn write_session_summary_sync(
+    workspace: &Workspace,
+    session_id: SessionId,
+    summary: &str,
+) -> std::io::Result<()> {
+    let truncated = truncate_session_summary(summary);
+    let trimmed = truncated.trim_end();
+    if trimmed.trim().is_empty() {
+        return Ok(());
+    }
+
+    let dir = workspace.state_dir.join("memory").join("sessions");
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(dir.join(format!("{session_id}.md")), trimmed)
+}
+
 fn truncate_session_summary(content: &str) -> String {
     let byte_limited = truncate_to_byte_boundary(content, MAX_SESSION_SUMMARY_BYTES);
     byte_limited

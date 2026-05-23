@@ -8,6 +8,10 @@ use crate::core::types::{JobId, RunId, SessionId, TerminationReason, ToolContext
 use crate::core::workspace::Workspace;
 use crate::errors::ToolError;
 
+mod session_memory;
+
+pub use session_memory::SessionMemoryHook;
+
 #[async_trait]
 pub trait PreToolHook: Send + Sync {
     async fn before_tool(
@@ -59,6 +63,10 @@ pub struct HookRegistry {
 impl HookRegistry {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn with_default_post_run_hooks() -> Self {
+        Self::default().with_post_run(Box::new(SessionMemoryHook))
     }
 
     pub fn with_pre_tool(mut self, hook: Box<dyn PreToolHook>) -> Self {

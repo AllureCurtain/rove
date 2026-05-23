@@ -178,7 +178,7 @@ impl Engine {
             approval_policy,
             approval_decision,
             approval_provider: None,
-            hooks: HookRegistry::default(),
+            hooks: HookRegistry::with_default_post_run_hooks(),
         }
     }
 

@@ -1328,6 +1328,43 @@ async fn engine_includes_session_memory_file_in_prompt() {
 }
 
 #[tokio::test]
+async fn engine_writes_final_output_to_session_memory_file() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let session_id = SessionId::new();
+    let engine = build_test_engine_with_workspace(
+        vec!["learned session summary".to_string()],
+        workspace.clone(),
+    );
+    let req = RunRequest {
+        session_id,
+        job_id: JobId::new(),
+        run_id: RunId::new(),
+        user_message: "finish".to_string(),
+        resume_state: None,
+    };
+
+    let events = collect_events_with_request(&engine, req).await;
+    assert!(matches!(
+        events.last(),
+        Some(StreamEvent::RunCompleted {
+            reason: TerminationReason::Final,
+            output: Some(output),
+        }) if output == "learned session summary"
+    ));
+
+    let session_memory_path = workspace
+        .state_dir
+        .join("memory")
+        .join("sessions")
+        .join(format!("{session_id}.md"));
+    assert_eq!(
+        std::fs::read_to_string(session_memory_path).unwrap(),
+        "learned session summary"
+    );
+}
+
+#[tokio::test]
 async fn engine_includes_durable_memory_index_in_prompt() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();

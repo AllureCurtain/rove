@@ -8,7 +8,7 @@ This compares the current `main` implementation with the original design in:
 
 ## Summary
 
-`main` is already beyond the original M0-M2 kernel plan and includes partial M3, M4, M5, and M6 surfaces. The largest difference is shape: the original docs describe an eventual `EngineDeps` dependency graph and richer provider routing, while the current implementation remains a simpler single-crate engine. `RunStream`, cooperative cancellation, CLI signal cancellation, ToolContext cancellation propagation, post-run hook cancellation, prompt-time durable memory, and prompt-time session memory file loading now exist, but the full app-level token tree, layered memory store, built-in post-run hook workloads, and provider-routing design are still open.
+`main` is already beyond the original M0-M2 kernel plan and includes partial M3, M4, M5, and M6 surfaces. The largest difference is shape: the original docs describe an eventual `EngineDeps` dependency graph and richer provider routing, while the current implementation remains a simpler single-crate engine. `RunStream`, cooperative cancellation, CLI signal cancellation, ToolContext cancellation propagation, post-run hook cancellation, prompt-time durable memory, prompt-time session memory file loading, and default post-run session summary writes now exist, but the full app-level token tree, layered memory store, durable-memory promotion hooks, user-configured post-run hooks, and provider-routing design are still open.
 
 ## Implemented Close To The Design
 
@@ -28,6 +28,7 @@ This compares the current `main` implementation with the original design in:
 | Durable memory tools | `save_memory`, `update_memory_index`, and `read_memory_topic` operate on `.rove/memory/` | `src/tools/memory.rs`, `tests/memory_tool.rs`, `tests/api.rs` | Adds YAML-frontmatter topic files, capped index rebuilding, constrained topic reads, unsafe-topic rejection, and CLI/API registration. |
 | Prompt-time durable memory | `MEMORY.md` is read synchronously and injected into context | `src/memory/durable.rs`, `src/core/engine.rs`, `src/core/context.rs`, `tests/e2e.rs` | Missing index files are ignored; present indexes are capped at 200 lines / 25KB before prompt assembly. |
 | Prompt-time session memory | `.rove/memory/sessions/<session_id>.md` is read synchronously and injected into context | `src/memory/session.rs`, `src/core/engine.rs`, `tests/e2e.rs` | Missing files are ignored; resume-state summaries still take precedence for resumed runs. |
+| Post-run session memory | Default post-run hook writes final output back to `.rove/memory/sessions/<session_id>.md` | `src/hooks/session_memory.rs`, `src/memory/session.rs`, `src/core/engine.rs`, `tests/e2e.rs` | Gives the prompt-time session loader an automatic writer without adding the full `MemoryStore` abstraction yet. |
 | Resume snapshots | `task_state.json` supports resume | `src/state/store.rs`, `src/interfaces/cli/oneshot.rs`, `tests/e2e.rs` | Supports `--resume latest` and `--resume <run_id>`. |
 | CLI fast paths | Lightweight subcommands avoid full engine setup | `src/interfaces/cli/config.rs`, `src/interfaces/cli/index.rs`, `src/interfaces/cli/sessions.rs`, `src/main.rs`, `tests/cli_config.rs`, `tests/cli_index.rs`, `tests/cli_sessions.rs` | `dump-config`, `index`, and `sessions` now run before workspace/model/tool setup. |
 | Planner | Persisted plan and step events | `src/core/planner.rs`, `src/core/engine.rs`, `prompts/planner.md`, `tests/e2e.rs` | Includes replanning after failed planned steps. |
@@ -57,14 +58,14 @@ This compares the current `main` implementation with the original design in:
 | REPL mode and slash commands | `docs/06` station 11 | No `rustyline` REPL, `/session`, `/memory`, `/history`, `/cancel`, etc. |
 | Cancellation token tree completion | `docs/06` stations 2, 3, 12 | `Engine::run_with_cancel`, `RunStream::cancel`, CLI signal cancellation, ToolContext token propagation, post-run hook cancellation, and API parent/child job tokens exist. Remaining gaps: explicit app-level runtime token object, REPL-specific cancellation behavior, and panic-hook trace fallback. |
 | Prompt cache and compaction | `docs/06` station 5 | No cache breakpoint metadata or compact model flow. |
-| Durable/session memory stores | `docs/06` station 8 | Durable topic files, capped `MEMORY.md`, prompt-time durable/session memory loading, `save_memory`, `update_memory_index`, and `read_memory_topic` now exist. Remaining gaps: full `LayeredMemory`/`MemoryStore`, automatic session memory writes/promotions, and relevant-memory retrieval. |
+| Durable/session memory stores | `docs/06` station 8 | Durable topic files, capped `MEMORY.md`, prompt-time durable/session memory loading, default post-run session summary writes, `save_memory`, `update_memory_index`, and `read_memory_topic` now exist. Remaining gaps: full `LayeredMemory`/`MemoryStore`, richer session compaction/promotions, and relevant-memory retrieval. |
 | Anthropic/Ollama/DeepSeek providers | `docs/04` M1 and `docs/06` station 4 | Only OpenAI-compatible and fake clients are present. |
 | Routing model client and circuit breaker | `docs/06` station 4 | No fallback provider routing, TTFB probe, or three-state circuit breaker. |
 | Native OpenAI/Anthropic tool-use normalization | `docs/06` station 6 | Model layer does not emit structured `ModelChunk::ToolUse`; parser remains JSON-text based. |
 | Concurrent tool calls | `docs/05` D7 and `docs/06` station 7 | Tool calls execute serially. |
 | `request_input` interactive flow | `docs/06` station 7 | Tool surface and fallback output exist. Missing: `ToolContext` input provider, CLI/API response channel, and returning actual user answers to the tool caller. |
 | MCP SSE transport | `docs/04` M4 | Stdio transport exists; SSE transport does not. |
-| Post-run hook hardening | `docs/06` station 10 | Core hook boundary, cancellation, per-hook timeout, and panic isolation exist. Remaining gaps: built-in memory-promotion/session-summary hooks and user-configured hooks. |
+| Post-run hook hardening | `docs/06` station 10 | Core hook boundary, cancellation, per-hook timeout, panic isolation, and a built-in session summary hook exist. Remaining gaps: durable-memory promotion hooks and user-configured hooks. |
 | Cargo workspace split | `docs/04` M5 optional | Still a single Rust crate plus separate `web-ui` package. |
 
 ## Milestone Status
@@ -73,7 +74,7 @@ This compares the current `main` implementation with the original design in:
 |---|---|---|
 | M0 skeleton | Implemented | Workspace detection, streaming engine, CLI oneshot, trace/report tests. |
 | M1 core loop | Mostly implemented | Multi-step loop, file/shell tools, approval policy, hooks, state/report, context trimming, CLI fast paths, fake benchmarks/tests. Missing Anthropic provider and richer retry/time-budget behavior. |
-| M2 planner | Mostly implemented | Persisted `TaskPlan`, resume-at-step, replanning after failed steps, `RunStream` identity/cancel handle, cooperative engine/CLI/API cancellation, ToolContext and post-run cancellation propagation, post-run timeout/panic isolation, durable-memory tools, and prompt-time session memory loading. Missing richer long-task controls and the full layered memory store. |
+| M2 planner | Mostly implemented | Persisted `TaskPlan`, resume-at-step, replanning after failed steps, `RunStream` identity/cancel handle, cooperative engine/CLI/API cancellation, ToolContext and post-run cancellation propagation, post-run timeout/panic isolation, durable-memory tools, prompt-time session memory loading, and default post-run session summary writes. Missing richer long-task controls and the full layered memory store. |
 | M3 RAG | Partially implemented | `src/tools/rag.rs`, `src/tools/rag_stub.rs`, `src/bin/rove-index.rs`, `tests/rag.rs`, `tests/rag_default.rs`; tool schemas are always present, but real indexing/retrieval remains feature-gated. |
 | M4 MCP | Partially implemented | Stdio MCP proxy and mock-server test exist; SSE transport and real GitHub/filesystem server validation remain. |
 | M5 HTTP API | Implemented with additions | Job create/events/state/cancel and approval endpoints have integration coverage. |
@@ -182,3 +183,10 @@ This continuation starts station-8 session memory file loading:
 - `src/memory/session.rs` and `src/memory/mod.rs`: add synchronous `.rove/memory/sessions/<session_id>.md` loading for prompt construction.
 - `src/core/engine.rs`: injects the loaded session memory when no resume-state summary is present.
 - `tests/e2e.rs`: covers prompt inclusion for matching session memory files.
+
+This continuation wires a default station-8/station-10 session memory writer:
+
+- `src/hooks/session_memory.rs` and `src/hooks/mod.rs`: add a default post-run hook that writes final run output as a bounded session summary.
+- `src/memory/session.rs`: adds synchronous session summary writing beside the prompt-time reader.
+- `src/core/engine.rs`: installs default post-run hooks for standard engine construction while preserving explicit `with_hooks(...)` overrides.
+- `tests/e2e.rs`: covers `.rove/memory/sessions/<session_id>.md` persistence after a successful default engine run.
