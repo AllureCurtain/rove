@@ -21,9 +21,11 @@ use crate::core::engine::{Engine, EngineConfig};
 use crate::core::events::StreamEvent;
 use crate::core::types::{
     ApprovalDecision, ApprovalPolicy, CallId, JobId, RunId, RunStatus, SessionId,
-    TerminationReason, ToolApprovalProvider, ToolApprovalRequest,
+    TerminationReason, ToolApprovalProvider, ToolApprovalRequest, UserInputProvider,
+    UserInputRequest,
 };
 use crate::core::workspace::Workspace;
+use crate::errors::ToolError;
 use crate::models::fake::FakeModelClient;
 use crate::models::openai::OpenAiClient;
 use crate::models::traits::ModelClient;
@@ -58,6 +60,7 @@ struct JobRecord {
     status: Mutex<RunStatus>,
     events: Mutex<Vec<StreamEvent>>,
     pending_approvals: Mutex<HashMap<CallId, PendingApproval>>,
+    pending_inputs: Mutex<HashMap<CallId, PendingInput>>,
     tx: broadcast::Sender<StreamEvent>,
     handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
     cancel_token: CancellationToken,
@@ -68,12 +71,23 @@ struct PendingApproval {
     tx: oneshot::Sender<ApprovalDecision>,
 }
 
+struct PendingInput {
+    request: UserInputRequest,
+    tx: oneshot::Sender<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PendingApprovalResponse {
     pub call_id: CallId,
     pub name: String,
     pub args: serde_json::Value,
     pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingInputResponse {
+    pub input_id: CallId,
+    pub prompt: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -89,6 +103,11 @@ pub struct SubmitApprovalRequest {
     pub decision: ApprovalDecision,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct SubmitInputRequest {
+    pub answer: String,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CreateJobResponse {
     pub job_id: JobId,
@@ -102,6 +121,7 @@ pub struct JobStateResponse {
     pub status: RunStatus,
     pub event_count: usize,
     pub pending_approvals: Vec<PendingApprovalResponse>,
+    pub pending_inputs: Vec<PendingInputResponse>,
 }
 
 pub fn router(state: ApiState) -> Router {
@@ -111,6 +131,7 @@ pub fn router(state: ApiState) -> Router {
         .route("/jobs/{job_id}/state", get(job_state))
         .route("/jobs/{job_id}/cancel", post(cancel_job))
         .route("/jobs/{job_id}/approvals/{call_id}", post(submit_approval))
+        .route("/jobs/{job_id}/inputs/{input_id}", post(submit_input))
         .with_state(state)
 }
 
@@ -194,6 +215,7 @@ async fn create_job(
         status: Mutex::new(RunStatus::Init),
         events: Mutex::new(Vec::new()),
         pending_approvals: Mutex::new(HashMap::new()),
+        pending_inputs: Mutex::new(HashMap::new()),
         tx,
         handle: Mutex::new(None),
         cancel_token: state.inner.shutdown_token.child_token(),
@@ -243,14 +265,7 @@ async fn job_state(
     Path(job_id): Path<JobId>,
 ) -> Result<Json<JobStateResponse>, ApiError> {
     let record = find_job(&state, job_id).await?;
-    let pending_approvals = pending_approvals_response(&record).await;
-    Ok(Json(JobStateResponse {
-        job_id: record.job_id,
-        run_id: record.run_id,
-        status: record.status.lock().await.clone(),
-        event_count: record.events.lock().await.len(),
-        pending_approvals,
-    }))
+    Ok(Json(job_state_response(&record).await))
 }
 
 async fn cancel_job(
@@ -260,35 +275,23 @@ async fn cancel_job(
     let record = find_job(&state, job_id).await?;
     let current_status = record.status.lock().await.clone();
     if is_terminal(&current_status) {
-        return Ok(Json(JobStateResponse {
-            job_id: record.job_id,
-            run_id: record.run_id,
-            status: current_status,
-            event_count: record.events.lock().await.len(),
-            pending_approvals: pending_approvals_response(&record).await,
-        }));
+        return Ok(Json(job_state_response(&record).await));
     }
 
     record.cancel_token.cancel();
     reject_pending_approvals(&record).await;
+    reject_pending_inputs(&record).await;
 
     if let Some(handle) = record.handle.lock().await.take() {
         let _ = handle.await;
     }
 
-    let mut status = record.status.lock().await.clone();
+    let status = record.status.lock().await.clone();
     if !is_terminal(&status) {
         finalize_cancelled_job(&state, &record).await;
-        status = RunStatus::Cancelled;
     }
 
-    Ok(Json(JobStateResponse {
-        job_id: record.job_id,
-        run_id: record.run_id,
-        status,
-        event_count: record.events.lock().await.len(),
-        pending_approvals: pending_approvals_response(&record).await,
-    }))
+    Ok(Json(job_state_response(&record).await))
 }
 
 async fn submit_approval(
@@ -304,13 +307,23 @@ async fn submit_approval(
         .remove(&call_id)
         .ok_or_else(|| ApiError::not_found("pending approval not found"))?;
     let _ = pending.tx.send(req.decision);
-    Ok(Json(JobStateResponse {
-        job_id: record.job_id,
-        run_id: record.run_id,
-        status: record.status.lock().await.clone(),
-        event_count: record.events.lock().await.len(),
-        pending_approvals: pending_approvals_response(&record).await,
-    }))
+    Ok(Json(job_state_response(&record).await))
+}
+
+async fn submit_input(
+    State(state): State<ApiState>,
+    Path((job_id, input_id)): Path<(JobId, CallId)>,
+    Json(req): Json<SubmitInputRequest>,
+) -> Result<Json<JobStateResponse>, ApiError> {
+    let record = find_job(&state, job_id).await?;
+    let pending = record
+        .pending_inputs
+        .lock()
+        .await
+        .remove(&input_id)
+        .ok_or_else(|| ApiError::not_found("pending input not found"))?;
+    let _ = pending.tx.send(req.answer);
+    Ok(Json(job_state_response(&record).await))
 }
 
 async fn run_job(state: ApiState, record: Arc<JobRecord>, req: CreateJobRequest) {
@@ -361,6 +374,7 @@ async fn run_job_inner(
         .await;
     if matches!(terminal_status, RunStatus::Cancelled | RunStatus::Error) {
         reject_pending_approvals(record).await;
+        reject_pending_inputs(record).await;
     }
     *record.status.lock().await = if completed {
         terminal_status
@@ -457,7 +471,10 @@ fn build_engine(
         },
         workspace,
         approval_policy,
-    );
+    )
+    .with_input_provider(Arc::new(ApiInputProvider {
+        record: record.clone(),
+    }));
     if approval_policy == ApprovalPolicy::Ask {
         Ok(engine.with_approval_provider(Arc::new(ApiApprovalProvider { record })))
     } else {
@@ -493,6 +510,37 @@ impl ToolApprovalProvider for ApiApprovalProvider {
     }
 }
 
+struct ApiInputProvider {
+    record: Arc<JobRecord>,
+}
+
+#[async_trait]
+impl UserInputProvider for ApiInputProvider {
+    async fn request_input(&self, request: UserInputRequest) -> Result<String, ToolError> {
+        let input_id = CallId::new();
+        let (tx, rx) = oneshot::channel();
+        self.record
+            .pending_inputs
+            .lock()
+            .await
+            .insert(input_id, PendingInput { request, tx });
+        rx.await.map_err(|_| ToolError::ExecutionFailed {
+            reason: "input request cancelled".to_string(),
+        })
+    }
+}
+
+async fn job_state_response(record: &JobRecord) -> JobStateResponse {
+    JobStateResponse {
+        job_id: record.job_id,
+        run_id: record.run_id,
+        status: record.status.lock().await.clone(),
+        event_count: record.events.lock().await.len(),
+        pending_approvals: pending_approvals_response(record).await,
+        pending_inputs: pending_inputs_response(record).await,
+    }
+}
+
 async fn pending_approvals_response(record: &JobRecord) -> Vec<PendingApprovalResponse> {
     record
         .pending_approvals
@@ -508,11 +556,28 @@ async fn pending_approvals_response(record: &JobRecord) -> Vec<PendingApprovalRe
         .collect()
 }
 
+async fn pending_inputs_response(record: &JobRecord) -> Vec<PendingInputResponse> {
+    record
+        .pending_inputs
+        .lock()
+        .await
+        .iter()
+        .map(|(input_id, pending)| PendingInputResponse {
+            input_id: *input_id,
+            prompt: pending.request.prompt.clone(),
+        })
+        .collect()
+}
+
 async fn reject_pending_approvals(record: &JobRecord) {
     let pending = std::mem::take(&mut *record.pending_approvals.lock().await);
     for (_, approval) in pending {
         let _ = approval.tx.send(ApprovalDecision::Reject);
     }
+}
+
+async fn reject_pending_inputs(record: &JobRecord) {
+    let _ = std::mem::take(&mut *record.pending_inputs.lock().await);
 }
 
 fn sse_event(event: StreamEvent) -> Result<Event, serde_json::Error> {

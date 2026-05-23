@@ -771,7 +771,7 @@ async fn api_registers_rag_stub_tools_without_rag_feature() {
 }
 
 #[tokio::test]
-async fn api_registers_request_input_tool_for_jobs() {
+async fn api_exposes_pending_request_input_tool_for_jobs() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
     let app = router(ApiState::new(workspace, test_config()));
@@ -804,8 +804,89 @@ async fn api_registers_request_input_tool_for_jobs() {
         .unwrap();
     let created: CreateJobResponse = serde_json::from_slice(&body).unwrap();
 
+    let state = wait_for_pending_input(app.clone(), created.job_id.to_string()).await;
+    assert_eq!(state.status, RunStatus::Running);
+    assert_eq!(state.pending_inputs.len(), 1);
+    assert_eq!(state.pending_inputs[0].prompt, "Which branch should I use?");
+
+    let cancel = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/jobs/{}/cancel", created.job_id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(cancel.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(cancel.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let state: JobStateResponse = serde_json::from_slice(&body).unwrap();
+    assert_eq!(state.status, RunStatus::Cancelled);
+    assert!(state.pending_inputs.is_empty());
+}
+
+#[tokio::test]
+async fn api_answers_pending_request_input_tool_call() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let app = router(ApiState::new(workspace, test_config()));
+    let message = serde_json::json!({
+        "tool": "request_input",
+        "args": { "prompt": "Which branch should I use?" }
+    })
+    .to_string();
+    let body = serde_json::json!({
+        "message": message,
+        "model": "fake-raw",
+        "max_steps": 1
+    });
+
+    let create = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/jobs")
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(create.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let created: CreateJobResponse = serde_json::from_slice(&body).unwrap();
+
+    let pending = wait_for_pending_input(app.clone(), created.job_id.to_string()).await;
+    let input = pending.pending_inputs.first().unwrap();
+    assert_eq!(input.prompt, "Which branch should I use?");
+
+    let submit = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/jobs/{}/inputs/{}",
+                    created.job_id, input.input_id
+                ))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"answer":"Use main."}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(submit.status(), StatusCode::OK);
+
     let state = wait_for_done(app.clone(), created.job_id.to_string()).await;
     assert_eq!(state.status, RunStatus::Done);
+    assert!(state.pending_inputs.is_empty());
+
     let events = app
         .oneshot(
             Request::builder()
@@ -820,8 +901,8 @@ async fn api_registers_request_input_tool_for_jobs() {
         .await
         .unwrap();
     let text = String::from_utf8(body.to_vec()).unwrap();
-    assert!(text.contains("requires an interactive input provider"));
-    assert!(text.contains("Which branch should I use?"));
+    assert!(text.contains("event: tool_call_completed"));
+    assert!(text.contains("Use main."));
 }
 
 async fn wait_for_done(app: axum::Router, job_id: String) -> JobStateResponse {
@@ -849,6 +930,33 @@ async fn wait_for_done(app: axum::Router, job_id: String) -> JobStateResponse {
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     }
     panic!("job did not finish; last state: {last_state:?}");
+}
+
+async fn wait_for_pending_input(app: axum::Router, job_id: String) -> JobStateResponse {
+    let mut last_state = None;
+    for _ in 0..80 {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/jobs/{job_id}/state"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let state: JobStateResponse = serde_json::from_slice(&body).unwrap();
+        if !state.pending_inputs.is_empty() {
+            return state;
+        }
+        last_state = Some(state);
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    panic!("job did not wait for input; last state: {last_state:?}");
 }
 
 async fn wait_for_pending_approval(app: axum::Router, job_id: String) -> JobStateResponse {
