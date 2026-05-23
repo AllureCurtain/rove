@@ -8,7 +8,7 @@ This compares the current `main` implementation with the original design in:
 
 ## Summary
 
-`main` is already beyond the original M0-M2 kernel plan and includes partial M3, M4, M5, and M6 surfaces. The largest difference is shape: the original docs describe an eventual `EngineDeps` dependency graph and richer provider routing, while the current implementation remains a simpler single-crate engine. `RunStream`, cooperative cancellation, CLI signal cancellation, ToolContext cancellation propagation, post-run hook cancellation, prompt-time durable memory, prompt-time session memory file loading, and default post-run session summary writes now exist, but the full app-level token tree, layered memory store, durable-memory promotion hooks, user-configured post-run hooks, and provider-routing design are still open.
+`main` is already beyond the original M0-M2 kernel plan and includes partial M3, M4, M5, and M6 surfaces. The largest difference is shape: the original docs describe an eventual `EngineDeps` dependency graph and richer provider routing, while the current implementation remains a simpler single-crate engine. `RunStream`, cooperative cancellation, CLI signal cancellation, ToolContext cancellation propagation, post-run hook cancellation, prompt-time durable memory, prompt-time session memory file loading, default post-run session summary writes, and a basic routing model client now exist, but the full app-level token tree, layered memory store, durable-memory promotion hooks, user-configured post-run hooks, provider config wiring, and circuit-breaker design are still open.
 
 ## Implemented Close To The Design
 
@@ -45,6 +45,7 @@ This compares the current `main` implementation with the original design in:
 | M3 RAG availability | `retrieve_code` / `retrieve_docs` tools plus ingestion | Tool schemas are always registered; default builds return a clear `rag` feature-required message, while real ingestion/retrieval remains behind Cargo feature `rag` | The LLM-visible tool surface is stable in default builds, but real retrieval still requires a RAG-enabled binary. |
 | M4 MCP transport | JSON-RPC over stdio/SSE | Stdio JSON-RPC only | Mock-server tests cover stdio; SSE transport and broader server config are not implemented. |
 | Model providers | OpenAI, Anthropic, Ollama, DeepSeek, routing/fallback | OpenAI-compatible client plus fake model | Anthropic/Ollama/routing/circuit-breaker work remains open. |
+| Routing model client | Provider fallback with TTFB probe and circuit breaker | `src/models/routing.rs` adds a reusable fallback client, but it is not yet wired into CLI/API config and has no TTFB probe or circuit breaker | Failover is only attempted before any response chunks are emitted; partial streams surface their original error instead of switching providers mid-response. |
 | Tool call parsing | Protocol-specific tool-use normalized in model layer | Text parser handles final text or JSON `{ "tool": ..., "args": ... }` | Simpler and testable, but not yet the documented Anthropic/OpenAI tool-use abstraction. |
 | `request_input` flow | `request_input` asks the user via `ToolContext` and returns the answer | Tool schema is registered in CLI/API; current execution validates `prompt` and returns a clear interactive-provider-required message | Gives the LLM a stable tool contract, but real user-response channels remain open. |
 | Context management | 7-section budget, cache breakpoints, compaction | Deterministic prompt ordering with session summary and trimmed history | Covers early M1/M2 needs, not the full station-5 design. |
@@ -60,7 +61,7 @@ This compares the current `main` implementation with the original design in:
 | Prompt cache and compaction | `docs/06` station 5 | No cache breakpoint metadata or compact model flow. |
 | Durable/session memory stores | `docs/06` station 8 | Durable topic files, capped `MEMORY.md`, prompt-time durable/session memory loading, default post-run session summary writes, `save_memory`, `update_memory_index`, and `read_memory_topic` now exist. Remaining gaps: full `LayeredMemory`/`MemoryStore`, richer session compaction/promotions, and relevant-memory retrieval. |
 | Anthropic/Ollama/DeepSeek providers | `docs/04` M1 and `docs/06` station 4 | Only OpenAI-compatible and fake clients are present. |
-| Routing model client and circuit breaker | `docs/06` station 4 | No fallback provider routing, TTFB probe, or three-state circuit breaker. |
+| Routing config, probes, and circuit breaker | `docs/06` station 4 | A basic `RoutingModelClient` exists. Missing: CLI/API config wiring, fallback provider construction, TTFB probe, and three-state circuit breaker. |
 | Native OpenAI/Anthropic tool-use normalization | `docs/06` station 6 | Model layer does not emit structured `ModelChunk::ToolUse`; parser remains JSON-text based. |
 | Concurrent tool calls | `docs/05` D7 and `docs/06` station 7 | Tool calls execute serially. |
 | `request_input` interactive flow | `docs/06` station 7 | Tool surface and fallback output exist. Missing: `ToolContext` input provider, CLI/API response channel, and returning actual user answers to the tool caller. |
@@ -73,7 +74,7 @@ This compares the current `main` implementation with the original design in:
 | Milestone | Status | Evidence |
 |---|---|---|
 | M0 skeleton | Implemented | Workspace detection, streaming engine, CLI oneshot, trace/report tests. |
-| M1 core loop | Mostly implemented | Multi-step loop, file/shell tools, approval policy, hooks, state/report, context trimming, CLI fast paths, fake benchmarks/tests. Missing Anthropic provider and richer retry/time-budget behavior. |
+| M1 core loop | Mostly implemented | Multi-step loop, file/shell tools, approval policy, hooks, state/report, context trimming, CLI fast paths, basic routing client, fake benchmarks/tests. Missing Anthropic provider, routing config/circuit breaker, and richer retry/time-budget behavior. |
 | M2 planner | Mostly implemented | Persisted `TaskPlan`, resume-at-step, replanning after failed steps, `RunStream` identity/cancel handle, cooperative engine/CLI/API cancellation, ToolContext and post-run cancellation propagation, post-run timeout/panic isolation, durable-memory tools, prompt-time session memory loading, and default post-run session summary writes. Missing richer long-task controls and the full layered memory store. |
 | M3 RAG | Partially implemented | `src/tools/rag.rs`, `src/tools/rag_stub.rs`, `src/bin/rove-index.rs`, `tests/rag.rs`, `tests/rag_default.rs`; tool schemas are always present, but real indexing/retrieval remains feature-gated. |
 | M4 MCP | Partially implemented | Stdio MCP proxy and mock-server test exist; SSE transport and real GitHub/filesystem server validation remain. |
@@ -190,3 +191,9 @@ This continuation wires a default station-8/station-10 session memory writer:
 - `src/memory/session.rs`: adds synchronous session summary writing beside the prompt-time reader.
 - `src/core/engine.rs`: installs default post-run hooks for standard engine construction while preserving explicit `with_hooks(...)` overrides.
 - `tests/e2e.rs`: covers `.rove/memory/sessions/<session_id>.md` persistence after a successful default engine run.
+
+This continuation adds a station-4 routing model client surface:
+
+- `src/models/routing.rs` and `src/models/mod.rs`: add a composable `RoutingModelClient` that tries fallback providers only when the active provider fails before streaming chunks.
+- `src/models/routing.rs`: covers successful fallback and the no-mid-stream-fallback guard with unit tests.
+- Remaining station-4 gaps are config wiring, provider construction, TTFB probing, and circuit-breaker state.
