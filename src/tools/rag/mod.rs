@@ -13,7 +13,10 @@ mod types;
 
 pub use embed::{DeterministicEmbedder, Embedder, OpenAiEmbedder};
 pub use index::RagIndex;
-pub use types::{RetrieveKind, RetrievedChunk};
+pub use types::{
+    ChunkingManifest, EmbeddingManifest, IndexManifest, IndexedFile, ManifestChunk, RetrieveKind,
+    RetrievedChunk,
+};
 
 pub struct RagRetrieveTool {
     root: PathBuf,

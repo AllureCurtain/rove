@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use anyhow::Context;
 use arrow_array::cast::AsArray;
 use arrow_array::types::Float32Type;
 use arrow_array::{FixedSizeListArray, Int32Array, RecordBatch, StringArray};
@@ -11,7 +12,7 @@ use lancedb::query::{ExecutableQuery, QueryBase};
 use walkdir::WalkDir;
 
 use super::embed::{EMBEDDING_DIMS, Embedder, cosine_similarity, normalize_dims, tokenize};
-use super::types::{RetrieveKind, RetrievedChunk};
+use super::types::{IndexManifest, RetrieveKind, RetrievedChunk};
 
 const TABLE_NAME: &str = "chunks";
 
@@ -237,23 +238,43 @@ impl RagIndex {
         if !path.exists() {
             return Ok(Vec::new());
         }
-        let records: Vec<ManifestRecord> = serde_json::from_slice(&tokio::fs::read(path).await?)?;
-        let mut hits: Vec<_> = records
-            .into_iter()
-            .enumerate()
-            .filter(|(_, record)| record.kind == kind.as_str())
-            .map(|(idx, record)| RetrievedChunk {
-                id: format!("{}#{idx}", record.path),
-                score: cosine_similarity(query_vector, &record.vector)
-                    + lexical_score(query, &record.content),
-                path: record.path,
-                kind,
-                source: "manifest".to_string(),
-                heading: None,
-                chunk_hash: None,
-                content: record.content,
-            })
-            .collect();
+        let bytes = tokio::fs::read(path).await?;
+        let manifest: ManifestOnDisk =
+            serde_json::from_slice(&bytes).context("failed to parse RAG manifest")?;
+        let mut hits: Vec<_> = match manifest {
+            ManifestOnDisk::V1(manifest) => manifest
+                .chunks
+                .into_iter()
+                .filter(|record| record.kind == kind)
+                .map(|record| RetrievedChunk {
+                    id: record.id,
+                    score: cosine_similarity(query_vector, &record.vector)
+                        + lexical_score(query, &record.content),
+                    path: record.path,
+                    kind,
+                    source: "manifest".to_string(),
+                    heading: record.heading,
+                    chunk_hash: Some(record.chunk_hash),
+                    content: record.content,
+                })
+                .collect(),
+            ManifestOnDisk::Legacy(records) => records
+                .into_iter()
+                .enumerate()
+                .filter(|(_, record)| record.kind == kind.as_str())
+                .map(|(idx, record)| RetrievedChunk {
+                    id: format!("{}#{idx}", record.path),
+                    score: cosine_similarity(query_vector, &record.vector)
+                        + lexical_score(query, &record.content),
+                    path: record.path,
+                    kind,
+                    source: "manifest".to_string(),
+                    heading: None,
+                    chunk_hash: None,
+                    content: record.content,
+                })
+                .collect(),
+        };
         hits.sort_by(|a, b| b.score.total_cmp(&a.score));
         hits.truncate(limit);
         Ok(hits)
@@ -281,6 +302,13 @@ struct ManifestRecord {
     kind: String,
     content: String,
     vector: Vec<f32>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(untagged)]
+enum ManifestOnDisk {
+    V1(IndexManifest),
+    Legacy(Vec<ManifestRecord>),
 }
 
 fn classify_path(path: &Path) -> Option<RetrieveKind> {
