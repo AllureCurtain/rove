@@ -454,6 +454,55 @@ impl StateIndex {
         .map_err(io_other)
     }
 
+    pub async fn job_record_async(&self, job_id: JobId) -> std::io::Result<Option<JobIndexRecord>> {
+        let index = self.clone();
+        tokio::task::spawn_blocking(move || index.job_record(job_id))
+            .await
+            .map_err(std::io::Error::other)?
+    }
+
+    pub async fn event_records_async(
+        &self,
+        run_id: RunId,
+    ) -> std::io::Result<Vec<EventIndexRecord>> {
+        let index = self.clone();
+        tokio::task::spawn_blocking(move || index.event_records(run_id))
+            .await
+            .map_err(std::io::Error::other)?
+    }
+
+    pub async fn mark_running_jobs_interrupted_async(&self) -> std::io::Result<usize> {
+        let index = self.clone();
+        tokio::task::spawn_blocking(move || index.mark_running_jobs_interrupted())
+            .await
+            .map_err(std::io::Error::other)?
+    }
+
+    pub fn mark_running_jobs_interrupted(&self) -> std::io::Result<usize> {
+        let conn = self.connect()?;
+        let now = now_rfc3339();
+        let jobs = conn
+            .execute(
+                r#"
+                UPDATE jobs
+                SET status = 'interrupted', updated_at = ?1
+                WHERE status IN ('init', 'running')
+                "#,
+                params![now],
+            )
+            .map_err(io_other)?;
+        conn.execute(
+            r#"
+            UPDATE runs
+            SET status = 'interrupted', completed_at = ?1, updated_at = ?1
+            WHERE status IN ('init', 'running')
+            "#,
+            params![now],
+        )
+        .map_err(io_other)?;
+        Ok(jobs)
+    }
+
     pub fn run_record(&self, run_id: RunId) -> std::io::Result<Option<RunIndexRecord>> {
         let conn = self.connect()?;
         conn.query_row(

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -210,6 +210,13 @@ impl ApiState {
         config: AppConfig,
         shutdown_token: CancellationToken,
     ) -> Self {
+        let state_store = state_store_for_parts(&workspace, &config);
+        if let Err(err) = state_store.index.initialize() {
+            tracing::warn!("failed to initialize API state index: {err}");
+        }
+        if let Err(err) = state_store.index.mark_running_jobs_interrupted() {
+            tracing::warn!("failed to mark stale API jobs interrupted: {err}");
+        }
         Self {
             inner: Arc::new(ApiStateInner {
                 workspace,
@@ -270,17 +277,23 @@ async fn job_events(
     Query(query): Query<JobEventsQuery>,
     headers: HeaderMap,
 ) -> Result<Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>>, ApiError> {
-    let record = find_job(&state, job_id).await?;
     let after = query
         .after
         .or(parse_last_event_id(&headers)?)
         .unwrap_or_default();
+
+    let Some(record) = live_job(&state, job_id).await else {
+        let replay_events = persisted_job_events(&state, job_id, after).await?;
+        let stream = futures::stream::iter(replay_events)
+            .filter_map(|event| futures::future::ready(sse_event(event).ok()))
+            .map(Ok)
+            .boxed();
+        return Ok(Sse::new(stream).keep_alive(KeepAlive::default()));
+    };
+
     let live_rx = record.tx.subscribe();
-    let mut existing = record.events.lock().await.clone();
+    let existing = persisted_or_live_events(&state, &record, after).await?;
     let status = record.status.lock().await.clone();
-    if is_terminal(&status) {
-        existing = record.events.lock().await.clone();
-    }
     let replay_events: Vec<_> = existing
         .into_iter()
         .filter(|event| event.seq > after)
@@ -301,17 +314,21 @@ async fn job_events(
     };
     let stream = replay
         .chain(live)
-        .filter_map(|event| futures::future::ready(sse_event(event).ok()));
+        .filter_map(|event| futures::future::ready(sse_event(event).ok()))
+        .map(Ok)
+        .boxed();
 
-    Ok(Sse::new(stream.map(Ok)).keep_alive(KeepAlive::default()))
+    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
 async fn job_state(
     State(state): State<ApiState>,
     Path(job_id): Path<JobId>,
 ) -> Result<Json<JobStateResponse>, ApiError> {
-    let record = find_job(&state, job_id).await?;
-    Ok(Json(job_state_response(&record).await))
+    if let Some(record) = live_job(&state, job_id).await {
+        return Ok(Json(job_state_response(&record).await));
+    }
+    Ok(Json(persisted_job_state_response(&state, job_id).await?))
 }
 
 async fn cancel_job(
@@ -540,30 +557,29 @@ fn build_engine(
 }
 
 fn state_store_for_api(state: &ApiState) -> StateStore {
-    let sqlite_path = if state.inner.config.state.sqlite_path.is_absolute() {
-        state.inner.config.state.sqlite_path.clone()
+    state_store_for_parts(&state.inner.workspace, &state.inner.config)
+}
+
+fn state_store_for_parts(workspace: &Workspace, config: &AppConfig) -> StateStore {
+    let sqlite_path = if config.state.sqlite_path.is_absolute() {
+        config.state.sqlite_path.clone()
     } else {
-        state
-            .inner
-            .workspace
-            .root
-            .join(&state.inner.config.state.sqlite_path)
+        workspace.root.join(&config.state.sqlite_path)
     };
     StateStore::with_index_path(
-        &state.inner.workspace.state_dir,
+        &workspace.state_dir,
         sqlite_path,
-        state.inner.config.state.sqlite_busy_timeout_ms,
+        config.state.sqlite_busy_timeout_ms,
     )
 }
 
+async fn live_job(state: &ApiState, job_id: JobId) -> Option<Arc<JobRecord>> {
+    state.inner.jobs.read().await.get(&job_id).cloned()
+}
+
 async fn find_job(state: &ApiState, job_id: JobId) -> Result<Arc<JobRecord>, ApiError> {
-    state
-        .inner
-        .jobs
-        .read()
+    live_job(state, job_id)
         .await
-        .get(&job_id)
-        .cloned()
         .ok_or_else(|| ApiError::not_found("job not found"))
 }
 
@@ -617,6 +633,93 @@ async fn job_state_response(record: &JobRecord) -> JobStateResponse {
         pending_approvals: pending_approvals_response(record).await,
         pending_inputs: pending_inputs_response(record).await,
     }
+}
+
+async fn persisted_job_state_response(
+    state: &ApiState,
+    job_id: JobId,
+) -> Result<JobStateResponse, ApiError> {
+    let state_store = state_store_for_api(state);
+    let job = state_store
+        .index
+        .job_record_async(job_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::not_found("job not found"))?;
+    let run_id = job
+        .run_id
+        .ok_or_else(|| ApiError::not_found("job run not found"))?;
+    let events = persisted_events_for_run(&state_store, run_id, 0).await?;
+    Ok(JobStateResponse {
+        job_id: job.job_id,
+        run_id,
+        status: run_status_from_index(&job.status),
+        event_count: events.len(),
+        events,
+        pending_approvals: Vec::new(),
+        pending_inputs: Vec::new(),
+    })
+}
+
+async fn persisted_job_events(
+    state: &ApiState,
+    job_id: JobId,
+    after: u64,
+) -> Result<Vec<JobStreamEvent>, ApiError> {
+    let state_store = state_store_for_api(state);
+    let job = state_store
+        .index
+        .job_record_async(job_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::not_found("job not found"))?;
+    let run_id = job
+        .run_id
+        .ok_or_else(|| ApiError::not_found("job run not found"))?;
+    persisted_events_for_run(&state_store, run_id, after).await
+}
+
+async fn persisted_or_live_events(
+    state: &ApiState,
+    record: &JobRecord,
+    after: u64,
+) -> Result<Vec<JobStreamEvent>, ApiError> {
+    let state_store = state_store_for_api(state);
+    let mut merged = persisted_events_for_run(&state_store, record.run_id, after)
+        .await?
+        .into_iter()
+        .map(|event| (event.seq, event))
+        .collect::<BTreeMap<_, _>>();
+    for event in record.events.lock().await.iter().cloned() {
+        if event.seq > after {
+            merged.insert(event.seq, event);
+        }
+    }
+    Ok(merged.into_values().collect())
+}
+
+async fn persisted_events_for_run(
+    state_store: &StateStore,
+    run_id: RunId,
+    after: u64,
+) -> Result<Vec<JobStreamEvent>, ApiError> {
+    let records = state_store
+        .index
+        .event_records_async(run_id)
+        .await
+        .map_err(ApiError::internal)?;
+    records
+        .into_iter()
+        .filter(|record| record.seq > after)
+        .map(|record| {
+            let event = serde_json::from_str::<StreamEvent>(&record.event_json)
+                .map_err(ApiError::internal)?;
+            Ok(JobStreamEvent {
+                seq: record.seq,
+                event,
+            })
+        })
+        .collect()
 }
 
 async fn append_job_event(record: &JobRecord, event: StreamEvent) -> JobStreamEvent {
@@ -694,7 +797,7 @@ fn parse_last_event_id(headers: &HeaderMap) -> Result<Option<u64>, ApiError> {
 fn is_terminal(status: &RunStatus) -> bool {
     matches!(
         status,
-        RunStatus::Done | RunStatus::Error | RunStatus::Cancelled
+        RunStatus::Done | RunStatus::Error | RunStatus::Cancelled | RunStatus::Interrupted
     )
 }
 
@@ -706,6 +809,18 @@ fn status_for_reason(reason: &TerminationReason) -> RunStatus {
         | TerminationReason::TimeLimit => RunStatus::Done,
         TerminationReason::Error => RunStatus::Error,
         TerminationReason::Cancelled => RunStatus::Cancelled,
+    }
+}
+
+fn run_status_from_index(status: &str) -> RunStatus {
+    match status {
+        "init" => RunStatus::Init,
+        "running" => RunStatus::Running,
+        "done" => RunStatus::Done,
+        "error" => RunStatus::Error,
+        "cancelled" => RunStatus::Cancelled,
+        "interrupted" => RunStatus::Interrupted,
+        _ => RunStatus::Error,
     }
 }
 
@@ -727,6 +842,13 @@ impl ApiError {
         Self {
             status: StatusCode::NOT_FOUND,
             message: message.into(),
+        }
+    }
+
+    fn internal(err: impl std::fmt::Display) -> Self {
+        Self {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            message: err.to_string(),
         }
     }
 }

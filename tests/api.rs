@@ -346,6 +346,110 @@ async fn api_writes_run_artifacts_for_completed_job() {
 }
 
 #[tokio::test]
+async fn api_reads_completed_job_state_and_events_after_restart() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let app = router(ApiState::new(workspace.clone(), test_config()));
+
+    let create = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/jobs")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"message":"restart replay","model":"fake"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(create.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let created: CreateJobResponse = serde_json::from_slice(&body).unwrap();
+    let original_state = wait_for_done(app.clone(), created.job_id.to_string()).await;
+
+    let restarted = router(ApiState::new(workspace, test_config()));
+    let state = restarted
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/jobs/{}/state", created.job_id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(state.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(state.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let state: JobStateResponse = serde_json::from_slice(&body).unwrap();
+    assert_eq!(state.status, RunStatus::Done);
+    assert_eq!(state.job_id, created.job_id);
+    assert_eq!(state.run_id, created.run_id);
+    assert_eq!(state.event_count, original_state.event_count);
+    assert!(state.pending_approvals.is_empty());
+    assert!(state.pending_inputs.is_empty());
+
+    let events = restarted
+        .oneshot(
+            Request::builder()
+                .uri(format!("/jobs/{}/events?after=1", created.job_id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(events.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(events.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let text = String::from_utf8(body.to_vec()).unwrap();
+    assert!(!text.contains("id: 1"));
+    assert!(!text.contains("event: run_started"));
+    assert!(text.contains("event: run_completed"));
+}
+
+#[tokio::test]
+async fn api_startup_marks_stale_running_jobs_interrupted() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let state_store = rove::state::store::StateStore::new(&workspace.state_dir);
+    let session_id = rove::core::types::SessionId::new();
+    let job_id = rove::core::types::JobId::new();
+    let run_id = rove::core::types::RunId::new();
+    state_store
+        .start_run(session_id, job_id, run_id)
+        .expect("running job should be indexed");
+
+    let app = router(ApiState::new(workspace, test_config()));
+    let state = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/jobs/{job_id}/state"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(state.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(state.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let state: JobStateResponse = serde_json::from_slice(&body).unwrap();
+    assert_eq!(state.status, RunStatus::Interrupted);
+    assert_eq!(state.job_id, job_id);
+    assert_eq!(state.run_id, run_id);
+
+    let indexed_job = state_store.index.job_record(job_id).unwrap().unwrap();
+    assert_eq!(indexed_job.status, "interrupted");
+    let indexed_run = state_store.index.run_record(run_id).unwrap().unwrap();
+    assert_eq!(indexed_run.status, "interrupted");
+}
+
+#[tokio::test]
 async fn api_can_cancel_job() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
