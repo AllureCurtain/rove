@@ -22,7 +22,14 @@ import {
   useState,
 } from "react";
 
-import { cancelJob, createJob, openJobStream, submitApproval, submitInput } from "../lib/rove-client";
+import {
+  cancelJob,
+  createJob,
+  fetchJobState,
+  openJobStream,
+  submitApproval,
+  submitInput,
+} from "../lib/rove-client";
 import { STREAM_EVENT_NAMES, type StreamEvent } from "../lib/rove-types";
 import { createWorkbenchState, workbenchReducer, type ToolCallView } from "../lib/rove-state";
 
@@ -105,13 +112,12 @@ export function RoveWorkbench() {
 
     dispatch({ type: "set_status", statusText: "Cancelling run" });
     try {
-      await cancelJob(state.activeJobId);
+      const jobState = await cancelJob(state.activeJobId);
+      dispatch({ type: "job_state_synced", state: jobState });
     } catch (error) {
       dispatch({ type: "set_error", error: describeError(error) });
     } finally {
       closeStream();
-      dispatch({ type: "set_busy", busy: false });
-      dispatch({ type: "set_status", statusText: "Run cancelled" });
     }
   }
 
@@ -122,12 +128,13 @@ export function RoveWorkbench() {
 
     setApprovalBusy(tool.id);
     try {
-      await submitApproval(state.activeJobId, tool.id, decision);
+      const jobState = await submitApproval(state.activeJobId, tool.id, decision);
       dispatch({
         type: "approval_decision",
         callId: tool.id,
         decision,
       });
+      dispatch({ type: "job_state_synced", state: jobState });
     } catch (error) {
       dispatch({ type: "set_error", error: describeError(error) });
     } finally {
@@ -142,8 +149,9 @@ export function RoveWorkbench() {
 
     setInputBusy(inputId);
     try {
-      await submitInput(state.activeJobId, inputId, answer);
+      const jobState = await submitInput(state.activeJobId, inputId, answer);
       dispatch({ type: "input_submitted", inputId });
+      dispatch({ type: "job_state_synced", state: jobState });
     } catch (error) {
       dispatch({ type: "set_error", error: describeError(error) });
     } finally {
@@ -158,6 +166,20 @@ export function RoveWorkbench() {
     for (const name of STREAM_EVENT_NAMES) {
       source.addEventListener(name, handleEvent as EventListener);
     }
+
+    source.onerror = () => {
+      dispatch({ type: "set_status", statusText: "Reconnecting event stream" });
+      void fetchJobState(jobId)
+        .then((jobState) => {
+          dispatch({ type: "job_state_synced", state: jobState });
+          if (jobState.status !== "init" && jobState.status !== "running") {
+            closeStream();
+          }
+        })
+        .catch((error) => {
+          dispatch({ type: "set_error", error: describeError(error) });
+        });
+    };
   }
 
   function handleEvent(event: Event) {

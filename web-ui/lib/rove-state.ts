@@ -6,6 +6,7 @@ import type {
   StreamEvent,
   TaskPlan,
   ToolError,
+  JobStateResponse,
 } from "./rove-types";
 
 export interface ChatMessage {
@@ -54,6 +55,7 @@ export type WorkbenchAction =
   | { type: "set_error"; error: string | null }
   | { type: "approval_decision"; callId: string; decision: ApprovalDecision }
   | { type: "input_submitted"; inputId: string }
+  | { type: "job_state_synced"; state: JobStateResponse }
   | { type: "stream_event"; event: StreamEvent };
 
 export function createWorkbenchState(): WorkbenchState {
@@ -142,8 +144,118 @@ export function workbenchReducer(
           (input) => input.input_id !== action.inputId,
         ),
       };
+    case "job_state_synced":
+      return applyJobState(state, action.state);
     case "stream_event":
       return applyStreamEvent(state, action.event);
+  }
+}
+
+function applyJobState(
+  state: WorkbenchState,
+  jobState: JobStateResponse,
+): WorkbenchState {
+  const busy = jobState.status === "init" || jobState.status === "running";
+  const terminalDetail = statusDetail(jobState.status);
+
+  return {
+    ...state,
+    activeJobId: jobState.job_id,
+    activeRunId: jobState.run_id,
+    eventCount: jobState.event_count,
+    busy,
+    error: jobState.status === "error" ? (state.error ?? "Run failed") : state.error,
+    statusText: statusText(jobState.status),
+    lastSignal: "Job state synced",
+    pendingInputs: jobState.pending_inputs,
+    tools: syncPendingApprovals(
+      state.tools,
+      jobState.pending_approvals,
+      busy ? undefined : terminalDetail,
+    ),
+  };
+}
+
+function syncPendingApprovals(
+  tools: ToolCallView[],
+  pendingApprovals: PendingApproval[],
+  terminalDetail?: string,
+): ToolCallView[] {
+  const pendingById = new Map(
+    pendingApprovals.map((approval) => [approval.call_id, approval]),
+  );
+  const existingIds = new Set(tools.map((tool) => tool.id));
+  const synced = tools.map((tool) => {
+    const pending = pendingById.get(tool.id);
+    if (pending) {
+      return toolFromPendingApproval(pending, tool);
+    }
+    if (tool.pendingApproval && terminalDetail) {
+      return {
+        ...tool,
+        status: "error" as const,
+        details: terminalDetail,
+        pendingApproval: undefined,
+      };
+    }
+    if (tool.pendingApproval) {
+      return {
+        ...tool,
+        status: "running" as const,
+        details: "Approval state synced",
+        pendingApproval: undefined,
+      };
+    }
+    return tool;
+  });
+  const inserted = pendingApprovals
+    .filter((approval) => !existingIds.has(approval.call_id))
+    .map((approval) => toolFromPendingApproval(approval));
+  return [...inserted, ...synced];
+}
+
+function toolFromPendingApproval(
+  pendingApproval: PendingApproval,
+  existing?: ToolCallView,
+): ToolCallView {
+  return {
+    ...existing,
+    id: pendingApproval.call_id,
+    name: pendingApproval.name,
+    status: "waiting",
+    details: pendingApproval.reason,
+    reason: pendingApproval.reason,
+    pendingApproval,
+  };
+}
+
+function statusText(status: JobStateResponse["status"]): string {
+  switch (status) {
+    case "init":
+      return "Job queued";
+    case "running":
+      return "Streaming run events";
+    case "done":
+      return "Run completed";
+    case "error":
+      return "Run failed";
+    case "cancelled":
+      return "Run cancelled";
+  }
+}
+
+function statusDetail(status: JobStateResponse["status"]): string {
+  switch (status) {
+    case "init":
+      return "Job queued";
+    case "running":
+      return "Run still active";
+    case "done":
+      return "Run completed";
+    case "error":
+      return "Run failed";
+    case "cancelled":
+      return "Run cancelled";
   }
 }
 

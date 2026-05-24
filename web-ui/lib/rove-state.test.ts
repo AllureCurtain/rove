@@ -112,4 +112,96 @@ describe("workbenchReducer", () => {
 
     expect(submitted.pendingInputs).toHaveLength(0);
   });
+
+  it("syncs pending interactions from a job state response", () => {
+    const state = workbenchReducer(createWorkbenchState(), {
+      type: "job_state_synced",
+      state: {
+        job_id: "job-1",
+        run_id: "run-1",
+        status: "running",
+        event_count: 7,
+        pending_approvals: [
+          {
+            call_id: "call-1",
+            name: "fs_write",
+            args: { path: "notes.md" },
+            reason: "destructive tool requires explicit approval",
+          },
+        ],
+        pending_inputs: [
+          {
+            input_id: "input-1",
+            prompt: "Which branch should I use?",
+          },
+        ],
+      },
+    });
+
+    expect(state.activeJobId).toBe("job-1");
+    expect(state.activeRunId).toBe("run-1");
+    expect(state.busy).toBe(true);
+    expect(state.eventCount).toBe(7);
+    expect(state.pendingInputs).toEqual([
+      {
+        input_id: "input-1",
+        prompt: "Which branch should I use?",
+      },
+    ]);
+    expect(state.tools[0]).toMatchObject({
+      id: "call-1",
+      name: "fs_write",
+      status: "waiting",
+      pendingApproval: {
+        call_id: "call-1",
+        reason: "destructive tool requires explicit approval",
+      },
+    });
+  });
+
+  it("clears pending interactions when a synced job state is terminal", () => {
+    const withPending = workbenchReducer(createWorkbenchState(), {
+      type: "stream_event",
+      event: {
+        type: "tool_call_approval_needed",
+        call_id: "call-1",
+        name: "fs_write",
+        args: { path: "notes.md" },
+        reason: "destructive tool requires explicit approval",
+      },
+    });
+
+    const cancelled = workbenchReducer(
+      {
+        ...withPending,
+        pendingInputs: [
+          {
+            input_id: "input-1",
+            prompt: "Which branch should I use?",
+          },
+        ],
+      },
+      {
+        type: "job_state_synced",
+        state: {
+          job_id: "job-1",
+          run_id: "run-1",
+          status: "cancelled",
+          event_count: 8,
+          pending_approvals: [],
+          pending_inputs: [],
+        },
+      },
+    );
+
+    expect(cancelled.busy).toBe(false);
+    expect(cancelled.statusText).toBe("Run cancelled");
+    expect(cancelled.pendingInputs).toHaveLength(0);
+    expect(cancelled.tools[0]).toMatchObject({
+      id: "call-1",
+      status: "error",
+      details: "Run cancelled",
+    });
+    expect(cancelled.tools[0].pendingApproval).toBeUndefined();
+  });
 });
