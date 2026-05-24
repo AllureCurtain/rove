@@ -5,102 +5,15 @@ use arrow_array::cast::AsArray;
 use arrow_array::types::Float32Type;
 use arrow_array::{FixedSizeListArray, Int32Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
-use async_trait::async_trait;
 use futures::TryStreamExt;
 use lancedb::database::CreateTableMode;
 use lancedb::query::{ExecutableQuery, QueryBase};
-use serde_json::Value;
 use walkdir::WalkDir;
 
-use super::traits::{Tool, ToolOutput};
-use crate::core::types::{ToolContext, ToolSchema};
-use crate::errors::ToolError;
+use super::embed::{EMBEDDING_DIMS, Embedder, cosine_similarity, normalize_dims, tokenize};
+use super::types::{RetrieveKind, RetrievedChunk};
 
 const TABLE_NAME: &str = "chunks";
-const EMBEDDING_DIMS: usize = 64;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RetrieveKind {
-    Code,
-    Docs,
-}
-
-impl RetrieveKind {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Code => "code",
-            Self::Docs => "docs",
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct RetrievedChunk {
-    pub path: String,
-    pub content: String,
-    pub score: f32,
-}
-
-#[async_trait]
-pub trait Embedder: Send + Sync {
-    async fn embed(&self, text: &str) -> anyhow::Result<Vec<f32>>;
-}
-
-#[derive(Debug, Default)]
-pub struct DeterministicEmbedder;
-
-#[async_trait]
-impl Embedder for DeterministicEmbedder {
-    async fn embed(&self, text: &str) -> anyhow::Result<Vec<f32>> {
-        Ok(deterministic_embedding(text))
-    }
-}
-
-pub struct OpenAiEmbedder {
-    client: reqwest::Client,
-    api_base: String,
-    api_key: String,
-    model: String,
-}
-
-impl OpenAiEmbedder {
-    pub fn new(api_base: String, api_key: String, model: String) -> Self {
-        Self {
-            client: reqwest::Client::new(),
-            api_base,
-            api_key,
-            model,
-        }
-    }
-}
-
-#[async_trait]
-impl Embedder for OpenAiEmbedder {
-    async fn embed(&self, text: &str) -> anyhow::Result<Vec<f32>> {
-        let body = serde_json::json!({
-            "model": self.model,
-            "input": text,
-        });
-        let response = self
-            .client
-            .post(format!("{}/embeddings", self.api_base))
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .json(&body)
-            .send()
-            .await?;
-        if !response.status().is_success() {
-            anyhow::bail!("embedding request failed: {}", response.text().await?);
-        }
-        let json: serde_json::Value = response.json().await?;
-        let values = json["data"][0]["embedding"]
-            .as_array()
-            .ok_or_else(|| anyhow::anyhow!("embedding response missing data[0].embedding"))?;
-        Ok(values
-            .iter()
-            .map(|value| value.as_f64().unwrap_or_default() as f32)
-            .collect())
-    }
-}
 
 #[derive(Debug, Clone)]
 pub struct RagIndex {
@@ -271,10 +184,16 @@ impl RagIndex {
                 if kinds.value(row) != kind.as_str() {
                     continue;
                 }
+                let path = paths.value(row).to_string();
                 let content = contents.value(row).to_string();
                 hits.push(RetrievedChunk {
-                    path: paths.value(row).to_string(),
+                    id: format!("{path}#{row}"),
+                    path,
+                    kind,
                     score: lexical_score(query, &content),
+                    source: "vector".to_string(),
+                    heading: None,
+                    chunk_hash: None,
                     content,
                 });
             }
@@ -321,11 +240,17 @@ impl RagIndex {
         let records: Vec<ManifestRecord> = serde_json::from_slice(&tokio::fs::read(path).await?)?;
         let mut hits: Vec<_> = records
             .into_iter()
-            .filter(|record| record.kind == kind.as_str())
-            .map(|record| RetrievedChunk {
+            .enumerate()
+            .filter(|(_, record)| record.kind == kind.as_str())
+            .map(|(idx, record)| RetrievedChunk {
+                id: format!("{}#{idx}", record.path),
                 score: cosine_similarity(query_vector, &record.vector)
                     + lexical_score(query, &record.content),
                 path: record.path,
+                kind,
+                source: "manifest".to_string(),
+                heading: None,
+                chunk_hash: None,
                 content: record.content,
             })
             .collect();
@@ -343,80 +268,6 @@ impl RagIndex {
     }
 }
 
-pub struct RagRetrieveTool {
-    root: PathBuf,
-    kind: RetrieveKind,
-}
-
-impl RagRetrieveTool {
-    pub fn code(root: PathBuf) -> Self {
-        Self {
-            root,
-            kind: RetrieveKind::Code,
-        }
-    }
-
-    pub fn docs(root: PathBuf) -> Self {
-        Self {
-            root,
-            kind: RetrieveKind::Docs,
-        }
-    }
-}
-
-#[async_trait]
-impl Tool for RagRetrieveTool {
-    fn schema(&self) -> ToolSchema {
-        let name = match self.kind {
-            RetrieveKind::Code => "retrieve_code",
-            RetrieveKind::Docs => "retrieve_docs",
-        };
-        ToolSchema {
-            name: name.to_string(),
-            description: format!(
-                "Retrieve relevant {} chunks from the workspace RAG index.",
-                self.kind.as_str()
-            ),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "query": { "type": "string", "description": "Search query" },
-                    "limit": { "type": "number", "description": "Maximum number of chunks" }
-                },
-                "required": ["query"]
-            }),
-            destructive: false,
-        }
-    }
-
-    async fn execute(&self, args: Value, _ctx: &ToolContext<'_>) -> Result<ToolOutput, ToolError> {
-        let query = args
-            .get("query")
-            .and_then(|value| value.as_str())
-            .ok_or_else(|| ToolError::InvalidArgs {
-                reason: "Missing required argument: query".to_string(),
-            })?;
-        let limit = args
-            .get("limit")
-            .and_then(|value| value.as_u64())
-            .unwrap_or(5) as usize;
-        let index = RagIndex::new(self.root.clone());
-        let embedder = DeterministicEmbedder;
-        let hits = index
-            .retrieve(&embedder, self.kind, query, limit)
-            .await
-            .map_err(|err| ToolError::ExecutionFailed {
-                reason: err.to_string(),
-            })?;
-        let content = serde_json::to_string_pretty(&hits_as_json(&hits)).map_err(|err| {
-            ToolError::ExecutionFailed {
-                reason: err.to_string(),
-            }
-        })?;
-        Ok(ToolOutput { content })
-    }
-}
-
 #[derive(Debug, Clone)]
 struct ChunkRecord {
     path: String,
@@ -430,18 +281,6 @@ struct ManifestRecord {
     kind: String,
     content: String,
     vector: Vec<f32>,
-}
-
-fn hits_as_json(hits: &[RetrievedChunk]) -> Vec<serde_json::Value> {
-    hits.iter()
-        .map(|hit| {
-            serde_json::json!({
-                "path": hit.path,
-                "score": hit.score,
-                "content": hit.content,
-            })
-        })
-        .collect()
 }
 
 fn classify_path(path: &Path) -> Option<RetrieveKind> {
@@ -483,42 +322,6 @@ fn chunk_text(content: &str, max_chars: usize) -> Vec<String> {
     chunks
 }
 
-fn deterministic_embedding(text: &str) -> Vec<f32> {
-    let mut vector = vec![0.0; EMBEDDING_DIMS];
-    for token in tokenize(text) {
-        let idx = stable_hash(&token) % EMBEDDING_DIMS;
-        vector[idx] += 1.0;
-    }
-    normalize(vector)
-}
-
-fn normalize_dims(vector: &[f32]) -> Vec<f32> {
-    let mut fixed = vec![0.0; EMBEDDING_DIMS];
-    for (idx, value) in vector.iter().take(EMBEDDING_DIMS).enumerate() {
-        fixed[idx] = *value;
-    }
-    normalize(fixed)
-}
-
-fn normalize(mut vector: Vec<f32>) -> Vec<f32> {
-    let norm = vector.iter().map(|value| value * value).sum::<f32>().sqrt();
-    if norm > 0.0 {
-        for value in &mut vector {
-            *value /= norm;
-        }
-    }
-    vector
-}
-
-fn cosine_similarity(left: &[f32], right: &[f32]) -> f32 {
-    let left = normalize_dims(left);
-    let right = normalize_dims(right);
-    left.iter()
-        .zip(right.iter())
-        .map(|(left, right)| left * right)
-        .sum()
-}
-
 fn lexical_score(query: &str, content: &str) -> f32 {
     let query_tokens = tokenize(query);
     if query_tokens.is_empty() {
@@ -530,20 +333,4 @@ fn lexical_score(query: &str, content: &str) -> f32 {
         .filter(|token| content_tokens.contains(token))
         .count();
     matches as f32 / query_tokens.len() as f32
-}
-
-fn tokenize(text: &str) -> Vec<String> {
-    text.split(|ch: char| !ch.is_alphanumeric())
-        .filter(|token| !token.is_empty())
-        .map(|token| token.to_ascii_lowercase())
-        .collect()
-}
-
-fn stable_hash(value: &str) -> usize {
-    let mut hash: usize = 1469598103934665603usize;
-    for byte in value.bytes() {
-        hash ^= byte as usize;
-        hash = hash.wrapping_mul(1099511628211usize);
-    }
-    hash
 }

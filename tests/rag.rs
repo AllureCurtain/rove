@@ -3,6 +3,31 @@
 use rove::tools::rag::{DeterministicEmbedder, RagIndex, RetrieveKind};
 
 #[tokio::test]
+async fn rag_public_api_survives_module_split() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let src_dir = tmp.path().join("src");
+    std::fs::create_dir_all(&src_dir).unwrap();
+    std::fs::write(
+        src_dir.join("auth.rs"),
+        "pub fn validate_authentication_token(token: &str) -> bool { token == \"ok\" }",
+    )
+    .unwrap();
+
+    let index = RagIndex::new(tmp.path().to_path_buf());
+    let embedder = DeterministicEmbedder;
+    let indexed = index.ingest_workspace(&embedder).await.unwrap();
+    assert_eq!(indexed, 1);
+
+    let hits = index
+        .retrieve(&embedder, RetrieveKind::Code, "authentication token", 5)
+        .await
+        .unwrap();
+
+    assert_eq!(hits[0].path, "src/auth.rs");
+    assert!(hits[0].content.contains("validate_authentication_token"));
+}
+
+#[tokio::test]
 async fn retrieve_code_finds_relevant_chunk() {
     let tmp = tempfile::TempDir::new().unwrap();
     let src_dir = tmp.path().join("src");
