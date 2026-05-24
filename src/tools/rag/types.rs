@@ -74,6 +74,27 @@ pub struct ManifestChunk {
     pub vector: Vec<f32>,
 }
 
+#[derive(Debug, Clone)]
+pub struct ParsedDocument {
+    pub path: String,
+    pub kind: RetrieveKind,
+    pub content_hash: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct DocumentChunk {
+    pub id: String,
+    pub path: String,
+    pub kind: RetrieveKind,
+    pub content_hash: String,
+    pub chunk_hash: String,
+    pub start_byte: usize,
+    pub end_byte: usize,
+    pub heading: Option<String>,
+    pub content: String,
+}
+
 pub fn sha256_hex(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
 

@@ -9,6 +9,7 @@ use crate::errors::ToolError;
 
 mod embed;
 mod index;
+pub mod ingest;
 mod types;
 
 pub use embed::{DeterministicEmbedder, Embedder, OpenAiEmbedder};
