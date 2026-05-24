@@ -52,6 +52,9 @@ async fn main() -> anyhow::Result<()> {
                 cwd: path.or_else(|| args.cwd.map(PathBuf::from)),
                 deterministic,
                 embedding_model,
+                eval_query: None,
+                eval_kind: None,
+                eval_limit: 8,
             })
             .await;
         }

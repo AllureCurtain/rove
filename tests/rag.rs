@@ -281,3 +281,52 @@ async fn path_scoped_channel_prefers_matching_path_hint() {
     assert_eq!(hits[0].path, "src/billing.rs");
     assert!(hits[0].source.contains("path"));
 }
+
+#[tokio::test]
+async fn rag_tool_output_contains_query_metadata_and_results() {
+    use rove::core::types::{ApprovalPolicy, ToolContext};
+    use rove::core::workspace::Workspace;
+    use rove::tools::rag::RagRetrieveTool;
+    use rove::tools::traits::Tool;
+    use tokio_util::sync::CancellationToken;
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    std::fs::write(
+        tmp.path().join("README.md"),
+        "# RAG\n\nretrieval eval report",
+    )
+    .unwrap();
+
+    let index = RagIndex::new(tmp.path().to_path_buf());
+    let embedder = DeterministicEmbedder;
+    index.ingest_workspace(&embedder).await.unwrap();
+
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let ctx = ToolContext {
+        workspace: &workspace,
+        approval_policy: ApprovalPolicy::Auto,
+        cancel_token: CancellationToken::new(),
+        input_provider: None,
+    };
+    let tool = RagRetrieveTool::docs(workspace.root.clone());
+
+    let output = tool
+        .execute(
+            serde_json::json!({"query": "retrieval eval", "limit": 2}),
+            &ctx,
+        )
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_str(&output.content).unwrap();
+
+    assert_eq!(json["query"], "retrieval eval");
+    assert_eq!(json["normalized_query"], "retrieval eval");
+    assert_eq!(json["kind"], "docs");
+    assert_eq!(json["limit"], 2);
+    assert!(
+        json["results"][0]["source"]
+            .as_str()
+            .unwrap()
+            .contains("lexical")
+    );
+}

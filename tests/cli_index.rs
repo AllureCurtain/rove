@@ -21,6 +21,9 @@ async fn index_run_explains_when_rag_feature_is_disabled() {
         cwd: Some(PathBuf::from(".")),
         deterministic: true,
         embedding_model: None,
+        eval_query: None,
+        eval_kind: None,
+        eval_limit: 8,
     })
     .await
     .unwrap_err();
@@ -42,6 +45,9 @@ async fn deterministic_index_run_writes_manifest() {
         cwd: Some(tmp.path().to_path_buf()),
         deterministic: true,
         embedding_model: None,
+        eval_query: None,
+        eval_kind: None,
+        eval_limit: 8,
     })
     .await
     .unwrap();
@@ -53,6 +59,61 @@ async fn deterministic_index_run_writes_manifest() {
             .join("rag_index_log.jsonl")
             .exists()
     );
+}
+
+#[cfg(feature = "rag")]
+#[tokio::test]
+async fn eval_run_writes_report_without_llm_generation() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    write_file(
+        tmp.path().join("README.md"),
+        "# Retrieval\n\nRAG eval reports ranked retrieval chunks.",
+    );
+
+    run(IndexOptions {
+        cwd: Some(tmp.path().to_path_buf()),
+        deterministic: true,
+        embedding_model: None,
+        eval_query: None,
+        eval_kind: None,
+        eval_limit: 8,
+    })
+    .await
+    .unwrap();
+
+    run(IndexOptions {
+        cwd: Some(tmp.path().to_path_buf()),
+        deterministic: true,
+        embedding_model: None,
+        eval_query: Some("RAG eval reports".to_string()),
+        eval_kind: Some("docs".to_string()),
+        eval_limit: 3,
+    })
+    .await
+    .unwrap();
+
+    let eval_dir = tmp.path().join(".rove").join("rag_eval");
+    let mut reports = std::fs::read_dir(eval_dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect::<Vec<_>>();
+    reports.sort();
+    let report: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(reports.last().unwrap()).unwrap()).unwrap();
+
+    assert_eq!(report["schema_version"], 1);
+    assert_eq!(report["query"], "RAG eval reports");
+    assert_eq!(report["kind"], "docs");
+    assert!(report["duration_ms"].as_u64().is_some());
+    assert!(
+        report["channels"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|channel| channel["name"] == "lexical")
+    );
+    assert_eq!(report["results"][0]["rank"], 1);
+    assert!(report.get("llm_output").is_none());
 }
 
 #[cfg(feature = "rag")]

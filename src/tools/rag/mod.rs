@@ -6,8 +6,10 @@ use serde_json::Value;
 use super::traits::{Tool, ToolOutput};
 use crate::core::types::{ToolContext, ToolSchema};
 use crate::errors::ToolError;
+use crate::tools::rag::rewrite::{DeterministicQueryRewriteService, QueryRewriteService};
 
 mod embed;
+pub mod eval;
 mod index;
 pub mod ingest;
 pub mod retrieve;
@@ -86,10 +88,16 @@ impl Tool for RagRetrieveTool {
             .map_err(|err| ToolError::ExecutionFailed {
                 reason: err.to_string(),
             })?;
-        let content = serde_json::to_string_pretty(&hits_as_json(&hits)).map_err(|err| {
-            ToolError::ExecutionFailed {
-                reason: err.to_string(),
-            }
+        let rewrite = DeterministicQueryRewriteService.rewrite(query);
+        let content = serde_json::to_string_pretty(&serde_json::json!({
+            "query": query,
+            "normalized_query": rewrite.normalized_query,
+            "kind": self.kind.as_str(),
+            "limit": limit,
+            "results": hits_as_json(&hits),
+        }))
+        .map_err(|err| ToolError::ExecutionFailed {
+            reason: err.to_string(),
         })?;
         Ok(ToolOutput { content })
     }
@@ -99,8 +107,11 @@ fn hits_as_json(hits: &[RetrievedChunk]) -> Vec<serde_json::Value> {
     hits.iter()
         .map(|hit| {
             serde_json::json!({
+                "id": hit.id,
                 "path": hit.path,
                 "score": hit.score,
+                "source": hit.source,
+                "heading": hit.heading,
                 "content": hit.content,
             })
         })
