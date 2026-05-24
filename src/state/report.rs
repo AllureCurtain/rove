@@ -61,12 +61,13 @@ impl RunReport {
     }
 }
 
-/// Write a report to the run directory.
-pub fn write_report(run_dir: &Path, report: &RunReport) -> std::io::Result<()> {
+/// Write a report to the run directory and return the artifact path.
+pub fn write_report(run_dir: &Path, report: &RunReport) -> std::io::Result<PathBuf> {
     fs::create_dir_all(run_dir)?;
     let path = run_dir.join("report.json");
     let json = serde_json::to_string_pretty(report).map_err(std::io::Error::other)?;
-    atomic_write(&path, json.as_bytes())
+    atomic_write(&path, json.as_bytes())?;
+    Ok(path)
 }
 
 fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {

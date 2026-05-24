@@ -157,7 +157,8 @@ impl RunArtifactRecorder {
                 .map(|output| truncate_summary(output));
         }
         self.write_snapshot(state_store).await;
-        self.write_report(workspace, model_id, run_dir);
+        self.write_report(state_store, workspace, model_id, run_dir)
+            .await;
     }
 
     async fn write_snapshot(&self, state_store: &StateStore) {
@@ -177,7 +178,13 @@ impl RunArtifactRecorder {
         }
     }
 
-    fn write_report(&self, workspace: &Workspace, model_id: &str, run_dir: &Path) {
+    async fn write_report(
+        &self,
+        state_store: &StateStore,
+        workspace: &Workspace,
+        model_id: &str,
+        run_dir: &Path,
+    ) {
         let mut report = RunReport::new(
             self.session_id,
             self.job_id,
@@ -193,8 +200,23 @@ impl RunArtifactRecorder {
         report.tool_failures = self.tool_failures;
         report.output = self.final_output.clone();
 
-        if let Err(err) = write_report(run_dir, &report) {
-            tracing::warn!("Failed to write report.json: {}", err);
+        match write_report(run_dir, &report) {
+            Ok(path) => {
+                if let Err(err) = state_store
+                    .record_report(
+                        self.run_id,
+                        path,
+                        report.status.clone(),
+                        termination_reason_label(&report.termination_reason).to_string(),
+                    )
+                    .await
+                {
+                    tracing::warn!("Failed to index report.json: {}", err);
+                }
+            }
+            Err(err) => {
+                tracing::warn!("Failed to write report.json: {}", err);
+            }
         }
     }
 }
@@ -205,5 +227,16 @@ fn truncate_summary(output: &str) -> String {
         "completed".to_string()
     } else {
         summary.chars().take(120).collect()
+    }
+}
+
+fn termination_reason_label(reason: &TerminationReason) -> &'static str {
+    match reason {
+        TerminationReason::Final => "final",
+        TerminationReason::StepLimit => "step_limit",
+        TerminationReason::TokenLimit => "token_limit",
+        TerminationReason::TimeLimit => "time_limit",
+        TerminationReason::Error => "error",
+        TerminationReason::Cancelled => "cancelled",
     }
 }

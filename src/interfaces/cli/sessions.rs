@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use crate::config::{AppConfig, AppConfigOverrides};
 use crate::core::types::TaskState;
 use crate::core::workspace::Workspace;
 use crate::state::store::StateStore;
@@ -9,7 +10,12 @@ pub async fn run(cwd: Option<String>) -> anyhow::Result<()> {
         .map(PathBuf::from)
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
     let workspace = Workspace::detect(&cwd)?;
-    let state_store = StateStore::new(&workspace.state_dir);
+    let config = AppConfig::load(&workspace.root, AppConfigOverrides::default())?;
+    let state_store = StateStore::with_index_path(
+        &config.state_dir(),
+        config.sqlite_path(),
+        config.state.sqlite_busy_timeout_ms,
+    );
     let states = state_store.list_task_states().await?;
     println!("{}", format_task_states(&states));
     Ok(())

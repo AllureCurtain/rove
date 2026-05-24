@@ -3,6 +3,7 @@ use std::time::SystemTime;
 
 use crate::core::types::{JobId, RunId, RunRequest, SessionId, TaskState};
 
+use super::index::{StateIndex, TaskStateIndexRecord};
 use super::trace::RunStore;
 use super::trace::TraceWriter;
 
@@ -13,6 +14,7 @@ const TASK_STATE_SCHEMA_VERSION: u32 = 1;
 /// Coordinates run directories, trace files, and (later) report generation.
 pub struct StateStore {
     pub run_store: RunStore,
+    pub index: StateIndex,
     state_dir: PathBuf,
 }
 
@@ -32,8 +34,19 @@ struct TaskStateEntry {
 
 impl StateStore {
     pub fn new(state_dir: &Path) -> Self {
+        let index = StateIndex::new(state_dir);
+        Self::with_index(state_dir, index)
+    }
+
+    pub fn with_index_path(state_dir: &Path, db_path: PathBuf, busy_timeout_ms: u64) -> Self {
+        let index = StateIndex::with_path(state_dir, db_path, busy_timeout_ms);
+        Self::with_index(state_dir, index)
+    }
+
+    pub fn with_index(state_dir: &Path, index: StateIndex) -> Self {
         Self {
-            run_store: RunStore::new(state_dir),
+            run_store: RunStore::with_index(state_dir, index.clone()),
+            index,
             state_dir: state_dir.to_path_buf(),
         }
     }
@@ -47,6 +60,8 @@ impl StateStore {
     ) -> std::io::Result<RunHandle> {
         let run_dir = self.run_store.run_dir(&run_id);
         let trace_writer = self.run_store.create_trace(&run_id)?;
+        self.index
+            .record_run_started(session_id, job_id, run_id, &run_dir, trace_writer.path())?;
         Ok(RunHandle {
             session_id,
             job_id,
@@ -61,21 +76,32 @@ impl StateStore {
         tokio::fs::create_dir_all(&run_dir).await?;
         let path = run_dir.join("task_state.json");
         let json = serde_json::to_vec_pretty(state).map_err(std::io::Error::other)?;
-        atomic_write(&path, &json).await
+        atomic_write(&path, &json).await?;
+        let modified = tokio::fs::metadata(&path)
+            .await?
+            .modified()
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+        self.index
+            .record_task_state_async(state.clone(), path, modified)
+            .await
     }
 
     pub async fn load_latest_task_state(&self) -> std::io::Result<Option<TaskState>> {
-        let mut entries = self.task_state_entries().await?;
-        sort_newest_first(&mut entries);
-        let Some(entry) = entries.first() else {
+        self.lazy_import_task_states().await?;
+        let records = self.index.list_task_state_records_async(None).await?;
+        let Some(record) = records.first() else {
             return Ok(None);
         };
 
-        self.load_task_state_path(&entry.path).await.map(Some)
+        self.load_task_state_path(&record.path).await.map(Some)
     }
 
     pub async fn load_task_state(&self, run_id: RunId) -> std::io::Result<TaskState> {
-        let path = self.run_store.run_dir(&run_id).join("task_state.json");
+        self.lazy_import_task_states().await?;
+        let path = match self.index.task_state_path_async(run_id).await? {
+            Some(path) => path,
+            None => self.run_store.run_dir(&run_id).join("task_state.json"),
+        };
         if !tokio::fs::try_exists(&path).await? {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
@@ -89,30 +115,53 @@ impl StateStore {
         &self,
         session_id: SessionId,
     ) -> std::io::Result<Vec<TaskState>> {
-        let mut states = Vec::new();
-        let mut entries = self.task_state_entries().await?;
-        sort_newest_first(&mut entries);
-
-        for entry in entries {
-            let state = self.load_task_state_path(&entry.path).await?;
-            if state.session_id == session_id {
-                states.push(state);
-            }
-        }
-
-        Ok(states)
+        self.lazy_import_task_states().await?;
+        self.load_task_state_records(
+            self.index
+                .list_task_state_records_async(Some(session_id))
+                .await?,
+        )
+        .await
     }
 
     pub async fn list_task_states(&self) -> std::io::Result<Vec<TaskState>> {
+        self.lazy_import_task_states().await?;
+        self.load_task_state_records(self.index.list_task_state_records_async(None).await?)
+            .await
+    }
+
+    pub async fn record_report(
+        &self,
+        run_id: RunId,
+        report_path: PathBuf,
+        status: String,
+        termination_reason: String,
+    ) -> std::io::Result<()> {
+        self.index
+            .record_report_async(run_id, report_path, status, termination_reason)
+            .await
+    }
+
+    async fn load_task_state_records(
+        &self,
+        records: Vec<TaskStateIndexRecord>,
+    ) -> std::io::Result<Vec<TaskState>> {
         let mut states = Vec::new();
-        let mut entries = self.task_state_entries().await?;
-        sort_newest_first(&mut entries);
-
-        for entry in entries {
-            states.push(self.load_task_state_path(&entry.path).await?);
+        for record in records {
+            states.push(self.load_task_state_path(&record.path).await?);
         }
-
         Ok(states)
+    }
+
+    async fn lazy_import_task_states(&self) -> std::io::Result<()> {
+        let entries = self.task_state_entries().await?;
+        for entry in entries {
+            let state = self.load_task_state_path(&entry.path).await?;
+            self.index
+                .record_task_state_async(state, entry.path, entry.modified)
+                .await?;
+        }
+        Ok(())
     }
 
     async fn task_state_entries(&self) -> std::io::Result<Vec<TaskStateEntry>> {

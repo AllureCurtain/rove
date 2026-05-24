@@ -1227,10 +1227,10 @@ async fn load_task_state_returns_not_found_for_missing_run() {
 fn start_run_binds_identity_and_filesystem_paths() {
     let tmp = tempfile::TempDir::new().unwrap();
     let store = StateStore::new(tmp.path());
+    let session_id = SessionId::new();
+    let job_id = JobId::new();
     let run_id = RunId::new();
-    let handle = store
-        .start_run(SessionId::new(), JobId::new(), run_id)
-        .unwrap();
+    let handle = store.start_run(session_id, job_id, run_id).unwrap();
 
     assert_eq!(handle.run_id, run_id);
     assert_eq!(
@@ -1243,6 +1243,99 @@ fn start_run_binds_identity_and_filesystem_paths() {
     let request = handle.request("hello".to_string(), None);
     assert_eq!(request.run_id, run_id);
     assert_eq!(request.user_message, "hello");
+
+    assert!(store.index.path().exists());
+    let job = store
+        .index
+        .job_record(job_id)
+        .unwrap()
+        .expect("job should be indexed");
+    assert_eq!(job.session_id, session_id);
+    assert_eq!(job.status, "running");
+    assert_eq!(job.run_id, Some(run_id));
+    let run = store
+        .index
+        .run_record(run_id)
+        .unwrap()
+        .expect("run should be indexed");
+    assert_eq!(run.session_id, session_id);
+    assert_eq!(run.job_id, job_id);
+    assert_eq!(run.status, "running");
+    assert_eq!(run.run_dir, handle.run_dir);
+    assert_eq!(run.trace_path, handle.trace_writer.path());
+}
+
+#[tokio::test]
+async fn lazy_import_indexes_existing_task_state_artifacts() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let store = StateStore::new(tmp.path());
+    let state = TaskState {
+        schema_version: 1,
+        session_id: SessionId::new(),
+        job_id: JobId::new(),
+        run_id: RunId::new(),
+        goal: "legacy artifact".to_string(),
+        step: 2,
+        history: vec![user_message("legacy artifact")],
+        summary: Some("legacy summary".to_string()),
+        plan: None,
+    };
+    let run_dir = tmp.path().join("runs").join(state.run_id.to_string());
+    std::fs::create_dir_all(&run_dir).unwrap();
+    let task_state_path = run_dir.join("task_state.json");
+    std::fs::write(&task_state_path, serde_json::to_vec_pretty(&state).unwrap()).unwrap();
+
+    assert!(!store.index.path().exists());
+
+    let states = store.list_task_states().await.unwrap();
+
+    assert_eq!(states.len(), 1);
+    assert_eq!(states[0].goal, "legacy artifact");
+    assert!(store.index.path().exists());
+    assert_eq!(
+        store
+            .index
+            .task_state_path(state.run_id)
+            .unwrap()
+            .as_deref(),
+        Some(task_state_path.as_path())
+    );
+    let records = store.index.list_task_state_records(None).unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].run_id, state.run_id);
+    assert_eq!(records[0].path, task_state_path);
+}
+
+#[test]
+fn trace_writer_indexes_appended_events() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let store = StateStore::new(tmp.path());
+    let session_id = SessionId::new();
+    let job_id = JobId::new();
+    let run_id = RunId::new();
+    let handle = store.start_run(session_id, job_id, run_id).unwrap();
+    let started = StreamEvent::RunStarted {
+        run_id,
+        job_id,
+        user_message: "trace me".to_string(),
+    };
+    let completed = StreamEvent::RunCompleted {
+        reason: TerminationReason::Final,
+        output: Some("done".to_string()),
+    };
+
+    handle.trace_writer.append(&started).unwrap();
+    handle.trace_writer.append(&completed).unwrap();
+
+    let events = store.index.event_records(run_id).unwrap();
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0].seq, 1);
+    assert_eq!(events[0].event_name, "run_started");
+    assert_eq!(events[1].seq, 2);
+    assert_eq!(events[1].event_name, "run_completed");
+    assert_eq!(store.index.last_event_seq(run_id).unwrap(), 2);
+    let run = store.index.run_record(run_id).unwrap().unwrap();
+    assert_eq!(run.last_event_seq, 2);
 }
 
 #[tokio::test]
@@ -2193,6 +2286,25 @@ async fn oneshot_report_includes_workspace_and_identity_metadata() {
     );
     assert_eq!(report["workspace_kind"], "folder");
     assert_eq!(report["model_id"], "fake-model");
+
+    let indexed_report = state_store
+        .index
+        .report_record(run_id)
+        .unwrap()
+        .expect("report should be indexed");
+    assert_eq!(indexed_report.path, run_dir.join("report.json"));
+    assert_eq!(indexed_report.status, "success");
+    assert_eq!(indexed_report.termination_reason, "final");
+    let indexed_run = state_store
+        .index
+        .run_record(run_id)
+        .unwrap()
+        .expect("run should be indexed");
+    assert_eq!(indexed_run.status, "done");
+    assert_eq!(
+        indexed_run.report_path.as_deref(),
+        Some(indexed_report.path.as_path())
+    );
 }
 
 #[tokio::test]

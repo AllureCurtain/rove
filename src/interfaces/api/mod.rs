@@ -387,7 +387,7 @@ async fn run_job_inner(
     req: &CreateJobRequest,
 ) -> anyhow::Result<()> {
     let engine = build_engine(state, &record.message, req, record.clone())?;
-    let state_store = StateStore::new(&state.inner.workspace.state_dir);
+    let state_store = state_store_for_api(state);
     let run = state_store.start_run(record.session_id, record.job_id, record.run_id)?;
     let mut recorder = RunArtifactRecorder::new(
         record.session_id,
@@ -452,7 +452,7 @@ async fn finalize_cancelled_job(state: &ApiState, record: &Arc<JobRecord>) {
         .map(|event| event.event.clone())
         .collect();
 
-    let state_store = StateStore::new(&state.inner.workspace.state_dir);
+    let state_store = state_store_for_api(state);
     if let Ok(trace_writer) = state_store.run_store.create_trace(&record.run_id) {
         let _ = trace_writer.append(&cancel_event);
     }
@@ -529,6 +529,23 @@ fn build_engine(
     } else {
         Ok(engine)
     }
+}
+
+fn state_store_for_api(state: &ApiState) -> StateStore {
+    let sqlite_path = if state.inner.config.state.sqlite_path.is_absolute() {
+        state.inner.config.state.sqlite_path.clone()
+    } else {
+        state
+            .inner
+            .workspace
+            .root
+            .join(&state.inner.config.state.sqlite_path)
+    };
+    StateStore::with_index_path(
+        &state.inner.workspace.state_dir,
+        sqlite_path,
+        state.inner.config.state.sqlite_busy_timeout_ms,
+    )
 }
 
 async fn find_job(state: &ApiState, job_id: JobId) -> Result<Arc<JobRecord>, ApiError> {

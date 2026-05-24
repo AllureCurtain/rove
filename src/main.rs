@@ -177,7 +177,11 @@ async fn main() -> anyhow::Result<()> {
     };
 
     // Set up state store + trace
-    let state_store = StateStore::new(&workspace.state_dir);
+    let state_store = StateStore::with_index_path(
+        &workspace.state_dir,
+        config.sqlite_path(),
+        config.state.sqlite_busy_timeout_ms,
+    );
     let resume_state = resolve_resume_state(&state_store, args.resume.as_deref()).await?;
     let run_id = RunId::new();
     let run_handle = state_store.start_run(

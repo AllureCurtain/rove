@@ -232,6 +232,7 @@ pub enum RunStatus {
     Done,
     Error,
     Cancelled,
+    Interrupted,
 }
 
 /// Tool schema definition exposed to the LLM.

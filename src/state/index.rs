@@ -1,0 +1,796 @@
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use rusqlite::{Connection, OptionalExtension, params};
+
+use crate::core::events::StreamEvent;
+use crate::core::types::{JobId, RunId, SessionId, TaskState};
+
+const CURRENT_SCHEMA_VERSION: i64 = 1;
+const DEFAULT_BUSY_TIMEOUT_MS: u64 = 5_000;
+
+const MIGRATION_001: &str = r#"
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    version INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    applied_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+    session_id TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS jobs (
+    job_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    run_id TEXT,
+    message TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    ttl_expires_at TEXT,
+    FOREIGN KEY(session_id) REFERENCES sessions(session_id)
+);
+
+CREATE TABLE IF NOT EXISTS runs (
+    run_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    job_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    run_dir TEXT NOT NULL,
+    trace_path TEXT NOT NULL,
+    task_state_path TEXT,
+    report_path TEXT,
+    started_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    completed_at TEXT,
+    last_event_seq INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY(session_id) REFERENCES sessions(session_id),
+    FOREIGN KEY(job_id) REFERENCES jobs(job_id)
+);
+
+CREATE TABLE IF NOT EXISTS task_states (
+    run_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    job_id TEXT NOT NULL,
+    path TEXT NOT NULL,
+    schema_version INTEGER NOT NULL,
+    goal TEXT NOT NULL,
+    step INTEGER NOT NULL,
+    summary TEXT,
+    modified_at INTEGER NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(run_id) REFERENCES runs(run_id),
+    FOREIGN KEY(session_id) REFERENCES sessions(session_id),
+    FOREIGN KEY(job_id) REFERENCES jobs(job_id)
+);
+
+CREATE TABLE IF NOT EXISTS reports (
+    run_id TEXT PRIMARY KEY,
+    path TEXT NOT NULL,
+    status TEXT NOT NULL,
+    termination_reason TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(run_id) REFERENCES runs(run_id)
+);
+
+CREATE TABLE IF NOT EXISTS events (
+    run_id TEXT NOT NULL,
+    seq INTEGER NOT NULL,
+    event_name TEXT NOT NULL,
+    event_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(run_id, seq),
+    FOREIGN KEY(run_id) REFERENCES runs(run_id)
+);
+
+CREATE TABLE IF NOT EXISTS event_offsets (
+    run_id TEXT PRIMARY KEY,
+    last_seq INTEGER NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(run_id) REFERENCES runs(run_id)
+);
+
+CREATE TABLE IF NOT EXISTS pending_approvals (
+    call_id TEXT PRIMARY KEY,
+    job_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    args_json TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    status TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(job_id) REFERENCES jobs(job_id),
+    FOREIGN KEY(run_id) REFERENCES runs(run_id)
+);
+
+CREATE TABLE IF NOT EXISTS pending_inputs (
+    input_id TEXT PRIMARY KEY,
+    job_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    prompt TEXT NOT NULL,
+    status TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(job_id) REFERENCES jobs(job_id),
+    FOREIGN KEY(run_id) REFERENCES runs(run_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_task_states_session_modified
+    ON task_states(session_id, modified_at DESC, path DESC);
+CREATE INDEX IF NOT EXISTS idx_task_states_modified
+    ON task_states(modified_at DESC, path DESC);
+CREATE INDEX IF NOT EXISTS idx_jobs_session_updated
+    ON jobs(session_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_events_run_seq
+    ON events(run_id, seq);
+"#;
+
+#[derive(Debug, Clone)]
+pub struct StateIndex {
+    db_path: Arc<PathBuf>,
+    state_dir: Arc<PathBuf>,
+    busy_timeout_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskStateIndexRecord {
+    pub run_id: RunId,
+    pub path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JobIndexRecord {
+    pub job_id: JobId,
+    pub session_id: SessionId,
+    pub status: String,
+    pub run_id: Option<RunId>,
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunIndexRecord {
+    pub run_id: RunId,
+    pub session_id: SessionId,
+    pub job_id: JobId,
+    pub status: String,
+    pub run_dir: PathBuf,
+    pub trace_path: PathBuf,
+    pub task_state_path: Option<PathBuf>,
+    pub report_path: Option<PathBuf>,
+    pub last_event_seq: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReportIndexRecord {
+    pub run_id: RunId,
+    pub path: PathBuf,
+    pub status: String,
+    pub termination_reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EventIndexRecord {
+    pub run_id: RunId,
+    pub seq: u64,
+    pub event_name: String,
+    pub event_json: String,
+}
+
+impl StateIndex {
+    pub fn new(state_dir: &Path) -> Self {
+        Self::with_path(
+            state_dir,
+            state_dir.join("state.sqlite"),
+            DEFAULT_BUSY_TIMEOUT_MS,
+        )
+    }
+
+    pub fn with_path(state_dir: &Path, db_path: PathBuf, busy_timeout_ms: u64) -> Self {
+        Self {
+            db_path: Arc::new(db_path),
+            state_dir: Arc::new(state_dir.to_path_buf()),
+            busy_timeout_ms,
+        }
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.db_path
+    }
+
+    pub fn initialize(&self) -> std::io::Result<()> {
+        let _ = self.connect()?;
+        Ok(())
+    }
+
+    pub fn record_run_started(
+        &self,
+        session_id: SessionId,
+        job_id: JobId,
+        run_id: RunId,
+        run_dir: &Path,
+        trace_path: &Path,
+    ) -> std::io::Result<()> {
+        let conn = self.connect()?;
+        let now = now_rfc3339();
+        upsert_session(&conn, session_id, &now)?;
+        conn.execute(
+            r#"
+            INSERT INTO jobs(job_id, session_id, status, run_id, created_at, updated_at)
+            VALUES (?1, ?2, 'running', ?3, ?4, ?4)
+            ON CONFLICT(job_id) DO UPDATE SET
+                session_id = excluded.session_id,
+                status = excluded.status,
+                run_id = excluded.run_id,
+                updated_at = excluded.updated_at
+            "#,
+            params![
+                job_id.to_string(),
+                session_id.to_string(),
+                run_id.to_string(),
+                now
+            ],
+        )
+        .map_err(io_other)?;
+        conn.execute(
+            r#"
+            INSERT INTO runs(
+                run_id, session_id, job_id, status, run_dir, trace_path, started_at, updated_at
+            )
+            VALUES (?1, ?2, ?3, 'running', ?4, ?5, ?6, ?6)
+            ON CONFLICT(run_id) DO UPDATE SET
+                session_id = excluded.session_id,
+                job_id = excluded.job_id,
+                status = excluded.status,
+                run_dir = excluded.run_dir,
+                trace_path = excluded.trace_path,
+                updated_at = excluded.updated_at
+            "#,
+            params![
+                run_id.to_string(),
+                session_id.to_string(),
+                job_id.to_string(),
+                run_dir.to_string_lossy().as_ref(),
+                trace_path.to_string_lossy().as_ref(),
+                now,
+            ],
+        )
+        .map_err(io_other)?;
+        Ok(())
+    }
+
+    pub async fn record_task_state_async(
+        &self,
+        state: TaskState,
+        path: PathBuf,
+        modified: SystemTime,
+    ) -> std::io::Result<()> {
+        let index = self.clone();
+        tokio::task::spawn_blocking(move || index.record_task_state(&state, &path, modified))
+            .await
+            .map_err(std::io::Error::other)?
+    }
+
+    pub fn record_task_state(
+        &self,
+        state: &TaskState,
+        path: &Path,
+        modified: SystemTime,
+    ) -> std::io::Result<()> {
+        let conn = self.connect()?;
+        let now = now_rfc3339();
+        upsert_session(&conn, state.session_id, &now)?;
+        conn.execute(
+            r#"
+            INSERT INTO jobs(job_id, session_id, status, run_id, message, created_at, updated_at)
+            VALUES (?1, ?2, 'running', ?3, ?4, ?5, ?5)
+            ON CONFLICT(job_id) DO UPDATE SET
+                session_id = excluded.session_id,
+                run_id = excluded.run_id,
+                message = COALESCE(excluded.message, jobs.message),
+                updated_at = excluded.updated_at
+            "#,
+            params![
+                state.job_id.to_string(),
+                state.session_id.to_string(),
+                state.run_id.to_string(),
+                state.goal,
+                now,
+            ],
+        )
+        .map_err(io_other)?;
+        let run_dir = path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| self.state_dir.join("runs").join(state.run_id.to_string()));
+        let trace_path = run_dir.join("trace.jsonl");
+        conn.execute(
+            r#"
+            INSERT INTO runs(
+                run_id, session_id, job_id, status, run_dir, trace_path, task_state_path,
+                started_at, updated_at
+            )
+            VALUES (?1, ?2, ?3, 'running', ?4, ?5, ?6, ?7, ?7)
+            ON CONFLICT(run_id) DO UPDATE SET
+                session_id = excluded.session_id,
+                job_id = excluded.job_id,
+                task_state_path = excluded.task_state_path,
+                updated_at = excluded.updated_at
+            "#,
+            params![
+                state.run_id.to_string(),
+                state.session_id.to_string(),
+                state.job_id.to_string(),
+                run_dir.to_string_lossy().as_ref(),
+                trace_path.to_string_lossy().as_ref(),
+                path.to_string_lossy().as_ref(),
+                now,
+            ],
+        )
+        .map_err(io_other)?;
+        conn.execute(
+            r#"
+            INSERT INTO task_states(
+                run_id, session_id, job_id, path, schema_version, goal, step, summary, modified_at,
+                updated_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            ON CONFLICT(run_id) DO UPDATE SET
+                session_id = excluded.session_id,
+                job_id = excluded.job_id,
+                path = excluded.path,
+                schema_version = excluded.schema_version,
+                goal = excluded.goal,
+                step = excluded.step,
+                summary = excluded.summary,
+                modified_at = excluded.modified_at,
+                updated_at = excluded.updated_at
+            "#,
+            params![
+                state.run_id.to_string(),
+                state.session_id.to_string(),
+                state.job_id.to_string(),
+                path.to_string_lossy().as_ref(),
+                state.schema_version,
+                state.goal,
+                state.step,
+                state.summary,
+                system_time_millis(modified),
+                now,
+            ],
+        )
+        .map_err(io_other)?;
+        Ok(())
+    }
+
+    pub async fn list_task_state_records_async(
+        &self,
+        session_id: Option<SessionId>,
+    ) -> std::io::Result<Vec<TaskStateIndexRecord>> {
+        let index = self.clone();
+        tokio::task::spawn_blocking(move || index.list_task_state_records(session_id))
+            .await
+            .map_err(std::io::Error::other)?
+    }
+
+    pub fn list_task_state_records(
+        &self,
+        session_id: Option<SessionId>,
+    ) -> std::io::Result<Vec<TaskStateIndexRecord>> {
+        let conn = self.connect()?;
+        let mut records = Vec::new();
+        if let Some(session_id) = session_id {
+            let mut stmt = conn
+                .prepare(
+                    r#"
+                    SELECT run_id, path
+                    FROM task_states
+                    WHERE session_id = ?1
+                    ORDER BY modified_at DESC, path DESC
+                    "#,
+                )
+                .map_err(io_other)?;
+            let rows = stmt
+                .query_map(params![session_id.to_string()], task_state_record_from_row)
+                .map_err(io_other)?;
+            for row in rows {
+                records.push(row.map_err(io_other)?);
+            }
+        } else {
+            let mut stmt = conn
+                .prepare(
+                    r#"
+                    SELECT run_id, path
+                    FROM task_states
+                    ORDER BY modified_at DESC, path DESC
+                    "#,
+                )
+                .map_err(io_other)?;
+            let rows = stmt
+                .query_map([], task_state_record_from_row)
+                .map_err(io_other)?;
+            for row in rows {
+                records.push(row.map_err(io_other)?);
+            }
+        }
+        Ok(records)
+    }
+
+    pub async fn task_state_path_async(&self, run_id: RunId) -> std::io::Result<Option<PathBuf>> {
+        let index = self.clone();
+        tokio::task::spawn_blocking(move || index.task_state_path(run_id))
+            .await
+            .map_err(std::io::Error::other)?
+    }
+
+    pub fn task_state_path(&self, run_id: RunId) -> std::io::Result<Option<PathBuf>> {
+        let conn = self.connect()?;
+        conn.query_row(
+            "SELECT path FROM task_states WHERE run_id = ?1",
+            params![run_id.to_string()],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map(|path| path.map(PathBuf::from))
+        .map_err(io_other)
+    }
+
+    pub fn job_record(&self, job_id: JobId) -> std::io::Result<Option<JobIndexRecord>> {
+        let conn = self.connect()?;
+        conn.query_row(
+            r#"
+            SELECT job_id, session_id, status, run_id, message
+            FROM jobs
+            WHERE job_id = ?1
+            "#,
+            params![job_id.to_string()],
+            job_record_from_row,
+        )
+        .optional()
+        .map_err(io_other)
+    }
+
+    pub fn run_record(&self, run_id: RunId) -> std::io::Result<Option<RunIndexRecord>> {
+        let conn = self.connect()?;
+        conn.query_row(
+            r#"
+            SELECT run_id, session_id, job_id, status, run_dir, trace_path, task_state_path,
+                   report_path, last_event_seq
+            FROM runs
+            WHERE run_id = ?1
+            "#,
+            params![run_id.to_string()],
+            run_record_from_row,
+        )
+        .optional()
+        .map_err(io_other)
+    }
+
+    pub fn report_record(&self, run_id: RunId) -> std::io::Result<Option<ReportIndexRecord>> {
+        let conn = self.connect()?;
+        conn.query_row(
+            r#"
+            SELECT run_id, path, status, termination_reason
+            FROM reports
+            WHERE run_id = ?1
+            "#,
+            params![run_id.to_string()],
+            report_record_from_row,
+        )
+        .optional()
+        .map_err(io_other)
+    }
+
+    pub fn event_records(&self, run_id: RunId) -> std::io::Result<Vec<EventIndexRecord>> {
+        let conn = self.connect()?;
+        let mut stmt = conn
+            .prepare(
+                r#"
+                SELECT run_id, seq, event_name, event_json
+                FROM events
+                WHERE run_id = ?1
+                ORDER BY seq ASC
+                "#,
+            )
+            .map_err(io_other)?;
+        let rows = stmt
+            .query_map(params![run_id.to_string()], event_record_from_row)
+            .map_err(io_other)?;
+        let mut records = Vec::new();
+        for row in rows {
+            records.push(row.map_err(io_other)?);
+        }
+        Ok(records)
+    }
+
+    pub fn last_event_seq(&self, run_id: RunId) -> std::io::Result<u64> {
+        let conn = self.connect()?;
+        let seq: Option<i64> = conn
+            .query_row(
+                "SELECT last_seq FROM event_offsets WHERE run_id = ?1",
+                params![run_id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(io_other)?;
+        Ok(seq.unwrap_or_default().max(0) as u64)
+    }
+
+    pub fn append_event(
+        &self,
+        run_id: RunId,
+        seq: u64,
+        event: &StreamEvent,
+        event_json: &str,
+    ) -> std::io::Result<()> {
+        let conn = self.connect()?;
+        let now = now_rfc3339();
+        conn.execute(
+            r#"
+            INSERT OR IGNORE INTO events(run_id, seq, event_name, event_json, created_at)
+            VALUES (?1, ?2, ?3, ?4, ?5)
+            "#,
+            params![
+                run_id.to_string(),
+                seq as i64,
+                event.event_name(),
+                event_json,
+                now,
+            ],
+        )
+        .map_err(io_other)?;
+        conn.execute(
+            r#"
+            INSERT INTO event_offsets(run_id, last_seq, updated_at)
+            VALUES (?1, ?2, ?3)
+            ON CONFLICT(run_id) DO UPDATE SET
+                last_seq = MAX(last_seq, excluded.last_seq),
+                updated_at = excluded.updated_at
+            "#,
+            params![run_id.to_string(), seq as i64, now],
+        )
+        .map_err(io_other)?;
+        conn.execute(
+            "UPDATE runs SET last_event_seq = MAX(last_event_seq, ?2), updated_at = ?3 WHERE run_id = ?1",
+            params![run_id.to_string(), seq as i64, now],
+        )
+        .map_err(io_other)?;
+        Ok(())
+    }
+
+    pub async fn record_report_async(
+        &self,
+        run_id: RunId,
+        path: PathBuf,
+        status: String,
+        termination_reason: String,
+    ) -> std::io::Result<()> {
+        let index = self.clone();
+        tokio::task::spawn_blocking(move || {
+            index.record_report(run_id, &path, &status, &termination_reason)
+        })
+        .await
+        .map_err(std::io::Error::other)?
+    }
+
+    pub fn record_report(
+        &self,
+        run_id: RunId,
+        path: &Path,
+        status: &str,
+        termination_reason: &str,
+    ) -> std::io::Result<()> {
+        let conn = self.connect()?;
+        let now = now_rfc3339();
+        let run_status = match status {
+            "success" => "done",
+            "cancelled" => "cancelled",
+            "error" => "error",
+            _ => "interrupted",
+        };
+        conn.execute(
+            r#"
+            INSERT INTO reports(run_id, path, status, termination_reason, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5)
+            ON CONFLICT(run_id) DO UPDATE SET
+                path = excluded.path,
+                status = excluded.status,
+                termination_reason = excluded.termination_reason,
+                updated_at = excluded.updated_at
+            "#,
+            params![
+                run_id.to_string(),
+                path.to_string_lossy().as_ref(),
+                status,
+                termination_reason,
+                now,
+            ],
+        )
+        .map_err(io_other)?;
+        conn.execute(
+            r#"
+            UPDATE runs
+            SET report_path = ?2, status = ?3, completed_at = ?4, updated_at = ?4
+            WHERE run_id = ?1
+            "#,
+            params![
+                run_id.to_string(),
+                path.to_string_lossy().as_ref(),
+                run_status,
+                now
+            ],
+        )
+        .map_err(io_other)?;
+        conn.execute(
+            r#"
+            UPDATE jobs
+            SET status = ?2, updated_at = ?3
+            WHERE run_id = ?1
+            "#,
+            params![run_id.to_string(), run_status, now],
+        )
+        .map_err(io_other)?;
+        Ok(())
+    }
+
+    fn connect(&self) -> std::io::Result<Connection> {
+        if let Some(parent) = self.db_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let conn = Connection::open(self.db_path.as_ref()).map_err(io_other)?;
+        conn.busy_timeout(Duration::from_millis(self.busy_timeout_ms))
+            .map_err(io_other)?;
+        conn.pragma_update(None, "foreign_keys", "ON")
+            .map_err(io_other)?;
+        conn.pragma_update(None, "journal_mode", "WAL")
+            .map_err(io_other)?;
+        conn.pragma_update(None, "synchronous", "NORMAL")
+            .map_err(io_other)?;
+        apply_migrations(&conn)?;
+        Ok(conn)
+    }
+}
+
+fn apply_migrations(conn: &Connection) -> std::io::Result<()> {
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+            version INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            applied_at TEXT NOT NULL
+        );
+        "#,
+    )
+    .map_err(io_other)?;
+    let applied: Option<i64> = conn
+        .query_row(
+            "SELECT version FROM schema_migrations WHERE version = ?1",
+            params![CURRENT_SCHEMA_VERSION],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(io_other)?;
+    if applied.is_none() {
+        conn.execute_batch(MIGRATION_001).map_err(io_other)?;
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES (?1, ?2, ?3)",
+            params![CURRENT_SCHEMA_VERSION, "runtime_state_index", now_rfc3339()],
+        )
+        .map_err(io_other)?;
+    }
+    Ok(())
+}
+
+fn upsert_session(conn: &Connection, session_id: SessionId, now: &str) -> std::io::Result<()> {
+    conn.execute(
+        r#"
+        INSERT INTO sessions(session_id, created_at, updated_at)
+        VALUES (?1, ?2, ?2)
+        ON CONFLICT(session_id) DO UPDATE SET updated_at = excluded.updated_at
+        "#,
+        params![session_id.to_string(), now],
+    )
+    .map_err(io_other)?;
+    Ok(())
+}
+
+fn task_state_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TaskStateIndexRecord> {
+    Ok(TaskStateIndexRecord {
+        run_id: run_id_from_row(row, 0)?,
+        path: PathBuf::from(row.get::<_, String>(1)?),
+    })
+}
+
+fn job_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<JobIndexRecord> {
+    let run_id = row
+        .get::<_, Option<String>>(3)?
+        .map(|value| parse_run_id_at(3, value))
+        .transpose()?;
+    Ok(JobIndexRecord {
+        job_id: job_id_from_row(row, 0)?,
+        session_id: session_id_from_row(row, 1)?,
+        status: row.get(2)?,
+        run_id,
+        message: row.get(4)?,
+    })
+}
+
+fn run_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RunIndexRecord> {
+    Ok(RunIndexRecord {
+        run_id: run_id_from_row(row, 0)?,
+        session_id: session_id_from_row(row, 1)?,
+        job_id: job_id_from_row(row, 2)?,
+        status: row.get(3)?,
+        run_dir: PathBuf::from(row.get::<_, String>(4)?),
+        trace_path: PathBuf::from(row.get::<_, String>(5)?),
+        task_state_path: row.get::<_, Option<String>>(6)?.map(PathBuf::from),
+        report_path: row.get::<_, Option<String>>(7)?.map(PathBuf::from),
+        last_event_seq: row.get::<_, i64>(8)?.max(0) as u64,
+    })
+}
+
+fn report_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ReportIndexRecord> {
+    Ok(ReportIndexRecord {
+        run_id: run_id_from_row(row, 0)?,
+        path: PathBuf::from(row.get::<_, String>(1)?),
+        status: row.get(2)?,
+        termination_reason: row.get(3)?,
+    })
+}
+
+fn event_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<EventIndexRecord> {
+    Ok(EventIndexRecord {
+        run_id: run_id_from_row(row, 0)?,
+        seq: row.get::<_, i64>(1)?.max(0) as u64,
+        event_name: row.get(2)?,
+        event_json: row.get(3)?,
+    })
+}
+
+fn session_id_from_row(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<SessionId> {
+    let value = row.get::<_, String>(index)?;
+    ulid::Ulid::from_string(&value)
+        .map(SessionId)
+        .map_err(|err| from_sql_ulid_error(index, err))
+}
+
+fn job_id_from_row(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<JobId> {
+    let value = row.get::<_, String>(index)?;
+    ulid::Ulid::from_string(&value)
+        .map(JobId)
+        .map_err(|err| from_sql_ulid_error(index, err))
+}
+
+fn run_id_from_row(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<RunId> {
+    parse_run_id_at(index, row.get::<_, String>(index)?)
+}
+
+fn parse_run_id_at(index: usize, value: String) -> rusqlite::Result<RunId> {
+    ulid::Ulid::from_string(&value)
+        .map(RunId)
+        .map_err(|err| from_sql_ulid_error(index, err))
+}
+
+fn from_sql_ulid_error(index: usize, err: ulid::DecodeError) -> rusqlite::Error {
+    rusqlite::Error::FromSqlConversionFailure(index, rusqlite::types::Type::Text, Box::new(err))
+}
+
+fn now_rfc3339() -> String {
+    chrono::Utc::now().to_rfc3339()
+}
+
+fn system_time_millis(value: SystemTime) -> i64 {
+    value
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(i64::MAX as u128) as i64
+}
+
+fn io_other(err: rusqlite::Error) -> std::io::Error {
+    std::io::Error::other(err)
+}

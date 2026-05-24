@@ -248,7 +248,7 @@ async fn api_state_includes_input_needed_event_for_snapshot_recovery() {
 async fn api_writes_run_artifacts_for_completed_job() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
-    let run_store = rove::state::store::StateStore::new(&workspace.state_dir).run_store;
+    let state_store = rove::state::store::StateStore::new(&workspace.state_dir);
     let app = router(ApiState::new(workspace, test_config()));
 
     let create = app
@@ -272,7 +272,7 @@ async fn api_writes_run_artifacts_for_completed_job() {
     let state = wait_for_done(app.clone(), created.job_id.to_string()).await;
     assert_eq!(state.status, RunStatus::Done);
 
-    let run_dir = run_store.run_dir(&created.run_id);
+    let run_dir = state_store.run_store.run_dir(&created.run_id);
     let trace_path = run_dir.join("trace.jsonl");
     let task_state_path = run_dir.join("task_state.json");
     let report_path = run_dir.join("report.json");
@@ -285,17 +285,64 @@ async fn api_writes_run_artifacts_for_completed_job() {
     assert!(report_path.exists(), "report.json should be written");
 
     let task_state: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(task_state_path).unwrap()).unwrap();
+        serde_json::from_slice(&std::fs::read(&task_state_path).unwrap()).unwrap();
     assert_eq!(task_state["job_id"], created.job_id.to_string());
     assert_eq!(task_state["run_id"], created.run_id.to_string());
     assert_eq!(task_state["goal"], "artifact api");
 
     let report: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(report_path).unwrap()).unwrap();
+        serde_json::from_slice(&std::fs::read(&report_path).unwrap()).unwrap();
     assert_eq!(report["job_id"], created.job_id.to_string());
     assert_eq!(report["run_id"], created.run_id.to_string());
     assert_eq!(report["status"], "success");
     assert_eq!(report["output"], "fake response: artifact api");
+
+    assert!(
+        state_store.index.path().exists(),
+        "state.sqlite should be written"
+    );
+    let indexed_job = state_store
+        .index
+        .job_record(created.job_id)
+        .unwrap()
+        .expect("job should be indexed");
+    assert_eq!(indexed_job.status, "done");
+    assert_eq!(indexed_job.run_id, Some(created.run_id));
+    assert_eq!(indexed_job.message.as_deref(), Some("artifact api"));
+    let indexed_run = state_store
+        .index
+        .run_record(created.run_id)
+        .unwrap()
+        .expect("run should be indexed");
+    assert_eq!(indexed_run.status, "done");
+    assert_eq!(
+        indexed_run.task_state_path.as_deref(),
+        Some(task_state_path.as_path())
+    );
+    assert_eq!(
+        indexed_run.report_path.as_deref(),
+        Some(report_path.as_path())
+    );
+    assert!(indexed_run.last_event_seq > 0);
+    let indexed_report = state_store
+        .index
+        .report_record(created.run_id)
+        .unwrap()
+        .expect("report should be indexed");
+    assert_eq!(indexed_report.path, report_path);
+    assert_eq!(indexed_report.status, "success");
+    assert_eq!(indexed_report.termination_reason, "final");
+    let indexed_events = state_store.index.event_records(created.run_id).unwrap();
+    assert!(
+        indexed_events
+            .iter()
+            .any(|event| event.event_name == "run_started")
+    );
+    assert!(
+        indexed_events
+            .iter()
+            .any(|event| event.event_name == "run_completed")
+    );
 }
 
 #[tokio::test]
