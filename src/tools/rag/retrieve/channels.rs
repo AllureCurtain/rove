@@ -181,10 +181,10 @@ fn search_manifest_lexical(
         })
         .filter_map(|chunk| {
             let mut score = lexical_score(&context.normalized_query, &chunk.content);
-            if let Some(hint) = path_hint {
-                if chunk.path.contains(hint) || hint.contains(&chunk.path) {
-                    score += 2.0;
-                }
+            if let Some(hint) = path_hint
+                && (chunk.path.contains(hint) || hint.contains(&chunk.path))
+            {
+                score += 2.0;
             }
             if score <= 0.0 {
                 return None;

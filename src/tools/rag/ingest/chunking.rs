@@ -51,8 +51,8 @@ impl ChunkingStrategy for FixedTextChunker {
             let mut end = if start + self.target_chars >= len {
                 len
             } else {
-                let target_end = start + self.target_chars;
-                if len - target_end <= self.overlap_chars {
+                let target_end = byte_index_after_chars(&normalized, start, self.target_chars);
+                if remaining_chars(&normalized, target_end) <= self.overlap_chars {
                     len
                 } else {
                     adjust_to_boundary(&normalized, start, target_end)
@@ -60,7 +60,7 @@ impl ChunkingStrategy for FixedTextChunker {
             };
 
             if end <= start {
-                end = (start + self.target_chars).min(len);
+                end = byte_index_after_chars(&normalized, start, self.target_chars);
             }
 
             let content = normalized[start..end].trim().to_string();
@@ -83,7 +83,7 @@ impl ChunkingStrategy for FixedTextChunker {
                 break;
             }
 
-            let next_start = end.saturating_sub(self.overlap_chars);
+            let next_start = byte_index_before_chars(&normalized, end, self.overlap_chars);
             start = if next_start <= start { end } else { next_start };
         }
 
@@ -296,10 +296,12 @@ fn normalize_text(text: &str) -> String {
     let mut out = String::with_capacity(src.len());
     let mut chars = src.chars().peekable();
     while let Some(ch) = chars.next() {
-        if ch == '\n' && out.ends_with('.') && looks_like_url_tail(&out) {
-            if matches!(chars.peek(), Some(next) if next.is_ascii_alphabetic() || *next == '/') {
-                continue;
-            }
+        if ch == '\n'
+            && out.ends_with('.')
+            && looks_like_url_tail(&out)
+            && matches!(chars.peek(), Some(next) if next.is_ascii_alphabetic() || *next == '/')
+        {
+            continue;
         }
         out.push(ch);
     }
@@ -314,7 +316,41 @@ fn looks_like_url_tail(text: &str) -> bool {
     tail.starts_with("http://") || tail.starts_with("https://")
 }
 
+fn byte_index_after_chars(text: &str, start: usize, count: usize) -> usize {
+    if start >= text.len() {
+        return text.len();
+    }
+
+    text[start..]
+        .char_indices()
+        .nth(count)
+        .map(|(offset, _)| start + offset)
+        .unwrap_or(text.len())
+}
+
+fn byte_index_before_chars(text: &str, end: usize, count: usize) -> usize {
+    if count == 0 || end == 0 {
+        return end;
+    }
+
+    text[..end]
+        .char_indices()
+        .rev()
+        .nth(count - 1)
+        .map(|(offset, _)| offset)
+        .unwrap_or(0)
+}
+
+fn remaining_chars(text: &str, start: usize) -> usize {
+    text[start..].chars().count()
+}
+
 fn adjust_to_boundary(text: &str, start: usize, target_end: usize) -> usize {
+    let target_end = previous_char_boundary(text, target_end.min(text.len()));
+    if target_end <= start {
+        return start;
+    }
+
     let window = &text[start..target_end];
     for pattern in ["\n\n", "\n#"] {
         if let Some(offset) = window.rfind(pattern) {
@@ -342,6 +378,13 @@ fn adjust_to_boundary(text: &str, start: usize, target_end: usize) -> usize {
     }
 
     target_end
+}
+
+fn previous_char_boundary(text: &str, mut index: usize) -> usize {
+    while index > 0 && !text.is_char_boundary(index) {
+        index -= 1;
+    }
+    index
 }
 
 #[cfg(test)]
@@ -384,6 +427,27 @@ mod tests {
 
         assert_eq!(chunks.len(), 1);
         assert!(chunks[0].content.contains("https://example.com/path"));
+    }
+
+    #[test]
+    fn fixed_chunker_handles_multibyte_boundaries() {
+        let document = ParsedDocument {
+            path: "docs/unicode.md".to_string(),
+            kind: RetrieveKind::Docs,
+            content_hash: "sha256:unicode".to_string(),
+            content: "关键决策清单包含中文内容和英文 tokens for retrieval.".to_string(),
+        };
+        let chunker = FixedTextChunker::new(16, 4);
+
+        let chunks = chunker.chunk(&document);
+
+        assert!(chunks.len() > 1);
+        assert!(chunks.iter().all(|chunk| !chunk.content.is_empty()));
+        assert!(
+            chunks
+                .windows(2)
+                .all(|pair| pair[1].start_byte < pair[0].end_byte)
+        );
     }
 
     #[test]

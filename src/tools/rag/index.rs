@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::Context;
@@ -221,7 +221,7 @@ enum ManifestOnDisk {
     Legacy(Vec<ManifestRecord>),
 }
 
-fn legacy_manifest(records: Vec<ManifestRecord>, workspace_root: &PathBuf) -> IndexManifest {
+fn legacy_manifest(records: Vec<ManifestRecord>, workspace_root: &Path) -> IndexManifest {
     let chunks: Vec<_> = records
         .into_iter()
         .enumerate()
