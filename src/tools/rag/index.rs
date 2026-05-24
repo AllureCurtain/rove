@@ -1,18 +1,18 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Context;
 use arrow_array::cast::AsArray;
 use arrow_array::types::Float32Type;
-use arrow_array::{FixedSizeListArray, Int32Array, RecordBatch, StringArray};
+use arrow_array::{FixedSizeListArray, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use futures::TryStreamExt;
 use lancedb::database::CreateTableMode;
 use lancedb::query::{ExecutableQuery, QueryBase};
-use walkdir::WalkDir;
 
 use super::embed::{EMBEDDING_DIMS, Embedder, cosine_similarity, normalize_dims, tokenize};
-use super::types::{IndexManifest, RetrieveKind, RetrievedChunk};
+use super::ingest::pipeline::IngestionPipeline;
+use super::types::{EmbeddedChunk, IndexManifest, RetrieveKind, RetrievedChunk};
 
 const TABLE_NAME: &str = "chunks";
 
@@ -27,27 +27,9 @@ impl RagIndex {
     }
 
     pub async fn ingest_workspace(&self, embedder: &dyn Embedder) -> anyhow::Result<usize> {
-        let chunks = self.collect_chunks()?;
-        if chunks.is_empty() {
-            return Ok(0);
-        }
-
-        let mut paths = Vec::new();
-        let mut kinds = Vec::new();
-        let mut contents = Vec::new();
-        let mut vectors = Vec::new();
-
-        for chunk in &chunks {
-            paths.push(chunk.path.clone());
-            kinds.push(chunk.kind.as_str().to_string());
-            contents.push(chunk.content.clone());
-            vectors.push(embedder.embed(&chunk.content).await?);
-        }
-
-        self.write_lancedb(&paths, &kinds, &contents, &vectors)
-            .await?;
-        self.write_manifest(&chunks, &vectors).await?;
-        Ok(chunks.len())
+        let pipeline = IngestionPipeline::default_markdown(self.workspace_root.clone(), embedder);
+        let result = pipeline.run().await?;
+        Ok(result.chunk_count)
     }
 
     pub async fn retrieve(
@@ -69,53 +51,42 @@ impl RagIndex {
         Ok(hits)
     }
 
-    fn collect_chunks(&self) -> anyhow::Result<Vec<ChunkRecord>> {
-        let mut chunks = Vec::new();
-        for entry in WalkDir::new(&self.workspace_root)
-            .into_iter()
-            .filter_entry(|entry| !is_ignored(entry.path()))
-        {
-            let entry = entry?;
-            if !entry.file_type().is_file() {
-                continue;
-            }
-            let Some(kind) = classify_path(entry.path()) else {
-                continue;
-            };
-            let content = std::fs::read_to_string(entry.path())?;
-            let path = entry
-                .path()
-                .strip_prefix(&self.workspace_root)
-                .unwrap_or(entry.path())
-                .to_string_lossy()
-                .replace('\\', "/");
-            for chunk in chunk_text(&content, 1600) {
-                chunks.push(ChunkRecord {
-                    path: path.clone(),
-                    kind,
-                    content: chunk,
-                });
-            }
-        }
-        Ok(chunks)
-    }
-
-    async fn write_lancedb(
+    pub(crate) async fn write_lancedb_embedded(
         &self,
-        paths: &[String],
-        kinds: &[String],
-        contents: &[String],
-        vectors: &[Vec<f32>],
+        chunks: &[EmbeddedChunk],
     ) -> anyhow::Result<()> {
+        if chunks.is_empty() {
+            return Ok(());
+        }
+
         let db_dir = self.db_dir();
         tokio::fs::create_dir_all(&db_dir).await?;
         let db = lancedb::connect(db_dir.to_str().unwrap()).execute().await?;
 
+        let ids: Vec<_> = chunks.iter().map(|chunk| chunk.chunk.id.clone()).collect();
+        let paths: Vec<_> = chunks
+            .iter()
+            .map(|chunk| chunk.chunk.path.clone())
+            .collect();
+        let kinds: Vec<_> = chunks
+            .iter()
+            .map(|chunk| chunk.chunk.kind.as_str().to_string())
+            .collect();
+        let contents: Vec<_> = chunks
+            .iter()
+            .map(|chunk| chunk.chunk.content.clone())
+            .collect();
+        let headings: Vec<_> = chunks
+            .iter()
+            .map(|chunk| chunk.chunk.heading.clone().unwrap_or_default())
+            .collect();
+
         let schema = Arc::new(Schema::new(vec![
-            Field::new("id", DataType::Int32, false),
+            Field::new("id", DataType::Utf8, false),
             Field::new("path", DataType::Utf8, false),
             Field::new("kind", DataType::Utf8, false),
             Field::new("content", DataType::Utf8, false),
+            Field::new("heading", DataType::Utf8, false),
             Field::new(
                 "vector",
                 DataType::FixedSizeList(
@@ -128,14 +99,15 @@ impl RagIndex {
         let batch = RecordBatch::try_new(
             schema.clone(),
             vec![
-                Arc::new(Int32Array::from_iter_values(0..paths.len() as i32)),
-                Arc::new(StringArray::from(paths.to_vec())),
-                Arc::new(StringArray::from(kinds.to_vec())),
-                Arc::new(StringArray::from(contents.to_vec())),
+                Arc::new(StringArray::from(ids)),
+                Arc::new(StringArray::from(paths)),
+                Arc::new(StringArray::from(kinds)),
+                Arc::new(StringArray::from(contents)),
+                Arc::new(StringArray::from(headings)),
                 Arc::new(
                     FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
-                        vectors.iter().map(|vector| {
-                            let fixed = normalize_dims(vector);
+                        chunks.iter().map(|chunk| {
+                            let fixed = normalize_dims(&chunk.vector);
                             Some(fixed.into_iter().map(Some).collect::<Vec<_>>())
                         }),
                         EMBEDDING_DIMS as i32,
@@ -180,20 +152,27 @@ impl RagIndex {
         for batch in batches {
             let paths = batch.column_by_name("path").unwrap().as_string::<i32>();
             let kinds = batch.column_by_name("kind").unwrap().as_string::<i32>();
+            let ids = batch.column_by_name("id").unwrap().as_string::<i32>();
             let contents = batch.column_by_name("content").unwrap().as_string::<i32>();
+            let headings = batch.column_by_name("heading").unwrap().as_string::<i32>();
             for row in 0..batch.num_rows() {
                 if kinds.value(row) != kind.as_str() {
                     continue;
                 }
                 let path = paths.value(row).to_string();
                 let content = contents.value(row).to_string();
+                let heading = headings.value(row);
                 hits.push(RetrievedChunk {
-                    id: format!("{path}#{row}"),
+                    id: ids.value(row).to_string(),
                     path,
                     kind,
                     score: lexical_score(query, &content),
                     source: "vector".to_string(),
-                    heading: None,
+                    heading: if heading.is_empty() {
+                        None
+                    } else {
+                        Some(heading.to_string())
+                    },
                     chunk_hash: None,
                     content,
                 });
@@ -202,29 +181,6 @@ impl RagIndex {
         hits.sort_by(|a, b| b.score.total_cmp(&a.score));
         hits.truncate(limit);
         Ok(hits)
-    }
-
-    async fn write_manifest(
-        &self,
-        chunks: &[ChunkRecord],
-        vectors: &[Vec<f32>],
-    ) -> anyhow::Result<()> {
-        let path = self.manifest_path();
-        if let Some(parent) = path.parent() {
-            tokio::fs::create_dir_all(parent).await?;
-        }
-        let records: Vec<ManifestRecord> = chunks
-            .iter()
-            .zip(vectors.iter())
-            .map(|(chunk, vector)| ManifestRecord {
-                path: chunk.path.clone(),
-                kind: chunk.kind.as_str().to_string(),
-                content: chunk.content.clone(),
-                vector: normalize_dims(vector),
-            })
-            .collect();
-        tokio::fs::write(path, serde_json::to_vec_pretty(&records)?).await?;
-        Ok(())
     }
 
     async fn retrieve_manifest(
@@ -289,13 +245,6 @@ impl RagIndex {
     }
 }
 
-#[derive(Debug, Clone)]
-struct ChunkRecord {
-    path: String,
-    kind: RetrieveKind,
-    content: String,
-}
-
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct ManifestRecord {
     path: String,
@@ -309,45 +258,6 @@ struct ManifestRecord {
 enum ManifestOnDisk {
     V1(IndexManifest),
     Legacy(Vec<ManifestRecord>),
-}
-
-fn classify_path(path: &Path) -> Option<RetrieveKind> {
-    let ext = path.extension()?.to_string_lossy().to_ascii_lowercase();
-    match ext.as_str() {
-        "rs" | "toml" | "js" | "ts" | "tsx" | "jsx" | "py" | "go" | "java" | "c" | "cpp" | "h"
-        | "hpp" => Some(RetrieveKind::Code),
-        "md" | "mdx" | "txt" | "rst" => Some(RetrieveKind::Docs),
-        _ => None,
-    }
-}
-
-fn is_ignored(path: &Path) -> bool {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .map(|name| {
-            matches!(
-                name,
-                ".git" | ".rove" | "target" | "node_modules" | ".next" | "dist"
-            )
-        })
-        .unwrap_or(false)
-}
-
-fn chunk_text(content: &str, max_chars: usize) -> Vec<String> {
-    let mut chunks = Vec::new();
-    let mut current = String::new();
-    for line in content.lines() {
-        if current.len() + line.len() + 1 > max_chars && !current.is_empty() {
-            chunks.push(current.trim().to_string());
-            current.clear();
-        }
-        current.push_str(line);
-        current.push('\n');
-    }
-    if !current.trim().is_empty() {
-        chunks.push(current.trim().to_string());
-    }
-    chunks
 }
 
 fn lexical_score(query: &str, content: &str) -> f32 {

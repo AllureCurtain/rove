@@ -228,7 +228,35 @@ fn markdown_sections(text: &str) -> Vec<MarkdownSection> {
         });
     }
 
-    sections
+    merge_heading_only_sections(text, sections)
+}
+
+fn merge_heading_only_sections(text: &str, sections: Vec<MarkdownSection>) -> Vec<MarkdownSection> {
+    let mut merged = Vec::new();
+    let mut pending_start = None;
+
+    for mut section in sections {
+        if is_heading_only_section(text, &section) {
+            pending_start = Some(pending_start.unwrap_or(section.start));
+            continue;
+        }
+
+        if let Some(start) = pending_start.take() {
+            section.start = start;
+        }
+        merged.push(section);
+    }
+
+    merged
+}
+
+fn is_heading_only_section(text: &str, section: &MarkdownSection) -> bool {
+    let content = text[section.start..section.end].trim();
+    let mut non_empty = content.lines().filter(|line| !line.trim().is_empty());
+    let Some(first) = non_empty.next() else {
+        return true;
+    };
+    parse_heading(first.trim()).is_some() && non_empty.next().is_none()
 }
 
 fn lines_with_offsets(text: &str) -> Vec<(usize, &str)> {

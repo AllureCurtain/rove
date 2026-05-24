@@ -47,6 +47,12 @@ async fn deterministic_index_run_writes_manifest() {
     .unwrap();
 
     assert!(tmp.path().join(".rove").join("rag_manifest.json").exists());
+    assert!(
+        tmp.path()
+            .join(".rove")
+            .join("rag_index_log.jsonl")
+            .exists()
+    );
 }
 
 #[cfg(feature = "rag")]

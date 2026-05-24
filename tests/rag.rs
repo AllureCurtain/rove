@@ -67,6 +67,53 @@ async fn malformed_manifest_returns_clear_error() {
 }
 
 #[tokio::test]
+async fn ingestion_pipeline_writes_manifest_and_stage_log() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    std::fs::create_dir_all(tmp.path().join("docs")).unwrap();
+    std::fs::write(
+        tmp.path().join("docs").join("guide.md"),
+        "# Guide\n\n## Retrieval\n\nUse retrieve_docs for indexed docs.",
+    )
+    .unwrap();
+
+    let index = RagIndex::new(tmp.path().to_path_buf());
+    let embedder = DeterministicEmbedder;
+    let count = index.ingest_workspace(&embedder).await.unwrap();
+
+    assert_eq!(count, 1);
+
+    let manifest_path = tmp.path().join(".rove").join("rag_manifest.json");
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(manifest_path).unwrap()).unwrap();
+    assert_eq!(manifest["schema_version"], 1);
+    assert_eq!(manifest["chunking"]["strategy"], "markdown-aware");
+    assert_eq!(manifest["files"][0]["path"], "docs/guide.md");
+    assert_eq!(manifest["chunks"][0]["id"], "docs/guide.md#0000");
+    assert_eq!(manifest["chunks"][0]["heading"], "Guide > Retrieval");
+
+    let log_path = tmp.path().join(".rove").join("rag_index_log.jsonl");
+    let log = std::fs::read_to_string(log_path).unwrap();
+    for stage in [
+        "ScanWorkspace",
+        "ParseReadableFiles",
+        "ChunkDocuments",
+        "EmbedChunks",
+        "PersistIndex",
+        "WriteManifestAndLog",
+    ] {
+        assert!(log.contains(stage), "missing stage log for {stage}");
+    }
+    assert!(
+        log.lines()
+            .all(|line| line.contains("\"schema_version\":1"))
+    );
+    assert!(
+        log.lines()
+            .all(|line| line.contains("\"status\":\"completed\""))
+    );
+}
+
+#[tokio::test]
 async fn rag_public_api_survives_module_split() {
     let tmp = tempfile::TempDir::new().unwrap();
     let src_dir = tmp.path().join("src");

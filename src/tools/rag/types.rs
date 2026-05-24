@@ -95,6 +95,19 @@ pub struct DocumentChunk {
     pub content: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct DiscoveredFile {
+    pub absolute_path: std::path::PathBuf,
+    pub relative_path: String,
+    pub kind: RetrieveKind,
+}
+
+#[derive(Debug, Clone)]
+pub struct EmbeddedChunk {
+    pub chunk: DocumentChunk,
+    pub vector: Vec<f32>,
+}
+
 pub fn sha256_hex(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
 
