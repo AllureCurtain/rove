@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicI32, Ordering};
 
 use clap::Parser;
-use rove::config::AppConfig;
+use rove::config::{AppConfig, AppConfigOverrides};
 use rove::core::context::ContextManager;
 use rove::core::engine::{Engine, EngineConfig};
 use rove::core::types::{ApprovalPolicy, RunId, TerminationReason};
@@ -42,7 +42,16 @@ async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
     match args.command {
-        Some(Command::DumpConfig) => return cli_config::run(),
+        Some(Command::DumpConfig) => {
+            return cli_config::run(
+                args.cwd.clone().map(PathBuf::from),
+                AppConfigOverrides {
+                    model: args.model.clone(),
+                    max_steps: args.max_steps,
+                    api_bind_addr: None,
+                },
+            );
+        }
         Some(Command::Index {
             path,
             deterministic,
@@ -77,15 +86,33 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    // Load config
-    let config = AppConfig::from_env()?;
-
     // Detect workspace
     let cwd = args
         .cwd
+        .clone()
         .map(PathBuf::from)
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
     let workspace = Workspace::detect(&cwd)?;
+
+    // Load config after workspace detection so `.rove/config.toml` is scoped to the project root.
+    let config = AppConfig::load(
+        &workspace.root,
+        AppConfigOverrides {
+            model: args.model.clone(),
+            max_steps: args.max_steps,
+            api_bind_addr: None,
+        },
+    )?;
+
+    // Ensure state root exists after config path validation.
+    let configured_state_dir = config.state_dir();
+    if configured_state_dir != workspace.state_dir {
+        std::fs::create_dir_all(&configured_state_dir)?;
+    }
+    let workspace = Workspace {
+        state_dir: configured_state_dir,
+        ..workspace
+    };
     workspace.ensure_state_dir()?;
 
     tracing::info!(
@@ -95,7 +122,7 @@ async fn main() -> anyhow::Result<()> {
     );
 
     // Build model client
-    let model_id = args.model.unwrap_or(config.model.clone());
+    let model_id = config.provider.model.clone();
     let model: Box<dyn ModelClient> = if model_id == "fake" {
         Box::new(FakeModelClient::new(format!("fake response: {}", message)))
     } else {
@@ -114,11 +141,7 @@ async fn main() -> anyhow::Result<()> {
     registry.register(Box::new(RagRetrieveTool::docs(workspace.root.clone())));
     registry.register(Box::new(RequestInputTool));
     registry.register(Box::new(ShellTool::new(workspace.root.clone())));
-    let mcp_config_path = if config.mcp_config_path.is_absolute() {
-        config.mcp_config_path.clone()
-    } else {
-        workspace.root.join(&config.mcp_config_path)
-    };
+    let mcp_config_path = config.resolve_path(&config.tool.mcp_config_path);
     let mcp_tool_count = register_mcp_tools_from_file(&mut registry, mcp_config_path).await?;
     if mcp_tool_count > 0 {
         tracing::info!(mcp_tool_count, "Registered MCP tools");
@@ -130,7 +153,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Build engine
     let engine_config = EngineConfig {
-        max_steps: args.max_steps.unwrap_or(config.max_steps),
+        max_steps: config.runtime.max_steps,
         plan_enabled: true,
     };
     let approval_policy = match args.approval {

@@ -7,7 +7,7 @@ use crate::models::traits::ModelClient;
 use std::time::Duration;
 
 pub fn build_model_client(config: &AppConfig, model_id: String) -> Box<dyn ModelClient> {
-    match config.provider.as_str() {
+    match config.provider.name.as_str() {
         "anthropic" => build_anthropic_model_client(config, model_id),
         "ollama" => build_ollama_model_client(config, model_id),
         _ => build_openai_model_client(config, model_id),
@@ -15,18 +15,29 @@ pub fn build_model_client(config: &AppConfig, model_id: String) -> Box<dyn Model
 }
 
 pub fn build_openai_model_client(config: &AppConfig, model_id: String) -> Box<dyn ModelClient> {
-    let primary = openai_client(config.api_base.clone(), config.api_key.clone(), model_id);
-    if config.fallback_models.is_empty() && config.fallback_providers.is_empty() {
+    let primary = openai_client(
+        config.provider.api_base.clone(),
+        config.provider.api_key.clone(),
+        model_id,
+    );
+    if config.provider.fallback_models.is_empty() && config.provider.fallback_providers.is_empty() {
         return primary;
     }
 
     let mut fallbacks: Vec<Box<dyn ModelClient>> = config
+        .provider
         .fallback_models
         .iter()
         .cloned()
-        .map(|model| openai_client(config.api_base.clone(), config.api_key.clone(), model))
+        .map(|model| {
+            openai_client(
+                config.provider.api_base.clone(),
+                config.provider.api_key.clone(),
+                model,
+            )
+        })
         .collect();
-    fallbacks.extend(config.fallback_providers.iter().map(|provider| {
+    fallbacks.extend(config.provider.fallback_providers.iter().map(|provider| {
         openai_client(
             provider.api_base.clone(),
             provider.api_key.clone(),
@@ -35,31 +46,31 @@ pub fn build_openai_model_client(config: &AppConfig, model_id: String) -> Box<dy
     }));
     Box::new(
         RoutingModelClient::new(primary, fallbacks).with_health_config(HealthConfig {
-            failure_threshold: config.routing_failure_threshold,
-            open_cooldown: Duration::from_millis(config.routing_open_cooldown_ms),
+            failure_threshold: config.routing.failure_threshold,
+            open_cooldown: Duration::from_millis(config.routing.open_cooldown_ms),
         }),
     )
 }
 
 pub fn build_anthropic_model_client(config: &AppConfig, model_id: String) -> Box<dyn ModelClient> {
-    let api_base = if config.api_base.contains("anthropic") {
-        config.api_base.clone()
+    let api_base = if config.provider.api_base.contains("anthropic") {
+        config.provider.api_base.clone()
     } else {
         "https://api.anthropic.com".to_string()
     };
-    let api_key = if config.anthropic_api_key.is_empty() {
-        config.api_key.clone()
+    let api_key = if config.provider.anthropic_api_key.is_empty() {
+        config.provider.api_key.clone()
     } else {
-        config.anthropic_api_key.clone()
+        config.provider.anthropic_api_key.clone()
     };
     Box::new(AnthropicClient::new(api_base, api_key, model_id))
 }
 
 pub fn build_ollama_model_client(config: &AppConfig, model_id: String) -> Box<dyn ModelClient> {
-    let api_base = if config.api_base.contains("openai") {
+    let api_base = if config.provider.api_base.contains("openai") {
         String::new()
     } else {
-        config.api_base.clone()
+        config.provider.api_base.clone()
     };
     Box::new(OllamaClient::new(api_base, model_id))
 }

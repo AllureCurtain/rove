@@ -16,7 +16,7 @@ use tokio::sync::{Mutex, RwLock, broadcast, oneshot};
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_util::sync::CancellationToken;
 
-use crate::config::AppConfig;
+use crate::config::{AppConfig, AppConfigOverrides};
 use crate::core::context::ContextManager;
 use crate::core::engine::{Engine, EngineConfig};
 use crate::core::events::StreamEvent;
@@ -149,7 +149,7 @@ pub fn router(state: ApiState) -> Router {
         .with_state(state)
 }
 
-pub async fn serve(addr: SocketAddr, cwd: PathBuf) -> anyhow::Result<()> {
+pub async fn serve(addr: Option<SocketAddr>, cwd: PathBuf) -> anyhow::Result<()> {
     let shutdown = CancellationToken::new();
     let signal_shutdown = shutdown.clone();
     tokio::spawn(async move {
@@ -162,13 +162,25 @@ pub async fn serve(addr: SocketAddr, cwd: PathBuf) -> anyhow::Result<()> {
 }
 
 pub async fn serve_with_shutdown(
-    addr: SocketAddr,
+    addr: Option<SocketAddr>,
     cwd: PathBuf,
     shutdown: CancellationToken,
 ) -> anyhow::Result<()> {
-    let config = AppConfig::from_env()?;
     let workspace = Workspace::detect(&cwd)?;
+    let config = AppConfig::load(
+        &workspace.root,
+        AppConfigOverrides {
+            api_bind_addr: addr.map(|addr| addr.to_string()),
+            ..AppConfigOverrides::default()
+        },
+    )?;
+    let configured_state_dir = config.state_dir();
+    let workspace = Workspace {
+        state_dir: configured_state_dir,
+        ..workspace
+    };
     workspace.ensure_state_dir()?;
+    let addr: SocketAddr = config.api.bind_addr.parse()?;
     let state = ApiState::with_shutdown(workspace, config, shutdown.clone());
     let listener = tokio::net::TcpListener::bind(addr).await?;
     serve_listener(listener, router(state), shutdown).await
@@ -460,7 +472,7 @@ async fn finalize_cancelled_job(state: &ApiState, record: &Arc<JobRecord>) {
         .finalize(
             &state_store,
             &state.inner.workspace,
-            state.inner.config.model.as_str(),
+            state.inner.config.provider.model.as_str(),
             &run_dir,
         )
         .await;
@@ -474,7 +486,10 @@ fn build_engine(
     record: Arc<JobRecord>,
 ) -> anyhow::Result<Engine> {
     let config = &state.inner.config;
-    let model_id = req.model.clone().unwrap_or_else(|| config.model.clone());
+    let model_id = req
+        .model
+        .clone()
+        .unwrap_or_else(|| config.provider.model.clone());
     let model: Box<dyn ModelClient> = match model_id.as_str() {
         "fake" => Box::new(FakeModelClient::new(format!("fake response: {message}"))),
         "fake-raw" => Box::new(FakeModelClient::new(message.to_string())),
@@ -500,7 +515,7 @@ fn build_engine(
         registry,
         ContextManager::new(config.load_system_prompt()),
         EngineConfig {
-            max_steps: req.max_steps.unwrap_or(config.max_steps),
+            max_steps: req.max_steps.unwrap_or(config.runtime.max_steps),
             plan_enabled: true,
         },
         workspace,

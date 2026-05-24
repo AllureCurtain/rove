@@ -7,9 +7,9 @@ use rove::interfaces::api::serve;
 #[derive(Debug, Parser)]
 #[command(name = "rove-api", about = "Serve the rove HTTP API")]
 struct Args {
-    /// Address to bind.
-    #[arg(long, default_value = "127.0.0.1:8787")]
-    addr: SocketAddr,
+    /// Address to bind. Overrides api.bind_addr from `.rove/config.toml` and env.
+    #[arg(long)]
+    addr: Option<SocketAddr>,
 
     /// Working directory for jobs.
     #[arg(short = 'C', long)]

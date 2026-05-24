@@ -1160,18 +1160,10 @@ async fn wait_for_status(
 }
 
 fn test_config() -> AppConfig {
-    AppConfig {
-        provider: "openai".to_string(),
-        api_base: "http://127.0.0.1".to_string(),
-        api_key: String::new(),
-        anthropic_api_key: String::new(),
-        model: "fake".to_string(),
-        fallback_models: Vec::new(),
-        fallback_providers: Vec::new(),
-        routing_failure_threshold: 3,
-        routing_open_cooldown_ms: 30_000,
-        max_steps: 4,
-        system_prompt_path: "prompts/system.md".into(),
-        mcp_config_path: ".rove/mcp_servers.json".into(),
-    }
+    let mut config = AppConfig::default();
+    config.provider.name = "openai".to_string();
+    config.provider.api_base = "http://127.0.0.1".to_string();
+    config.provider.model = "fake".to_string();
+    config.runtime.max_steps = 4;
+    config
 }
