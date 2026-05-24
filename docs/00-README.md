@@ -45,6 +45,7 @@
 | 05 | [下一步:统一执行内核 [WIP]](./05-下一步-统一执行内核.md) | 第一个 deep dive 的起点 |
 | 06 | [请求生命周期 [Live]](./06-请求生命周期.md) | 12 站全流程,跟设计讨论一起长大 |
 | 07 | [产品定位与 Workspace](./07-产品定位与Workspace.md) | rove 的上层产品定位:`Workspace` runtime |
+| runtime | [当前 runtime 文档](./runtime/README.md) | 当前实现的架构、子系统边界、实现状态对照 |
 | ref | [ragent 流式与模型设计借鉴](./RAGENT-STREAM-MODEL-NOTES-2026-05-24.md) | 记录 ragent 在 SSE、模型流、取消和路由降级上的可借鉴思想 |
 
 ---
@@ -84,3 +85,4 @@
 - 2026-05-18:新增 [07 产品定位与 Workspace](./07-产品定位与Workspace.md),确认 rove 是 Workspace runtime,第一阶段先做 Folder/Repo Workspace。
 - 2026-05-22:更新当前状态,代码已推进到 API / Web workbench 阶段,文档开始对齐实际实现。
 - 2026-05-24:新增 [ragent 流式与模型设计借鉴](./RAGENT-STREAM-MODEL-NOTES-2026-05-24.md),沉淀 SSE、模型流、取消和路由降级参考思想。
+- 2026-05-24:新增 [当前 runtime 文档](./runtime/README.md),补齐 root README、总架构、子系统设计、当前实现 vs 目标设计对照。
