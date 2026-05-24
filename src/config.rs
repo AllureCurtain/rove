@@ -44,6 +44,8 @@ pub struct ProviderConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FallbackProviderConfig {
+    #[serde(default = "default_fallback_provider_name")]
+    pub name: String,
     pub api_base: String,
     pub api_key: String,
     pub model: String,
@@ -136,6 +138,10 @@ impl Default for ProviderConfig {
             fallback_providers: Vec::new(),
         }
     }
+}
+
+fn default_fallback_provider_name() -> String {
+    "openai-compatible".to_string()
 }
 
 impl Default for ToolConfig {
@@ -281,12 +287,9 @@ impl AppConfig {
 
     fn validate(&self) -> anyhow::Result<()> {
         let provider = self.provider.name.as_str();
-        if !matches!(
-            provider,
-            "openai" | "openai-compatible" | "anthropic" | "ollama"
-        ) {
+        if canonical_provider_name(provider).is_none() {
             anyhow::bail!(
-                "invalid provider `{provider}`; expected openai, openai-compatible, anthropic, or ollama"
+                "invalid provider `{provider}`; expected openai, openai-compatible, anthropic, ollama, or fake"
             );
         }
         if self.provider.model.trim().is_empty() {
@@ -301,8 +304,16 @@ impl AppConfig {
             anyhow::bail!("provider.fallback_models must not contain empty model names");
         }
         for fallback in &self.provider.fallback_providers {
-            if fallback.api_base.trim().is_empty() {
-                anyhow::bail!("provider.fallback_providers.api_base must not be empty");
+            let fallback_provider = fallback.name.as_str();
+            let Some(fallback_kind) = canonical_provider_name(fallback_provider) else {
+                anyhow::bail!(
+                    "invalid fallback provider `{fallback_provider}`; expected openai, openai-compatible, anthropic, ollama, or fake"
+                );
+            };
+            if fallback_kind == "openai-compatible" && fallback.api_base.trim().is_empty() {
+                anyhow::bail!(
+                    "provider.fallback_providers.api_base must not be empty for OpenAI-compatible providers"
+                );
             }
             if fallback.model.trim().is_empty() {
                 anyhow::bail!("provider.fallback_providers.model must not be empty");
@@ -392,6 +403,16 @@ impl AppConfig {
             );
         }
         Ok(())
+    }
+}
+
+fn canonical_provider_name(name: &str) -> Option<&'static str> {
+    match name.trim().to_ascii_lowercase().as_str() {
+        "openai" | "openai-compatible" => Some("openai-compatible"),
+        "anthropic" => Some("anthropic"),
+        "ollama" => Some("ollama"),
+        "fake" => Some("fake"),
+        _ => None,
     }
 }
 
@@ -912,6 +933,45 @@ failure_threshold = 2
                 .contains(&"provider.model".to_string())
         );
         clear_config_env();
+    }
+
+    #[test]
+    fn fallback_provider_config_defaults_to_openai_compatible() {
+        let fallback: FallbackProviderConfig = serde_json::from_str(
+            r#"{
+                "api_base": "https://fallback.test/v1",
+                "api_key": "fallback-secret",
+                "model": "fallback-model"
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(fallback.name, "openai-compatible");
+        assert_eq!(fallback.model, "fallback-model");
+    }
+
+    #[test]
+    fn validation_rejects_unknown_fallback_provider_name() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let config_dir = tmp.path().join(".rove");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::write(
+            config_dir.join("config.toml"),
+            r#"
+[provider]
+fallback_providers = [
+  { name = "unknown", api_base = "https://fallback.test/v1", api_key = "secret", model = "fallback-model" }
+]
+"#,
+        )
+        .unwrap();
+
+        let err = AppConfig::load(tmp.path(), AppConfigOverrides::default()).unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("invalid fallback provider `unknown`")
+        );
     }
 
     #[test]

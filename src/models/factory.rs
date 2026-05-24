@@ -1,5 +1,6 @@
 use crate::config::AppConfig;
 use crate::models::anthropic::AnthropicClient;
+use crate::models::fake::FakeModelClient;
 use crate::models::ollama::OllamaClient;
 use crate::models::openai::OpenAiClient;
 use crate::models::routing::{HealthConfig, RoutingModelClient};
@@ -7,43 +8,32 @@ use crate::models::traits::ModelClient;
 use std::time::Duration;
 
 pub fn build_model_client(config: &AppConfig, model_id: String) -> Box<dyn ModelClient> {
-    match config.provider.name.as_str() {
-        "anthropic" => build_anthropic_model_client(config, model_id),
-        "ollama" => build_ollama_model_client(config, model_id),
-        _ => build_openai_model_client(config, model_id),
-    }
+    build_routed_model_client(config, ProviderSpec::primary(config, model_id))
 }
 
 pub fn build_openai_model_client(config: &AppConfig, model_id: String) -> Box<dyn ModelClient> {
-    let primary = openai_client(
-        config.provider.api_base.clone(),
-        config.provider.api_key.clone(),
-        model_id,
-    );
-    if config.provider.fallback_models.is_empty() && config.provider.fallback_providers.is_empty() {
+    build_routed_model_client(config, ProviderSpec::openai_compatible(config, model_id))
+}
+
+pub fn build_anthropic_model_client(config: &AppConfig, model_id: String) -> Box<dyn ModelClient> {
+    build_routed_model_client(config, ProviderSpec::anthropic(config, model_id))
+}
+
+pub fn build_ollama_model_client(config: &AppConfig, model_id: String) -> Box<dyn ModelClient> {
+    build_routed_model_client(config, ProviderSpec::ollama(config, model_id))
+}
+
+fn build_routed_model_client(config: &AppConfig, primary: ProviderSpec) -> Box<dyn ModelClient> {
+    let fallback_specs = fallback_specs(config, &primary);
+    let primary = build_provider_client(primary);
+    if fallback_specs.is_empty() {
         return primary;
     }
 
-    let mut fallbacks: Vec<Box<dyn ModelClient>> = config
-        .provider
-        .fallback_models
-        .iter()
-        .cloned()
-        .map(|model| {
-            openai_client(
-                config.provider.api_base.clone(),
-                config.provider.api_key.clone(),
-                model,
-            )
-        })
-        .collect();
-    fallbacks.extend(config.provider.fallback_providers.iter().map(|provider| {
-        openai_client(
-            provider.api_base.clone(),
-            provider.api_key.clone(),
-            provider.model.clone(),
-        )
-    }));
+    let fallbacks = fallback_specs
+        .into_iter()
+        .map(build_provider_client)
+        .collect::<Vec<_>>();
     Box::new(
         RoutingModelClient::new(primary, fallbacks).with_health_config(HealthConfig {
             failure_threshold: config.routing.failure_threshold,
@@ -52,29 +42,150 @@ pub fn build_openai_model_client(config: &AppConfig, model_id: String) -> Box<dy
     )
 }
 
-pub fn build_anthropic_model_client(config: &AppConfig, model_id: String) -> Box<dyn ModelClient> {
-    let api_base = if config.provider.api_base.contains("anthropic") {
-        config.provider.api_base.clone()
+fn fallback_specs(config: &AppConfig, primary: &ProviderSpec) -> Vec<ProviderSpec> {
+    let mut fallbacks = config
+        .provider
+        .fallback_models
+        .iter()
+        .cloned()
+        .map(|model| primary.with_model(model))
+        .collect::<Vec<_>>();
+
+    fallbacks.extend(
+        config
+            .provider
+            .fallback_providers
+            .iter()
+            .map(ProviderSpec::fallback),
+    );
+    fallbacks
+}
+
+fn build_provider_client(spec: ProviderSpec) -> Box<dyn ModelClient> {
+    match spec.kind {
+        ProviderKind::OpenAiCompatible => {
+            Box::new(OpenAiClient::new(spec.api_base, spec.api_key, spec.model))
+        }
+        ProviderKind::Anthropic => Box::new(AnthropicClient::new(
+            anthropic_base(spec.api_base),
+            spec.api_key,
+            spec.model,
+        )),
+        ProviderKind::Ollama => Box::new(OllamaClient::new(ollama_base(spec.api_base), spec.model)),
+        ProviderKind::Fake => Box::new(FakeModelClient::new(format!(
+            "fake response from {}",
+            spec.model
+        ))),
+    }
+}
+
+#[derive(Clone)]
+struct ProviderSpec {
+    kind: ProviderKind,
+    api_base: String,
+    api_key: String,
+    model: String,
+}
+
+impl ProviderSpec {
+    fn primary(config: &AppConfig, model: String) -> Self {
+        match ProviderKind::from_name(&config.provider.name) {
+            ProviderKind::OpenAiCompatible => Self::openai_compatible(config, model),
+            ProviderKind::Anthropic => Self::anthropic(config, model),
+            ProviderKind::Ollama => Self::ollama(config, model),
+            ProviderKind::Fake => Self::fake(model),
+        }
+    }
+
+    fn openai_compatible(config: &AppConfig, model: String) -> Self {
+        Self {
+            kind: ProviderKind::OpenAiCompatible,
+            api_base: config.provider.api_base.clone(),
+            api_key: config.provider.api_key.clone(),
+            model,
+        }
+    }
+
+    fn anthropic(config: &AppConfig, model: String) -> Self {
+        let api_key = if config.provider.anthropic_api_key.is_empty() {
+            config.provider.api_key.clone()
+        } else {
+            config.provider.anthropic_api_key.clone()
+        };
+        Self {
+            kind: ProviderKind::Anthropic,
+            api_base: config.provider.api_base.clone(),
+            api_key,
+            model,
+        }
+    }
+
+    fn ollama(config: &AppConfig, model: String) -> Self {
+        Self {
+            kind: ProviderKind::Ollama,
+            api_base: config.provider.api_base.clone(),
+            api_key: String::new(),
+            model,
+        }
+    }
+
+    fn fake(model: String) -> Self {
+        Self {
+            kind: ProviderKind::Fake,
+            api_base: String::new(),
+            api_key: String::new(),
+            model,
+        }
+    }
+
+    fn fallback(provider: &crate::config::FallbackProviderConfig) -> Self {
+        Self {
+            kind: ProviderKind::from_name(&provider.name),
+            api_base: provider.api_base.clone(),
+            api_key: provider.api_key.clone(),
+            model: provider.model.clone(),
+        }
+    }
+
+    fn with_model(&self, model: String) -> Self {
+        Self {
+            model,
+            ..self.clone()
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ProviderKind {
+    OpenAiCompatible,
+    Anthropic,
+    Ollama,
+    Fake,
+}
+
+impl ProviderKind {
+    fn from_name(name: &str) -> Self {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "anthropic" => Self::Anthropic,
+            "ollama" => Self::Ollama,
+            "fake" => Self::Fake,
+            _ => Self::OpenAiCompatible,
+        }
+    }
+}
+
+fn anthropic_base(api_base: String) -> String {
+    if api_base.contains("anthropic") {
+        api_base
     } else {
         "https://api.anthropic.com".to_string()
-    };
-    let api_key = if config.provider.anthropic_api_key.is_empty() {
-        config.provider.api_key.clone()
-    } else {
-        config.provider.anthropic_api_key.clone()
-    };
-    Box::new(AnthropicClient::new(api_base, api_key, model_id))
+    }
 }
 
-pub fn build_ollama_model_client(config: &AppConfig, model_id: String) -> Box<dyn ModelClient> {
-    let api_base = if config.provider.api_base.contains("openai") {
+fn ollama_base(api_base: String) -> String {
+    if api_base.contains("openai") {
         String::new()
     } else {
-        config.provider.api_base.clone()
-    };
-    Box::new(OllamaClient::new(api_base, model_id))
-}
-
-fn openai_client(api_base: String, api_key: String, model_id: String) -> Box<dyn ModelClient> {
-    Box::new(OpenAiClient::new(api_base, api_key, model_id))
+        api_base
+    }
 }

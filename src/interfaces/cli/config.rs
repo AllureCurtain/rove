@@ -18,6 +18,7 @@ pub fn format_effective_config(config: &AppConfig) -> String {
         .iter()
         .map(|provider| {
             serde_json::json!({
+                "name": provider.name,
                 "api_base": provider.api_base,
                 "api_key_set": !provider.api_key.is_empty(),
                 "model": provider.model,

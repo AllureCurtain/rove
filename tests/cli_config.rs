@@ -11,6 +11,7 @@ fn format_effective_config_prints_json_without_secret_value() {
     config.provider.model = "model-a".to_string();
     config.provider.fallback_models = vec!["model-b".to_string(), "model-c".to_string()];
     config.provider.fallback_providers = vec![FallbackProviderConfig {
+        name: "anthropic".to_string(),
         api_base: "https://fallback.test/v1".to_string(),
         api_key: "fallback-secret".to_string(),
         model: "fallback-provider-model".to_string(),
@@ -31,6 +32,10 @@ fn format_effective_config_prints_json_without_secret_value() {
     assert_eq!(json["provider"]["model"], "model-a");
     assert_eq!(json["provider"]["fallback_models"][0], "model-b");
     assert_eq!(json["provider"]["fallback_models"][1], "model-c");
+    assert_eq!(
+        json["provider"]["fallback_providers"][0]["name"],
+        "anthropic"
+    );
     assert_eq!(
         json["provider"]["fallback_providers"][0]["api_base"],
         "https://fallback.test/v1"
