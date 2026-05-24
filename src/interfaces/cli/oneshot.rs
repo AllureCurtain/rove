@@ -140,6 +140,7 @@ mod tests {
             step: 1,
             history: vec![],
             summary: None,
+            checkpoint: None,
             plan: None,
         }
     }

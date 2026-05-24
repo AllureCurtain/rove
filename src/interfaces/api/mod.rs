@@ -17,7 +17,7 @@ use tokio_stream::wrappers::BroadcastStream;
 use tokio_util::sync::CancellationToken;
 
 use crate::config::{AppConfig, AppConfigOverrides};
-use crate::core::context::ContextManager;
+use crate::core::context::{ContextBudget, ContextManager};
 use crate::core::engine::{Engine, EngineConfig};
 use crate::core::events::StreamEvent;
 use crate::core::types::{
@@ -513,7 +513,14 @@ fn build_engine(
     let engine = Engine::with_workspace(
         model,
         registry,
-        ContextManager::new(config.load_system_prompt()),
+        ContextManager::with_token_budget(
+            config.load_system_prompt(),
+            ContextBudget {
+                soft_limit_tokens: config.runtime.context_soft_limit_tokens,
+                hard_limit_tokens: config.runtime.context_hard_limit_tokens,
+                reserved_tokens: config.runtime.context_reserved_tokens,
+            },
+        ),
         EngineConfig {
             max_steps: req.max_steps.unwrap_or(config.runtime.max_steps),
             plan_enabled: true,

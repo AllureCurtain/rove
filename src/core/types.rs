@@ -46,7 +46,23 @@ pub struct TaskState {
     pub history: Vec<Message>,
     pub summary: Option<String>,
     #[serde(default)]
+    pub checkpoint: Option<PromptCheckpoint>,
+    #[serde(default)]
     pub plan: Option<TaskPlan>,
+}
+
+/// Resumable prompt checkpoint used to rebuild context without replaying the full audit history.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PromptCheckpoint {
+    pub summary: Option<String>,
+    pub preserved_tail: Vec<Message>,
+    pub plan: Option<TaskPlan>,
+    pub session_memory_pointer: Option<String>,
+    pub durable_memory_pointer: Option<String>,
+    pub last_step: u32,
+    pub last_event_seq: Option<u64>,
+    pub token_estimate: usize,
+    pub compacted_history_messages: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -157,7 +173,7 @@ impl std::fmt::Display for CallId {
 }
 
 /// A message in the conversation history.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Message {
     pub role: Role,
     pub content: String,

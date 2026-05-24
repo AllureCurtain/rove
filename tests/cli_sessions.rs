@@ -17,6 +17,7 @@ fn task_state(
         step,
         history: vec![],
         summary: Some(format!("summary for {goal}")),
+        checkpoint: None,
         plan: None,
     }
 }

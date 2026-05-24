@@ -386,10 +386,19 @@ impl Engine {
                     complete_run!(TerminationReason::Cancelled, None);
                 }
 
-                let mut history: Vec<Message> = resume_state
+                let resume_checkpoint = resume_state
                     .as_ref()
-                    .map(|state| state.history.clone())
+                    .and_then(|state| state.checkpoint.as_ref());
+                let mut history: Vec<Message> = resume_checkpoint
+                    .map(|checkpoint| checkpoint.preserved_tail.clone())
+                    .or_else(|| {
+                        resume_state
+                            .as_ref()
+                            .map(|state| state.history.clone())
+                    })
                     .unwrap_or_default();
+                let compact_summary = resume_checkpoint
+                    .and_then(|checkpoint| checkpoint.summary.clone());
                 let resume_summary = resume_state
                     .as_ref()
                     .and_then(|state| state.summary.as_deref());
@@ -403,8 +412,13 @@ impl Engine {
                 if let Some(summary) = prompt_memory.session_summary {
                     working_memory.push(session_summary_message(&summary));
                 }
-                let mut step: u32 = resume_state.as_ref().map(|state| state.step).unwrap_or(0);
-                let mut plan = resume_state.as_ref().and_then(|state| state.plan.clone());
+                let mut step: u32 = resume_checkpoint
+                    .map(|checkpoint| checkpoint.last_step)
+                    .or_else(|| resume_state.as_ref().map(|state| state.step))
+                    .unwrap_or(0);
+                let mut plan = resume_checkpoint
+                    .and_then(|checkpoint| checkpoint.plan.clone())
+                    .or_else(|| resume_state.as_ref().and_then(|state| state.plan.clone()));
 
                 if self.config.plan_enabled {
                     if plan.is_none() {
@@ -467,7 +481,19 @@ impl Engine {
                             "Goal: {}\nCurrent step {}: {}\nComplete this step and report the result.",
                             active_plan.goal, current_step.id, current_step.title
                         );
-                        let messages = self.context_manager.build(&step_prompt, &working_memory, &history);
+                        let context = self.context_manager.build_with_checkpoint(
+                            &step_prompt,
+                            &working_memory,
+                            compact_summary.as_deref(),
+                            &history,
+                        );
+                        if context.over_hard_limit {
+                            complete_run!(
+                                TerminationReason::TokenLimit,
+                                Some("context exceeds configured hard token budget".to_string())
+                            );
+                        }
+                        let messages = context.messages;
                         let mut full_response = String::new();
                         let mut usage = Usage::default();
                         let mut native_tool_call = None;
@@ -760,7 +786,19 @@ impl Engine {
                     step += 1;
 
                     // 1. Build prompt
-                    let messages = self.context_manager.build(&user_message, &working_memory, &history);
+                    let context = self.context_manager.build_with_checkpoint(
+                        &user_message,
+                        &working_memory,
+                        compact_summary.as_deref(),
+                        &history,
+                    );
+                    if context.over_hard_limit {
+                        complete_run!(
+                            TerminationReason::TokenLimit,
+                            Some("context exceeds configured hard token budget".to_string())
+                        );
+                    }
+                    let messages = context.messages;
 
                     // 2. Call model (streaming)
                     let mut full_response = String::new();

@@ -5,12 +5,12 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
-use rove::core::context::ContextManager;
+use rove::core::context::{ContextBudget, ContextManager};
 use rove::core::engine::{Engine, EngineConfig};
 use rove::core::events::StreamEvent;
 use rove::core::types::{
-    ApprovalDecision, ApprovalPolicy, CallId, JobId, Message, PlanStep, RunId, RunRequest,
-    SessionId, TaskPlan, TaskState, TerminationReason, ToolContext, ToolSchema, Usage,
+    ApprovalDecision, ApprovalPolicy, CallId, JobId, Message, PlanStep, PromptCheckpoint, RunId,
+    RunRequest, SessionId, TaskPlan, TaskState, TerminationReason, ToolContext, ToolSchema, Usage,
     UserInputProvider, UserInputRequest,
 };
 use rove::core::workspace::{Workspace, WorkspaceKind};
@@ -1034,6 +1034,7 @@ async fn latest_task_state_is_loaded_for_resume() {
         step: 3,
         history: vec![user_message("continue")],
         summary: Some("working summary".to_string()),
+        checkpoint: None,
         plan: None,
     };
 
@@ -1057,6 +1058,7 @@ async fn latest_task_state_rejects_unsupported_schema_version() {
         step: 1,
         history: vec![],
         summary: None,
+        checkpoint: None,
         plan: None,
     };
 
@@ -1086,6 +1088,7 @@ async fn list_resumable_task_states_filters_by_session_and_newest_first() {
         step: 1,
         history: vec![],
         summary: None,
+        checkpoint: None,
         plan: None,
     };
     let unrelated = TaskState {
@@ -1097,6 +1100,7 @@ async fn list_resumable_task_states_filters_by_session_and_newest_first() {
         step: 1,
         history: vec![],
         summary: None,
+        checkpoint: None,
         plan: None,
     };
     let newer = TaskState {
@@ -1108,6 +1112,7 @@ async fn list_resumable_task_states_filters_by_session_and_newest_first() {
         step: 2,
         history: vec![],
         summary: None,
+        checkpoint: None,
         plan: None,
     };
 
@@ -1146,6 +1151,7 @@ async fn list_task_states_returns_all_snapshots_newest_first() {
         step: 1,
         history: vec![],
         summary: None,
+        checkpoint: None,
         plan: None,
     };
     let newer = TaskState {
@@ -1157,6 +1163,7 @@ async fn list_task_states_returns_all_snapshots_newest_first() {
         step: 2,
         history: vec![],
         summary: None,
+        checkpoint: None,
         plan: None,
     };
 
@@ -1188,6 +1195,7 @@ async fn load_task_state_reads_exact_run_id() {
         step: 7,
         history: vec![user_message("target")],
         summary: Some("target summary".to_string()),
+        checkpoint: None,
         plan: None,
     };
     let other = TaskState {
@@ -1199,6 +1207,7 @@ async fn load_task_state_reads_exact_run_id() {
         step: 1,
         history: vec![],
         summary: None,
+        checkpoint: None,
         plan: None,
     };
 
@@ -1278,6 +1287,7 @@ async fn lazy_import_indexes_existing_task_state_artifacts() {
         step: 2,
         history: vec![user_message("legacy artifact")],
         summary: Some("legacy summary".to_string()),
+        checkpoint: None,
         plan: None,
     };
     let run_dir = tmp.path().join("runs").join(state.run_id.to_string());
@@ -1436,6 +1446,7 @@ async fn resumed_run_includes_session_summary_in_prompt() {
             step: 0,
             history: vec![],
             summary: Some("previous session summary".to_string()),
+            checkpoint: None,
             plan: None,
         }),
     };
@@ -1698,6 +1709,7 @@ async fn planner_resumes_at_current_step() {
             step: 1,
             history: vec![],
             summary: None,
+            checkpoint: None,
             plan: Some(plan),
         }),
     };
@@ -1855,6 +1867,7 @@ async fn resumed_run_uses_persisted_replanned_task_state() {
                 content: "previous step failed and was re-planned".to_string(),
             }],
             summary: None,
+            checkpoint: None,
             plan: Some(plan),
         }),
     };
@@ -2207,6 +2220,177 @@ async fn run_stream_cancel_completes_cancelled_while_tool_is_waiting() {
             output: None,
         }
     ));
+}
+
+#[test]
+fn context_manager_fits_history_by_token_budget() {
+    let context = ContextManager::with_token_budget(
+        "s".to_string(),
+        ContextBudget {
+            soft_limit_tokens: 40,
+            hard_limit_tokens: 60,
+            reserved_tokens: 10,
+        },
+    );
+    let memory = vec![user_message("m")];
+    let history = vec![
+        user_message(&"old ".repeat(160)),
+        user_message("recent one"),
+        user_message("recent two"),
+    ];
+
+    let built = context.build_with_checkpoint("c", &memory, None, &history);
+    let contents: Vec<_> = built
+        .messages
+        .iter()
+        .map(|message| message.content.as_str())
+        .collect();
+
+    assert!(built.dropped_history_messages > 0);
+    assert!(!built.over_hard_limit);
+    assert!(contents.contains(&"s"));
+    assert!(contents.contains(&"m"));
+    assert!(contents.contains(&"recent one"));
+    assert!(contents.contains(&"recent two"));
+    assert!(contents.contains(&"c"));
+    assert!(
+        !contents
+            .iter()
+            .any(|content| content.starts_with("old old old"))
+    );
+}
+
+#[tokio::test]
+async fn oneshot_persists_prompt_checkpoint() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let state_store = StateStore::new(&workspace.state_dir);
+    let run_id = RunId::new();
+    let run = state_store
+        .start_run(SessionId::new(), JobId::new(), run_id)
+        .unwrap();
+    let model = Box::new(FakeModelClient::new(vec![
+        r#"{"tool":"echo","args":{"message":"one"}}"#.to_string(),
+        r#"{"tool":"echo","args":{"message":"two"}}"#.to_string(),
+        r#"{"tool":"echo","args":{"message":"three"}}"#.to_string(),
+        r#"{"tool":"echo","args":{"message":"four"}}"#.to_string(),
+        r#"{"tool":"echo","args":{"message":"five"}}"#.to_string(),
+        r#"{"tool":"echo","args":{"message":"six"}}"#.to_string(),
+        "done".to_string(),
+    ]));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(EchoTool));
+    let engine = Engine::with_workspace(
+        model,
+        registry,
+        ContextManager::new("You are a test agent.".to_string()),
+        EngineConfig {
+            max_steps: 8,
+            plan_enabled: false,
+        },
+        workspace.clone(),
+        ApprovalPolicy::Auto,
+    );
+
+    run_oneshot(
+        &engine,
+        "build checkpoint".to_string(),
+        run,
+        None,
+        &state_store,
+    )
+    .await;
+
+    let run_dir = workspace.state_dir.join("runs").join(run_id.to_string());
+    let task_state: TaskState =
+        serde_json::from_slice(&std::fs::read(run_dir.join("task_state.json")).unwrap()).unwrap();
+    let checkpoint = task_state
+        .checkpoint
+        .expect("task_state should include a prompt checkpoint");
+    assert_eq!(checkpoint.last_step, task_state.step);
+    assert!(!checkpoint.preserved_tail.is_empty());
+    assert!(checkpoint.preserved_tail.len() <= 12);
+    assert!(checkpoint.compacted_history_messages > 0);
+    assert_eq!(checkpoint.summary.as_deref(), Some("done"));
+    assert!(checkpoint.session_memory_pointer.is_some());
+    assert!(checkpoint.durable_memory_pointer.is_some());
+    assert!(checkpoint.token_estimate > 0);
+}
+
+#[tokio::test]
+async fn resumed_run_prefers_prompt_checkpoint_tail_and_summary() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let captured_messages = Arc::new(Mutex::new(None));
+    let model = Box::new(RecordingModelClient::new(captured_messages.clone()));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(EchoTool));
+    let engine = Engine::with_workspace(
+        model,
+        registry,
+        ContextManager::with_max_history("system".to_string(), 20),
+        EngineConfig {
+            max_steps: 1,
+            plan_enabled: false,
+        },
+        workspace,
+        ApprovalPolicy::Auto,
+    );
+    let checkpoint_plan = TaskPlan {
+        goal: "checkpoint goal".to_string(),
+        steps: vec![PlanStep {
+            id: "1".to_string(),
+            title: "checkpoint step".to_string(),
+            done: false,
+        }],
+        current_step: 0,
+    };
+    let resume_state = TaskState {
+        schema_version: 1,
+        session_id: SessionId::new(),
+        job_id: JobId::new(),
+        run_id: RunId::new(),
+        goal: "resume".to_string(),
+        step: 2,
+        history: vec![user_message("full history should not appear")],
+        summary: None,
+        checkpoint: Some(PromptCheckpoint {
+            summary: Some("checkpoint summary".to_string()),
+            preserved_tail: vec![user_message("checkpoint tail")],
+            plan: Some(checkpoint_plan),
+            session_memory_pointer: Some(".rove/memory/sessions/test.md".to_string()),
+            durable_memory_pointer: Some(".rove/memory/MEMORY.md".to_string()),
+            last_step: 0,
+            last_event_seq: Some(42),
+            token_estimate: 12,
+            compacted_history_messages: 1,
+        }),
+        plan: None,
+    };
+    let req = RunRequest {
+        session_id: SessionId::new(),
+        job_id: JobId::new(),
+        run_id: RunId::new(),
+        user_message: "current task".to_string(),
+        resume_state: Some(resume_state),
+    };
+
+    let events = collect_events_with_request(&engine, req).await;
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, StreamEvent::RunCompleted { .. }))
+    );
+
+    let messages = captured_messages.lock().unwrap().clone().unwrap();
+    let contents: Vec<_> = messages
+        .iter()
+        .map(|message| message.content.as_str())
+        .collect();
+    assert!(contents.contains(&"Compact summary: checkpoint summary"));
+    assert!(contents.contains(&"checkpoint tail"));
+    assert!(contents.contains(&"current task"));
+    assert!(!contents.contains(&"full history should not appear"));
 }
 
 #[test]

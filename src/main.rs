@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicI32, Ordering};
 
 use clap::Parser;
 use rove::config::{AppConfig, AppConfigOverrides};
-use rove::core::context::ContextManager;
+use rove::core::context::{ContextBudget, ContextManager};
 use rove::core::engine::{Engine, EngineConfig};
 use rove::core::types::{ApprovalPolicy, RunId, TerminationReason};
 use rove::core::workspace::Workspace;
@@ -149,7 +149,14 @@ async fn main() -> anyhow::Result<()> {
 
     // Build context manager
     let system_prompt = config.load_system_prompt();
-    let context_manager = ContextManager::new(system_prompt);
+    let context_manager = ContextManager::with_token_budget(
+        system_prompt,
+        ContextBudget {
+            soft_limit_tokens: config.runtime.context_soft_limit_tokens,
+            hard_limit_tokens: config.runtime.context_hard_limit_tokens,
+            reserved_tokens: config.runtime.context_reserved_tokens,
+        },
+    );
 
     // Build engine
     let engine_config = EngineConfig {
