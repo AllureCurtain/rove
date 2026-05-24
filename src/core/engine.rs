@@ -14,14 +14,14 @@ use crate::core::executor::Executor;
 use crate::core::parser::parse_action;
 use crate::core::planner::{Planner, PlannerError};
 use crate::core::types::{
-    Action, ApprovalDecision, ApprovalPolicy, JobId, Message, Role, RunId, RunRequest, SessionId,
-    TaskPlan, TerminationReason, ToolApprovalProvider, ToolApprovalRequest, ToolContext, Usage,
-    UserInputProvider,
+    Action, ApprovalDecision, ApprovalPolicy, CallId, JobId, Message, Role, RunId, RunRequest,
+    SessionId, TaskPlan, TerminationReason, ToolApprovalProvider, ToolApprovalRequest, ToolContext,
+    Usage, UserInputProvider,
 };
 use crate::core::workspace::Workspace;
 use crate::hooks::{HookRegistry, PostRunHookContext};
 use crate::memory::layered::load_prompt_memory_sync;
-use crate::models::traits::ModelClient;
+use crate::models::traits::{ModelClient, ModelEvent};
 use crate::state::trace::TraceWriter;
 use crate::tools::registry::ToolRegistry;
 
@@ -89,6 +89,13 @@ impl Drop for RunStream<'_> {
 pub struct EngineConfig {
     pub max_steps: u32,
     pub plan_enabled: bool,
+}
+
+#[derive(Debug, Clone)]
+struct NativeToolCall {
+    call_id: CallId,
+    name: String,
+    args: serde_json::Value,
 }
 
 impl Default for EngineConfig {
@@ -463,6 +470,7 @@ impl Engine {
                         let messages = self.context_manager.build(&step_prompt, &working_memory, &history);
                         let mut full_response = String::new();
                         let mut usage = Usage::default();
+                        let mut native_tool_call = None;
                         let mut model_stream: BoxStream<'_, _> = self.model.stream(
                             &messages,
                             &self.registry.schemas(),
@@ -480,21 +488,32 @@ impl Engine {
                                 break;
                             };
                             match chunk_result {
-                                Ok(chunk) => {
-                                    if !chunk.delta.is_empty() {
-                                        full_response.push_str(&chunk.delta);
-                                        let event = StreamEvent::LlmChunk {
-                                            delta: chunk.delta,
-                                        };
-                                        if let Some(ref tw) = trace_writer {
-                                            let _ = tw.append(&event);
+                                Ok(model_event) => match model_event {
+                                    ModelEvent::TextDelta { text } => {
+                                        if !text.is_empty() {
+                                            full_response.push_str(&text);
+                                            let event = StreamEvent::LlmChunk { delta: text };
+                                            if let Some(ref tw) = trace_writer {
+                                                let _ = tw.append(&event);
+                                            }
+                                            yield event;
                                         }
-                                        yield event;
                                     }
-                                    if let Some(u) = chunk.usage {
+                                    ModelEvent::Usage { usage: u } => {
                                         usage = u;
                                     }
-                                }
+                                    ModelEvent::Done => break,
+                                    ModelEvent::ThinkingDelta { .. }
+                                    | ModelEvent::ToolUseStart { .. }
+                                    | ModelEvent::ToolUseDelta { .. } => {}
+                                    | ModelEvent::ToolUseDone { name, args, .. } => {
+                                        native_tool_call.get_or_insert_with(|| NativeToolCall {
+                                            call_id: CallId::new(),
+                                            name,
+                                            args,
+                                        });
+                                    }
+                                },
                                 Err(e) => {
                                     complete_run!(
                                         TerminationReason::Error,
@@ -513,7 +532,15 @@ impl Engine {
                         }
                         yield msg_event;
 
-                        match parse_action(&full_response) {
+                        let action = native_tool_call
+                            .map(|tool_call| Action::ToolCall {
+                                call_id: tool_call.call_id,
+                                name: tool_call.name,
+                                args: tool_call.args,
+                            })
+                            .unwrap_or_else(|| parse_action(&full_response));
+
+                        match action {
                             Action::ToolCall { call_id, name, args } => {
                                 let start_event = StreamEvent::ToolCallStarted {
                                     call_id,
@@ -738,6 +765,7 @@ impl Engine {
                     // 2. Call model (streaming)
                     let mut full_response = String::new();
                     let mut usage = Usage::default();
+                    let mut native_tool_call = None;
                     let mut model_stream: BoxStream<'_, _> = self.model.stream(
                         &messages,
                         &self.registry.schemas(),
@@ -755,21 +783,32 @@ impl Engine {
                             break;
                         };
                         match chunk_result {
-                            Ok(chunk) => {
-                                if !chunk.delta.is_empty() {
-                                    full_response.push_str(&chunk.delta);
-                                    let event = StreamEvent::LlmChunk {
-                                        delta: chunk.delta,
-                                    };
-                                    if let Some(ref tw) = trace_writer {
-                                        let _ = tw.append(&event);
+                            Ok(model_event) => match model_event {
+                                ModelEvent::TextDelta { text } => {
+                                    if !text.is_empty() {
+                                        full_response.push_str(&text);
+                                        let event = StreamEvent::LlmChunk { delta: text };
+                                        if let Some(ref tw) = trace_writer {
+                                            let _ = tw.append(&event);
+                                        }
+                                        yield event;
                                     }
-                                    yield event;
                                 }
-                                if let Some(u) = chunk.usage {
+                                ModelEvent::Usage { usage: u } => {
                                     usage = u;
                                 }
-                            }
+                                ModelEvent::Done => break,
+                                ModelEvent::ThinkingDelta { .. }
+                                | ModelEvent::ToolUseStart { .. }
+                                | ModelEvent::ToolUseDelta { .. } => {}
+                                | ModelEvent::ToolUseDone { name, args, .. } => {
+                                    native_tool_call.get_or_insert_with(|| NativeToolCall {
+                                        call_id: CallId::new(),
+                                        name,
+                                        args,
+                                    });
+                                }
+                            },
                             Err(e) => {
                                 complete_run!(
                                     TerminationReason::Error,
@@ -790,7 +829,13 @@ impl Engine {
                     yield msg_event;
 
                     // 3. Parse action
-                    let action = parse_action(&full_response);
+                    let action = native_tool_call
+                        .map(|tool_call| Action::ToolCall {
+                            call_id: tool_call.call_id,
+                            name: tool_call.name,
+                            args: tool_call.args,
+                        })
+                        .unwrap_or_else(|| parse_action(&full_response));
 
                     // 4. Handle action
                     match action {

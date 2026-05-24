@@ -4,7 +4,7 @@ use reqwest::StatusCode;
 
 use crate::core::types::{Message, Role, ToolSchema, Usage};
 use crate::errors::ModelError;
-use crate::models::traits::{ModelClient, StreamChunk};
+use crate::models::traits::{ModelClient, ModelEvent};
 
 const DEFAULT_OLLAMA_BASE: &str = "http://localhost:11434";
 
@@ -81,13 +81,79 @@ fn classify_ollama_error(status: StatusCode, body: &str) -> ModelError {
     ModelError::RequestFailed(format!("HTTP {}: {}", status, body))
 }
 
+fn normalize_ollama_chat_line(line: &str) -> serde_json::Result<Vec<ModelEvent>> {
+    let json = serde_json::from_str::<serde_json::Value>(line)?;
+    let mut events = Vec::new();
+
+    if let Some(content) = json
+        .get("message")
+        .and_then(|message| message.get("content"))
+        .and_then(|content| content.as_str())
+        && !content.is_empty()
+    {
+        events.push(ModelEvent::TextDelta {
+            text: content.to_string(),
+        });
+    }
+
+    if let Some(tool_calls) = json
+        .get("message")
+        .and_then(|message| message.get("tool_calls"))
+        .and_then(|tool_calls| tool_calls.as_array())
+    {
+        for (index, tool_call) in tool_calls.iter().enumerate() {
+            if let Some(function) = tool_call.get("function") {
+                let name = function
+                    .get("name")
+                    .and_then(|name| name.as_str())
+                    .unwrap_or("tool")
+                    .to_string();
+                let id = format!("ollama_tool_call_{index}");
+                let args = function
+                    .get("arguments")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!({}));
+                events.push(ModelEvent::ToolUseStart {
+                    id: id.clone(),
+                    name: name.clone(),
+                });
+                events.push(ModelEvent::ToolUseDone { id, name, args });
+            }
+        }
+    }
+
+    if json.get("done").and_then(|value| value.as_bool()) == Some(true) {
+        let usage = Usage {
+            prompt_tokens: json
+                .get("prompt_eval_count")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0) as u32,
+            completion_tokens: json
+                .get("eval_count")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0) as u32,
+            total_tokens: 0,
+        };
+        let total_tokens = usage.prompt_tokens + usage.completion_tokens;
+        events.push(ModelEvent::Usage {
+            usage: Usage {
+                total_tokens,
+                ..usage
+            },
+        });
+        events.push(ModelEvent::Done);
+    }
+
+    Ok(events)
+}
+
 #[async_trait]
 impl ModelClient for OllamaClient {
     fn stream(
         &self,
         messages: &[Message],
         tools: &[ToolSchema],
-    ) -> BoxStream<'_, Result<StreamChunk, ModelError>> {
+    ) -> BoxStream<'_, Result<ModelEvent, ModelError>> {
         let body = self.build_request_body(messages, tools);
         let url = format!("{}/api/chat", self.api_base);
 
@@ -131,39 +197,13 @@ impl ModelClient for OllamaClient {
                         continue;
                     }
 
-                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&line) {
-                        let done = json.get("done").and_then(|v| v.as_bool()).unwrap_or(false);
-
-                        if let Some(content) = json
-                            .get("message")
-                            .and_then(|m| m.get("content"))
-                            .and_then(|c| c.as_str())
-                            && !content.is_empty()
-                        {
-                            yield Ok(StreamChunk {
-                                delta: content.to_string(),
-                                usage: None,
-                            });
-                        }
-
-                        if done {
-                            let usage = Usage {
-                                prompt_tokens: json
-                                    .get("prompt_eval_count")
-                                    .and_then(|v| v.as_u64())
-                                    .unwrap_or(0) as u32,
-                                completion_tokens: json
-                                    .get("eval_count")
-                                    .and_then(|v| v.as_u64())
-                                    .unwrap_or(0) as u32,
-                                total_tokens: 0,
-                            };
-                            let total = usage.prompt_tokens + usage.completion_tokens;
-                            yield Ok(StreamChunk {
-                                delta: String::new(),
-                                usage: Some(Usage { total_tokens: total, ..usage }),
-                            });
-                            return;
+                    if let Ok(events) = normalize_ollama_chat_line(&line) {
+                        for event in events {
+                            let done = matches!(event, ModelEvent::Done);
+                            yield Ok(event);
+                            if done {
+                                return;
+                            }
                         }
                     }
                 }
@@ -227,6 +267,40 @@ mod tests {
 
         assert_eq!(body["tools"][0]["type"], "function");
         assert_eq!(body["tools"][0]["function"]["name"], "fs_read");
+    }
+
+    #[test]
+    fn ollama_tool_calls_are_normalized() {
+        let line = serde_json::json!({
+            "message": {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{
+                    "function": {
+                        "name": "fs_read",
+                        "arguments": { "path": "Cargo.toml" }
+                    }
+                }]
+            },
+            "done": false
+        })
+        .to_string();
+
+        let events = normalize_ollama_chat_line(&line).unwrap();
+
+        assert!(events.iter().any(|event| {
+            matches!(
+                event,
+                ModelEvent::ToolUseStart { name, .. } if name == "fs_read"
+            )
+        }));
+        assert!(events.iter().any(|event| {
+            matches!(
+                event,
+                ModelEvent::ToolUseDone { name, args, .. }
+                    if name == "fs_read" && args["path"] == "Cargo.toml"
+            )
+        }));
     }
 
     #[test]

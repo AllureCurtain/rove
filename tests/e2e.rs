@@ -20,7 +20,7 @@ use rove::hooks::{
 };
 use rove::interfaces::cli::oneshot::{run_oneshot, run_oneshot_with_cancel};
 use rove::memory::durable::read_memory_index_sync;
-use rove::models::traits::{ModelClient, StreamChunk};
+use rove::models::traits::{ModelClient, ModelEvent};
 use rove::state::report::RunReport;
 use rove::state::store::StateStore;
 use rove::tools::echo::EchoTool;
@@ -58,7 +58,7 @@ impl ModelClient for FakeModelClient {
         &self,
         _messages: &[Message],
         _tools: &[ToolSchema],
-    ) -> BoxStream<'_, Result<StreamChunk, ModelError>> {
+    ) -> BoxStream<'_, Result<ModelEvent, ModelError>> {
         let idx = self
             .call_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -68,16 +68,16 @@ impl ModelClient for FakeModelClient {
             .cloned()
             .unwrap_or_else(|| "No more responses configured".to_string());
 
-        Box::pin(futures::stream::once(async move {
-            Ok(StreamChunk {
-                delta: response,
-                usage: Some(Usage {
+        Box::pin(futures::stream::iter([
+            Ok(ModelEvent::TextDelta { text: response }),
+            Ok(ModelEvent::Usage {
+                usage: Usage {
                     prompt_tokens: 10,
                     completion_tokens: 5,
                     total_tokens: 15,
-                }),
-            })
-        }))
+                },
+            }),
+        ]))
     }
 
     fn model_id(&self) -> &str {
@@ -101,22 +101,75 @@ impl ModelClient for RecordingModelClient {
         &self,
         messages: &[Message],
         _tools: &[ToolSchema],
-    ) -> BoxStream<'_, Result<StreamChunk, ModelError>> {
+    ) -> BoxStream<'_, Result<ModelEvent, ModelError>> {
         *self.captured_messages.lock().unwrap() = Some(messages.to_vec());
-        Box::pin(futures::stream::once(async {
-            Ok(StreamChunk {
-                delta: "done".to_string(),
-                usage: Some(Usage {
+        Box::pin(futures::stream::iter([
+            Ok(ModelEvent::TextDelta {
+                text: "done".to_string(),
+            }),
+            Ok(ModelEvent::Usage {
+                usage: Usage {
                     prompt_tokens: 1,
                     completion_tokens: 1,
                     total_tokens: 2,
+                },
+            }),
+        ]))
+    }
+
+    fn model_id(&self) -> &str {
+        "recording-model"
+    }
+}
+
+struct NativeToolUseModelClient {
+    call_count: std::sync::atomic::AtomicUsize,
+}
+
+impl NativeToolUseModelClient {
+    fn new() -> Self {
+        Self {
+            call_count: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+}
+
+#[async_trait]
+impl ModelClient for NativeToolUseModelClient {
+    fn stream(
+        &self,
+        _messages: &[Message],
+        _tools: &[ToolSchema],
+    ) -> BoxStream<'_, Result<ModelEvent, ModelError>> {
+        let idx = self
+            .call_count
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if idx == 0 {
+            return Box::pin(futures::stream::iter([
+                Ok(ModelEvent::ToolUseStart {
+                    id: "native-call-1".to_string(),
+                    name: "echo".to_string(),
                 }),
+                Ok(ModelEvent::ToolUseDone {
+                    id: "native-call-1".to_string(),
+                    name: "echo".to_string(),
+                    args: serde_json::json!({ "message": "native hello" }),
+                }),
+                Ok(ModelEvent::Usage {
+                    usage: Usage::default(),
+                }),
+            ]));
+        }
+
+        Box::pin(futures::stream::once(async {
+            Ok(ModelEvent::TextDelta {
+                text: "done with native tool".to_string(),
             })
         }))
     }
 
     fn model_id(&self) -> &str {
-        "recording-model"
+        "native-tool-use-model"
     }
 }
 
@@ -2215,6 +2268,43 @@ async fn engine_handles_tool_call() {
             reason: rove::core::types::TerminationReason::Final,
             ..
         }
+    ));
+}
+
+#[tokio::test]
+async fn engine_executes_native_model_tool_use() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(EchoTool));
+    let engine = Engine::with_workspace(
+        Box::new(NativeToolUseModelClient::new()),
+        registry,
+        ContextManager::new("You are a test agent.".to_string()),
+        EngineConfig {
+            max_steps: 3,
+            plan_enabled: false,
+        },
+        workspace,
+        ApprovalPolicy::Auto,
+    );
+
+    let events = collect_events(&engine, "echo through native tool use").await;
+
+    assert!(events.iter().any(|event| matches!(
+        event,
+        StreamEvent::ToolCallStarted { name, .. } if name == "echo"
+    )));
+    assert!(events.iter().any(|event| matches!(
+        event,
+        StreamEvent::ToolCallCompleted { result, .. } if result.output == "native hello"
+    )));
+    assert!(matches!(
+        events.last(),
+        Some(StreamEvent::RunCompleted {
+            reason: rove::core::types::TerminationReason::Final,
+            output: Some(output),
+        }) if output == "done with native tool"
     ));
 }
 

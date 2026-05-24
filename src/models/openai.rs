@@ -4,10 +4,11 @@ use reqwest::{
     StatusCode,
     header::{HeaderMap, RETRY_AFTER},
 };
+use std::collections::BTreeMap;
 
 use crate::core::types::{Message, ToolSchema, Usage};
 use crate::errors::ModelError;
-use crate::models::traits::{ModelClient, StreamChunk};
+use crate::models::traits::{ModelClient, ModelEvent};
 
 /// OpenAI-compatible model client.
 ///
@@ -159,13 +160,139 @@ fn unsigned_numbers(text: &str) -> Vec<u32> {
     numbers
 }
 
+#[derive(Debug, Default)]
+struct OpenAiToolCallState {
+    calls: BTreeMap<u64, OpenAiPartialToolCall>,
+}
+
+#[derive(Debug, Default)]
+struct OpenAiPartialToolCall {
+    id: Option<String>,
+    name: Option<String>,
+    arguments: String,
+    started: bool,
+}
+
+fn normalize_openai_chat_chunk(
+    state: &mut OpenAiToolCallState,
+    data: &str,
+) -> serde_json::Result<Vec<ModelEvent>> {
+    let json = serde_json::from_str::<serde_json::Value>(data)?;
+    let mut events = Vec::new();
+
+    for choice in json
+        .get("choices")
+        .and_then(|choices| choices.as_array())
+        .into_iter()
+        .flatten()
+    {
+        if let Some(delta) = choice.get("delta") {
+            if let Some(text) = delta.get("content").and_then(|content| content.as_str())
+                && !text.is_empty()
+            {
+                events.push(ModelEvent::TextDelta {
+                    text: text.to_string(),
+                });
+            }
+
+            if let Some(tool_calls) = delta.get("tool_calls").and_then(|calls| calls.as_array()) {
+                for tool_call in tool_calls {
+                    let index = tool_call
+                        .get("index")
+                        .and_then(|value| value.as_u64())
+                        .unwrap_or(0);
+                    let partial = state.calls.entry(index).or_default();
+                    if let Some(id) = tool_call.get("id").and_then(|value| value.as_str()) {
+                        partial.id = Some(id.to_string());
+                    }
+                    if let Some(function) = tool_call.get("function") {
+                        if let Some(name) = function.get("name").and_then(|value| value.as_str()) {
+                            partial.name = Some(name.to_string());
+                            if !partial.started {
+                                partial.started = true;
+                                events.push(ModelEvent::ToolUseStart {
+                                    id: openai_tool_call_id(index, partial),
+                                    name: name.to_string(),
+                                });
+                            }
+                        }
+                        if let Some(args_delta) =
+                            function.get("arguments").and_then(|value| value.as_str())
+                            && !args_delta.is_empty()
+                        {
+                            partial.arguments.push_str(args_delta);
+                            events.push(ModelEvent::ToolUseDelta {
+                                id: openai_tool_call_id(index, partial),
+                                args_delta: args_delta.to_string(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        if choice.get("finish_reason").and_then(|value| value.as_str()) == Some("tool_calls") {
+            for (index, partial) in &state.calls {
+                if let Some(name) = &partial.name {
+                    let args = serde_json::from_str::<serde_json::Value>(&partial.arguments)
+                        .unwrap_or_else(|_| serde_json::Value::String(partial.arguments.clone()));
+                    events.push(ModelEvent::ToolUseDone {
+                        id: openai_tool_call_id(*index, partial),
+                        name: name.clone(),
+                        args,
+                    });
+                }
+            }
+            state.calls.clear();
+        }
+    }
+
+    if let Some(usage_obj) = json.get("usage") {
+        let usage = Usage {
+            prompt_tokens: usage_obj
+                .get("prompt_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32,
+            completion_tokens: usage_obj
+                .get("completion_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32,
+            total_tokens: usage_obj
+                .get("total_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32,
+        };
+        events.push(ModelEvent::Usage { usage });
+    }
+
+    Ok(events)
+}
+
+fn normalize_openai_sse_data(
+    state: &mut OpenAiToolCallState,
+    data: &str,
+) -> serde_json::Result<Vec<ModelEvent>> {
+    if data.trim() == "[DONE]" {
+        return Ok(vec![ModelEvent::Done]);
+    }
+
+    normalize_openai_chat_chunk(state, data)
+}
+
+fn openai_tool_call_id(index: u64, partial: &OpenAiPartialToolCall) -> String {
+    partial
+        .id
+        .clone()
+        .unwrap_or_else(|| format!("tool_call_{index}"))
+}
+
 #[async_trait]
 impl ModelClient for OpenAiClient {
     fn stream(
         &self,
         messages: &[Message],
         tools: &[ToolSchema],
-    ) -> BoxStream<'_, Result<StreamChunk, ModelError>> {
+    ) -> BoxStream<'_, Result<ModelEvent, ModelError>> {
         let body = self.build_request_body(messages, tools);
         let url = format!("{}/chat/completions", self.api_base);
         let api_key = self.api_key.clone();
@@ -193,6 +320,7 @@ impl ModelClient for OpenAiClient {
             use futures::StreamExt;
             let mut byte_stream = response.bytes_stream();
             let mut buffer = String::new();
+            let mut tool_call_state = OpenAiToolCallState::default();
 
             while let Some(chunk) = byte_stream.next().await {
                 let chunk = match chunk {
@@ -214,46 +342,14 @@ impl ModelClient for OpenAiClient {
                         continue;
                     }
 
-                    if let Some(data) = line.strip_prefix("data: ") {
-                        if data.trim() == "[DONE]" {
-                            return;
-                        }
-
-                        if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
-                            // Extract delta content
-                            if let Some(delta) = json
-                                .get("choices")
-                                .and_then(|c| c.get(0))
-                                .and_then(|c| c.get("delta"))
-                                .and_then(|d| d.get("content"))
-                                .and_then(|c| c.as_str())
-                            {
-                                yield Ok(StreamChunk {
-                                    delta: delta.to_string(),
-                                    usage: None,
-                                });
-                            }
-
-                            // Check for usage in final chunk
-                            if let Some(usage_obj) = json.get("usage") {
-                                let usage = Usage {
-                                    prompt_tokens: usage_obj
-                                        .get("prompt_tokens")
-                                        .and_then(|v| v.as_u64())
-                                        .unwrap_or(0) as u32,
-                                    completion_tokens: usage_obj
-                                        .get("completion_tokens")
-                                        .and_then(|v| v.as_u64())
-                                        .unwrap_or(0) as u32,
-                                    total_tokens: usage_obj
-                                        .get("total_tokens")
-                                        .and_then(|v| v.as_u64())
-                                        .unwrap_or(0) as u32,
-                                };
-                                yield Ok(StreamChunk {
-                                    delta: String::new(),
-                                    usage: Some(usage),
-                                });
+                    if let Some(data) = line.strip_prefix("data: ")
+                        && let Ok(events) = normalize_openai_sse_data(&mut tool_call_state, data)
+                    {
+                        for event in events {
+                            let done = matches!(event, ModelEvent::Done);
+                            yield Ok(event);
+                            if done {
+                                return;
                             }
                         }
                     }
@@ -306,6 +402,67 @@ mod tests {
         assert_eq!(body["tools"][0]["function"]["name"], "fs_read");
         assert_eq!(body["tools"][0]["function"]["description"], "Read a file");
         assert_eq!(body["tool_choice"], "auto");
+    }
+
+    #[test]
+    fn openai_delta_tool_call_events_are_normalized() {
+        let mut state = OpenAiToolCallState::default();
+        let first = serde_json::json!({
+            "choices": [{
+                "delta": {
+                    "tool_calls": [{
+                        "index": 0,
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "fs_read",
+                            "arguments": "{\"path\""
+                        }
+                    }]
+                }
+            }]
+        })
+        .to_string();
+        let second = serde_json::json!({
+            "choices": [{
+                "delta": {
+                    "tool_calls": [{
+                        "index": 0,
+                        "function": {
+                            "arguments": ":\"Cargo.toml\"}"
+                        }
+                    }]
+                },
+                "finish_reason": "tool_calls"
+            }]
+        })
+        .to_string();
+
+        let mut events = normalize_openai_chat_chunk(&mut state, &first).unwrap();
+        events.extend(normalize_openai_chat_chunk(&mut state, &second).unwrap());
+
+        assert!(events.iter().any(|event| {
+            matches!(
+                event,
+                ModelEvent::ToolUseStart { id, name }
+                    if id == "call_1" && name == "fs_read"
+            )
+        }));
+        assert!(events.iter().any(|event| {
+            matches!(
+                event,
+                ModelEvent::ToolUseDone { id, name, args }
+                    if id == "call_1" && name == "fs_read" && args["path"] == "Cargo.toml"
+            )
+        }));
+    }
+
+    #[test]
+    fn openai_done_sentinel_is_normalized() {
+        let mut state = OpenAiToolCallState::default();
+        let events = normalize_openai_sse_data(&mut state, "[DONE]").unwrap();
+
+        assert_eq!(events, vec![ModelEvent::Done]);
     }
 
     #[test]

@@ -7,7 +7,7 @@ use tokio::time::{Instant, timeout};
 
 use crate::core::types::{Message, ToolSchema};
 use crate::errors::ModelError;
-use crate::models::traits::{ModelClient, StreamChunk};
+use crate::models::traits::{ModelClient, ModelEvent};
 
 /// Model client that tries a primary provider, then fallback providers if the
 /// active provider fails before streaming any response chunks.
@@ -155,7 +155,7 @@ impl ModelClient for RoutingModelClient {
         &self,
         messages: &[Message],
         tools: &[ToolSchema],
-    ) -> BoxStream<'_, Result<StreamChunk, ModelError>> {
+    ) -> BoxStream<'_, Result<ModelEvent, ModelError>> {
         let messages = messages.to_vec();
         let tools = tools.to_vec();
         Box::pin(stream! {
@@ -167,42 +167,64 @@ impl ModelClient for RoutingModelClient {
                     continue;
                 }
 
-                let mut chunks = client.stream(&messages, &tools);
-                match timeout(probe_timeout, chunks.next()).await {
-                    Ok(Some(Ok(chunk))) => {
-                        self.health.mark_success(&client_id);
-                        yield Ok(chunk);
-                    }
-                    Ok(Some(Err(err))) => {
-                        if err.counts_as_health_failure() {
-                            self.health.mark_failure(&client_id);
+                let mut events = client.stream(&messages, &tools);
+                let mut buffered = Vec::new();
+                let committed = loop {
+                    match timeout(probe_timeout, events.next()).await {
+                        Ok(Some(Ok(event))) if is_commit_event(&event) => {
+                            self.health.mark_success(&client_id);
+                            for buffered_event in buffered {
+                                yield Ok(buffered_event);
+                            }
+                            yield Ok(event);
+                            break true;
                         }
-                        last_error = Some(err);
-                        continue;
+                        Ok(Some(Ok(ModelEvent::Done))) => {
+                            let err = ModelError::StreamInterrupted(
+                                "stream ended before first content event".to_string(),
+                            );
+                            self.health.mark_failure(&client_id);
+                            last_error = Some(err);
+                            break false;
+                        }
+                        Ok(Some(Ok(event))) => {
+                            buffered.push(event);
+                            continue;
+                        }
+                        Ok(Some(Err(err))) => {
+                            if err.counts_as_health_failure() {
+                                self.health.mark_failure(&client_id);
+                            }
+                            last_error = Some(err);
+                            break false;
+                        }
+                        Ok(None) => {
+                            let err = ModelError::StreamInterrupted(
+                                "stream ended before first content event".to_string(),
+                            );
+                            self.health.mark_failure(&client_id);
+                            last_error = Some(err);
+                            break false;
+                        }
+                        Err(_) => {
+                            let err = ModelError::StreamInterrupted(format!(
+                                "first content event probe timed out after {}ms",
+                                probe_timeout.as_millis()
+                            ));
+                            self.health.mark_failure(&client_id);
+                            last_error = Some(err);
+                            break false;
+                        }
                     }
-                    Ok(None) => {
-                        let err = ModelError::StreamInterrupted(
-                            "stream ended before first chunk".to_string(),
-                        );
-                        self.health.mark_failure(&client_id);
-                        last_error = Some(err);
-                        continue;
-                    }
-                    Err(_) => {
-                        let err = ModelError::StreamInterrupted(format!(
-                            "first chunk probe timed out after {}ms",
-                            probe_timeout.as_millis()
-                        ));
-                        self.health.mark_failure(&client_id);
-                        last_error = Some(err);
-                        continue;
-                    }
+                };
+                if !committed {
+                    continue;
                 }
 
                 loop {
-                    match chunks.next().await {
-                        Some(Ok(chunk)) => {
-                            yield Ok(chunk);
+                    match events.next().await {
+                        Some(Ok(event)) => {
+                            yield Ok(event);
                         }
                         Some(Err(err)) => {
                             if err.counts_as_health_failure() {
@@ -226,6 +248,14 @@ impl ModelClient for RoutingModelClient {
     }
 }
 
+fn is_commit_event(event: &ModelEvent) -> bool {
+    match event {
+        ModelEvent::TextDelta { text } | ModelEvent::ThinkingDelta { text } => !text.is_empty(),
+        ModelEvent::ToolUseStart { .. } | ModelEvent::ToolUseDone { .. } => true,
+        ModelEvent::ToolUseDelta { .. } | ModelEvent::Usage { .. } | ModelEvent::Done => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::{
@@ -239,7 +269,7 @@ mod tests {
     use crate::core::types::{Message, ToolSchema, Usage};
     use crate::errors::ModelError;
     use crate::models::routing::{HealthConfig, RoutingModelClient};
-    use crate::models::traits::{ModelClient, StreamChunk};
+    use crate::models::traits::{ModelClient, ModelEvent};
 
     struct FailingClient {
         id: &'static str,
@@ -252,7 +282,7 @@ mod tests {
             &self,
             _messages: &[Message],
             _tools: &[ToolSchema],
-        ) -> BoxStream<'_, Result<StreamChunk, ModelError>> {
+        ) -> BoxStream<'_, Result<ModelEvent, ModelError>> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             Box::pin(stream::once(async {
                 Err(ModelError::RequestFailed("primary unavailable".to_string()))
@@ -276,14 +306,11 @@ mod tests {
             &self,
             _messages: &[Message],
             _tools: &[ToolSchema],
-        ) -> BoxStream<'_, Result<StreamChunk, ModelError>> {
+        ) -> BoxStream<'_, Result<ModelEvent, ModelError>> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             let response = self.response.to_string();
             Box::pin(stream::once(async move {
-                Ok(StreamChunk {
-                    delta: response,
-                    usage: Some(Usage::default()),
-                })
+                Ok(ModelEvent::TextDelta { text: response })
             }))
         }
 
@@ -303,12 +330,11 @@ mod tests {
             &self,
             _messages: &[Message],
             _tools: &[ToolSchema],
-        ) -> BoxStream<'_, Result<StreamChunk, ModelError>> {
+        ) -> BoxStream<'_, Result<ModelEvent, ModelError>> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             Box::pin(stream::iter([
-                Ok(StreamChunk {
-                    delta: "partial".to_string(),
-                    usage: None,
+                Ok(ModelEvent::TextDelta {
+                    text: "partial".to_string(),
                 }),
                 Err(ModelError::StreamInterrupted(
                     "primary interrupted".to_string(),
@@ -332,13 +358,12 @@ mod tests {
             &self,
             _messages: &[Message],
             _tools: &[ToolSchema],
-        ) -> BoxStream<'_, Result<StreamChunk, ModelError>> {
+        ) -> BoxStream<'_, Result<ModelEvent, ModelError>> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             Box::pin(stream::once(async {
                 tokio::time::sleep(std::time::Duration::from_secs(60)).await;
-                Ok(StreamChunk {
-                    delta: "too late".to_string(),
-                    usage: None,
+                Ok(ModelEvent::TextDelta {
+                    text: "too late".to_string(),
                 })
             }))
         }
@@ -354,13 +379,70 @@ mod tests {
         calls: Arc<AtomicUsize>,
     }
 
+    struct UsageThenErrorClient {
+        id: &'static str,
+        calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl ModelClient for UsageThenErrorClient {
+        fn stream(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolSchema],
+        ) -> BoxStream<'_, Result<ModelEvent, ModelError>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Box::pin(stream::iter([
+                Ok(ModelEvent::Usage {
+                    usage: Usage::default(),
+                }),
+                Err(ModelError::StreamInterrupted(
+                    "primary interrupted after usage".to_string(),
+                )),
+            ]))
+        }
+
+        fn model_id(&self) -> &str {
+            self.id
+        }
+    }
+
+    struct ToolUseStartThenErrorClient {
+        id: &'static str,
+        calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl ModelClient for ToolUseStartThenErrorClient {
+        fn stream(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolSchema],
+        ) -> BoxStream<'_, Result<ModelEvent, ModelError>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Box::pin(stream::iter([
+                Ok(ModelEvent::ToolUseStart {
+                    id: "native-call-1".to_string(),
+                    name: "echo".to_string(),
+                }),
+                Err(ModelError::StreamInterrupted(
+                    "primary interrupted after tool start".to_string(),
+                )),
+            ]))
+        }
+
+        fn model_id(&self) -> &str {
+            self.id
+        }
+    }
+
     #[async_trait]
     impl ModelClient for FailsThenSucceedsClient {
         fn stream(
             &self,
             _messages: &[Message],
             _tools: &[ToolSchema],
-        ) -> BoxStream<'_, Result<StreamChunk, ModelError>> {
+        ) -> BoxStream<'_, Result<ModelEvent, ModelError>> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             if self
                 .failures_remaining
@@ -375,9 +457,8 @@ mod tests {
             }
 
             Box::pin(stream::once(async {
-                Ok(StreamChunk {
-                    delta: "primary recovered".to_string(),
-                    usage: Some(Usage::default()),
+                Ok(ModelEvent::TextDelta {
+                    text: "primary recovered".to_string(),
                 })
             }))
         }
@@ -385,6 +466,13 @@ mod tests {
         fn model_id(&self) -> &str {
             self.id
         }
+    }
+
+    fn assert_text_event(event: &Result<ModelEvent, ModelError>, expected: &str) {
+        assert!(
+            matches!(event, Ok(ModelEvent::TextDelta { text }) if text == expected),
+            "expected text event {expected:?}, got {event:?}"
+        );
     }
 
     #[tokio::test]
@@ -410,7 +498,7 @@ mod tests {
         assert_eq!(primary_calls.load(Ordering::SeqCst), 1);
         assert_eq!(fallback_calls.load(Ordering::SeqCst), 1);
         assert_eq!(chunks.len(), 1);
-        assert_eq!(chunks[0].as_ref().unwrap().delta, "fallback answer");
+        assert_text_event(&chunks[0], "fallback answer");
     }
 
     #[tokio::test]
@@ -436,7 +524,7 @@ mod tests {
         assert_eq!(primary_calls.load(Ordering::SeqCst), 1);
         assert_eq!(fallback_calls.load(Ordering::SeqCst), 0);
         assert_eq!(chunks.len(), 2);
-        assert_eq!(chunks[0].as_ref().unwrap().delta, "partial");
+        assert_text_event(&chunks[0], "partial");
         assert!(matches!(
             chunks[1],
             Err(ModelError::StreamInterrupted(ref message))
@@ -468,7 +556,7 @@ mod tests {
         assert_eq!(primary_calls.load(Ordering::SeqCst), 1);
         assert_eq!(fallback_calls.load(Ordering::SeqCst), 1);
         assert_eq!(chunks.len(), 1);
-        assert_eq!(chunks[0].as_ref().unwrap().delta, "fallback answer");
+        assert_text_event(&chunks[0], "fallback answer");
     }
 
     #[tokio::test(start_paused = true)]
@@ -497,9 +585,9 @@ mod tests {
         let second = model.stream(&messages, &tools).collect::<Vec<_>>().await;
         let third = model.stream(&messages, &tools).collect::<Vec<_>>().await;
 
-        assert_eq!(first[0].as_ref().unwrap().delta, "fallback answer");
-        assert_eq!(second[0].as_ref().unwrap().delta, "fallback answer");
-        assert_eq!(third[0].as_ref().unwrap().delta, "fallback answer");
+        assert_text_event(&first[0], "fallback answer");
+        assert_text_event(&second[0], "fallback answer");
+        assert_text_event(&third[0], "fallback answer");
         assert_eq!(primary_calls.load(Ordering::SeqCst), 2);
         assert_eq!(fallback_calls.load(Ordering::SeqCst), 3);
     }
@@ -533,11 +621,71 @@ mod tests {
         let half_open = model.stream(&messages, &tools).collect::<Vec<_>>().await;
         let closed_again = model.stream(&messages, &tools).collect::<Vec<_>>().await;
 
-        assert_eq!(first[0].as_ref().unwrap().delta, "fallback answer");
-        assert_eq!(second[0].as_ref().unwrap().delta, "fallback answer");
-        assert_eq!(half_open[0].as_ref().unwrap().delta, "primary recovered");
-        assert_eq!(closed_again[0].as_ref().unwrap().delta, "primary recovered");
+        assert_text_event(&first[0], "fallback answer");
+        assert_text_event(&second[0], "fallback answer");
+        assert_text_event(&half_open[0], "primary recovered");
+        assert_text_event(&closed_again[0], "primary recovered");
         assert_eq!(primary_calls.load(Ordering::SeqCst), 4);
         assert_eq!(fallback_calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn usage_only_first_event_does_not_commit_routing_provider() {
+        let primary_calls = Arc::new(AtomicUsize::new(0));
+        let fallback_calls = Arc::new(AtomicUsize::new(0));
+        let model = RoutingModelClient::new(
+            Box::new(UsageThenErrorClient {
+                id: "primary",
+                calls: primary_calls.clone(),
+            }),
+            vec![Box::new(StaticClient {
+                id: "fallback",
+                response: "fallback answer",
+                calls: fallback_calls.clone(),
+            })],
+        );
+        let messages: Vec<Message> = Vec::new();
+        let tools: Vec<ToolSchema> = Vec::new();
+
+        let chunks = model.stream(&messages, &tools).collect::<Vec<_>>().await;
+
+        assert_eq!(primary_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(fallback_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(chunks.len(), 1);
+        assert_text_event(&chunks[0], "fallback answer");
+    }
+
+    #[tokio::test]
+    async fn tool_use_start_commits_routing_provider() {
+        let primary_calls = Arc::new(AtomicUsize::new(0));
+        let fallback_calls = Arc::new(AtomicUsize::new(0));
+        let model = RoutingModelClient::new(
+            Box::new(ToolUseStartThenErrorClient {
+                id: "primary",
+                calls: primary_calls.clone(),
+            }),
+            vec![Box::new(StaticClient {
+                id: "fallback",
+                response: "fallback answer",
+                calls: fallback_calls.clone(),
+            })],
+        );
+        let messages: Vec<Message> = Vec::new();
+        let tools: Vec<ToolSchema> = Vec::new();
+
+        let chunks = model.stream(&messages, &tools).collect::<Vec<_>>().await;
+
+        assert_eq!(primary_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(fallback_calls.load(Ordering::SeqCst), 0);
+        assert!(matches!(
+            &chunks[0],
+            Ok(ModelEvent::ToolUseStart { id, name })
+                if id == "native-call-1" && name == "echo"
+        ));
+        assert!(matches!(
+            &chunks[1],
+            Err(ModelError::StreamInterrupted(message))
+                if message == "primary interrupted after tool start"
+        ));
     }
 }

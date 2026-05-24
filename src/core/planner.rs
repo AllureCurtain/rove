@@ -2,7 +2,7 @@ use futures::StreamExt;
 use thiserror::Error;
 
 use crate::core::types::{Message, PlanStep, Role, TaskPlan};
-use crate::models::traits::ModelClient;
+use crate::models::traits::{ModelClient, ModelEvent};
 
 const DEFAULT_PLANNER_PROMPT: &str = r#"You are the planner for rove.
 Return JSON only:
@@ -56,9 +56,17 @@ impl Planner {
 
         let mut full_response = String::new();
         let mut stream = model.stream(&messages, &[]);
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(|err| PlannerError::Model(err.to_string()))?;
-            full_response.push_str(&chunk.delta);
+        while let Some(event) = stream.next().await {
+            let event = event.map_err(|err| PlannerError::Model(err.to_string()))?;
+            match event {
+                ModelEvent::TextDelta { text } => full_response.push_str(&text),
+                ModelEvent::Done => break,
+                ModelEvent::ThinkingDelta { .. }
+                | ModelEvent::ToolUseStart { .. }
+                | ModelEvent::ToolUseDelta { .. }
+                | ModelEvent::ToolUseDone { .. }
+                | ModelEvent::Usage { .. } => {}
+            }
         }
 
         parse_plan(&full_response)

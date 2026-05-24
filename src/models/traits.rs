@@ -4,12 +4,35 @@ use futures::stream::BoxStream;
 use crate::core::types::{Message, ToolSchema, Usage};
 use crate::errors::ModelError;
 
-/// A chunk from the streaming LLM response.
-#[derive(Debug, Clone)]
-pub struct StreamChunk {
-    pub delta: String,
-    /// Set on the final chunk when usage info is available.
-    pub usage: Option<Usage>,
+/// A normalized event from a streaming LLM response.
+///
+/// Provider adapters translate OpenAI/Anthropic/Ollama-specific stream frames
+/// into this event model before the engine consumes them.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ModelEvent {
+    TextDelta {
+        text: String,
+    },
+    ThinkingDelta {
+        text: String,
+    },
+    ToolUseStart {
+        id: String,
+        name: String,
+    },
+    ToolUseDelta {
+        id: String,
+        args_delta: String,
+    },
+    ToolUseDone {
+        id: String,
+        name: String,
+        args: serde_json::Value,
+    },
+    Usage {
+        usage: Usage,
+    },
+    Done,
 }
 
 /// Trait for LLM model clients.
@@ -25,7 +48,7 @@ pub trait ModelClient: Send + Sync {
         &self,
         messages: &[Message],
         tools: &[ToolSchema],
-    ) -> BoxStream<'_, Result<StreamChunk, ModelError>>;
+    ) -> BoxStream<'_, Result<ModelEvent, ModelError>>;
 
     /// The model identifier (for logging/tracing).
     fn model_id(&self) -> &str;

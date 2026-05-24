@@ -3,7 +3,7 @@ use futures::stream::BoxStream;
 
 use crate::core::types::{Message, ToolSchema, Usage};
 use crate::errors::ModelError;
-use crate::models::traits::{ModelClient, StreamChunk};
+use crate::models::traits::{ModelClient, ModelEvent};
 
 /// Deterministic local model for smoke tests and demos.
 pub struct FakeModelClient {
@@ -22,7 +22,7 @@ impl ModelClient for FakeModelClient {
         &self,
         messages: &[Message],
         _tools: &[ToolSchema],
-    ) -> BoxStream<'_, Result<StreamChunk, ModelError>> {
+    ) -> BoxStream<'_, Result<ModelEvent, ModelError>> {
         let response = if messages
             .first()
             .map(|message| message.content.contains("You are the planner for rove."))
@@ -41,16 +41,16 @@ impl ModelClient for FakeModelClient {
         } else {
             self.response.clone()
         };
-        Box::pin(futures::stream::once(async move {
-            Ok(StreamChunk {
-                delta: response,
-                usage: Some(Usage {
+        Box::pin(futures::stream::iter([
+            Ok(ModelEvent::TextDelta { text: response }),
+            Ok(ModelEvent::Usage {
+                usage: Usage {
                     prompt_tokens: 0,
                     completion_tokens: 0,
                     total_tokens: 0,
-                }),
-            })
-        }))
+                },
+            }),
+        ]))
     }
 
     fn model_id(&self) -> &str {

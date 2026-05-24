@@ -198,7 +198,7 @@ pub struct ToolResult {
 }
 
 /// Token usage from a single LLM call.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Usage {
     pub prompt_tokens: u32,
     pub completion_tokens: u32,
