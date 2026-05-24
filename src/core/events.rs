@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::types::{
     CallId, JobId, PlanStep, RunId, TaskPlan, TerminationReason, ToolResult, Usage,
@@ -9,7 +9,7 @@ use crate::errors::ToolError;
 ///
 /// Consumers (CLI, API/SSE, Web) pattern-match on these to render output.
 /// Adding a new variant forces all consumers to handle it (exhaustive match).
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum StreamEvent {
     /// A new run has started.

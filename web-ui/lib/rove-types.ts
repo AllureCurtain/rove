@@ -118,8 +118,14 @@ export interface JobStateResponse {
   run_id: string;
   status: RunStatus;
   event_count: number;
+  events: JobStreamEvent[];
   pending_approvals: PendingApproval[];
   pending_inputs: PendingInput[];
+}
+
+export interface JobStreamEvent {
+  seq: number;
+  event: StreamEvent;
 }
 
 export interface PendingApproval {

@@ -36,6 +36,7 @@ export interface WorkbenchState {
   activeRunId: string | null;
   statusText: string;
   eventCount: number;
+  seenEventSeqs: number[];
   lastSignal: string;
   busy: boolean;
   error: string | null;
@@ -56,7 +57,7 @@ export type WorkbenchAction =
   | { type: "approval_decision"; callId: string; decision: ApprovalDecision }
   | { type: "input_submitted"; inputId: string }
   | { type: "job_state_synced"; state: JobStateResponse }
-  | { type: "stream_event"; event: StreamEvent };
+  | { type: "stream_event"; event: StreamEvent; seq?: number };
 
 export function createWorkbenchState(): WorkbenchState {
   return {
@@ -64,6 +65,7 @@ export function createWorkbenchState(): WorkbenchState {
     activeRunId: null,
     statusText: "No active run",
     eventCount: 0,
+    seenEventSeqs: [],
     lastSignal: "Idle",
     busy: false,
     error: null,
@@ -147,7 +149,7 @@ export function workbenchReducer(
     case "job_state_synced":
       return applyJobState(state, action.state);
     case "stream_event":
-      return applyStreamEvent(state, action.event);
+      return applyStreamEvent(state, action.event, action.seq);
   }
 }
 
@@ -155,11 +157,15 @@ function applyJobState(
   state: WorkbenchState,
   jobState: JobStateResponse,
 ): WorkbenchState {
+  const hydrated = jobState.events.reduce(
+    (current, stored) => applyStreamEvent(current, stored.event, stored.seq),
+    state,
+  );
   const busy = jobState.status === "init" || jobState.status === "running";
   const terminalDetail = statusDetail(jobState.status);
 
   return {
-    ...state,
+    ...hydrated,
     activeJobId: jobState.job_id,
     activeRunId: jobState.run_id,
     eventCount: jobState.event_count,
@@ -169,7 +175,7 @@ function applyJobState(
     lastSignal: "Job state synced",
     pendingInputs: jobState.pending_inputs,
     tools: syncPendingApprovals(
-      state.tools,
+      hydrated.tools,
       jobState.pending_approvals,
       busy ? undefined : terminalDetail,
     ),
@@ -259,10 +265,20 @@ function statusDetail(status: JobStateResponse["status"]): string {
   }
 }
 
-function applyStreamEvent(state: WorkbenchState, event: StreamEvent): WorkbenchState {
+function applyStreamEvent(
+  state: WorkbenchState,
+  event: StreamEvent,
+  seq?: number,
+): WorkbenchState {
+  if (seq !== undefined && state.seenEventSeqs.includes(seq)) {
+    return state;
+  }
+
   const next = {
     ...state,
-    eventCount: state.eventCount + 1,
+    eventCount: seq === undefined ? state.eventCount + 1 : Math.max(state.eventCount, seq),
+    seenEventSeqs:
+      seq === undefined ? state.seenEventSeqs : [...state.seenEventSeqs, seq],
     lastSignal: humanizeEventName(event.type),
   };
 
@@ -275,6 +291,7 @@ function applyStreamEvent(state: WorkbenchState, event: StreamEvent): WorkbenchS
         busy: true,
         error: null,
         statusText: "Run started",
+        messages: ensureUserMessage(state.messages, event.user_message),
         trace: prependTrace(state.trace, event.type, `${event.user_message}`),
       };
     case "llm_chunk":
@@ -358,7 +375,7 @@ function applyStreamEvent(state: WorkbenchState, event: StreamEvent): WorkbenchS
       return {
         ...next,
         pendingInputs: [
-          ...state.pendingInputs,
+          ...state.pendingInputs.filter((input) => input.input_id !== event.input_id),
           { input_id: event.input_id, prompt: event.prompt },
         ],
         trace: prependTrace(state.trace, event.type, event.prompt),
@@ -405,6 +422,28 @@ function applyStreamEvent(state: WorkbenchState, event: StreamEvent): WorkbenchS
         ),
       };
   }
+}
+
+function ensureUserMessage(messages: ChatMessage[], content: string): ChatMessage[] {
+  if (
+    messages.some(
+      (message) =>
+        message.role === "user" &&
+        message.content === content &&
+        message.status === "final",
+    )
+  ) {
+    return messages;
+  }
+  return [
+    ...messages,
+    {
+      id: crypto.randomUUID(),
+      role: "user",
+      content,
+      status: "final",
+    },
+  ];
 }
 
 function appendAssistantDelta(messages: ChatMessage[], delta: string): ChatMessage[] {

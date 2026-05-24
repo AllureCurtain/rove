@@ -45,6 +45,7 @@
 | 05 | [下一步:统一执行内核 [WIP]](./05-下一步-统一执行内核.md) | 第一个 deep dive 的起点 |
 | 06 | [请求生命周期 [Live]](./06-请求生命周期.md) | 12 站全流程,跟设计讨论一起长大 |
 | 07 | [产品定位与 Workspace](./07-产品定位与Workspace.md) | rove 的上层产品定位:`Workspace` runtime |
+| ref | [ragent 流式与模型设计借鉴](./RAGENT-STREAM-MODEL-NOTES-2026-05-24.md) | 记录 ragent 在 SSE、模型流、取消和路由降级上的可借鉴思想 |
 
 ---
 
@@ -72,6 +73,7 @@
 
 - **pico** (`D:/Study/project/agent/pico/`):前一个 Python coding agent 项目,**继承思想,不复用代码**(语言已切换到 Rust)
 - **Claude Code 解析** (`D:/Study/project/claude-code-analysis/analysis/`):工业级 agent 的逆向工程文档,13k+ 行,是本项目的主要参考来源
+- **ragent** (`D:/Study/project/agent/ragent/`):SSE 生命周期、模型流取消、首包探测和路由降级的参考实现。详见 [ragent 流式与模型设计借鉴](./RAGENT-STREAM-MODEL-NOTES-2026-05-24.md)
 
 ---
 
@@ -81,3 +83,4 @@
 - 2026-05-17:**重大决策切换 —— 语言从 Python 改为 Rust**,项目命名定为 rove。原因详见 [01 决策 1]。01/03/04/05 同步更新
 - 2026-05-18:新增 [07 产品定位与 Workspace](./07-产品定位与Workspace.md),确认 rove 是 Workspace runtime,第一阶段先做 Folder/Repo Workspace。
 - 2026-05-22:更新当前状态,代码已推进到 API / Web workbench 阶段,文档开始对齐实际实现。
+- 2026-05-24:新增 [ragent 流式与模型设计借鉴](./RAGENT-STREAM-MODEL-NOTES-2026-05-24.md),沉淀 SSE、模型流、取消和路由降级参考思想。

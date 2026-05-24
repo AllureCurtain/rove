@@ -75,7 +75,7 @@ impl ModelError {
 }
 
 /// Errors from tool execution pipeline.
-#[derive(Debug, Clone, Error, serde::Serialize)]
+#[derive(Debug, Clone, Error, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "code", rename_all = "snake_case")]
 pub enum ToolError {
     #[error("Unknown tool: {name}")]

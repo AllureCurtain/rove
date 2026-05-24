@@ -4,8 +4,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use axum::extract::Query;
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -40,6 +41,7 @@ use crate::tools::request_input::RequestInputTool;
 use crate::tools::shell::ShellTool;
 
 const EVENT_BUFFER: usize = 256;
+
 #[derive(Clone)]
 pub struct ApiState {
     inner: Arc<ApiStateInner>,
@@ -58,10 +60,10 @@ struct JobRecord {
     run_id: RunId,
     message: String,
     status: Mutex<RunStatus>,
-    events: Mutex<Vec<StreamEvent>>,
+    events: Mutex<Vec<JobStreamEvent>>,
     pending_approvals: Mutex<HashMap<CallId, PendingApproval>>,
     pending_inputs: Mutex<HashMap<CallId, PendingInput>>,
-    tx: broadcast::Sender<StreamEvent>,
+    tx: broadcast::Sender<JobStreamEvent>,
     handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
     cancel_token: CancellationToken,
 }
@@ -108,6 +110,12 @@ pub struct SubmitInputRequest {
     pub answer: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JobStreamEvent {
+    pub seq: u64,
+    pub event: StreamEvent,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CreateJobResponse {
     pub job_id: JobId,
@@ -120,8 +128,14 @@ pub struct JobStateResponse {
     pub run_id: RunId,
     pub status: RunStatus,
     pub event_count: usize,
+    pub events: Vec<JobStreamEvent>,
     pub pending_approvals: Vec<PendingApprovalResponse>,
     pub pending_inputs: Vec<PendingInputResponse>,
+}
+
+#[derive(Debug, Deserialize)]
+struct JobEventsQuery {
+    after: Option<u64>,
 }
 
 pub fn router(state: ApiState) -> Router {
@@ -241,16 +255,36 @@ async fn create_job(
 async fn job_events(
     State(state): State<ApiState>,
     Path(job_id): Path<JobId>,
+    Query(query): Query<JobEventsQuery>,
+    headers: HeaderMap,
 ) -> Result<Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>>, ApiError> {
     let record = find_job(&state, job_id).await?;
-    let existing = record.events.lock().await.clone();
+    let after = query
+        .after
+        .or(parse_last_event_id(&headers)?)
+        .unwrap_or_default();
+    let live_rx = record.tx.subscribe();
+    let mut existing = record.events.lock().await.clone();
     let status = record.status.lock().await.clone();
-    let replay = futures::stream::iter(existing);
+    if is_terminal(&status) {
+        existing = record.events.lock().await.clone();
+    }
+    let replay_events: Vec<_> = existing
+        .into_iter()
+        .filter(|event| event.seq > after)
+        .collect();
+    let replay_high_water = replay_events.last().map(|event| event.seq).unwrap_or(after);
+    let replay = futures::stream::iter(replay_events);
     let live = if is_terminal(&status) {
         futures::stream::empty().boxed()
     } else {
-        BroadcastStream::new(record.tx.subscribe())
-            .filter_map(|event| futures::future::ready(event.ok()))
+        BroadcastStream::new(live_rx)
+            .filter_map(move |event| {
+                futures::future::ready(match event {
+                    Ok(event) if event.seq > replay_high_water => Some(event),
+                    _ => None,
+                })
+            })
             .boxed()
     };
     let stream = replay
@@ -366,8 +400,7 @@ async fn run_job_inner(
             completed = true;
             terminal_status = status_for_reason(reason);
         }
-        record.events.lock().await.push(event.clone());
-        let _ = record.tx.send(event);
+        append_job_event(record, event).await;
     }
     recorder
         .finalize(&state_store, &workspace, &model_id, &run.run_dir)
@@ -390,17 +423,22 @@ async fn finalize_cancelled_job(state: &ApiState, record: &Arc<JobRecord>) {
         output: None,
     };
 
-    let events_for_recorder = {
-        let mut events = record.events.lock().await;
-        if !events
-            .iter()
-            .any(|event| matches!(event, StreamEvent::RunCompleted { .. }))
-        {
-            events.push(cancel_event.clone());
-            let _ = record.tx.send(cancel_event.clone());
-        }
-        events.clone()
-    };
+    let already_completed = record
+        .events
+        .lock()
+        .await
+        .iter()
+        .any(|event| matches!(event.event, StreamEvent::RunCompleted { .. }));
+    if !already_completed {
+        append_job_event(record, cancel_event.clone()).await;
+    }
+    let events_for_recorder: Vec<_> = record
+        .events
+        .lock()
+        .await
+        .iter()
+        .map(|event| event.event.clone())
+        .collect();
 
     let state_store = StateStore::new(&state.inner.workspace.state_dir);
     if let Ok(trace_writer) = state_store.run_store.create_trace(&record.run_id) {
@@ -521,10 +559,7 @@ impl UserInputProvider for ApiInputProvider {
             .lock()
             .await
             .insert(input_id, PendingInput { request, tx });
-        let _ = self
-            .record
-            .tx
-            .send(StreamEvent::InputNeeded { input_id, prompt });
+        append_job_event(&self.record, StreamEvent::InputNeeded { input_id, prompt }).await;
         rx.await.map_err(|_| ToolError::ExecutionFailed {
             reason: "input request cancelled".to_string(),
         })
@@ -532,14 +567,28 @@ impl UserInputProvider for ApiInputProvider {
 }
 
 async fn job_state_response(record: &JobRecord) -> JobStateResponse {
+    let events = record.events.lock().await.clone();
     JobStateResponse {
         job_id: record.job_id,
         run_id: record.run_id,
         status: record.status.lock().await.clone(),
-        event_count: record.events.lock().await.len(),
+        event_count: events.len(),
+        events,
         pending_approvals: pending_approvals_response(record).await,
         pending_inputs: pending_inputs_response(record).await,
     }
+}
+
+async fn append_job_event(record: &JobRecord, event: StreamEvent) -> JobStreamEvent {
+    let stored = {
+        let mut events = record.events.lock().await;
+        let seq = events.last().map(|event| event.seq + 1).unwrap_or(1);
+        let stored = JobStreamEvent { seq, event };
+        events.push(stored.clone());
+        stored
+    };
+    let _ = record.tx.send(stored.clone());
+    stored
 }
 
 async fn pending_approvals_response(record: &JobRecord) -> Vec<PendingApprovalResponse> {
@@ -581,11 +630,25 @@ async fn reject_pending_inputs(record: &JobRecord) {
     let _ = std::mem::take(&mut *record.pending_inputs.lock().await);
 }
 
-fn sse_event(event: StreamEvent) -> Result<Event, serde_json::Error> {
-    let name = event.event_name();
+fn sse_event(event: JobStreamEvent) -> Result<Event, serde_json::Error> {
+    let name = event.event.event_name();
     Ok(Event::default()
+        .id(event.seq.to_string())
         .event(name)
-        .data(serde_json::to_string(&event)?))
+        .data(serde_json::to_string(&event.event)?))
+}
+
+fn parse_last_event_id(headers: &HeaderMap) -> Result<Option<u64>, ApiError> {
+    let Some(value) = headers.get("last-event-id") else {
+        return Ok(None);
+    };
+    let value = value
+        .to_str()
+        .map_err(|_| ApiError::bad_request("Last-Event-ID must be a valid integer"))?;
+    value
+        .parse::<u64>()
+        .map(Some)
+        .map_err(|_| ApiError::bad_request("Last-Event-ID must be a valid integer"))
 }
 
 fn is_terminal(status: &RunStatus) -> bool {

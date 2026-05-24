@@ -183,8 +183,9 @@ export function RoveWorkbench() {
   }
 
   function handleEvent(event: Event) {
-    const payload = JSON.parse((event as MessageEvent<string>).data) as StreamEvent;
-    dispatch({ type: "stream_event", event: payload });
+    const message = event as MessageEvent<string>;
+    const payload = JSON.parse(message.data) as StreamEvent;
+    dispatch({ type: "stream_event", event: payload, seq: parseEventSeq(message.lastEventId) });
 
     if (payload.type === "run_completed") {
       closeStream();
@@ -628,4 +629,12 @@ function describeError(error: unknown): string {
     return error.message;
   }
   return String(error);
+}
+
+function parseEventSeq(value: string): number | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const seq = Number(value);
+  return Number.isSafeInteger(seq) && seq > 0 ? seq : undefined;
 }

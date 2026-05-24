@@ -1,6 +1,7 @@
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use rove::config::AppConfig;
+use rove::core::events::StreamEvent;
 use rove::core::types::RunStatus;
 use rove::core::workspace::Workspace;
 use rove::interfaces::api::{
@@ -100,6 +101,147 @@ async fn api_creates_job_streams_events_and_reports_state() {
     let text = String::from_utf8(body.to_vec()).unwrap();
     assert!(text.contains("event: run_started"));
     assert!(text.contains("event: run_completed"));
+}
+
+#[tokio::test]
+async fn api_sse_events_have_ids_and_support_after_resume() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let app = router(ApiState::new(workspace, test_config()));
+
+    let create = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/jobs")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"message":"resume api","model":"fake"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(create.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let created: CreateJobResponse = serde_json::from_slice(&body).unwrap();
+
+    let state = wait_for_done(app.clone(), created.job_id.to_string()).await;
+    assert_eq!(state.event_count, state.events.len());
+    assert_eq!(state.events.first().unwrap().seq, 1);
+    assert!(
+        state
+            .events
+            .windows(2)
+            .all(|pair| pair[1].seq > pair[0].seq)
+    );
+
+    let events = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/jobs/{}/events", created.job_id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(events.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(events.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let text = String::from_utf8(body.to_vec()).unwrap();
+    assert!(text.contains("id: 1"));
+    assert!(text.contains("event: run_started"));
+
+    let after_first = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/jobs/{}/events?after=1", created.job_id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(after_first.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(after_first.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let text = String::from_utf8(body.to_vec()).unwrap();
+    assert!(!text.contains("id: 1"));
+    assert!(!text.contains("event: run_started"));
+    assert!(text.contains("id: 2"));
+
+    let header_resume = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/jobs/{}/events", created.job_id))
+                .header("last-event-id", "1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(header_resume.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(header_resume.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let text = String::from_utf8(body.to_vec()).unwrap();
+    assert!(!text.contains("id: 1"));
+    assert!(text.contains("id: 2"));
+}
+
+#[tokio::test]
+async fn api_state_includes_input_needed_event_for_snapshot_recovery() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let app = router(ApiState::new(workspace, test_config()));
+    let message = serde_json::json!({
+        "tool": "request_input",
+        "args": { "prompt": "Which branch should I use?" }
+    })
+    .to_string();
+    let body = serde_json::json!({
+        "message": message,
+        "model": "fake-raw",
+        "max_steps": 1
+    });
+
+    let create = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/jobs")
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(create.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let created: CreateJobResponse = serde_json::from_slice(&body).unwrap();
+
+    let state = wait_for_pending_input(app.clone(), created.job_id.to_string()).await;
+    assert_eq!(state.status, RunStatus::Running);
+    assert_eq!(state.event_count, state.events.len());
+    assert!(
+        state
+            .events
+            .windows(2)
+            .all(|pair| pair[1].seq > pair[0].seq)
+    );
+    assert!(state.events.iter().any(|stored| {
+        matches!(
+            &stored.event,
+            StreamEvent::InputNeeded { prompt, .. } if prompt == "Which branch should I use?"
+        )
+    }));
 }
 
 #[tokio::test]
