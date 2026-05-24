@@ -1634,14 +1634,25 @@ async fn engine_writes_final_output_to_session_memory_file() {
 }
 
 #[tokio::test]
-async fn engine_includes_durable_memory_index_in_prompt() {
+async fn engine_includes_relevant_durable_memory_in_prompt() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
     let memory_dir = workspace.root.join(".rove").join("memory");
-    std::fs::create_dir_all(&memory_dir).unwrap();
+    let topics_dir = memory_dir.join("topics");
+    std::fs::create_dir_all(&topics_dir).unwrap();
     std::fs::write(
         memory_dir.join("MEMORY.md"),
-        "# rove Memory\n\n- [Project Facts](topics/project-facts.md) - project memory\n",
+        "# rove Memory\n\n- [Project Facts](topics/project-facts.md) - project memory\n- [User Preferences](topics/user-preferences.md) - user memory\n",
+    )
+    .unwrap();
+    std::fs::write(
+        topics_dir.join("project-facts.md"),
+        "---\ntitle: Project Facts\ntype: project\n---\n\nUse SQLite for the state index.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        topics_dir.join("user-preferences.md"),
+        "---\ntitle: User Preferences\ntype: user\n---\n\nPrefers terse responses.\n",
     )
     .unwrap();
     let captured_messages = Arc::new(Mutex::new(None));
@@ -1660,7 +1671,7 @@ async fn engine_includes_durable_memory_index_in_prompt() {
         ApprovalPolicy::Auto,
     );
 
-    let events = collect_events(&engine, "current task").await;
+    let events = collect_events(&engine, "apply project facts").await;
     assert!(
         events
             .iter()
@@ -1672,7 +1683,13 @@ async fn engine_includes_durable_memory_index_in_prompt() {
     assert!(messages[1].content.starts_with("Durable memory:\n"));
     assert!(messages[1].content.contains("# rove Memory"));
     assert!(messages[1].content.contains("Project Facts"));
-    assert_eq!(messages.last().unwrap().content, "current task");
+    assert!(
+        messages[1]
+            .content
+            .contains("Use SQLite for the state index.")
+    );
+    assert!(!messages[1].content.contains("User Preferences"));
+    assert_eq!(messages.last().unwrap().content, "apply project facts");
 }
 
 #[test]

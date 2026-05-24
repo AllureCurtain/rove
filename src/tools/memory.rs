@@ -62,6 +62,7 @@ impl Tool for SaveMemoryTool {
         let slug = normalize_topic(raw_topic)?;
         let memory_type = MemoryType::parse(raw_type)?;
         let content = validate_content(raw_content)?;
+        validate_promotion_policy(raw_topic, &content)?;
         let title = display_title(raw_topic);
 
         let memory_dir = self.root.join(".rove").join("memory");
@@ -351,6 +352,59 @@ fn validate_content(raw: &str) -> Result<String, ToolError> {
         });
     }
     Ok(raw.trim_end().to_string())
+}
+
+fn validate_promotion_policy(topic: &str, content: &str) -> Result<(), ToolError> {
+    let lower = format!("{} {}", topic, content).to_ascii_lowercase();
+    if contains_secret_signal(&lower) {
+        return Err(ToolError::InvalidInput {
+            reason: "durable memory must not contain secrets, tokens, passwords, cookies, or private keys"
+                .to_string(),
+        });
+    }
+    if contains_transient_signal(&lower) {
+        return Err(ToolError::InvalidInput {
+            reason:
+                "durable memory must describe stable long-term facts, preferences, or decisions"
+                    .to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn contains_secret_signal(lower: &str) -> bool {
+    [
+        "api key",
+        "apikey",
+        "auth token",
+        "bearer ",
+        "cookie",
+        "password",
+        "private key",
+        "secret",
+        "token:",
+        "sk-",
+        "ghp_",
+        "xoxb-",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
+fn contains_transient_signal(lower: &str) -> bool {
+    [
+        "/tmp/",
+        "debug output",
+        "log output",
+        "one-time",
+        "one off",
+        "scratch",
+        "short-term",
+        "temporary",
+        "transient",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
 }
 
 fn display_title(raw: &str) -> String {

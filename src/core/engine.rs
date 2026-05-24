@@ -123,6 +123,7 @@ pub struct Engine {
     approval_provider: Option<Arc<dyn ToolApprovalProvider>>,
     input_provider: Option<Arc<dyn UserInputProvider>>,
     hooks: HookRegistry,
+    memory_recall_limit: usize,
 }
 
 impl Engine {
@@ -189,6 +190,7 @@ impl Engine {
             approval_provider: None,
             input_provider: None,
             hooks: HookRegistry::with_default_post_run_hooks(),
+            memory_recall_limit: 8,
         }
     }
 
@@ -207,6 +209,11 @@ impl Engine {
 
     pub fn with_input_provider(mut self, input_provider: Arc<dyn UserInputProvider>) -> Self {
         self.input_provider = Some(input_provider);
+        self
+    }
+
+    pub fn with_memory_recall_limit(mut self, memory_recall_limit: usize) -> Self {
+        self.memory_recall_limit = memory_recall_limit;
         self
     }
 
@@ -454,9 +461,14 @@ impl Engine {
                 let resume_summary = resume_state
                     .as_ref()
                     .and_then(|state| state.summary.as_deref());
-                let prompt_memory =
-                    load_prompt_memory_sync(&self.workspace, session_id, resume_summary)
-                        .unwrap_or_default();
+                let prompt_memory = load_prompt_memory_sync(
+                    &self.workspace,
+                    session_id,
+                    resume_summary,
+                    &user_message,
+                    self.memory_recall_limit,
+                )
+                .unwrap_or_default();
                 let mut working_memory: Vec<Message> = Vec::new();
                 if let Some(index) = prompt_memory.durable_index {
                     working_memory.push(durable_memory_message(&index));

@@ -176,6 +176,7 @@ async fn main() -> anyhow::Result<()> {
         workspace.clone(),
         approval_policy,
     )
+    .with_memory_recall_limit(config.memory.recall_limit)
     .with_input_provider(stdin_input_provider());
     let engine = if approval_policy == ApprovalPolicy::Ask {
         engine.with_approval_provider(stdin_approval_provider())

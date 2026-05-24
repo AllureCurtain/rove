@@ -528,6 +528,7 @@ fn build_engine(
         workspace,
         approval_policy,
     )
+    .with_memory_recall_limit(config.memory.recall_limit)
     .with_input_provider(Arc::new(ApiInputProvider {
         record: record.clone(),
     }));

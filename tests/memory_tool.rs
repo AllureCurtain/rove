@@ -97,6 +97,76 @@ async fn save_memory_rejects_unsafe_topic_without_writing() {
 }
 
 #[tokio::test]
+async fn save_memory_rejects_secret_content_without_writing() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(SaveMemoryTool::new(workspace.root.clone())));
+    let executor = Executor::new(&registry);
+    let ctx = ToolContext {
+        workspace: &workspace,
+        approval_policy: ApprovalPolicy::Never,
+        cancel_token: CancellationToken::new(),
+        input_provider: None,
+    };
+
+    let err = executor
+        .run(
+            &ctx,
+            "save_memory",
+            serde_json::json!({
+                "topic": "Deployment Token",
+                "content": "API key sk-test-secret should never be stored.",
+                "type": "project"
+            }),
+            CallId::new(),
+        )
+        .await
+        .unwrap_err();
+
+    assert!(matches!(
+        err,
+        ToolError::InvalidInput { reason } if reason.contains("must not contain secrets")
+    ));
+    assert!(!workspace.root.join(".rove").join("memory").exists());
+}
+
+#[tokio::test]
+async fn save_memory_rejects_transient_content_without_writing() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(SaveMemoryTool::new(workspace.root.clone())));
+    let executor = Executor::new(&registry);
+    let ctx = ToolContext {
+        workspace: &workspace,
+        approval_policy: ApprovalPolicy::Never,
+        cancel_token: CancellationToken::new(),
+        input_provider: None,
+    };
+
+    let err = executor
+        .run(
+            &ctx,
+            "save_memory",
+            serde_json::json!({
+                "topic": "Temporary Debug Output",
+                "content": "Short-term log output from /tmp/current-run.log",
+                "type": "reference"
+            }),
+            CallId::new(),
+        )
+        .await
+        .unwrap_err();
+
+    assert!(matches!(
+        err,
+        ToolError::InvalidInput { reason } if reason.contains("stable long-term facts")
+    ));
+    assert!(!workspace.root.join(".rove").join("memory").exists());
+}
+
+#[tokio::test]
 async fn save_memory_keeps_index_within_hard_limits() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
