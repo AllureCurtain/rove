@@ -11,8 +11,8 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
-  check:
-    name: default fmt + clippy + test
+  rust:
+    name: rust default
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -40,3 +40,31 @@ jobs:
 
       - name: cargo test
         run: cargo test
+
+  web:
+    name: web test + typecheck + build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web-ui
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web-ui/package-lock.json
+
+      - name: npm ci
+        run: npm ci
+
+      - name: npm test
+        run: npm test
+
+      - name: npm run typecheck
+        run: npm run typecheck
+
+      - name: npm run build
+        run: npm run build
