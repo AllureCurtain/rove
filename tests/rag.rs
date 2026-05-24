@@ -196,3 +196,88 @@ async fn retrieve_docs_ignores_code_chunks() {
     assert!(!hits.is_empty());
     assert_eq!(hits[0].path, "README.md");
 }
+
+#[tokio::test]
+async fn manifest_fallback_retrieval_still_works_without_lancedb() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+    std::fs::write(
+        tmp.path().join("src").join("auth.rs"),
+        "pub fn validate_authentication_token(token: &str) -> bool { token == \"ok\" }",
+    )
+    .unwrap();
+
+    let index = RagIndex::new(tmp.path().to_path_buf());
+    let embedder = DeterministicEmbedder;
+    index.ingest_workspace(&embedder).await.unwrap();
+    std::fs::remove_dir_all(tmp.path().join(".rove").join("rag.lancedb")).unwrap();
+
+    let hits = index
+        .retrieve(&embedder, RetrieveKind::Code, "authentication token", 3)
+        .await
+        .unwrap();
+
+    assert_eq!(hits[0].path, "src/auth.rs");
+    assert!(hits[0].source.contains("vector"));
+}
+
+#[tokio::test]
+async fn lexical_channel_ranks_exact_symbol_matches() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+    std::fs::write(
+        tmp.path().join("src").join("auth.rs"),
+        "pub fn validate_authentication_token(token: &str) -> bool { token == \"ok\" }",
+    )
+    .unwrap();
+    std::fs::write(
+        tmp.path().join("src").join("billing.rs"),
+        "pub fn calculate_invoice_total(cents: u64) -> u64 { cents }",
+    )
+    .unwrap();
+
+    let index = RagIndex::new(tmp.path().to_path_buf());
+    let embedder = DeterministicEmbedder;
+    index.ingest_workspace(&embedder).await.unwrap();
+
+    let hits = index
+        .retrieve(&embedder, RetrieveKind::Code, "calculate_invoice_total", 3)
+        .await
+        .unwrap();
+
+    assert_eq!(hits[0].path, "src/billing.rs");
+    assert!(hits[0].source.contains("lexical"));
+}
+
+#[tokio::test]
+async fn path_scoped_channel_prefers_matching_path_hint() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+    std::fs::write(
+        tmp.path().join("src").join("auth.rs"),
+        "pub fn shared_name() {}",
+    )
+    .unwrap();
+    std::fs::write(
+        tmp.path().join("src").join("billing.rs"),
+        "pub fn shared_name() {}",
+    )
+    .unwrap();
+
+    let index = RagIndex::new(tmp.path().to_path_buf());
+    let embedder = DeterministicEmbedder;
+    index.ingest_workspace(&embedder).await.unwrap();
+
+    let hits = index
+        .retrieve(
+            &embedder,
+            RetrieveKind::Code,
+            "src/billing.rs shared_name",
+            3,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(hits[0].path, "src/billing.rs");
+    assert!(hits[0].source.contains("path"));
+}

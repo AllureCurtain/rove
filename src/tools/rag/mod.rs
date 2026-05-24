@@ -10,6 +10,7 @@ use crate::errors::ToolError;
 mod embed;
 mod index;
 pub mod ingest;
+pub mod retrieve;
 pub mod rewrite;
 mod types;
 

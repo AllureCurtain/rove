@@ -10,9 +10,13 @@ use futures::TryStreamExt;
 use lancedb::database::CreateTableMode;
 use lancedb::query::{ExecutableQuery, QueryBase};
 
-use super::embed::{EMBEDDING_DIMS, Embedder, cosine_similarity, normalize_dims, tokenize};
+use super::embed::{EMBEDDING_DIMS, Embedder, normalize_dims};
 use super::ingest::pipeline::IngestionPipeline;
-use super::types::{EmbeddedChunk, IndexManifest, RetrieveKind, RetrievedChunk};
+use super::retrieve::pipeline::RetrievalPipeline;
+use super::types::{
+    ChunkingManifest, EmbeddedChunk, EmbeddingManifest, IndexManifest, IndexedFile, ManifestChunk,
+    RetrieveKind, RetrievedChunk, sha256_hex,
+};
 
 const TABLE_NAME: &str = "chunks";
 
@@ -39,16 +43,13 @@ impl RagIndex {
         query: &str,
         limit: usize,
     ) -> anyhow::Result<Vec<RetrievedChunk>> {
-        let query_vector = embedder.embed(query).await?;
-        let mut hits = self
-            .retrieve_lancedb(kind, query, &query_vector, limit)
-            .await?;
-        if hits.is_empty() {
-            hits = self
-                .retrieve_manifest(kind, query, &query_vector, limit)
-                .await?;
-        }
-        Ok(hits)
+        RetrievalPipeline::new(self, embedder)
+            .retrieve(kind, query, limit)
+            .await
+    }
+
+    pub(crate) fn workspace_root(&self) -> &PathBuf {
+        &self.workspace_root
     }
 
     pub(crate) async fn write_lancedb_embedded(
@@ -122,10 +123,9 @@ impl RagIndex {
         Ok(())
     }
 
-    async fn retrieve_lancedb(
+    pub(crate) async fn search_lancedb(
         &self,
         kind: RetrieveKind,
-        query: &str,
         query_vector: &[f32],
         limit: usize,
     ) -> anyhow::Result<Vec<RetrievedChunk>> {
@@ -166,7 +166,7 @@ impl RagIndex {
                     id: ids.value(row).to_string(),
                     path,
                     kind,
-                    score: lexical_score(query, &content),
+                    score: (1.0 - (hits.len() as f32 * 0.001)).max(0.0),
                     source: "vector".to_string(),
                     heading: if heading.is_empty() {
                         None
@@ -183,57 +183,18 @@ impl RagIndex {
         Ok(hits)
     }
 
-    async fn retrieve_manifest(
-        &self,
-        kind: RetrieveKind,
-        query: &str,
-        query_vector: &[f32],
-        limit: usize,
-    ) -> anyhow::Result<Vec<RetrievedChunk>> {
+    pub(crate) async fn load_manifest(&self) -> anyhow::Result<Option<IndexManifest>> {
         let path = self.manifest_path();
         if !path.exists() {
-            return Ok(Vec::new());
+            return Ok(None);
         }
         let bytes = tokio::fs::read(path).await?;
         let manifest: ManifestOnDisk =
             serde_json::from_slice(&bytes).context("failed to parse RAG manifest")?;
-        let mut hits: Vec<_> = match manifest {
-            ManifestOnDisk::V1(manifest) => manifest
-                .chunks
-                .into_iter()
-                .filter(|record| record.kind == kind)
-                .map(|record| RetrievedChunk {
-                    id: record.id,
-                    score: cosine_similarity(query_vector, &record.vector)
-                        + lexical_score(query, &record.content),
-                    path: record.path,
-                    kind,
-                    source: "manifest".to_string(),
-                    heading: record.heading,
-                    chunk_hash: Some(record.chunk_hash),
-                    content: record.content,
-                })
-                .collect(),
-            ManifestOnDisk::Legacy(records) => records
-                .into_iter()
-                .enumerate()
-                .filter(|(_, record)| record.kind == kind.as_str())
-                .map(|(idx, record)| RetrievedChunk {
-                    id: format!("{}#{idx}", record.path),
-                    score: cosine_similarity(query_vector, &record.vector)
-                        + lexical_score(query, &record.content),
-                    path: record.path,
-                    kind,
-                    source: "manifest".to_string(),
-                    heading: None,
-                    chunk_hash: None,
-                    content: record.content,
-                })
-                .collect(),
-        };
-        hits.sort_by(|a, b| b.score.total_cmp(&a.score));
-        hits.truncate(limit);
-        Ok(hits)
+        Ok(Some(match manifest {
+            ManifestOnDisk::V1(manifest) => manifest,
+            ManifestOnDisk::Legacy(records) => legacy_manifest(records, &self.workspace_root),
+        }))
     }
 
     fn db_dir(&self) -> PathBuf {
@@ -260,15 +221,56 @@ enum ManifestOnDisk {
     Legacy(Vec<ManifestRecord>),
 }
 
-fn lexical_score(query: &str, content: &str) -> f32 {
-    let query_tokens = tokenize(query);
-    if query_tokens.is_empty() {
-        return 0.0;
-    }
-    let content_tokens = tokenize(content);
-    let matches = query_tokens
+fn legacy_manifest(records: Vec<ManifestRecord>, workspace_root: &PathBuf) -> IndexManifest {
+    let chunks: Vec<_> = records
+        .into_iter()
+        .enumerate()
+        .filter_map(|(idx, record)| {
+            let kind = match record.kind.as_str() {
+                "code" => RetrieveKind::Code,
+                "docs" => RetrieveKind::Docs,
+                _ => return None,
+            };
+            let content_hash = sha256_hex(record.content.as_bytes());
+            Some(ManifestChunk {
+                id: format!("{}#{idx:04}", record.path),
+                path: record.path,
+                kind,
+                content_hash: content_hash.clone(),
+                chunk_hash: content_hash,
+                start_byte: 0,
+                end_byte: record.content.len(),
+                heading: None,
+                content: record.content,
+                vector: record.vector,
+            })
+        })
+        .collect();
+    let files = chunks
         .iter()
-        .filter(|token| content_tokens.contains(token))
-        .count();
-    matches as f32 / query_tokens.len() as f32
+        .map(|chunk| IndexedFile {
+            path: chunk.path.clone(),
+            kind: chunk.kind,
+            content_hash: chunk.content_hash.clone(),
+            chunk_count: 1,
+            indexed_at: String::new(),
+        })
+        .collect();
+
+    IndexManifest {
+        schema_version: 1,
+        workspace_root: workspace_root.to_string_lossy().replace('\\', "/"),
+        embedding: EmbeddingManifest {
+            provider: "deterministic".to_string(),
+            model: "deterministic-64".to_string(),
+            dims: EMBEDDING_DIMS,
+        },
+        chunking: ChunkingManifest {
+            strategy: "legacy".to_string(),
+            target_chars: 1600,
+            overlap_chars: 0,
+        },
+        files,
+        chunks,
+    }
 }
