@@ -251,6 +251,12 @@ impl StdioMcpClient {
             .and_then(|annotations| annotations.get("destructiveHint"))
             .and_then(Value::as_bool)
             .unwrap_or(false);
+        let parallel_safe = !destructive
+            && tool
+                .get("annotations")
+                .and_then(|annotations| annotations.get("readOnlyHint"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
         let name = format!("mcp__{}__{}", sanitize_name(&self.server_name), remote_name);
 
         Ok(McpToolInfo {
@@ -261,6 +267,7 @@ impl StdioMcpClient {
                 description,
                 parameters,
                 destructive,
+                parallel_safe,
             },
         })
     }
@@ -455,6 +462,12 @@ impl SseMcpClient {
             .and_then(|annotations| annotations.get("destructiveHint"))
             .and_then(Value::as_bool)
             .unwrap_or(false);
+        let parallel_safe = !destructive
+            && tool
+                .get("annotations")
+                .and_then(|annotations| annotations.get("readOnlyHint"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
         let name = format!("mcp__{}__{}", sanitize_name(&self.server_name), remote_name);
 
         Ok(McpToolInfo {
@@ -465,6 +478,7 @@ impl SseMcpClient {
                 description,
                 parameters,
                 destructive,
+                parallel_safe,
             },
         })
     }

@@ -27,6 +27,7 @@ impl Tool for EchoTool {
                 "required": ["message"]
             }),
             destructive: false,
+            parallel_safe: true,
         }
     }
 

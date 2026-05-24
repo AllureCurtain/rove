@@ -36,6 +36,7 @@ impl Tool for ShellTool {
                 "required": ["command"]
             }),
             destructive: true,
+            parallel_safe: false,
         }
     }
 

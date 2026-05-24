@@ -186,6 +186,7 @@ impl Tool for FakeDestructiveTool {
                 "properties": {}
             }),
             destructive: true,
+            parallel_safe: false,
         }
     }
 
@@ -218,6 +219,7 @@ impl Tool for CountingTool {
                 "required": ["path"]
             }),
             destructive: false,
+            parallel_safe: false,
         }
     }
 
@@ -246,6 +248,7 @@ impl Tool for NeverCompletesTool {
                 "properties": {}
             }),
             destructive: false,
+            parallel_safe: false,
         }
     }
 
@@ -256,6 +259,81 @@ impl Tool for NeverCompletesTool {
     ) -> Result<ToolOutput, ToolError> {
         futures::future::pending::<()>().await;
         unreachable!("pending tool should only finish by cancellation")
+    }
+}
+
+struct ProbeTool {
+    name: &'static str,
+    parallel_safe: bool,
+    active: Arc<std::sync::atomic::AtomicUsize>,
+    max_active: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl ProbeTool {
+    fn new(
+        name: &'static str,
+        parallel_safe: bool,
+        active: Arc<std::sync::atomic::AtomicUsize>,
+        max_active: Arc<std::sync::atomic::AtomicUsize>,
+    ) -> Self {
+        Self {
+            name,
+            parallel_safe,
+            active,
+            max_active,
+        }
+    }
+}
+
+#[async_trait]
+impl Tool for ProbeTool {
+    fn schema(&self) -> ToolSchema {
+        ToolSchema {
+            name: self.name.to_string(),
+            description: "A test probe tool for batch orchestration.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "label": { "type": "string" },
+                    "delay_ms": { "type": "integer" }
+                },
+                "required": ["label", "delay_ms"]
+            }),
+            destructive: false,
+            parallel_safe: self.parallel_safe,
+        }
+    }
+
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        _ctx: &ToolContext<'_>,
+    ) -> Result<ToolOutput, ToolError> {
+        let label = args
+            .get("label")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| ToolError::InvalidArgs {
+                reason: "Missing required argument: label".to_string(),
+            })?;
+        let delay_ms = args
+            .get("delay_ms")
+            .and_then(|value| value.as_u64())
+            .ok_or_else(|| ToolError::InvalidArgs {
+                reason: "Missing required argument: delay_ms".to_string(),
+            })?;
+        let active_now = self
+            .active
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            + 1;
+        self.max_active
+            .fetch_max(active_now, std::sync::atomic::Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+        self.active
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+
+        Ok(ToolOutput {
+            content: label.to_string(),
+        })
     }
 }
 
@@ -2564,6 +2642,106 @@ async fn engine_handles_tool_call() {
             reason: rove::core::types::TerminationReason::Final,
             ..
         }
+    ));
+}
+
+#[tokio::test]
+async fn engine_runs_parallel_safe_tool_batch_concurrently_with_ordered_writeback() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let active = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let max_active = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(ProbeTool::new(
+        "probe",
+        true,
+        active.clone(),
+        max_active.clone(),
+    )));
+    let engine = Engine::with_workspace(
+        Box::new(FakeModelClient::new(vec![
+            r#"{"tools":[{"tool":"probe","args":{"label":"slow","delay_ms":80}},{"tool":"probe","args":{"label":"fast","delay_ms":10}}]}"#
+                .to_string(),
+            "done".to_string(),
+        ])),
+        registry,
+        ContextManager::new("You are a test agent.".to_string()),
+        EngineConfig {
+            max_steps: 3,
+            plan_enabled: false,
+        },
+        workspace,
+        ApprovalPolicy::Auto,
+    );
+
+    let events = collect_events(&engine, "run probe batch").await;
+    let completed: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event {
+            StreamEvent::ToolCallCompleted { result, .. } => Some(result.output.as_str()),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(completed, vec!["slow", "fast"]);
+    assert_eq!(active.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(max_active.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert!(matches!(
+        events.last(),
+        Some(StreamEvent::RunCompleted {
+            reason: rove::core::types::TerminationReason::Final,
+            output: Some(output),
+        }) if output == "done"
+    ));
+}
+
+#[tokio::test]
+async fn engine_runs_non_parallel_safe_tool_batch_serially() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let active = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let max_active = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(ProbeTool::new(
+        "serial_probe",
+        false,
+        active.clone(),
+        max_active.clone(),
+    )));
+    let engine = Engine::with_workspace(
+        Box::new(FakeModelClient::new(vec![
+            r#"{"tools":[{"tool":"serial_probe","args":{"label":"first","delay_ms":20}},{"tool":"serial_probe","args":{"label":"second","delay_ms":20}}]}"#
+                .to_string(),
+            "done".to_string(),
+        ])),
+        registry,
+        ContextManager::new("You are a test agent.".to_string()),
+        EngineConfig {
+            max_steps: 3,
+            plan_enabled: false,
+        },
+        workspace,
+        ApprovalPolicy::Auto,
+    );
+
+    let events = collect_events(&engine, "run serial probe batch").await;
+    let completed: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event {
+            StreamEvent::ToolCallCompleted { result, .. } => Some(result.output.as_str()),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(completed, vec!["first", "second"]);
+    assert_eq!(active.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(max_active.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert!(matches!(
+        events.last(),
+        Some(StreamEvent::RunCompleted {
+            reason: rove::core::types::TerminationReason::Final,
+            output: Some(output),
+        }) if output == "done"
     ));
 }
 

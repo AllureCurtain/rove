@@ -66,6 +66,7 @@ impl Tool for RagRetrieveTool {
                 "required": ["query"]
             }),
             destructive: false,
+            parallel_safe: true,
         }
     }
 

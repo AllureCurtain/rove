@@ -51,6 +51,7 @@ impl Tool for SaveMemoryTool {
                 "required": ["topic", "content", "type"]
             }),
             destructive: false,
+            parallel_safe: false,
         }
     }
 
@@ -117,6 +118,7 @@ impl Tool for UpdateMemoryIndexTool {
                 "properties": {}
             }),
             destructive: false,
+            parallel_safe: false,
         }
     }
 
@@ -162,6 +164,7 @@ impl Tool for ReadMemoryTopicTool {
                 "required": ["name"]
             }),
             destructive: false,
+            parallel_safe: true,
         }
     }
 

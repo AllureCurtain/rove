@@ -202,8 +202,18 @@ pub enum Action {
         args: serde_json::Value,
     },
 
+    /// LLM wants to call multiple tools in one batch.
+    ToolBatch { calls: Vec<ToolCallAction> },
+
     /// LLM output could not be parsed into a valid action.
     Malformed { reason: String },
+}
+
+#[derive(Debug, Clone)]
+pub struct ToolCallAction {
+    pub call_id: CallId,
+    pub name: String,
+    pub args: serde_json::Value,
 }
 
 /// Result of a successful tool execution.
@@ -258,6 +268,7 @@ pub struct ToolSchema {
     pub description: String,
     pub parameters: serde_json::Value,
     pub destructive: bool,
+    pub parallel_safe: bool,
 }
 
 /// Tool approval policy.

@@ -58,6 +58,7 @@ impl Tool for FsReadTool {
                 "required": ["path"]
             }),
             destructive: false,
+            parallel_safe: true,
         }
     }
 
@@ -111,6 +112,7 @@ impl Tool for FsWriteTool {
                 "required": ["path", "content"]
             }),
             destructive: true,
+            parallel_safe: false,
         }
     }
 

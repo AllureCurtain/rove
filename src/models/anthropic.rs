@@ -375,6 +375,7 @@ mod tests {
                     }
                 }),
                 destructive: false,
+                parallel_safe: true,
             }],
         );
 

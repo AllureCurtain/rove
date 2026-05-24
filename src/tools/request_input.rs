@@ -28,6 +28,7 @@ impl Tool for RequestInputTool {
                 "required": ["prompt"]
             }),
             destructive: false,
+            parallel_safe: false,
         }
     }
 
