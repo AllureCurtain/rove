@@ -31,10 +31,7 @@ use rove::tools::shell::ShellTool;
 use rove::tools::traits::{Tool, ToolOutput};
 
 fn user_message(content: &str) -> Message {
-    Message {
-        role: rove::core::types::Role::User,
-        content: content.to_string(),
-    }
+    Message::user(content)
 }
 
 /// A fake model client that returns predetermined responses.
@@ -2074,10 +2071,9 @@ async fn resumed_run_uses_persisted_replanned_task_state() {
             run_id: RunId::new(),
             goal: "fix docs".to_string(),
             step: 1,
-            history: vec![Message {
-                role: rove::core::types::Role::User,
-                content: "previous step failed and was re-planned".to_string(),
-            }],
+            history: vec![Message::user(
+                "previous step failed and was re-planned",
+            )],
             summary: None,
             checkpoint: None,
             plan: Some(plan),
@@ -3073,4 +3069,279 @@ async fn trace_writer_records_events() {
         let parsed: serde_json::Value = serde_json::from_str(line).unwrap();
         assert!(parsed.get("type").is_some());
     }
+}
+
+/// Model client that emits a native tool call on the first invocation, then
+/// records the messages it receives on the second invocation (to verify the
+/// structured tool-use fields round-trip correctly through history).
+struct RoundTripRecordingModel {
+    call_count: std::sync::atomic::AtomicUsize,
+    captured: Arc<Mutex<Option<Vec<Message>>>>,
+}
+
+impl RoundTripRecordingModel {
+    fn new(captured: Arc<Mutex<Option<Vec<Message>>>>) -> Self {
+        Self {
+            call_count: std::sync::atomic::AtomicUsize::new(0),
+            captured,
+        }
+    }
+}
+
+#[async_trait]
+impl ModelClient for RoundTripRecordingModel {
+    fn stream(
+        &self,
+        messages: &[Message],
+        _tools: &[ToolSchema],
+    ) -> BoxStream<'_, Result<ModelEvent, ModelError>> {
+        let idx = self
+            .call_count
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if idx == 0 {
+            return Box::pin(futures::stream::iter([
+                Ok(ModelEvent::ToolUseStart {
+                    id: "toolu_roundtrip_1".to_string(),
+                    name: "echo".to_string(),
+                }),
+                Ok(ModelEvent::ToolUseDone {
+                    id: "toolu_roundtrip_1".to_string(),
+                    name: "echo".to_string(),
+                    args: serde_json::json!({ "message": "round-trip test" }),
+                }),
+                Ok(ModelEvent::Usage {
+                    usage: Usage::default(),
+                }),
+            ]));
+        }
+
+        *self.captured.lock().unwrap() = Some(messages.to_vec());
+        Box::pin(futures::stream::iter([
+            Ok(ModelEvent::TextDelta {
+                text: "round-trip complete".to_string(),
+            }),
+            Ok(ModelEvent::Usage {
+                usage: Usage::default(),
+            }),
+        ]))
+    }
+
+    fn model_id(&self) -> &str {
+        "round-trip-model"
+    }
+}
+
+#[tokio::test]
+async fn native_tool_use_populates_structured_history_fields() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let captured = Arc::new(Mutex::new(None));
+    let model = Box::new(RoundTripRecordingModel::new(captured.clone()));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(EchoTool));
+    let engine = Engine::with_workspace(
+        model,
+        registry,
+        ContextManager::new("test".to_string()),
+        EngineConfig {
+            max_steps: 5,
+            plan_enabled: false,
+        },
+        workspace,
+        ApprovalPolicy::Auto,
+    );
+
+    let events = collect_events(&engine, "trigger native tool use").await;
+
+    // Verify the run completed successfully
+    assert!(matches!(
+        events.last(),
+        Some(StreamEvent::RunCompleted {
+            reason: TerminationReason::Final,
+            ..
+        })
+    ));
+
+    // Verify the messages sent to the model on the second call include
+    // structured tool-use fields
+    let messages = captured.lock().unwrap().take().expect("model was called twice");
+
+    // Find the assistant message with tool_calls
+    let assistant_with_tools = messages
+        .iter()
+        .find(|m| !m.tool_calls.is_empty())
+        .expect("assistant message should have tool_calls populated");
+    assert_eq!(assistant_with_tools.tool_calls.len(), 1);
+    assert_eq!(assistant_with_tools.tool_calls[0].id, "toolu_roundtrip_1");
+    assert_eq!(assistant_with_tools.tool_calls[0].name, "echo");
+
+    // Find the tool result message with tool_call_id
+    let tool_result = messages
+        .iter()
+        .find(|m| m.tool_call_id.is_some())
+        .expect("tool result message should have tool_call_id populated");
+    assert_eq!(
+        tool_result.tool_call_id.as_deref(),
+        Some("toolu_roundtrip_1")
+    );
+    assert!(tool_result.content.contains("round-trip test"));
+}
+
+/// Model client that emits a batch of native tool calls on the first turn,
+/// then captures messages on the second turn to verify structured history.
+struct NativeBatchModel {
+    call_count: std::sync::atomic::AtomicUsize,
+    captured: Arc<Mutex<Option<Vec<Message>>>>,
+}
+
+impl NativeBatchModel {
+    fn new(captured: Arc<Mutex<Option<Vec<Message>>>>) -> Self {
+        Self {
+            call_count: std::sync::atomic::AtomicUsize::new(0),
+            captured,
+        }
+    }
+}
+
+#[async_trait]
+impl ModelClient for NativeBatchModel {
+    fn stream(
+        &self,
+        messages: &[Message],
+        _tools: &[ToolSchema],
+    ) -> BoxStream<'_, Result<ModelEvent, ModelError>> {
+        let idx = self
+            .call_count
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if idx == 0 {
+            return Box::pin(futures::stream::iter([
+                Ok(ModelEvent::ToolUseStart {
+                    id: "batch_call_1".to_string(),
+                    name: "probe".to_string(),
+                }),
+                Ok(ModelEvent::ToolUseDone {
+                    id: "batch_call_1".to_string(),
+                    name: "probe".to_string(),
+                    args: serde_json::json!({ "label": "alpha", "delay_ms": 60 }),
+                }),
+                Ok(ModelEvent::ToolUseStart {
+                    id: "batch_call_2".to_string(),
+                    name: "probe".to_string(),
+                }),
+                Ok(ModelEvent::ToolUseDone {
+                    id: "batch_call_2".to_string(),
+                    name: "probe".to_string(),
+                    args: serde_json::json!({ "label": "beta", "delay_ms": 60 }),
+                }),
+                Ok(ModelEvent::Usage {
+                    usage: Usage::default(),
+                }),
+            ]));
+        }
+
+        *self.captured.lock().unwrap() = Some(messages.to_vec());
+        Box::pin(futures::stream::iter([
+            Ok(ModelEvent::TextDelta {
+                text: "batch done".to_string(),
+            }),
+            Ok(ModelEvent::Usage {
+                usage: Usage::default(),
+            }),
+        ]))
+    }
+
+    fn model_id(&self) -> &str {
+        "native-batch-model"
+    }
+}
+
+#[tokio::test]
+async fn native_multi_tool_call_executes_concurrently_and_round_trips() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let active = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let max_active = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let captured = Arc::new(Mutex::new(None));
+
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(ProbeTool::new(
+        "probe",
+        true,
+        active.clone(),
+        max_active.clone(),
+    )));
+
+    let engine = Engine::with_workspace(
+        Box::new(NativeBatchModel::new(captured.clone())),
+        registry,
+        ContextManager::new("test".to_string()),
+        EngineConfig {
+            max_steps: 5,
+            plan_enabled: false,
+        },
+        workspace,
+        ApprovalPolicy::Auto,
+    );
+
+    let start = std::time::Instant::now();
+    let events = collect_events(&engine, "trigger native batch").await;
+    let elapsed = start.elapsed();
+
+    // Both tools ran concurrently — max_active should be 2
+    assert_eq!(max_active.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert_eq!(active.load(std::sync::atomic::Ordering::SeqCst), 0);
+
+    // If they ran in parallel (both 60ms), total should be well under 120ms
+    assert!(
+        elapsed < Duration::from_millis(110),
+        "Expected parallel execution under 110ms, got {:?}",
+        elapsed
+    );
+
+    // Both tool results should appear in events
+    let completed: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event {
+            StreamEvent::ToolCallCompleted { result, .. } => Some(result.output.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(completed.len(), 2);
+    assert!(completed.contains(&"alpha"));
+    assert!(completed.contains(&"beta"));
+
+    // Run completed successfully
+    assert!(matches!(
+        events.last(),
+        Some(StreamEvent::RunCompleted {
+            reason: TerminationReason::Final,
+            output: Some(output),
+        }) if output == "batch done"
+    ));
+
+    // Verify structured history round-trip
+    let messages = captured.lock().unwrap().take().expect("model called twice");
+
+    // Assistant message should have both tool_calls
+    let assistant_msg = messages
+        .iter()
+        .find(|m| !m.tool_calls.is_empty())
+        .expect("assistant message should have tool_calls");
+    assert_eq!(assistant_msg.tool_calls.len(), 2);
+    let ids: Vec<&str> = assistant_msg.tool_calls.iter().map(|tc| tc.id.as_str()).collect();
+    assert!(ids.contains(&"batch_call_1"));
+    assert!(ids.contains(&"batch_call_2"));
+
+    // Both tool result messages should have tool_call_id set
+    let tool_results: Vec<_> = messages
+        .iter()
+        .filter(|m| m.tool_call_id.is_some())
+        .collect();
+    assert_eq!(tool_results.len(), 2);
+    let result_ids: Vec<&str> = tool_results
+        .iter()
+        .map(|m| m.tool_call_id.as_deref().unwrap())
+        .collect();
+    assert!(result_ids.contains(&"batch_call_1"));
+    assert!(result_ids.contains(&"batch_call_2"));
 }

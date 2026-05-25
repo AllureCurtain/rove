@@ -31,12 +31,7 @@ impl OllamaClient {
     fn build_request_body(&self, messages: &[Message], tools: &[ToolSchema]) -> serde_json::Value {
         let msgs: Vec<serde_json::Value> = messages
             .iter()
-            .map(|m| {
-                serde_json::json!({
-                    "role": ollama_role(&m.role),
-                    "content": m.content,
-                })
-            })
+            .map(|m| format_ollama_message(m))
             .collect();
 
         let mut body = serde_json::json!({
@@ -63,6 +58,45 @@ impl OllamaClient {
         }
 
         body
+    }
+}
+
+fn format_ollama_message(m: &Message) -> serde_json::Value {
+    match m.role {
+        Role::Assistant if !m.tool_calls.is_empty() => {
+            let tool_calls: Vec<serde_json::Value> = m
+                .tool_calls
+                .iter()
+                .map(|tc| {
+                    serde_json::json!({
+                        "function": {
+                            "name": tc.name,
+                            "arguments": tc.args,
+                        }
+                    })
+                })
+                .collect();
+            let mut msg = serde_json::json!({
+                "role": "assistant",
+                "tool_calls": tool_calls,
+            });
+            if !m.content.is_empty() {
+                msg["content"] = serde_json::Value::String(m.content.clone());
+            }
+            msg
+        }
+        Role::Tool => {
+            serde_json::json!({
+                "role": "tool",
+                "content": m.content,
+            })
+        }
+        _ => {
+            serde_json::json!({
+                "role": ollama_role(&m.role),
+                "content": m.content,
+            })
+        }
     }
 }
 
@@ -219,21 +253,15 @@ impl ModelClient for OllamaClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::types::{Message, Role, ToolSchema};
+    use crate::core::types::{Message, ToolSchema};
 
     #[test]
     fn request_body_uses_ollama_roles() {
         let client = OllamaClient::new(String::new(), "llama3".to_string());
         let body = client.build_request_body(
             &[
-                Message {
-                    role: Role::System,
-                    content: "You are helpful.".to_string(),
-                },
-                Message {
-                    role: Role::User,
-                    content: "Hello".to_string(),
-                },
+                Message::system("You are helpful."),
+                Message::user("Hello"),
             ],
             &[],
         );
@@ -248,10 +276,7 @@ mod tests {
     fn request_body_includes_tools() {
         let client = OllamaClient::new(String::new(), "llama3".to_string());
         let body = client.build_request_body(
-            &[Message {
-                role: Role::User,
-                content: "inspect".to_string(),
-            }],
+            &[Message::user("inspect")],
             &[ToolSchema {
                 name: "fs_read".to_string(),
                 description: "Read a file".to_string(),

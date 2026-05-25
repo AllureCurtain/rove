@@ -6,7 +6,7 @@ use reqwest::{
 };
 use std::collections::BTreeMap;
 
-use crate::core::types::{Message, ToolSchema, Usage};
+use crate::core::types::{Message, Role, ToolSchema, Usage};
 use crate::errors::ModelError;
 use crate::models::traits::{ModelClient, ModelEvent};
 
@@ -34,12 +34,7 @@ impl OpenAiClient {
     fn build_request_body(&self, messages: &[Message], tools: &[ToolSchema]) -> serde_json::Value {
         let msgs: Vec<serde_json::Value> = messages
             .iter()
-            .map(|m| {
-                serde_json::json!({
-                    "role": m.role,
-                    "content": m.content,
-                })
-            })
+            .map(|m| format_openai_message(m))
             .collect();
 
         let tool_defs: Vec<serde_json::Value> = tools
@@ -286,6 +281,51 @@ fn openai_tool_call_id(index: u64, partial: &OpenAiPartialToolCall) -> String {
         .unwrap_or_else(|| format!("tool_call_{index}"))
 }
 
+fn format_openai_message(m: &Message) -> serde_json::Value {
+    match m.role {
+        Role::Assistant if !m.tool_calls.is_empty() => {
+            let tool_calls: Vec<serde_json::Value> = m
+                .tool_calls
+                .iter()
+                .map(|tc| {
+                    serde_json::json!({
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.name,
+                            "arguments": tc.args.to_string(),
+                        }
+                    })
+                })
+                .collect();
+            let mut msg = serde_json::json!({
+                "role": "assistant",
+                "tool_calls": tool_calls,
+            });
+            if !m.content.is_empty() {
+                msg["content"] = serde_json::Value::String(m.content.clone());
+            }
+            msg
+        }
+        Role::Tool => {
+            let mut msg = serde_json::json!({
+                "role": "tool",
+                "content": m.content,
+            });
+            if let Some(ref id) = m.tool_call_id {
+                msg["tool_call_id"] = serde_json::Value::String(id.clone());
+            }
+            msg
+        }
+        _ => {
+            serde_json::json!({
+                "role": m.role,
+                "content": m.content,
+            })
+        }
+    }
+}
+
 #[async_trait]
 impl ModelClient for OpenAiClient {
     fn stream(
@@ -367,7 +407,7 @@ impl ModelClient for OpenAiClient {
 mod tests {
     use super::*;
 
-    use crate::core::types::{Message, Role, ToolSchema};
+    use crate::core::types::{Message, ToolSchema};
     use reqwest::{
         StatusCode,
         header::{HeaderMap, HeaderValue, RETRY_AFTER},
@@ -381,10 +421,7 @@ mod tests {
             "gpt-4o".to_string(),
         );
         let body = client.build_request_body(
-            &[Message {
-                role: Role::User,
-                content: "inspect".to_string(),
-            }],
+            &[Message::user("inspect")],
             &[ToolSchema {
                 name: "fs_read".to_string(),
                 description: "Read a file".to_string(),

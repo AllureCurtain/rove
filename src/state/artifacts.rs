@@ -48,10 +48,7 @@ impl RunArtifactRecorder {
             .map(|message| message.role != Role::User || message.content != goal)
             .unwrap_or(true);
         if needs_current_user_message {
-            history.push(Message {
-                role: Role::User,
-                content: goal.clone(),
-            });
+            history.push(Message::user(goal.clone()));
         }
         Self {
             session_id,
@@ -78,10 +75,7 @@ impl RunArtifactRecorder {
             }
             StreamEvent::LlmMessage { full, usage } => {
                 self.steps += 1;
-                self.history.push(Message {
-                    role: Role::Assistant,
-                    content: full.clone(),
-                });
+                self.history.push(Message::assistant(full.clone()));
                 self.total_usage.prompt_tokens += usage.prompt_tokens;
                 self.total_usage.completion_tokens += usage.completion_tokens;
                 self.total_usage.total_tokens += usage.total_tokens;
@@ -92,18 +86,12 @@ impl RunArtifactRecorder {
                 self.write_snapshot(state_store).await;
             }
             StreamEvent::ToolCallCompleted { result, .. } => {
-                self.history.push(Message {
-                    role: Role::Tool,
-                    content: result.output.clone(),
-                });
+                self.history.push(Message::tool(result.output.clone(), None));
                 self.write_snapshot(state_store).await;
             }
             StreamEvent::ToolCallFailed { error, .. } => {
                 self.tool_failures += 1;
-                self.history.push(Message {
-                    role: Role::Tool,
-                    content: format!("Error: {error}"),
-                });
+                self.history.push(Message::tool(format!("Error: {error}"), None));
                 self.write_snapshot(state_store).await;
             }
             StreamEvent::PlanCreated { plan } => {
@@ -127,10 +115,8 @@ impl RunArtifactRecorder {
                 self.write_snapshot(state_store).await;
             }
             StreamEvent::PlanStepFailed { step, reason, .. } => {
-                self.history.push(Message {
-                    role: Role::User,
-                    content: planned_step_failure_message(&step.title, reason),
-                });
+                self.history
+                    .push(Message::user(planned_step_failure_message(&step.title, reason)));
                 self.write_snapshot(state_store).await;
             }
             StreamEvent::RunCompleted { reason, output } => {

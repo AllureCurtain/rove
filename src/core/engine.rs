@@ -15,9 +15,9 @@ use crate::core::executor::Executor;
 use crate::core::parser::parse_action;
 use crate::core::planner::{Planner, PlannerError};
 use crate::core::types::{
-    Action, ApprovalDecision, ApprovalPolicy, CallId, JobId, Message, Role, RunId, RunRequest,
+    Action, ApprovalDecision, ApprovalPolicy, CallId, JobId, Message, RunId, RunRequest,
     SessionId, TaskPlan, TerminationReason, ToolApprovalProvider, ToolApprovalRequest,
-    ToolCallAction, ToolContext, ToolResult, Usage, UserInputProvider,
+    ToolCallAction, ToolCallRef, ToolContext, ToolResult, Usage, UserInputProvider,
 };
 use crate::core::workspace::Workspace;
 use crate::errors::ToolError;
@@ -331,10 +331,7 @@ impl Engine {
         reason: &str,
         history: &mut Vec<Message>,
     ) -> Result<TaskPlan, PlannerError> {
-        history.push(Message {
-            role: Role::User,
-            content: planned_step_failure_message(step_title, reason),
-        });
+        history.push(Message::user(planned_step_failure_message(step_title, reason)));
         self.draft_plan(goal, history).await
     }
 
@@ -596,9 +593,10 @@ impl Engine {
                                     ModelEvent::ThinkingDelta { .. }
                                     | ModelEvent::ToolUseStart { .. }
                                     | ModelEvent::ToolUseDelta { .. } => {}
-                                    | ModelEvent::ToolUseDone { name, args, .. } => {
+                                    ModelEvent::ToolUseDone { id, name, args } => {
                                         native_tool_calls.push(ToolCallAction {
                                             call_id: CallId::new(),
+                                            tool_use_id: Some(id),
                                             name,
                                             args,
                                         });
@@ -625,7 +623,7 @@ impl Engine {
                         let action = action_from_tool_calls(native_tool_calls, &full_response);
 
                         match action {
-                            Action::ToolCall { call_id, name, args } => {
+                            Action::ToolCall { call_id, tool_use_id, name, args } => {
                                 let start_event = StreamEvent::ToolCallStarted {
                                     call_id,
                                     name: name.clone(),
@@ -677,14 +675,17 @@ impl Engine {
                                 };
                                 match tool_result {
                                     Ok(result) => {
-                                        history.push(Message {
-                                            role: Role::Assistant,
-                                            content: full_response.clone(),
-                                        });
-                                        history.push(Message {
-                                            role: Role::Tool,
-                                            content: result.output.clone(),
-                                        });
+                                        let tool_refs = tool_use_id.as_ref().map(|id| vec![ToolCallRef {
+                                            id: id.clone(),
+                                            name: name.clone(),
+                                            args: serde_json::Value::Null,
+                                        }]);
+                                        if let Some(refs) = tool_refs {
+                                            history.push(Message::assistant_with_tool_calls(full_response.clone(), refs));
+                                        } else {
+                                            history.push(Message::assistant(full_response.clone()));
+                                        }
+                                        history.push(Message::tool(result.output.clone(), tool_use_id.clone()));
 
                                         let event = StreamEvent::ToolCallCompleted {
                                             call_id,
@@ -697,14 +698,17 @@ impl Engine {
                                     }
                                     Err(e) => {
                                         let reason = e.to_string();
-                                        history.push(Message {
-                                            role: Role::Assistant,
-                                            content: full_response.clone(),
-                                        });
-                                        history.push(Message {
-                                            role: Role::Tool,
-                                            content: format!("Error: {reason}"),
-                                        });
+                                        let tool_refs = tool_use_id.as_ref().map(|id| vec![ToolCallRef {
+                                            id: id.clone(),
+                                            name: name.clone(),
+                                            args: serde_json::Value::Null,
+                                        }]);
+                                        if let Some(refs) = tool_refs {
+                                            history.push(Message::assistant_with_tool_calls(full_response.clone(), refs));
+                                        } else {
+                                            history.push(Message::assistant(full_response.clone()));
+                                        }
+                                        history.push(Message::tool(format!("Error: {reason}"), tool_use_id.clone()));
 
                                         let event = StreamEvent::ToolCallFailed {
                                             call_id,
@@ -825,17 +829,22 @@ impl Engine {
                                 }
 
                                 let mut first_error_reason = None;
-                                history.push(Message {
-                                    role: Role::Assistant,
-                                    content: full_response.clone(),
-                                });
+                                let tool_refs: Vec<ToolCallRef> = executions.iter()
+                                    .filter_map(|ex| ex.call.tool_use_id.as_ref().map(|id| ToolCallRef {
+                                        id: id.clone(),
+                                        name: ex.call.name.clone(),
+                                        args: ex.call.args.clone(),
+                                    }))
+                                    .collect();
+                                if tool_refs.is_empty() {
+                                    history.push(Message::assistant(full_response.clone()));
+                                } else {
+                                    history.push(Message::assistant_with_tool_calls(full_response.clone(), tool_refs));
+                                }
                                 for execution in executions {
                                     match execution.result {
                                         Ok(result) => {
-                                            history.push(Message {
-                                                role: Role::Tool,
-                                                content: result.output.clone(),
-                                            });
+                                            history.push(Message::tool(result.output.clone(), execution.call.tool_use_id));
                                             yield_traced!(StreamEvent::ToolCallCompleted {
                                                 call_id: execution.call.call_id,
                                                 result,
@@ -844,10 +853,7 @@ impl Engine {
                                         Err(error) => {
                                             let reason = error.to_string();
                                             first_error_reason.get_or_insert_with(|| reason.clone());
-                                            history.push(Message {
-                                                role: Role::Tool,
-                                                content: format!("Error: {reason}"),
-                                            });
+                                            history.push(Message::tool(format!("Error: {reason}"), execution.call.tool_use_id));
                                             yield_traced!(StreamEvent::ToolCallFailed {
                                                 call_id: execution.call.call_id,
                                                 error,
@@ -900,10 +906,7 @@ impl Engine {
                                 }
                             }
                             Action::Final { text } => {
-                                history.push(Message {
-                                    role: Role::Assistant,
-                                    content: text.clone(),
-                                });
+                                history.push(Message::assistant(text.clone()));
                                 final_output = Some(text);
                                 active_plan.mark_current_done();
                                 let completed = StreamEvent::PlanStepCompleted {
@@ -916,17 +919,11 @@ impl Engine {
                                 yield completed;
                             }
                             Action::Malformed { reason } => {
-                                history.push(Message {
-                                    role: Role::Assistant,
-                                    content: full_response.clone(),
-                                });
-                                history.push(Message {
-                                    role: Role::User,
-                                    content: format!(
-                                        "Your previous output could not be parsed: {}. Please try again.",
-                                        reason
-                                    ),
-                                });
+                                history.push(Message::assistant(full_response.clone()));
+                                history.push(Message::user(format!(
+                                    "Your previous output could not be parsed: {}. Please try again.",
+                                    reason
+                                )));
                                 let failed = StreamEvent::PlanStepFailed {
                                     step: current_step.clone(),
                                     index: current_index,
@@ -1038,9 +1035,10 @@ impl Engine {
                                 ModelEvent::ThinkingDelta { .. }
                                 | ModelEvent::ToolUseStart { .. }
                                 | ModelEvent::ToolUseDelta { .. } => {}
-                                | ModelEvent::ToolUseDone { name, args, .. } => {
+                                ModelEvent::ToolUseDone { id, name, args } => {
                                     native_tool_calls.push(ToolCallAction {
                                         call_id: CallId::new(),
+                                        tool_use_id: Some(id),
                                         name,
                                         args,
                                     });
@@ -1073,7 +1071,7 @@ impl Engine {
                         Action::Final { text } => {
                             complete_run!(TerminationReason::Final, Some(text));
                         }
-                        Action::ToolCall { call_id, name, args } => {
+                        Action::ToolCall { call_id, tool_use_id, name, args } => {
                             let start_event = StreamEvent::ToolCallStarted {
                                 call_id,
                                 name: name.clone(),
@@ -1124,14 +1122,17 @@ impl Engine {
                             match tool_result {
                                 Ok(result) => {
                                     // Add assistant message + tool result to history
-                                    history.push(Message {
-                                        role: Role::Assistant,
-                                        content: full_response.clone(),
-                                    });
-                                    history.push(Message {
-                                        role: Role::Tool,
-                                        content: result.output.clone(),
-                                    });
+                                    let tool_refs = tool_use_id.as_ref().map(|id| vec![ToolCallRef {
+                                        id: id.clone(),
+                                        name: name.clone(),
+                                        args: serde_json::Value::Null,
+                                    }]);
+                                    if let Some(refs) = tool_refs {
+                                        history.push(Message::assistant_with_tool_calls(full_response.clone(), refs));
+                                    } else {
+                                        history.push(Message::assistant(full_response.clone()));
+                                    }
+                                    history.push(Message::tool(result.output.clone(), tool_use_id.clone()));
 
                                     let event = StreamEvent::ToolCallCompleted {
                                         call_id,
@@ -1144,14 +1145,17 @@ impl Engine {
                                 }
                                 Err(e) => {
                                     // Feed error back to LLM
-                                    history.push(Message {
-                                        role: Role::Assistant,
-                                        content: full_response.clone(),
-                                    });
-                                    history.push(Message {
-                                        role: Role::Tool,
-                                        content: format!("Error: {}", e),
-                                    });
+                                    let tool_refs = tool_use_id.as_ref().map(|id| vec![ToolCallRef {
+                                        id: id.clone(),
+                                        name: name.clone(),
+                                        args: serde_json::Value::Null,
+                                    }]);
+                                    if let Some(refs) = tool_refs {
+                                        history.push(Message::assistant_with_tool_calls(full_response.clone(), refs));
+                                    } else {
+                                        history.push(Message::assistant(full_response.clone()));
+                                    }
+                                    history.push(Message::tool(format!("Error: {}", e), tool_use_id.clone()));
 
                                     let event = StreamEvent::ToolCallFailed {
                                         call_id,
@@ -1230,27 +1234,29 @@ impl Engine {
                                 }
                             }
 
-                            history.push(Message {
-                                role: Role::Assistant,
-                                content: full_response.clone(),
-                            });
+                            let tool_refs: Vec<ToolCallRef> = executions.iter()
+                                .filter_map(|ex| ex.call.tool_use_id.as_ref().map(|id| ToolCallRef {
+                                    id: id.clone(),
+                                    name: ex.call.name.clone(),
+                                    args: ex.call.args.clone(),
+                                }))
+                                .collect();
+                            if tool_refs.is_empty() {
+                                history.push(Message::assistant(full_response.clone()));
+                            } else {
+                                history.push(Message::assistant_with_tool_calls(full_response.clone(), tool_refs));
+                            }
                             for execution in executions {
                                 match execution.result {
                                     Ok(result) => {
-                                        history.push(Message {
-                                            role: Role::Tool,
-                                            content: result.output.clone(),
-                                        });
+                                        history.push(Message::tool(result.output.clone(), execution.call.tool_use_id));
                                         yield_traced!(StreamEvent::ToolCallCompleted {
                                             call_id: execution.call.call_id,
                                             result,
                                         });
                                     }
                                     Err(error) => {
-                                        history.push(Message {
-                                            role: Role::Tool,
-                                            content: format!("Error: {error}"),
-                                        });
+                                        history.push(Message::tool(format!("Error: {error}"), execution.call.tool_use_id));
                                         yield_traced!(StreamEvent::ToolCallFailed {
                                             call_id: execution.call.call_id,
                                             error,
@@ -1261,17 +1267,11 @@ impl Engine {
                         }
                         Action::Malformed { reason } => {
                             // Feed parse failure back to LLM for self-correction
-                            history.push(Message {
-                                role: Role::Assistant,
-                                content: full_response.clone(),
-                            });
-                            history.push(Message {
-                                role: Role::User,
-                                content: format!(
-                                    "Your previous output could not be parsed: {}. Please try again.",
-                                    reason
-                                ),
-                            });
+                            history.push(Message::assistant(full_response.clone()));
+                            history.push(Message::user(format!(
+                                "Your previous output could not be parsed: {}. Please try again.",
+                                reason
+                            )));
                         }
                     }
                 }
@@ -1297,6 +1297,7 @@ fn action_from_tool_calls(calls: Vec<ToolCallAction>, full_response: &str) -> Ac
             let call = calls.into_iter().next().expect("one tool call");
             Action::ToolCall {
                 call_id: call.call_id,
+                tool_use_id: call.tool_use_id,
                 name: call.name,
                 args: call.args,
             }

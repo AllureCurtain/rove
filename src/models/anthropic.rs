@@ -39,12 +39,7 @@ impl AnthropicClient {
 
         let msgs: Vec<serde_json::Value> = conversation
             .iter()
-            .map(|m| {
-                serde_json::json!({
-                    "role": anthropic_role(&m.role),
-                    "content": m.content,
-                })
-            })
+            .map(|m| format_anthropic_message(m))
             .collect();
 
         let mut body = serde_json::json!({
@@ -73,6 +68,56 @@ impl AnthropicClient {
         }
 
         body
+    }
+}
+
+fn format_anthropic_message(m: &Message) -> serde_json::Value {
+    match m.role {
+        Role::Assistant if !m.tool_calls.is_empty() => {
+            let mut content_blocks: Vec<serde_json::Value> = Vec::new();
+            if !m.content.is_empty() {
+                content_blocks.push(serde_json::json!({
+                    "type": "text",
+                    "text": m.content,
+                }));
+            }
+            for tc in &m.tool_calls {
+                content_blocks.push(serde_json::json!({
+                    "type": "tool_use",
+                    "id": tc.id,
+                    "name": tc.name,
+                    "input": tc.args,
+                }));
+            }
+            serde_json::json!({
+                "role": "assistant",
+                "content": content_blocks,
+            })
+        }
+        Role::Tool => {
+            let block = if let Some(ref id) = m.tool_call_id {
+                serde_json::json!({
+                    "type": "tool_result",
+                    "tool_use_id": id,
+                    "content": m.content,
+                })
+            } else {
+                serde_json::json!({
+                    "type": "text",
+                    "text": m.content,
+                })
+            };
+            serde_json::json!({
+                "role": "user",
+                "content": [block],
+            })
+        }
+        _ => {
+            serde_json::json!({
+                "role": anthropic_role(&m.role),
+                "content": m.content,
+            })
+        }
     }
 }
 
@@ -324,7 +369,7 @@ impl ModelClient for AnthropicClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::types::{Message, Role, ToolSchema};
+    use crate::core::types::{Message, ToolSchema};
 
     #[test]
     fn request_body_separates_system_message() {
@@ -335,14 +380,8 @@ mod tests {
         );
         let body = client.build_request_body(
             &[
-                Message {
-                    role: Role::System,
-                    content: "You are helpful.".to_string(),
-                },
-                Message {
-                    role: Role::User,
-                    content: "Hello".to_string(),
-                },
+                Message::system("You are helpful."),
+                Message::user("Hello"),
             ],
             &[],
         );
@@ -361,10 +400,7 @@ mod tests {
             "claude-sonnet-4-6-20250514".to_string(),
         );
         let body = client.build_request_body(
-            &[Message {
-                role: Role::User,
-                content: "inspect".to_string(),
-            }],
+            &[Message::user("inspect")],
             &[ToolSchema {
                 name: "fs_read".to_string(),
                 description: "Read a file".to_string(),

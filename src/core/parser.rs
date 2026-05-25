@@ -23,6 +23,7 @@ pub fn parse_action(raw: &str) -> Action {
         ) {
             return Action::ToolCall {
                 call_id: CallId::new(),
+                tool_use_id: None,
                 name: name.to_string(),
                 args: args.clone(),
             };
@@ -53,6 +54,7 @@ fn parse_tool_batch(value: &serde_json::Value) -> Option<Vec<ToolCallAction>> {
         let args = call.get("args").cloned().unwrap_or(serde_json::Value::Null);
         parsed.push(ToolCallAction {
             call_id: CallId::new(),
+            tool_use_id: None,
             name: name.to_string(),
             args,
         });
@@ -65,6 +67,7 @@ fn calls_to_action(mut calls: Vec<ToolCallAction>) -> Action {
         let call = calls.remove(0);
         Action::ToolCall {
             call_id: call.call_id,
+            tool_use_id: call.tool_use_id,
             name: call.name,
             args: call.args,
         }

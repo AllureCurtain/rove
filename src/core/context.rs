@@ -1,4 +1,4 @@
-use crate::core::types::{Message, Role};
+use crate::core::types::Message;
 
 const MESSAGE_OVERHEAD_TOKENS: usize = 4;
 const CHARS_PER_TOKEN: usize = 4;
@@ -172,10 +172,7 @@ impl ContextManager {
     ) -> ContextBuild {
         let mut messages = Vec::new();
 
-        messages.push(Message {
-            role: Role::System,
-            content: self.system_prompt.clone(),
-        });
+        messages.push(Message::system(self.system_prompt.clone()));
         messages.extend_from_slice(working_memory);
         if let Some(summary) = compact_summary {
             messages.push(compact_summary_message(summary));
@@ -187,10 +184,7 @@ impl ContextManager {
             0
         };
         messages.extend_from_slice(&history[start..]);
-        messages.push(Message {
-            role: Role::User,
-            content: user_message.to_string(),
-        });
+        messages.push(Message::user(user_message));
 
         let token_estimate = estimate_messages_tokens(&messages);
         ContextBuild {
@@ -211,15 +205,9 @@ impl ContextManager {
         history: &[Message],
         budget: ContextBudget,
     ) -> ContextBuild {
-        let current_user = Message {
-            role: Role::User,
-            content: user_message.to_string(),
-        };
+        let current_user = Message::user(user_message);
         let mut prefix = Vec::new();
-        prefix.push(Message {
-            role: Role::System,
-            content: self.system_prompt.clone(),
-        });
+        prefix.push(Message::system(self.system_prompt.clone()));
         prefix.extend_from_slice(working_memory);
         if let Some(summary) = compact_summary {
             prefix.push(compact_summary_message(summary));
@@ -274,24 +262,15 @@ impl ContextManager {
 }
 
 pub fn session_summary_message(summary: &str) -> Message {
-    Message {
-        role: Role::System,
-        content: format!("Session summary: {summary}"),
-    }
+    Message::system(format!("Session summary: {summary}"))
 }
 
 pub fn compact_summary_message(summary: &str) -> Message {
-    Message {
-        role: Role::System,
-        content: format!("Compact summary: {summary}"),
-    }
+    Message::system(format!("Compact summary: {summary}"))
 }
 
 pub fn durable_memory_message(index: &str) -> Message {
-    Message {
-        role: Role::System,
-        content: format!("Durable memory:\n{}", index.trim_end()),
-    }
+    Message::system(format!("Durable memory:\n{}", index.trim_end()))
 }
 
 pub fn estimate_messages_tokens(messages: &[Message]) -> usize {

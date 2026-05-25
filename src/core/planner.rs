@@ -1,7 +1,7 @@
 use futures::StreamExt;
 use thiserror::Error;
 
-use crate::core::types::{Message, PlanStep, Role, TaskPlan};
+use crate::core::types::{Message, PlanStep, TaskPlan};
 use crate::models::traits::{ModelClient, ModelEvent};
 
 const DEFAULT_PLANNER_PROMPT: &str = r#"You are the planner for rove.
@@ -43,14 +43,8 @@ impl Planner {
         history: &[Message],
     ) -> Result<TaskPlan, PlannerError> {
         let mut messages = vec![
-            Message {
-                role: Role::System,
-                content: self.prompt.clone(),
-            },
-            Message {
-                role: Role::User,
-                content: format!("Goal: {goal}"),
-            },
+            Message::system(self.prompt.clone()),
+            Message::user(format!("Goal: {goal}")),
         ];
         messages.extend_from_slice(history);
 
