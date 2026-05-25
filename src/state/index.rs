@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use chrono::{DateTime, FixedOffset, Utc};
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::core::events::StreamEvent;
@@ -171,6 +172,20 @@ pub struct ReportIndexRecord {
     pub path: PathBuf,
     pub status: String,
     pub termination_reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CleanupResult {
+    pub job_count: usize,
+    pub run_count: usize,
+    pub task_state_count: usize,
+}
+
+#[derive(Debug, Clone)]
+struct ExpiredJobRecord {
+    job_id: JobId,
+    run_id: Option<RunId>,
+    run_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -478,6 +493,62 @@ impl StateIndex {
             .map_err(std::io::Error::other)?
     }
 
+    pub fn set_job_ttl(
+        &self,
+        job_id: JobId,
+        ttl_expires_at: Option<String>,
+    ) -> std::io::Result<()> {
+        let conn = self.connect()?;
+        let now = now_rfc3339();
+        conn.execute(
+            r#"
+            UPDATE jobs
+            SET ttl_expires_at = ?2, updated_at = ?3
+            WHERE job_id = ?1
+            "#,
+            params![job_id.to_string(), ttl_expires_at, now],
+        )
+        .map_err(io_other)?;
+        Ok(())
+    }
+
+    pub async fn cleanup_expired_async(&self) -> std::io::Result<CleanupResult> {
+        let index = self.clone();
+        tokio::task::spawn_blocking(move || index.cleanup_expired())
+            .await
+            .map_err(std::io::Error::other)?
+    }
+
+    pub fn cleanup_expired(&self) -> std::io::Result<CleanupResult> {
+        let mut conn = self.connect()?;
+        let now = Utc::now().with_timezone(&FixedOffset::east_opt(0).expect("zero offset"));
+        let expired_jobs = {
+            let tx = conn.transaction().map_err(io_other)?;
+            let records = select_expired_jobs(&tx, now)?;
+            delete_expired_jobs(&tx, &records)?;
+            tx.commit().map_err(io_other)?;
+            records
+        };
+
+        for record in &expired_jobs {
+            if let Some(run_dir) = record.run_dir.as_ref() {
+                remove_run_dir_if_safe(&self.state_dir, run_dir)?;
+            }
+        }
+
+        Ok(CleanupResult {
+            job_count: expired_jobs.len(),
+            run_count: expired_jobs
+                .iter()
+                .filter(|record| record.run_id.is_some())
+                .count(),
+            task_state_count: expired_jobs
+                .iter()
+                .filter(|record| record.run_id.is_some())
+                .count(),
+        })
+    }
+
     pub fn mark_running_jobs_interrupted(&self) -> std::io::Result<usize> {
         let conn = self.connect()?;
         let now = now_rfc3339();
@@ -730,6 +801,110 @@ fn apply_migrations(conn: &Connection) -> std::io::Result<()> {
             params![CURRENT_SCHEMA_VERSION, "runtime_state_index", now_rfc3339()],
         )
         .map_err(io_other)?;
+    }
+    Ok(())
+}
+
+fn select_expired_jobs(
+    conn: &Connection,
+    now: DateTime<FixedOffset>,
+) -> std::io::Result<Vec<ExpiredJobRecord>> {
+    let mut stmt = conn
+        .prepare(
+            r#"
+            SELECT jobs.job_id, jobs.run_id, runs.run_dir, jobs.ttl_expires_at
+            FROM jobs
+            LEFT JOIN runs ON jobs.run_id = runs.run_id
+            WHERE jobs.ttl_expires_at IS NOT NULL
+            ORDER BY jobs.updated_at ASC, jobs.job_id ASC
+            "#,
+        )
+        .map_err(io_other)?;
+    let rows = stmt
+        .query_map([], |row| {
+            let ttl_expires_at: String = row.get(3)?;
+            Ok((
+                job_id_from_row(row, 0)?,
+                row.get::<_, Option<String>>(1)?
+                    .map(|value| parse_run_id_at(1, value))
+                    .transpose()?,
+                row.get::<_, Option<String>>(2)?.map(PathBuf::from),
+                ttl_expires_at,
+            ))
+        })
+        .map_err(io_other)?;
+
+    let mut expired = Vec::new();
+    for row in rows {
+        let (job_id, run_id, run_dir, ttl_expires_at) = row.map_err(io_other)?;
+        let ttl = DateTime::parse_from_rfc3339(&ttl_expires_at)
+            .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
+        if ttl <= now {
+            expired.push(ExpiredJobRecord {
+                job_id,
+                run_id,
+                run_dir,
+            });
+        }
+    }
+    Ok(expired)
+}
+
+fn delete_expired_jobs(conn: &Connection, records: &[ExpiredJobRecord]) -> std::io::Result<()> {
+    for record in records {
+        if let Some(run_id) = record.run_id {
+            conn.execute(
+                "DELETE FROM pending_approvals WHERE run_id = ?1",
+                params![run_id.to_string()],
+            )
+            .map_err(io_other)?;
+            conn.execute(
+                "DELETE FROM pending_inputs WHERE run_id = ?1",
+                params![run_id.to_string()],
+            )
+            .map_err(io_other)?;
+            conn.execute(
+                "DELETE FROM events WHERE run_id = ?1",
+                params![run_id.to_string()],
+            )
+            .map_err(io_other)?;
+            conn.execute(
+                "DELETE FROM event_offsets WHERE run_id = ?1",
+                params![run_id.to_string()],
+            )
+            .map_err(io_other)?;
+            conn.execute(
+                "DELETE FROM reports WHERE run_id = ?1",
+                params![run_id.to_string()],
+            )
+            .map_err(io_other)?;
+            conn.execute(
+                "DELETE FROM task_states WHERE run_id = ?1",
+                params![run_id.to_string()],
+            )
+            .map_err(io_other)?;
+            conn.execute(
+                "DELETE FROM runs WHERE run_id = ?1",
+                params![run_id.to_string()],
+            )
+            .map_err(io_other)?;
+        }
+        conn.execute(
+            "DELETE FROM jobs WHERE job_id = ?1",
+            params![record.job_id.to_string()],
+        )
+        .map_err(io_other)?;
+    }
+    Ok(())
+}
+
+fn remove_run_dir_if_safe(state_dir: &Path, run_dir: &Path) -> std::io::Result<()> {
+    let runs_root = state_dir.join("runs");
+    if !run_dir.starts_with(&runs_root) {
+        return Ok(());
+    }
+    if run_dir.exists() {
+        std::fs::remove_dir_all(run_dir)?;
     }
     Ok(())
 }

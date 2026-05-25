@@ -3,7 +3,7 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 
-use super::chunking::{ChunkingStrategy, MarkdownAwareChunker};
+use super::chunking::{ChunkingStrategy, MixedCodeMarkdownChunker};
 use super::log::{StageLogRow, StageStatus, append_stage_log};
 use super::stages::{
     ChunkDocumentsStage, EmbedChunksStage, ParseReadableFilesStage, PersistIndexStage,
@@ -53,7 +53,7 @@ impl<'a> IngestionPipeline<'a> {
         Self {
             workspace_root,
             embedder,
-            chunker: Box::new(MarkdownAwareChunker::new(1600, 160)),
+            chunker: Box::new(MixedCodeMarkdownChunker::new(1600, 160)),
         }
     }
 

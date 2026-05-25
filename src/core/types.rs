@@ -63,6 +63,39 @@ pub struct PromptCheckpoint {
     pub last_event_seq: Option<u64>,
     pub token_estimate: usize,
     pub compacted_history_messages: usize,
+    #[serde(default)]
+    pub compaction: PromptCompactionState,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PromptCompactionState {
+    pub mode: PromptCompactionMode,
+    pub auto_triggered: bool,
+    pub degraded: bool,
+    pub consecutive_failures: u32,
+    pub circuit_open: bool,
+}
+
+impl Default for PromptCompactionState {
+    fn default() -> Self {
+        Self {
+            mode: PromptCompactionMode::Deterministic,
+            auto_triggered: false,
+            degraded: false,
+            consecutive_failures: 0,
+            circuit_open: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptCompactionMode {
+    None,
+    Deterministic,
+    Automatic,
+    Degraded,
+    Disabled,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

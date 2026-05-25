@@ -15,6 +15,7 @@ use rove::interfaces::cli::index::{self as cli_index, IndexOptions};
 use rove::interfaces::cli::input::stdin_input_provider;
 use rove::interfaces::cli::oneshot::{resolve_resume_state, run_oneshot_with_cancel};
 use rove::interfaces::cli::sessions;
+use rove::interfaces::cli::state as cli_state;
 use rove::models::factory::build_model_client;
 use rove::models::fake::FakeModelClient;
 use rove::models::traits::ModelClient;
@@ -68,6 +69,7 @@ async fn main() -> anyhow::Result<()> {
             .await;
         }
         Some(Command::Sessions) => return sessions::run(args.cwd).await,
+        Some(Command::State { command }) => return cli_state::run(args.cwd, command).await,
         None => {}
     }
 

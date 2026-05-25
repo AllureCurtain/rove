@@ -4,8 +4,8 @@ use crate::core::context::estimate_messages_tokens;
 use crate::core::engine::planned_step_failure_message;
 use crate::core::events::StreamEvent;
 use crate::core::types::{
-    JobId, Message, PromptCheckpoint, Role, RunId, SessionId, TaskPlan, TaskState,
-    TerminationReason, Usage,
+    JobId, Message, PromptCheckpoint, PromptCompactionMode, PromptCompactionState, Role, RunId,
+    SessionId, TaskPlan, TaskState, TerminationReason, Usage,
 };
 use crate::core::workspace::Workspace;
 
@@ -259,6 +259,17 @@ impl RunArtifactRecorder {
             last_event_seq: None,
             token_estimate,
             compacted_history_messages,
+            compaction: PromptCompactionState {
+                mode: if compacted_history_messages > 0 {
+                    PromptCompactionMode::Deterministic
+                } else {
+                    PromptCompactionMode::None
+                },
+                auto_triggered: compacted_history_messages > 0,
+                degraded: false,
+                consecutive_failures: 0,
+                circuit_open: false,
+            },
         }
     }
 }

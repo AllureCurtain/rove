@@ -31,6 +31,71 @@ pub struct ContextBuild {
     pub included_history_messages: usize,
     pub dropped_history_messages: usize,
     pub over_hard_limit: bool,
+    pub auto_compaction_needed: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompactionMode {
+    None,
+    Automatic,
+    Degraded,
+    Disabled,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CompactionDecision {
+    pub mode: CompactionMode,
+    pub circuit_open: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CompactionPolicy {
+    pub consecutive_failures: u32,
+    pub failure_threshold: u32,
+}
+
+impl Default for CompactionPolicy {
+    fn default() -> Self {
+        Self {
+            consecutive_failures: 0,
+            failure_threshold: 3,
+        }
+    }
+}
+
+impl CompactionPolicy {
+    pub fn decide(&self, context: &ContextBuild, budget: ContextBudget) -> CompactionDecision {
+        if self.consecutive_failures >= self.failure_threshold.max(1) {
+            return CompactionDecision {
+                mode: CompactionMode::Disabled,
+                circuit_open: true,
+            };
+        }
+
+        if context.over_hard_limit {
+            return CompactionDecision {
+                mode: CompactionMode::Degraded,
+                circuit_open: false,
+            };
+        }
+
+        if context.auto_compaction_needed
+            || context.token_estimate
+                >= budget
+                    .soft_limit_tokens
+                    .saturating_sub(budget.reserved_tokens)
+        {
+            return CompactionDecision {
+                mode: CompactionMode::Automatic,
+                circuit_open: false,
+            };
+        }
+
+        CompactionDecision {
+            mode: CompactionMode::None,
+            circuit_open: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -134,6 +199,7 @@ impl ContextManager {
             included_history_messages: history.len().saturating_sub(start),
             dropped_history_messages: start,
             over_hard_limit: false,
+            auto_compaction_needed: start > 0,
         }
     }
 
@@ -181,15 +247,23 @@ impl ContextManager {
         messages.push(current_user);
 
         let token_estimate = estimate_messages_tokens(&messages);
+        let over_hard_limit = token_estimate
+            > budget
+                .hard_limit_tokens
+                .saturating_sub(budget.reserved_tokens);
+        let auto_compaction_needed = token_estimate
+            >= budget
+                .soft_limit_tokens
+                .saturating_sub(budget.reserved_tokens)
+            || history.len().saturating_sub(included_history_messages) > 0;
+
         ContextBuild {
             messages,
             token_estimate,
             included_history_messages,
             dropped_history_messages: history.len().saturating_sub(included_history_messages),
-            over_hard_limit: token_estimate
-                > budget
-                    .hard_limit_tokens
-                    .saturating_sub(budget.reserved_tokens),
+            over_hard_limit,
+            auto_compaction_needed,
         }
     }
 

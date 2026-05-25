@@ -57,6 +57,151 @@ async fn api_server_stops_when_shutdown_token_is_cancelled() {
 }
 
 #[tokio::test]
+async fn api_rejects_missing_bearer_token_when_configured() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let mut config = test_config();
+    config.api.token_auth = Some("secret-token".to_string());
+    let app = router(ApiState::new(workspace, config));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/jobs")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"message":"secured api","model":"fake"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        response
+            .headers()
+            .get("www-authenticate")
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        "Bearer"
+    );
+}
+
+#[tokio::test]
+async fn api_accepts_matching_bearer_token() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let mut config = test_config();
+    config.api.token_auth = Some("secret-token".to_string());
+    let app = router(ApiState::new(workspace, config));
+
+    let rejected = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/jobs")
+                .header("content-type", "application/json")
+                .header("authorization", "Bearer wrong-token")
+                .body(Body::from(r#"{"message":"secured api","model":"fake"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(rejected.status(), StatusCode::UNAUTHORIZED);
+
+    let allowed = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/jobs")
+                .header("content-type", "application/json")
+                .header("authorization", "Bearer secret-token")
+                .body(Body::from(r#"{"message":"secured api","model":"fake"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(allowed.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn api_rejects_disallowed_cors_origin() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let mut config = test_config();
+    config.api.cors_origins = vec!["https://allowed.example".to_string()];
+    let app = router(ApiState::new(workspace, config));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/jobs/01ARZ3NDEKTSV4RRFFQ69G5FAV/state")
+                .header("origin", "https://evil.example")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn api_allows_configured_cors_origin_and_sets_headers() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let mut config = test_config();
+    config.api.cors_origins = vec!["https://allowed.example".to_string()];
+    let app = router(ApiState::new(workspace, config));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/jobs/01ARZ3NDEKTSV4RRFFQ69G5FAV/state")
+                .header("origin", "https://allowed.example")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(
+        response
+            .headers()
+            .get("access-control-allow-origin")
+            .unwrap(),
+        "https://allowed.example"
+    );
+}
+
+#[tokio::test]
+async fn api_rate_limits_requests_when_configured() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let mut config = test_config();
+    config.api.rate_limit_per_minute = Some(2);
+    let app = router(ApiState::new(workspace, config));
+
+    let request = || {
+        Request::builder()
+            .uri("/jobs/01ARZ3NDEKTSV4RRFFQ69G5FAV/state")
+            .body(Body::empty())
+            .unwrap()
+    };
+
+    let first = app.clone().oneshot(request()).await.unwrap();
+    let second = app.clone().oneshot(request()).await.unwrap();
+    let third = app.oneshot(request()).await.unwrap();
+
+    assert_eq!(first.status(), StatusCode::NOT_FOUND);
+    assert_eq!(second.status(), StatusCode::NOT_FOUND);
+    assert_eq!(third.status(), StatusCode::TOO_MANY_REQUESTS);
+}
+
+#[tokio::test]
 async fn api_creates_job_streams_events_and_reports_state() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();

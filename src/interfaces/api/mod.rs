@@ -2,11 +2,13 @@ use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Instant;
 
 use async_trait::async_trait;
 use axum::extract::Query;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
+use axum::middleware;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -40,6 +42,8 @@ use crate::tools::registry::ToolRegistry;
 use crate::tools::request_input::RequestInputTool;
 use crate::tools::shell::ShellTool;
 
+mod security;
+
 const EVENT_BUFFER: usize = 256;
 
 #[derive(Clone)]
@@ -52,6 +56,13 @@ struct ApiStateInner {
     config: AppConfig,
     shutdown_token: CancellationToken,
     jobs: RwLock<HashMap<JobId, Arc<JobRecord>>>,
+    rate_limit: tokio::sync::Mutex<RateLimitState>,
+}
+
+#[derive(Debug, Default)]
+struct RateLimitState {
+    window_started_at: Option<Instant>,
+    requests_in_window: u32,
 }
 
 struct JobRecord {
@@ -146,7 +157,11 @@ pub fn router(state: ApiState) -> Router {
         .route("/jobs/{job_id}/cancel", post(cancel_job))
         .route("/jobs/{job_id}/approvals/{call_id}", post(submit_approval))
         .route("/jobs/{job_id}/inputs/{input_id}", post(submit_input))
-        .with_state(state)
+        .with_state(state.clone())
+        .layer(middleware::from_fn_with_state(
+            state,
+            security::api_security,
+        ))
 }
 
 pub async fn serve(addr: Option<SocketAddr>, cwd: PathBuf) -> anyhow::Result<()> {
@@ -223,6 +238,7 @@ impl ApiState {
                 config,
                 shutdown_token,
                 jobs: RwLock::new(HashMap::new()),
+                rate_limit: tokio::sync::Mutex::new(RateLimitState::default()),
             }),
         }
     }

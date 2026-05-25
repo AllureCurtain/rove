@@ -26,7 +26,8 @@ SQLite:
 
 - stores sessions, jobs, runs, events, reports, task state metadata, pending approval/input tables, and replay offsets;
 - uses schema migrations, foreign keys, WAL, `synchronous=NORMAL`, and a bounded busy timeout;
-- exposes async helpers through `spawn_blocking` where API handlers need indexed reads.
+- exposes async helpers through `spawn_blocking` where API handlers need indexed reads;
+- supports explicit `rove state repair` and `rove state cleanup` maintenance commands.
 
 ## Context And Compaction
 
@@ -38,7 +39,7 @@ system -> durable memory -> session memory -> compact summary -> recent history 
 
 `TaskState` can include a `PromptCheckpoint` with summary, preserved tail, plan pointer, memory pointers, last step, optional last event seq, token estimate, and compacted message count. Resume prefers this checkpoint over replaying full audit history.
 
-Current compaction is deterministic and artifact-based. It writes checkpoint summaries and preserved tails; it does not yet call a model to synthesize richer summaries or implement a multi-attempt compaction failure circuit.
+Current compaction is deterministic and artifact-based. It writes checkpoint summaries, preserved tails, and structured compaction metadata, including automatic trigger and circuit/degradation state. It does not yet call a model to synthesize richer summaries.
 
 ## Provider And Routing
 
@@ -89,7 +90,7 @@ The API routes are:
 - `POST /jobs/{job_id}/approvals/{call_id}`
 - `POST /jobs/{job_id}/inputs/{input_id}`
 
-The API default is local-only binding. Config already has slots for token auth, CORS origins, rate limits, and an explicit unsafe remote-without-auth override. Token auth, CORS enforcement, and rate limiting are config surfaces rather than complete middleware in the current implementation.
+The API default is local-only binding. Config supports token auth, CORS origin allowlists, rate limits, and an explicit unsafe remote-without-auth override. Token auth, CORS enforcement, and rate limiting are implemented as API middleware.
 
 ## RAG
 
@@ -97,11 +98,12 @@ The RAG implementation is behind `--features rag` and lives under `src/tools/rag
 
 - deterministic and OpenAI-compatible embedders;
 - staged ingestion with logging;
-- markdown-aware and fixed chunking;
+- fixed, markdown-aware, and lightweight code-aware chunking;
 - LanceDB storage plus manifest fallback;
 - vector, lexical, and path-scoped retrieval channels;
 - postprocessing for dedupe and score normalization;
-- pure retrieval eval reports.
+- pure retrieval eval reports;
+- a `RagPromptService` formatting boundary for retrieved evidence.
 
 Default builds expose stub `retrieve_code` and `retrieve_docs` tools that explain the feature requirement.
 

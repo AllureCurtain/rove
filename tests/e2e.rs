@@ -1394,6 +1394,123 @@ async fn lazy_import_indexes_existing_task_state_artifacts() {
     assert_eq!(records[0].path, task_state_path);
 }
 
+#[tokio::test]
+async fn repair_index_explicitly_imports_legacy_task_state_artifacts() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let store = StateStore::new(tmp.path());
+    let state = TaskState {
+        schema_version: 1,
+        session_id: SessionId::new(),
+        job_id: JobId::new(),
+        run_id: RunId::new(),
+        goal: "repair me".to_string(),
+        step: 3,
+        history: vec![user_message("repair me")],
+        summary: Some("legacy summary".to_string()),
+        checkpoint: None,
+        plan: None,
+    };
+    let run_dir = tmp.path().join("runs").join(state.run_id.to_string());
+    std::fs::create_dir_all(&run_dir).unwrap();
+    let task_state_path = run_dir.join("task_state.json");
+    std::fs::write(&task_state_path, serde_json::to_vec_pretty(&state).unwrap()).unwrap();
+
+    let imported = store.repair_index().await.unwrap();
+
+    assert_eq!(imported.task_state_count, 1);
+    let records = store.index.list_task_state_records(None).unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].run_id, state.run_id);
+    assert_eq!(records[0].path, task_state_path);
+}
+
+#[tokio::test]
+async fn repair_index_does_not_cleanup_expired_state_rows() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let store = StateStore::new(tmp.path());
+    let session_id = SessionId::new();
+    let job_id = JobId::new();
+    let run_id = RunId::new();
+    let run_dir = tmp.path().join("runs").join(run_id.to_string());
+    std::fs::create_dir_all(&run_dir).unwrap();
+    store
+        .index
+        .record_run_started(
+            session_id,
+            job_id,
+            run_id,
+            &run_dir,
+            &run_dir.join("trace.jsonl"),
+        )
+        .unwrap();
+    store
+        .index
+        .set_job_ttl(job_id, Some("2000-01-01T00:00:00Z".to_string()))
+        .unwrap();
+
+    let imported = store.repair_index().await.unwrap();
+
+    assert_eq!(imported.task_state_count, 0);
+    assert!(store.index.job_record(job_id).unwrap().is_some());
+    assert!(store.index.run_record(run_id).unwrap().is_some());
+    assert!(run_dir.exists());
+}
+
+#[tokio::test]
+async fn cleanup_expired_state_rows_removes_only_expired_entries() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let store = StateStore::new(tmp.path());
+    let session_id = SessionId::new();
+
+    let expired_job = JobId::new();
+    let expired_run = RunId::new();
+    let active_job = JobId::new();
+    let active_run = RunId::new();
+    let expired_state = TaskState {
+        schema_version: 1,
+        session_id,
+        job_id: expired_job,
+        run_id: expired_run,
+        goal: "expired".to_string(),
+        step: 1,
+        history: vec![],
+        summary: None,
+        checkpoint: None,
+        plan: None,
+    };
+    store.write_task_state(&expired_state).await.unwrap();
+    let run_dir = tmp.path().join("runs").join(active_run.to_string());
+    store
+        .index
+        .record_run_started(
+            session_id,
+            active_job,
+            active_run,
+            &run_dir,
+            &run_dir.join("trace2.jsonl"),
+        )
+        .unwrap();
+
+    store
+        .index
+        .set_job_ttl(expired_job, Some("2000-01-01T00:00:00Z".to_string()))
+        .unwrap();
+    store
+        .index
+        .set_job_ttl(active_job, Some("2999-01-01T00:00:00Z".to_string()))
+        .unwrap();
+
+    let removed = store.cleanup_expired().await.unwrap();
+
+    assert_eq!(removed.job_count, 1);
+    assert_eq!(removed.run_count, 1);
+    assert_eq!(removed.task_state_count, 1);
+    assert!(store.index.job_record(expired_job).unwrap().is_none());
+    assert!(store.index.run_record(expired_run).unwrap().is_none());
+    assert!(store.index.job_record(active_job).unwrap().is_some());
+    assert!(store.index.run_record(active_run).unwrap().is_some());
+}
+
 #[test]
 fn trace_writer_indexes_appended_events() {
     let tmp = tempfile::TempDir::new().unwrap();
@@ -2355,6 +2472,57 @@ fn context_manager_fits_history_by_token_budget() {
     );
 }
 
+#[test]
+fn compaction_policy_requests_auto_compaction_after_soft_limit() {
+    let budget = ContextBudget {
+        soft_limit_tokens: 20,
+        hard_limit_tokens: 80,
+        reserved_tokens: 5,
+    };
+    let build = rove::core::context::ContextBuild {
+        messages: vec![user_message("large context")],
+        token_estimate: 24,
+        included_history_messages: 3,
+        dropped_history_messages: 2,
+        over_hard_limit: false,
+        auto_compaction_needed: true,
+    };
+
+    let decision = rove::core::context::CompactionPolicy::default().decide(&build, budget);
+
+    assert_eq!(
+        decision.mode,
+        rove::core::context::CompactionMode::Automatic
+    );
+    assert!(!decision.circuit_open);
+}
+
+#[test]
+fn compaction_policy_opens_circuit_after_repeated_failures() {
+    let budget = ContextBudget {
+        soft_limit_tokens: 20,
+        hard_limit_tokens: 80,
+        reserved_tokens: 5,
+    };
+    let build = rove::core::context::ContextBuild {
+        messages: vec![user_message("large context")],
+        token_estimate: 24,
+        included_history_messages: 3,
+        dropped_history_messages: 2,
+        over_hard_limit: false,
+        auto_compaction_needed: true,
+    };
+
+    let decision = rove::core::context::CompactionPolicy {
+        consecutive_failures: 3,
+        failure_threshold: 3,
+    }
+    .decide(&build, budget);
+
+    assert_eq!(decision.mode, rove::core::context::CompactionMode::Disabled);
+    assert!(decision.circuit_open);
+}
+
 #[tokio::test]
 async fn oneshot_persists_prompt_checkpoint() {
     let tmp = tempfile::TempDir::new().unwrap();
@@ -2410,6 +2578,11 @@ async fn oneshot_persists_prompt_checkpoint() {
     assert!(checkpoint.session_memory_pointer.is_some());
     assert!(checkpoint.durable_memory_pointer.is_some());
     assert!(checkpoint.token_estimate > 0);
+    assert_eq!(
+        checkpoint.compaction.mode,
+        rove::core::types::PromptCompactionMode::Deterministic
+    );
+    assert!(!checkpoint.compaction.circuit_open);
 }
 
 #[tokio::test]
@@ -2459,6 +2632,7 @@ async fn resumed_run_prefers_prompt_checkpoint_tail_and_summary() {
             last_event_seq: Some(42),
             token_estimate: 12,
             compacted_history_messages: 1,
+            compaction: Default::default(),
         }),
         plan: None,
     };

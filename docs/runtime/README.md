@@ -1,6 +1,6 @@
 # Runtime Documentation
 
-This directory is the current runtime documentation surface. It summarizes the implemented architecture and the remaining gaps against the runtime hardening target.
+This directory is the authoritative runtime documentation surface. It summarizes the implemented architecture and the remaining gaps against the runtime hardening target.
 
 ## Documents
 
@@ -17,4 +17,4 @@ The current architecture is based on:
 - `docs/superpowers/specs/2026-05-24-rove-runtime-hardening-design.md`
 - `docs/superpowers/specs/2026-05-24-rag-pipeline-hardening-design.md`
 
-Those specs explain the target direction. These runtime docs describe what exists now and where the remaining gaps are.
+Those specs explain the target direction. These runtime docs describe what exists now and where the remaining gaps are. Older top-level design docs are historical references unless they explicitly point back here.

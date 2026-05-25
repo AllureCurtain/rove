@@ -3,7 +3,7 @@ use std::time::SystemTime;
 
 use crate::core::types::{JobId, RunId, RunRequest, SessionId, TaskState};
 
-use super::index::{StateIndex, TaskStateIndexRecord};
+use super::index::{CleanupResult, StateIndex, TaskStateIndexRecord};
 use super::trace::RunStore;
 use super::trace::TraceWriter;
 
@@ -25,6 +25,11 @@ pub struct RunHandle {
     pub run_id: RunId,
     pub run_dir: PathBuf,
     pub trace_writer: TraceWriter,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepairResult {
+    pub task_state_count: usize,
 }
 
 struct TaskStateEntry {
@@ -142,6 +147,15 @@ impl StateStore {
             .await
     }
 
+    pub async fn repair_index(&self) -> std::io::Result<RepairResult> {
+        let task_state_count = self.import_task_states().await?;
+        Ok(RepairResult { task_state_count })
+    }
+
+    pub async fn cleanup_expired(&self) -> std::io::Result<CleanupResult> {
+        self.index.cleanup_expired_async().await
+    }
+
     async fn load_task_state_records(
         &self,
         records: Vec<TaskStateIndexRecord>,
@@ -154,14 +168,20 @@ impl StateStore {
     }
 
     async fn lazy_import_task_states(&self) -> std::io::Result<()> {
+        self.import_task_states().await.map(|_| ())
+    }
+
+    async fn import_task_states(&self) -> std::io::Result<usize> {
         let entries = self.task_state_entries().await?;
+        let mut imported = 0;
         for entry in entries {
             let state = self.load_task_state_path(&entry.path).await?;
             self.index
                 .record_task_state_async(state, entry.path, entry.modified)
                 .await?;
+            imported += 1;
         }
-        Ok(())
+        Ok(imported)
     }
 
     async fn task_state_entries(&self) -> std::io::Result<Vec<TaskStateEntry>> {

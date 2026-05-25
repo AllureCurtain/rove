@@ -171,6 +171,219 @@ impl ChunkingStrategy for MarkdownAwareChunker {
 }
 
 #[derive(Debug, Clone)]
+pub struct CodeAwareChunker {
+    target_chars: usize,
+    overlap_chars: usize,
+}
+
+impl CodeAwareChunker {
+    pub fn new(target_chars: usize, overlap_chars: usize) -> Self {
+        let target_chars = target_chars.max(1);
+        let overlap_chars = overlap_chars.min(target_chars.saturating_sub(1));
+        Self {
+            target_chars,
+            overlap_chars,
+        }
+    }
+}
+
+impl ChunkingStrategy for CodeAwareChunker {
+    fn name(&self) -> &'static str {
+        "code-aware"
+    }
+
+    fn target_chars(&self) -> usize {
+        self.target_chars
+    }
+
+    fn overlap_chars(&self) -> usize {
+        self.overlap_chars
+    }
+
+    fn chunk(&self, document: &ParsedDocument) -> Vec<DocumentChunk> {
+        let normalized = document.content.replace("\r\n", "\n").replace('\r', "\n");
+        let spans = code_symbol_spans(&normalized);
+        if spans.is_empty() {
+            return FixedTextChunker::new(self.target_chars, self.overlap_chars).chunk(document);
+        }
+
+        let mut chunks = Vec::new();
+        for span in spans {
+            let content = normalized[span.start..span.end].trim().to_string();
+            if content.is_empty() {
+                continue;
+            }
+            if content.chars().count() > self.target_chars {
+                let fixed_document = ParsedDocument {
+                    path: document.path.clone(),
+                    kind: document.kind,
+                    content_hash: document.content_hash.clone(),
+                    content,
+                };
+                for mut chunk in FixedTextChunker::new(self.target_chars, self.overlap_chars)
+                    .chunk(&fixed_document)
+                {
+                    chunk.id = format!("{}#{:04}", document.path, chunks.len());
+                    chunk.start_byte += span.start;
+                    chunk.end_byte += span.start;
+                    chunk.heading = Some(span.heading.clone());
+                    chunks.push(chunk);
+                }
+                continue;
+            }
+
+            chunks.push(DocumentChunk {
+                id: format!("{}#{:04}", document.path, chunks.len()),
+                path: document.path.clone(),
+                kind: document.kind,
+                content_hash: document.content_hash.clone(),
+                chunk_hash: sha256_hex(content.as_bytes()),
+                start_byte: span.start,
+                end_byte: span.end,
+                heading: Some(span.heading),
+                content,
+            });
+        }
+
+        chunks
+    }
+}
+
+#[derive(Debug, Clone)]
+struct CodeSpan {
+    start: usize,
+    end: usize,
+    heading: String,
+}
+
+fn code_symbol_spans(text: &str) -> Vec<CodeSpan> {
+    let mut spans = Vec::new();
+    let lines = lines_with_offsets(text);
+    let mut idx = 0;
+    while idx < lines.len() {
+        let (line_start, line) = lines[idx];
+        let trimmed = line.trim();
+        if trimmed.starts_with("#[") {
+            let mut probe = idx + 1;
+            while probe < lines.len() && lines[probe].1.trim().starts_with("#[") {
+                probe += 1;
+            }
+            if probe < lines.len()
+                && let Some(name) = function_name(lines[probe].1.trim())
+            {
+                let end = balanced_block_end(text, lines[probe].0).unwrap_or_else(|| {
+                    lines
+                        .get(probe + 1)
+                        .map(|(start, _)| *start)
+                        .unwrap_or(text.len())
+                });
+                spans.push(CodeSpan {
+                    start: line_start,
+                    end,
+                    heading: format!("fn {name}"),
+                });
+                idx = probe + 1;
+                continue;
+            }
+        }
+
+        if let Some(name) = function_name(trimmed) {
+            let end = balanced_block_end(text, line_start).unwrap_or_else(|| {
+                lines
+                    .get(idx + 1)
+                    .map(|(start, _)| *start)
+                    .unwrap_or(text.len())
+            });
+            spans.push(CodeSpan {
+                start: line_start,
+                end,
+                heading: format!("fn {name}"),
+            });
+        }
+        idx += 1;
+    }
+    spans
+}
+
+fn function_name(line: &str) -> Option<String> {
+    let fn_pos = line.find("fn ")?;
+    if fn_pos > 0 {
+        let before = line[..fn_pos].trim_end();
+        if !before.is_empty()
+            && !before.ends_with("pub")
+            && !before.ends_with("pub(crate)")
+            && !before.ends_with("async")
+            && !before.ends_with("unsafe")
+        {
+            return None;
+        }
+    }
+    let after = &line[fn_pos + 3..];
+    let name: String = after
+        .chars()
+        .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '_')
+        .collect();
+    if name.is_empty() { None } else { Some(name) }
+}
+
+fn balanced_block_end(text: &str, start: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut saw_open = false;
+    for (offset, ch) in text[start..].char_indices() {
+        match ch {
+            '{' => {
+                saw_open = true;
+                depth += 1;
+            }
+            '}' if saw_open => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(start + offset + ch.len_utf8());
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+#[derive(Debug, Clone)]
+pub struct MixedCodeMarkdownChunker {
+    code: CodeAwareChunker,
+    markdown: MarkdownAwareChunker,
+}
+
+impl MixedCodeMarkdownChunker {
+    pub fn new(target_chars: usize, overlap_chars: usize) -> Self {
+        Self {
+            code: CodeAwareChunker::new(target_chars, overlap_chars),
+            markdown: MarkdownAwareChunker::new(target_chars, overlap_chars),
+        }
+    }
+}
+
+impl ChunkingStrategy for MixedCodeMarkdownChunker {
+    fn name(&self) -> &'static str {
+        "mixed-code-markdown"
+    }
+
+    fn target_chars(&self) -> usize {
+        self.markdown.target_chars()
+    }
+
+    fn overlap_chars(&self) -> usize {
+        self.markdown.overlap_chars()
+    }
+
+    fn chunk(&self, document: &ParsedDocument) -> Vec<DocumentChunk> {
+        match document.kind {
+            crate::tools::rag::types::RetrieveKind::Code => self.code.chunk(document),
+            crate::tools::rag::types::RetrieveKind::Docs => self.markdown.chunk(document),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 struct MarkdownSection {
     start: usize,
     end: usize,

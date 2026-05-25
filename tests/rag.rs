@@ -2,7 +2,7 @@
 
 use rove::tools::rag::{
     ChunkingManifest, DeterministicEmbedder, EmbeddingManifest, IndexManifest, IndexedFile,
-    ManifestChunk, RagIndex, RetrieveKind,
+    ManifestChunk, RagIndex, RagPromptService, RetrieveKind, RetrievedChunk,
 };
 
 #[test]
@@ -49,6 +49,62 @@ fn index_manifest_serializes_schema_files_and_chunks() {
     assert_eq!(json["chunks"][0]["id"], "docs/guide.md#0000");
 }
 
+#[test]
+fn rag_prompt_service_formats_evidence_boundary() {
+    let chunks = vec![RetrievedChunk {
+        id: "src/auth.rs#0001".to_string(),
+        path: "src/auth.rs".to_string(),
+        kind: RetrieveKind::Code,
+        content: "pub fn validate_token(token: &str) -> bool { !token.is_empty() }".to_string(),
+        score: 0.91,
+        source: "lexical+vector".to_string(),
+        heading: None,
+        chunk_hash: Some("sha256:abc".to_string()),
+    }];
+
+    let prompt = RagPromptService.format_context("validate token", &chunks);
+
+    assert!(prompt.contains("RAG evidence for query: validate token"));
+    assert!(prompt.contains("BEGIN RAG EVIDENCE"));
+    assert!(prompt.contains("END RAG EVIDENCE"));
+    assert!(prompt.contains("src/auth.rs#0001"));
+    assert!(prompt.contains("Use only the evidence inside this boundary"));
+}
+
+#[test]
+fn code_aware_chunker_keeps_rust_functions_and_tests_coherent() {
+    use rove::tools::rag::ParsedDocument;
+    use rove::tools::rag::ingest::chunking::{ChunkingStrategy, CodeAwareChunker};
+
+    let document = ParsedDocument {
+        path: "src/lib.rs".to_string(),
+        kind: RetrieveKind::Code,
+        content_hash: "sha256:code".to_string(),
+        content: r#"
+pub fn validate_token(token: &str) -> bool {
+    !token.trim().is_empty()
+}
+
+#[test]
+fn rejects_empty_token() {
+    assert!(!validate_token(""));
+}
+"#
+        .to_string(),
+    };
+    let chunker = CodeAwareChunker::new(80, 0);
+
+    let chunks = chunker.chunk(&document);
+
+    assert_eq!(chunks.len(), 2);
+    assert!(chunks[0].content.contains("pub fn validate_token"));
+    assert!(!chunks[0].content.contains("rejects_empty_token"));
+    assert!(chunks[1].content.contains("#[test]"));
+    assert!(chunks[1].content.contains("fn rejects_empty_token"));
+    assert_eq!(chunks[0].heading.as_deref(), Some("fn validate_token"));
+    assert_eq!(chunks[1].heading.as_deref(), Some("fn rejects_empty_token"));
+}
+
 #[tokio::test]
 async fn malformed_manifest_returns_clear_error() {
     let tmp = tempfile::TempDir::new().unwrap();
@@ -86,7 +142,7 @@ async fn ingestion_pipeline_writes_manifest_and_stage_log() {
     let manifest: serde_json::Value =
         serde_json::from_slice(&std::fs::read(manifest_path).unwrap()).unwrap();
     assert_eq!(manifest["schema_version"], 1);
-    assert_eq!(manifest["chunking"]["strategy"], "markdown-aware");
+    assert_eq!(manifest["chunking"]["strategy"], "mixed-code-markdown");
     assert_eq!(manifest["files"][0]["path"], "docs/guide.md");
     assert_eq!(manifest["chunks"][0]["id"], "docs/guide.md#0000");
     assert_eq!(manifest["chunks"][0]["heading"], "Guide > Retrieval");

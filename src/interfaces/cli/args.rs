@@ -61,6 +61,19 @@ pub enum Command {
     },
     /// List resumable local task states.
     Sessions,
+    /// Maintain the local state index.
+    State {
+        #[command(subcommand)]
+        command: StateCommand,
+    },
+}
+
+#[derive(Clone, Debug, Subcommand)]
+pub enum StateCommand {
+    /// Rebuild missing SQLite index rows from local artifacts.
+    Repair,
+    /// Remove expired state rows and run artifacts.
+    Cleanup,
 }
 
 #[cfg(test)]
@@ -117,5 +130,31 @@ mod tests {
             }
             other => panic!("expected index subcommand, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn state_repair_subcommand_parses_without_message() {
+        let args = Args::parse_from(["rove", "state", "repair"]);
+
+        assert!(args.message.is_none());
+        assert!(matches!(
+            args.command,
+            Some(Command::State {
+                command: super::StateCommand::Repair
+            })
+        ));
+    }
+
+    #[test]
+    fn state_cleanup_subcommand_parses_without_message() {
+        let args = Args::parse_from(["rove", "state", "cleanup"]);
+
+        assert!(args.message.is_none());
+        assert!(matches!(
+            args.command,
+            Some(Command::State {
+                command: super::StateCommand::Cleanup
+            })
+        ));
     }
 }

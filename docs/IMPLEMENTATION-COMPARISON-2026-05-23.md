@@ -52,7 +52,7 @@ This compares the current `main` implementation with the original design in:
 | `request_input` flow | `request_input` asks the user via `ToolContext` and returns the answer | Tool schema is registered in CLI/API; direct tool execution, engine runs configured with `Engine::with_input_provider`, CLI runs, API jobs can return interface-provided answers, and the Web workbench can submit pending input answers | Gives the LLM, engine/tool boundary, CLI, API, and Web UI a stable response contract; remaining work is broader interaction polish. |
 | Context management | 7-section budget, cache breakpoints, compaction | Deterministic prompt ordering with session summary and trimmed history | Covers early M1/M2 needs, not the full station-5 design. |
 | API cancellation/shutdown | Graceful cancellation token tree | API stores an API shutdown token, gives jobs child tokens, passes them to `Engine::run_with_cancel`, and serves with `with_graceful_shutdown` | API shutdown now cancels pending jobs and clears approvals; still missing explicit job-broker drain semantics and the fuller app-level token container from the docs. |
-| Web delivery | Roadmap recommended independent Next.js project or temporary axum HTML | Independent Next.js workbench proxies to `/api` | Matches the preferred direction more than the historical `GOAL.md` Path B note. |
+| Web delivery | Roadmap recommended independent Next.js project or temporary axum HTML | Independent Next.js workbench proxies to `/api` | Matches the preferred direction more than the earlier temporary Path B note. |
 
 ## Not Yet Implemented
 

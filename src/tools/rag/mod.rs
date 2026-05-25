@@ -12,15 +12,17 @@ mod embed;
 pub mod eval;
 mod index;
 pub mod ingest;
+mod prompt;
 pub mod retrieve;
 pub mod rewrite;
 mod types;
 
 pub use embed::{DeterministicEmbedder, Embedder, OpenAiEmbedder};
 pub use index::RagIndex;
+pub use prompt::RagPromptService;
 pub use types::{
-    ChunkingManifest, EmbeddingManifest, IndexManifest, IndexedFile, ManifestChunk, RetrieveKind,
-    RetrievedChunk,
+    ChunkingManifest, EmbeddingManifest, IndexManifest, IndexedFile, ManifestChunk, ParsedDocument,
+    RetrieveKind, RetrievedChunk,
 };
 
 pub struct RagRetrieveTool {
