@@ -15,9 +15,9 @@ use crate::core::executor::Executor;
 use crate::core::parser::parse_action;
 use crate::core::planner::{Planner, PlannerError};
 use crate::core::types::{
-    Action, ApprovalDecision, ApprovalPolicy, CallId, JobId, Message, RunId, RunRequest,
-    SessionId, TaskPlan, TerminationReason, ToolApprovalProvider, ToolApprovalRequest,
-    ToolCallAction, ToolCallRef, ToolContext, ToolResult, Usage, UserInputProvider,
+    Action, ApprovalDecision, ApprovalPolicy, CallId, JobId, Message, RunId, RunRequest, SessionId,
+    TaskPlan, TerminationReason, ToolApprovalProvider, ToolApprovalRequest, ToolCallAction,
+    ToolCallRef, ToolContext, ToolResult, Usage, UserInputProvider,
 };
 use crate::core::workspace::Workspace;
 use crate::errors::ToolError;
@@ -331,7 +331,9 @@ impl Engine {
         reason: &str,
         history: &mut Vec<Message>,
     ) -> Result<TaskPlan, PlannerError> {
-        history.push(Message::user(planned_step_failure_message(step_title, reason)));
+        history.push(Message::user(planned_step_failure_message(
+            step_title, reason,
+        )));
         self.draft_plan(goal, history).await
     }
 
@@ -614,6 +616,7 @@ impl Engine {
                         let msg_event = StreamEvent::LlmMessage {
                             full: full_response.clone(),
                             usage,
+                            tool_calls: tool_refs_from_actions(&native_tool_calls),
                         };
                         if let Some(ref tw) = trace_writer {
                             let _ = tw.append(&msg_event);
@@ -626,6 +629,7 @@ impl Engine {
                             Action::ToolCall { call_id, tool_use_id, name, args } => {
                                 let start_event = StreamEvent::ToolCallStarted {
                                     call_id,
+                                    tool_use_id: tool_use_id.clone(),
                                     name: name.clone(),
                                     args: args.clone(),
                                 };
@@ -666,6 +670,11 @@ impl Engine {
                                     cancel_token: stream_cancel.clone(),
                                     input_provider: self.input_provider.clone(),
                                 };
+                                let tool_ref = tool_use_id.as_ref().map(|id| ToolCallRef {
+                                    id: id.clone(),
+                                    name: name.clone(),
+                                    args: args.clone(),
+                                });
                                 let tool_result = tokio::select! {
                                     biased;
                                     _ = stream_cancel.cancelled() => {
@@ -675,13 +684,8 @@ impl Engine {
                                 };
                                 match tool_result {
                                     Ok(result) => {
-                                        let tool_refs = tool_use_id.as_ref().map(|id| vec![ToolCallRef {
-                                            id: id.clone(),
-                                            name: name.clone(),
-                                            args: serde_json::Value::Null,
-                                        }]);
-                                        if let Some(refs) = tool_refs {
-                                            history.push(Message::assistant_with_tool_calls(full_response.clone(), refs));
+                                        if let Some(tool_ref) = tool_ref.clone() {
+                                            history.push(Message::assistant_with_tool_calls(full_response.clone(), vec![tool_ref]));
                                         } else {
                                             history.push(Message::assistant(full_response.clone()));
                                         }
@@ -698,13 +702,8 @@ impl Engine {
                                     }
                                     Err(e) => {
                                         let reason = e.to_string();
-                                        let tool_refs = tool_use_id.as_ref().map(|id| vec![ToolCallRef {
-                                            id: id.clone(),
-                                            name: name.clone(),
-                                            args: serde_json::Value::Null,
-                                        }]);
-                                        if let Some(refs) = tool_refs {
-                                            history.push(Message::assistant_with_tool_calls(full_response.clone(), refs));
+                                        if let Some(tool_ref) = tool_ref.clone() {
+                                            history.push(Message::assistant_with_tool_calls(full_response.clone(), vec![tool_ref]));
                                         } else {
                                             history.push(Message::assistant(full_response.clone()));
                                         }
@@ -768,6 +767,7 @@ impl Engine {
                                     for call in &calls {
                                         yield_traced!(StreamEvent::ToolCallStarted {
                                             call_id: call.call_id,
+                                            tool_use_id: call.tool_use_id.clone(),
                                             name: call.name.clone(),
                                             args: call.args.clone(),
                                         });
@@ -784,6 +784,7 @@ impl Engine {
                                     for call in calls {
                                         yield_traced!(StreamEvent::ToolCallStarted {
                                             call_id: call.call_id,
+                                            tool_use_id: call.tool_use_id.clone(),
                                             name: call.name.clone(),
                                             args: call.args.clone(),
                                         });
@@ -1057,6 +1058,7 @@ impl Engine {
                     let msg_event = StreamEvent::LlmMessage {
                         full: full_response.clone(),
                         usage: usage.clone(),
+                        tool_calls: tool_refs_from_actions(&native_tool_calls),
                     };
                     if let Some(ref tw) = trace_writer {
                         let _ = tw.append(&msg_event);
@@ -1074,6 +1076,7 @@ impl Engine {
                         Action::ToolCall { call_id, tool_use_id, name, args } => {
                             let start_event = StreamEvent::ToolCallStarted {
                                 call_id,
+                                tool_use_id: tool_use_id.clone(),
                                 name: name.clone(),
                                 args: args.clone(),
                             };
@@ -1112,6 +1115,11 @@ impl Engine {
                                 cancel_token: stream_cancel.clone(),
                                 input_provider: self.input_provider.clone(),
                             };
+                            let tool_ref = tool_use_id.as_ref().map(|id| ToolCallRef {
+                                id: id.clone(),
+                                name: name.clone(),
+                                args: args.clone(),
+                            });
                             let tool_result = tokio::select! {
                                 biased;
                                 _ = stream_cancel.cancelled() => {
@@ -1122,13 +1130,8 @@ impl Engine {
                             match tool_result {
                                 Ok(result) => {
                                     // Add assistant message + tool result to history
-                                    let tool_refs = tool_use_id.as_ref().map(|id| vec![ToolCallRef {
-                                        id: id.clone(),
-                                        name: name.clone(),
-                                        args: serde_json::Value::Null,
-                                    }]);
-                                    if let Some(refs) = tool_refs {
-                                        history.push(Message::assistant_with_tool_calls(full_response.clone(), refs));
+                                    if let Some(tool_ref) = tool_ref.clone() {
+                                        history.push(Message::assistant_with_tool_calls(full_response.clone(), vec![tool_ref]));
                                     } else {
                                         history.push(Message::assistant(full_response.clone()));
                                     }
@@ -1145,13 +1148,8 @@ impl Engine {
                                 }
                                 Err(e) => {
                                     // Feed error back to LLM
-                                    let tool_refs = tool_use_id.as_ref().map(|id| vec![ToolCallRef {
-                                        id: id.clone(),
-                                        name: name.clone(),
-                                        args: serde_json::Value::Null,
-                                    }]);
-                                    if let Some(refs) = tool_refs {
-                                        history.push(Message::assistant_with_tool_calls(full_response.clone(), refs));
+                                    if let Some(tool_ref) = tool_ref.clone() {
+                                        history.push(Message::assistant_with_tool_calls(full_response.clone(), vec![tool_ref]));
                                     } else {
                                         history.push(Message::assistant(full_response.clone()));
                                     }
@@ -1174,6 +1172,7 @@ impl Engine {
                                 for call in &calls {
                                     yield_traced!(StreamEvent::ToolCallStarted {
                                         call_id: call.call_id,
+                                        tool_use_id: call.tool_use_id.clone(),
                                         name: call.name.clone(),
                                         args: call.args.clone(),
                                     });
@@ -1190,6 +1189,7 @@ impl Engine {
                                 for call in calls {
                                     yield_traced!(StreamEvent::ToolCallStarted {
                                         call_id: call.call_id,
+                                        tool_use_id: call.tool_use_id.clone(),
                                         name: call.name.clone(),
                                         args: call.args.clone(),
                                     });
@@ -1288,6 +1288,19 @@ fn append_trace(trace_writer: &Option<TraceWriter>, event: &StreamEvent) {
     if let Some(tw) = trace_writer {
         let _ = tw.append(event);
     }
+}
+
+fn tool_refs_from_actions(calls: &[ToolCallAction]) -> Vec<ToolCallRef> {
+    calls
+        .iter()
+        .filter_map(|call| {
+            call.tool_use_id.as_ref().map(|id| ToolCallRef {
+                id: id.clone(),
+                name: call.name.clone(),
+                args: call.args.clone(),
+            })
+        })
+        .collect()
 }
 
 fn action_from_tool_calls(calls: Vec<ToolCallAction>, full_response: &str) -> Action {

@@ -1,11 +1,12 @@
+use std::collections::HashMap;
 use std::path::Path;
 
 use crate::core::context::estimate_messages_tokens;
 use crate::core::engine::planned_step_failure_message;
 use crate::core::events::StreamEvent;
 use crate::core::types::{
-    JobId, Message, PromptCheckpoint, PromptCompactionMode, PromptCompactionState, Role, RunId,
-    SessionId, TaskPlan, TaskState, TerminationReason, Usage,
+    CallId, JobId, Message, PromptCheckpoint, PromptCompactionMode, PromptCompactionState, Role,
+    RunId, SessionId, TaskPlan, TaskState, TerminationReason, Usage,
 };
 use crate::core::workspace::Workspace;
 
@@ -30,6 +31,7 @@ pub struct RunArtifactRecorder {
     total_usage: Usage,
     final_reason: TerminationReason,
     final_output: Option<String>,
+    pending_tool_use_ids: HashMap<CallId, Option<String>>,
 }
 
 impl RunArtifactRecorder {
@@ -65,6 +67,7 @@ impl RunArtifactRecorder {
             total_usage: Usage::default(),
             final_reason: TerminationReason::Error,
             final_output: None,
+            pending_tool_use_ids: HashMap::new(),
         }
     }
 
@@ -73,25 +76,46 @@ impl RunArtifactRecorder {
             StreamEvent::RunStarted { .. } => {
                 self.write_snapshot(state_store).await;
             }
-            StreamEvent::LlmMessage { full, usage } => {
+            StreamEvent::LlmMessage {
+                full,
+                usage,
+                tool_calls,
+            } => {
                 self.steps += 1;
-                self.history.push(Message::assistant(full.clone()));
+                if tool_calls.is_empty() {
+                    self.history.push(Message::assistant(full.clone()));
+                } else {
+                    self.history.push(Message::assistant_with_tool_calls(
+                        full.clone(),
+                        tool_calls.clone(),
+                    ));
+                }
                 self.total_usage.prompt_tokens += usage.prompt_tokens;
                 self.total_usage.completion_tokens += usage.completion_tokens;
                 self.total_usage.total_tokens += usage.total_tokens;
                 self.write_snapshot(state_store).await;
             }
-            StreamEvent::ToolCallStarted { .. } => {
+            StreamEvent::ToolCallStarted {
+                call_id,
+                tool_use_id,
+                ..
+            } => {
                 self.tool_calls += 1;
+                self.pending_tool_use_ids
+                    .insert(*call_id, tool_use_id.clone());
                 self.write_snapshot(state_store).await;
             }
-            StreamEvent::ToolCallCompleted { result, .. } => {
-                self.history.push(Message::tool(result.output.clone(), None));
+            StreamEvent::ToolCallCompleted { call_id, result } => {
+                let tool_use_id = self.pending_tool_use_ids.remove(call_id).flatten();
+                self.history
+                    .push(Message::tool(result.output.clone(), tool_use_id));
                 self.write_snapshot(state_store).await;
             }
-            StreamEvent::ToolCallFailed { error, .. } => {
+            StreamEvent::ToolCallFailed { call_id, error } => {
                 self.tool_failures += 1;
-                self.history.push(Message::tool(format!("Error: {error}"), None));
+                let tool_use_id = self.pending_tool_use_ids.remove(call_id).flatten();
+                self.history
+                    .push(Message::tool(format!("Error: {error}"), tool_use_id));
                 self.write_snapshot(state_store).await;
             }
             StreamEvent::PlanCreated { plan } => {
@@ -116,7 +140,10 @@ impl RunArtifactRecorder {
             }
             StreamEvent::PlanStepFailed { step, reason, .. } => {
                 self.history
-                    .push(Message::user(planned_step_failure_message(&step.title, reason)));
+                    .push(Message::user(planned_step_failure_message(
+                        &step.title,
+                        reason,
+                    )));
                 self.write_snapshot(state_store).await;
             }
             StreamEvent::RunCompleted { reason, output } => {

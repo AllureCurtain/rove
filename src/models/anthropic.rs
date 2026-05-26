@@ -37,10 +37,8 @@ impl AnthropicClient {
     fn build_request_body(&self, messages: &[Message], tools: &[ToolSchema]) -> serde_json::Value {
         let (system_prompt, conversation) = extract_system(messages);
 
-        let msgs: Vec<serde_json::Value> = conversation
-            .iter()
-            .map(|m| format_anthropic_message(m))
-            .collect();
+        let msgs: Vec<serde_json::Value> =
+            conversation.iter().map(format_anthropic_message).collect();
 
         let mut body = serde_json::json!({
             "model": self.model,
@@ -379,10 +377,7 @@ mod tests {
             "claude-sonnet-4-6-20250514".to_string(),
         );
         let body = client.build_request_body(
-            &[
-                Message::system("You are helpful."),
-                Message::user("Hello"),
-            ],
+            &[Message::system("You are helpful."), Message::user("Hello")],
             &[],
         );
 

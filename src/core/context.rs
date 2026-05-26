@@ -278,7 +278,25 @@ pub fn estimate_messages_tokens(messages: &[Message]) -> usize {
 }
 
 pub fn estimate_message_tokens(message: &Message) -> usize {
-    MESSAGE_OVERHEAD_TOKENS + estimate_text_tokens(&message.content)
+    let tool_call_tokens: usize = message
+        .tool_calls
+        .iter()
+        .map(|tool_call| {
+            estimate_text_tokens(&tool_call.id)
+                + estimate_text_tokens(&tool_call.name)
+                + estimate_text_tokens(&tool_call.args.to_string())
+        })
+        .sum();
+    let tool_call_id_tokens = message
+        .tool_call_id
+        .as_deref()
+        .map(estimate_text_tokens)
+        .unwrap_or(0);
+
+    MESSAGE_OVERHEAD_TOKENS
+        + estimate_text_tokens(&message.content)
+        + tool_call_tokens
+        + tool_call_id_tokens
 }
 
 fn estimate_text_tokens(text: &str) -> usize {
@@ -293,4 +311,27 @@ fn prompt_target_limit(budget: ContextBudget, required_tokens: usize) -> usize {
         .soft_limit_tokens
         .saturating_sub(budget.reserved_tokens);
     hard_available.min(soft_available.max(required_tokens))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::types::ToolCallRef;
+
+    #[test]
+    fn estimate_message_tokens_counts_structured_tool_calls() {
+        let plain = Message::assistant("");
+        let with_tool_call = Message::assistant_with_tool_calls(
+            "",
+            vec![ToolCallRef {
+                id: "toolu_1".to_string(),
+                name: "echo".to_string(),
+                args: serde_json::json!({
+                    "message": "this argument text must count against context budget"
+                }),
+            }],
+        );
+
+        assert!(estimate_message_tokens(&with_tool_call) > estimate_message_tokens(&plain));
+    }
 }

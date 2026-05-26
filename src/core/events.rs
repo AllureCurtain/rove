@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::types::{
-    CallId, JobId, PlanStep, RunId, TaskPlan, TerminationReason, ToolResult, Usage,
+    CallId, JobId, PlanStep, RunId, TaskPlan, TerminationReason, ToolCallRef, ToolResult, Usage,
 };
 use crate::errors::ToolError;
 
@@ -23,11 +23,18 @@ pub enum StreamEvent {
     LlmChunk { delta: String },
 
     /// The LLM finished producing a complete message.
-    LlmMessage { full: String, usage: Usage },
+    LlmMessage {
+        full: String,
+        usage: Usage,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        tool_calls: Vec<ToolCallRef>,
+    },
 
     /// A tool call has been requested by the LLM.
     ToolCallStarted {
         call_id: CallId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tool_use_id: Option<String>,
         name: String,
         args: serde_json::Value,
     },

@@ -1603,6 +1603,60 @@ async fn oneshot_writes_task_state_before_completion() {
 }
 
 #[tokio::test]
+async fn oneshot_persists_native_tool_use_structured_history() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let state_store = StateStore::new(&workspace.state_dir);
+    let run_id = RunId::new();
+    let run = state_store
+        .start_run(SessionId::new(), JobId::new(), run_id)
+        .unwrap();
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(EchoTool));
+    let engine = Engine::with_workspace(
+        Box::new(NativeToolUseModelClient::new()),
+        registry,
+        ContextManager::new("You are a test agent.".to_string()),
+        EngineConfig {
+            max_steps: 5,
+            plan_enabled: false,
+        },
+        workspace.clone(),
+        ApprovalPolicy::Auto,
+    );
+
+    run_oneshot(
+        &engine,
+        "echo through native tool use".to_string(),
+        run,
+        None,
+        &state_store,
+    )
+    .await;
+
+    let task_state = state_store.load_task_state(run_id).await.unwrap();
+    let assistant_with_tools = task_state
+        .history
+        .iter()
+        .find(|message| !message.tool_calls.is_empty())
+        .expect("persisted assistant message should keep native tool calls");
+    assert_eq!(assistant_with_tools.tool_calls.len(), 1);
+    assert_eq!(assistant_with_tools.tool_calls[0].id, "native-call-1");
+    assert_eq!(assistant_with_tools.tool_calls[0].name, "echo");
+    assert_eq!(
+        assistant_with_tools.tool_calls[0].args["message"],
+        "native hello"
+    );
+
+    let tool_result = task_state
+        .history
+        .iter()
+        .find(|message| message.tool_call_id.as_deref() == Some("native-call-1"))
+        .expect("persisted tool result should keep native tool-use id");
+    assert_eq!(tool_result.content, "native hello");
+}
+
+#[tokio::test]
 async fn resumed_run_includes_session_summary_in_prompt() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
@@ -2071,9 +2125,7 @@ async fn resumed_run_uses_persisted_replanned_task_state() {
             run_id: RunId::new(),
             goal: "fix docs".to_string(),
             step: 1,
-            history: vec![Message::user(
-                "previous step failed and was re-planned",
-            )],
+            history: vec![Message::user("previous step failed and was re-planned")],
             summary: None,
             checkpoint: None,
             plan: Some(plan),
@@ -3164,7 +3216,11 @@ async fn native_tool_use_populates_structured_history_fields() {
 
     // Verify the messages sent to the model on the second call include
     // structured tool-use fields
-    let messages = captured.lock().unwrap().take().expect("model was called twice");
+    let messages = captured
+        .lock()
+        .unwrap()
+        .take()
+        .expect("model was called twice");
 
     // Find the assistant message with tool_calls
     let assistant_with_tools = messages
@@ -3174,6 +3230,10 @@ async fn native_tool_use_populates_structured_history_fields() {
     assert_eq!(assistant_with_tools.tool_calls.len(), 1);
     assert_eq!(assistant_with_tools.tool_calls[0].id, "toolu_roundtrip_1");
     assert_eq!(assistant_with_tools.tool_calls[0].name, "echo");
+    assert_eq!(
+        assistant_with_tools.tool_calls[0].args["message"],
+        "round-trip test"
+    );
 
     // Find the tool result message with tool_call_id
     let tool_result = messages
@@ -3328,7 +3388,11 @@ async fn native_multi_tool_call_executes_concurrently_and_round_trips() {
         .find(|m| !m.tool_calls.is_empty())
         .expect("assistant message should have tool_calls");
     assert_eq!(assistant_msg.tool_calls.len(), 2);
-    let ids: Vec<&str> = assistant_msg.tool_calls.iter().map(|tc| tc.id.as_str()).collect();
+    let ids: Vec<&str> = assistant_msg
+        .tool_calls
+        .iter()
+        .map(|tc| tc.id.as_str())
+        .collect();
     assert!(ids.contains(&"batch_call_1"));
     assert!(ids.contains(&"batch_call_2"));
 

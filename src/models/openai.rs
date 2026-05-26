@@ -32,10 +32,7 @@ impl OpenAiClient {
     }
 
     fn build_request_body(&self, messages: &[Message], tools: &[ToolSchema]) -> serde_json::Value {
-        let msgs: Vec<serde_json::Value> = messages
-            .iter()
-            .map(|m| format_openai_message(m))
-            .collect();
+        let msgs: Vec<serde_json::Value> = messages.iter().map(format_openai_message).collect();
 
         let tool_defs: Vec<serde_json::Value> = tools
             .iter()
@@ -307,7 +304,7 @@ fn format_openai_message(m: &Message) -> serde_json::Value {
             }
             msg
         }
-        Role::Tool => {
+        Role::Tool if m.tool_call_id.is_some() => {
             let mut msg = serde_json::json!({
                 "role": "tool",
                 "content": m.content,
@@ -316,6 +313,12 @@ fn format_openai_message(m: &Message) -> serde_json::Value {
                 msg["tool_call_id"] = serde_json::Value::String(id.clone());
             }
             msg
+        }
+        Role::Tool => {
+            serde_json::json!({
+                "role": "user",
+                "content": m.content,
+            })
         }
         _ => {
             serde_json::json!({
@@ -440,6 +443,15 @@ mod tests {
         assert_eq!(body["tools"][0]["function"]["name"], "fs_read");
         assert_eq!(body["tools"][0]["function"]["description"], "Read a file");
         assert_eq!(body["tool_choice"], "auto");
+    }
+
+    #[test]
+    fn legacy_tool_result_without_id_falls_back_to_user_message() {
+        let msg = format_openai_message(&Message::tool("plain parsed tool output", None));
+
+        assert_eq!(msg["role"], "user");
+        assert_eq!(msg["content"], "plain parsed tool output");
+        assert!(msg.get("tool_call_id").is_none());
     }
 
     #[test]
