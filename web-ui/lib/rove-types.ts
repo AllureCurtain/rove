@@ -1,4 +1,4 @@
-export type RunStatus = "init" | "running" | "done" | "error" | "cancelled";
+export type RunStatus = "init" | "running" | "done" | "error" | "cancelled" | "interrupted";
 
 export interface Usage {
   prompt_tokens: number;

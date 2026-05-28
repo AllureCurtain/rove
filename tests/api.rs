@@ -2,7 +2,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use rove::config::AppConfig;
 use rove::core::events::StreamEvent;
-use rove::core::types::RunStatus;
+use rove::core::types::{Role, RunStatus, TaskState};
 use rove::core::workspace::Workspace;
 use rove::interfaces::api::{
     ApiState, CreateJobResponse, JobStateResponse, router, serve_listener,
@@ -487,6 +487,136 @@ async fn api_writes_run_artifacts_for_completed_job() {
         indexed_events
             .iter()
             .any(|event| event.event_name == "run_completed")
+    );
+}
+
+#[tokio::test]
+async fn api_can_resume_latest_task_state() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let state_store = rove::state::store::StateStore::new(&workspace.state_dir);
+    let app = router(ApiState::new(workspace, test_config()));
+
+    let create = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/jobs")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"message":"first api","model":"fake"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(create.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let first: CreateJobResponse = serde_json::from_slice(&body).unwrap();
+    let first_state = wait_for_done(app.clone(), first.job_id.to_string()).await;
+    assert_eq!(first_state.status, RunStatus::Done);
+
+    let first_task_state: TaskState = serde_json::from_slice(
+        &std::fs::read(
+            state_store
+                .run_store
+                .run_dir(&first.run_id)
+                .join("task_state.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+
+    let resumed_body = serde_json::json!({
+        "message": "continue api",
+        "model": "fake",
+        "resume": "latest"
+    });
+    let create = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/jobs")
+                .header("content-type", "application/json")
+                .body(Body::from(resumed_body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(create.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let resumed: CreateJobResponse = serde_json::from_slice(&body).unwrap();
+    assert_ne!(resumed.run_id, first.run_id);
+
+    let resumed_state = wait_for_done(app.clone(), resumed.job_id.to_string()).await;
+    assert_eq!(resumed_state.status, RunStatus::Done);
+    let resumed_task_state: TaskState = serde_json::from_slice(
+        &std::fs::read(
+            state_store
+                .run_store
+                .run_dir(&resumed.run_id)
+                .join("task_state.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+
+    assert_eq!(resumed.job_id, first.job_id);
+    assert_eq!(resumed_task_state.session_id, first_task_state.session_id);
+    assert_eq!(resumed_task_state.job_id, first_task_state.job_id);
+    assert_eq!(resumed_task_state.run_id, resumed.run_id);
+    assert!(
+        resumed_task_state
+            .history
+            .iter()
+            .any(|message| message.role == Role::User && message.content == "first api")
+    );
+    assert!(
+        resumed_task_state
+            .history
+            .iter()
+            .any(|message| message.role == Role::User && message.content == "continue api")
+    );
+    assert!(resumed_task_state.step >= first_task_state.step);
+}
+
+#[tokio::test]
+async fn api_rejects_invalid_resume_value() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let app = router(ApiState::new(workspace, test_config()));
+    let body = serde_json::json!({
+        "message": "continue api",
+        "model": "fake",
+        "resume": "not-a-run-id"
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/jobs")
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let error: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(
+        error["error"]
+            .as_str()
+            .unwrap()
+            .contains("expected latest or run_id")
     );
 }
 

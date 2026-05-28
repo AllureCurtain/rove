@@ -3,6 +3,7 @@ name = "rove"
 version = "0.1.0"
 edition = "2024"
 description = "A local-first, stateful, observable general-purpose agent runtime"
+default-run = "rove"
 
 [[bin]]
 name = "rove"

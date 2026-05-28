@@ -432,4 +432,22 @@ describe("workbenchReducer", () => {
     });
     expect(cancelled.tools[0].pendingApproval).toBeUndefined();
   });
+
+  it("treats interrupted job state as terminal after API restart", () => {
+    const state = workbenchReducer(createWorkbenchState(), {
+      type: "job_state_synced",
+      state: {
+        job_id: "job-1",
+        run_id: "run-1",
+        status: "interrupted",
+        event_count: 3,
+        events: [],
+        pending_approvals: [],
+        pending_inputs: [],
+      },
+    });
+
+    expect(state.busy).toBe(false);
+    expect(state.statusText).toBe("Run interrupted");
+  });
 });

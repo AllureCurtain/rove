@@ -247,6 +247,8 @@ function statusText(status: JobStateResponse["status"]): string {
       return "Run failed";
     case "cancelled":
       return "Run cancelled";
+    case "interrupted":
+      return "Run interrupted";
   }
 }
 
@@ -262,6 +264,8 @@ function statusDetail(status: JobStateResponse["status"]): string {
       return "Run failed";
     case "cancelled":
       return "Run cancelled";
+    case "interrupted":
+      return "Run interrupted";
   }
 }
 

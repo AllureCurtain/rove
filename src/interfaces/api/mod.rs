@@ -23,7 +23,7 @@ use crate::core::context::{ContextBudget, ContextManager};
 use crate::core::engine::{Engine, EngineConfig};
 use crate::core::events::StreamEvent;
 use crate::core::types::{
-    ApprovalDecision, ApprovalPolicy, CallId, JobId, RunId, RunStatus, SessionId,
+    ApprovalDecision, ApprovalPolicy, CallId, JobId, RunId, RunStatus, SessionId, TaskState,
     TerminationReason, ToolApprovalProvider, ToolApprovalRequest, UserInputProvider,
     UserInputRequest,
 };
@@ -33,6 +33,7 @@ use crate::models::factory::build_model_client;
 use crate::models::fake::FakeModelClient;
 use crate::models::traits::ModelClient;
 use crate::state::artifacts::RunArtifactRecorder;
+use crate::state::resume::resolve_resume_state;
 use crate::state::store::StateStore;
 use crate::tools::echo::EchoTool;
 use crate::tools::fs::{FsReadTool, FsWriteTool};
@@ -70,6 +71,7 @@ struct JobRecord {
     job_id: JobId,
     run_id: RunId,
     message: String,
+    resume_state: Option<TaskState>,
     status: Mutex<RunStatus>,
     events: Mutex<Vec<JobStreamEvent>>,
     pending_approvals: Mutex<HashMap<CallId, PendingApproval>>,
@@ -109,6 +111,7 @@ pub struct CreateJobRequest {
     pub model: Option<String>,
     pub max_steps: Option<u32>,
     pub approval: Option<ApprovalPolicy>,
+    pub resume: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -252,8 +255,18 @@ async fn create_job(
         return Err(ApiError::bad_request("message must not be empty"));
     }
 
-    let session_id = SessionId::new();
-    let job_id = JobId::new();
+    let state_store = state_store_for_api(&state);
+    let resume_state = resolve_resume_state(&state_store, req.resume.as_deref())
+        .await
+        .map_err(|err| ApiError::bad_request(err.to_string()))?;
+    let session_id = resume_state
+        .as_ref()
+        .map(|task_state| task_state.session_id)
+        .unwrap_or_else(SessionId::new);
+    let job_id = resume_state
+        .as_ref()
+        .map(|task_state| task_state.job_id)
+        .unwrap_or_else(JobId::new);
     let run_id = RunId::new();
     let (tx, _) = broadcast::channel(EVENT_BUFFER);
     let record = Arc::new(JobRecord {
@@ -261,6 +274,7 @@ async fn create_job(
         job_id,
         run_id,
         message: req.message.clone(),
+        resume_state,
         status: Mutex::new(RunStatus::Init),
         events: Mutex::new(Vec::new()),
         pending_approvals: Mutex::new(HashMap::new()),
@@ -427,11 +441,11 @@ async fn run_job_inner(
         record.job_id,
         record.run_id,
         record.message.clone(),
-        None,
+        record.resume_state.as_ref(),
     );
     let model_id = engine.model_id().to_string();
     let workspace = engine.workspace().clone();
-    let request = run.request(record.message.clone(), None);
+    let request = run.request(record.message.clone(), record.resume_state.clone());
     let mut stream = std::pin::pin!(engine.run_with_cancel(
         request,
         Some(run.trace_writer),

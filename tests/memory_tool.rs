@@ -61,6 +61,49 @@ async fn save_memory_writes_topic_and_index_inside_workspace() {
 }
 
 #[tokio::test]
+async fn save_memory_writes_to_configured_workspace_state_dir() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let mut workspace = Workspace::detect(tmp.path()).unwrap();
+    let custom_state_dir = workspace.root.join("custom-state");
+    workspace.state_dir = custom_state_dir.clone();
+
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(SaveMemoryTool::new(workspace.root.clone())));
+    let executor = Executor::new(&registry);
+    let ctx = ToolContext {
+        workspace: &workspace,
+        approval_policy: ApprovalPolicy::Never,
+        cancel_token: CancellationToken::new(),
+        input_provider: None,
+    };
+
+    let result = executor
+        .run(
+            &ctx,
+            "save_memory",
+            serde_json::json!({
+                "topic": "Project Conventions",
+                "content": "Run cargo fmt before committing.",
+                "type": "project"
+            }),
+            CallId::new(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(result.output, "saved memory: project-conventions");
+    assert!(
+        custom_state_dir
+            .join("memory")
+            .join("topics")
+            .join("project-conventions.md")
+            .exists()
+    );
+    assert!(custom_state_dir.join("memory").join("MEMORY.md").exists());
+    assert!(!workspace.root.join(".rove").join("memory").exists());
+}
+
+#[tokio::test]
 async fn save_memory_rejects_unsafe_topic_without_writing() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();

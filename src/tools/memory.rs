@@ -13,14 +13,12 @@ const MAX_MEMORY_INDEX_LINES: usize = 200;
 const MAX_MEMORY_INDEX_BYTES: usize = 25_000;
 const MAX_TOPIC_SLUG_BYTES: usize = 80;
 
-/// Save a durable memory topic under `.rove/memory/`.
-pub struct SaveMemoryTool {
-    root: PathBuf,
-}
+/// Save a durable memory topic under the workspace state directory.
+pub struct SaveMemoryTool;
 
 impl SaveMemoryTool {
-    pub fn new(root: PathBuf) -> Self {
-        Self { root }
+    pub fn new(_root: PathBuf) -> Self {
+        Self
     }
 }
 
@@ -55,7 +53,7 @@ impl Tool for SaveMemoryTool {
         }
     }
 
-    async fn execute(&self, args: Value, _ctx: &ToolContext<'_>) -> Result<ToolOutput, ToolError> {
+    async fn execute(&self, args: Value, ctx: &ToolContext<'_>) -> Result<ToolOutput, ToolError> {
         let raw_topic = required_string(&args, "topic")?;
         let raw_content = required_string(&args, "content")?;
         let raw_type = required_string(&args, "type")?;
@@ -65,7 +63,7 @@ impl Tool for SaveMemoryTool {
         validate_promotion_policy(raw_topic, &content)?;
         let title = display_title(raw_topic);
 
-        let memory_dir = self.root.join(".rove").join("memory");
+        let memory_dir = memory_dir(ctx);
         let topics_dir = memory_dir.join("topics");
         tokio::fs::create_dir_all(&topics_dir)
             .await
@@ -97,14 +95,12 @@ impl Tool for SaveMemoryTool {
     }
 }
 
-/// Rebuild `.rove/memory/MEMORY.md` from existing topic files.
-pub struct UpdateMemoryIndexTool {
-    root: PathBuf,
-}
+/// Rebuild the workspace memory index from existing topic files.
+pub struct UpdateMemoryIndexTool;
 
 impl UpdateMemoryIndexTool {
-    pub fn new(root: PathBuf) -> Self {
-        Self { root }
+    pub fn new(_root: PathBuf) -> Self {
+        Self
     }
 }
 
@@ -123,8 +119,8 @@ impl Tool for UpdateMemoryIndexTool {
         }
     }
 
-    async fn execute(&self, _args: Value, _ctx: &ToolContext<'_>) -> Result<ToolOutput, ToolError> {
-        let memory_dir = self.root.join(".rove").join("memory");
+    async fn execute(&self, _args: Value, ctx: &ToolContext<'_>) -> Result<ToolOutput, ToolError> {
+        let memory_dir = memory_dir(ctx);
         tokio::fs::create_dir_all(&memory_dir)
             .await
             .map_err(execution_failed)?;
@@ -136,14 +132,12 @@ impl Tool for UpdateMemoryIndexTool {
     }
 }
 
-/// Read a durable memory topic from `.rove/memory/topics/`.
-pub struct ReadMemoryTopicTool {
-    root: PathBuf,
-}
+/// Read a durable memory topic from the workspace state directory.
+pub struct ReadMemoryTopicTool;
 
 impl ReadMemoryTopicTool {
-    pub fn new(root: PathBuf) -> Self {
-        Self { root }
+    pub fn new(_root: PathBuf) -> Self {
+        Self
     }
 }
 
@@ -169,15 +163,10 @@ impl Tool for ReadMemoryTopicTool {
         }
     }
 
-    async fn execute(&self, args: Value, _ctx: &ToolContext<'_>) -> Result<ToolOutput, ToolError> {
+    async fn execute(&self, args: Value, ctx: &ToolContext<'_>) -> Result<ToolOutput, ToolError> {
         let raw_name = required_string(&args, "name")?;
         let slug = normalize_topic(raw_name)?;
-        let topic_path = self
-            .root
-            .join(".rove")
-            .join("memory")
-            .join("topics")
-            .join(format!("{slug}.md"));
+        let topic_path = memory_dir(ctx).join("topics").join(format!("{slug}.md"));
 
         let content = tokio::fs::read_to_string(topic_path).await.map_err(|err| {
             if err.kind() == ErrorKind::NotFound {
@@ -230,6 +219,10 @@ struct IndexEntry {
     slug: String,
     title: String,
     memory_type: String,
+}
+
+fn memory_dir(ctx: &ToolContext<'_>) -> PathBuf {
+    ctx.workspace.state_dir.join("memory")
 }
 
 async fn update_memory_index(memory_dir: &Path) -> Result<(), ToolError> {
