@@ -88,6 +88,8 @@ impl SearchResultPostProcessor for ScoreNormalizationPostProcessor {
     }
 }
 
+/// Local deterministic rerank fallback. Remote rerank providers should be
+/// introduced behind a routed rerank client that reuses ModelHealthStore.
 pub struct NoopRerankPostProcessor;
 
 impl SearchResultPostProcessor for NoopRerankPostProcessor {

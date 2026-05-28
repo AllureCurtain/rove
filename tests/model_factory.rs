@@ -14,7 +14,7 @@ fn build_openai_model_client_uses_configured_fallback_models() {
 
     assert_eq!(
         model.model_id(),
-        "routing(primary-model,fallback-a,fallback-b)"
+        "routing(openai-compatible:https://example.test/v1:primary-model,openai-compatible:https://example.test/v1:fallback-a,openai-compatible:https://example.test/v1:fallback-b)"
     );
 }
 
@@ -44,7 +44,7 @@ fn build_openai_model_client_uses_configured_fallback_providers() {
 
     assert_eq!(
         model.model_id(),
-        "routing(primary-model,provider-a,provider-b)"
+        "routing(openai-compatible:https://example.test/v1:primary-model,openai-compatible:https://fallback-a.test/v1:provider-a,openai-compatible:https://fallback-b.test/v1:provider-b)"
     );
 }
 
@@ -74,7 +74,7 @@ fn build_model_client_routes_mixed_native_fallback_providers() {
 
     assert_eq!(
         model.model_id(),
-        "routing(primary-model,claude-fallback,llama-fallback)"
+        "routing(openai-compatible:https://example.test/v1:primary-model,anthropic:https://api.anthropic.com:claude-fallback,ollama:http://localhost:11434:llama-fallback)"
     );
 }
 
@@ -88,7 +88,10 @@ fn fallback_models_inherit_primary_provider() {
 
     let model = build_model_client(&config, "claude-primary".to_string());
 
-    assert_eq!(model.model_id(), "routing(claude-primary,claude-fallback)");
+    assert_eq!(
+        model.model_id(),
+        "routing(anthropic:https://api.anthropic.com:claude-primary,anthropic:https://api.anthropic.com:claude-fallback)"
+    );
 }
 
 #[test]

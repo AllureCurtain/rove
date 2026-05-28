@@ -1,5 +1,5 @@
 use axum::body::Body;
-use axum::http::{Request, StatusCode};
+use axum::http::{Request, StatusCode, header::CONTENT_TYPE};
 use rove::config::AppConfig;
 use rove::core::events::StreamEvent;
 use rove::core::types::{Role, RunStatus, TaskState};
@@ -582,6 +582,66 @@ async fn api_can_resume_latest_task_state() {
             .any(|message| message.role == Role::User && message.content == "continue api")
     );
     assert!(resumed_task_state.step >= first_task_state.step);
+}
+
+#[tokio::test]
+async fn api_rejects_resume_when_job_is_still_live() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let app = router(ApiState::new(workspace, test_config()));
+    let message = serde_json::json!({
+        "tool": "request_input",
+        "args": { "prompt": "continue?" }
+    })
+    .to_string();
+    let body = serde_json::json!({
+        "message": message,
+        "model": "fake-raw",
+        "max_steps": 1
+    });
+
+    let create = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/jobs")
+                .header(CONTENT_TYPE, "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(create.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let created: CreateJobResponse = serde_json::from_slice(&body).unwrap();
+
+    let pending = wait_for_pending_input(app.clone(), created.job_id.to_string()).await;
+    assert_eq!(pending.status, RunStatus::Running);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/jobs")
+                .header(CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "message": "resume while live",
+                        "model": "fake",
+                        "resume": created.run_id.to_string()
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::CONFLICT);
 }
 
 #[tokio::test]

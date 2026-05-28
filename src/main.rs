@@ -21,14 +21,7 @@ use rove::models::fake::FakeModelClient;
 use rove::models::traits::ModelClient;
 use rove::state::resume::resolve_resume_state;
 use rove::state::store::StateStore;
-use rove::tools::echo::EchoTool;
-use rove::tools::fs::{FsReadTool, FsWriteTool};
 use rove::tools::mcp_proxy::register_mcp_tools_from_file;
-use rove::tools::memory::{ReadMemoryTopicTool, SaveMemoryTool, UpdateMemoryIndexTool};
-use rove::tools::rag::RagRetrieveTool;
-use rove::tools::registry::ToolRegistry;
-use rove::tools::request_input::RequestInputTool;
-use rove::tools::shell::ShellTool;
 use tokio_util::sync::CancellationToken;
 
 #[tokio::main]
@@ -133,17 +126,7 @@ async fn main() -> anyhow::Result<()> {
     };
 
     // Build tool registry
-    let mut registry = ToolRegistry::new();
-    registry.register(Box::new(EchoTool));
-    registry.register(Box::new(FsReadTool::new(workspace.root.clone())));
-    registry.register(Box::new(FsWriteTool::new(workspace.root.clone())));
-    registry.register(Box::new(ReadMemoryTopicTool::new(workspace.root.clone())));
-    registry.register(Box::new(SaveMemoryTool::new(workspace.root.clone())));
-    registry.register(Box::new(UpdateMemoryIndexTool::new(workspace.root.clone())));
-    registry.register(Box::new(RagRetrieveTool::code(workspace.root.clone())));
-    registry.register(Box::new(RagRetrieveTool::docs(workspace.root.clone())));
-    registry.register(Box::new(RequestInputTool));
-    registry.register(Box::new(ShellTool::new(workspace.root.clone())));
+    let mut registry = rove::tools::default_tool_registry(&workspace);
     let mcp_config_path = config.resolve_path(&config.tool.mcp_config_path);
     let mcp_tool_count = register_mcp_tools_from_file(&mut registry, mcp_config_path).await?;
     if mcp_tool_count > 0 {

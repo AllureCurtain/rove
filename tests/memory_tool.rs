@@ -11,7 +11,7 @@ async fn save_memory_writes_topic_and_index_inside_workspace() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
     let mut registry = ToolRegistry::new();
-    registry.register(Box::new(SaveMemoryTool::new(workspace.root.clone())));
+    registry.register(Box::new(SaveMemoryTool::new()));
     let executor = Executor::new(&registry);
     let ctx = ToolContext {
         workspace: &workspace,
@@ -68,7 +68,7 @@ async fn save_memory_writes_to_configured_workspace_state_dir() {
     workspace.state_dir = custom_state_dir.clone();
 
     let mut registry = ToolRegistry::new();
-    registry.register(Box::new(SaveMemoryTool::new(workspace.root.clone())));
+    registry.register(Box::new(SaveMemoryTool::new()));
     let executor = Executor::new(&registry);
     let ctx = ToolContext {
         workspace: &workspace,
@@ -108,7 +108,7 @@ async fn save_memory_rejects_unsafe_topic_without_writing() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
     let mut registry = ToolRegistry::new();
-    registry.register(Box::new(SaveMemoryTool::new(workspace.root.clone())));
+    registry.register(Box::new(SaveMemoryTool::new()));
     let executor = Executor::new(&registry);
     let ctx = ToolContext {
         workspace: &workspace,
@@ -144,7 +144,7 @@ async fn save_memory_rejects_secret_content_without_writing() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
     let mut registry = ToolRegistry::new();
-    registry.register(Box::new(SaveMemoryTool::new(workspace.root.clone())));
+    registry.register(Box::new(SaveMemoryTool::new()));
     let executor = Executor::new(&registry);
     let ctx = ToolContext {
         workspace: &workspace,
@@ -179,7 +179,7 @@ async fn save_memory_rejects_transient_content_without_writing() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
     let mut registry = ToolRegistry::new();
-    registry.register(Box::new(SaveMemoryTool::new(workspace.root.clone())));
+    registry.register(Box::new(SaveMemoryTool::new()));
     let executor = Executor::new(&registry);
     let ctx = ToolContext {
         workspace: &workspace,
@@ -214,7 +214,7 @@ async fn save_memory_keeps_index_within_hard_limits() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
     let mut registry = ToolRegistry::new();
-    registry.register(Box::new(SaveMemoryTool::new(workspace.root.clone())));
+    registry.register(Box::new(SaveMemoryTool::new()));
     let executor = Executor::new(&registry);
     let ctx = ToolContext {
         workspace: &workspace,
@@ -272,7 +272,7 @@ async fn update_memory_index_rebuilds_index_from_existing_topics() {
     .unwrap();
 
     let mut registry = ToolRegistry::new();
-    registry.register(Box::new(UpdateMemoryIndexTool::new(workspace.root.clone())));
+    registry.register(Box::new(UpdateMemoryIndexTool::new()));
     let executor = Executor::new(&registry);
     let ctx = ToolContext {
         workspace: &workspace,
@@ -318,7 +318,7 @@ async fn read_memory_topic_reads_only_named_topic() {
     .unwrap();
 
     let mut registry = ToolRegistry::new();
-    registry.register(Box::new(ReadMemoryTopicTool::new(workspace.root.clone())));
+    registry.register(Box::new(ReadMemoryTopicTool::new()));
     let executor = Executor::new(&registry);
     let ctx = ToolContext {
         workspace: &workspace,
@@ -347,7 +347,7 @@ async fn read_memory_topic_rejects_unsafe_name() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
     let mut registry = ToolRegistry::new();
-    registry.register(Box::new(ReadMemoryTopicTool::new(workspace.root.clone())));
+    registry.register(Box::new(ReadMemoryTopicTool::new()));
     let executor = Executor::new(&registry);
     let ctx = ToolContext {
         workspace: &workspace,

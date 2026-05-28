@@ -101,7 +101,7 @@ High-level flow in `src/main.rs`:
 3. Detect workspace.
 4. Load `AppConfig`.
 5. Construct the model client.
-6. Register built-in tools and MCP tools.
+6. Register the shared default tool registry and MCP tools.
 7. Build `ContextManager`.
 8. Build `Engine`.
 9. Create `StateStore` and `RunHandle`.
@@ -342,6 +342,8 @@ trait ModelClient {
         -> BoxStream<'_, Result<ModelEvent, ModelError>>;
 
     fn model_id(&self) -> &str;
+
+    fn client_id(&self) -> ModelClientId;
 }
 ```
 
@@ -364,7 +366,11 @@ Native providers:
 | Ollama | `src/models/ollama.rs` |
 | Fake | `src/models/fake.rs` |
 
-`RoutingModelClient` wraps a primary model plus fallback models/providers. It can fall back only before committed visible output or committed tool-use. Health state has a failure threshold and cooldown.
+`RoutingModelClient` wraps a primary model plus fallback models/providers. It can fall back only before committed visible output or committed tool-use. Provider target identity is provider plus endpoint plus model, exposed as `ModelClientId`, so two providers using the same model name do not share a health bucket.
+
+`src/models/health.rs` owns `ModelHealthStore`, `HealthConfig`, and circuit state. CLI-created routed clients keep private health state configured from `routing.failure_threshold` and `routing.open_cooldown_ms`. API state creates one process-shared `ModelHealthStore` and injects it into routed model clients so API jobs share circuit breaker decisions across runs in the same process.
+
+First-packet routing decisions are emitted through `tracing`: candidate start, skipped open circuit, committed first event, no content, timeout, and error-before-commit. These are observability records only; they do not add user-facing `StreamEvent` variants.
 
 Relevant code:
 
@@ -392,6 +398,8 @@ Current built-in tools:
 | `retrieve_code` | RAG code retrieval or stub |
 | `retrieve_docs` | RAG docs retrieval or stub |
 | `mcp__<server>__<tool>` | MCP-proxied remote tools |
+
+CLI and API both construct built-ins through `default_tool_registry(&Workspace)`. Root-bound tools receive the workspace root at construction. Memory tools are context-bound and derive their paths from `ToolContext.workspace.state_dir`.
 
 Tool schemas include:
 
@@ -600,6 +608,7 @@ RAG is optional and gated behind the `rag` feature. Default builds expose stub `
 Feature-enabled RAG includes:
 
 - deterministic and OpenAI-compatible embedders;
+- a routed embedder foundation that reuses `ModelHealthStore` for production embedding providers;
 - staged ingestion;
 - fixed, Markdown-aware, and lightweight code-aware chunking;
 - LanceDB storage;
@@ -625,7 +634,7 @@ cargo run --features rag --bin rove-index -- --deterministic -C .
 cargo test --features rag --test cli_index deterministic_index_run_writes_manifest -- --exact
 ```
 
-The CLI uses deterministic embeddings if requested or if no provider API key is configured. Retrieval tools currently use deterministic embeddings.
+The CLI uses deterministic embeddings if requested or if no provider API key is configured. Retrieval tools currently use deterministic embeddings. Remote rerank is intentionally not wired in; `NoopRerankPostProcessor` remains the local deterministic fallback until a routed rerank client is introduced.
 
 Relevant code:
 

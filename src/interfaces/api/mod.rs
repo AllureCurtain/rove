@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use axum::extract::Query;
@@ -29,19 +29,14 @@ use crate::core::types::{
 };
 use crate::core::workspace::Workspace;
 use crate::errors::ToolError;
-use crate::models::factory::build_model_client;
+use crate::models::factory::build_model_client_with_health;
 use crate::models::fake::FakeModelClient;
+use crate::models::health::{HealthConfig, ModelHealthStore};
 use crate::models::traits::ModelClient;
 use crate::state::artifacts::RunArtifactRecorder;
 use crate::state::resume::resolve_resume_state;
 use crate::state::store::StateStore;
-use crate::tools::echo::EchoTool;
-use crate::tools::fs::{FsReadTool, FsWriteTool};
-use crate::tools::memory::{ReadMemoryTopicTool, SaveMemoryTool, UpdateMemoryIndexTool};
-use crate::tools::rag::RagRetrieveTool;
-use crate::tools::registry::ToolRegistry;
-use crate::tools::request_input::RequestInputTool;
-use crate::tools::shell::ShellTool;
+use crate::tools::default_tool_registry;
 
 mod security;
 
@@ -57,6 +52,7 @@ struct ApiStateInner {
     config: AppConfig,
     shutdown_token: CancellationToken,
     jobs: RwLock<HashMap<JobId, Arc<JobRecord>>>,
+    model_health: Arc<ModelHealthStore>,
     rate_limit: tokio::sync::Mutex<RateLimitState>,
 }
 
@@ -235,12 +231,17 @@ impl ApiState {
         if let Err(err) = state_store.index.mark_running_jobs_interrupted() {
             tracing::warn!("failed to mark stale API jobs interrupted: {err}");
         }
+        let model_health = Arc::new(ModelHealthStore::new(HealthConfig {
+            failure_threshold: config.routing.failure_threshold,
+            open_cooldown: Duration::from_millis(config.routing.open_cooldown_ms),
+        }));
         Self {
             inner: Arc::new(ApiStateInner {
                 workspace,
                 config,
                 shutdown_token,
                 jobs: RwLock::new(HashMap::new()),
+                model_health,
                 rate_limit: tokio::sync::Mutex::new(RateLimitState::default()),
             }),
         }
@@ -267,6 +268,16 @@ async fn create_job(
         .as_ref()
         .map(|task_state| task_state.job_id)
         .unwrap_or_else(JobId::new);
+    if resume_state.is_some()
+        && let Some(record) = live_job(&state, job_id).await
+    {
+        let status = record.status.lock().await.clone();
+        if !is_terminal(&status) {
+            return Err(ApiError::conflict(
+                "cannot resume a job while its previous run is still active",
+            ));
+        }
+    }
     let run_id = RunId::new();
     let (tx, _) = broadcast::channel(EVENT_BUFFER);
     let record = Arc::new(JobRecord {
@@ -540,21 +551,11 @@ fn build_engine(
     let model: Box<dyn ModelClient> = match model_id.as_str() {
         "fake" => Box::new(FakeModelClient::new(format!("fake response: {message}"))),
         "fake-raw" => Box::new(FakeModelClient::new(message.to_string())),
-        _ => build_model_client(config, model_id),
+        _ => build_model_client_with_health(config, model_id, state.inner.model_health.clone()),
     };
 
     let workspace = state.inner.workspace.clone();
-    let mut registry = ToolRegistry::new();
-    registry.register(Box::new(EchoTool));
-    registry.register(Box::new(FsReadTool::new(workspace.root.clone())));
-    registry.register(Box::new(FsWriteTool::new(workspace.root.clone())));
-    registry.register(Box::new(ReadMemoryTopicTool::new(workspace.root.clone())));
-    registry.register(Box::new(SaveMemoryTool::new(workspace.root.clone())));
-    registry.register(Box::new(UpdateMemoryIndexTool::new(workspace.root.clone())));
-    registry.register(Box::new(RagRetrieveTool::code(workspace.root.clone())));
-    registry.register(Box::new(RagRetrieveTool::docs(workspace.root.clone())));
-    registry.register(Box::new(RequestInputTool));
-    registry.register(Box::new(ShellTool::new(workspace.root.clone())));
+    let registry = default_tool_registry(&workspace);
 
     let approval_policy = req.approval.unwrap_or(ApprovalPolicy::Ask);
     let engine = Engine::with_workspace(
@@ -871,6 +872,13 @@ impl ApiError {
     fn not_found(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::NOT_FOUND,
+            message: message.into(),
+        }
+    }
+
+    fn conflict(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::CONFLICT,
             message: message.into(),
         }
     }

@@ -17,8 +17,14 @@ const MAX_TOPIC_SLUG_BYTES: usize = 80;
 pub struct SaveMemoryTool;
 
 impl SaveMemoryTool {
-    pub fn new(_root: PathBuf) -> Self {
+    pub fn new() -> Self {
         Self
+    }
+}
+
+impl Default for SaveMemoryTool {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -99,8 +105,14 @@ impl Tool for SaveMemoryTool {
 pub struct UpdateMemoryIndexTool;
 
 impl UpdateMemoryIndexTool {
-    pub fn new(_root: PathBuf) -> Self {
+    pub fn new() -> Self {
         Self
+    }
+}
+
+impl Default for UpdateMemoryIndexTool {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -136,8 +148,14 @@ impl Tool for UpdateMemoryIndexTool {
 pub struct ReadMemoryTopicTool;
 
 impl ReadMemoryTopicTool {
-    pub fn new(_root: PathBuf) -> Self {
+    pub fn new() -> Self {
         Self
+    }
+}
+
+impl Default for ReadMemoryTopicTool {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

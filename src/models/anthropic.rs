@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 
 use crate::core::types::{Message, Role, ToolSchema, Usage};
 use crate::errors::ModelError;
-use crate::models::traits::{ModelClient, ModelEvent};
+use crate::models::traits::{ModelClient, ModelClientId, ModelEvent};
 
 const DEFAULT_MAX_TOKENS: u32 = 4096;
 const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -361,6 +361,10 @@ impl ModelClient for AnthropicClient {
 
     fn model_id(&self) -> &str {
         &self.model
+    }
+
+    fn client_id(&self) -> ModelClientId {
+        ModelClientId::new("anthropic", &self.api_base, &self.model)
     }
 }
 

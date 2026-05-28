@@ -1,12 +1,12 @@
 use async_stream::stream;
 use futures::{StreamExt, stream::BoxStream};
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::{Instant, timeout};
 
 use crate::core::types::{Message, ToolSchema};
 use crate::errors::ModelError;
+use crate::models::health::{HealthConfig, ModelHealthStore};
 use crate::models::traits::{ModelClient, ModelEvent};
 
 /// Model client that tries a primary provider, then fallback providers if the
@@ -18,108 +18,43 @@ pub struct RoutingModelClient {
     probe_timeout: Duration,
 }
 
-#[derive(Debug, Clone)]
-pub struct HealthConfig {
-    pub failure_threshold: u32,
-    pub open_cooldown: Duration,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProbeOutcome {
+    Committed,
+    ErrorBeforeCommit,
+    NoContent,
+    Timeout,
+    SkippedOpenCircuit,
 }
 
-impl Default for HealthConfig {
-    fn default() -> Self {
-        Self {
-            failure_threshold: 3,
-            open_cooldown: Duration::from_secs(30),
+impl ProbeOutcome {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Committed => "committed",
+            Self::ErrorBeforeCommit => "error_before_commit",
+            Self::NoContent => "no_content",
+            Self::Timeout => "timeout",
+            Self::SkippedOpenCircuit => "skipped_open_circuit",
         }
     }
-}
-
-struct ModelHealthStore {
-    config: HealthConfig,
-    states: Mutex<HashMap<String, HealthState>>,
-}
-
-impl ModelHealthStore {
-    fn new(config: HealthConfig) -> Self {
-        Self {
-            config,
-            states: Mutex::new(HashMap::new()),
-        }
-    }
-
-    fn allow_call(&self, model_id: &str) -> bool {
-        let mut states = self.states.lock().expect("model health mutex poisoned");
-        let state = states.entry(model_id.to_string()).or_default();
-        match state.status {
-            CircuitStatus::Closed => true,
-            CircuitStatus::Open => {
-                if state
-                    .opened_at
-                    .is_some_and(|opened_at| opened_at.elapsed() >= self.config.open_cooldown)
-                {
-                    state.status = CircuitStatus::HalfOpen;
-                    state.half_open_token = true;
-                }
-                if state.status == CircuitStatus::HalfOpen && state.half_open_token {
-                    state.half_open_token = false;
-                    true
-                } else {
-                    false
-                }
-            }
-            CircuitStatus::HalfOpen => {
-                if state.half_open_token {
-                    state.half_open_token = false;
-                    true
-                } else {
-                    false
-                }
-            }
-        }
-    }
-
-    fn mark_success(&self, model_id: &str) {
-        let mut states = self.states.lock().expect("model health mutex poisoned");
-        let state = states.entry(model_id.to_string()).or_default();
-        state.status = CircuitStatus::Closed;
-        state.consecutive_failures = 0;
-        state.opened_at = None;
-        state.half_open_token = true;
-    }
-
-    fn mark_failure(&self, model_id: &str) {
-        let mut states = self.states.lock().expect("model health mutex poisoned");
-        let state = states.entry(model_id.to_string()).or_default();
-        state.consecutive_failures = state.consecutive_failures.saturating_add(1);
-        if state.status == CircuitStatus::HalfOpen
-            || state.consecutive_failures >= self.config.failure_threshold.max(1)
-        {
-            state.status = CircuitStatus::Open;
-            state.opened_at = Some(Instant::now());
-            state.half_open_token = false;
-        }
-    }
-}
-
-#[derive(Debug, Default)]
-struct HealthState {
-    status: CircuitStatus,
-    consecutive_failures: u32,
-    opened_at: Option<Instant>,
-    half_open_token: bool,
-}
-
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-enum CircuitStatus {
-    #[default]
-    Closed,
-    Open,
-    HalfOpen,
 }
 
 impl RoutingModelClient {
     const DEFAULT_PROBE_TIMEOUT: Duration = Duration::from_secs(60);
 
     pub fn new(primary: Box<dyn ModelClient>, fallbacks: Vec<Box<dyn ModelClient>>) -> Self {
+        Self::with_health_store(
+            primary,
+            fallbacks,
+            Arc::new(ModelHealthStore::new(HealthConfig::default())),
+        )
+    }
+
+    pub fn with_health_store(
+        primary: Box<dyn ModelClient>,
+        fallbacks: Vec<Box<dyn ModelClient>>,
+        health: Arc<ModelHealthStore>,
+    ) -> Self {
         let mut clients = Vec::with_capacity(1 + fallbacks.len());
         clients.push(primary);
         clients.extend(fallbacks);
@@ -127,13 +62,13 @@ impl RoutingModelClient {
             "routing({})",
             clients
                 .iter()
-                .map(|client| client.model_id())
+                .map(|client| client.client_id().to_string())
                 .collect::<Vec<_>>()
                 .join(",")
         );
         Self {
             clients,
-            health: Arc::new(ModelHealthStore::new(HealthConfig::default())),
+            health,
             model_id,
             probe_timeout: Self::DEFAULT_PROBE_TIMEOUT,
         }
@@ -162,17 +97,37 @@ impl ModelClient for RoutingModelClient {
             let mut last_error = None;
             let probe_timeout = self.probe_timeout;
             for client in &self.clients {
-                let client_id = client.model_id().to_string();
-                if !self.health.allow_call(&client_id) {
+                let client_id = client.client_id();
+                let client_id_text = client_id.as_str().to_string();
+                if !self.health.allow_call(&client_id_text) {
+                    tracing::debug!(
+                        model_target = %client_id_text,
+                        routing_model = %self.model_id,
+                        outcome = ProbeOutcome::SkippedOpenCircuit.as_str(),
+                        "model routing candidate skipped"
+                    );
                     continue;
                 }
 
+                let attempt_started = Instant::now();
+                tracing::debug!(
+                    model_target = %client_id_text,
+                    routing_model = %self.model_id,
+                    "model routing candidate probe started"
+                );
                 let mut events = client.stream(&messages, &tools);
                 let mut buffered = Vec::new();
                 let committed = loop {
                     match timeout(probe_timeout, events.next()).await {
                         Ok(Some(Ok(event))) if is_commit_event(&event) => {
-                            self.health.mark_success(&client_id);
+                            tracing::info!(
+                                model_target = %client_id_text,
+                                routing_model = %self.model_id,
+                                first_event_latency_ms = attempt_started.elapsed().as_millis() as u64,
+                                outcome = ProbeOutcome::Committed.as_str(),
+                                "model routing candidate committed"
+                            );
+                            self.health.mark_success(&client_id_text);
                             for buffered_event in buffered {
                                 yield Ok(buffered_event);
                             }
@@ -183,7 +138,14 @@ impl ModelClient for RoutingModelClient {
                             let err = ModelError::StreamInterrupted(
                                 "stream ended before first content event".to_string(),
                             );
-                            self.health.mark_failure(&client_id);
+                            tracing::warn!(
+                                model_target = %client_id_text,
+                                routing_model = %self.model_id,
+                                first_event_latency_ms = attempt_started.elapsed().as_millis() as u64,
+                                outcome = ProbeOutcome::NoContent.as_str(),
+                                "model routing stream ended before first content event"
+                            );
+                            self.health.mark_failure(&client_id_text);
                             last_error = Some(err);
                             break false;
                         }
@@ -192,8 +154,16 @@ impl ModelClient for RoutingModelClient {
                             continue;
                         }
                         Ok(Some(Err(err))) => {
+                            tracing::warn!(
+                                model_target = %client_id_text,
+                                routing_model = %self.model_id,
+                                first_event_latency_ms = attempt_started.elapsed().as_millis() as u64,
+                                outcome = ProbeOutcome::ErrorBeforeCommit.as_str(),
+                                error = %err,
+                                "model routing candidate failed before commit"
+                            );
                             if err.counts_as_health_failure() {
-                                self.health.mark_failure(&client_id);
+                                self.health.mark_failure(&client_id_text);
                             }
                             last_error = Some(err);
                             break false;
@@ -202,7 +172,14 @@ impl ModelClient for RoutingModelClient {
                             let err = ModelError::StreamInterrupted(
                                 "stream ended before first content event".to_string(),
                             );
-                            self.health.mark_failure(&client_id);
+                            tracing::warn!(
+                                model_target = %client_id_text,
+                                routing_model = %self.model_id,
+                                first_event_latency_ms = attempt_started.elapsed().as_millis() as u64,
+                                outcome = ProbeOutcome::NoContent.as_str(),
+                                "model routing stream ended before first content event"
+                            );
+                            self.health.mark_failure(&client_id_text);
                             last_error = Some(err);
                             break false;
                         }
@@ -211,7 +188,15 @@ impl ModelClient for RoutingModelClient {
                                 "first content event probe timed out after {}ms",
                                 probe_timeout.as_millis()
                             ));
-                            self.health.mark_failure(&client_id);
+                            tracing::warn!(
+                                model_target = %client_id_text,
+                                routing_model = %self.model_id,
+                                first_event_latency_ms = attempt_started.elapsed().as_millis() as u64,
+                                timeout_ms = probe_timeout.as_millis() as u64,
+                                outcome = ProbeOutcome::Timeout.as_str(),
+                                "model routing first content probe timed out"
+                            );
+                            self.health.mark_failure(&client_id_text);
                             last_error = Some(err);
                             break false;
                         }
@@ -228,7 +213,7 @@ impl ModelClient for RoutingModelClient {
                         }
                         Some(Err(err)) => {
                             if err.counts_as_health_failure() {
-                                self.health.mark_failure(&client_id);
+                                self.health.mark_failure(&client_id_text);
                             }
                             yield Err(err);
                             return;
@@ -268,7 +253,8 @@ mod tests {
 
     use crate::core::types::{Message, ToolSchema, Usage};
     use crate::errors::ModelError;
-    use crate::models::routing::{HealthConfig, RoutingModelClient};
+    use crate::models::health::{HealthConfig, ModelHealthStore};
+    use crate::models::routing::RoutingModelClient;
     use crate::models::traits::{ModelClient, ModelEvent};
 
     struct FailingClient {
@@ -590,6 +576,53 @@ mod tests {
         assert_text_event(&third[0], "fallback answer");
         assert_eq!(primary_calls.load(Ordering::SeqCst), 2);
         assert_eq!(fallback_calls.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn shared_health_store_skips_open_target_across_routing_clients() {
+        let shared_health = Arc::new(ModelHealthStore::new(HealthConfig {
+            failure_threshold: 1,
+            open_cooldown: std::time::Duration::from_secs(30),
+        }));
+        let first_primary_calls = Arc::new(AtomicUsize::new(0));
+        let second_primary_calls = Arc::new(AtomicUsize::new(0));
+        let fallback_calls = Arc::new(AtomicUsize::new(0));
+
+        let first = RoutingModelClient::with_health_store(
+            Box::new(FailingClient {
+                id: "provider-a:same-model",
+                calls: first_primary_calls.clone(),
+            }),
+            vec![Box::new(StaticClient {
+                id: "fallback",
+                response: "fallback answer",
+                calls: fallback_calls.clone(),
+            })],
+            shared_health.clone(),
+        );
+
+        let second = RoutingModelClient::with_health_store(
+            Box::new(FailingClient {
+                id: "provider-a:same-model",
+                calls: second_primary_calls.clone(),
+            }),
+            vec![Box::new(StaticClient {
+                id: "fallback",
+                response: "fallback answer",
+                calls: fallback_calls.clone(),
+            })],
+            shared_health,
+        );
+
+        let messages: Vec<Message> = Vec::new();
+        let tools: Vec<ToolSchema> = Vec::new();
+
+        let _ = first.stream(&messages, &tools).collect::<Vec<_>>().await;
+        let _ = second.stream(&messages, &tools).collect::<Vec<_>>().await;
+
+        assert_eq!(first_primary_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(second_primary_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(fallback_calls.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test(start_paused = true)]

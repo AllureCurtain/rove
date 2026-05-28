@@ -5,7 +5,7 @@ use futures::stream::BoxStream;
 
 use crate::core::types::{Message, ToolSchema, Usage};
 use crate::errors::ModelError;
-use crate::models::traits::{ModelClient, ModelEvent};
+use crate::models::traits::{ModelClient, ModelClientId, ModelEvent};
 
 /// Scripted turn for a `FakeModelClient` — one entry per LLM call.
 #[derive(Debug, Clone)]
@@ -126,5 +126,9 @@ impl ModelClient for FakeModelClient {
 
     fn model_id(&self) -> &str {
         "fake"
+    }
+
+    fn client_id(&self) -> ModelClientId {
+        ModelClientId::new("fake", "local", self.model_id())
     }
 }

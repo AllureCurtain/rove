@@ -17,7 +17,7 @@ pub mod retrieve;
 pub mod rewrite;
 mod types;
 
-pub use embed::{DeterministicEmbedder, Embedder, OpenAiEmbedder};
+pub use embed::{DeterministicEmbedder, Embedder, OpenAiEmbedder, RoutingEmbedder};
 pub use index::RagIndex;
 pub use prompt::RagPromptService;
 pub use types::{

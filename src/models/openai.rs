@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 
 use crate::core::types::{Message, Role, ToolSchema, Usage};
 use crate::errors::ModelError;
-use crate::models::traits::{ModelClient, ModelEvent};
+use crate::models::traits::{ModelClient, ModelClientId, ModelEvent};
 
 /// OpenAI-compatible model client.
 ///
@@ -404,6 +404,10 @@ impl ModelClient for OpenAiClient {
     fn model_id(&self) -> &str {
         &self.model
     }
+
+    fn client_id(&self) -> ModelClientId {
+        ModelClientId::new("openai-compatible", &self.api_base, &self.model)
+    }
 }
 
 #[cfg(test)]
@@ -513,6 +517,23 @@ mod tests {
         let events = normalize_openai_sse_data(&mut state, "[DONE]").unwrap();
 
         assert_eq!(events, vec![ModelEvent::Done]);
+    }
+
+    #[test]
+    fn client_id_includes_provider_endpoint_and_model() {
+        let left = OpenAiClient::new(
+            "https://primary.test/v1".to_string(),
+            "key".to_string(),
+            "same-model".to_string(),
+        );
+        let right = OpenAiClient::new(
+            "https://fallback.test/v1".to_string(),
+            "key".to_string(),
+            "same-model".to_string(),
+        );
+
+        assert_ne!(left.client_id(), right.client_id());
+        assert_eq!(left.model_id(), right.model_id());
     }
 
     #[test]

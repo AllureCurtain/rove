@@ -1,29 +1,51 @@
 use crate::config::AppConfig;
 use crate::models::anthropic::AnthropicClient;
 use crate::models::fake::FakeModelClient;
+use crate::models::health::{HealthConfig, ModelHealthStore};
 use crate::models::ollama::OllamaClient;
 use crate::models::openai::OpenAiClient;
-use crate::models::routing::{HealthConfig, RoutingModelClient};
+use crate::models::routing::RoutingModelClient;
 use crate::models::traits::ModelClient;
+use std::sync::Arc;
 use std::time::Duration;
 
 pub fn build_model_client(config: &AppConfig, model_id: String) -> Box<dyn ModelClient> {
-    build_routed_model_client(config, ProviderSpec::primary(config, model_id))
+    build_routed_model_client(config, ProviderSpec::primary(config, model_id), None)
+}
+
+pub fn build_model_client_with_health(
+    config: &AppConfig,
+    model_id: String,
+    health: Arc<ModelHealthStore>,
+) -> Box<dyn ModelClient> {
+    build_routed_model_client(
+        config,
+        ProviderSpec::primary(config, model_id),
+        Some(health),
+    )
 }
 
 pub fn build_openai_model_client(config: &AppConfig, model_id: String) -> Box<dyn ModelClient> {
-    build_routed_model_client(config, ProviderSpec::openai_compatible(config, model_id))
+    build_routed_model_client(
+        config,
+        ProviderSpec::openai_compatible(config, model_id),
+        None,
+    )
 }
 
 pub fn build_anthropic_model_client(config: &AppConfig, model_id: String) -> Box<dyn ModelClient> {
-    build_routed_model_client(config, ProviderSpec::anthropic(config, model_id))
+    build_routed_model_client(config, ProviderSpec::anthropic(config, model_id), None)
 }
 
 pub fn build_ollama_model_client(config: &AppConfig, model_id: String) -> Box<dyn ModelClient> {
-    build_routed_model_client(config, ProviderSpec::ollama(config, model_id))
+    build_routed_model_client(config, ProviderSpec::ollama(config, model_id), None)
 }
 
-fn build_routed_model_client(config: &AppConfig, primary: ProviderSpec) -> Box<dyn ModelClient> {
+fn build_routed_model_client(
+    config: &AppConfig,
+    primary: ProviderSpec,
+    health: Option<Arc<ModelHealthStore>>,
+) -> Box<dyn ModelClient> {
     let fallback_specs = fallback_specs(config, &primary);
     let primary = build_provider_client(primary);
     if fallback_specs.is_empty() {
@@ -34,12 +56,14 @@ fn build_routed_model_client(config: &AppConfig, primary: ProviderSpec) -> Box<d
         .into_iter()
         .map(build_provider_client)
         .collect::<Vec<_>>();
-    Box::new(
-        RoutingModelClient::new(primary, fallbacks).with_health_config(HealthConfig {
+    let routed = match health {
+        Some(health) => RoutingModelClient::with_health_store(primary, fallbacks, health),
+        None => RoutingModelClient::new(primary, fallbacks).with_health_config(HealthConfig {
             failure_threshold: config.routing.failure_threshold,
             open_cooldown: Duration::from_millis(config.routing.open_cooldown_ms),
         }),
-    )
+    };
+    Box::new(routed)
 }
 
 fn fallback_specs(config: &AppConfig, primary: &ProviderSpec) -> Vec<ProviderSpec> {

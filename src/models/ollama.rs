@@ -4,7 +4,7 @@ use reqwest::StatusCode;
 
 use crate::core::types::{Message, Role, ToolSchema, Usage};
 use crate::errors::ModelError;
-use crate::models::traits::{ModelClient, ModelEvent};
+use crate::models::traits::{ModelClient, ModelClientId, ModelEvent};
 
 const DEFAULT_OLLAMA_BASE: &str = "http://localhost:11434";
 
@@ -250,6 +250,10 @@ impl ModelClient for OllamaClient {
 
     fn model_id(&self) -> &str {
         &self.model
+    }
+
+    fn client_id(&self) -> ModelClientId {
+        ModelClientId::new("ollama", &self.api_base, &self.model)
     }
 }
 

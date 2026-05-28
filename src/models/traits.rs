@@ -4,6 +4,31 @@ use futures::stream::BoxStream;
 use crate::core::types::{Message, ToolSchema, Usage};
 use crate::errors::ModelError;
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ModelClientId(String);
+
+impl ModelClientId {
+    pub fn new(provider: &str, endpoint: impl AsRef<str>, model: impl AsRef<str>) -> Self {
+        let endpoint = endpoint.as_ref().trim_end_matches('/');
+        let model = model.as_ref();
+        Self(format!("{provider}:{endpoint}:{model}"))
+    }
+
+    pub fn opaque(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for ModelClientId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 /// A normalized event from a streaming LLM response.
 ///
 /// Provider adapters translate OpenAI/Anthropic/Ollama-specific stream frames
@@ -52,4 +77,9 @@ pub trait ModelClient: Send + Sync {
 
     /// The model identifier (for logging/tracing).
     fn model_id(&self) -> &str;
+
+    /// Stable provider target identity for routing health state.
+    fn client_id(&self) -> ModelClientId {
+        ModelClientId::opaque(self.model_id().to_string())
+    }
 }
