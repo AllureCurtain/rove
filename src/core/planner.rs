@@ -4,7 +4,7 @@ use thiserror::Error;
 use crate::core::types::{Message, PlanStep, TaskPlan};
 use crate::models::traits::{ModelClient, ModelEvent};
 
-const DEFAULT_PLANNER_PROMPT: &str = r#"You are the planner for rove.
+pub const DEFAULT_PLANNER_PROMPT: &str = r#"You are the planner for rove.
 Return JSON only:
 {
   "goal": "string",
@@ -29,11 +29,14 @@ pub struct Planner {
 }
 
 impl Planner {
-    pub fn new() -> Self {
+    pub fn new(prompt: impl Into<String>) -> Self {
         Self {
-            prompt: std::fs::read_to_string("prompts/planner.md")
-                .unwrap_or_else(|_| DEFAULT_PLANNER_PROMPT.to_string()),
+            prompt: prompt.into(),
         }
+    }
+
+    pub fn with_default_prompt() -> Self {
+        Self::new(DEFAULT_PLANNER_PROMPT)
     }
 
     pub async fn draft(
@@ -69,7 +72,7 @@ impl Planner {
 
 impl Default for Planner {
     fn default() -> Self {
-        Self::new()
+        Self::with_default_prompt()
     }
 }
 

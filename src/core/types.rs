@@ -7,6 +7,7 @@ use ulid::Ulid;
 
 use crate::core::workspace::Workspace;
 use crate::errors::ToolError;
+use crate::memory::paths::MemoryPaths;
 
 /// Unique identifier for a session (user-level, spans multiple jobs).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -74,6 +75,14 @@ pub struct PromptCompactionState {
     pub degraded: bool,
     pub consecutive_failures: u32,
     pub circuit_open: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_version: Option<String>,
+    #[serde(default)]
+    pub source_message_count: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
 }
 
 impl Default for PromptCompactionState {
@@ -84,6 +93,10 @@ impl Default for PromptCompactionState {
             degraded: false,
             consecutive_failures: 0,
             circuit_open: false,
+            model: None,
+            prompt_version: None,
+            source_message_count: 0,
+            last_error: None,
         }
     }
 }
@@ -93,6 +106,7 @@ impl Default for PromptCompactionState {
 pub enum PromptCompactionMode {
     None,
     Deterministic,
+    ModelGenerated,
     Automatic,
     Degraded,
     Disabled,
@@ -325,6 +339,25 @@ pub struct ToolCallAction {
 pub struct ToolResult {
     pub call_id: CallId,
     pub output: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mutations: Vec<ToolMutation>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ToolMutation {
+    pub path: String,
+    pub operation: ToolMutationOperation,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolMutationOperation {
+    Create,
+    Update,
+    Delete,
+    Unknown,
 }
 
 /// Token usage from a single LLM call.
@@ -373,6 +406,17 @@ pub struct ToolSchema {
     pub parameters: serde_json::Value,
     pub destructive: bool,
     pub parallel_safe: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capability: Option<ToolCapability>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ToolCapability {
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feature: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
 /// Tool approval policy.
@@ -423,6 +467,7 @@ pub trait UserInputProvider: Send + Sync {
 #[derive(Clone)]
 pub struct ToolContext<'a> {
     pub workspace: &'a Workspace,
+    pub memory_paths: MemoryPaths,
     pub approval_policy: ApprovalPolicy,
     pub cancel_token: CancellationToken,
     pub input_provider: Option<Arc<dyn UserInputProvider>>,
@@ -432,6 +477,7 @@ impl std::fmt::Debug for ToolContext<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ToolContext")
             .field("workspace", &self.workspace)
+            .field("memory_paths", &self.memory_paths)
             .field("approval_policy", &self.approval_policy)
             .field("cancel_token", &self.cancel_token)
             .field("input_provider", &self.input_provider.is_some())

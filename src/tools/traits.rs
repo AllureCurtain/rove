@@ -1,13 +1,23 @@
 use async_trait::async_trait;
 use serde_json::Value;
 
-use crate::core::types::{ToolContext, ToolSchema};
+use crate::core::types::{ToolContext, ToolMutation, ToolSchema};
 use crate::errors::ToolError;
 
 /// Result of a tool execution.
 #[derive(Debug, Clone)]
 pub struct ToolOutput {
     pub content: String,
+    pub mutations: Vec<ToolMutation>,
+}
+
+impl ToolOutput {
+    pub fn text(content: impl Into<String>) -> Self {
+        Self {
+            content: content.into(),
+            mutations: Vec::new(),
+        }
+    }
 }
 
 /// Trait that all tools must implement.

@@ -10,6 +10,8 @@ pub enum WorkspaceKind {
     Folder,
     /// A directory with git repository semantics.
     Repo,
+    /// An isolated standalone task workspace.
+    Task,
 }
 
 /// Represents the world boundary the agent is working within.
@@ -48,6 +50,23 @@ impl Workspace {
         })
     }
 
+    /// Create an isolated standalone task workspace under `base_dir`.
+    pub fn task(base_dir: &Path, name: &str) -> anyhow::Result<Self> {
+        let name = validate_task_workspace_name(name)?;
+        let base = base_dir
+            .canonicalize()
+            .unwrap_or_else(|_| base_dir.to_path_buf());
+        let root = base.join(name);
+        let state_dir = root.join(".rove");
+        std::fs::create_dir_all(&state_dir)?;
+
+        Ok(Self {
+            root,
+            kind: WorkspaceKind::Task,
+            state_dir,
+        })
+    }
+
     /// Ensure the `.rove/` state directory exists.
     pub fn ensure_state_dir(&self) -> std::io::Result<()> {
         std::fs::create_dir_all(&self.state_dir)
@@ -64,6 +83,19 @@ fn find_git_root(path: &Path) -> Option<PathBuf> {
         current = dir.parent();
     }
     None
+}
+
+fn validate_task_workspace_name(name: &str) -> anyhow::Result<&str> {
+    let trimmed = name.trim();
+    if trimmed.is_empty()
+        || Path::new(trimmed).is_absolute()
+        || Path::new(trimmed).components().count() != 1
+        || trimmed == "."
+        || trimmed == ".."
+    {
+        anyhow::bail!("invalid task workspace name: {name}");
+    }
+    Ok(trimmed)
 }
 
 #[cfg(test)]
@@ -101,5 +133,26 @@ mod tests {
             ws.state_dir,
             tmp.path().canonicalize().unwrap().join(".rove")
         );
+    }
+
+    #[test]
+    fn task_workspace_uses_isolated_root_and_state_dir_under_base() {
+        let tmp = TempDir::new().unwrap();
+        let ws = Workspace::task(tmp.path(), "standalone-task").unwrap();
+        let expected_root = tmp.path().canonicalize().unwrap().join("standalone-task");
+
+        assert_eq!(ws.kind, WorkspaceKind::Task);
+        assert_eq!(ws.root, expected_root);
+        assert_eq!(ws.state_dir, ws.root.join(".rove"));
+        assert!(ws.root.exists());
+        assert!(ws.state_dir.exists());
+    }
+
+    #[test]
+    fn task_workspace_name_rejects_path_traversal() {
+        let tmp = TempDir::new().unwrap();
+        let err = Workspace::task(tmp.path(), "../escape").unwrap_err();
+
+        assert!(err.to_string().contains("task workspace name"));
     }
 }

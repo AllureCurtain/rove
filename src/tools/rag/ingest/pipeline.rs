@@ -44,14 +44,25 @@ pub struct IngestionResult {
 
 pub struct IngestionPipeline<'a> {
     workspace_root: PathBuf,
+    state_dir: PathBuf,
     embedder: &'a dyn Embedder,
     chunker: Box<dyn ChunkingStrategy>,
 }
 
 impl<'a> IngestionPipeline<'a> {
     pub fn default_markdown(workspace_root: PathBuf, embedder: &'a dyn Embedder) -> Self {
+        let state_dir = workspace_root.join(".rove");
+        Self::default_markdown_with_state_dir(workspace_root, state_dir, embedder)
+    }
+
+    pub fn default_markdown_with_state_dir(
+        workspace_root: PathBuf,
+        state_dir: PathBuf,
+        embedder: &'a dyn Embedder,
+    ) -> Self {
         Self {
             workspace_root,
+            state_dir,
             embedder,
             chunker: Box::new(MixedCodeMarkdownChunker::new(1600, 160)),
         }
@@ -59,12 +70,9 @@ impl<'a> IngestionPipeline<'a> {
 
     pub async fn run(self) -> anyhow::Result<IngestionResult> {
         let artifact_paths = RagArtifactPaths {
-            db_dir: self.workspace_root.join(".rove").join("rag.lancedb"),
-            manifest_path: self.workspace_root.join(".rove").join("rag_manifest.json"),
-            index_log_path: self
-                .workspace_root
-                .join(".rove")
-                .join("rag_index_log.jsonl"),
+            db_dir: self.state_dir.join("rag.lancedb"),
+            manifest_path: self.state_dir.join("rag_manifest.json"),
+            index_log_path: self.state_dir.join("rag_index_log.jsonl"),
         };
         let mut context = IngestionContext {
             run_id: ulid::Ulid::new().to_string(),

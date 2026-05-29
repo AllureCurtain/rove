@@ -10,7 +10,11 @@ const MAX_TOPIC_SNIPPET_BYTES: usize = 1_200;
 
 /// Read `.rove/memory/MEMORY.md` for prompt construction.
 pub fn read_memory_index_sync(workspace: &Workspace) -> std::io::Result<Option<String>> {
-    let path = workspace.state_dir.join("memory").join("MEMORY.md");
+    read_memory_index_from_dir_sync(&workspace.state_dir.join("memory"))
+}
+
+pub fn read_memory_index_from_dir_sync(memory_dir: &Path) -> std::io::Result<Option<String>> {
+    let path = memory_dir.join("MEMORY.md");
     let content = match std::fs::read_to_string(path) {
         Ok(content) => content,
         Err(err) if err.kind() == ErrorKind::NotFound => return Ok(None),
@@ -30,11 +34,18 @@ pub fn recall_durable_memory_sync(
     query: &str,
     limit: usize,
 ) -> std::io::Result<Option<String>> {
+    recall_durable_memory_from_dir_sync(&workspace.state_dir.join("memory"), query, limit)
+}
+
+pub fn recall_durable_memory_from_dir_sync(
+    memory_dir: &Path,
+    query: &str,
+    limit: usize,
+) -> std::io::Result<Option<String>> {
     if limit == 0 {
         return Ok(None);
     }
 
-    let memory_dir = workspace.state_dir.join("memory");
     let index_path = memory_dir.join("MEMORY.md");
     let content = match std::fs::read_to_string(index_path) {
         Ok(content) => content,
@@ -70,7 +81,7 @@ pub fn recall_durable_memory_sync(
     for (_, entry) in selected {
         recalled.push_str(&entry.line);
         recalled.push('\n');
-        if let Some(snippet) = read_topic_snippet(&memory_dir, &entry.slug)? {
+        if let Some(snippet) = read_topic_snippet(memory_dir, &entry.slug)? {
             recalled.push_str(&format!("  snippet: {snippet}\n"));
         }
     }

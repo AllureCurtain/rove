@@ -18,6 +18,10 @@ required-features = ["rag"]
 name = "rove-api"
 path = "src/bin/rove-api.rs"
 
+[[bin]]
+name = "rove-bench"
+path = "src/bin/rove-bench.rs"
+
 [lib]
 name = "rove"
 path = "src/lib.rs"

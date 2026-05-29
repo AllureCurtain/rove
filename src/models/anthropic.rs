@@ -411,12 +411,57 @@ mod tests {
                 }),
                 destructive: false,
                 parallel_safe: true,
+                capability: None,
             }],
         );
 
         assert_eq!(body["tools"][0]["name"], "fs_read");
         assert_eq!(body["tools"][0]["description"], "Read a file");
         assert!(body["tools"][0]["input_schema"].is_object());
+    }
+
+    #[test]
+    fn request_body_formats_native_tool_history_for_replay() {
+        let client = AnthropicClient::new(
+            "https://api.anthropic.com".to_string(),
+            "sk-test".to_string(),
+            "claude-sonnet-4-6-20250514".to_string(),
+        );
+        let body = client.build_request_body(
+            &[
+                Message::assistant_with_tool_calls(
+                    "I will inspect that.".to_string(),
+                    vec![crate::core::types::ToolCallRef {
+                        id: "toolu_1".to_string(),
+                        name: "fs_read".to_string(),
+                        args: serde_json::json!({ "path": "Cargo.toml" }),
+                    }],
+                ),
+                Message::tool("file contents", Some("toolu_1".to_string())),
+            ],
+            &[],
+        );
+
+        assert_eq!(body["messages"][0]["role"], "assistant");
+        assert_eq!(body["messages"][0]["content"][0]["type"], "text");
+        assert_eq!(
+            body["messages"][0]["content"][0]["text"],
+            "I will inspect that."
+        );
+        assert_eq!(body["messages"][0]["content"][1]["type"], "tool_use");
+        assert_eq!(body["messages"][0]["content"][1]["id"], "toolu_1");
+        assert_eq!(body["messages"][0]["content"][1]["name"], "fs_read");
+        assert_eq!(
+            body["messages"][0]["content"][1]["input"]["path"],
+            "Cargo.toml"
+        );
+        assert_eq!(body["messages"][1]["role"], "user");
+        assert_eq!(body["messages"][1]["content"][0]["type"], "tool_result");
+        assert_eq!(body["messages"][1]["content"][0]["tool_use_id"], "toolu_1");
+        assert_eq!(
+            body["messages"][1]["content"][0]["content"],
+            "file contents"
+        );
     }
 
     #[test]

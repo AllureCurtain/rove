@@ -28,6 +28,7 @@ impl Tool for EchoTool {
             }),
             destructive: false,
             parallel_safe: true,
+            capability: None,
         }
     }
 
@@ -39,9 +40,7 @@ impl Tool for EchoTool {
                 reason: "Missing required argument: message".to_string(),
             })?;
 
-        Ok(ToolOutput {
-            content: message.to_string(),
-        })
+        Ok(ToolOutput::text(message))
     }
 }
 
@@ -52,6 +51,7 @@ mod tests {
     use super::*;
     use crate::core::types::{ApprovalPolicy, ToolContext};
     use crate::core::workspace::{Workspace, WorkspaceKind};
+    use crate::memory::paths::MemoryPaths;
     use tokio_util::sync::CancellationToken;
 
     fn test_workspace() -> Workspace {
@@ -69,6 +69,7 @@ mod tests {
         let workspace = test_workspace();
         let ctx = ToolContext {
             workspace: &workspace,
+            memory_paths: MemoryPaths::from_workspace(&workspace, 8),
             approval_policy: ApprovalPolicy::Auto,
             cancel_token: CancellationToken::new(),
             input_provider: None,
@@ -84,6 +85,7 @@ mod tests {
         let workspace = test_workspace();
         let ctx = ToolContext {
             workspace: &workspace,
+            memory_paths: MemoryPaths::from_workspace(&workspace, 8),
             approval_policy: ApprovalPolicy::Auto,
             cancel_token: CancellationToken::new(),
             input_provider: None,

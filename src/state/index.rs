@@ -6,7 +6,7 @@ use chrono::{DateTime, FixedOffset, Utc};
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::core::events::StreamEvent;
-use crate::core::types::{JobId, RunId, SessionId, TaskState};
+use crate::core::types::{CallId, JobId, RunId, SessionId, TaskState};
 
 const CURRENT_SCHEMA_VERSION: i64 = 1;
 const DEFAULT_BUSY_TIMEOUT_MS: u64 = 5_000;
@@ -512,6 +512,154 @@ impl StateIndex {
         Ok(())
     }
 
+    pub async fn record_pending_approval_async(
+        &self,
+        call_id: CallId,
+        job_id: JobId,
+        run_id: RunId,
+        name: String,
+        args_json: String,
+        reason: String,
+    ) -> std::io::Result<()> {
+        let index = self.clone();
+        tokio::task::spawn_blocking(move || {
+            index.record_pending_approval(call_id, job_id, run_id, &name, &args_json, &reason)
+        })
+        .await
+        .map_err(std::io::Error::other)?
+    }
+
+    pub fn record_pending_approval(
+        &self,
+        call_id: CallId,
+        job_id: JobId,
+        run_id: RunId,
+        name: &str,
+        args_json: &str,
+        reason: &str,
+    ) -> std::io::Result<()> {
+        let conn = self.connect()?;
+        let now = now_rfc3339();
+        conn.execute(
+            r#"
+            INSERT INTO pending_approvals(
+                call_id, job_id, run_id, name, args_json, reason, status, created_at, updated_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', ?7, ?7)
+            ON CONFLICT(call_id) DO UPDATE SET
+                job_id = excluded.job_id,
+                run_id = excluded.run_id,
+                name = excluded.name,
+                args_json = excluded.args_json,
+                reason = excluded.reason,
+                status = 'pending',
+                updated_at = excluded.updated_at
+            "#,
+            params![
+                call_id.to_string(),
+                job_id.to_string(),
+                run_id.to_string(),
+                name,
+                args_json,
+                reason,
+                now,
+            ],
+        )
+        .map_err(io_other)?;
+        Ok(())
+    }
+
+    pub async fn record_pending_input_async(
+        &self,
+        input_id: CallId,
+        job_id: JobId,
+        run_id: RunId,
+        prompt: String,
+    ) -> std::io::Result<()> {
+        let index = self.clone();
+        tokio::task::spawn_blocking(move || {
+            index.record_pending_input(input_id, job_id, run_id, &prompt)
+        })
+        .await
+        .map_err(std::io::Error::other)?
+    }
+
+    pub fn record_pending_input(
+        &self,
+        input_id: CallId,
+        job_id: JobId,
+        run_id: RunId,
+        prompt: &str,
+    ) -> std::io::Result<()> {
+        let conn = self.connect()?;
+        let now = now_rfc3339();
+        conn.execute(
+            r#"
+            INSERT INTO pending_inputs(
+                input_id, job_id, run_id, prompt, status, created_at, updated_at
+            )
+            VALUES (?1, ?2, ?3, ?4, 'pending', ?5, ?5)
+            ON CONFLICT(input_id) DO UPDATE SET
+                job_id = excluded.job_id,
+                run_id = excluded.run_id,
+                prompt = excluded.prompt,
+                status = 'pending',
+                updated_at = excluded.updated_at
+            "#,
+            params![
+                input_id.to_string(),
+                job_id.to_string(),
+                run_id.to_string(),
+                prompt,
+                now,
+            ],
+        )
+        .map_err(io_other)?;
+        Ok(())
+    }
+
+    pub async fn mark_pending_approval_status_async(
+        &self,
+        call_id: CallId,
+        status: String,
+    ) -> std::io::Result<()> {
+        let index = self.clone();
+        tokio::task::spawn_blocking(move || index.mark_pending_approval_status(call_id, &status))
+            .await
+            .map_err(std::io::Error::other)?
+    }
+
+    pub fn mark_pending_approval_status(
+        &self,
+        call_id: CallId,
+        status: &str,
+    ) -> std::io::Result<()> {
+        self.mark_pending_status("pending_approvals", "call_id", call_id, status)
+    }
+
+    pub async fn mark_pending_input_status_async(
+        &self,
+        input_id: CallId,
+        status: String,
+    ) -> std::io::Result<()> {
+        let index = self.clone();
+        tokio::task::spawn_blocking(move || index.mark_pending_input_status(input_id, &status))
+            .await
+            .map_err(std::io::Error::other)?
+    }
+
+    pub fn mark_pending_input_status(&self, input_id: CallId, status: &str) -> std::io::Result<()> {
+        self.mark_pending_status("pending_inputs", "input_id", input_id, status)
+    }
+
+    pub fn pending_approval_status(&self, call_id: CallId) -> std::io::Result<Option<String>> {
+        self.pending_status("pending_approvals", "call_id", call_id)
+    }
+
+    pub fn pending_input_status(&self, input_id: CallId) -> std::io::Result<Option<String>> {
+        self.pending_status("pending_inputs", "input_id", input_id)
+    }
+
     pub async fn cleanup_expired_async(&self) -> std::io::Result<CleanupResult> {
         let index = self.clone();
         tokio::task::spawn_blocking(move || index.cleanup_expired())
@@ -567,6 +715,26 @@ impl StateIndex {
             UPDATE runs
             SET status = 'interrupted', completed_at = ?1, updated_at = ?1
             WHERE status IN ('init', 'running')
+            "#,
+            params![now],
+        )
+        .map_err(io_other)?;
+        conn.execute(
+            r#"
+            UPDATE pending_approvals
+            SET status = 'interrupted', updated_at = ?1
+            WHERE status = 'pending'
+                AND job_id IN (SELECT job_id FROM jobs WHERE status = 'interrupted')
+            "#,
+            params![now],
+        )
+        .map_err(io_other)?;
+        conn.execute(
+            r#"
+            UPDATE pending_inputs
+            SET status = 'interrupted', updated_at = ?1
+            WHERE status = 'pending'
+                AND job_id IN (SELECT job_id FROM jobs WHERE status = 'interrupted')
             "#,
             params![now],
         )
@@ -772,6 +940,34 @@ impl StateIndex {
             .map_err(io_other)?;
         apply_migrations(&conn)?;
         Ok(conn)
+    }
+
+    fn mark_pending_status(
+        &self,
+        table: &str,
+        id_column: &str,
+        id: CallId,
+        status: &str,
+    ) -> std::io::Result<()> {
+        let conn = self.connect()?;
+        let now = now_rfc3339();
+        let sql = format!("UPDATE {table} SET status = ?2, updated_at = ?3 WHERE {id_column} = ?1");
+        conn.execute(&sql, params![id.to_string(), status, now])
+            .map_err(io_other)?;
+        Ok(())
+    }
+
+    fn pending_status(
+        &self,
+        table: &str,
+        id_column: &str,
+        id: CallId,
+    ) -> std::io::Result<Option<String>> {
+        let conn = self.connect()?;
+        let sql = format!("SELECT status FROM {table} WHERE {id_column} = ?1");
+        conn.query_row(&sql, params![id.to_string()], |row| row.get(0))
+            .optional()
+            .map_err(io_other)
     }
 }
 

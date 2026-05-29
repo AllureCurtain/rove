@@ -1,9 +1,11 @@
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+use crate::core::events::StreamEvent;
 use crate::core::types::{JobId, RunId, RunRequest, SessionId, TaskState};
 
 use super::index::{CleanupResult, StateIndex, TaskStateIndexRecord};
+use super::report::RunReport;
 use super::trace::RunStore;
 use super::trace::TraceWriter;
 
@@ -30,11 +32,19 @@ pub struct RunHandle {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepairResult {
     pub task_state_count: usize,
+    pub event_count: usize,
+    pub report_count: usize,
+    pub corrupt_trace_line_count: usize,
 }
 
 struct TaskStateEntry {
     path: PathBuf,
     modified: SystemTime,
+}
+
+struct TraceImportResult {
+    event_count: usize,
+    corrupt_line_count: usize,
 }
 
 impl StateStore {
@@ -149,7 +159,14 @@ impl StateStore {
 
     pub async fn repair_index(&self) -> std::io::Result<RepairResult> {
         let task_state_count = self.import_task_states().await?;
-        Ok(RepairResult { task_state_count })
+        let report_count = self.import_reports().await?;
+        let trace_import = self.import_trace_events().await?;
+        Ok(RepairResult {
+            task_state_count,
+            event_count: trace_import.event_count,
+            report_count,
+            corrupt_trace_line_count: trace_import.corrupt_line_count,
+        })
     }
 
     pub async fn cleanup_expired(&self) -> std::io::Result<CleanupResult> {
@@ -176,9 +193,92 @@ impl StateStore {
         let mut imported = 0;
         for entry in entries {
             let state = self.load_task_state_path(&entry.path).await?;
+            if Some(state.run_id) != run_id_from_artifact_path(&entry.path) {
+                tracing::warn!(
+                    path = %entry.path.display(),
+                    task_state_run_id = %state.run_id,
+                    "Skipping task state with mismatched run identity during state repair"
+                );
+                continue;
+            }
             self.index
                 .record_task_state_async(state, entry.path, entry.modified)
                 .await?;
+            imported += 1;
+        }
+        Ok(imported)
+    }
+
+    async fn import_trace_events(&self) -> std::io::Result<TraceImportResult> {
+        let entries = self.run_artifact_entries("trace.jsonl").await?;
+        let mut event_count = 0;
+        let mut corrupt_line_count = 0;
+        for entry in entries {
+            let Some(run_id) = run_id_from_artifact_path(&entry) else {
+                continue;
+            };
+            let content = tokio::fs::read_to_string(&entry).await?;
+            let mut seq = 0;
+            for (line_index, line) in content.lines().enumerate() {
+                if line.trim().is_empty() {
+                    continue;
+                }
+                let line_number = line_index + 1;
+                match serde_json::from_str::<StreamEvent>(line) {
+                    Ok(event) => {
+                        seq += 1;
+                        self.index.append_event(run_id, seq, &event, line)?;
+                        event_count += 1;
+                    }
+                    Err(err) => {
+                        corrupt_line_count += 1;
+                        tracing::warn!(
+                            path = %entry.display(),
+                            line = line_number,
+                            error = %err,
+                            "Skipping corrupted trace line during state repair"
+                        );
+                    }
+                }
+            }
+        }
+        Ok(TraceImportResult {
+            event_count,
+            corrupt_line_count,
+        })
+    }
+
+    async fn import_reports(&self) -> std::io::Result<usize> {
+        let entries = self.run_artifact_entries("report.json").await?;
+        let mut imported = 0;
+        for entry in entries {
+            let report = self.load_report_path(&entry).await?;
+            if Some(report.run_id) != run_id_from_artifact_path(&entry) {
+                tracing::warn!(
+                    path = %entry.display(),
+                    report_run_id = %report.run_id,
+                    "Skipping report with mismatched run identity during state repair"
+                );
+                continue;
+            }
+            let run_dir = entry
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| self.run_store.run_dir(&report.run_id));
+            self.index.record_run_started(
+                report.session_id,
+                report.job_id,
+                report.run_id,
+                &run_dir,
+                &run_dir.join("trace.jsonl"),
+            )?;
+            self.record_report(
+                report.run_id,
+                entry,
+                report.status,
+                termination_reason_label(&report.termination_reason).to_string(),
+            )
+            .await?;
             imported += 1;
         }
         Ok(imported)
@@ -207,11 +307,35 @@ impl StateStore {
         Ok(state_paths)
     }
 
+    async fn run_artifact_entries(&self, file_name: &str) -> std::io::Result<Vec<PathBuf>> {
+        let runs_dir = self.state_dir.join("runs");
+        let mut entries = match tokio::fs::read_dir(&runs_dir).await {
+            Ok(entries) => entries,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(err) => return Err(err),
+        };
+
+        let mut artifact_paths = Vec::new();
+        while let Some(entry) = entries.next_entry().await? {
+            let path = entry.path().join(file_name);
+            if tokio::fs::try_exists(&path).await? {
+                artifact_paths.push(path);
+            }
+        }
+        artifact_paths.sort();
+        Ok(artifact_paths)
+    }
+
     async fn load_task_state_path(&self, path: &Path) -> std::io::Result<TaskState> {
         let bytes = tokio::fs::read(path).await?;
         let state: TaskState = serde_json::from_slice(&bytes).map_err(std::io::Error::other)?;
         validate_task_state_schema(&state)?;
         Ok(state)
+    }
+
+    async fn load_report_path(&self, path: &Path) -> std::io::Result<RunReport> {
+        let bytes = tokio::fs::read(path).await?;
+        serde_json::from_slice(&bytes).map_err(std::io::Error::other)
     }
 }
 
@@ -246,11 +370,21 @@ fn validate_task_state_schema(state: &TaskState) -> std::io::Result<()> {
     Ok(())
 }
 
-fn sort_newest_first(entries: &mut [TaskStateEntry]) {
-    entries.sort_by(|left, right| {
-        right
-            .modified
-            .cmp(&left.modified)
-            .then_with(|| right.path.cmp(&left.path))
-    });
+fn run_id_from_artifact_path(path: &Path) -> Option<RunId> {
+    path.parent()
+        .and_then(Path::file_name)
+        .and_then(|name| name.to_str())
+        .and_then(|value| ulid::Ulid::from_string(value).ok())
+        .map(RunId)
+}
+
+fn termination_reason_label(reason: &crate::core::types::TerminationReason) -> &'static str {
+    match reason {
+        crate::core::types::TerminationReason::Final => "final",
+        crate::core::types::TerminationReason::StepLimit => "step_limit",
+        crate::core::types::TerminationReason::TokenLimit => "token_limit",
+        crate::core::types::TerminationReason::TimeLimit => "time_limit",
+        crate::core::types::TerminationReason::Error => "error",
+        crate::core::types::TerminationReason::Cancelled => "cancelled",
+    }
 }

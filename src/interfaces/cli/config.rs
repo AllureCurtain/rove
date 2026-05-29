@@ -29,6 +29,9 @@ pub fn format_effective_config(config: &AppConfig) -> String {
         "runtime": {
             "max_steps": config.runtime.max_steps,
             "system_prompt_path": config.runtime.system_prompt_path.to_string_lossy(),
+            "planner_prompt_path": config.runtime.planner_prompt_path.to_string_lossy(),
+            "model_compaction_enabled": config.runtime.model_compaction_enabled,
+            "compaction_failure_threshold": config.runtime.compaction_failure_threshold,
             "context_soft_limit_tokens": config.runtime.context_soft_limit_tokens,
             "context_hard_limit_tokens": config.runtime.context_hard_limit_tokens,
             "context_reserved_tokens": config.runtime.context_reserved_tokens,
@@ -44,6 +47,12 @@ pub fn format_effective_config(config: &AppConfig) -> String {
         },
         "tool": {
             "mcp_config_path": config.tool.mcp_config_path.to_string_lossy(),
+            "shell": {
+                "timeout_ms": config.tool.shell.timeout_ms,
+                "max_output_bytes": config.tool.shell.max_output_bytes,
+                "inherit_environment": config.tool.shell.inherit_environment,
+                "denylist": config.tool.shell.denylist,
+            },
         },
         "memory": {
             "session_dir": config.memory.session_dir.to_string_lossy(),
@@ -70,6 +79,21 @@ pub fn format_effective_config(config: &AppConfig) -> String {
         "routing": {
             "failure_threshold": config.routing.failure_threshold,
             "open_cooldown_ms": config.routing.open_cooldown_ms,
+            "retry_max_attempts": config.routing.retry_max_attempts,
+            "retry_backoff_base_ms": config.routing.retry_backoff_base_ms,
+            "retry_backoff_max_ms": config.routing.retry_backoff_max_ms,
+        },
+        "rag": {
+            "deterministic": config.rag.deterministic,
+            "embedding_provider": config.rag.embedding_provider,
+            "embedding_model": config.rag.embedding_model,
+            "embedding_api_base": config.rag.embedding_api_base,
+            "embedding_api_key_set": !config.rag.embedding_api_key.is_empty(),
+            "rerank_provider": config.rag.rerank_provider,
+            "rerank_model": config.rag.rerank_model,
+            "rerank_api_key_set": config.rag.rerank_api_key.as_deref().is_some_and(|key| !key.is_empty()),
+            "timeout_ms": config.rag.timeout_ms,
+            "fallback_to_deterministic": config.rag.fallback_to_deterministic,
         },
         "sources": {
             "workspace_root": config.source_summary.workspace_root.to_string_lossy(),
@@ -80,6 +104,7 @@ pub fn format_effective_config(config: &AppConfig) -> String {
         },
         "resolved_paths": {
             "system_prompt_path": config.resolve_path(&config.runtime.system_prompt_path).to_string_lossy(),
+            "planner_prompt_path": config.resolve_path(&config.runtime.planner_prompt_path).to_string_lossy(),
             "mcp_config_path": config.resolve_path(&config.tool.mcp_config_path).to_string_lossy(),
             "state_dir": config.state_dir().to_string_lossy(),
             "sqlite_path": config.sqlite_path().to_string_lossy(),

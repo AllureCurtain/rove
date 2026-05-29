@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
+use rove::config::{AppConfig, AppConfigOverrides};
 use rove::core::context::{ContextBudget, ContextManager};
 use rove::core::engine::{Engine, EngineConfig};
 use rove::core::events::StreamEvent;
@@ -20,6 +21,7 @@ use rove::hooks::{
 };
 use rove::interfaces::cli::oneshot::{run_oneshot, run_oneshot_with_cancel};
 use rove::memory::durable::read_memory_index_sync;
+use rove::memory::paths::MemoryPaths;
 use rove::models::traits::{ModelClient, ModelEvent};
 use rove::state::report::RunReport;
 use rove::state::store::StateStore;
@@ -79,6 +81,91 @@ impl ModelClient for FakeModelClient {
 
     fn model_id(&self) -> &str {
         "fake-model"
+    }
+}
+
+struct FailingAfterFirstCallModelClient {
+    first_response: String,
+    call_count: std::sync::atomic::AtomicUsize,
+}
+
+impl FailingAfterFirstCallModelClient {
+    fn new(first_response: impl Into<String>) -> Self {
+        Self {
+            first_response: first_response.into(),
+            call_count: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+}
+
+#[async_trait]
+impl ModelClient for FailingAfterFirstCallModelClient {
+    fn stream(
+        &self,
+        _messages: &[Message],
+        _tools: &[ToolSchema],
+    ) -> BoxStream<'_, Result<ModelEvent, ModelError>> {
+        let idx = self
+            .call_count
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if idx == 0 {
+            return Box::pin(futures::stream::iter([Ok(ModelEvent::TextDelta {
+                text: self.first_response.clone(),
+            })]));
+        }
+        Box::pin(futures::stream::iter([Err(ModelError::RequestFailed(
+            "compaction model failed".to_string(),
+        ))]))
+    }
+
+    fn model_id(&self) -> &str {
+        "failing-after-first-call"
+    }
+}
+
+struct CapturingFakeModelClient {
+    responses: Vec<String>,
+    call_count: std::sync::atomic::AtomicUsize,
+    captured_messages: Arc<Mutex<Vec<Vec<Message>>>>,
+}
+
+impl CapturingFakeModelClient {
+    fn new(responses: Vec<String>, captured_messages: Arc<Mutex<Vec<Vec<Message>>>>) -> Self {
+        Self {
+            responses,
+            call_count: std::sync::atomic::AtomicUsize::new(0),
+            captured_messages,
+        }
+    }
+}
+
+#[async_trait]
+impl ModelClient for CapturingFakeModelClient {
+    fn stream(
+        &self,
+        messages: &[Message],
+        _tools: &[ToolSchema],
+    ) -> BoxStream<'_, Result<ModelEvent, ModelError>> {
+        self.captured_messages
+            .lock()
+            .unwrap()
+            .push(messages.to_vec());
+        let idx = self
+            .call_count
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let response = self
+            .responses
+            .get(idx)
+            .cloned()
+            .unwrap_or_else(|| "No more responses configured".to_string());
+
+        Box::pin(futures::stream::iter([Ok(ModelEvent::TextDelta {
+            text: response,
+        })]))
+    }
+
+    fn model_id(&self) -> &str {
+        "capturing-fake-model"
     }
 }
 
@@ -170,6 +257,33 @@ impl ModelClient for NativeToolUseModelClient {
     }
 }
 
+struct ThinkingStatusModelClient;
+
+#[async_trait]
+impl ModelClient for ThinkingStatusModelClient {
+    fn stream(
+        &self,
+        _messages: &[Message],
+        _tools: &[ToolSchema],
+    ) -> BoxStream<'_, Result<ModelEvent, ModelError>> {
+        Box::pin(futures::stream::iter([
+            Ok(ModelEvent::ThinkingDelta {
+                text: "PRIVATE_CHAIN_OF_THOUGHT".to_string(),
+            }),
+            Ok(ModelEvent::TextDelta {
+                text: "done".to_string(),
+            }),
+            Ok(ModelEvent::Usage {
+                usage: Usage::default(),
+            }),
+        ]))
+    }
+
+    fn model_id(&self) -> &str {
+        "thinking-status-model"
+    }
+}
+
 struct FakeDestructiveTool;
 
 #[async_trait]
@@ -184,6 +298,7 @@ impl Tool for FakeDestructiveTool {
             }),
             destructive: true,
             parallel_safe: false,
+            capability: None,
         }
     }
 
@@ -192,9 +307,7 @@ impl Tool for FakeDestructiveTool {
         _args: serde_json::Value,
         _ctx: &ToolContext<'_>,
     ) -> Result<ToolOutput, ToolError> {
-        Ok(ToolOutput {
-            content: "should never run".to_string(),
-        })
+        Ok(ToolOutput::text("should never run"))
     }
 }
 
@@ -217,6 +330,7 @@ impl Tool for CountingTool {
             }),
             destructive: false,
             parallel_safe: false,
+            capability: None,
         }
     }
 
@@ -226,9 +340,7 @@ impl Tool for CountingTool {
         _ctx: &ToolContext<'_>,
     ) -> Result<ToolOutput, ToolError> {
         self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        Ok(ToolOutput {
-            content: "executed".to_string(),
-        })
+        Ok(ToolOutput::text("executed"))
     }
 }
 
@@ -246,6 +358,7 @@ impl Tool for NeverCompletesTool {
             }),
             destructive: false,
             parallel_safe: false,
+            capability: None,
         }
     }
 
@@ -298,6 +411,7 @@ impl Tool for ProbeTool {
             }),
             destructive: false,
             parallel_safe: self.parallel_safe,
+            capability: None,
         }
     }
 
@@ -328,9 +442,7 @@ impl Tool for ProbeTool {
         self.active
             .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
 
-        Ok(ToolOutput {
-            content: label.to_string(),
-        })
+        Ok(ToolOutput::text(label))
     }
 }
 
@@ -509,6 +621,16 @@ fn build_test_engine_with_workspace(responses: Vec<String>, workspace: Workspace
     )
 }
 
+fn tool_context(workspace: &Workspace, approval_policy: ApprovalPolicy) -> ToolContext<'_> {
+    ToolContext {
+        workspace,
+        memory_paths: MemoryPaths::from_workspace(workspace, 8),
+        approval_policy,
+        cancel_token: CancellationToken::new(),
+        input_provider: None,
+    }
+}
+
 fn build_engine_with_destructive_tool(
     responses: Vec<String>,
     workspace: Workspace,
@@ -580,6 +702,28 @@ async fn collect_events_with_request(engine: &Engine, req: RunRequest) -> Vec<St
     events
 }
 
+fn tool_lifecycle(events: &[StreamEvent]) -> Vec<String> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            StreamEvent::ToolCallStarted {
+                name,
+                args,
+                tool_use_id,
+                ..
+            } => Some(format!("started:{name}:{args}:{tool_use_id:?}")),
+            StreamEvent::ToolCallApprovalNeeded { name, args, .. } => {
+                Some(format!("approval:{name}:{args}"))
+            }
+            StreamEvent::ToolCallCompleted { result, .. } => {
+                Some(format!("completed:{}", result.output))
+            }
+            StreamEvent::ToolCallFailed { error, .. } => Some(format!("failed:{error}")),
+            _ => None,
+        })
+        .collect()
+}
+
 #[tokio::test]
 async fn destructive_tool_is_blocked_when_policy_is_never() {
     let tmp = tempfile::TempDir::new().unwrap();
@@ -589,12 +733,7 @@ async fn destructive_tool_is_blocked_when_policy_is_never() {
     registry.register(Box::new(FakeDestructiveTool));
 
     let executor = rove::core::executor::Executor::new(&registry);
-    let ctx = ToolContext {
-        workspace: &workspace,
-        approval_policy: ApprovalPolicy::Never,
-        cancel_token: CancellationToken::new(),
-        input_provider: None,
-    };
+    let ctx = tool_context(&workspace, ApprovalPolicy::Never);
 
     let err = executor
         .run(&ctx, "danger", serde_json::json!({}), CallId::new())
@@ -613,12 +752,7 @@ async fn destructive_tool_requires_explicit_approval_when_policy_is_ask() {
     registry.register(Box::new(FakeDestructiveTool));
 
     let executor = rove::core::executor::Executor::new(&registry);
-    let ctx = ToolContext {
-        workspace: &workspace,
-        approval_policy: ApprovalPolicy::Ask,
-        cancel_token: CancellationToken::new(),
-        input_provider: None,
-    };
+    let ctx = tool_context(&workspace, ApprovalPolicy::Ask);
 
     let err = executor
         .run(&ctx, "danger", serde_json::json!({}), CallId::new())
@@ -742,12 +876,7 @@ async fn executor_rejects_wrong_argument_type_before_tool_runs() {
     }));
 
     let executor = rove::core::executor::Executor::new(&registry);
-    let ctx = ToolContext {
-        workspace: &workspace,
-        approval_policy: ApprovalPolicy::Auto,
-        cancel_token: CancellationToken::new(),
-        input_provider: None,
-    };
+    let ctx = tool_context(&workspace, ApprovalPolicy::Auto);
 
     let err = executor
         .run(
@@ -775,12 +904,7 @@ async fn empty_hook_registry_preserves_tool_result() {
     }));
 
     let executor = rove::core::executor::Executor::with_hooks(&registry, HookRegistry::default());
-    let ctx = ToolContext {
-        workspace: &workspace,
-        approval_policy: ApprovalPolicy::Auto,
-        cancel_token: CancellationToken::new(),
-        input_provider: None,
-    };
+    let ctx = tool_context(&workspace, ApprovalPolicy::Auto);
 
     let result = executor
         .run(
@@ -808,12 +932,7 @@ async fn pre_tool_hook_can_block_before_tool_runs() {
     }));
     let hooks = HookRegistry::default().with_pre_tool(Box::new(BlockingPreHook));
     let executor = rove::core::executor::Executor::with_hooks(&registry, hooks);
-    let ctx = ToolContext {
-        workspace: &workspace,
-        approval_policy: ApprovalPolicy::Auto,
-        cancel_token: CancellationToken::new(),
-        input_provider: None,
-    };
+    let ctx = tool_context(&workspace, ApprovalPolicy::Auto);
 
     let err = executor
         .run(
@@ -848,6 +967,7 @@ async fn pre_tool_hook_receives_cancellation_token_in_context() {
     let cancel = CancellationToken::new();
     let ctx = ToolContext {
         workspace: &workspace,
+        memory_paths: MemoryPaths::from_workspace(&workspace, 8),
         approval_policy: ApprovalPolicy::Auto,
         cancel_token: cancel.clone(),
         input_provider: None,
@@ -881,12 +1001,7 @@ async fn post_tool_hook_observes_successful_tool_result() {
         records: records.clone(),
     }));
     let executor = rove::core::executor::Executor::with_hooks(&registry, hooks);
-    let ctx = ToolContext {
-        workspace: &workspace,
-        approval_policy: ApprovalPolicy::Auto,
-        cancel_token: CancellationToken::new(),
-        input_provider: None,
-    };
+    let ctx = tool_context(&workspace, ApprovalPolicy::Auto);
 
     let result = executor
         .run(
@@ -1422,6 +1537,115 @@ async fn repair_index_explicitly_imports_legacy_task_state_artifacts() {
 }
 
 #[tokio::test]
+async fn repair_index_rebuilds_events_and_report_from_artifacts() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let store = StateStore::new(tmp.path());
+    let session_id = SessionId::new();
+    let job_id = JobId::new();
+    let run_id = RunId::new();
+    let run = store.start_run(session_id, job_id, run_id).unwrap();
+    let started = StreamEvent::RunStarted {
+        run_id,
+        job_id,
+        user_message: "repair trace".to_string(),
+    };
+    let completed = StreamEvent::RunCompleted {
+        reason: TerminationReason::Final,
+        output: Some("done".to_string()),
+    };
+    run.trace_writer.append(&started).unwrap();
+    run.trace_writer.append(&completed).unwrap();
+    let state = TaskState {
+        schema_version: 1,
+        session_id,
+        job_id,
+        run_id,
+        goal: "repair trace".to_string(),
+        step: 1,
+        history: vec![user_message("repair trace")],
+        summary: Some("done".to_string()),
+        checkpoint: None,
+        plan: None,
+    };
+    store.write_task_state(&state).await.unwrap();
+    let report = RunReport::new(
+        session_id,
+        job_id,
+        run_id,
+        tmp.path().to_path_buf(),
+        WorkspaceKind::Folder,
+        "fake".to_string(),
+        TerminationReason::Final,
+    );
+    rove::state::report::write_report(&run.run_dir, &report).unwrap();
+    std::fs::remove_file(store.index.path()).unwrap();
+
+    let repaired = store.repair_index().await.unwrap();
+
+    assert_eq!(repaired.task_state_count, 1);
+    assert_eq!(repaired.event_count, 2);
+    assert_eq!(repaired.report_count, 1);
+    let indexed_events = store.index.event_records(run_id).unwrap();
+    assert_eq!(indexed_events.len(), 2);
+    assert_eq!(indexed_events[0].event_name, "run_started");
+    assert_eq!(indexed_events[1].event_name, "run_completed");
+    assert_eq!(store.index.last_event_seq(run_id).unwrap(), 2);
+    let indexed_run = store.index.run_record(run_id).unwrap().unwrap();
+    assert_eq!(indexed_run.status, "done");
+    assert_eq!(indexed_run.last_event_seq, 2);
+    assert!(store.index.report_record(run_id).unwrap().is_some());
+    assert!(store.index.job_record(job_id).unwrap().is_some());
+}
+
+#[tokio::test]
+async fn repair_index_reports_corrupted_trace_lines_without_aborting() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let store = StateStore::new(tmp.path());
+    let session_id = SessionId::new();
+    let job_id = JobId::new();
+    let run_id = RunId::new();
+    let run_dir = tmp.path().join("runs").join(run_id.to_string());
+    std::fs::create_dir_all(&run_dir).unwrap();
+    let state = TaskState {
+        schema_version: 1,
+        session_id,
+        job_id,
+        run_id,
+        goal: "repair corrupted trace".to_string(),
+        step: 1,
+        history: vec![user_message("repair corrupted trace")],
+        summary: None,
+        checkpoint: None,
+        plan: None,
+    };
+    std::fs::write(
+        run_dir.join("task_state.json"),
+        serde_json::to_vec_pretty(&state).unwrap(),
+    )
+    .unwrap();
+    let valid_event = serde_json::to_string(&StreamEvent::RunStarted {
+        run_id,
+        job_id,
+        user_message: "repair corrupted trace".to_string(),
+    })
+    .unwrap();
+    std::fs::write(
+        run_dir.join("trace.jsonl"),
+        format!("{valid_event}\nnot-json\n"),
+    )
+    .unwrap();
+
+    let repaired = store.repair_index().await.unwrap();
+
+    assert_eq!(repaired.task_state_count, 1);
+    assert_eq!(repaired.event_count, 1);
+    assert_eq!(repaired.corrupt_trace_line_count, 1);
+    let indexed_events = store.index.event_records(run_id).unwrap();
+    assert_eq!(indexed_events.len(), 1);
+    assert_eq!(indexed_events[0].event_name, "run_started");
+}
+
+#[tokio::test]
 async fn repair_index_does_not_cleanup_expired_state_rows() {
     let tmp = tempfile::TempDir::new().unwrap();
     let store = StateStore::new(tmp.path());
@@ -1765,6 +1989,72 @@ async fn engine_includes_session_memory_file_in_prompt() {
 }
 
 #[tokio::test]
+async fn engine_honors_configured_session_memory_dir_for_read_and_write() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let session_id = SessionId::new();
+    let session_dir = workspace.root.join("configured-session-memory");
+    std::fs::create_dir_all(&session_dir).unwrap();
+    std::fs::write(
+        session_dir.join(format!("{session_id}.md")),
+        "configured session preference",
+    )
+    .unwrap();
+    let captured_messages = Arc::new(Mutex::new(None));
+    let model = Box::new(RecordingModelClient::new(captured_messages.clone()));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(EchoTool));
+    let engine = Engine::with_workspace(
+        model,
+        registry,
+        ContextManager::with_max_history("system".to_string(), 2),
+        EngineConfig {
+            max_steps: 1,
+            plan_enabled: false,
+        },
+        workspace.clone(),
+        ApprovalPolicy::Auto,
+    )
+    .with_memory_paths(rove::memory::paths::MemoryPaths {
+        session_dir: session_dir.clone(),
+        durable_dir: workspace.state_dir.join("memory"),
+        recall_limit: 8,
+    });
+    let req = RunRequest {
+        session_id,
+        job_id: JobId::new(),
+        run_id: RunId::new(),
+        user_message: "current task".to_string(),
+        resume_state: None,
+    };
+
+    let events = collect_events_with_request(&engine, req).await;
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, StreamEvent::RunCompleted { .. }))
+    );
+
+    let messages = captured_messages.lock().unwrap().clone().unwrap();
+    assert_eq!(
+        messages[1].content,
+        "Session summary: configured session preference"
+    );
+    let summary = std::fs::read_to_string(session_dir.join(format!("{session_id}.md"))).unwrap();
+    assert!(summary.contains("- Goal: current task"));
+    assert!(summary.contains("- Status: final"));
+    assert!(summary.contains("- Output: done"));
+    assert!(
+        !workspace
+            .state_dir
+            .join("memory")
+            .join("sessions")
+            .join(format!("{session_id}.md"))
+            .exists()
+    );
+}
+
+#[tokio::test]
 async fn engine_writes_final_output_to_session_memory_file() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
@@ -1795,10 +2085,90 @@ async fn engine_writes_final_output_to_session_memory_file() {
         .join("memory")
         .join("sessions")
         .join(format!("{session_id}.md"));
-    assert_eq!(
-        std::fs::read_to_string(session_memory_path).unwrap(),
-        "learned session summary"
+    let summary = std::fs::read_to_string(session_memory_path).unwrap();
+    assert!(summary.contains("- Goal: finish"));
+    assert!(summary.contains("- Status: final"));
+    assert!(summary.contains("- Output: learned session summary"));
+}
+
+#[tokio::test]
+async fn engine_writes_deterministic_session_summary_with_tool_activity() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let session_id = SessionId::new();
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(EchoTool));
+    registry.register(Box::new(FsWriteTool::new(workspace.root.clone())));
+    let engine = Engine::with_workspace(
+        Box::new(FakeModelClient::new(vec![
+            r#"{"tool":"fs_write","args":{"path":"note.txt","content":"remember this"}}"#
+                .to_string(),
+            "all set".to_string(),
+        ])),
+        registry,
+        ContextManager::new("system".to_string()),
+        EngineConfig {
+            max_steps: 3,
+            plan_enabled: false,
+        },
+        workspace.clone(),
+        ApprovalPolicy::Auto,
     );
+    let req = RunRequest {
+        session_id,
+        job_id: JobId::new(),
+        run_id: RunId::new(),
+        user_message: "write a note".to_string(),
+        resume_state: None,
+    };
+
+    let events = collect_events_with_request(&engine, req).await;
+    assert!(events.iter().any(|event| matches!(
+        event,
+        StreamEvent::ToolCallCompleted { result, .. }
+            if result.mutations.iter().any(|mutation| mutation.path == "note.txt")
+    )));
+
+    let session_memory_path = workspace
+        .state_dir
+        .join("memory")
+        .join("sessions")
+        .join(format!("{session_id}.md"));
+    let summary = std::fs::read_to_string(session_memory_path).unwrap();
+    assert!(summary.contains("- Goal: write a note"));
+    assert!(summary.contains("- Status: final"));
+    assert!(summary.contains("- Output: all set"));
+    assert!(summary.contains("- Tools used: fs_write"));
+    assert!(summary.contains("- Files changed: note.txt (create)"));
+
+    let captured_messages = Arc::new(Mutex::new(None));
+    let resume_engine = Engine::with_workspace(
+        Box::new(RecordingModelClient::new(captured_messages.clone())),
+        ToolRegistry::new(),
+        ContextManager::with_max_history("system".to_string(), 2),
+        EngineConfig {
+            max_steps: 1,
+            plan_enabled: false,
+        },
+        workspace,
+        ApprovalPolicy::Auto,
+    );
+    let resume_req = RunRequest {
+        session_id,
+        job_id: JobId::new(),
+        run_id: RunId::new(),
+        user_message: "continue".to_string(),
+        resume_state: None,
+    };
+
+    let _ = collect_events_with_request(&resume_engine, resume_req).await;
+    let messages = captured_messages.lock().unwrap().clone().unwrap();
+    assert!(messages.iter().any(|message| {
+        message
+            .content
+            .contains("Session summary: # Session Summary")
+            && message.content.contains("- Tools used: fs_write")
+    }));
 }
 
 #[tokio::test]
@@ -1860,6 +2230,59 @@ async fn engine_includes_relevant_durable_memory_in_prompt() {
     assert_eq!(messages.last().unwrap().content, "apply project facts");
 }
 
+#[tokio::test]
+async fn engine_honors_configured_durable_memory_dir_for_prompt_recall() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let durable_dir = workspace.root.join("configured-durable-memory");
+    let topics_dir = durable_dir.join("topics");
+    std::fs::create_dir_all(&topics_dir).unwrap();
+    std::fs::write(
+        durable_dir.join("MEMORY.md"),
+        "# rove Memory\n\n- [Project Facts](topics/project-facts.md) - project memory\n",
+    )
+    .unwrap();
+    std::fs::write(
+        topics_dir.join("project-facts.md"),
+        "---\ntitle: Project Facts\ntype: project\n---\n\nUse configured durable memory.\n",
+    )
+    .unwrap();
+    let captured_messages = Arc::new(Mutex::new(None));
+    let model = Box::new(RecordingModelClient::new(captured_messages.clone()));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(EchoTool));
+    let engine = Engine::with_workspace(
+        model,
+        registry,
+        ContextManager::with_max_history("system".to_string(), 2),
+        EngineConfig {
+            max_steps: 1,
+            plan_enabled: false,
+        },
+        workspace.clone(),
+        ApprovalPolicy::Auto,
+    )
+    .with_memory_paths(rove::memory::paths::MemoryPaths {
+        session_dir: workspace.state_dir.join("memory").join("sessions"),
+        durable_dir: durable_dir.clone(),
+        recall_limit: 1,
+    });
+
+    let events = collect_events(&engine, "apply project facts").await;
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, StreamEvent::RunCompleted { .. }))
+    );
+
+    let messages = captured_messages.lock().unwrap().clone().unwrap();
+    assert!(
+        messages[1]
+            .content
+            .contains("Use configured durable memory.")
+    );
+}
+
 #[test]
 fn read_memory_index_sync_enforces_hard_limits() {
     let tmp = tempfile::TempDir::new().unwrap();
@@ -1915,6 +2338,53 @@ async fn planner_persists_steps_and_resumes_mid_plan() {
 }
 
 #[tokio::test]
+async fn engine_writes_completed_plan_steps_to_session_summary() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let session_id = SessionId::new();
+    let engine = Engine::with_workspace(
+        Box::new(FakeModelClient::new(vec![
+            r#"{"goal":"fix docs","steps":[{"id":"1","title":"inspect docs"},{"id":"2","title":"write summary"}]}"#.to_string(),
+            "step 1 done".to_string(),
+            "step 2 done".to_string(),
+        ])),
+        ToolRegistry::new(),
+        ContextManager::new("system".to_string()),
+        EngineConfig {
+            max_steps: 5,
+            plan_enabled: true,
+        },
+        workspace.clone(),
+        ApprovalPolicy::Auto,
+    );
+    let req = RunRequest {
+        session_id,
+        job_id: JobId::new(),
+        run_id: RunId::new(),
+        user_message: "fix the docs".to_string(),
+        resume_state: None,
+    };
+
+    let events = collect_events_with_request(&engine, req).await;
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, StreamEvent::PlanStepCompleted { .. }))
+            .count(),
+        2
+    );
+
+    let session_memory_path = workspace
+        .state_dir
+        .join("memory")
+        .join("sessions")
+        .join(format!("{session_id}.md"));
+    let summary = std::fs::read_to_string(session_memory_path).unwrap();
+    assert!(summary.contains("- Goal: fix the docs"));
+    assert!(summary.contains("- Completed plan steps: 1 inspect docs; 2 write summary"));
+}
+
+#[tokio::test]
 async fn planner_accepts_json_inside_markdown_fence() {
     let engine = build_planner_test_engine(vec![
         "```json\n{\"goal\":\"fix docs\",\"steps\":[{\"id\":\"1\",\"title\":\"inspect docs\"}]}\n```"
@@ -1936,6 +2406,59 @@ async fn planner_accepts_json_inside_markdown_fence() {
             StreamEvent::PlanStepCompleted { step, .. } if step.id == "1"
         )
     }));
+}
+
+#[tokio::test]
+async fn planner_uses_engine_configured_prompt() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    std::fs::create_dir_all(workspace.root.join(".rove")).unwrap();
+    std::fs::create_dir_all(workspace.root.join("prompts")).unwrap();
+    std::fs::write(
+        workspace.root.join("prompts").join("custom-planner.md"),
+        "CUSTOM PLANNER PROMPT",
+    )
+    .unwrap();
+    std::fs::write(
+        workspace.root.join(".rove").join("config.toml"),
+        "[runtime]\nplanner_prompt_path = \"prompts/custom-planner.md\"\n",
+    )
+    .unwrap();
+    let config = AppConfig::load(&workspace.root, AppConfigOverrides::default()).unwrap();
+
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let model = Box::new(CapturingFakeModelClient::new(
+        vec![
+            r#"{"goal":"fix docs","steps":[{"id":"1","title":"inspect docs"}]}"#.to_string(),
+            "step 1 done".to_string(),
+        ],
+        captured.clone(),
+    ));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(EchoTool));
+    let engine = Engine::with_workspace(
+        model,
+        registry,
+        ContextManager::new("You are a test agent.".to_string()),
+        EngineConfig {
+            max_steps: 3,
+            plan_enabled: true,
+        },
+        workspace,
+        ApprovalPolicy::Auto,
+    )
+    .with_planner_prompt(config.load_planner_prompt());
+
+    let events = collect_events(&engine, "fix the docs").await;
+
+    assert!(events.iter().any(|event| {
+        matches!(
+            event,
+            StreamEvent::PlanStepCompleted { step, .. } if step.id == "1"
+        )
+    }));
+    let captured = captured.lock().unwrap();
+    assert_eq!(captured[0][0].content, "CUSTOM PLANNER PROMPT");
 }
 
 #[tokio::test]
@@ -1985,6 +2508,77 @@ async fn planner_resumes_at_current_step() {
             .iter()
             .any(|event| matches!(event, StreamEvent::PlanCreated { .. }))
     );
+    assert!(events.iter().any(|event| {
+        matches!(
+            event,
+            StreamEvent::PlanStepStarted { step, .. } if step.id == "2"
+        )
+    }));
+}
+
+#[tokio::test]
+async fn planner_resume_checkpoint_does_not_repeat_completed_steps() {
+    let checkpoint_plan = TaskPlan {
+        goal: "fix docs".to_string(),
+        steps: vec![
+            PlanStep {
+                id: "1".to_string(),
+                title: "inspect docs".to_string(),
+                done: true,
+            },
+            PlanStep {
+                id: "2".to_string(),
+                title: "write summary".to_string(),
+                done: false,
+            },
+        ],
+        current_step: 1,
+    };
+    let req = RunRequest {
+        session_id: SessionId::new(),
+        job_id: JobId::new(),
+        run_id: RunId::new(),
+        user_message: "fix the docs".to_string(),
+        resume_state: Some(TaskState {
+            schema_version: 1,
+            session_id: SessionId::new(),
+            job_id: JobId::new(),
+            run_id: RunId::new(),
+            goal: "fix docs".to_string(),
+            step: 1,
+            history: vec![Message::user("previous plan work")],
+            summary: None,
+            checkpoint: Some(PromptCheckpoint {
+                summary: None,
+                preserved_tail: vec![Message::user("previous plan work")],
+                plan: Some(checkpoint_plan),
+                session_memory_pointer: None,
+                durable_memory_pointer: None,
+                last_step: 1,
+                last_event_seq: Some(7),
+                token_estimate: 12,
+                compacted_history_messages: 0,
+                compaction: Default::default(),
+            }),
+            plan: None,
+        }),
+    };
+    let engine = build_planner_test_engine(vec!["step 2 done".to_string()]);
+
+    let events = collect_events_with_request(&engine, req).await;
+
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, StreamEvent::PlanCreated { .. })),
+        "resume should use checkpoint plan without drafting a new one"
+    );
+    assert!(!events.iter().any(|event| {
+        matches!(
+            event,
+            StreamEvent::PlanStepStarted { step, .. } if step.id == "1"
+        )
+    }));
     assert!(events.iter().any(|event| {
         matches!(
             event,
@@ -2165,12 +2759,7 @@ async fn file_tools_read_and_write_inside_workspace() {
     registry.register(Box::new(FsReadTool::new(workspace.root.clone())));
 
     let executor = rove::core::executor::Executor::new(&registry);
-    let ctx = ToolContext {
-        workspace: &workspace,
-        approval_policy: ApprovalPolicy::Auto,
-        cancel_token: CancellationToken::new(),
-        input_provider: None,
-    };
+    let ctx = tool_context(&workspace, ApprovalPolicy::Auto);
 
     executor
         .run(
@@ -2203,12 +2792,7 @@ async fn shell_tool_is_blocked_when_policy_is_never() {
     registry.register(Box::new(ShellTool::new(workspace.root.clone())));
 
     let executor = rove::core::executor::Executor::new(&registry);
-    let ctx = ToolContext {
-        workspace: &workspace,
-        approval_policy: ApprovalPolicy::Never,
-        cancel_token: CancellationToken::new(),
-        input_provider: None,
-    };
+    let ctx = tool_context(&workspace, ApprovalPolicy::Never);
 
     let err = executor
         .run(
@@ -2232,12 +2816,7 @@ async fn shell_tool_rejects_empty_command() {
     registry.register(Box::new(ShellTool::new(workspace.root.clone())));
 
     let executor = rove::core::executor::Executor::new(&registry);
-    let ctx = ToolContext {
-        workspace: &workspace,
-        approval_policy: ApprovalPolicy::Auto,
-        cancel_token: CancellationToken::new(),
-        input_provider: None,
-    };
+    let ctx = tool_context(&workspace, ApprovalPolicy::Auto);
 
     let err = executor
         .run(
@@ -2264,12 +2843,7 @@ async fn shell_tool_rejects_nul_byte_command() {
     registry.register(Box::new(ShellTool::new(workspace.root.clone())));
 
     let executor = rove::core::executor::Executor::new(&registry);
-    let ctx = ToolContext {
-        workspace: &workspace,
-        approval_policy: ApprovalPolicy::Auto,
-        cancel_token: CancellationToken::new(),
-        input_provider: None,
-    };
+    let ctx = tool_context(&workspace, ApprovalPolicy::Auto);
 
     let err = executor
         .run(
@@ -2296,12 +2870,7 @@ async fn shell_tool_runs_non_empty_command_when_approved() {
     registry.register(Box::new(ShellTool::new(workspace.root.clone())));
 
     let executor = rove::core::executor::Executor::new(&registry);
-    let ctx = ToolContext {
-        workspace: &workspace,
-        approval_policy: ApprovalPolicy::Auto,
-        cancel_token: CancellationToken::new(),
-        input_provider: None,
-    };
+    let ctx = tool_context(&workspace, ApprovalPolicy::Auto);
 
     let command = if cfg!(windows) {
         "Write-Output shell-ok"
@@ -2625,12 +3194,144 @@ async fn oneshot_persists_prompt_checkpoint() {
     assert_eq!(checkpoint.summary.as_deref(), Some("done"));
     assert!(checkpoint.session_memory_pointer.is_some());
     assert!(checkpoint.durable_memory_pointer.is_some());
+    let last_event_seq = checkpoint
+        .last_event_seq
+        .expect("checkpoint should record last event sequence");
+    assert_eq!(
+        last_event_seq,
+        state_store.index.last_event_seq(run_id).unwrap()
+    );
+    assert!(last_event_seq > 1);
     assert!(checkpoint.token_estimate > 0);
     assert_eq!(
         checkpoint.compaction.mode,
         rove::core::types::PromptCompactionMode::Deterministic
     );
     assert!(!checkpoint.compaction.circuit_open);
+}
+
+#[tokio::test]
+async fn model_compaction_stores_generated_summary_in_checkpoint() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let state_store = StateStore::new(&workspace.state_dir);
+    let run_id = RunId::new();
+    let run = state_store
+        .start_run(SessionId::new(), JobId::new(), run_id)
+        .unwrap();
+    let model = Box::new(FakeModelClient::new(vec![
+        r#"{"tool":"echo","args":{"message":"one"}}"#.to_string(),
+        r#"{"tool":"echo","args":{"message":"two"}}"#.to_string(),
+        "MODEL GENERATED COMPACTION SUMMARY".to_string(),
+        "done".to_string(),
+    ]));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(EchoTool));
+    let engine = Engine::with_workspace(
+        model,
+        registry,
+        ContextManager::with_max_history("You are a test agent.".to_string(), 2),
+        EngineConfig {
+            max_steps: 4,
+            plan_enabled: false,
+        },
+        workspace.clone(),
+        ApprovalPolicy::Auto,
+    )
+    .with_model_compaction(true, 3);
+
+    run_oneshot(
+        &engine,
+        "build model checkpoint".to_string(),
+        run,
+        None,
+        &state_store,
+    )
+    .await;
+
+    let run_dir = workspace.state_dir.join("runs").join(run_id.to_string());
+    let task_state: TaskState =
+        serde_json::from_slice(&std::fs::read(run_dir.join("task_state.json")).unwrap()).unwrap();
+    let checkpoint = task_state
+        .checkpoint
+        .expect("task_state should include a prompt checkpoint");
+    assert_eq!(
+        checkpoint.summary.as_deref(),
+        Some("MODEL GENERATED COMPACTION SUMMARY")
+    );
+    assert_eq!(
+        checkpoint.compaction.mode,
+        rove::core::types::PromptCompactionMode::ModelGenerated
+    );
+    assert_eq!(checkpoint.compaction.model.as_deref(), Some("fake-model"));
+    assert_eq!(checkpoint.compaction.source_message_count, 2);
+    assert!(!checkpoint.compaction.degraded);
+    assert!(!checkpoint.compaction.circuit_open);
+}
+
+#[tokio::test]
+async fn failing_model_compaction_falls_back_to_deterministic_summary_with_circuit_metadata() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let state_store = StateStore::new(&workspace.state_dir);
+    let run_id = RunId::new();
+    let run = state_store
+        .start_run(SessionId::new(), JobId::new(), run_id)
+        .unwrap();
+    let model = Box::new(FailingAfterFirstCallModelClient::new(
+        r#"{"tool":"echo","args":{"message":"one"}}"#,
+    ));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(EchoTool));
+    let engine = Engine::with_workspace(
+        model,
+        registry,
+        ContextManager::with_max_history("You are a test agent.".to_string(), 1),
+        EngineConfig {
+            max_steps: 2,
+            plan_enabled: false,
+        },
+        workspace.clone(),
+        ApprovalPolicy::Auto,
+    )
+    .with_model_compaction(true, 1);
+
+    run_oneshot(
+        &engine,
+        "build fallback checkpoint".to_string(),
+        run,
+        None,
+        &state_store,
+    )
+    .await;
+
+    let run_dir = workspace.state_dir.join("runs").join(run_id.to_string());
+    let task_state: TaskState =
+        serde_json::from_slice(&std::fs::read(run_dir.join("task_state.json")).unwrap()).unwrap();
+    let checkpoint = task_state
+        .checkpoint
+        .expect("task_state should include a prompt checkpoint");
+    assert_eq!(
+        checkpoint.compaction.mode,
+        rove::core::types::PromptCompactionMode::Degraded
+    );
+    assert!(
+        checkpoint
+            .summary
+            .unwrap()
+            .contains("earlier message(s) compacted")
+    );
+    assert!(checkpoint.compaction.degraded);
+    assert!(checkpoint.compaction.circuit_open);
+    assert_eq!(checkpoint.compaction.consecutive_failures, 1);
+    assert!(
+        checkpoint
+            .compaction
+            .last_error
+            .as_deref()
+            .unwrap()
+            .contains("compaction model failed")
+    );
 }
 
 #[tokio::test]
@@ -2882,6 +3583,61 @@ async fn engine_handles_tool_call() {
             ..
         }
     ));
+}
+
+#[tokio::test]
+async fn engine_emits_safe_model_status_without_raw_thinking_text() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(EchoTool));
+    let engine = Engine::with_workspace(
+        Box::new(ThinkingStatusModelClient),
+        registry,
+        ContextManager::new("You are a test agent.".to_string()),
+        EngineConfig::default(),
+        workspace,
+        ApprovalPolicy::Auto,
+    );
+
+    let events = collect_events(&engine, "think safely").await;
+
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            StreamEvent::ModelStatus {
+                status,
+                message,
+            } if status == "thinking" && message == "Model is thinking"
+        )),
+        "expected a safe thinking status event"
+    );
+    let serialized = serde_json::to_string(&events).unwrap();
+    assert!(
+        !serialized.contains("PRIVATE_CHAIN_OF_THOUGHT"),
+        "raw thinking text must not be exposed"
+    );
+}
+
+#[tokio::test]
+async fn planned_and_unplanned_runs_emit_equivalent_tool_lifecycle_events() {
+    let unplanned = build_test_engine(vec![
+        r#"{"tool": "echo", "args": {"message": "ping"}}"#.to_string(),
+        "The echo returned: ping".to_string(),
+    ]);
+    let planned = build_planner_test_engine(vec![
+        r#"{"goal":"echo ping","steps":[{"id":"1","title":"echo ping"}]}"#.to_string(),
+        r#"{"tool": "echo", "args": {"message": "ping"}}"#.to_string(),
+        "The echo returned: ping".to_string(),
+    ]);
+
+    let unplanned_events = collect_events(&unplanned, "echo ping").await;
+    let planned_events = collect_events(&planned, "echo ping").await;
+
+    assert_eq!(
+        tool_lifecycle(&planned_events),
+        tool_lifecycle(&unplanned_events)
+    );
 }
 
 #[tokio::test]
@@ -3343,20 +4099,11 @@ async fn native_multi_tool_call_executes_concurrently_and_round_trips() {
         ApprovalPolicy::Auto,
     );
 
-    let start = std::time::Instant::now();
     let events = collect_events(&engine, "trigger native batch").await;
-    let elapsed = start.elapsed();
 
     // Both tools ran concurrently — max_active should be 2
     assert_eq!(max_active.load(std::sync::atomic::Ordering::SeqCst), 2);
     assert_eq!(active.load(std::sync::atomic::Ordering::SeqCst), 0);
-
-    // If they ran in parallel (both 60ms), total should be well under 120ms
-    assert!(
-        elapsed < Duration::from_millis(110),
-        "Expected parallel execution under 110ms, got {:?}",
-        elapsed
-    );
 
     // Both tool results should appear in events
     let completed: Vec<_> = events

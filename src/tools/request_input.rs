@@ -29,6 +29,7 @@ impl Tool for RequestInputTool {
             }),
             destructive: false,
             parallel_safe: false,
+            capability: None,
         }
     }
 
@@ -47,14 +48,12 @@ impl Tool for RequestInputTool {
                     prompt: prompt.clone(),
                 })
                 .await?;
-            return Ok(ToolOutput { content: answer });
+            return Ok(ToolOutput::text(answer));
         }
 
-        Ok(ToolOutput {
-            content: format!(
-                "request_input requires an interactive input provider. Prompt: {prompt}"
-            ),
-        })
+        Ok(ToolOutput::text(format!(
+            "request_input requires an interactive input provider. Prompt: {prompt}"
+        )))
     }
 }
 

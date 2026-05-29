@@ -21,11 +21,9 @@ use rove::models::fake::FakeModelClient;
 use rove::models::traits::ModelClient;
 use rove::state::resume::resolve_resume_state;
 use rove::state::store::StateStore;
-use rove::tools::mcp_proxy::register_mcp_tools_from_file;
 use tokio_util::sync::CancellationToken;
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
     // Initialize tracing
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -36,6 +34,15 @@ async fn main() -> anyhow::Result<()> {
 
     let args = Args::parse();
 
+    if args.is_sync_fast_path() {
+        return run_sync_fast_path(args);
+    }
+
+    let runtime = tokio::runtime::Runtime::new()?;
+    runtime.block_on(async_main(args))
+}
+
+fn run_sync_fast_path(args: Args) -> anyhow::Result<()> {
     match args.command {
         Some(Command::DumpConfig) => {
             return cli_config::run(
@@ -47,6 +54,17 @@ async fn main() -> anyhow::Result<()> {
                 },
             );
         }
+        None if args.message.is_none() => {
+            print_help();
+            return Ok(());
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+async fn async_main(args: Args) -> anyhow::Result<()> {
+    match args.command {
         Some(Command::Index {
             path,
             deterministic,
@@ -65,19 +83,14 @@ async fn main() -> anyhow::Result<()> {
         Some(Command::Sessions) => return sessions::run(args.cwd).await,
         Some(Command::State { command }) => return cli_state::run(args.cwd, command).await,
         None => {}
+        Some(Command::DumpConfig) => unreachable!("dump-config is handled before runtime startup"),
     }
 
     // Fast path: no message = show help
     let message = match args.message {
         Some(msg) => msg,
         None => {
-            eprintln!("rove — a local-first agent runtime");
-            eprintln!();
-            eprintln!("Usage: rove \"<your task>\"");
-            eprintln!();
-            eprintln!("Examples:");
-            eprintln!("  rove \"echo hello\"");
-            eprintln!("  rove \"find all TODO comments in this project\"");
+            print_help();
             return Ok(());
         }
     };
@@ -88,17 +101,28 @@ async fn main() -> anyhow::Result<()> {
         .clone()
         .map(PathBuf::from)
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-    let workspace = Workspace::detect(&cwd)?;
+    let detected_workspace = Workspace::detect(&cwd)?;
 
     // Load config after workspace detection so `.rove/config.toml` is scoped to the project root.
-    let config = AppConfig::load(
-        &workspace.root,
+    let mut config = AppConfig::load(
+        &detected_workspace.root,
         AppConfigOverrides {
             model: args.model.clone(),
             max_steps: args.max_steps,
             api_bind_addr: None,
         },
     )?;
+    let workspace = if let Some(task_name) = args.task_workspace.as_deref() {
+        let base = args
+            .task_base
+            .clone()
+            .unwrap_or_else(|| config.state_dir().join("tasks"));
+        let task_workspace = Workspace::task(&base, task_name)?;
+        config.rebase_to_workspace(&task_workspace.root);
+        task_workspace
+    } else {
+        detected_workspace
+    };
 
     // Ensure state root exists after config path validation.
     let configured_state_dir = config.state_dir();
@@ -126,12 +150,10 @@ async fn main() -> anyhow::Result<()> {
     };
 
     // Build tool registry
-    let mut registry = rove::tools::default_tool_registry(&workspace);
     let mcp_config_path = config.resolve_path(&config.tool.mcp_config_path);
-    let mcp_tool_count = register_mcp_tools_from_file(&mut registry, mcp_config_path).await?;
-    if mcp_tool_count > 0 {
-        tracing::info!(mcp_tool_count, "Registered MCP tools");
-    }
+    let registry =
+        rove::tools::runtime_tool_registry(&workspace, config.shell_policy(), mcp_config_path)
+            .await?;
 
     // Build context manager
     let system_prompt = config.load_system_prompt();
@@ -145,6 +167,7 @@ async fn main() -> anyhow::Result<()> {
     );
 
     // Build engine
+    let memory_paths = config.memory_paths();
     let engine_config = EngineConfig {
         max_steps: config.runtime.max_steps,
         plan_enabled: true,
@@ -162,7 +185,12 @@ async fn main() -> anyhow::Result<()> {
         workspace.clone(),
         approval_policy,
     )
-    .with_memory_recall_limit(config.memory.recall_limit)
+    .with_planner_prompt(config.load_planner_prompt())
+    .with_memory_paths(memory_paths)
+    .with_model_compaction(
+        config.runtime.model_compaction_enabled,
+        config.runtime.compaction_failure_threshold,
+    )
     .with_input_provider(stdin_input_provider());
     let engine = if approval_policy == ApprovalPolicy::Ask {
         engine.with_approval_provider(stdin_approval_provider())
@@ -209,6 +237,16 @@ async fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+fn print_help() {
+    eprintln!("rove — a local-first agent runtime");
+    eprintln!();
+    eprintln!("Usage: rove \"<your task>\"");
+    eprintln!();
+    eprintln!("Examples:");
+    eprintln!("  rove \"echo hello\"");
+    eprintln!("  rove \"find all TODO comments in this project\"");
 }
 
 fn spawn_cli_signal_listener(cancel: CancellationToken) -> Arc<AtomicI32> {

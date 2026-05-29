@@ -18,6 +18,8 @@ pub struct RetrievalEvalReport {
     pub channels: Vec<EvalChannelSummary>,
     pub results: Vec<EvalResult>,
     pub artifact_path: String,
+    pub embedder: String,
+    pub reranker: String,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -88,6 +90,8 @@ pub async fn run_retrieval_eval(
             })
             .collect(),
         artifact_path: String::new(),
+        embedder: embedder.client_id().to_string(),
+        reranker: "none".to_string(),
     })
 }
 
@@ -96,6 +100,13 @@ pub async fn write_eval_report(
     report: &RetrievalEvalReport,
 ) -> anyhow::Result<PathBuf> {
     let dir = workspace_root.join(".rove").join("rag_eval");
+    write_eval_report_to_dir(&dir, report).await
+}
+
+pub async fn write_eval_report_to_dir(
+    dir: &Path,
+    report: &RetrievalEvalReport,
+) -> anyhow::Result<PathBuf> {
     tokio::fs::create_dir_all(&dir).await?;
     let path = dir.join(format!("{}.json", ulid::Ulid::new()));
     let mut value = serde_json::to_value(report)?;

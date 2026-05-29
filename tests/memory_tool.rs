@@ -2,9 +2,20 @@ use rove::core::executor::Executor;
 use rove::core::types::{ApprovalPolicy, CallId, ToolContext};
 use rove::core::workspace::Workspace;
 use rove::errors::ToolError;
+use rove::memory::paths::MemoryPaths;
 use rove::tools::memory::{ReadMemoryTopicTool, SaveMemoryTool, UpdateMemoryIndexTool};
 use rove::tools::registry::ToolRegistry;
 use tokio_util::sync::CancellationToken;
+
+fn tool_context(workspace: &Workspace) -> ToolContext<'_> {
+    ToolContext {
+        workspace,
+        memory_paths: MemoryPaths::from_workspace(workspace, 8),
+        approval_policy: ApprovalPolicy::Never,
+        cancel_token: CancellationToken::new(),
+        input_provider: None,
+    }
+}
 
 #[tokio::test]
 async fn save_memory_writes_topic_and_index_inside_workspace() {
@@ -13,12 +24,7 @@ async fn save_memory_writes_topic_and_index_inside_workspace() {
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(SaveMemoryTool::new()));
     let executor = Executor::new(&registry);
-    let ctx = ToolContext {
-        workspace: &workspace,
-        approval_policy: ApprovalPolicy::Never,
-        cancel_token: CancellationToken::new(),
-        input_provider: None,
-    };
+    let ctx = tool_context(&workspace);
 
     let result = executor
         .run(
@@ -70,12 +76,7 @@ async fn save_memory_writes_to_configured_workspace_state_dir() {
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(SaveMemoryTool::new()));
     let executor = Executor::new(&registry);
-    let ctx = ToolContext {
-        workspace: &workspace,
-        approval_policy: ApprovalPolicy::Never,
-        cancel_token: CancellationToken::new(),
-        input_provider: None,
-    };
+    let ctx = tool_context(&workspace);
 
     let result = executor
         .run(
@@ -104,18 +105,60 @@ async fn save_memory_writes_to_configured_workspace_state_dir() {
 }
 
 #[tokio::test]
+async fn save_memory_writes_to_configured_durable_memory_dir() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let durable_dir = workspace.root.join("configured-durable-memory");
+    let memory_paths = MemoryPaths {
+        session_dir: workspace.state_dir.join("memory").join("sessions"),
+        durable_dir: durable_dir.clone(),
+        recall_limit: 8,
+    };
+
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(SaveMemoryTool::new()));
+    let executor = Executor::new(&registry);
+    let ctx = ToolContext {
+        workspace: &workspace,
+        memory_paths,
+        approval_policy: ApprovalPolicy::Never,
+        cancel_token: CancellationToken::new(),
+        input_provider: None,
+    };
+
+    let result = executor
+        .run(
+            &ctx,
+            "save_memory",
+            serde_json::json!({
+                "topic": "Project Conventions",
+                "content": "Run cargo fmt before committing.",
+                "type": "project"
+            }),
+            CallId::new(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(result.output, "saved memory: project-conventions");
+    assert!(
+        durable_dir
+            .join("topics")
+            .join("project-conventions.md")
+            .exists()
+    );
+    assert!(durable_dir.join("MEMORY.md").exists());
+    assert!(!workspace.state_dir.join("memory").exists());
+}
+
+#[tokio::test]
 async fn save_memory_rejects_unsafe_topic_without_writing() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(SaveMemoryTool::new()));
     let executor = Executor::new(&registry);
-    let ctx = ToolContext {
-        workspace: &workspace,
-        approval_policy: ApprovalPolicy::Never,
-        cancel_token: CancellationToken::new(),
-        input_provider: None,
-    };
+    let ctx = tool_context(&workspace);
 
     let err = executor
         .run(
@@ -146,12 +189,7 @@ async fn save_memory_rejects_secret_content_without_writing() {
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(SaveMemoryTool::new()));
     let executor = Executor::new(&registry);
-    let ctx = ToolContext {
-        workspace: &workspace,
-        approval_policy: ApprovalPolicy::Never,
-        cancel_token: CancellationToken::new(),
-        input_provider: None,
-    };
+    let ctx = tool_context(&workspace);
 
     let err = executor
         .run(
@@ -181,12 +219,7 @@ async fn save_memory_rejects_transient_content_without_writing() {
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(SaveMemoryTool::new()));
     let executor = Executor::new(&registry);
-    let ctx = ToolContext {
-        workspace: &workspace,
-        approval_policy: ApprovalPolicy::Never,
-        cancel_token: CancellationToken::new(),
-        input_provider: None,
-    };
+    let ctx = tool_context(&workspace);
 
     let err = executor
         .run(
@@ -216,12 +249,7 @@ async fn save_memory_keeps_index_within_hard_limits() {
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(SaveMemoryTool::new()));
     let executor = Executor::new(&registry);
-    let ctx = ToolContext {
-        workspace: &workspace,
-        approval_policy: ApprovalPolicy::Never,
-        cancel_token: CancellationToken::new(),
-        input_provider: None,
-    };
+    let ctx = tool_context(&workspace);
 
     for topic in 0..205 {
         executor
@@ -274,12 +302,7 @@ async fn update_memory_index_rebuilds_index_from_existing_topics() {
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(UpdateMemoryIndexTool::new()));
     let executor = Executor::new(&registry);
-    let ctx = ToolContext {
-        workspace: &workspace,
-        approval_policy: ApprovalPolicy::Never,
-        cancel_token: CancellationToken::new(),
-        input_provider: None,
-    };
+    let ctx = tool_context(&workspace);
 
     let result = executor
         .run(
@@ -320,12 +343,7 @@ async fn read_memory_topic_reads_only_named_topic() {
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(ReadMemoryTopicTool::new()));
     let executor = Executor::new(&registry);
-    let ctx = ToolContext {
-        workspace: &workspace,
-        approval_policy: ApprovalPolicy::Never,
-        cancel_token: CancellationToken::new(),
-        input_provider: None,
-    };
+    let ctx = tool_context(&workspace);
 
     let result = executor
         .run(
@@ -349,12 +367,7 @@ async fn read_memory_topic_rejects_unsafe_name() {
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(ReadMemoryTopicTool::new()));
     let executor = Executor::new(&registry);
-    let ctx = ToolContext {
-        workspace: &workspace,
-        approval_policy: ApprovalPolicy::Never,
-        cancel_token: CancellationToken::new(),
-        input_provider: None,
-    };
+    let ctx = tool_context(&workspace);
 
     let err = executor
         .run(

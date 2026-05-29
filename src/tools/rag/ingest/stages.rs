@@ -128,7 +128,15 @@ impl IngestionStage for PersistIndexStage {
     }
 
     async fn run(&self, context: &mut IngestionContext) -> anyhow::Result<()> {
-        let index = RagIndex::new(context.workspace_root.clone());
+        let index = RagIndex::new_with_state_dir(
+            context.workspace_root.clone(),
+            context
+                .artifact_paths
+                .manifest_path
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| context.workspace_root.join(".rove")),
+        );
         index.write_lancedb_embedded(&context.embedded_chunks).await
     }
 }

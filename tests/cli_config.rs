@@ -18,9 +18,33 @@ fn format_effective_config_prints_json_without_secret_value() {
     }];
     config.routing.failure_threshold = 5;
     config.routing.open_cooldown_ms = 45_000;
+    config.routing.retry_max_attempts = 4;
+    config.routing.retry_backoff_base_ms = 500;
+    config.routing.retry_backoff_max_ms = 8_000;
     config.runtime.max_steps = 42;
     config.runtime.system_prompt_path = "prompts/custom.md".into();
+    config.runtime.planner_prompt_path = "prompts/custom-planner.md".into();
+    config.runtime.model_compaction_enabled = true;
+    config.runtime.compaction_failure_threshold = 2;
     config.tool.mcp_config_path = ".rove/custom-mcp.json".into();
+    config.tool.shell.timeout_ms = 1_234;
+    config.tool.shell.max_output_bytes = 4_096;
+    config.tool.shell.inherit_environment = false;
+    config.tool.shell.denylist = vec!["shutdown".to_string()];
+    config.memory.session_dir = "custom-memory/sessions".into();
+    config.memory.durable_dir = "custom-memory/durable".into();
+    config.memory.recall_limit = 4;
+    config.rag.deterministic = false;
+    config.rag.embedding_provider = "openai-compatible".to_string();
+    config.rag.embedding_model = "text-embedding-large".to_string();
+    config.rag.embedding_api_base = "https://embedding.test/v1".to_string();
+    config.rag.embedding_api_key = "embedding-secret".to_string();
+    config.rag.rerank_provider = Some("cohere-compatible".to_string());
+    config.rag.rerank_model = Some("rerank-v1".to_string());
+    config.rag.rerank_api_key = Some("rerank-secret".to_string());
+    config.rag.timeout_ms = 9_000;
+    config.rag.fallback_to_deterministic = false;
+    config.source_summary.workspace_root = std::path::PathBuf::from("D:/workspace");
 
     let output = format_effective_config(&config);
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
@@ -50,10 +74,51 @@ fn format_effective_config_prints_json_without_secret_value() {
     );
     assert_eq!(json["routing"]["failure_threshold"], 5);
     assert_eq!(json["routing"]["open_cooldown_ms"], 45_000);
+    assert_eq!(json["routing"]["retry_max_attempts"], 4);
+    assert_eq!(json["routing"]["retry_backoff_base_ms"], 500);
+    assert_eq!(json["routing"]["retry_backoff_max_ms"], 8_000);
     assert_eq!(json["runtime"]["max_steps"], 42);
     assert_eq!(json["runtime"]["system_prompt_path"], "prompts/custom.md");
+    assert_eq!(
+        json["runtime"]["planner_prompt_path"],
+        "prompts/custom-planner.md"
+    );
+    assert_eq!(json["runtime"]["model_compaction_enabled"], true);
+    assert_eq!(json["runtime"]["compaction_failure_threshold"], 2);
     assert_eq!(json["tool"]["mcp_config_path"], ".rove/custom-mcp.json");
+    assert_eq!(json["tool"]["shell"]["timeout_ms"], 1_234);
+    assert_eq!(json["tool"]["shell"]["max_output_bytes"], 4_096);
+    assert_eq!(json["tool"]["shell"]["inherit_environment"], false);
+    assert_eq!(json["tool"]["shell"]["denylist"][0], "shutdown");
+    assert_eq!(json["memory"]["session_dir"], "custom-memory/sessions");
+    assert_eq!(json["memory"]["durable_dir"], "custom-memory/durable");
+    assert_eq!(json["memory"]["recall_limit"], 4);
+    assert_eq!(json["rag"]["deterministic"], false);
+    assert_eq!(json["rag"]["embedding_provider"], "openai-compatible");
+    assert_eq!(json["rag"]["embedding_model"], "text-embedding-large");
+    assert_eq!(
+        json["rag"]["embedding_api_base"],
+        "https://embedding.test/v1"
+    );
+    assert_eq!(json["rag"]["embedding_api_key_set"], true);
+    assert_eq!(json["rag"]["rerank_provider"], "cohere-compatible");
+    assert_eq!(json["rag"]["rerank_model"], "rerank-v1");
+    assert_eq!(json["rag"]["rerank_api_key_set"], true);
+    assert_eq!(json["rag"]["timeout_ms"], 9_000);
+    assert_eq!(json["rag"]["fallback_to_deterministic"], false);
+    let resolved_session_dir = json["resolved_paths"]["memory_session_dir"]
+        .as_str()
+        .unwrap()
+        .replace('\\', "/");
+    let resolved_durable_dir = json["resolved_paths"]["memory_durable_dir"]
+        .as_str()
+        .unwrap()
+        .replace('\\', "/");
+    assert!(resolved_session_dir.ends_with("D:/workspace/custom-memory/sessions"));
+    assert!(resolved_durable_dir.ends_with("D:/workspace/custom-memory/durable"));
     assert!(!output.contains("secret-token"));
     assert!(!output.contains("fallback-secret"));
     assert!(!output.contains("anthropic-secret"));
+    assert!(!output.contains("embedding-secret"));
+    assert!(!output.contains("rerank-secret"));
 }

@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 use super::types::{
-    CallId, JobId, PlanStep, RunId, TaskPlan, TerminationReason, ToolCallRef, ToolResult, Usage,
+    CallId, JobId, PlanStep, PromptCompactionState, RunId, TaskPlan, TerminationReason,
+    ToolCallRef, ToolResult, Usage,
 };
 use crate::errors::ToolError;
 
@@ -21,6 +22,9 @@ pub enum StreamEvent {
 
     /// A chunk of streaming text from the LLM.
     LlmChunk { delta: String },
+
+    /// A safe runtime progress note. This must not contain hidden reasoning text.
+    ModelStatus { status: String, message: String },
 
     /// The LLM finished producing a complete message.
     LlmMessage {
@@ -72,6 +76,12 @@ pub enum StreamEvent {
         reason: String,
     },
 
+    /// Prompt history was compacted for future resume.
+    PromptCompacted {
+        summary: Option<String>,
+        state: PromptCompactionState,
+    },
+
     /// The run has completed.
     RunCompleted {
         reason: TerminationReason,
@@ -85,6 +95,7 @@ impl StreamEvent {
         match self {
             Self::RunStarted { .. } => "run_started",
             Self::LlmChunk { .. } => "llm_chunk",
+            Self::ModelStatus { .. } => "model_status",
             Self::LlmMessage { .. } => "llm_message",
             Self::ToolCallStarted { .. } => "tool_call_started",
             Self::ToolCallApprovalNeeded { .. } => "tool_call_approval_needed",
@@ -95,6 +106,7 @@ impl StreamEvent {
             Self::PlanStepStarted { .. } => "plan_step_started",
             Self::PlanStepCompleted { .. } => "plan_step_completed",
             Self::PlanStepFailed { .. } => "plan_step_failed",
+            Self::PromptCompacted { .. } => "prompt_compacted",
             Self::RunCompleted { .. } => "run_completed",
         }
     }

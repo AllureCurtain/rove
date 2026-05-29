@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { createWorkbenchState, workbenchReducer } from "./rove-state";
+import type { StreamEvent } from "./rove-types";
 
 describe("workbenchReducer", () => {
   it("hydrates user messages from run_started events and ignores duplicate seq values", () => {
@@ -31,6 +32,55 @@ describe("workbenchReducer", () => {
       }),
     ]);
     expect(replayed.trace).toHaveLength(1);
+  });
+
+  it("tracks resumed source run identity from create and synced job state", () => {
+    const created = workbenchReducer(createWorkbenchState(), {
+      type: "job_created",
+      jobId: "job-1",
+      runId: "run-2",
+      resumedFromRunId: "run-1",
+    });
+
+    expect(created.activeJobId).toBe("job-1");
+    expect(created.activeRunId).toBe("run-2");
+    expect(created.resumedFromRunId).toBe("run-1");
+    expect(created.lastSignal).toBe("Resumed run");
+
+    const synced = workbenchReducer(created, {
+      type: "job_state_synced",
+      state: {
+        job_id: "job-1",
+        run_id: "run-2",
+        resumed_from_run_id: "run-1",
+        status: "done",
+        event_count: 1,
+        events: [],
+        pending_approvals: [],
+        pending_inputs: [],
+      },
+    });
+
+    expect(synced.resumedFromRunId).toBe("run-1");
+    expect(synced.busy).toBe(false);
+  });
+
+  it("clears resumed source identity on reset and fresh jobs", () => {
+    const resumed = workbenchReducer(createWorkbenchState(), {
+      type: "job_created",
+      jobId: "job-1",
+      runId: "run-2",
+      resumedFromRunId: "run-1",
+    });
+
+    const fresh = workbenchReducer(resumed, {
+      type: "job_created",
+      jobId: "job-2",
+      runId: "run-3",
+    });
+
+    expect(fresh.resumedFromRunId).toBeNull();
+    expect(workbenchReducer(resumed, { type: "reset" }).resumedFromRunId).toBeNull();
   });
 
   it("does not append duplicate message, tool, trace, input, or plan state on replay", () => {
@@ -117,6 +167,39 @@ describe("workbenchReducer", () => {
     });
     expect(duplicateInput.pendingInputs).toHaveLength(1);
     expect(duplicateInput.trace).toHaveLength(3);
+  });
+
+  it("replaces the visible plan when replanning emits a new plan_created event", () => {
+    const firstPlan = workbenchReducer(createWorkbenchState(), {
+      type: "stream_event",
+      seq: 1,
+      event: {
+        type: "plan_created",
+        plan: {
+          goal: "fix docs",
+          current_step: 0,
+          steps: [{ id: "1", title: "Inspect docs", done: false }],
+        },
+      },
+    });
+
+    const replanned = workbenchReducer(firstPlan, {
+      type: "stream_event",
+      seq: 2,
+      event: {
+        type: "plan_created",
+        plan: {
+          goal: "fix docs",
+          current_step: 0,
+          steps: [{ id: "2", title: "Inspect docs without a tool", done: false }],
+        },
+      },
+    });
+
+    expect(replanned.plan?.steps).toEqual([
+      { id: "2", title: "Inspect docs without a tool", done: false },
+    ]);
+    expect(replanned.plan?.current_step).toBe(0);
   });
 
   it("hydrates recoverable UI state from sequenced job state events", () => {
@@ -229,6 +312,170 @@ describe("workbenchReducer", () => {
     expect(state.trace.length).toBeGreaterThanOrEqual(4);
   });
 
+  it("renders every runtime stream event variant into recoverable UI state", () => {
+    const events: StreamEvent[] = [
+      {
+        type: "run_started",
+        job_id: "job-1",
+        run_id: "run-1",
+        user_message: "summarize",
+      },
+      {
+        type: "model_status",
+        status: "thinking",
+        message: "Model is thinking",
+      },
+      { type: "llm_chunk", delta: "sum" },
+      {
+        type: "llm_message",
+        full: "summary",
+        usage: {
+          prompt_tokens: 1,
+          completion_tokens: 1,
+          total_tokens: 2,
+        },
+        tool_calls: [
+          {
+            id: "toolu-1",
+            name: "echo",
+            args: { text: "ok" },
+          },
+        ],
+      },
+      {
+        type: "tool_call_started",
+        call_id: "call-1",
+        tool_use_id: "toolu-1",
+        name: "echo",
+        args: { text: "ok" },
+      },
+      {
+        type: "tool_call_approval_needed",
+        call_id: "call-2",
+        name: "fs_write",
+        args: { path: "notes.md" },
+        reason: "destructive tool requires explicit approval",
+      },
+      {
+        type: "tool_call_completed",
+        call_id: "call-1",
+        result: {
+          call_id: "call-1",
+          output: "ok",
+          mutations: [
+            {
+              path: "notes.md",
+              operation: "create",
+              diff: "+ok",
+            },
+          ],
+        },
+      },
+      {
+        type: "tool_call_failed",
+        call_id: "call-2",
+        error: {
+          code: "rejected",
+          reason: "user rejected",
+        },
+      },
+      {
+        type: "input_needed",
+        input_id: "input-1",
+        prompt: "Continue?",
+      },
+      {
+        type: "plan_created",
+        plan: {
+          goal: "summarize",
+          current_step: 0,
+          steps: [{ id: "1", title: "Read", done: false }],
+        },
+      },
+      {
+        type: "plan_step_started",
+        index: 0,
+        step: { id: "1", title: "Read", done: false },
+      },
+      {
+        type: "plan_step_completed",
+        index: 0,
+        step: { id: "1", title: "Read", done: true },
+      },
+      {
+        type: "plan_step_failed",
+        index: 0,
+        step: { id: "1", title: "Read", done: false },
+        reason: "retry",
+      },
+      {
+        type: "prompt_compacted",
+        summary: "Earlier context summarized",
+        state: {
+          mode: "model_generated",
+          auto_triggered: true,
+          degraded: false,
+          consecutive_failures: 0,
+          circuit_open: false,
+          model: "fake",
+          prompt_version: "rove.compaction.v1",
+          source_message_count: 4,
+        },
+      },
+      {
+        type: "run_completed",
+        reason: "final",
+        output: "done",
+      },
+    ];
+
+    const state = events.reduce(
+      (current, event, index) =>
+        workbenchReducer(current, {
+          type: "stream_event",
+          seq: index + 1,
+          event,
+        }),
+      createWorkbenchState(),
+    );
+
+    expect(state.activeJobId).toBe("job-1");
+    expect(state.activeRunId).toBe("run-1");
+    expect(state.busy).toBe(false);
+    expect(state.statusText).toBe("Run completed: final");
+    expect(state.messages.map((message) => message.content)).toEqual([
+      "summarize",
+      "done",
+    ]);
+    expect(state.tools).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "call-1", status: "done" }),
+        expect.objectContaining({ id: "call-2", status: "error" }),
+      ]),
+    );
+    expect(state.pendingInputs).toEqual([
+      { input_id: "input-1", prompt: "Continue?" },
+    ]);
+    expect(state.plan?.current_step).toBe(0);
+    expect(state.trace.map((entry) => entry.label)).toEqual(
+      expect.arrayContaining([
+        "run_started",
+        "model_status",
+        "tool_call_started",
+        "tool_call_approval_needed",
+        "tool_call_completed",
+        "tool_call_failed",
+        "input_needed",
+        "plan_created",
+        "plan_step_started",
+        "plan_step_completed",
+        "plan_step_failed",
+        "prompt_compacted",
+        "run_completed",
+      ]),
+    );
+  });
+
   it("marks an approved waiting tool as running and clears the pending approval", () => {
     const withWaitingTool = workbenchReducer(createWorkbenchState(), {
       type: "stream_event",
@@ -300,6 +547,23 @@ describe("workbenchReducer", () => {
         name: "shell",
         reason: "destructive tool requires explicit approval",
       },
+    });
+  });
+
+  it("renders model status events in status text and trace", () => {
+    const state = workbenchReducer(createWorkbenchState(), {
+      type: "stream_event",
+      event: {
+        type: "model_status",
+        status: "thinking",
+        message: "Model is thinking",
+      },
+    });
+
+    expect(state.statusText).toBe("Model is thinking");
+    expect(state.trace[0]).toMatchObject({
+      label: "model_status",
+      detail: "Model is thinking",
     });
   });
 

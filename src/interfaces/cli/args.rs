@@ -30,8 +30,23 @@ pub struct Args {
     #[arg(short = 'C', long)]
     pub cwd: Option<String>,
 
+    /// Create or use an isolated standalone task workspace by name.
+    #[arg(long)]
+    pub task_workspace: Option<String>,
+
+    /// Base directory for task workspaces. Defaults to <state_dir>/tasks.
+    #[arg(long)]
+    pub task_base: Option<PathBuf>,
+
     #[command(subcommand)]
     pub command: Option<Command>,
+}
+
+impl Args {
+    pub fn is_sync_fast_path(&self) -> bool {
+        matches!(self.command, Some(Command::DumpConfig))
+            || self.command.is_none() && self.message.is_none()
+    }
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -107,6 +122,13 @@ mod tests {
     }
 
     #[test]
+    fn dump_config_is_a_sync_fast_path() {
+        let args = Args::parse_from(["rove", "dump-config"]);
+
+        assert!(args.is_sync_fast_path());
+    }
+
+    #[test]
     fn index_subcommand_parses_options_without_message() {
         let args = Args::parse_from([
             "rove",
@@ -156,5 +178,20 @@ mod tests {
                 command: super::StateCommand::Cleanup
             })
         ));
+    }
+
+    #[test]
+    fn task_workspace_options_parse_for_standalone_runs() {
+        let args = Args::parse_from([
+            "rove",
+            "--task-workspace",
+            "standalone",
+            "--task-base",
+            "D:/rove-tasks",
+            "do work",
+        ]);
+
+        assert_eq!(args.task_workspace.as_deref(), Some("standalone"));
+        assert_eq!(args.task_base, Some(PathBuf::from("D:/rove-tasks")));
     }
 }

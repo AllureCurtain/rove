@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use rove::core::types::{ApprovalPolicy, ToolContext, UserInputProvider, UserInputRequest};
 use rove::core::workspace::Workspace;
 use rove::errors::ToolError;
+use rove::memory::paths::MemoryPaths;
 use rove::tools::request_input::RequestInputTool;
 use rove::tools::traits::Tool;
 use tokio_util::sync::CancellationToken;
@@ -37,6 +38,7 @@ async fn request_input_tool_requires_prompt_argument() {
     let workspace = Workspace::detect(tmp.path()).unwrap();
     let ctx = ToolContext {
         workspace: &workspace,
+        memory_paths: MemoryPaths::from_workspace(&workspace, 8),
         approval_policy: ApprovalPolicy::Auto,
         cancel_token: CancellationToken::new(),
         input_provider: None,
@@ -58,6 +60,7 @@ async fn request_input_tool_explains_interactive_provider_requirement() {
     let workspace = Workspace::detect(tmp.path()).unwrap();
     let ctx = ToolContext {
         workspace: &workspace,
+        memory_paths: MemoryPaths::from_workspace(&workspace, 8),
         approval_policy: ApprovalPolicy::Auto,
         cancel_token: CancellationToken::new(),
         input_provider: None,
@@ -89,6 +92,7 @@ async fn request_input_tool_returns_interactive_provider_answer() {
     });
     let ctx = ToolContext {
         workspace: &workspace,
+        memory_paths: MemoryPaths::from_workspace(&workspace, 8),
         approval_policy: ApprovalPolicy::Auto,
         cancel_token: CancellationToken::new(),
         input_provider: Some(provider),

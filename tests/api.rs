@@ -10,6 +10,10 @@ use rove::interfaces::api::{
 use tokio_util::sync::CancellationToken;
 use tower::ServiceExt;
 
+fn python_command() -> &'static str {
+    if cfg!(windows) { "python" } else { "python3" }
+}
+
 #[tokio::test]
 async fn api_does_not_serve_embedded_web_ui_anymore() {
     let tmp = tempfile::TempDir::new().unwrap();
@@ -246,6 +250,44 @@ async fn api_creates_job_streams_events_and_reports_state() {
     let text = String::from_utf8(body.to_vec()).unwrap();
     assert!(text.contains("event: run_started"));
     assert!(text.contains("event: run_completed"));
+}
+
+#[tokio::test]
+async fn api_can_create_job_in_task_workspace() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let mut config = test_config();
+    config.state.state_dir = "api-state".into();
+    config.memory.session_dir = "api-memory/sessions".into();
+    config.memory.durable_dir = "api-memory/durable".into();
+    let app = router(ApiState::new(workspace, config));
+
+    let create = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/jobs")
+                .header("content-type", "application/json")
+                .body(Body::from(format!(
+                    r#"{{"message":"task api","model":"fake","workspace":{{"kind":"task","name":"api-task","base":{}}}}}"#,
+                    serde_json::to_string(&tmp.path().to_string_lossy()).unwrap()
+                )))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(create.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let created: CreateJobResponse = serde_json::from_slice(&body).unwrap();
+    let state = wait_for_status(app, created.job_id.to_string(), RunStatus::Done).await;
+
+    assert_eq!(state.status, RunStatus::Done);
+    let task_root = tmp.path().join("api-task");
+    assert!(task_root.join("api-state").join("runs").is_dir());
+    assert!(task_root.join("api-memory").join("sessions").is_dir());
 }
 
 #[tokio::test]
@@ -551,9 +593,11 @@ async fn api_can_resume_latest_task_state() {
         .unwrap();
     let resumed: CreateJobResponse = serde_json::from_slice(&body).unwrap();
     assert_ne!(resumed.run_id, first.run_id);
+    assert_eq!(resumed.resumed_from_run_id, Some(first.run_id));
 
     let resumed_state = wait_for_done(app.clone(), resumed.job_id.to_string()).await;
     assert_eq!(resumed_state.status, RunStatus::Done);
+    assert_eq!(resumed_state.resumed_from_run_id, Some(first.run_id));
     let resumed_task_state: TaskState = serde_json::from_slice(
         &std::fs::read(
             state_store
@@ -782,6 +826,174 @@ async fn api_startup_marks_stale_running_jobs_interrupted() {
     assert_eq!(indexed_job.status, "interrupted");
     let indexed_run = state_store.index.run_record(run_id).unwrap().unwrap();
     assert_eq!(indexed_run.status, "interrupted");
+}
+
+#[tokio::test]
+async fn api_restart_marks_pending_approval_interrupted_and_allows_resume_latest() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let state_store = rove::state::store::StateStore::new(&workspace.state_dir);
+    let app = router(ApiState::new(workspace.clone(), test_config()));
+
+    let create = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/jobs")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"message":"{\"tool\":\"fs_write\",\"args\":{\"path\":\"pending.txt\",\"content\":\"no\"}}","model":"fake-raw","approval":"ask","max_steps":1}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(create.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let created: CreateJobResponse = serde_json::from_slice(&body).unwrap();
+
+    let pending = wait_for_pending_approval(app.clone(), created.job_id.to_string()).await;
+    let approval = pending.pending_approvals.first().unwrap();
+    assert_eq!(
+        state_store
+            .index
+            .pending_approval_status(approval.call_id)
+            .unwrap()
+            .as_deref(),
+        Some("pending")
+    );
+
+    let restarted = router(ApiState::new(workspace, test_config()));
+    let state = restarted
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/jobs/{}/state", created.job_id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(state.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(state.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let state: JobStateResponse = serde_json::from_slice(&body).unwrap();
+    assert_eq!(state.status, RunStatus::Interrupted);
+    assert!(state.pending_approvals.is_empty());
+    assert!(state.pending_inputs.is_empty());
+    assert_eq!(
+        state_store
+            .index
+            .pending_approval_status(approval.call_id)
+            .unwrap()
+            .as_deref(),
+        Some("interrupted")
+    );
+
+    let resume_body = serde_json::json!({
+        "message": "continue after interrupted approval",
+        "model": "fake",
+        "resume": "latest"
+    });
+    let resume = restarted
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/jobs")
+                .header("content-type", "application/json")
+                .body(Body::from(resume_body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resume.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resume.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let resumed: CreateJobResponse = serde_json::from_slice(&body).unwrap();
+    assert_ne!(resumed.run_id, created.run_id);
+    assert_eq!(resumed.job_id, created.job_id);
+    let resumed_state = wait_for_done(restarted, resumed.job_id.to_string()).await;
+    assert_eq!(resumed_state.status, RunStatus::Done);
+}
+
+#[tokio::test]
+async fn api_restart_marks_pending_input_interrupted() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let state_store = rove::state::store::StateStore::new(&workspace.state_dir);
+    let app = router(ApiState::new(workspace.clone(), test_config()));
+    let message = serde_json::json!({
+        "tool": "request_input",
+        "args": { "prompt": "Which branch should I use?" }
+    })
+    .to_string();
+    let body = serde_json::json!({
+        "message": message,
+        "model": "fake-raw",
+        "max_steps": 1
+    });
+
+    let create = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/jobs")
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(create.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let created: CreateJobResponse = serde_json::from_slice(&body).unwrap();
+
+    let pending = wait_for_pending_input(app.clone(), created.job_id.to_string()).await;
+    let input = pending.pending_inputs.first().unwrap();
+    assert_eq!(
+        state_store
+            .index
+            .pending_input_status(input.input_id)
+            .unwrap()
+            .as_deref(),
+        Some("pending")
+    );
+
+    let restarted = router(ApiState::new(workspace, test_config()));
+    let state = restarted
+        .oneshot(
+            Request::builder()
+                .uri(format!("/jobs/{}/state", created.job_id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(state.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(state.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let state: JobStateResponse = serde_json::from_slice(&body).unwrap();
+    assert_eq!(state.status, RunStatus::Interrupted);
+    assert!(state.pending_approvals.is_empty());
+    assert!(state.pending_inputs.is_empty());
+    assert_eq!(
+        state_store
+            .index
+            .pending_input_status(input.input_id)
+            .unwrap()
+            .as_deref(),
+        Some("interrupted")
+    );
 }
 
 #[tokio::test]
@@ -1396,6 +1608,77 @@ async fn api_registers_rag_stub_tools_without_rag_feature() {
         .unwrap();
     let text = String::from_utf8(body.to_vec()).unwrap();
     assert!(text.contains("requires the `rag` feature"));
+}
+
+#[tokio::test]
+async fn api_registers_configured_mcp_tools_for_jobs() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let config_dir = workspace.root.join(".rove");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    let mcp_config_path = config_dir.join("mcp_servers.json");
+    std::fs::write(
+        &mcp_config_path,
+        serde_json::json!({
+            "servers": [{
+                "name": "mock-server",
+                "transport": "stdio",
+                "command": python_command(),
+                "args": ["tests/fixtures/mcp_mock_server.py"]
+            }]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let mut config = test_config();
+    config.tool.mcp_config_path = mcp_config_path;
+    let app = router(ApiState::new(workspace, config));
+    let message = serde_json::json!({
+        "tool": "mcp__mock_server__echo_remote",
+        "args": { "message": "hello api mcp" }
+    })
+    .to_string();
+    let body = serde_json::json!({
+        "message": message,
+        "model": "fake-raw",
+        "max_steps": 1
+    });
+
+    let create = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/jobs")
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(create.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let created: CreateJobResponse = serde_json::from_slice(&body).unwrap();
+
+    let state = wait_for_done(app.clone(), created.job_id.to_string()).await;
+    assert_eq!(state.status, RunStatus::Done);
+    let events = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/jobs/{}/events", created.job_id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(events.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(events.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let text = String::from_utf8(body.to_vec()).unwrap();
+    assert!(text.contains("remote: hello api mcp"), "{text}");
 }
 
 #[tokio::test]

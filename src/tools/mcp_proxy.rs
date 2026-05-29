@@ -3,13 +3,15 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, Lines};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
+use tokio::time::timeout;
 
 use super::registry::ToolRegistry;
 use super::traits::{Tool, ToolOutput};
@@ -17,6 +19,8 @@ use crate::core::types::{ToolContext, ToolSchema};
 use crate::errors::ToolError;
 
 const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
+const DEFAULT_MCP_REQUEST_TIMEOUT_MS: u64 = 30_000;
+const DEFAULT_MCP_STDERR_CAPTURE_BYTES: usize = 16 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpServerConfig {
@@ -33,6 +37,8 @@ pub struct McpServerConfig {
     /// SSE endpoint URL (sse transport only).
     #[serde(default)]
     pub url: String,
+    #[serde(default)]
+    pub policy: McpTransportPolicy,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -41,6 +47,31 @@ pub enum McpTransport {
     #[default]
     Stdio,
     Sse,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct McpTransportPolicy {
+    #[serde(default = "default_mcp_request_timeout_ms")]
+    pub request_timeout_ms: u64,
+    #[serde(default = "default_mcp_stderr_capture_bytes")]
+    pub stderr_capture_bytes: usize,
+}
+
+impl Default for McpTransportPolicy {
+    fn default() -> Self {
+        Self {
+            request_timeout_ms: DEFAULT_MCP_REQUEST_TIMEOUT_MS,
+            stderr_capture_bytes: DEFAULT_MCP_STDERR_CAPTURE_BYTES,
+        }
+    }
+}
+
+fn default_mcp_request_timeout_ms() -> u64 {
+    DEFAULT_MCP_REQUEST_TIMEOUT_MS
+}
+
+fn default_mcp_stderr_capture_bytes() -> usize {
+    DEFAULT_MCP_STDERR_CAPTURE_BYTES
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -120,16 +151,16 @@ impl Tool for McpProxyTool {
             .map_err(|err| ToolError::ExecutionFailed {
                 reason: err.to_string(),
             })?;
-        Ok(ToolOutput {
-            content: mcp_call_result_to_text(result),
-        })
+        Ok(ToolOutput::text(mcp_call_result_to_text(result)))
     }
 }
 
 pub struct StdioMcpClient {
     server_name: String,
     next_id: AtomicU64,
+    policy: McpTransportPolicy,
     transport: Mutex<StdioTransport>,
+    stderr: Arc<Mutex<StderrCapture>>,
 }
 
 impl StdioMcpClient {
@@ -140,7 +171,7 @@ impl StdioMcpClient {
             .envs(&config.env)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit());
+            .stderr(Stdio::piped());
 
         let mut child = command.spawn()?;
         let stdin = child
@@ -151,15 +182,25 @@ impl StdioMcpClient {
             .stdout
             .take()
             .ok_or_else(|| anyhow::anyhow!("MCP server stdout unavailable"))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("MCP server stderr unavailable"))?;
+        let stderr_capture = Arc::new(Mutex::new(StderrCapture::new(
+            config.policy.stderr_capture_bytes,
+        )));
+        spawn_stderr_capture(stderr, stderr_capture.clone());
 
         let client = Self {
             server_name: config.name,
             next_id: AtomicU64::new(1),
+            policy: config.policy,
             transport: Mutex::new(StdioTransport {
                 child,
                 stdin,
                 lines: BufReader::new(stdout).lines(),
             }),
+            stderr: stderr_capture,
         };
         client.initialize().await?;
         Ok(client)
@@ -215,7 +256,21 @@ impl StdioMcpClient {
         });
         let mut transport = self.transport.lock().await;
         transport.write_message(&request).await?;
-        transport.read_response(id).await
+        let read = timeout(
+            Duration::from_millis(self.policy.request_timeout_ms),
+            transport.read_response(id),
+        )
+        .await;
+        match read {
+            Ok(result) => result,
+            Err(_) => {
+                let stderr = self.stderr.lock().await.snapshot();
+                anyhow::bail!(
+                    "{}",
+                    format_timeout_error(self.policy.request_timeout_ms, stderr)
+                );
+            }
+        }
     }
 
     async fn notify(&self, method: &str, params: Value) -> anyhow::Result<()> {
@@ -268,6 +323,7 @@ impl StdioMcpClient {
                 parameters,
                 destructive,
                 parallel_safe,
+                capability: None,
             },
         })
     }
@@ -306,7 +362,7 @@ impl StdioTransport {
                 continue;
             }
             if let Some(error) = message.get("error") {
-                anyhow::bail!("MCP error response: {error}");
+                anyhow::bail!("{}", format_mcp_error(error));
             }
             return Ok(message.get("result").cloned().unwrap_or_else(|| json!({})));
         }
@@ -342,11 +398,14 @@ pub struct SseMcpClient {
     http: reqwest::Client,
     endpoint: String,
     next_id: AtomicU64,
+    policy: McpTransportPolicy,
 }
 
 impl SseMcpClient {
     pub async fn connect(config: McpServerConfig) -> anyhow::Result<Self> {
-        let http = reqwest::Client::new();
+        let http = reqwest::Client::builder()
+            .timeout(Duration::from_millis(config.policy.request_timeout_ms))
+            .build()?;
         let endpoint = discover_endpoint(&http, &config.url).await?;
 
         let client = Self {
@@ -354,6 +413,7 @@ impl SseMcpClient {
             http,
             endpoint,
             next_id: AtomicU64::new(1),
+            policy: config.policy,
         };
         client.initialize().await?;
         Ok(client)
@@ -407,13 +467,24 @@ impl SseMcpClient {
             "method": method,
             "params": params,
         });
-        let response = self
-            .http
-            .post(&self.endpoint)
-            .header("content-type", "application/json")
-            .json(&request)
-            .send()
-            .await?;
+        let response = timeout(
+            Duration::from_millis(self.policy.request_timeout_ms),
+            async {
+                self.http
+                    .post(&self.endpoint)
+                    .header("content-type", "application/json")
+                    .json(&request)
+                    .send()
+                    .await
+            },
+        )
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "MCP request timed out after {}ms",
+                self.policy.request_timeout_ms
+            )
+        })??;
 
         if !response.status().is_success() {
             let text = response.text().await.unwrap_or_default();
@@ -422,7 +493,7 @@ impl SseMcpClient {
 
         let body: Value = response.json().await?;
         if let Some(error) = body.get("error") {
-            anyhow::bail!("MCP error response: {error}");
+            anyhow::bail!("{}", format_mcp_error(error));
         }
         Ok(body.get("result").cloned().unwrap_or_else(|| json!({})))
     }
@@ -479,6 +550,7 @@ impl SseMcpClient {
                 parameters,
                 destructive,
                 parallel_safe,
+                capability: None,
             },
         })
     }
@@ -535,9 +607,7 @@ impl Tool for McpSseProxyTool {
             .map_err(|err| ToolError::ExecutionFailed {
                 reason: err.to_string(),
             })?;
-        Ok(ToolOutput {
-            content: mcp_call_result_to_text(result),
-        })
+        Ok(ToolOutput::text(mcp_call_result_to_text(result)))
     }
 }
 
@@ -552,4 +622,82 @@ fn sanitize_name(value: &str) -> String {
             }
         })
         .collect()
+}
+
+fn spawn_stderr_capture(stderr: tokio::process::ChildStderr, capture: Arc<Mutex<StderrCapture>>) {
+    tokio::spawn(async move {
+        let mut stderr = stderr;
+        let mut buffer = [0_u8; 1024];
+        loop {
+            match stderr.read(&mut buffer).await {
+                Ok(0) => break,
+                Ok(count) => capture.lock().await.push(&buffer[..count]),
+                Err(_) => break,
+            }
+        }
+    });
+}
+
+#[derive(Debug)]
+struct StderrCapture {
+    max_bytes: usize,
+    bytes: Vec<u8>,
+    truncated: bool,
+}
+
+impl StderrCapture {
+    fn new(max_bytes: usize) -> Self {
+        Self {
+            max_bytes,
+            bytes: Vec::new(),
+            truncated: false,
+        }
+    }
+
+    fn push(&mut self, chunk: &[u8]) {
+        if self.max_bytes == 0 {
+            self.truncated = true;
+            return;
+        }
+
+        let remaining = self.max_bytes.saturating_sub(self.bytes.len());
+        if chunk.len() > remaining {
+            self.bytes.extend_from_slice(&chunk[..remaining]);
+            self.truncated = true;
+        } else {
+            self.bytes.extend_from_slice(chunk);
+        }
+    }
+
+    fn snapshot(&self) -> String {
+        let mut value = String::from_utf8_lossy(&self.bytes).to_string();
+        if self.truncated {
+            value.push_str("\n[stderr truncated]");
+        }
+        value
+    }
+}
+
+fn format_timeout_error(timeout_ms: u64, stderr: String) -> String {
+    if stderr.trim().is_empty() {
+        format!("MCP request timed out after {timeout_ms}ms")
+    } else {
+        format!(
+            "MCP request timed out after {timeout_ms}ms; stderr: {}",
+            stderr.trim()
+        )
+    }
+}
+
+fn format_mcp_error(error: &Value) -> String {
+    let code = error.get("code").and_then(Value::as_i64);
+    let message = error
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown MCP error");
+
+    match code {
+        Some(code) => format!("MCP JSON-RPC error {code}: {message}"),
+        None => format!("MCP JSON-RPC error: {message}"),
+    }
 }

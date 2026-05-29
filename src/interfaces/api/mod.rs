@@ -34,9 +34,10 @@ use crate::models::fake::FakeModelClient;
 use crate::models::health::{HealthConfig, ModelHealthStore};
 use crate::models::traits::ModelClient;
 use crate::state::artifacts::RunArtifactRecorder;
+use crate::state::index::StateIndex;
 use crate::state::resume::resolve_resume_state;
 use crate::state::store::StateStore;
-use crate::tools::default_tool_registry;
+use crate::tools::runtime_tool_registry;
 
 mod security;
 
@@ -66,7 +67,10 @@ struct JobRecord {
     session_id: SessionId,
     job_id: JobId,
     run_id: RunId,
+    workspace: Workspace,
+    config: AppConfig,
     message: String,
+    resumed_from_run_id: Option<RunId>,
     resume_state: Option<TaskState>,
     status: Mutex<RunStatus>,
     events: Mutex<Vec<JobStreamEvent>>,
@@ -108,6 +112,20 @@ pub struct CreateJobRequest {
     pub max_steps: Option<u32>,
     pub approval: Option<ApprovalPolicy>,
     pub resume: Option<String>,
+    pub workspace: Option<CreateJobWorkspace>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateJobWorkspace {
+    pub kind: CreateJobWorkspaceKind,
+    pub name: Option<String>,
+    pub base: Option<PathBuf>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CreateJobWorkspaceKind {
+    Task,
 }
 
 #[derive(Debug, Deserialize)]
@@ -130,12 +148,16 @@ pub struct JobStreamEvent {
 pub struct CreateJobResponse {
     pub job_id: JobId,
     pub run_id: RunId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resumed_from_run_id: Option<RunId>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct JobStateResponse {
     pub job_id: JobId,
     pub run_id: RunId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resumed_from_run_id: Option<RunId>,
     pub status: RunStatus,
     pub event_count: usize,
     pub events: Vec<JobStreamEvent>,
@@ -221,9 +243,13 @@ impl ApiState {
 
     pub fn with_shutdown(
         workspace: Workspace,
-        config: AppConfig,
+        mut config: AppConfig,
         shutdown_token: CancellationToken,
     ) -> Self {
+        if config.source_summary.workspace_root == std::path::Path::new(".") {
+            config.source_summary.workspace_root = workspace.root.clone();
+            config.source_summary.project_config_path = workspace.root.join(".rove/config.toml");
+        }
         let state_store = state_store_for_parts(&workspace, &config);
         if let Err(err) = state_store.index.initialize() {
             tracing::warn!("failed to initialize API state index: {err}");
@@ -256,7 +282,8 @@ async fn create_job(
         return Err(ApiError::bad_request("message must not be empty"));
     }
 
-    let state_store = state_store_for_api(&state);
+    let (workspace, config) = workspace_for_create_job(&state, req.workspace.as_ref())?;
+    let state_store = state_store_for_parts(&workspace, &config);
     let resume_state = resolve_resume_state(&state_store, req.resume.as_deref())
         .await
         .map_err(|err| ApiError::bad_request(err.to_string()))?;
@@ -279,12 +306,16 @@ async fn create_job(
         }
     }
     let run_id = RunId::new();
+    let resumed_from_run_id = resume_state.as_ref().map(|task_state| task_state.run_id);
     let (tx, _) = broadcast::channel(EVENT_BUFFER);
     let record = Arc::new(JobRecord {
         session_id,
         job_id,
         run_id,
+        workspace,
+        config,
         message: req.message.clone(),
+        resumed_from_run_id,
         resume_state,
         status: Mutex::new(RunStatus::Init),
         events: Mutex::new(Vec::new()),
@@ -309,7 +340,11 @@ async fn create_job(
     });
     *record.handle.lock().await = Some(handle);
 
-    Ok(Json(CreateJobResponse { job_id, run_id }))
+    Ok(Json(CreateJobResponse {
+        job_id,
+        run_id,
+        resumed_from_run_id,
+    }))
 }
 
 async fn job_events(
@@ -383,8 +418,9 @@ async fn cancel_job(
     }
 
     record.cancel_token.cancel();
-    reject_pending_approvals(&record).await;
-    reject_pending_inputs(&record).await;
+    let state_store = state_store_for_record(&record);
+    reject_pending_approvals(&record, &state_store.index).await;
+    reject_pending_inputs(&record, &state_store.index).await;
 
     if let Some(handle) = record.handle.lock().await.take() {
         let _ = handle.await;
@@ -410,6 +446,13 @@ async fn submit_approval(
         .await
         .remove(&call_id)
         .ok_or_else(|| ApiError::not_found("pending approval not found"))?;
+    if let Err(err) = state_store_for_record(&record)
+        .index
+        .mark_pending_approval_status_async(call_id, approval_status(req.decision).to_string())
+        .await
+    {
+        tracing::warn!(job_id = %job_id, call_id = %call_id, "failed to mark pending approval resolved: {err}");
+    }
     let _ = pending.tx.send(req.decision);
     Ok(Json(job_state_response(&record).await))
 }
@@ -426,6 +469,13 @@ async fn submit_input(
         .await
         .remove(&input_id)
         .ok_or_else(|| ApiError::not_found("pending input not found"))?;
+    if let Err(err) = state_store_for_record(&record)
+        .index
+        .mark_pending_input_status_async(input_id, "answered".to_string())
+        .await
+    {
+        tracing::warn!(job_id = %job_id, input_id = %input_id, "failed to mark pending input answered: {err}");
+    }
     let _ = pending.tx.send(req.answer);
     Ok(Json(job_state_response(&record).await))
 }
@@ -444,8 +494,8 @@ async fn run_job_inner(
     record: &Arc<JobRecord>,
     req: &CreateJobRequest,
 ) -> anyhow::Result<()> {
-    let engine = build_engine(state, &record.message, req, record.clone())?;
-    let state_store = state_store_for_api(state);
+    let engine = build_engine(state, &record.message, req, record.clone()).await?;
+    let state_store = state_store_for_record(record);
     let run = state_store.start_run(record.session_id, record.job_id, record.run_id)?;
     let mut recorder = RunArtifactRecorder::new(
         record.session_id,
@@ -464,11 +514,14 @@ async fn run_job_inner(
     ));
     let mut completed = false;
     let mut terminal_status = RunStatus::Error;
+    let mut terminal_event = None;
     while let Some(event) = stream.next().await {
         recorder.record_event(&event, &state_store).await;
         if let StreamEvent::RunCompleted { reason, .. } = &event {
             completed = true;
             terminal_status = status_for_reason(reason);
+            terminal_event = Some(event);
+            continue;
         }
         append_job_event(record, event).await;
     }
@@ -476,18 +529,18 @@ async fn run_job_inner(
         .finalize(&state_store, &workspace, &model_id, &run.run_dir)
         .await;
     if matches!(terminal_status, RunStatus::Cancelled | RunStatus::Error) {
-        reject_pending_approvals(record).await;
-        reject_pending_inputs(record).await;
+        reject_pending_approvals(record, &state_store.index).await;
+        reject_pending_inputs(record, &state_store.index).await;
     }
-    *record.status.lock().await = if completed {
-        terminal_status
-    } else {
-        RunStatus::Error
-    };
+    if let Some(event) = terminal_event {
+        append_job_event(record, event).await;
+    } else if !completed {
+        *record.status.lock().await = RunStatus::Error;
+    }
     Ok(())
 }
 
-async fn finalize_cancelled_job(state: &ApiState, record: &Arc<JobRecord>) {
+async fn finalize_cancelled_job(_state: &ApiState, record: &Arc<JobRecord>) {
     let cancel_event = StreamEvent::RunCompleted {
         reason: TerminationReason::Cancelled,
         output: None,
@@ -499,18 +552,18 @@ async fn finalize_cancelled_job(state: &ApiState, record: &Arc<JobRecord>) {
         .await
         .iter()
         .any(|event| matches!(event.event, StreamEvent::RunCompleted { .. }));
-    if !already_completed {
-        append_job_event(record, cancel_event.clone()).await;
-    }
-    let events_for_recorder: Vec<_> = record
+    let mut events_for_recorder: Vec<_> = record
         .events
         .lock()
         .await
         .iter()
         .map(|event| event.event.clone())
         .collect();
+    if !already_completed {
+        events_for_recorder.push(cancel_event.clone());
+    }
 
-    let state_store = state_store_for_api(state);
+    let state_store = state_store_for_record(record);
     if let Ok(trace_writer) = state_store.run_store.create_trace(&record.run_id) {
         let _ = trace_writer.append(&cancel_event);
     }
@@ -529,21 +582,25 @@ async fn finalize_cancelled_job(state: &ApiState, record: &Arc<JobRecord>) {
     recorder
         .finalize(
             &state_store,
-            &state.inner.workspace,
-            state.inner.config.provider.model.as_str(),
+            &record.workspace,
+            record.config.provider.model.as_str(),
             &run_dir,
         )
         .await;
-    *record.status.lock().await = RunStatus::Cancelled;
+    if !already_completed {
+        append_job_event(record, cancel_event).await;
+    } else {
+        *record.status.lock().await = RunStatus::Cancelled;
+    }
 }
 
-fn build_engine(
+async fn build_engine(
     state: &ApiState,
     message: &str,
     req: &CreateJobRequest,
     record: Arc<JobRecord>,
 ) -> anyhow::Result<Engine> {
-    let config = &state.inner.config;
+    let config = &record.config;
     let model_id = req
         .model
         .clone()
@@ -554,8 +611,15 @@ fn build_engine(
         _ => build_model_client_with_health(config, model_id, state.inner.model_health.clone()),
     };
 
-    let workspace = state.inner.workspace.clone();
-    let registry = default_tool_registry(&workspace);
+    let workspace = record.workspace.clone();
+    let memory_paths = config.memory_paths();
+    let state_store = state_store_for_record(&record);
+    let registry = runtime_tool_registry(
+        &workspace,
+        config.shell_policy(),
+        config.resolve_path(&config.tool.mcp_config_path),
+    )
+    .await?;
 
     let approval_policy = req.approval.unwrap_or(ApprovalPolicy::Ask);
     let engine = Engine::with_workspace(
@@ -576,12 +640,21 @@ fn build_engine(
         workspace,
         approval_policy,
     )
-    .with_memory_recall_limit(config.memory.recall_limit)
+    .with_planner_prompt(config.load_planner_prompt())
+    .with_memory_paths(memory_paths)
+    .with_model_compaction(
+        config.runtime.model_compaction_enabled,
+        config.runtime.compaction_failure_threshold,
+    )
     .with_input_provider(Arc::new(ApiInputProvider {
         record: record.clone(),
+        index: state_store.index.clone(),
     }));
     if approval_policy == ApprovalPolicy::Ask {
-        Ok(engine.with_approval_provider(Arc::new(ApiApprovalProvider { record })))
+        Ok(engine.with_approval_provider(Arc::new(ApiApprovalProvider {
+            record,
+            index: state_store.index.clone(),
+        })))
     } else {
         Ok(engine)
     }
@@ -589,6 +662,41 @@ fn build_engine(
 
 fn state_store_for_api(state: &ApiState) -> StateStore {
     state_store_for_parts(&state.inner.workspace, &state.inner.config)
+}
+
+fn state_store_for_record(record: &JobRecord) -> StateStore {
+    state_store_for_parts(&record.workspace, &record.config)
+}
+
+fn workspace_for_create_job(
+    state: &ApiState,
+    requested: Option<&CreateJobWorkspace>,
+) -> Result<(Workspace, AppConfig), ApiError> {
+    let Some(requested) = requested else {
+        return Ok((state.inner.workspace.clone(), state.inner.config.clone()));
+    };
+
+    match requested.kind {
+        CreateJobWorkspaceKind::Task => {
+            let name = requested
+                .name
+                .as_deref()
+                .ok_or_else(|| ApiError::bad_request("task workspace name is required"))?;
+            let base = requested
+                .base
+                .clone()
+                .unwrap_or_else(|| state.inner.config.state_dir().join("tasks"));
+            let mut workspace = Workspace::task(&base, name)
+                .map_err(|err| ApiError::bad_request(err.to_string()))?;
+            let mut config = state.inner.config.clone();
+            config.rebase_to_workspace(&workspace.root);
+            workspace.state_dir = config.state_dir();
+            workspace
+                .ensure_state_dir()
+                .map_err(|err| ApiError::internal(err.to_string()))?;
+            Ok((workspace, config))
+        }
+    }
 }
 
 fn state_store_for_parts(workspace: &Workspace, config: &AppConfig) -> StateStore {
@@ -616,12 +724,31 @@ async fn find_job(state: &ApiState, job_id: JobId) -> Result<Arc<JobRecord>, Api
 
 struct ApiApprovalProvider {
     record: Arc<JobRecord>,
+    index: StateIndex,
 }
 
 #[async_trait]
 impl ToolApprovalProvider for ApiApprovalProvider {
     async fn decide(&self, request: ToolApprovalRequest) -> ApprovalDecision {
         let (tx, rx) = oneshot::channel();
+        if let Err(err) = self
+            .index
+            .record_pending_approval_async(
+                request.call_id,
+                self.record.job_id,
+                self.record.run_id,
+                request.name.clone(),
+                request.args.to_string(),
+                request.reason.clone(),
+            )
+            .await
+        {
+            tracing::warn!(
+                job_id = %self.record.job_id,
+                call_id = %request.call_id,
+                "failed to persist pending approval: {err}"
+            );
+        }
         self.record
             .pending_approvals
             .lock()
@@ -633,6 +760,7 @@ impl ToolApprovalProvider for ApiApprovalProvider {
 
 struct ApiInputProvider {
     record: Arc<JobRecord>,
+    index: StateIndex,
 }
 
 #[async_trait]
@@ -641,6 +769,22 @@ impl UserInputProvider for ApiInputProvider {
         let input_id = CallId::new();
         let (tx, rx) = oneshot::channel();
         let prompt = request.prompt.clone();
+        if let Err(err) = self
+            .index
+            .record_pending_input_async(
+                input_id,
+                self.record.job_id,
+                self.record.run_id,
+                prompt.clone(),
+            )
+            .await
+        {
+            tracing::warn!(
+                job_id = %self.record.job_id,
+                input_id = %input_id,
+                "failed to persist pending input: {err}"
+            );
+        }
         self.record
             .pending_inputs
             .lock()
@@ -658,6 +802,7 @@ async fn job_state_response(record: &JobRecord) -> JobStateResponse {
     JobStateResponse {
         job_id: record.job_id,
         run_id: record.run_id,
+        resumed_from_run_id: record.resumed_from_run_id,
         status: record.status.lock().await.clone(),
         event_count: events.len(),
         events,
@@ -684,6 +829,7 @@ async fn persisted_job_state_response(
     Ok(JobStateResponse {
         job_id: job.job_id,
         run_id,
+        resumed_from_run_id: None,
         status: run_status_from_index(&job.status),
         event_count: events.len(),
         events,
@@ -711,11 +857,11 @@ async fn persisted_job_events(
 }
 
 async fn persisted_or_live_events(
-    state: &ApiState,
+    _state: &ApiState,
     record: &JobRecord,
     after: u64,
 ) -> Result<Vec<JobStreamEvent>, ApiError> {
-    let state_store = state_store_for_api(state);
+    let state_store = state_store_for_record(record);
     let mut merged = persisted_events_for_run(&state_store, record.run_id, after)
         .await?
         .into_iter()
@@ -756,6 +902,9 @@ async fn persisted_events_for_run(
 async fn append_job_event(record: &JobRecord, event: StreamEvent) -> JobStreamEvent {
     let stored = {
         let mut events = record.events.lock().await;
+        if let StreamEvent::RunCompleted { reason, .. } = &event {
+            *record.status.lock().await = status_for_reason(reason);
+        }
         let seq = events.last().map(|event| event.seq + 1).unwrap_or(1);
         let stored = JobStreamEvent { seq, event };
         events.push(stored.clone());
@@ -793,15 +942,36 @@ async fn pending_inputs_response(record: &JobRecord) -> Vec<PendingInputResponse
         .collect()
 }
 
-async fn reject_pending_approvals(record: &JobRecord) {
+async fn reject_pending_approvals(record: &JobRecord, index: &StateIndex) {
     let pending = std::mem::take(&mut *record.pending_approvals.lock().await);
-    for (_, approval) in pending {
+    for (call_id, approval) in pending {
+        if let Err(err) = index
+            .mark_pending_approval_status_async(call_id, "cancelled".to_string())
+            .await
+        {
+            tracing::warn!(job_id = %record.job_id, call_id = %call_id, "failed to mark pending approval cancelled: {err}");
+        }
         let _ = approval.tx.send(ApprovalDecision::Reject);
     }
 }
 
-async fn reject_pending_inputs(record: &JobRecord) {
-    let _ = std::mem::take(&mut *record.pending_inputs.lock().await);
+async fn reject_pending_inputs(record: &JobRecord, index: &StateIndex) {
+    let pending = std::mem::take(&mut *record.pending_inputs.lock().await);
+    for (input_id, _) in pending {
+        if let Err(err) = index
+            .mark_pending_input_status_async(input_id, "cancelled".to_string())
+            .await
+        {
+            tracing::warn!(job_id = %record.job_id, input_id = %input_id, "failed to mark pending input cancelled: {err}");
+        }
+    }
+}
+
+fn approval_status(decision: ApprovalDecision) -> &'static str {
+    match decision {
+        ApprovalDecision::Approve => "approved",
+        ApprovalDecision::Reject => "rejected",
+    }
 }
 
 fn sse_event(event: JobStreamEvent) -> Result<Event, serde_json::Error> {
@@ -900,5 +1070,65 @@ impl axum::response::IntoResponse for ApiError {
             })),
         )
             .into_response()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use super::*;
+
+    async fn publish_terminal_event_after_barrier(
+        record: &JobRecord,
+        event: StreamEvent,
+        finalized: &AtomicBool,
+    ) {
+        finalized.store(true, Ordering::SeqCst);
+        append_job_event(record, event).await;
+    }
+
+    #[tokio::test]
+    async fn terminal_event_updates_live_status_after_finalization_barrier() {
+        let (tx, _) = broadcast::channel(EVENT_BUFFER);
+        let workspace = Workspace::detect(std::env::current_dir().unwrap().as_path()).unwrap();
+        let mut config = AppConfig::default();
+        config.rebase_to_workspace(&workspace.root);
+        let record = JobRecord {
+            session_id: SessionId::new(),
+            job_id: JobId::new(),
+            run_id: RunId::new(),
+            workspace,
+            config,
+            message: "test".to_string(),
+            resumed_from_run_id: None,
+            resume_state: None,
+            status: Mutex::new(RunStatus::Running),
+            events: Mutex::new(Vec::new()),
+            pending_approvals: Mutex::new(HashMap::new()),
+            pending_inputs: Mutex::new(HashMap::new()),
+            tx,
+            handle: Mutex::new(None),
+            cancel_token: CancellationToken::new(),
+        };
+        let finalized = AtomicBool::new(false);
+
+        publish_terminal_event_after_barrier(
+            &record,
+            StreamEvent::RunCompleted {
+                reason: TerminationReason::StepLimit,
+                output: None,
+            },
+            &finalized,
+        )
+        .await;
+
+        assert!(finalized.load(Ordering::SeqCst));
+        assert_eq!(*record.status.lock().await, RunStatus::Done);
+        let events = record.events.lock().await;
+        assert!(matches!(
+            events.last().map(|event| &event.event),
+            Some(StreamEvent::RunCompleted { .. })
+        ));
     }
 }

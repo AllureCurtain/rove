@@ -1,0 +1,67 @@
+{
+  "name": "agent-smoke",
+  "tasks": [
+    {
+      "name": "echo_smoke",
+      "message": "Run echo smoke benchmark",
+      "requires_network": false,
+      "turns": [
+        {
+          "type": "tool_use",
+          "id": "call_echo_smoke",
+          "name": "echo",
+          "args": { "message": "benchmark echo ok" }
+        },
+        {
+          "type": "text",
+          "text": "echo benchmark passed: benchmark echo ok"
+        }
+      ],
+      "expected_output_contains": ["echo benchmark passed"]
+    },
+    {
+      "name": "write_file",
+      "message": "Write a deterministic benchmark note",
+      "requires_network": false,
+      "turns": [
+        {
+          "type": "tool_use",
+          "id": "call_write_note",
+          "name": "fs_write",
+          "args": {
+            "path": "bench-output.txt",
+            "content": "written by rove-bench\n"
+          }
+        },
+        {
+          "type": "text",
+          "text": "write benchmark passed"
+        }
+      ],
+      "expected_output_contains": ["write benchmark passed"],
+      "expected_files": [
+        {
+          "path": "bench-output.txt",
+          "content": "written by rove-bench\n"
+        }
+      ]
+    },
+    {
+      "name": "resume_interrupted",
+      "message": "Continue the interrupted benchmark",
+      "requires_network": false,
+      "resume_state": {
+        "goal": "Interrupted benchmark goal",
+        "summary": "Previous run stopped after preparing resume context."
+      },
+      "turns": [
+        {
+          "type": "text",
+          "text": "resume benchmark passed using Previous run stopped after preparing resume context."
+        }
+      ],
+      "expected_output_contains": ["resume benchmark passed"],
+      "expected_summary_contains": ["Previous run stopped after preparing resume context."]
+    }
+  ]
+}

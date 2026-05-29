@@ -3,7 +3,11 @@
     {
       "name": "filesystem",
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem", "."]
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
+      "policy": {
+        "request_timeout_ms": 30000,
+        "stderr_capture_bytes": 16384
+      }
     },
     {
       "name": "github",

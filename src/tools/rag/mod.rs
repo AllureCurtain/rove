@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use super::traits::{Tool, ToolOutput};
-use crate::core::types::{ToolContext, ToolSchema};
+use crate::core::types::{ToolCapability, ToolContext, ToolSchema};
 use crate::errors::ToolError;
 use crate::tools::rag::rewrite::{DeterministicQueryRewriteService, QueryRewriteService};
 
@@ -69,6 +69,11 @@ impl Tool for RagRetrieveTool {
             }),
             destructive: false,
             parallel_safe: true,
+            capability: Some(ToolCapability {
+                status: "enabled".to_string(),
+                feature: Some("rag".to_string()),
+                message: None,
+            }),
         }
     }
 
@@ -83,7 +88,8 @@ impl Tool for RagRetrieveTool {
             .get("limit")
             .and_then(|value| value.as_u64())
             .unwrap_or(5) as usize;
-        let index = RagIndex::new(self.root.clone());
+        let index =
+            RagIndex::new_with_state_dir(self.root.clone(), _ctx.workspace.state_dir.clone());
         let embedder = DeterministicEmbedder;
         let hits = index
             .retrieve(&embedder, self.kind, query, limit)
@@ -102,7 +108,7 @@ impl Tool for RagRetrieveTool {
         .map_err(|err| ToolError::ExecutionFailed {
             reason: err.to_string(),
         })?;
-        Ok(ToolOutput { content })
+        Ok(ToolOutput::text(content))
     }
 }
 

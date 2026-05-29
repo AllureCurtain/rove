@@ -5,6 +5,8 @@ use figment::Figment;
 use figment::providers::{Format, Serialized, Toml};
 use serde::{Deserialize, Serialize};
 
+use crate::memory::paths::MemoryPaths;
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct AppConfig {
@@ -16,6 +18,7 @@ pub struct AppConfig {
     pub api: ApiConfig,
     pub web: WebConfig,
     pub routing: RoutingConfig,
+    pub rag: RagConfig,
     #[serde(skip)]
     pub source_summary: ConfigSourceSummary,
 }
@@ -25,6 +28,9 @@ pub struct AppConfig {
 pub struct RuntimeConfig {
     pub max_steps: u32,
     pub system_prompt_path: PathBuf,
+    pub planner_prompt_path: PathBuf,
+    pub model_compaction_enabled: bool,
+    pub compaction_failure_threshold: u32,
     pub context_soft_limit_tokens: usize,
     pub context_hard_limit_tokens: usize,
     pub context_reserved_tokens: usize,
@@ -55,6 +61,16 @@ pub struct FallbackProviderConfig {
 #[serde(default)]
 pub struct ToolConfig {
     pub mcp_config_path: PathBuf,
+    pub shell: ShellConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct ShellConfig {
+    pub timeout_ms: u64,
+    pub max_output_bytes: usize,
+    pub inherit_environment: bool,
+    pub denylist: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -96,6 +112,24 @@ pub struct WebConfig {
 pub struct RoutingConfig {
     pub failure_threshold: u32,
     pub open_cooldown_ms: u64,
+    pub retry_max_attempts: u32,
+    pub retry_backoff_base_ms: u64,
+    pub retry_backoff_max_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct RagConfig {
+    pub deterministic: bool,
+    pub embedding_provider: String,
+    pub embedding_model: String,
+    pub embedding_api_base: String,
+    pub embedding_api_key: String,
+    pub rerank_provider: Option<String>,
+    pub rerank_model: Option<String>,
+    pub rerank_api_key: Option<String>,
+    pub timeout_ms: u64,
+    pub fallback_to_deterministic: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -119,6 +153,9 @@ impl Default for RuntimeConfig {
         Self {
             max_steps: 20,
             system_prompt_path: PathBuf::from("prompts/system.md"),
+            planner_prompt_path: PathBuf::from("prompts/planner.md"),
+            model_compaction_enabled: false,
+            compaction_failure_threshold: 3,
             context_soft_limit_tokens: 24_000,
             context_hard_limit_tokens: 30_000,
             context_reserved_tokens: 4_000,
@@ -148,6 +185,18 @@ impl Default for ToolConfig {
     fn default() -> Self {
         Self {
             mcp_config_path: PathBuf::from(".rove/mcp_servers.json"),
+            shell: ShellConfig::default(),
+        }
+    }
+}
+
+impl Default for ShellConfig {
+    fn default() -> Self {
+        Self {
+            timeout_ms: 30_000,
+            max_output_bytes: 64 * 1024,
+            inherit_environment: true,
+            denylist: Vec::new(),
         }
     }
 }
@@ -199,6 +248,26 @@ impl Default for RoutingConfig {
         Self {
             failure_threshold: 3,
             open_cooldown_ms: 30_000,
+            retry_max_attempts: 1,
+            retry_backoff_base_ms: 250,
+            retry_backoff_max_ms: 5_000,
+        }
+    }
+}
+
+impl Default for RagConfig {
+    fn default() -> Self {
+        Self {
+            deterministic: true,
+            embedding_provider: "deterministic".to_string(),
+            embedding_model: "deterministic-64".to_string(),
+            embedding_api_base: "https://api.openai.com/v1".to_string(),
+            embedding_api_key: String::new(),
+            rerank_provider: None,
+            rerank_model: None,
+            rerank_api_key: None,
+            timeout_ms: 30_000,
+            fallback_to_deterministic: true,
         }
     }
 }
@@ -269,6 +338,21 @@ impl AppConfig {
         })
     }
 
+    pub fn load_planner_prompt(&self) -> String {
+        let path = self.resolve_path(&self.runtime.planner_prompt_path);
+        std::fs::read_to_string(path)
+            .unwrap_or_else(|_| crate::core::planner::DEFAULT_PLANNER_PROMPT.to_string())
+    }
+
+    pub fn shell_policy(&self) -> crate::tools::shell::ShellPolicy {
+        crate::tools::shell::ShellPolicy {
+            timeout_ms: self.tool.shell.timeout_ms,
+            max_output_bytes: self.tool.shell.max_output_bytes,
+            inherit_environment: self.tool.shell.inherit_environment,
+            denylist: self.tool.shell.denylist.clone(),
+        }
+    }
+
     pub fn resolve_path(&self, path: &Path) -> PathBuf {
         if path.is_absolute() {
             path.to_path_buf()
@@ -283,6 +367,24 @@ impl AppConfig {
 
     pub fn sqlite_path(&self) -> PathBuf {
         self.resolve_path(&self.state.sqlite_path)
+    }
+
+    pub fn memory_paths(&self) -> MemoryPaths {
+        MemoryPaths {
+            session_dir: self.resolve_path(&self.memory.session_dir),
+            durable_dir: self.resolve_path(&self.memory.durable_dir),
+            recall_limit: self.memory.recall_limit,
+        }
+    }
+
+    pub fn rebase_to_workspace(&mut self, workspace_root: impl AsRef<Path>) {
+        let workspace_root = workspace_root
+            .as_ref()
+            .canonicalize()
+            .unwrap_or_else(|_| workspace_root.as_ref().to_path_buf());
+        self.source_summary.workspace_root = workspace_root.clone();
+        self.source_summary.project_config_path = workspace_root.join(".rove/config.toml");
+        self.source_summary.project_config_loaded = false;
     }
 
     fn validate(&self) -> anyhow::Result<()> {
@@ -322,6 +424,9 @@ impl AppConfig {
         if self.runtime.max_steps == 0 {
             anyhow::bail!("runtime.max_steps must be greater than 0");
         }
+        if self.runtime.compaction_failure_threshold == 0 {
+            anyhow::bail!("runtime.compaction_failure_threshold must be greater than 0");
+        }
         if self.runtime.context_reserved_tokens >= self.runtime.context_hard_limit_tokens {
             anyhow::bail!(
                 "runtime.context_reserved_tokens must be less than context_hard_limit_tokens"
@@ -337,6 +442,17 @@ impl AppConfig {
         }
         if self.routing.open_cooldown_ms == 0 {
             anyhow::bail!("routing.open_cooldown_ms must be greater than 0");
+        }
+        if self.routing.retry_max_attempts == 0 {
+            anyhow::bail!("routing.retry_max_attempts must be greater than 0");
+        }
+        if self.routing.retry_backoff_max_ms < self.routing.retry_backoff_base_ms {
+            anyhow::bail!(
+                "routing.retry_backoff_max_ms must be greater than or equal to retry_backoff_base_ms"
+            );
+        }
+        if self.rag.timeout_ms == 0 {
+            anyhow::bail!("rag.timeout_ms must be greater than 0");
         }
         if self.state.sqlite_busy_timeout_ms == 0 {
             anyhow::bail!("state.sqlite_busy_timeout_ms must be greater than 0");
@@ -379,6 +495,10 @@ impl AppConfig {
             (
                 "runtime.system_prompt_path",
                 &self.runtime.system_prompt_path,
+            ),
+            (
+                "runtime.planner_prompt_path",
+                &self.runtime.planner_prompt_path,
             ),
             ("tool.mcp_config_path", &self.tool.mcp_config_path),
             ("state.state_dir", &self.state.state_dir),
@@ -456,6 +576,8 @@ struct AppConfigLayer {
     web: Option<WebConfigLayer>,
     #[serde(skip_serializing_if = "Option::is_none")]
     routing: Option<RoutingConfigLayer>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rag: Option<RagConfigLayer>,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -464,6 +586,12 @@ struct RuntimeConfigLayer {
     max_steps: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     system_prompt_path: Option<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    planner_prompt_path: Option<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model_compaction_enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    compaction_failure_threshold: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     context_soft_limit_tokens: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -494,6 +622,20 @@ struct ProviderConfigLayer {
 struct ToolConfigLayer {
     #[serde(skip_serializing_if = "Option::is_none")]
     mcp_config_path: Option<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    shell: Option<ShellConfigLayer>,
+}
+
+#[derive(Debug, Default, Serialize)]
+struct ShellConfigLayer {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    timeout_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_output_bytes: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    inherit_environment: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    denylist: Option<Vec<String>>,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -546,6 +688,36 @@ struct RoutingConfigLayer {
     failure_threshold: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     open_cooldown_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    retry_max_attempts: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    retry_backoff_base_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    retry_backoff_max_ms: Option<u64>,
+}
+
+#[derive(Debug, Default, Serialize)]
+struct RagConfigLayer {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    deterministic: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    embedding_provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    embedding_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    embedding_api_base: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    embedding_api_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rerank_provider: Option<Option<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rerank_model: Option<Option<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rerank_api_key: Option<Option<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    timeout_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fallback_to_deterministic: Option<bool>,
 }
 
 #[derive(Debug, Default)]
@@ -597,6 +769,20 @@ fn env_layer() -> anyhow::Result<NamedConfigLayer> {
     if let Some(value) = env_string("ROVE_SYSTEM_PROMPT") {
         runtime.system_prompt_path = Some(PathBuf::from(value));
         keys.push("ROVE_SYSTEM_PROMPT".to_string());
+    }
+    if let Some(value) = env_string("ROVE_PLANNER_PROMPT") {
+        runtime.planner_prompt_path = Some(PathBuf::from(value));
+        keys.push("ROVE_PLANNER_PROMPT".to_string());
+    }
+    if let Some(value) = env_string("ROVE_MODEL_COMPACTION_ENABLED") {
+        runtime.model_compaction_enabled =
+            Some(parse_env_bool("ROVE_MODEL_COMPACTION_ENABLED", &value)?);
+        keys.push("ROVE_MODEL_COMPACTION_ENABLED".to_string());
+    }
+    if let Some(value) = env_string("ROVE_COMPACTION_FAILURE_THRESHOLD") {
+        runtime.compaction_failure_threshold =
+            Some(parse_env("ROVE_COMPACTION_FAILURE_THRESHOLD", &value)?);
+        keys.push("ROVE_COMPACTION_FAILURE_THRESHOLD".to_string());
     }
     if let Some(value) = env_string("ROVE_CONTEXT_SOFT_LIMIT_TOKENS") {
         runtime.context_soft_limit_tokens =
@@ -656,12 +842,89 @@ fn env_layer() -> anyhow::Result<NamedConfigLayer> {
         routing.open_cooldown_ms = Some(parse_env("ROVE_ROUTING_OPEN_COOLDOWN_MS", &value)?);
         keys.push("ROVE_ROUTING_OPEN_COOLDOWN_MS".to_string());
     }
+    if let Some(value) = env_string("ROVE_ROUTING_RETRY_MAX_ATTEMPTS") {
+        routing.retry_max_attempts = Some(parse_env("ROVE_ROUTING_RETRY_MAX_ATTEMPTS", &value)?);
+        keys.push("ROVE_ROUTING_RETRY_MAX_ATTEMPTS".to_string());
+    }
+    if let Some(value) = env_string("ROVE_ROUTING_RETRY_BACKOFF_BASE_MS") {
+        routing.retry_backoff_base_ms =
+            Some(parse_env("ROVE_ROUTING_RETRY_BACKOFF_BASE_MS", &value)?);
+        keys.push("ROVE_ROUTING_RETRY_BACKOFF_BASE_MS".to_string());
+    }
+    if let Some(value) = env_string("ROVE_ROUTING_RETRY_BACKOFF_MAX_MS") {
+        routing.retry_backoff_max_ms =
+            Some(parse_env("ROVE_ROUTING_RETRY_BACKOFF_MAX_MS", &value)?);
+        keys.push("ROVE_ROUTING_RETRY_BACKOFF_MAX_MS".to_string());
+    }
+
+    let mut rag = RagConfigLayer::default();
+    if let Some(value) = env_string("ROVE_RAG_DETERMINISTIC") {
+        rag.deterministic = Some(parse_env_bool("ROVE_RAG_DETERMINISTIC", &value)?);
+        keys.push("ROVE_RAG_DETERMINISTIC".to_string());
+    }
+    if let Some(value) = env_string("ROVE_RAG_EMBEDDING_PROVIDER") {
+        rag.embedding_provider = Some(value);
+        keys.push("ROVE_RAG_EMBEDDING_PROVIDER".to_string());
+    }
+    if let Some(value) = env_string("ROVE_RAG_EMBEDDING_MODEL") {
+        rag.embedding_model = Some(value);
+        keys.push("ROVE_RAG_EMBEDDING_MODEL".to_string());
+    }
+    if let Some(value) = env_string("ROVE_RAG_EMBEDDING_API_BASE") {
+        rag.embedding_api_base = Some(value);
+        keys.push("ROVE_RAG_EMBEDDING_API_BASE".to_string());
+    }
+    if let Some(value) = env_string("ROVE_RAG_EMBEDDING_API_KEY") {
+        rag.embedding_api_key = Some(value);
+        keys.push("ROVE_RAG_EMBEDDING_API_KEY".to_string());
+    }
+    if let Some(value) = env_string("ROVE_RAG_RERANK_PROVIDER") {
+        rag.rerank_provider = Some(Some(value));
+        keys.push("ROVE_RAG_RERANK_PROVIDER".to_string());
+    }
+    if let Some(value) = env_string("ROVE_RAG_RERANK_MODEL") {
+        rag.rerank_model = Some(Some(value));
+        keys.push("ROVE_RAG_RERANK_MODEL".to_string());
+    }
+    if let Some(value) = env_string("ROVE_RAG_RERANK_API_KEY") {
+        rag.rerank_api_key = Some(Some(value));
+        keys.push("ROVE_RAG_RERANK_API_KEY".to_string());
+    }
+    if let Some(value) = env_string("ROVE_RAG_TIMEOUT_MS") {
+        rag.timeout_ms = Some(parse_env("ROVE_RAG_TIMEOUT_MS", &value)?);
+        keys.push("ROVE_RAG_TIMEOUT_MS".to_string());
+    }
+    if let Some(value) = env_string("ROVE_RAG_FALLBACK_TO_DETERMINISTIC") {
+        rag.fallback_to_deterministic = Some(parse_env_bool(
+            "ROVE_RAG_FALLBACK_TO_DETERMINISTIC",
+            &value,
+        )?);
+        keys.push("ROVE_RAG_FALLBACK_TO_DETERMINISTIC".to_string());
+    }
 
     let mut tool = ToolConfigLayer::default();
     if let Some(value) = env_string("ROVE_MCP_CONFIG") {
         tool.mcp_config_path = Some(PathBuf::from(value));
         keys.push("ROVE_MCP_CONFIG".to_string());
     }
+    let mut shell = ShellConfigLayer::default();
+    if let Some(value) = env_string("ROVE_SHELL_TIMEOUT_MS") {
+        shell.timeout_ms = Some(parse_env("ROVE_SHELL_TIMEOUT_MS", &value)?);
+        keys.push("ROVE_SHELL_TIMEOUT_MS".to_string());
+    }
+    if let Some(value) = env_string("ROVE_SHELL_MAX_OUTPUT_BYTES") {
+        shell.max_output_bytes = Some(parse_env("ROVE_SHELL_MAX_OUTPUT_BYTES", &value)?);
+        keys.push("ROVE_SHELL_MAX_OUTPUT_BYTES".to_string());
+    }
+    if let Some(value) = env_string("ROVE_SHELL_INHERIT_ENVIRONMENT") {
+        shell.inherit_environment = Some(parse_env_bool("ROVE_SHELL_INHERIT_ENVIRONMENT", &value)?);
+        keys.push("ROVE_SHELL_INHERIT_ENVIRONMENT".to_string());
+    }
+    if let Some(value) = env_string("ROVE_SHELL_DENYLIST") {
+        shell.denylist = Some(parse_csv(&value));
+        keys.push("ROVE_SHELL_DENYLIST".to_string());
+    }
+    tool.shell = Some(shell).filter(has_shell_values);
 
     let mut memory = MemoryConfigLayer::default();
     if let Some(value) = env_string("ROVE_MEMORY_SESSION_DIR") {
@@ -742,6 +1005,7 @@ fn env_layer() -> anyhow::Result<NamedConfigLayer> {
             api: Some(api).filter(has_api_values),
             web: Some(web).filter(has_web_values),
             routing: Some(routing).filter(has_routing_values),
+            rag: Some(rag).filter(has_rag_values),
         },
         keys,
     })
@@ -782,6 +1046,9 @@ fn parse_csv(raw: &str) -> Vec<String> {
 fn has_runtime_values(layer: &RuntimeConfigLayer) -> bool {
     layer.max_steps.is_some()
         || layer.system_prompt_path.is_some()
+        || layer.planner_prompt_path.is_some()
+        || layer.model_compaction_enabled.is_some()
+        || layer.compaction_failure_threshold.is_some()
         || layer.context_soft_limit_tokens.is_some()
         || layer.context_hard_limit_tokens.is_some()
         || layer.context_reserved_tokens.is_some()
@@ -798,7 +1065,14 @@ fn has_provider_values(layer: &ProviderConfigLayer) -> bool {
 }
 
 fn has_tool_values(layer: &ToolConfigLayer) -> bool {
-    layer.mcp_config_path.is_some()
+    layer.mcp_config_path.is_some() || layer.shell.is_some()
+}
+
+fn has_shell_values(layer: &ShellConfigLayer) -> bool {
+    layer.timeout_ms.is_some()
+        || layer.max_output_bytes.is_some()
+        || layer.inherit_environment.is_some()
+        || layer.denylist.is_some()
 }
 
 fn has_memory_values(layer: &MemoryConfigLayer) -> bool {
@@ -826,7 +1100,24 @@ fn has_web_values(layer: &WebConfigLayer) -> bool {
 }
 
 fn has_routing_values(layer: &RoutingConfigLayer) -> bool {
-    layer.failure_threshold.is_some() || layer.open_cooldown_ms.is_some()
+    layer.failure_threshold.is_some()
+        || layer.open_cooldown_ms.is_some()
+        || layer.retry_max_attempts.is_some()
+        || layer.retry_backoff_base_ms.is_some()
+        || layer.retry_backoff_max_ms.is_some()
+}
+
+fn has_rag_values(layer: &RagConfigLayer) -> bool {
+    layer.deterministic.is_some()
+        || layer.embedding_provider.is_some()
+        || layer.embedding_model.is_some()
+        || layer.embedding_api_base.is_some()
+        || layer.embedding_api_key.is_some()
+        || layer.rerank_provider.is_some()
+        || layer.rerank_model.is_some()
+        || layer.rerank_api_key.is_some()
+        || layer.timeout_ms.is_some()
+        || layer.fallback_to_deterministic.is_some()
 }
 
 #[cfg(test)]
@@ -857,12 +1148,32 @@ mod tests {
             "ROVE_FALLBACK_PROVIDERS",
             "ROVE_ROUTING_FAILURE_THRESHOLD",
             "ROVE_ROUTING_OPEN_COOLDOWN_MS",
+            "ROVE_ROUTING_RETRY_MAX_ATTEMPTS",
+            "ROVE_ROUTING_RETRY_BACKOFF_BASE_MS",
+            "ROVE_ROUTING_RETRY_BACKOFF_MAX_MS",
             "ROVE_MAX_STEPS",
             "ROVE_SYSTEM_PROMPT",
+            "ROVE_PLANNER_PROMPT",
+            "ROVE_MODEL_COMPACTION_ENABLED",
+            "ROVE_COMPACTION_FAILURE_THRESHOLD",
             "ROVE_MCP_CONFIG",
+            "ROVE_SHELL_TIMEOUT_MS",
+            "ROVE_SHELL_MAX_OUTPUT_BYTES",
+            "ROVE_SHELL_INHERIT_ENVIRONMENT",
+            "ROVE_SHELL_DENYLIST",
             "ROVE_API_BIND_ADDR",
             "ROVE_API_TOKEN",
             "ROVE_API_UNSAFE_REMOTE_WITHOUT_AUTH",
+            "ROVE_RAG_DETERMINISTIC",
+            "ROVE_RAG_EMBEDDING_PROVIDER",
+            "ROVE_RAG_EMBEDDING_MODEL",
+            "ROVE_RAG_EMBEDDING_API_BASE",
+            "ROVE_RAG_EMBEDDING_API_KEY",
+            "ROVE_RAG_RERANK_PROVIDER",
+            "ROVE_RAG_RERANK_MODEL",
+            "ROVE_RAG_RERANK_API_KEY",
+            "ROVE_RAG_TIMEOUT_MS",
+            "ROVE_RAG_FALLBACK_TO_DETERMINISTIC",
         ] {
             unsafe {
                 std::env::remove_var(key);
@@ -897,6 +1208,9 @@ model = "project-model"
 
 [routing]
 failure_threshold = 2
+retry_max_attempts = 4
+retry_backoff_base_ms = 123
+retry_backoff_max_ms = 456
 "#,
         )
         .unwrap();
@@ -919,6 +1233,9 @@ failure_threshold = 2
         assert_eq!(config.provider.model, "cli-model");
         assert_eq!(config.runtime.max_steps, 13);
         assert_eq!(config.routing.failure_threshold, 2);
+        assert_eq!(config.routing.retry_max_attempts, 4);
+        assert_eq!(config.routing.retry_backoff_base_ms, 123);
+        assert_eq!(config.routing.retry_backoff_max_ms, 456);
         assert!(config.source_summary.project_config_loaded);
         assert!(
             config

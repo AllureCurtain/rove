@@ -104,3 +104,23 @@ fn build_model_client_supports_fake_provider() {
 
     assert_eq!(model.model_id(), "fake");
 }
+
+#[test]
+fn routing_retry_config_does_not_change_target_identity() {
+    let mut config = AppConfig::default();
+    config.provider.name = "openai".to_string();
+    config.provider.api_base = "https://example.test/v1".to_string();
+    config.provider.api_key = "secret-token".to_string();
+    config.provider.model = "primary-model".to_string();
+    config.provider.fallback_models = vec!["fallback-a".to_string()];
+    config.routing.retry_max_attempts = 3;
+    config.routing.retry_backoff_base_ms = 100;
+    config.routing.retry_backoff_max_ms = 1_000;
+
+    let model = build_model_client(&config, "primary-model".to_string());
+
+    assert_eq!(
+        model.model_id(),
+        "routing(openai-compatible:https://example.test/v1:primary-model,openai-compatible:https://example.test/v1:fallback-a)"
+    );
+}

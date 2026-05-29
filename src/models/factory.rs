@@ -4,7 +4,7 @@ use crate::models::fake::FakeModelClient;
 use crate::models::health::{HealthConfig, ModelHealthStore};
 use crate::models::ollama::OllamaClient;
 use crate::models::openai::OpenAiClient;
-use crate::models::routing::RoutingModelClient;
+use crate::models::routing::{RetryPolicy, RoutingModelClient};
 use crate::models::traits::ModelClient;
 use std::sync::Arc;
 use std::time::Duration;
@@ -63,7 +63,11 @@ fn build_routed_model_client(
             open_cooldown: Duration::from_millis(config.routing.open_cooldown_ms),
         }),
     };
-    Box::new(routed)
+    Box::new(routed.with_retry_policy(RetryPolicy {
+        max_attempts: config.routing.retry_max_attempts,
+        backoff_base: Duration::from_millis(config.routing.retry_backoff_base_ms),
+        backoff_max: Duration::from_millis(config.routing.retry_backoff_max_ms),
+    }))
 }
 
 fn fallback_specs(config: &AppConfig, primary: &ProviderSpec) -> Vec<ProviderSpec> {

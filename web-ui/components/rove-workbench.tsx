@@ -4,6 +4,7 @@ import {
   ActivityLogIcon,
   CheckIcon,
   ClockIcon,
+  CounterClockwiseClockIcon,
   CubeIcon,
   DotFilledIcon,
   FileTextIcon,
@@ -57,8 +58,11 @@ export function RoveWorkbench() {
     if (!state.activeJobId) {
       return "no active run";
     }
-    return `job ${shortId(state.activeJobId)} / run ${shortId(state.activeRunId)}`;
-  }, [state.activeJobId, state.activeRunId]);
+    const resume = state.resumedFromRunId
+      ? ` / from ${shortId(state.resumedFromRunId)}`
+      : "";
+    return `job ${shortId(state.activeJobId)} / run ${shortId(state.activeRunId)}${resume}`;
+  }, [state.activeJobId, state.activeRunId, state.resumedFromRunId]);
 
   useEffect(() => {
     return () => {
@@ -77,6 +81,14 @@ export function RoveWorkbench() {
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    await startJob("fresh");
+  }
+
+  async function handleResumeLatest() {
+    await startJob("latest");
+  }
+
+  async function startJob(mode: "fresh" | "latest") {
     const trimmed = message.trim();
     if (!trimmed || isBusy) {
       return;
@@ -94,9 +106,15 @@ export function RoveWorkbench() {
         model: model.trim() || undefined,
         max_steps: Number(maxSteps) || undefined,
         approval: "ask",
+        resume: mode === "latest" ? "latest" : undefined,
       });
 
-      dispatch({ type: "job_created", jobId: job.job_id, runId: job.run_id });
+      dispatch({
+        type: "job_created",
+        jobId: job.job_id,
+        runId: job.run_id,
+        resumedFromRunId: job.resumed_from_run_id,
+      });
       attachStream(job.job_id);
     } catch (error) {
       dispatch({ type: "set_error", error: describeError(error) });
@@ -135,6 +153,9 @@ export function RoveWorkbench() {
         decision,
       });
       dispatch({ type: "job_state_synced", state: jobState });
+      if (isTerminalStatus(jobState.status)) {
+        closeStream();
+      }
     } catch (error) {
       dispatch({ type: "set_error", error: describeError(error) });
     } finally {
@@ -152,6 +173,9 @@ export function RoveWorkbench() {
       const jobState = await submitInput(state.activeJobId, inputId, answer);
       dispatch({ type: "input_submitted", inputId });
       dispatch({ type: "job_state_synced", state: jobState });
+      if (isTerminalStatus(jobState.status)) {
+        closeStream();
+      }
     } catch (error) {
       dispatch({ type: "set_error", error: describeError(error) });
     } finally {
@@ -297,6 +321,16 @@ export function RoveWorkbench() {
                   </button>
                   <button
                     type="button"
+                    className="secondary"
+                    onClick={handleResumeLatest}
+                    disabled={isBusy}
+                    title="Resume latest run"
+                  >
+                    <CounterClockwiseClockIcon width={15} height={15} />
+                    Resume
+                  </button>
+                  <button
+                    type="button"
                     className="danger"
                     onClick={handleCancel}
                     disabled={!state.activeJobId || !state.busy}
@@ -367,6 +401,7 @@ export function RoveWorkbench() {
               <SummaryRow label="status" value={state.statusText} />
               <SummaryRow label="job" value={shortId(state.activeJobId)} />
               <SummaryRow label="run" value={shortId(state.activeRunId)} />
+              <SummaryRow label="resumed from" value={shortId(state.resumedFromRunId)} />
             </InspectorSection>
 
             <InspectorSection title="Plan" icon={<FileTextIcon />}>
@@ -637,4 +672,8 @@ function parseEventSeq(value: string): number | undefined {
   }
   const seq = Number(value);
   return Number.isSafeInteger(seq) && seq > 0 ? seq : undefined;
+}
+
+function isTerminalStatus(status: string): boolean {
+  return status === "done" || status === "error" || status === "cancelled" || status === "interrupted";
 }

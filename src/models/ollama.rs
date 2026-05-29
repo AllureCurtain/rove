@@ -292,6 +292,7 @@ mod tests {
                 }),
                 destructive: false,
                 parallel_safe: true,
+                capability: None,
             }],
         );
 
@@ -306,6 +307,38 @@ mod tests {
         assert_eq!(msg["role"], "user");
         assert_eq!(msg["content"], "plain parsed tool output");
         assert!(msg.get("tool_calls").is_none());
+    }
+
+    #[test]
+    fn request_body_formats_native_tool_history_for_replay() {
+        let client = OllamaClient::new(String::new(), "llama3".to_string());
+        let body = client.build_request_body(
+            &[
+                Message::assistant_with_tool_calls(
+                    "I will inspect that.".to_string(),
+                    vec![crate::core::types::ToolCallRef {
+                        id: "ollama_tool_call_0".to_string(),
+                        name: "fs_read".to_string(),
+                        args: serde_json::json!({ "path": "Cargo.toml" }),
+                    }],
+                ),
+                Message::tool("file contents", Some("ollama_tool_call_0".to_string())),
+            ],
+            &[],
+        );
+
+        assert_eq!(body["messages"][0]["role"], "assistant");
+        assert_eq!(body["messages"][0]["content"], "I will inspect that.");
+        assert_eq!(
+            body["messages"][0]["tool_calls"][0]["function"]["name"],
+            "fs_read"
+        );
+        assert_eq!(
+            body["messages"][0]["tool_calls"][0]["function"]["arguments"]["path"],
+            "Cargo.toml"
+        );
+        assert_eq!(body["messages"][1]["role"], "tool");
+        assert_eq!(body["messages"][1]["content"], "file contents");
     }
 
     #[test]

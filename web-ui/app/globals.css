@@ -78,6 +78,13 @@ button.danger {
   box-shadow: none;
 }
 
+button.secondary {
+  background: var(--surface-soft);
+  border-color: var(--border-strong);
+  color: var(--text);
+  box-shadow: none;
+}
+
 button:disabled {
   cursor: not-allowed;
   opacity: 0.55;

@@ -15,10 +15,11 @@ pub async fn run(options: IndexOptions) -> anyhow::Result<()> {
 }
 
 pub fn format_index_result(count: usize, workspace_root: &Path) -> String {
-    format!(
-        "indexed {count} chunks into {}\n",
-        workspace_root.join(".rove").join("rag.lancedb").display()
-    )
+    format_index_result_for_db(count, &workspace_root.join(".rove").join("rag.lancedb"))
+}
+
+pub fn format_index_result_for_db(count: usize, db_dir: &Path) -> String {
+    format!("indexed {count} chunks into {}\n", db_dir.display())
 }
 
 #[cfg(feature = "rag")]
@@ -47,8 +48,8 @@ pub fn format_eval_result(
 async fn run_impl(options: IndexOptions) -> anyhow::Result<()> {
     use crate::config::{AppConfig, AppConfigOverrides};
     use crate::core::workspace::Workspace;
-    use crate::tools::rag::eval::{run_retrieval_eval, write_eval_report};
-    use crate::tools::rag::{DeterministicEmbedder, Embedder, OpenAiEmbedder, RagIndex};
+    use crate::tools::rag::RagIndex;
+    use crate::tools::rag::eval::{run_retrieval_eval, write_eval_report_to_dir};
 
     let cwd = options
         .cwd
@@ -57,45 +58,58 @@ async fn run_impl(options: IndexOptions) -> anyhow::Result<()> {
     workspace.ensure_state_dir()?;
 
     let config = AppConfig::load(&workspace.root, AppConfigOverrides::default())?;
-    let index = RagIndex::new(workspace.root.clone());
-    let use_deterministic = options.deterministic || config.provider.api_key.is_empty();
-    let openai_model = options
+    let state_dir = config.state_dir();
+    let index = RagIndex::new_with_state_dir(workspace.root.clone(), state_dir.clone());
+    let use_deterministic = options.deterministic || config.rag.deterministic;
+    let embedding_model = options
         .embedding_model
         .or_else(|| std::env::var("ROVE_EMBEDDING_MODEL").ok())
-        .unwrap_or_else(|| "text-embedding-3-small".to_string());
+        .unwrap_or_else(|| config.rag.embedding_model.clone());
 
     if let Some(query) = options.eval_query {
         let kind = parse_eval_kind(options.eval_kind.as_deref().unwrap_or("docs"))?;
-        let embedder: Box<dyn Embedder> = if use_deterministic {
-            Box::new(DeterministicEmbedder)
-        } else {
-            Box::new(OpenAiEmbedder::new(
-                config.provider.api_base,
-                config.provider.api_key,
-                openai_model,
-            ))
-        };
+        let embedder = build_rag_embedder(&config, use_deterministic, embedding_model)?;
         let report =
             run_retrieval_eval(&index, embedder.as_ref(), kind, &query, options.eval_limit).await?;
-        let path = write_eval_report(&workspace.root, &report).await?;
+        let path = write_eval_report_to_dir(&state_dir.join("rag_eval"), &report).await?;
         print!("{}", format_eval_result(&report, &path));
         return Ok(());
     }
 
-    let count = if use_deterministic {
-        let embedder = DeterministicEmbedder;
-        index.ingest_workspace(&embedder).await?
-    } else {
-        let embedder = OpenAiEmbedder::new(
-            config.provider.api_base,
-            config.provider.api_key,
-            openai_model,
-        );
-        index.ingest_workspace(&embedder).await?
-    };
+    let embedder = build_rag_embedder(&config, use_deterministic, embedding_model)?;
+    let count = index.ingest_workspace(embedder.as_ref()).await?;
 
-    print!("{}", format_index_result(count, &workspace.root));
+    print!(
+        "{}",
+        format_index_result_for_db(count, &state_dir.join("rag.lancedb"))
+    );
     Ok(())
+}
+
+#[cfg(feature = "rag")]
+fn build_rag_embedder(
+    config: &crate::config::AppConfig,
+    use_deterministic: bool,
+    embedding_model: String,
+) -> anyhow::Result<Box<dyn crate::tools::rag::Embedder>> {
+    use crate::tools::rag::{DeterministicEmbedder, OpenAiEmbedder};
+
+    if use_deterministic {
+        return Ok(Box::new(DeterministicEmbedder));
+    }
+    if config.rag.embedding_api_key.trim().is_empty() {
+        if config.rag.fallback_to_deterministic {
+            return Ok(Box::new(DeterministicEmbedder));
+        }
+        anyhow::bail!(
+            "rag.embedding_api_key is required when rag.deterministic=false and fallback_to_deterministic=false"
+        );
+    }
+    Ok(Box::new(OpenAiEmbedder::new(
+        config.rag.embedding_api_base.clone(),
+        config.rag.embedding_api_key.clone(),
+        embedding_model,
+    )))
 }
 
 #[cfg(feature = "rag")]

@@ -23,15 +23,31 @@ const TABLE_NAME: &str = "chunks";
 #[derive(Debug, Clone)]
 pub struct RagIndex {
     workspace_root: PathBuf,
+    state_dir: PathBuf,
 }
 
 impl RagIndex {
     pub fn new(workspace_root: PathBuf) -> Self {
-        Self { workspace_root }
+        let state_dir = workspace_root.join(".rove");
+        Self {
+            workspace_root,
+            state_dir,
+        }
+    }
+
+    pub fn new_with_state_dir(workspace_root: PathBuf, state_dir: PathBuf) -> Self {
+        Self {
+            workspace_root,
+            state_dir,
+        }
     }
 
     pub async fn ingest_workspace(&self, embedder: &dyn Embedder) -> anyhow::Result<usize> {
-        let pipeline = IngestionPipeline::default_markdown(self.workspace_root.clone(), embedder);
+        let pipeline = IngestionPipeline::default_markdown_with_state_dir(
+            self.workspace_root.clone(),
+            self.state_dir.clone(),
+            embedder,
+        );
         let result = pipeline.run().await?;
         Ok(result.chunk_count)
     }
@@ -198,11 +214,11 @@ impl RagIndex {
     }
 
     fn db_dir(&self) -> PathBuf {
-        self.workspace_root.join(".rove").join("rag.lancedb")
+        self.state_dir.join("rag.lancedb")
     }
 
     fn manifest_path(&self) -> PathBuf {
-        self.workspace_root.join(".rove").join("rag_manifest.json")
+        self.state_dir.join("rag_manifest.json")
     }
 }
 

@@ -22,6 +22,16 @@ Run a local fake-model task without network credentials:
 cargo run -- --model fake "echo hello from rove"
 ```
 
+Run in an isolated standalone Task workspace:
+
+```bash
+cargo run -- --task-workspace invoice-check --task-base .rove/tasks --model fake "review this task"
+```
+
+Task workspaces keep their files, `.rove` state, and default memory under the
+task directory. Remove that directory when the isolated task is no longer
+needed.
+
 Inspect effective configuration:
 
 ```bash
@@ -32,6 +42,12 @@ List resumable local task states:
 
 ```bash
 cargo run -- sessions
+```
+
+Run deterministic local benchmark tasks:
+
+```bash
+cargo run --bin rove-bench -- --suite benchmarks/agent-smoke.json --output-dir .rove/bench
 ```
 
 Start the local API server:
@@ -49,6 +65,9 @@ npm run dev
 ```
 
 By default the API binds to `127.0.0.1:8787`, and the web workbench proxies `/api/*` to that local API.
+For token-protected API deployments, set the same `ROVE_API_TOKEN` in the Rust
+API environment and the Next.js server environment. The web proxy injects the
+bearer token server-side and does not expose it to browser JavaScript.
 
 ## Main Entry Points
 
@@ -56,6 +75,7 @@ By default the API binds to `127.0.0.1:8787`, and the web workbench proxies `/ap
 |---|---|---|
 | CLI | `src/main.rs` | One-shot task runs, config dump, sessions, and RAG indexing command dispatch. |
 | API | `src/bin/rove-api.rs`, `src/interfaces/api/` | HTTP job lifecycle, SSE event streaming, approvals, inputs, and cancellation. |
+| Benchmarks | `src/bin/rove-bench.rs`, `benchmarks/` | Deterministic no-network benchmark tasks with artifact-path reports. |
 | Web | `web-ui/` | Next.js workbench that consumes the API and SSE job stream. |
 | Core runtime | `src/core/` | Engine loop, context building, planner, parser, executor, IDs, and workspace detection. |
 | State | `src/state/` | File artifacts under `.rove/runs/` plus SQLite indexing in `.rove/state.sqlite`. |
@@ -82,7 +102,21 @@ Common environment variables:
 | `OPENAI_API_BASE` | OpenAI-compatible API base URL. |
 | `ANTHROPIC_API_KEY` | Anthropic API key. |
 | `ROVE_API_BIND_ADDR` | API bind address override. Defaults to `127.0.0.1:8787`. |
+| `ROVE_API_TOKEN` | Bearer token required by the Rust API and injected by the Web proxy when set server-side. |
+| `ROVE_API_BASE` | Web proxy upstream API URL. Defaults to `http://127.0.0.1:8787`. |
 | `ROVE_FALLBACK_MODELS` | Comma-separated fallback model list using the primary provider. |
+| `ROVE_ROUTING_RETRY_MAX_ATTEMPTS` | Routed provider attempts before fallback. Defaults to `1`. |
+| `ROVE_ROUTING_RETRY_BACKOFF_BASE_MS` | Base retry backoff for routed providers. Defaults to `250`. |
+| `ROVE_ROUTING_RETRY_BACKOFF_MAX_MS` | Maximum retry backoff for routed providers. Defaults to `5000`. |
+| `ROVE_MODEL_COMPACTION_ENABLED` | Enable optional model-generated prompt compaction. Defaults to `false`. |
+| `ROVE_COMPACTION_FAILURE_THRESHOLD` | Consecutive model-compaction failures before circuit-open fallback. Defaults to `3`. |
+| `ROVE_SHELL_TIMEOUT_MS` | Shell command timeout. Defaults to `30000`. |
+| `ROVE_SHELL_MAX_OUTPUT_BYTES` | Max captured stdout/stderr bytes per stream. Defaults to `65536`. |
+| `ROVE_SHELL_INHERIT_ENVIRONMENT` | Whether shell commands inherit the process environment. Defaults to `true`. |
+| `ROVE_SHELL_DENYLIST` | Comma-separated shell command substrings to reject before execution. |
+| `ROVE_RAG_DETERMINISTIC` | Use deterministic local RAG embeddings. Defaults to `true`. |
+| `ROVE_RAG_EMBEDDING_MODEL` | RAG embedding model when provider mode is enabled. |
+| `ROVE_RAG_EMBEDDING_API_KEY` | RAG embedding API key; redacted in `dump-config`. |
 
 `dump-config` prints the effective config, source summary, resolved paths, and secret-redacted provider fields.
 
@@ -101,7 +135,9 @@ Runtime state is written under `.rove/` by default:
   memory/sessions/<session_id>.md
 ```
 
-Files are the readable artifacts. SQLite is the index used for listing, replay, and restart-aware API job state.
+Files are the readable artifacts. SQLite is the index used for listing, replay, and restart-aware API job state. `rove state repair` can rebuild the index from task, trace, and report artifacts, skipping corrupted trace lines instead of aborting the whole repair.
+
+`memory.session_dir` and `memory.durable_dir` can move session summaries and durable memory away from the default `.rove/memory` layout. Session summaries are deterministic markdown with the goal, final status, output excerpt, completed plan steps, tools used, and reported file changes.
 
 ## RAG
 
@@ -118,6 +154,8 @@ Index a workspace with deterministic local embeddings:
 ```bash
 cargo run --features rag --bin rove-index -- --deterministic -C .
 ```
+
+RAG artifacts use the configured `state.state_dir` and default to `.rove/rag.lancedb`, `.rove/rag_manifest.json`, `.rove/rag_index_log.jsonl`, and `.rove/rag_eval/`. Provider embeddings are configured under `[rag]`; if provider mode lacks an API key and deterministic fallback is enabled, indexing falls back to local deterministic embeddings.
 
 ## Verification
 
@@ -142,6 +180,13 @@ cargo clippy --all-targets --features rag -- -D warnings
 cargo test --features rag
 ```
 
+Deterministic benchmark checks:
+
+```bash
+cargo test --test bench
+cargo run --bin rove-bench -- --suite benchmarks/agent-smoke.json --output-dir .rove/bench
+```
+
 ## Runtime Docs
 
 Start here:
@@ -149,5 +194,8 @@ Start here:
 - [Runtime Architecture](docs/runtime/architecture.md)
 - [Subsystem Design](docs/runtime/subsystems.md)
 - [Implementation Status](docs/runtime/implementation-status.md)
+- [Acceptance Matrix](docs/runtime/acceptance-matrix.md)
 
-Older design notes remain in `docs/` and `docs/superpowers/specs/`; the `docs/runtime/` files describe the current implementation surface.
+Current runtime source of truth is the `docs/runtime/` directory. Older design
+notes remain in `docs/` and `docs/superpowers/specs/` as historical context
+unless they explicitly point back to the runtime docs.

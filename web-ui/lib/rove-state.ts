@@ -34,6 +34,7 @@ export interface TraceEntry {
 export interface WorkbenchState {
   activeJobId: string | null;
   activeRunId: string | null;
+  resumedFromRunId: string | null;
   statusText: string;
   eventCount: number;
   seenEventSeqs: number[];
@@ -50,7 +51,12 @@ export interface WorkbenchState {
 export type WorkbenchAction =
   | { type: "reset" }
   | { type: "append_user_message"; content: string }
-  | { type: "job_created"; jobId: string; runId: string }
+  | {
+      type: "job_created";
+      jobId: string;
+      runId: string;
+      resumedFromRunId?: string | null;
+    }
   | { type: "set_busy"; busy: boolean }
   | { type: "set_status"; statusText: string }
   | { type: "set_error"; error: string | null }
@@ -63,6 +69,7 @@ export function createWorkbenchState(): WorkbenchState {
   return {
     activeJobId: null,
     activeRunId: null,
+    resumedFromRunId: null,
     statusText: "No active run",
     eventCount: 0,
     seenEventSeqs: [],
@@ -102,9 +109,10 @@ export function workbenchReducer(
         ...state,
         activeJobId: action.jobId,
         activeRunId: action.runId,
+        resumedFromRunId: action.resumedFromRunId ?? null,
         busy: true,
         statusText: "Streaming run events",
-        lastSignal: "Job created",
+        lastSignal: action.resumedFromRunId ? "Resumed run" : "Job created",
         error: null,
       };
     case "set_busy":
@@ -168,6 +176,7 @@ function applyJobState(
     ...hydrated,
     activeJobId: jobState.job_id,
     activeRunId: jobState.run_id,
+    resumedFromRunId: jobState.resumed_from_run_id ?? hydrated.resumedFromRunId,
     eventCount: jobState.event_count,
     busy,
     error: jobState.status === "error" ? (state.error ?? "Run failed") : state.error,
@@ -303,6 +312,12 @@ function applyStreamEvent(
         ...next,
         messages: appendAssistantDelta(state.messages, event.delta),
       };
+    case "model_status":
+      return {
+        ...next,
+        statusText: event.message,
+        trace: prependTrace(state.trace, event.type, event.message),
+      };
     case "llm_message":
       return {
         ...next,
@@ -410,6 +425,18 @@ function applyStreamEvent(
           state.trace,
           event.type,
           `${event.step.title}: ${event.reason}`,
+        ),
+      };
+    case "prompt_compacted":
+      return {
+        ...next,
+        statusText: event.state.degraded
+          ? "Prompt compacted with fallback summary"
+          : "Prompt compacted",
+        trace: prependTrace(
+          state.trace,
+          event.type,
+          formatPromptCompaction(event.summary, event.state),
         ),
       };
     case "run_completed":
@@ -589,6 +616,17 @@ function findToolName(tools: ToolCallView[], id: string): string {
 
 function formatToolError(error: ToolError): string {
   return formatValue(error);
+}
+
+function formatPromptCompaction(
+  summary: string | null | undefined,
+  state: Extract<StreamEvent, { type: "prompt_compacted" }>["state"],
+): string {
+  const source = `${state.source_message_count} message(s)`;
+  const mode = state.mode.replaceAll("_", " ");
+  const fallback = state.degraded ? " degraded" : "";
+  const summaryText = summary ? `: ${truncate(summary, 160)}` : "";
+  return `${mode}${fallback}; ${source}${summaryText}`;
 }
 
 function formatValue(value: unknown): string {

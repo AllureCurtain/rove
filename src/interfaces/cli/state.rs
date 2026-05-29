@@ -33,8 +33,11 @@ pub async fn run(cwd: Option<String>, command: StateCommand) -> anyhow::Result<(
 
 pub fn format_repair_result(result: &RepairResult) -> String {
     format!(
-        "state repair complete: imported {} task state artifact(s)\n",
-        result.task_state_count
+        "state repair complete: imported {} task state artifact(s), {} trace event(s), {} report artifact(s); skipped {} corrupted trace line(s)\n",
+        result.task_state_count,
+        result.event_count,
+        result.report_count,
+        result.corrupt_trace_line_count
     )
 }
 
@@ -53,11 +56,17 @@ mod tests {
     fn format_repair_result_reports_import_count() {
         let result = RepairResult {
             task_state_count: 2,
+            event_count: 3,
+            report_count: 1,
+            corrupt_trace_line_count: 4,
         };
 
         let output = format_repair_result(&result);
 
         assert!(output.contains("imported 2 task state artifact(s)"));
+        assert!(output.contains("3 trace event(s)"));
+        assert!(output.contains("1 report artifact(s)"));
+        assert!(output.contains("skipped 4 corrupted trace line(s)"));
         assert!(output.ends_with('\n'));
     }
 

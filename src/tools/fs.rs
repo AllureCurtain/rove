@@ -1,34 +1,12 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use async_trait::async_trait;
 use serde_json::Value;
 
 use super::traits::{Tool, ToolOutput};
-use crate::core::types::{ToolContext, ToolSchema};
+use crate::core::boundary::{resolve_workspace_read_path, resolve_workspace_write_path};
+use crate::core::types::{ToolContext, ToolMutation, ToolMutationOperation, ToolSchema};
 use crate::errors::ToolError;
-
-fn resolve_workspace_path(root: &Path, raw_path: &str) -> Result<PathBuf, ToolError> {
-    let path = PathBuf::from(raw_path);
-    if path.is_absolute() {
-        return Err(ToolError::InvalidInput {
-            reason: "absolute paths are not allowed".to_string(),
-        });
-    }
-
-    let joined = root.join(path);
-    let parent = joined.parent().unwrap_or(root);
-    let canonical_parent = parent.canonicalize().map_err(|e| ToolError::InvalidInput {
-        reason: format!("invalid path parent: {e}"),
-    })?;
-
-    if !canonical_parent.starts_with(root) {
-        return Err(ToolError::PermissionDenied {
-            reason: "path escapes workspace".to_string(),
-        });
-    }
-
-    Ok(joined)
-}
 
 /// Read a UTF-8 file inside the workspace.
 pub struct FsReadTool {
@@ -59,6 +37,7 @@ impl Tool for FsReadTool {
             }),
             destructive: false,
             parallel_safe: true,
+            capability: None,
         }
     }
 
@@ -69,14 +48,14 @@ impl Tool for FsReadTool {
             .ok_or_else(|| ToolError::InvalidArgs {
                 reason: "Missing required argument: path".to_string(),
             })?;
-        let path = resolve_workspace_path(&self.root, raw_path)?;
+        let path = resolve_workspace_read_path(&self.root, raw_path)?;
         let content =
             tokio::fs::read_to_string(path)
                 .await
                 .map_err(|e| ToolError::ExecutionFailed {
                     reason: e.to_string(),
                 })?;
-        Ok(ToolOutput { content })
+        Ok(ToolOutput::text(content))
     }
 }
 
@@ -113,6 +92,7 @@ impl Tool for FsWriteTool {
             }),
             destructive: true,
             parallel_safe: false,
+            capability: None,
         }
     }
 
@@ -129,7 +109,16 @@ impl Tool for FsWriteTool {
             .ok_or_else(|| ToolError::InvalidArgs {
                 reason: "Missing required argument: content".to_string(),
             })?;
-        let path = resolve_workspace_path(&self.root, raw_path)?;
+        let path = resolve_workspace_write_path(&self.root, raw_path)?;
+        let before = match tokio::fs::read_to_string(&path).await {
+            Ok(content) => Some(content),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+            Err(err) => {
+                return Err(ToolError::ExecutionFailed {
+                    reason: err.to_string(),
+                });
+            }
+        };
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent)
                 .await
@@ -142,8 +131,40 @@ impl Tool for FsWriteTool {
             .map_err(|e| ToolError::ExecutionFailed {
                 reason: e.to_string(),
             })?;
+        let operation = if before.is_some() {
+            ToolMutationOperation::Update
+        } else {
+            ToolMutationOperation::Create
+        };
+        let diff = unified_diff(raw_path, before.as_deref().unwrap_or(""), content);
         Ok(ToolOutput {
             content: format!("wrote {}", raw_path),
+            mutations: vec![ToolMutation {
+                path: raw_path.to_string(),
+                operation,
+                diff: Some(diff),
+            }],
         })
     }
+}
+
+fn unified_diff(path: &str, before: &str, after: &str) -> String {
+    let mut diff = format!("--- a/{path}\n+++ b/{path}\n@@\n");
+    for line in before.lines() {
+        diff.push('-');
+        diff.push_str(line);
+        diff.push('\n');
+    }
+    if before.is_empty() {
+        diff.push_str("-\n");
+    }
+    for line in after.lines() {
+        diff.push('+');
+        diff.push_str(line);
+        diff.push('\n');
+    }
+    if after.is_empty() {
+        diff.push_str("+\n");
+    }
+    diff
 }

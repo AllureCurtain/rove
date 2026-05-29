@@ -18,9 +18,44 @@ export interface TaskPlan {
   current_step: number;
 }
 
+export type PromptCompactionMode =
+  | "none"
+  | "deterministic"
+  | "model_generated"
+  | "automatic"
+  | "degraded"
+  | "disabled";
+
+export interface PromptCompactionState {
+  mode: PromptCompactionMode;
+  auto_triggered: boolean;
+  degraded: boolean;
+  consecutive_failures: number;
+  circuit_open: boolean;
+  model?: string;
+  prompt_version?: string;
+  source_message_count: number;
+  last_error?: string;
+}
+
 export interface ToolResult {
   call_id: string;
   output: string;
+  mutations?: ToolMutation[];
+}
+
+export interface ToolMutation {
+  path: string;
+  operation: ToolMutationOperation;
+  diff?: string | null;
+}
+
+export type ToolMutationOperation = "create" | "update" | "delete" | "unknown";
+
+export interface ToolCallRef {
+  id: string;
+  name: string;
+  args: unknown;
 }
 
 export interface ToolError {
@@ -43,13 +78,20 @@ export type StreamEvent =
       delta: string;
     }
   | {
+      type: "model_status";
+      status: string;
+      message: string;
+    }
+  | {
       type: "llm_message";
       full: string;
       usage: Usage;
+      tool_calls?: ToolCallRef[];
     }
   | {
       type: "tool_call_started";
       call_id: string;
+      tool_use_id?: string | null;
       name: string;
       args: unknown;
     }
@@ -96,6 +138,11 @@ export type StreamEvent =
       reason: string;
     }
   | {
+      type: "prompt_compacted";
+      summary?: string | null;
+      state: PromptCompactionState;
+    }
+  | {
       type: "run_completed";
       reason: string;
       output?: string | null;
@@ -106,16 +153,19 @@ export interface CreateJobRequest {
   model?: string;
   max_steps?: number;
   approval?: ApprovalPolicy;
+  resume?: ResumeMode;
 }
 
 export interface CreateJobResponse {
   job_id: string;
   run_id: string;
+  resumed_from_run_id?: string | null;
 }
 
 export interface JobStateResponse {
   job_id: string;
   run_id: string;
+  resumed_from_run_id?: string | null;
   status: RunStatus;
   event_count: number;
   events: JobStreamEvent[];
@@ -144,9 +194,12 @@ export type ApprovalDecision = "approve" | "reject";
 
 export type ApprovalPolicy = "ask" | "auto" | "never";
 
+export type ResumeMode = "latest";
+
 export const STREAM_EVENT_NAMES = [
   "run_started",
   "llm_chunk",
+  "model_status",
   "llm_message",
   "tool_call_started",
   "tool_call_approval_needed",
@@ -157,6 +210,7 @@ export const STREAM_EVENT_NAMES = [
   "plan_step_started",
   "plan_step_completed",
   "plan_step_failed",
+  "prompt_compacted",
   "run_completed",
 ] as const;
 

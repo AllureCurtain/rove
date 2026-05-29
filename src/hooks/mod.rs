@@ -4,9 +4,12 @@ use async_trait::async_trait;
 use futures::FutureExt;
 use tokio_util::sync::CancellationToken;
 
+use crate::core::events::StreamEvent;
 use crate::core::types::{JobId, RunId, SessionId, TerminationReason, ToolContext, ToolResult};
+use crate::core::types::{PlanStep, ToolMutation};
 use crate::core::workspace::Workspace;
 use crate::errors::ToolError;
+use crate::memory::paths::MemoryPaths;
 
 mod session_memory;
 
@@ -36,12 +39,50 @@ pub trait PostToolHook: Send + Sync {
 
 pub struct PostRunHookContext<'a> {
     pub workspace: &'a Workspace,
+    pub memory_paths: &'a MemoryPaths,
     pub session_id: SessionId,
     pub job_id: JobId,
     pub run_id: RunId,
     pub reason: TerminationReason,
     pub output: Option<String>,
+    pub summary: RunSummary,
     pub cancel_token: CancellationToken,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct RunSummary {
+    pub goal: String,
+    pub completed_plan_steps: Vec<PlanStep>,
+    pub tools_used: Vec<String>,
+    pub tool_mutations: Vec<ToolMutation>,
+}
+
+impl RunSummary {
+    pub fn new(goal: impl Into<String>) -> Self {
+        Self {
+            goal: goal.into(),
+            completed_plan_steps: Vec::new(),
+            tools_used: Vec::new(),
+            tool_mutations: Vec::new(),
+        }
+    }
+
+    pub fn record_event(&mut self, event: &StreamEvent) {
+        match event {
+            StreamEvent::ToolCallStarted { name, .. }
+                if !self.tools_used.iter().any(|tool| tool == name) =>
+            {
+                self.tools_used.push(name.clone());
+            }
+            StreamEvent::ToolCallCompleted { result, .. } => {
+                self.tool_mutations.extend(result.mutations.clone());
+            }
+            StreamEvent::PlanStepCompleted { step, .. } => {
+                self.completed_plan_steps.push(step.clone());
+            }
+            _ => {}
+        }
+    }
 }
 
 #[async_trait]

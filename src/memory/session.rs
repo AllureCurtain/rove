@@ -1,4 +1,5 @@
 use std::io::ErrorKind;
+use std::path::Path;
 
 use crate::core::types::SessionId;
 use crate::core::workspace::Workspace;
@@ -11,11 +12,17 @@ pub fn read_session_summary_sync(
     workspace: &Workspace,
     session_id: SessionId,
 ) -> std::io::Result<Option<String>> {
-    let path = workspace
-        .state_dir
-        .join("memory")
-        .join("sessions")
-        .join(format!("{session_id}.md"));
+    read_session_summary_from_dir_sync(
+        &workspace.state_dir.join("memory").join("sessions"),
+        session_id,
+    )
+}
+
+pub fn read_session_summary_from_dir_sync(
+    session_dir: &Path,
+    session_id: SessionId,
+) -> std::io::Result<Option<String>> {
+    let path = session_dir.join(format!("{session_id}.md"));
     let content = match std::fs::read_to_string(path) {
         Ok(content) => content,
         Err(err) if err.kind() == ErrorKind::NotFound => return Ok(None),
@@ -36,15 +43,26 @@ pub fn write_session_summary_sync(
     session_id: SessionId,
     summary: &str,
 ) -> std::io::Result<()> {
+    write_session_summary_to_dir_sync(
+        &workspace.state_dir.join("memory").join("sessions"),
+        session_id,
+        summary,
+    )
+}
+
+pub fn write_session_summary_to_dir_sync(
+    session_dir: &Path,
+    session_id: SessionId,
+    summary: &str,
+) -> std::io::Result<()> {
     let truncated = truncate_session_summary(summary);
     let trimmed = truncated.trim_end();
     if trimmed.trim().is_empty() {
         return Ok(());
     }
 
-    let dir = workspace.state_dir.join("memory").join("sessions");
-    std::fs::create_dir_all(&dir)?;
-    std::fs::write(dir.join(format!("{session_id}.md")), trimmed)
+    std::fs::create_dir_all(session_dir)?;
+    std::fs::write(session_dir.join(format!("{session_id}.md")), trimmed)
 }
 
 fn truncate_session_summary(content: &str) -> String {

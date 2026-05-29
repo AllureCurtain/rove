@@ -4,6 +4,7 @@
 /web-ui/.next
 /web-ui/out
 /web-ui/.turbo
+/web-ui/test-results
 /web-ui/.env*
 /web-ui/.vercel
 /web-ui/.rove

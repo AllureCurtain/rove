@@ -1,10 +1,15 @@
 pub mod boundary;
+pub(crate) mod compaction;
 pub mod context;
 pub mod engine;
 pub mod events;
 pub mod executor;
+pub(crate) mod model_turn;
 pub mod parser;
+pub(crate) mod plan_loop;
 pub mod planner;
+pub(crate) mod run_loop;
 pub mod session;
+pub(crate) mod tool_turn;
 pub mod types;
 pub mod workspace;

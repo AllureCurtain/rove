@@ -63,6 +63,38 @@ async fn deterministic_index_run_writes_manifest() {
 
 #[cfg(feature = "rag")]
 #[tokio::test]
+async fn deterministic_index_run_honors_configured_state_dir() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let state_dir = tmp.path().join("custom-state");
+    write_file(
+        tmp.path().join(".rove").join("config.toml"),
+        &format!("[state]\nstate_dir = \"{}\"\n", "custom-state"),
+    );
+    write_file(
+        tmp.path().join("src").join("lib.rs"),
+        "fn configured_state_dir_symbol() {}\n",
+    );
+    write_file(tmp.path().join("README.md"), "# configured state docs\n");
+
+    run(IndexOptions {
+        cwd: Some(tmp.path().to_path_buf()),
+        deterministic: true,
+        embedding_model: None,
+        eval_query: None,
+        eval_kind: None,
+        eval_limit: 8,
+    })
+    .await
+    .unwrap();
+
+    assert!(state_dir.join("rag_manifest.json").exists());
+    assert!(state_dir.join("rag_index_log.jsonl").exists());
+    assert!(state_dir.join("rag.lancedb").exists());
+    assert!(!tmp.path().join(".rove").join("rag_manifest.json").exists());
+}
+
+#[cfg(feature = "rag")]
+#[tokio::test]
 async fn eval_run_writes_report_without_llm_generation() {
     let tmp = tempfile::TempDir::new().unwrap();
     write_file(
@@ -104,6 +136,11 @@ async fn eval_run_writes_report_without_llm_generation() {
     assert_eq!(report["schema_version"], 1);
     assert_eq!(report["query"], "RAG eval reports");
     assert_eq!(report["kind"], "docs");
+    assert_eq!(
+        report["embedder"],
+        "embedding-deterministic:local:deterministic-64"
+    );
+    assert_eq!(report["reranker"], "none");
     assert!(report["duration_ms"].as_u64().is_some());
     assert!(
         report["channels"]
@@ -114,6 +151,112 @@ async fn eval_run_writes_report_without_llm_generation() {
     );
     assert_eq!(report["results"][0]["rank"], 1);
     assert!(report.get("llm_output").is_none());
+}
+
+#[cfg(feature = "rag")]
+#[tokio::test]
+async fn eval_run_honors_configured_state_dir() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let state_dir = tmp.path().join("custom-state");
+    write_file(
+        tmp.path().join(".rove").join("config.toml"),
+        &format!("[state]\nstate_dir = \"{}\"\n", "custom-state"),
+    );
+    write_file(
+        tmp.path().join("README.md"),
+        "# Retrieval\n\nConfigured state eval report.",
+    );
+
+    run(IndexOptions {
+        cwd: Some(tmp.path().to_path_buf()),
+        deterministic: true,
+        embedding_model: None,
+        eval_query: None,
+        eval_kind: None,
+        eval_limit: 8,
+    })
+    .await
+    .unwrap();
+
+    run(IndexOptions {
+        cwd: Some(tmp.path().to_path_buf()),
+        deterministic: true,
+        embedding_model: None,
+        eval_query: Some("Configured state eval".to_string()),
+        eval_kind: Some("docs".to_string()),
+        eval_limit: 3,
+    })
+    .await
+    .unwrap();
+
+    let eval_dir = state_dir.join("rag_eval");
+    assert!(eval_dir.exists());
+    assert!(!tmp.path().join(".rove").join("rag_eval").exists());
+}
+
+#[cfg(feature = "rag")]
+#[tokio::test]
+async fn provider_embedding_without_key_falls_back_to_deterministic_when_configured() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    write_file(
+        tmp.path().join(".rove").join("config.toml"),
+        r#"
+[rag]
+deterministic = false
+embedding_provider = "openai-compatible"
+embedding_model = "text-embedding-3-small"
+fallback_to_deterministic = true
+"#,
+    );
+    write_file(tmp.path().join("README.md"), "# fallback docs\n");
+
+    run(IndexOptions {
+        cwd: Some(tmp.path().to_path_buf()),
+        deterministic: false,
+        embedding_model: None,
+        eval_query: None,
+        eval_kind: None,
+        eval_limit: 8,
+    })
+    .await
+    .unwrap();
+
+    let manifest: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(tmp.path().join(".rove").join("rag_manifest.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(manifest["embedding"]["provider"], "deterministic");
+    assert_eq!(manifest["embedding"]["model"], "deterministic-64");
+}
+
+#[cfg(feature = "rag")]
+#[tokio::test]
+async fn provider_embedding_without_key_errors_when_fallback_disabled() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    write_file(
+        tmp.path().join(".rove").join("config.toml"),
+        r#"
+[rag]
+deterministic = false
+embedding_provider = "openai-compatible"
+embedding_model = "text-embedding-3-small"
+fallback_to_deterministic = false
+"#,
+    );
+    write_file(tmp.path().join("README.md"), "# missing key docs\n");
+
+    let err = run(IndexOptions {
+        cwd: Some(tmp.path().to_path_buf()),
+        deterministic: false,
+        embedding_model: None,
+        eval_query: None,
+        eval_kind: None,
+        eval_limit: 8,
+    })
+    .await
+    .unwrap_err();
+
+    assert!(err.to_string().contains("rag.embedding_api_key"));
 }
 
 #[cfg(feature = "rag")]

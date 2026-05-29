@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use super::traits::{Tool, ToolOutput};
-use crate::core::types::{ToolContext, ToolSchema};
+use crate::core::types::{ToolCapability, ToolContext, ToolSchema};
 use crate::errors::ToolError;
 
 #[derive(Debug, Clone, Copy)]
@@ -69,6 +69,11 @@ impl Tool for RagRetrieveTool {
             }),
             destructive: false,
             parallel_safe: true,
+            capability: Some(ToolCapability {
+                status: "disabled".to_string(),
+                feature: Some("rag".to_string()),
+                message: Some("RAG feature is not enabled in this build".to_string()),
+            }),
         }
     }
 
@@ -80,11 +85,22 @@ impl Tool for RagRetrieveTool {
                 reason: "Missing required argument: query".to_string(),
             })?;
 
-        Ok(ToolOutput {
-            content: format!(
-                "`{}` requires the `rag` feature. Rebuild with `--features rag` or use a RAG-enabled binary.",
-                self.kind.tool_name()
-            ),
-        })
+        Ok(ToolOutput::text(
+            serde_json::to_string_pretty(&serde_json::json!({
+                "capability": "disabled",
+                "feature": "rag",
+                "tool": self.kind.tool_name(),
+                "message": format!(
+                    "`{}` requires the `rag` feature. Rebuild with `--features rag` or use a RAG-enabled binary.",
+                    self.kind.tool_name()
+                )
+            }))
+            .unwrap_or_else(|_| {
+                format!(
+                    "`{}` requires the `rag` feature. Rebuild with `--features rag` or use a RAG-enabled binary.",
+                    self.kind.tool_name()
+                )
+            }),
+        ))
     }
 }

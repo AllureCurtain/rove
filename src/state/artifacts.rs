@@ -6,7 +6,7 @@ use crate::core::engine::planned_step_failure_message;
 use crate::core::events::StreamEvent;
 use crate::core::types::{
     CallId, JobId, Message, PromptCheckpoint, PromptCompactionMode, PromptCompactionState, Role,
-    RunId, SessionId, TaskPlan, TaskState, TerminationReason, Usage,
+    RunId, SessionId, TaskPlan, TaskState, TerminationReason, ToolMutation, Usage,
 };
 use crate::core::workspace::Workspace;
 
@@ -28,10 +28,13 @@ pub struct RunArtifactRecorder {
     steps: u32,
     tool_calls: u32,
     tool_failures: u32,
+    tool_mutations: Vec<ToolMutation>,
     total_usage: Usage,
     final_reason: TerminationReason,
     final_output: Option<String>,
     pending_tool_use_ids: HashMap<CallId, Option<String>>,
+    last_event_seq: Option<u64>,
+    compaction: PromptCompactionState,
 }
 
 impl RunArtifactRecorder {
@@ -64,14 +67,18 @@ impl RunArtifactRecorder {
             steps: 0,
             tool_calls: 0,
             tool_failures: 0,
+            tool_mutations: Vec::new(),
             total_usage: Usage::default(),
             final_reason: TerminationReason::Error,
             final_output: None,
             pending_tool_use_ids: HashMap::new(),
+            last_event_seq: None,
+            compaction: PromptCompactionState::default(),
         }
     }
 
     pub async fn record_event(&mut self, event: &StreamEvent, state_store: &StateStore) {
+        self.refresh_last_event_seq(state_store).await;
         match event {
             StreamEvent::RunStarted { .. } => {
                 self.write_snapshot(state_store).await;
@@ -109,6 +116,7 @@ impl RunArtifactRecorder {
                 let tool_use_id = self.pending_tool_use_ids.remove(call_id).flatten();
                 self.history
                     .push(Message::tool(result.output.clone(), tool_use_id));
+                self.tool_mutations.extend(result.mutations.clone());
                 self.write_snapshot(state_store).await;
             }
             StreamEvent::ToolCallFailed { call_id, error } => {
@@ -144,6 +152,13 @@ impl RunArtifactRecorder {
                         &step.title,
                         reason,
                     )));
+                self.write_snapshot(state_store).await;
+            }
+            StreamEvent::PromptCompacted { summary, state } => {
+                if let Some(summary) = summary.clone() {
+                    self.summary = Some(summary);
+                }
+                self.compaction = state.clone();
                 self.write_snapshot(state_store).await;
             }
             StreamEvent::RunCompleted { reason, output } => {
@@ -197,6 +212,18 @@ impl RunArtifactRecorder {
         }
     }
 
+    async fn refresh_last_event_seq(&mut self, state_store: &StateStore) {
+        match state_store.index.last_event_seq(self.run_id) {
+            Ok(0) => {}
+            Ok(seq) => {
+                self.last_event_seq = Some(seq);
+            }
+            Err(err) => {
+                tracing::warn!("Failed to read last event sequence: {}", err);
+            }
+        }
+    }
+
     async fn write_report(
         &self,
         state_store: &StateStore,
@@ -217,6 +244,7 @@ impl RunArtifactRecorder {
         report.total_usage = self.total_usage.clone();
         report.tool_calls = self.tool_calls;
         report.tool_failures = self.tool_failures;
+        report.tool_mutations = self.tool_mutations.clone();
         report.output = self.final_output.clone();
 
         match write_report(run_dir, &report) {
@@ -269,20 +297,34 @@ impl RunArtifactRecorder {
             session_memory_pointer: Some(format!(".rove/memory/sessions/{}.md", self.session_id)),
             durable_memory_pointer: Some(".rove/memory/MEMORY.md".to_string()),
             last_step: step,
-            last_event_seq: None,
+            last_event_seq: self.last_event_seq,
             token_estimate,
             compacted_history_messages,
-            compaction: PromptCompactionState {
-                mode: if compacted_history_messages > 0 {
-                    PromptCompactionMode::Deterministic
-                } else {
-                    PromptCompactionMode::None
-                },
-                auto_triggered: compacted_history_messages > 0,
-                degraded: false,
-                consecutive_failures: 0,
-                circuit_open: false,
+            compaction: self.checkpoint_compaction_state(compacted_history_messages),
+        }
+    }
+
+    fn checkpoint_compaction_state(
+        &self,
+        compacted_history_messages: usize,
+    ) -> PromptCompactionState {
+        if self.compaction.auto_triggered || self.compaction.degraded {
+            return self.compaction.clone();
+        }
+        PromptCompactionState {
+            mode: if compacted_history_messages > 0 {
+                PromptCompactionMode::Deterministic
+            } else {
+                PromptCompactionMode::None
             },
+            auto_triggered: compacted_history_messages > 0,
+            degraded: false,
+            consecutive_failures: 0,
+            circuit_open: false,
+            model: None,
+            prompt_version: None,
+            source_message_count: compacted_history_messages,
+            last_error: None,
         }
     }
 }

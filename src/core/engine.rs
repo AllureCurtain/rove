@@ -5,25 +5,24 @@ use std::{
 };
 
 use async_stream::stream;
-use futures::future::join_all;
 use futures::stream::{BoxStream, Stream, StreamExt};
 use tokio_util::sync::CancellationToken;
 
+use crate::core::compaction::CompactionRuntime;
 use crate::core::context::{ContextManager, durable_memory_message, session_summary_message};
 use crate::core::events::StreamEvent;
-use crate::core::executor::Executor;
-use crate::core::parser::parse_action;
-use crate::core::planner::{Planner, PlannerError};
+use crate::core::plan_loop::{PlanLoopState, run_planned_loop};
+use crate::core::planner::Planner;
+use crate::core::run_loop::{LoopContext, LoopItem, RunLoopState, run_unplanned_loop};
 use crate::core::types::{
-    Action, ApprovalDecision, ApprovalPolicy, CallId, JobId, Message, RunId, RunRequest, SessionId,
-    TaskPlan, TerminationReason, ToolApprovalProvider, ToolApprovalRequest, ToolCallAction,
-    ToolCallRef, ToolContext, ToolResult, Usage, UserInputProvider,
+    ApprovalDecision, ApprovalPolicy, JobId, Message, RunId, RunRequest, SessionId,
+    TerminationReason, ToolApprovalProvider, UserInputProvider,
 };
 use crate::core::workspace::Workspace;
-use crate::errors::ToolError;
-use crate::hooks::{HookRegistry, PostRunHookContext};
-use crate::memory::layered::load_prompt_memory_sync;
-use crate::models::traits::{ModelClient, ModelEvent};
+use crate::hooks::{HookRegistry, PostRunHookContext, RunSummary};
+use crate::memory::layered::load_prompt_memory_from_paths_sync;
+use crate::memory::paths::MemoryPaths;
+use crate::models::traits::ModelClient;
 use crate::state::trace::TraceWriter;
 use crate::tools::registry::ToolRegistry;
 
@@ -86,17 +85,11 @@ impl Drop for RunStream<'_> {
     }
 }
 
-/// Configuration for the engine's execution limits.
+/// Configuration for the engine's execution limits and planner prompt.
 #[derive(Debug, Clone)]
 pub struct EngineConfig {
     pub max_steps: u32,
     pub plan_enabled: bool,
-}
-
-#[derive(Debug)]
-struct ToolExecution {
-    call: ToolCallAction,
-    result: Result<ToolResult, ToolError>,
 }
 
 impl Default for EngineConfig {
@@ -117,13 +110,16 @@ pub struct Engine {
     registry: ToolRegistry,
     context_manager: ContextManager,
     config: EngineConfig,
+    planner: Planner,
     workspace: Workspace,
     approval_policy: ApprovalPolicy,
     approval_decision: ApprovalDecision,
     approval_provider: Option<Arc<dyn ToolApprovalProvider>>,
     input_provider: Option<Arc<dyn UserInputProvider>>,
     hooks: HookRegistry,
-    memory_recall_limit: usize,
+    memory_paths: MemoryPaths,
+    model_compaction_enabled: bool,
+    compaction_failure_threshold: u32,
 }
 
 impl Engine {
@@ -179,23 +175,32 @@ impl Engine {
         approval_policy: ApprovalPolicy,
         approval_decision: ApprovalDecision,
     ) -> Self {
+        let memory_paths = MemoryPaths::from_workspace(&workspace, 8);
         Self {
             model,
             registry,
             context_manager,
             config,
+            planner: Planner::default(),
             workspace,
             approval_policy,
             approval_decision,
             approval_provider: None,
             input_provider: None,
             hooks: HookRegistry::with_default_post_run_hooks(),
-            memory_recall_limit: 8,
+            memory_paths,
+            model_compaction_enabled: false,
+            compaction_failure_threshold: 3,
         }
     }
 
     pub fn with_hooks(mut self, hooks: HookRegistry) -> Self {
         self.hooks = hooks;
+        self
+    }
+
+    pub fn with_planner_prompt(mut self, planner_prompt: impl Into<String>) -> Self {
+        self.planner = Planner::new(planner_prompt);
         self
     }
 
@@ -213,7 +218,18 @@ impl Engine {
     }
 
     pub fn with_memory_recall_limit(mut self, memory_recall_limit: usize) -> Self {
-        self.memory_recall_limit = memory_recall_limit;
+        self.memory_paths.recall_limit = memory_recall_limit;
+        self
+    }
+
+    pub fn with_memory_paths(mut self, memory_paths: MemoryPaths) -> Self {
+        self.memory_paths = memory_paths;
+        self
+    }
+
+    pub fn with_model_compaction(mut self, enabled: bool, failure_threshold: u32) -> Self {
+        self.model_compaction_enabled = enabled;
+        self.compaction_failure_threshold = failure_threshold.max(1);
         self
     }
 
@@ -225,135 +241,17 @@ impl Engine {
         &self.workspace
     }
 
-    fn tool_requires_approval(&self, tool_name: &str) -> bool {
-        self.approval_policy == ApprovalPolicy::Ask
-            && self
-                .registry
-                .schema(tool_name)
-                .map(|schema| schema.destructive)
-                .unwrap_or(false)
-    }
-
-    async fn resolve_approval(
-        &self,
-        call_id: crate::core::types::CallId,
-        name: &str,
-        args: &serde_json::Value,
-        reason: &str,
-    ) -> ApprovalDecision {
-        if let Some(provider) = &self.approval_provider {
-            provider
-                .decide(ToolApprovalRequest {
-                    call_id,
-                    name: name.to_string(),
-                    args: args.clone(),
-                    reason: reason.to_string(),
-                })
-                .await
-        } else {
-            self.approval_decision
-        }
-    }
-
-    fn effective_approval_policy(
-        &self,
-        tool_name: &str,
-        approval_decision: ApprovalDecision,
-    ) -> ApprovalPolicy {
-        if self.approval_policy == ApprovalPolicy::Ask
-            && self
-                .registry
-                .schema(tool_name)
-                .map(|schema| schema.destructive)
-                .unwrap_or(false)
-            && approval_decision == ApprovalDecision::Approve
-        {
-            ApprovalPolicy::Auto
-        } else {
-            self.approval_policy
-        }
-    }
-
-    fn can_run_parallel_batch(&self, calls: &[ToolCallAction]) -> bool {
-        calls.len() > 1
-            && calls
-                .iter()
-                .all(|call| self.tool_is_parallel_safe(&call.name))
-    }
-
-    fn tool_is_parallel_safe(&self, tool_name: &str) -> bool {
-        let Ok(schema) = self.registry.schema(tool_name) else {
-            return false;
-        };
-        !schema.destructive && schema.parallel_safe
-    }
-
-    async fn execute_tool_call_with_decision(
-        &self,
-        call: ToolCallAction,
-        approval_decision: ApprovalDecision,
-        cancel_token: CancellationToken,
-    ) -> ToolExecution {
-        let executor = Executor::with_hooks(&self.registry, self.hooks.clone());
-        let tool_context = ToolContext {
-            workspace: &self.workspace,
-            approval_policy: self.effective_approval_policy(&call.name, approval_decision),
-            cancel_token,
-            input_provider: self.input_provider.clone(),
-        };
-        let result = executor
-            .run(&tool_context, &call.name, call.args.clone(), call.call_id)
-            .await;
-        ToolExecution { call, result }
-    }
-
-    async fn execute_parallel_tool_batch(
-        &self,
-        calls: Vec<ToolCallAction>,
-        cancel_token: CancellationToken,
-    ) -> Vec<ToolExecution> {
-        join_all(calls.into_iter().map(|call| {
-            self.execute_tool_call_with_decision(call, self.approval_decision, cancel_token.clone())
-        }))
-        .await
-    }
-
-    async fn draft_plan(&self, goal: &str, history: &[Message]) -> Result<TaskPlan, PlannerError> {
-        Planner::new()
-            .draft(self.model.as_ref(), goal, history)
-            .await
-    }
-
-    async fn replan_after_step_failure(
-        &self,
-        goal: &str,
-        step_title: &str,
-        reason: &str,
-        history: &mut Vec<Message>,
-    ) -> Result<TaskPlan, PlannerError> {
-        history.push(Message::user(planned_step_failure_message(
-            step_title, reason,
-        )));
-        self.draft_plan(goal, history).await
-    }
-
-    async fn run_post_run_hooks(
-        &self,
-        session_id: SessionId,
-        job_id: JobId,
-        run_id: RunId,
-        reason: TerminationReason,
-        output: Option<String>,
-        cancel_token: CancellationToken,
-    ) {
+    async fn run_post_run_hooks(&self, ctx: CompletedRunContext) {
         let ctx = PostRunHookContext {
             workspace: &self.workspace,
-            session_id,
-            job_id,
-            run_id,
-            reason,
-            output,
-            cancel_token,
+            memory_paths: &self.memory_paths,
+            session_id: ctx.session_id,
+            job_id: ctx.job_id,
+            run_id: ctx.run_id,
+            reason: ctx.reason,
+            output: ctx.output,
+            summary: ctx.summary,
+            cancel_token: ctx.cancel_token,
         };
         self.hooks.run_post_run(&ctx).await;
     }
@@ -400,6 +298,8 @@ impl Engine {
             run_id,
             cancel,
             stream! {
+                let mut run_summary = RunSummary::new(user_message.clone());
+
                 macro_rules! complete_run {
                     ($reason:expr, $output:expr) => {{
                         let reason = $reason;
@@ -410,14 +310,15 @@ impl Engine {
                         };
                         append_trace(&trace_writer, &event);
                         yield event;
-                        self.run_post_run_hooks(
+                        self.run_post_run_hooks(CompletedRunContext {
                             session_id,
                             job_id,
                             run_id,
                             reason,
                             output,
-                            stream_cancel.clone(),
-                        )
+                            summary: run_summary.clone(),
+                            cancel_token: stream_cancel.clone(),
+                        })
                         .await;
                         return;
                     }};
@@ -435,9 +336,7 @@ impl Engine {
                     job_id,
                     user_message: user_message.clone(),
                 };
-                if let Some(ref tw) = trace_writer {
-                    let _ = tw.append(&start_event);
-                }
+                append_trace(&trace_writer, &start_event);
                 yield start_event;
 
                 if stream_cancel.is_cancelled() {
@@ -447,25 +346,20 @@ impl Engine {
                 let resume_checkpoint = resume_state
                     .as_ref()
                     .and_then(|state| state.checkpoint.as_ref());
-                let mut history: Vec<Message> = resume_checkpoint
+                let history: Vec<Message> = resume_checkpoint
                     .map(|checkpoint| checkpoint.preserved_tail.clone())
-                    .or_else(|| {
-                        resume_state
-                            .as_ref()
-                            .map(|state| state.history.clone())
-                    })
+                    .or_else(|| resume_state.as_ref().map(|state| state.history.clone()))
                     .unwrap_or_default();
                 let compact_summary = resume_checkpoint
                     .and_then(|checkpoint| checkpoint.summary.clone());
                 let resume_summary = resume_state
                     .as_ref()
                     .and_then(|state| state.summary.as_deref());
-                let prompt_memory = load_prompt_memory_sync(
-                    &self.workspace,
+                let prompt_memory = load_prompt_memory_from_paths_sync(
+                    &self.memory_paths,
                     session_id,
                     resume_summary,
                     &user_message,
-                    self.memory_recall_limit,
                 )
                 .unwrap_or_default();
                 let mut working_memory: Vec<Message> = Vec::new();
@@ -475,806 +369,76 @@ impl Engine {
                 if let Some(summary) = prompt_memory.session_summary {
                     working_memory.push(session_summary_message(&summary));
                 }
-                let mut step: u32 = resume_checkpoint
+                let step: u32 = resume_checkpoint
                     .map(|checkpoint| checkpoint.last_step)
                     .or_else(|| resume_state.as_ref().map(|state| state.step))
                     .unwrap_or(0);
-                let mut plan = resume_checkpoint
+                let plan = resume_checkpoint
                     .and_then(|checkpoint| checkpoint.plan.clone())
                     .or_else(|| resume_state.as_ref().and_then(|state| state.plan.clone()));
 
-                if self.config.plan_enabled {
-                    if plan.is_none() {
-                        let draft_result = tokio::select! {
-                            biased;
-                            _ = stream_cancel.cancelled() => {
-                                complete_run!(TerminationReason::Cancelled, None);
-                            }
-                            result = self.draft_plan(&user_message, &history) => result,
-                        };
-                        match draft_result {
-                            Ok(drafted) => {
-                                let event = StreamEvent::PlanCreated {
-                                    plan: drafted.clone(),
-                                };
-                                if let Some(ref tw) = trace_writer {
-                                    let _ = tw.append(&event);
-                                }
-                                yield event;
-                                plan = Some(drafted);
-                            }
-                            Err(err) => {
-                                complete_run!(
-                                    TerminationReason::Error,
-                                    Some(format!("Planner error: {err}"))
-                                );
-                            }
+                let loop_context = LoopContext {
+                    model: self.model.as_ref(),
+                    registry: &self.registry,
+                    context_manager: &self.context_manager,
+                    workspace: &self.workspace,
+                    memory_paths: &self.memory_paths,
+                    max_steps: self.config.max_steps,
+                    approval_policy: self.approval_policy,
+                    approval_decision: self.approval_decision,
+                    approval_provider: self.approval_provider.clone(),
+                    input_provider: self.input_provider.clone(),
+                    hooks: self.hooks.clone(),
+                    compaction: CompactionRuntime::new(
+                        self.model_compaction_enabled,
+                        self.compaction_failure_threshold,
+                    ),
+                };
+
+                let mut runtime: BoxStream<'_, LoopItem> = if self.config.plan_enabled {
+                    run_planned_loop(
+                        loop_context,
+                        &self.planner,
+                        PlanLoopState {
+                            user_message,
+                            working_memory,
+                            compact_summary,
+                            history,
+                            step,
+                            plan,
+                        },
+                        stream_cancel.clone(),
+                    )
+                } else {
+                    run_unplanned_loop(
+                        loop_context,
+                        RunLoopState {
+                            user_message,
+                            working_memory,
+                            compact_summary,
+                            history,
+                            step,
+                        },
+                        stream_cancel.clone(),
+                    )
+                };
+
+                while let Some(item) = runtime.next().await {
+                    match item {
+                        LoopItem::Event(event) => {
+                            run_summary.record_event(&event);
+                            yield_traced!(event);
                         }
-                    }
-
-                    let mut final_output: Option<String> = None;
-                    while let Some(ref mut active_plan) = plan {
-                        if stream_cancel.is_cancelled() {
-                            complete_run!(TerminationReason::Cancelled, None);
-                        }
-
-                        if active_plan.is_complete() {
-                            break;
-                        }
-
-                        if step >= self.config.max_steps {
-                            complete_run!(TerminationReason::StepLimit, final_output);
-                        }
-
-                        let Some(current_step) = active_plan.current_step().cloned() else {
-                            break;
-                        };
-                        let current_index = active_plan.current_step;
-                        let started = StreamEvent::PlanStepStarted {
-                            step: current_step.clone(),
-                            index: current_index,
-                        };
-                        if let Some(ref tw) = trace_writer {
-                            let _ = tw.append(&started);
-                        }
-                        yield started;
-
-                        step += 1;
-                        let step_prompt = format!(
-                            "Goal: {}\nCurrent step {}: {}\nComplete this step and report the result.",
-                            active_plan.goal, current_step.id, current_step.title
-                        );
-                        let context = self.context_manager.build_with_checkpoint(
-                            &step_prompt,
-                            &working_memory,
-                            compact_summary.as_deref(),
-                            &history,
-                        );
-                        if context.over_hard_limit {
-                            complete_run!(
-                                TerminationReason::TokenLimit,
-                                Some("context exceeds configured hard token budget".to_string())
-                            );
-                        }
-                        let messages = context.messages;
-                        let mut full_response = String::new();
-                        let mut usage = Usage::default();
-                        let mut native_tool_calls = Vec::new();
-                        let mut model_stream: BoxStream<'_, _> = self.model.stream(
-                            &messages,
-                            &self.registry.schemas(),
-                        );
-
-                        loop {
-                            let chunk_result = tokio::select! {
-                                biased;
-                                _ = stream_cancel.cancelled() => {
-                                    complete_run!(TerminationReason::Cancelled, None);
-                                }
-                                chunk = model_stream.next() => chunk,
-                            };
-                            let Some(chunk_result) = chunk_result else {
-                                break;
-                            };
-                            match chunk_result {
-                                Ok(model_event) => match model_event {
-                                    ModelEvent::TextDelta { text } => {
-                                        if !text.is_empty() {
-                                            full_response.push_str(&text);
-                                            let event = StreamEvent::LlmChunk { delta: text };
-                                            if let Some(ref tw) = trace_writer {
-                                                let _ = tw.append(&event);
-                                            }
-                                            yield event;
-                                        }
-                                    }
-                                    ModelEvent::Usage { usage: u } => {
-                                        usage = u;
-                                    }
-                                    ModelEvent::Done => break,
-                                    ModelEvent::ThinkingDelta { .. }
-                                    | ModelEvent::ToolUseStart { .. }
-                                    | ModelEvent::ToolUseDelta { .. } => {}
-                                    ModelEvent::ToolUseDone { id, name, args } => {
-                                        native_tool_calls.push(ToolCallAction {
-                                            call_id: CallId::new(),
-                                            tool_use_id: Some(id),
-                                            name,
-                                            args,
-                                        });
-                                    }
-                                },
-                                Err(e) => {
-                                    complete_run!(
-                                        TerminationReason::Error,
-                                        Some(format!("Model error: {}", e))
-                                    );
-                                }
-                            }
-                        }
-
-                        let msg_event = StreamEvent::LlmMessage {
-                            full: full_response.clone(),
-                            usage,
-                            tool_calls: tool_refs_from_actions(&native_tool_calls),
-                        };
-                        if let Some(ref tw) = trace_writer {
-                            let _ = tw.append(&msg_event);
-                        }
-                        yield msg_event;
-
-                        let action = action_from_tool_calls(native_tool_calls, &full_response);
-
-                        match action {
-                            Action::ToolCall { call_id, tool_use_id, name, args } => {
-                                let start_event = StreamEvent::ToolCallStarted {
-                                    call_id,
-                                    tool_use_id: tool_use_id.clone(),
-                                    name: name.clone(),
-                                    args: args.clone(),
-                                };
-                                if let Some(ref tw) = trace_writer {
-                                    let _ = tw.append(&start_event);
-                                }
-                                yield start_event;
-
-                                let approval_reason = "destructive tool requires explicit approval";
-                                let approval_decision = if self.tool_requires_approval(&name) {
-                                    let approval_event = StreamEvent::ToolCallApprovalNeeded {
-                                        call_id,
-                                        name: name.clone(),
-                                        args: args.clone(),
-                                        reason: approval_reason.to_string(),
-                                    };
-                                    if let Some(ref tw) = trace_writer {
-                                        let _ = tw.append(&approval_event);
-                                    }
-                                    yield approval_event;
-                                    tokio::select! {
-                                        biased;
-                                        _ = stream_cancel.cancelled() => {
-                                            complete_run!(TerminationReason::Cancelled, None);
-                                        }
-                                        decision = self.resolve_approval(call_id, &name, &args, approval_reason) => decision,
-                                    }
-                                } else {
-                                    self.approval_decision
-                                };
-
-                                let executor =
-                                    Executor::with_hooks(&self.registry, self.hooks.clone());
-                                let tool_context = ToolContext {
-                                    workspace: &self.workspace,
-                                    approval_policy: self
-                                        .effective_approval_policy(&name, approval_decision),
-                                    cancel_token: stream_cancel.clone(),
-                                    input_provider: self.input_provider.clone(),
-                                };
-                                let tool_ref = tool_use_id.as_ref().map(|id| ToolCallRef {
-                                    id: id.clone(),
-                                    name: name.clone(),
-                                    args: args.clone(),
-                                });
-                                let tool_result = tokio::select! {
-                                    biased;
-                                    _ = stream_cancel.cancelled() => {
-                                        complete_run!(TerminationReason::Cancelled, None);
-                                    }
-                                    result = executor.run(&tool_context, &name, args, call_id) => result,
-                                };
-                                match tool_result {
-                                    Ok(result) => {
-                                        if let Some(tool_ref) = tool_ref.clone() {
-                                            history.push(Message::assistant_with_tool_calls(full_response.clone(), vec![tool_ref]));
-                                        } else {
-                                            history.push(Message::assistant(full_response.clone()));
-                                        }
-                                        history.push(Message::tool(result.output.clone(), tool_use_id.clone()));
-
-                                        let event = StreamEvent::ToolCallCompleted {
-                                            call_id,
-                                            result,
-                                        };
-                                        if let Some(ref tw) = trace_writer {
-                                            let _ = tw.append(&event);
-                                        }
-                                        yield event;
-                                    }
-                                    Err(e) => {
-                                        let reason = e.to_string();
-                                        if let Some(tool_ref) = tool_ref.clone() {
-                                            history.push(Message::assistant_with_tool_calls(full_response.clone(), vec![tool_ref]));
-                                        } else {
-                                            history.push(Message::assistant(full_response.clone()));
-                                        }
-                                        history.push(Message::tool(format!("Error: {reason}"), tool_use_id.clone()));
-
-                                        let event = StreamEvent::ToolCallFailed {
-                                            call_id,
-                                            error: e,
-                                        };
-                                        if let Some(ref tw) = trace_writer {
-                                            let _ = tw.append(&event);
-                                        }
-                                        yield event;
-
-                                        let failed = StreamEvent::PlanStepFailed {
-                                            step: current_step.clone(),
-                                            index: current_index,
-                                            reason: reason.clone(),
-                                        };
-                                        if let Some(ref tw) = trace_writer {
-                                            let _ = tw.append(&failed);
-                                        }
-                                        yield failed;
-
-                                        let replan_result = tokio::select! {
-                                            biased;
-                                            _ = stream_cancel.cancelled() => {
-                                                complete_run!(TerminationReason::Cancelled, None);
-                                            }
-                                            result = self.replan_after_step_failure(
-                                                &active_plan.goal,
-                                                &current_step.title,
-                                                &reason,
-                                                &mut history,
-                                            ) => result,
-                                        };
-                                        match replan_result {
-                                            Ok(drafted) => {
-                                                let event = StreamEvent::PlanCreated {
-                                                    plan: drafted.clone(),
-                                                };
-                                                if let Some(ref tw) = trace_writer {
-                                                    let _ = tw.append(&event);
-                                                }
-                                                yield event;
-                                                *active_plan = drafted;
-                                            }
-                                            Err(err) => {
-                                                complete_run!(
-                                                    TerminationReason::Error,
-                                                    Some(format!("Planner error: {err}"))
-                                                );
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            Action::ToolBatch { calls } => {
-                                let mut executions = Vec::new();
-                                if self.can_run_parallel_batch(&calls) {
-                                    for call in &calls {
-                                        yield_traced!(StreamEvent::ToolCallStarted {
-                                            call_id: call.call_id,
-                                            tool_use_id: call.tool_use_id.clone(),
-                                            name: call.name.clone(),
-                                            args: call.args.clone(),
-                                        });
-                                    }
-                                    executions = tokio::select! {
-                                        biased;
-                                        _ = stream_cancel.cancelled() => {
-                                            complete_run!(TerminationReason::Cancelled, None);
-                                        }
-                                        executions = self.execute_parallel_tool_batch(calls, stream_cancel.clone()) => executions,
-                                    };
-                                } else {
-                                    let approval_reason = "destructive tool requires explicit approval";
-                                    for call in calls {
-                                        yield_traced!(StreamEvent::ToolCallStarted {
-                                            call_id: call.call_id,
-                                            tool_use_id: call.tool_use_id.clone(),
-                                            name: call.name.clone(),
-                                            args: call.args.clone(),
-                                        });
-                                        let approval_decision = if self.tool_requires_approval(&call.name) {
-                                            yield_traced!(StreamEvent::ToolCallApprovalNeeded {
-                                                call_id: call.call_id,
-                                                name: call.name.clone(),
-                                                args: call.args.clone(),
-                                                reason: approval_reason.to_string(),
-                                            });
-                                            tokio::select! {
-                                                biased;
-                                                _ = stream_cancel.cancelled() => {
-                                                    complete_run!(TerminationReason::Cancelled, None);
-                                                }
-                                                decision = self.resolve_approval(
-                                                    call.call_id,
-                                                    &call.name,
-                                                    &call.args,
-                                                    approval_reason
-                                                ) => decision,
-                                            }
-                                        } else {
-                                            self.approval_decision
-                                        };
-                                        let execution = tokio::select! {
-                                            biased;
-                                            _ = stream_cancel.cancelled() => {
-                                                complete_run!(TerminationReason::Cancelled, None);
-                                            }
-                                            execution = self.execute_tool_call_with_decision(
-                                                call,
-                                                approval_decision,
-                                                stream_cancel.clone()
-                                            ) => execution,
-                                        };
-                                        let failed = execution.result.is_err();
-                                        executions.push(execution);
-                                        if failed {
-                                            break;
-                                        }
-                                    }
-                                }
-
-                                let mut first_error_reason = None;
-                                let tool_refs: Vec<ToolCallRef> = executions.iter()
-                                    .filter_map(|ex| ex.call.tool_use_id.as_ref().map(|id| ToolCallRef {
-                                        id: id.clone(),
-                                        name: ex.call.name.clone(),
-                                        args: ex.call.args.clone(),
-                                    }))
-                                    .collect();
-                                if tool_refs.is_empty() {
-                                    history.push(Message::assistant(full_response.clone()));
-                                } else {
-                                    history.push(Message::assistant_with_tool_calls(full_response.clone(), tool_refs));
-                                }
-                                for execution in executions {
-                                    match execution.result {
-                                        Ok(result) => {
-                                            history.push(Message::tool(result.output.clone(), execution.call.tool_use_id));
-                                            yield_traced!(StreamEvent::ToolCallCompleted {
-                                                call_id: execution.call.call_id,
-                                                result,
-                                            });
-                                        }
-                                        Err(error) => {
-                                            let reason = error.to_string();
-                                            first_error_reason.get_or_insert_with(|| reason.clone());
-                                            history.push(Message::tool(format!("Error: {reason}"), execution.call.tool_use_id));
-                                            yield_traced!(StreamEvent::ToolCallFailed {
-                                                call_id: execution.call.call_id,
-                                                error,
-                                            });
-                                        }
-                                    }
-                                }
-
-                                if let Some(reason) = first_error_reason {
-                                    let failed = StreamEvent::PlanStepFailed {
-                                        step: current_step.clone(),
-                                        index: current_index,
-                                        reason: reason.clone(),
-                                    };
-                                    if let Some(ref tw) = trace_writer {
-                                        let _ = tw.append(&failed);
-                                    }
-                                    yield failed;
-
-                                    let replan_result = tokio::select! {
-                                        biased;
-                                        _ = stream_cancel.cancelled() => {
-                                            complete_run!(TerminationReason::Cancelled, None);
-                                        }
-                                        result = self.replan_after_step_failure(
-                                            &active_plan.goal,
-                                            &current_step.title,
-                                            &reason,
-                                            &mut history,
-                                        ) => result,
-                                    };
-                                    match replan_result {
-                                        Ok(drafted) => {
-                                            let event = StreamEvent::PlanCreated {
-                                                plan: drafted.clone(),
-                                            };
-                                            if let Some(ref tw) = trace_writer {
-                                                let _ = tw.append(&event);
-                                            }
-                                            yield event;
-                                            *active_plan = drafted;
-                                        }
-                                        Err(err) => {
-                                            complete_run!(
-                                                TerminationReason::Error,
-                                                Some(format!("Planner error: {err}"))
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-                            Action::Final { text } => {
-                                history.push(Message::assistant(text.clone()));
-                                final_output = Some(text);
-                                active_plan.mark_current_done();
-                                let completed = StreamEvent::PlanStepCompleted {
-                                    step: current_step,
-                                    index: current_index,
-                                };
-                                if let Some(ref tw) = trace_writer {
-                                    let _ = tw.append(&completed);
-                                }
-                                yield completed;
-                            }
-                            Action::Malformed { reason } => {
-                                history.push(Message::assistant(full_response.clone()));
-                                history.push(Message::user(format!(
-                                    "Your previous output could not be parsed: {}. Please try again.",
-                                    reason
-                                )));
-                                let failed = StreamEvent::PlanStepFailed {
-                                    step: current_step.clone(),
-                                    index: current_index,
-                                    reason: reason.clone(),
-                                };
-                                if let Some(ref tw) = trace_writer {
-                                    let _ = tw.append(&failed);
-                                }
-                                yield failed;
-
-                                let replan_result = tokio::select! {
-                                    biased;
-                                    _ = stream_cancel.cancelled() => {
-                                        complete_run!(TerminationReason::Cancelled, None);
-                                    }
-                                    result = self.replan_after_step_failure(
-                                        &active_plan.goal,
-                                        &current_step.title,
-                                        &reason,
-                                        &mut history,
-                                    ) => result,
-                                };
-                                match replan_result {
-                                    Ok(drafted) => {
-                                        let event = StreamEvent::PlanCreated {
-                                            plan: drafted.clone(),
-                                        };
-                                        if let Some(ref tw) = trace_writer {
-                                            let _ = tw.append(&event);
-                                        }
-                                        yield event;
-                                        *active_plan = drafted;
-                                    }
-                                    Err(err) => {
-                                        complete_run!(
-                                            TerminationReason::Error,
-                                            Some(format!("Planner error: {err}"))
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    complete_run!(TerminationReason::Final, final_output);
-                }
-
-                loop {
-                    if stream_cancel.is_cancelled() {
-                        complete_run!(TerminationReason::Cancelled, None);
-                    }
-
-                    if step >= self.config.max_steps {
-                        complete_run!(TerminationReason::StepLimit, None);
-                    }
-                    step += 1;
-
-                    // 1. Build prompt
-                    let context = self.context_manager.build_with_checkpoint(
-                        &user_message,
-                        &working_memory,
-                        compact_summary.as_deref(),
-                        &history,
-                    );
-                    if context.over_hard_limit {
-                        complete_run!(
-                            TerminationReason::TokenLimit,
-                            Some("context exceeds configured hard token budget".to_string())
-                        );
-                    }
-                    let messages = context.messages;
-
-                    // 2. Call model (streaming)
-                    let mut full_response = String::new();
-                    let mut usage = Usage::default();
-                    let mut native_tool_calls = Vec::new();
-                    let mut model_stream: BoxStream<'_, _> = self.model.stream(
-                        &messages,
-                        &self.registry.schemas(),
-                    );
-
-                    loop {
-                        let chunk_result = tokio::select! {
-                            biased;
-                            _ = stream_cancel.cancelled() => {
-                                complete_run!(TerminationReason::Cancelled, None);
-                            }
-                            chunk = model_stream.next() => chunk,
-                        };
-                        let Some(chunk_result) = chunk_result else {
-                            break;
-                        };
-                        match chunk_result {
-                            Ok(model_event) => match model_event {
-                                ModelEvent::TextDelta { text } => {
-                                    if !text.is_empty() {
-                                        full_response.push_str(&text);
-                                        let event = StreamEvent::LlmChunk { delta: text };
-                                        if let Some(ref tw) = trace_writer {
-                                            let _ = tw.append(&event);
-                                        }
-                                        yield event;
-                                    }
-                                }
-                                ModelEvent::Usage { usage: u } => {
-                                    usage = u;
-                                }
-                                ModelEvent::Done => break,
-                                ModelEvent::ThinkingDelta { .. }
-                                | ModelEvent::ToolUseStart { .. }
-                                | ModelEvent::ToolUseDelta { .. } => {}
-                                ModelEvent::ToolUseDone { id, name, args } => {
-                                    native_tool_calls.push(ToolCallAction {
-                                        call_id: CallId::new(),
-                                        tool_use_id: Some(id),
-                                        name,
-                                        args,
-                                    });
-                                }
-                            },
-                            Err(e) => {
-                                complete_run!(
-                                    TerminationReason::Error,
-                                    Some(format!("Model error: {}", e))
-                                );
-                            }
-                        }
-                    }
-
-                    // Emit full message event
-                    let msg_event = StreamEvent::LlmMessage {
-                        full: full_response.clone(),
-                        usage: usage.clone(),
-                        tool_calls: tool_refs_from_actions(&native_tool_calls),
-                    };
-                    if let Some(ref tw) = trace_writer {
-                        let _ = tw.append(&msg_event);
-                    }
-                    yield msg_event;
-
-                    // 3. Parse action
-                    let action = action_from_tool_calls(native_tool_calls, &full_response);
-
-                    // 4. Handle action
-                    match action {
-                        Action::Final { text } => {
-                            complete_run!(TerminationReason::Final, Some(text));
-                        }
-                        Action::ToolCall { call_id, tool_use_id, name, args } => {
-                            let start_event = StreamEvent::ToolCallStarted {
-                                call_id,
-                                tool_use_id: tool_use_id.clone(),
-                                name: name.clone(),
-                                args: args.clone(),
-                            };
-                            if let Some(ref tw) = trace_writer {
-                                let _ = tw.append(&start_event);
-                            }
-                            yield start_event;
-
-                            let approval_reason = "destructive tool requires explicit approval";
-                            let approval_decision = if self.tool_requires_approval(&name) {
-                                let approval_event = StreamEvent::ToolCallApprovalNeeded {
-                                    call_id,
-                                    name: name.clone(),
-                                    args: args.clone(),
-                                    reason: approval_reason.to_string(),
-                                };
-                                if let Some(ref tw) = trace_writer {
-                                    let _ = tw.append(&approval_event);
-                                }
-                                yield approval_event;
-                                tokio::select! {
-                                    biased;
-                                    _ = stream_cancel.cancelled() => {
-                                        complete_run!(TerminationReason::Cancelled, None);
-                                    }
-                                    decision = self.resolve_approval(call_id, &name, &args, approval_reason) => decision,
-                                }
-                            } else {
-                                self.approval_decision
-                            };
-
-                            let executor = Executor::with_hooks(&self.registry, self.hooks.clone());
-                            let tool_context = ToolContext {
-                                workspace: &self.workspace,
-                                approval_policy: self.effective_approval_policy(&name, approval_decision),
-                                cancel_token: stream_cancel.clone(),
-                                input_provider: self.input_provider.clone(),
-                            };
-                            let tool_ref = tool_use_id.as_ref().map(|id| ToolCallRef {
-                                id: id.clone(),
-                                name: name.clone(),
-                                args: args.clone(),
-                            });
-                            let tool_result = tokio::select! {
-                                biased;
-                                _ = stream_cancel.cancelled() => {
-                                    complete_run!(TerminationReason::Cancelled, None);
-                                }
-                                result = executor.run(&tool_context, &name, args, call_id) => result,
-                            };
-                            match tool_result {
-                                Ok(result) => {
-                                    // Add assistant message + tool result to history
-                                    if let Some(tool_ref) = tool_ref.clone() {
-                                        history.push(Message::assistant_with_tool_calls(full_response.clone(), vec![tool_ref]));
-                                    } else {
-                                        history.push(Message::assistant(full_response.clone()));
-                                    }
-                                    history.push(Message::tool(result.output.clone(), tool_use_id.clone()));
-
-                                    let event = StreamEvent::ToolCallCompleted {
-                                        call_id,
-                                        result,
-                                    };
-                                    if let Some(ref tw) = trace_writer {
-                                        let _ = tw.append(&event);
-                                    }
-                                    yield event;
-                                }
-                                Err(e) => {
-                                    // Feed error back to LLM
-                                    if let Some(tool_ref) = tool_ref.clone() {
-                                        history.push(Message::assistant_with_tool_calls(full_response.clone(), vec![tool_ref]));
-                                    } else {
-                                        history.push(Message::assistant(full_response.clone()));
-                                    }
-                                    history.push(Message::tool(format!("Error: {}", e), tool_use_id.clone()));
-
-                                    let event = StreamEvent::ToolCallFailed {
-                                        call_id,
-                                        error: e,
-                                    };
-                                    if let Some(ref tw) = trace_writer {
-                                        let _ = tw.append(&event);
-                                    }
-                                    yield event;
-                                }
-                            }
-                        }
-                        Action::ToolBatch { calls } => {
-                            let mut executions = Vec::new();
-                            if self.can_run_parallel_batch(&calls) {
-                                for call in &calls {
-                                    yield_traced!(StreamEvent::ToolCallStarted {
-                                        call_id: call.call_id,
-                                        tool_use_id: call.tool_use_id.clone(),
-                                        name: call.name.clone(),
-                                        args: call.args.clone(),
-                                    });
-                                }
-                                executions = tokio::select! {
-                                    biased;
-                                    _ = stream_cancel.cancelled() => {
-                                        complete_run!(TerminationReason::Cancelled, None);
-                                    }
-                                    executions = self.execute_parallel_tool_batch(calls, stream_cancel.clone()) => executions,
-                                };
-                            } else {
-                                let approval_reason = "destructive tool requires explicit approval";
-                                for call in calls {
-                                    yield_traced!(StreamEvent::ToolCallStarted {
-                                        call_id: call.call_id,
-                                        tool_use_id: call.tool_use_id.clone(),
-                                        name: call.name.clone(),
-                                        args: call.args.clone(),
-                                    });
-                                    let approval_decision = if self.tool_requires_approval(&call.name) {
-                                        yield_traced!(StreamEvent::ToolCallApprovalNeeded {
-                                            call_id: call.call_id,
-                                            name: call.name.clone(),
-                                            args: call.args.clone(),
-                                            reason: approval_reason.to_string(),
-                                        });
-                                        tokio::select! {
-                                            biased;
-                                            _ = stream_cancel.cancelled() => {
-                                                complete_run!(TerminationReason::Cancelled, None);
-                                            }
-                                            decision = self.resolve_approval(
-                                                call.call_id,
-                                                &call.name,
-                                                &call.args,
-                                                approval_reason
-                                            ) => decision,
-                                        }
-                                    } else {
-                                        self.approval_decision
-                                    };
-                                    let execution = tokio::select! {
-                                        biased;
-                                        _ = stream_cancel.cancelled() => {
-                                            complete_run!(TerminationReason::Cancelled, None);
-                                        }
-                                        execution = self.execute_tool_call_with_decision(
-                                            call,
-                                            approval_decision,
-                                            stream_cancel.clone()
-                                        ) => execution,
-                                    };
-                                    let failed = execution.result.is_err();
-                                    executions.push(execution);
-                                    if failed {
-                                        break;
-                                    }
-                                }
-                            }
-
-                            let tool_refs: Vec<ToolCallRef> = executions.iter()
-                                .filter_map(|ex| ex.call.tool_use_id.as_ref().map(|id| ToolCallRef {
-                                    id: id.clone(),
-                                    name: ex.call.name.clone(),
-                                    args: ex.call.args.clone(),
-                                }))
-                                .collect();
-                            if tool_refs.is_empty() {
-                                history.push(Message::assistant(full_response.clone()));
-                            } else {
-                                history.push(Message::assistant_with_tool_calls(full_response.clone(), tool_refs));
-                            }
-                            for execution in executions {
-                                match execution.result {
-                                    Ok(result) => {
-                                        history.push(Message::tool(result.output.clone(), execution.call.tool_use_id));
-                                        yield_traced!(StreamEvent::ToolCallCompleted {
-                                            call_id: execution.call.call_id,
-                                            result,
-                                        });
-                                    }
-                                    Err(error) => {
-                                        history.push(Message::tool(format!("Error: {error}"), execution.call.tool_use_id));
-                                        yield_traced!(StreamEvent::ToolCallFailed {
-                                            call_id: execution.call.call_id,
-                                            error,
-                                        });
-                                    }
-                                }
-                            }
-                        }
-                        Action::Malformed { reason } => {
-                            // Feed parse failure back to LLM for self-correction
-                            history.push(Message::assistant(full_response.clone()));
-                            history.push(Message::user(format!(
-                                "Your previous output could not be parsed: {}. Please try again.",
-                                reason
-                            )));
+                        LoopItem::Complete { reason, output } => {
+                            complete_run!(reason, output);
                         }
                     }
                 }
+
+                complete_run!(
+                    TerminationReason::Error,
+                    Some("runtime loop ended without completion".to_string())
+                );
             },
         )
     }
@@ -1284,37 +448,18 @@ pub(crate) fn planned_step_failure_message(step_title: &str, reason: &str) -> St
     format!("Planned step failed: {step_title}. Reason: {reason}. Re-plan the remaining work.")
 }
 
+struct CompletedRunContext {
+    session_id: SessionId,
+    job_id: JobId,
+    run_id: RunId,
+    reason: TerminationReason,
+    output: Option<String>,
+    summary: RunSummary,
+    cancel_token: CancellationToken,
+}
+
 fn append_trace(trace_writer: &Option<TraceWriter>, event: &StreamEvent) {
     if let Some(tw) = trace_writer {
         let _ = tw.append(event);
-    }
-}
-
-fn tool_refs_from_actions(calls: &[ToolCallAction]) -> Vec<ToolCallRef> {
-    calls
-        .iter()
-        .filter_map(|call| {
-            call.tool_use_id.as_ref().map(|id| ToolCallRef {
-                id: id.clone(),
-                name: call.name.clone(),
-                args: call.args.clone(),
-            })
-        })
-        .collect()
-}
-
-fn action_from_tool_calls(calls: Vec<ToolCallAction>, full_response: &str) -> Action {
-    match calls.len() {
-        0 => parse_action(full_response),
-        1 => {
-            let call = calls.into_iter().next().expect("one tool call");
-            Action::ToolCall {
-                call_id: call.call_id,
-                tool_use_id: call.tool_use_id,
-                name: call.name,
-                args: call.args,
-            }
-        }
-        _ => Action::ToolBatch { calls },
     }
 }

@@ -1,15 +1,15 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-use crate::core::types::{JobId, RunId, SessionId, TerminationReason, Usage};
+use crate::core::types::{JobId, RunId, SessionId, TerminationReason, ToolMutation, Usage};
 use crate::core::workspace::WorkspaceKind;
 
 /// Summary report for a completed run.
 ///
 /// Written to `.rove/runs/<run_id>/report.json` after the run finishes.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunReport {
     pub session_id: SessionId,
     pub job_id: JobId,
@@ -23,6 +23,7 @@ pub struct RunReport {
     pub total_usage: Usage,
     pub tool_calls: u32,
     pub tool_failures: u32,
+    pub tool_mutations: Vec<ToolMutation>,
     pub output: Option<String>,
     pub timestamp: String,
 }
@@ -55,6 +56,7 @@ impl RunReport {
             total_usage: Usage::default(),
             tool_calls: 0,
             tool_failures: 0,
+            tool_mutations: Vec::new(),
             output: None,
             timestamp: chrono::Utc::now().to_rfc3339(),
         }

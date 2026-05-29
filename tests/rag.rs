@@ -342,6 +342,7 @@ async fn path_scoped_channel_prefers_matching_path_hint() {
 async fn rag_tool_output_contains_query_metadata_and_results() {
     use rove::core::types::{ApprovalPolicy, ToolContext};
     use rove::core::workspace::Workspace;
+    use rove::memory::paths::MemoryPaths;
     use rove::tools::rag::RagRetrieveTool;
     use rove::tools::traits::Tool;
     use tokio_util::sync::CancellationToken;
@@ -360,11 +361,18 @@ async fn rag_tool_output_contains_query_metadata_and_results() {
     let workspace = Workspace::detect(tmp.path()).unwrap();
     let ctx = ToolContext {
         workspace: &workspace,
+        memory_paths: MemoryPaths::from_workspace(&workspace, 8),
         approval_policy: ApprovalPolicy::Auto,
         cancel_token: CancellationToken::new(),
         input_provider: None,
     };
     let tool = RagRetrieveTool::docs(workspace.root.clone());
+    let schema = tool.schema();
+    assert_eq!(schema.capability.as_ref().unwrap().status, "enabled");
+    assert_eq!(
+        schema.capability.as_ref().unwrap().feature.as_deref(),
+        Some("rag")
+    );
 
     let output = tool
         .execute(
@@ -385,4 +393,52 @@ async fn rag_tool_output_contains_query_metadata_and_results() {
             .unwrap()
             .contains("lexical")
     );
+}
+
+#[tokio::test]
+async fn rag_retrieval_reads_from_configured_state_dir() {
+    use rove::core::types::{ApprovalPolicy, ToolContext};
+    use rove::core::workspace::{Workspace, WorkspaceKind};
+    use rove::memory::paths::MemoryPaths;
+    use rove::tools::rag::RagRetrieveTool;
+    use rove::tools::traits::Tool;
+    use tokio_util::sync::CancellationToken;
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let state_dir = tmp.path().join("custom-state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    std::fs::write(
+        tmp.path().join("README.md"),
+        "# Configured State\n\nRetrieval should read this custom state index.",
+    )
+    .unwrap();
+    let workspace = Workspace {
+        root: tmp.path().to_path_buf(),
+        kind: WorkspaceKind::Folder,
+        state_dir: state_dir.clone(),
+    };
+    let index = RagIndex::new_with_state_dir(workspace.root.clone(), state_dir);
+    index
+        .ingest_workspace(&DeterministicEmbedder)
+        .await
+        .unwrap();
+
+    let ctx = ToolContext {
+        workspace: &workspace,
+        memory_paths: MemoryPaths::from_workspace(&workspace, 8),
+        approval_policy: ApprovalPolicy::Auto,
+        cancel_token: CancellationToken::new(),
+        input_provider: None,
+    };
+    let tool = RagRetrieveTool::docs(workspace.root.clone());
+
+    let output = tool
+        .execute(
+            serde_json::json!({"query": "custom state index", "limit": 3}),
+            &ctx,
+        )
+        .await
+        .unwrap();
+
+    assert!(output.content.contains("Configured State"));
 }

@@ -64,4 +64,38 @@ describe("rove client", () => {
       }),
     });
   });
+
+  it("sends resume mode when creating a resumed job", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        job_id: "job-1",
+        run_id: "run-2",
+        resumed_from_run_id: "run-1",
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await createJob({
+      message: "continue",
+      model: "fake",
+      max_steps: 4,
+      approval: "ask",
+      resume: "latest",
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/jobs", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        message: "continue",
+        model: "fake",
+        max_steps: 4,
+        approval: "ask",
+        resume: "latest",
+      }),
+    });
+  });
 });

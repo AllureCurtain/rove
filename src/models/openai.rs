@@ -440,6 +440,7 @@ mod tests {
                 }),
                 destructive: false,
                 parallel_safe: true,
+                capability: None,
             }],
         );
 
@@ -456,6 +457,45 @@ mod tests {
         assert_eq!(msg["role"], "user");
         assert_eq!(msg["content"], "plain parsed tool output");
         assert!(msg.get("tool_call_id").is_none());
+    }
+
+    #[test]
+    fn request_body_formats_native_tool_history_for_replay() {
+        let client = OpenAiClient::new(
+            "https://example.invalid/v1".to_string(),
+            "secret".to_string(),
+            "gpt-4o".to_string(),
+        );
+        let body = client.build_request_body(
+            &[
+                Message::assistant_with_tool_calls(
+                    "I will inspect that.".to_string(),
+                    vec![crate::core::types::ToolCallRef {
+                        id: "call_1".to_string(),
+                        name: "fs_read".to_string(),
+                        args: serde_json::json!({ "path": "Cargo.toml" }),
+                    }],
+                ),
+                Message::tool("file contents", Some("call_1".to_string())),
+            ],
+            &[],
+        );
+
+        assert_eq!(body["messages"][0]["role"], "assistant");
+        assert_eq!(body["messages"][0]["content"], "I will inspect that.");
+        assert_eq!(body["messages"][0]["tool_calls"][0]["id"], "call_1");
+        assert_eq!(body["messages"][0]["tool_calls"][0]["type"], "function");
+        assert_eq!(
+            body["messages"][0]["tool_calls"][0]["function"]["name"],
+            "fs_read"
+        );
+        assert_eq!(
+            body["messages"][0]["tool_calls"][0]["function"]["arguments"],
+            "{\"path\":\"Cargo.toml\"}"
+        );
+        assert_eq!(body["messages"][1]["role"], "tool");
+        assert_eq!(body["messages"][1]["tool_call_id"], "call_1");
+        assert_eq!(body["messages"][1]["content"], "file contents");
     }
 
     #[test]

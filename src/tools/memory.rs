@@ -56,6 +56,7 @@ impl Tool for SaveMemoryTool {
             }),
             destructive: false,
             parallel_safe: false,
+            capability: None,
         }
     }
 
@@ -95,9 +96,7 @@ impl Tool for SaveMemoryTool {
 
         update_memory_index(&memory_dir).await?;
 
-        Ok(ToolOutput {
-            content: format!("saved memory: {slug}"),
-        })
+        Ok(ToolOutput::text(format!("saved memory: {slug}")))
     }
 }
 
@@ -128,6 +127,7 @@ impl Tool for UpdateMemoryIndexTool {
             }),
             destructive: false,
             parallel_safe: false,
+            capability: None,
         }
     }
 
@@ -138,9 +138,7 @@ impl Tool for UpdateMemoryIndexTool {
             .map_err(execution_failed)?;
         update_memory_index(&memory_dir).await?;
 
-        Ok(ToolOutput {
-            content: "updated memory index".to_string(),
-        })
+        Ok(ToolOutput::text("updated memory index"))
     }
 }
 
@@ -178,6 +176,7 @@ impl Tool for ReadMemoryTopicTool {
             }),
             destructive: false,
             parallel_safe: true,
+            capability: None,
         }
     }
 
@@ -196,7 +195,7 @@ impl Tool for ReadMemoryTopicTool {
             }
         })?;
 
-        Ok(ToolOutput { content })
+        Ok(ToolOutput::text(content))
     }
 }
 
@@ -240,7 +239,7 @@ struct IndexEntry {
 }
 
 fn memory_dir(ctx: &ToolContext<'_>) -> PathBuf {
-    ctx.workspace.state_dir.join("memory")
+    ctx.memory_paths.durable_dir.clone()
 }
 
 async fn update_memory_index(memory_dir: &Path) -> Result<(), ToolError> {
