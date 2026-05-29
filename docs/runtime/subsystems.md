@@ -146,15 +146,15 @@ RAG artifacts resolve under the configured `state.state_dir`; the default remain
 The web verification surface is:
 
 ```bash
-npm test
-npm run typecheck
-npm run build
+pnpm test
+pnpm typecheck
+pnpm build
 ```
 
 Browser-level checks are available separately:
 
 ```bash
-npm run test:e2e
+pnpm test:e2e
 ```
 
 ## CI

@@ -56,17 +56,27 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: 22
-          cache: npm
-          cache-dependency-path: web-ui/package-lock.json
 
-      - name: npm ci
-        run: npm ci
+      - name: Install pnpm
+        run: |
+          corepack enable pnpm
+          pnpm config set store-dir ~/.pnpm-store
 
-      - name: npm test
-        run: npm test
+      - name: Cache pnpm store
+        uses: actions/cache@v5
+        with:
+          path: ~/.pnpm-store
+          key: ${{ runner.os }}-pnpm-${{ hashFiles('web-ui/pnpm-lock.yaml') }}
+          restore-keys: ${{ runner.os }}-pnpm-
 
-      - name: npm run typecheck
-        run: npm run typecheck
+      - name: pnpm install
+        run: pnpm install --frozen-lockfile
 
-      - name: npm run build
-        run: npm run build
+      - name: pnpm test
+        run: pnpm test
+
+      - name: pnpm typecheck
+        run: pnpm typecheck
+
+      - name: pnpm build
+        run: pnpm build

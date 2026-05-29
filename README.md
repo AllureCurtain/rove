@@ -60,8 +60,8 @@ Start the web workbench in another shell:
 
 ```bash
 cd web-ui
-npm ci
-npm run dev
+pnpm install --frozen-lockfile
+pnpm dev
 ```
 
 By default the API binds to `127.0.0.1:8787`, and the web workbench proxies `/api/*` to that local API.
@@ -167,10 +167,10 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 
 cd web-ui
-npm ci
-npm test
-npm run typecheck
-npm run build
+pnpm install --frozen-lockfile
+pnpm test
+pnpm typecheck
+pnpm build
 ```
 
 RAG feature checks:

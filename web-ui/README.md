@@ -15,7 +15,7 @@ cargo run --bin rove-api
 Start the workbench from this directory:
 
 ```powershell
-npm run dev
+pnpm dev
 ```
 
 Open `http://localhost:3000`. By default the Next.js proxy sends `/api/*` to
@@ -29,7 +29,7 @@ To point the workbench at another API server:
 
 ```powershell
 $env:ROVE_API_BASE = "http://127.0.0.1:8787"
-npm run dev
+pnpm dev
 ```
 
 To use a token-protected API, set the same token in the Rust API process and the
@@ -37,7 +37,7 @@ Next.js server process:
 
 ```powershell
 $env:ROVE_API_TOKEN = "local-secret"
-npm run dev
+pnpm dev
 ```
 
 The token is injected into upstream requests by the server-side proxy. It is not
@@ -46,8 +46,8 @@ read by browser code and should not use a `NEXT_PUBLIC_` environment name.
 ## Production Build
 
 ```powershell
-npm run build
-npm run start
+pnpm build
+pnpm start
 ```
 
 ## Verification
@@ -55,15 +55,15 @@ npm run start
 Before treating UI changes as ready, run:
 
 ```powershell
-npm test
-npm run typecheck
-npm run build
+pnpm test
+pnpm typecheck
+pnpm build
 ```
 
 For browser-level E2E smoke coverage:
 
 ```powershell
-npm run test:e2e
+pnpm test:e2e
 ```
 
 The Playwright tests start the Next.js dev server and mock the API at the browser

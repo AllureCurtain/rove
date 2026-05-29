@@ -288,13 +288,13 @@ Current Web checks:
 
 ```powershell
 cd web-ui
-npm test
-npm run typecheck
-npm run build
+pnpm test
+pnpm typecheck
+pnpm build
 ```
 
 Browser-level Playwright tests live under `web-ui/tests/e2e` and run through
-`npm run test:e2e`. They are separate from the default fast Web checks so the
+`pnpm test:e2e`. They are separate from the default fast Web checks so the
 unit/type/build loop stays lightweight.
 
 ## 7. Core Runtime Types
@@ -880,16 +880,16 @@ Web checks:
 
 ```powershell
 cd web-ui
-npm test
-npm run typecheck
-npm run build
+pnpm test
+pnpm typecheck
+pnpm build
 ```
 
 Optional browser E2E checks:
 
 ```powershell
 cd web-ui
-npm run test:e2e
+pnpm test:e2e
 ```
 
 Useful focused tests:
@@ -993,9 +993,9 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 cargo check --features rag --bin rove-index
 cargo test --features rag
-cd web-ui; npm test
-cd web-ui; npm run typecheck
-cd web-ui; npm run build
+cd web-ui; pnpm test
+cd web-ui; pnpm typecheck
+cd web-ui; pnpm build
 ```
 
 `cargo test --features rag` took longer because it waited on Cargo artifact locks during the local run, then completed successfully when rerun by itself.
