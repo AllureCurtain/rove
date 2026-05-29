@@ -171,7 +171,6 @@ High-level flow in `src/main.rs`:
 1. Parse `Args` from `src/interfaces/cli/args.rs`.
 2. If `Args::is_sync_fast_path()` is true, run it without creating a Tokio runtime:
    - `dump-config`
-   - no message and no subcommand, which prints help
 3. Create a Tokio runtime for async commands and normal runs.
 4. Run async maintenance subcommands:
    - `index`
@@ -188,7 +187,8 @@ High-level flow in `src/main.rs`:
 11. Build `Engine`.
 12. Create `StateStore` and `RunHandle`.
 13. Resolve optional CLI resume state.
-14. Run `run_oneshot_with_cancel`.
+14. If a message argument is present, run `run_oneshot_with_cancel`.
+15. If no message and no subcommand are present, enter the line-oriented REPL.
 
 Current one-shot smoke command:
 
@@ -198,11 +198,36 @@ cargo run -- --model fake "echo hello from rove"
 
 `Cargo.toml` sets `default-run = "rove"`, so plain `cargo run -- ...` uses the CLI binary.
 
+Running `rove` with no task enters the REPL in the current terminal instead of
+printing help or opening a separate window. The REPL prompt is:
+
+```text
+rove>
+```
+
+Supported slash commands are:
+
+| Command | Purpose |
+|---|---|
+| `/help` | Print REPL commands. |
+| `/exit`, `/quit` | Exit the REPL. |
+| `/clear` | Clear the terminal screen. |
+| `/sessions` | List resumable task states from the active workspace. |
+| `/resume latest` | Load the newest task snapshot as the active resume state. |
+| `/resume <run_id>` | Load a specific task snapshot as the active resume state. |
+
+Normal text input runs a new engine run. After a successful non-cancelled run,
+the REPL loads the latest task snapshot for follow-up turns, preserving the
+session id and reusing the previous job id while creating a new run id. Ctrl+C
+while the prompt is idle returns to the prompt; Ctrl+C while a run is active
+cancels that run and keeps the REPL process alive.
+
 Relevant code:
 
 - `src/main.rs`
 - `src/interfaces/cli/args.rs`
 - `src/interfaces/cli/oneshot.rs`
+- `src/interfaces/cli/repl.rs`
 - `src/interfaces/cli/sessions.rs`
 - `src/interfaces/cli/state.rs`
 - `src/interfaces/cli/index.rs`
@@ -557,6 +582,14 @@ Filesystem tools resolve paths through `src/core/boundary.rs`. Reads canonicaliz
 
 Shell policy comes from `tool.shell`: timeout, max output bytes per stream, environment inheritance, and a denylist. The shell working directory is fixed to the workspace root. Empty commands, NUL bytes, denied substrings, timeouts, and output truncation are handled before unbounded history growth.
 
+Tool-call parallelism is conservative and batch-scoped. When a model turn
+returns multiple tool calls at once, the runtime runs them concurrently only if
+every call is non-destructive and its schema is marked `parallel_safe`. Results
+are still written back in model call order. Calls that depend on earlier tool
+results naturally happen in later model turns and therefore run serially. The
+runtime does not currently infer a general dependency DAG between arbitrary tool
+calls.
+
 Relevant code:
 
 - `src/tools/traits.rs`
@@ -824,6 +857,13 @@ cargo test --features rag --test cli_index deterministic_index_run_writes_manife
 
 The CLI uses deterministic embeddings when requested or when `rag.deterministic = true`. With `rag.deterministic = false`, indexing constructs an OpenAI-compatible embedder from `rag.embedding_api_base`, `rag.embedding_api_key`, and `rag.embedding_model`. If the key is missing and `rag.fallback_to_deterministic = true`, indexing falls back to deterministic embeddings; if fallback is disabled, indexing fails with a config error. Retrieval/eval reports record the embedder and reranker identities. Remote rerank is optional: when `rag.rerank_provider` and `rag.rerank_model` are set, eval retrieval builds a routed reranker using `rag.rerank_api_key` and the RAG embedding API base as the first-pass rerank endpoint base. If rerank is unconfigured, or if fallback is enabled after a provider failure, retrieval uses `rerank-noop` and keeps deterministic local behavior.
 
+Agent tool-time retrieval is intentionally narrower today. The in-agent
+`retrieve_code` and `retrieve_docs` tools read the configured state directory
+for RAG artifacts, but they still construct deterministic retrieval services
+inside the tool. Passing configured embedder/reranker services into
+`runtime_tool_registry` is the follow-up direction when tool-time retrieval
+needs to use provider-backed embeddings or rerankers.
+
 Relevant code:
 
 - `src/tools/rag/mod.rs`
@@ -851,6 +891,9 @@ Limitations:
 - no distributed rate limiting;
 - no browser login/session flow. The local Web workbench supports API bearer
   tokens through its server-side Next.js proxy, not through client-side headers.
+
+These limitations are deployment/product scope for a later phase, not active
+runtime gaps for the current local-first target.
 
 Relevant code:
 
@@ -942,6 +985,15 @@ reason that explains why the item is intentionally retained.
 
 ## 22. Common Maintenance Tasks
 
+### File Size And Module Shape
+
+The historical architecture notes suggested a hard line-count limit for Rust
+files. The current runtime docs do not treat that as a binding rule. Prefer
+splitting modules when it improves ownership, testability, or reviewability;
+keep related code together when a single file makes the behavior easier to
+trace. The practical standard is clear responsibility boundaries, not an
+absolute line-count threshold.
+
 When adding a new tool:
 
 1. Implement `Tool`.
@@ -975,7 +1027,7 @@ When changing provider tool-use:
 4. Check structured history round-trip tests.
 5. Preserve the native-before-text action conversion in `build_action_from_model_output`.
 
-## 22. Known Gaps And Risks
+## 23. Known Gaps And Risks
 
 These are implementation-level issues to keep in mind before extending the system.
 
@@ -983,7 +1035,7 @@ These are implementation-level issues to keep in mind before extending the syste
    Indexing and eval use configurable embedders and rerankers. The in-agent `retrieve_code` and `retrieve_docs` tools still construct deterministic retrieval directly; passing configured RAG provider services into runtime tool construction remains a follow-up.
 
 
-## 23. Current Verification Baseline
+## 24. Current Verification Baseline
 
 As of 2026-05-28, the following checks were run locally and passed:
 

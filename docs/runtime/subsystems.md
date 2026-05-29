@@ -95,6 +95,11 @@ Batch execution rules:
 - destructive, unknown, shell, write, request-input, and memory-write style calls serialize through the approval and execution boundary;
 - conversation history and trace events are written back in model call order after a batch completes.
 
+This is batch-scoped parallelism, not full DAG scheduling. If a tool call needs
+the output of a previous call, the model issues it in a later turn and the
+runtime runs that sequence serially. The current runtime does not infer hidden
+dependencies between arbitrary tool arguments.
+
 Approval policy is `ask`, `auto`, or `never`. The CLI uses stdin for approvals; the API exposes pending approvals through `/jobs/{job_id}/approvals/{call_id}`.
 
 API approval/input restart behavior uses Policy A. Pending records are persisted while live, but the in-memory answer channels are not reconstructed after restart. Startup marks stale running jobs and pending approval/input rows `interrupted`, and resume creates a new run from the last task snapshot.
@@ -120,7 +125,7 @@ The API routes are:
 - `POST /jobs/{job_id}/approvals/{call_id}`
 - `POST /jobs/{job_id}/inputs/{input_id}`
 
-The API default is local-only binding. Config supports token auth, CORS origin allowlists, rate limits, and an explicit unsafe remote-without-auth override. Token auth, CORS enforcement, and rate limiting are implemented as API middleware.
+The API default is local-only binding. Config supports token auth, CORS origin allowlists, rate limits, and an explicit unsafe remote-without-auth override. Token auth, CORS enforcement, and rate limiting are implemented as API middleware. Multi-user identity and distributed rate limiting are later deployment/product concerns rather than current runtime requirements.
 
 ## RAG
 
@@ -138,6 +143,12 @@ The RAG implementation is behind `--features rag` and lives under `src/tools/rag
 - a `RagPromptService` formatting boundary for retrieved evidence.
 
 RAG artifacts resolve under the configured `state.state_dir`; the default remains `.rove/rag.lancedb`, `.rove/rag_manifest.json`, `.rove/rag_index_log.jsonl`, and `.rove/rag_eval/`. Default builds expose stub `retrieve_code` and `retrieve_docs` tools with disabled capability metadata and JSON output explaining the feature requirement. Feature-enabled builds expose enabled capability metadata. Remote rerank is optional for eval retrieval: when `rag.rerank_provider`, `rag.rerank_model`, and `rag.rerank_api_key` are configured, the routed reranker calls the configured provider endpoint and records the reranker identity in reports; otherwise eval retrieval uses `rerank-noop`.
+
+The in-agent `retrieve_code` and `retrieve_docs` tools currently use deterministic
+retrieval services at execution time while reading artifacts from the configured
+state directory. Extending runtime tool construction to inject configured
+embedder/reranker services is the planned direction when provider-backed
+tool-time retrieval is needed.
 
 ## Web
 
