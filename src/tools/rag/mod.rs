@@ -13,6 +13,7 @@ pub mod eval;
 mod index;
 pub mod ingest;
 mod prompt;
+mod rerank;
 pub mod retrieve;
 pub mod rewrite;
 mod types;
@@ -20,6 +21,7 @@ mod types;
 pub use embed::{DeterministicEmbedder, Embedder, OpenAiEmbedder, RoutingEmbedder};
 pub use index::RagIndex;
 pub use prompt::RagPromptService;
+pub use rerank::{DashScopeReranker, NoopReranker, Reranker, RoutingReranker};
 pub use types::{
     ChunkingManifest, EmbeddingManifest, IndexManifest, IndexedFile, ManifestChunk, ParsedDocument,
     RetrieveKind, RetrievedChunk,

@@ -88,33 +88,6 @@ impl SearchResultPostProcessor for ScoreNormalizationPostProcessor {
     }
 }
 
-/// Local deterministic rerank fallback. Remote rerank providers should be
-/// introduced behind a routed rerank client that reuses ModelHealthStore.
-pub struct NoopRerankPostProcessor;
-
-impl SearchResultPostProcessor for NoopRerankPostProcessor {
-    fn name(&self) -> &'static str {
-        "noop-rerank"
-    }
-
-    fn order(&self) -> u8 {
-        10
-    }
-
-    fn is_enabled(&self, _context: &RetrievalContext) -> bool {
-        true
-    }
-
-    fn process(
-        &self,
-        context: &RetrievalContext,
-        mut results: Vec<RetrievedChunk>,
-    ) -> anyhow::Result<Vec<RetrievedChunk>> {
-        results.truncate(context.limit);
-        Ok(results)
-    }
-}
-
 fn dedupe_key(chunk: &RetrievedChunk) -> String {
     if !chunk.id.is_empty() {
         return format!("id:{}", chunk.id);

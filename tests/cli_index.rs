@@ -140,7 +140,7 @@ async fn eval_run_writes_report_without_llm_generation() {
         report["embedder"],
         "embedding-deterministic:local:deterministic-64"
     );
-    assert_eq!(report["reranker"], "none");
+    assert_eq!(report["reranker"], "rerank-noop");
     assert!(report["duration_ms"].as_u64().is_some());
     assert!(
         report["channels"]
@@ -192,6 +192,77 @@ async fn eval_run_honors_configured_state_dir() {
     let eval_dir = state_dir.join("rag_eval");
     assert!(eval_dir.exists());
     assert!(!tmp.path().join(".rove").join("rag_eval").exists());
+}
+
+#[cfg(feature = "rag")]
+#[tokio::test]
+async fn eval_run_uses_configured_remote_reranker() {
+    let server = start_rerank_server().await;
+    let tmp = tempfile::TempDir::new().unwrap();
+    write_file(
+        tmp.path().join(".rove").join("config.toml"),
+        &format!(
+            r#"
+[rag]
+deterministic = true
+embedding_api_base = "{}"
+rerank_provider = "dashscope"
+rerank_model = "qwen3-rerank"
+rerank_api_key = "secret"
+fallback_to_deterministic = false
+"#,
+            server.base_url
+        ),
+    );
+    write_file(
+        tmp.path().join("docs").join("a.md"),
+        "remote rerank query alpha candidate",
+    );
+    write_file(
+        tmp.path().join("docs").join("b.md"),
+        "remote rerank query beta candidate",
+    );
+
+    run(IndexOptions {
+        cwd: Some(tmp.path().to_path_buf()),
+        deterministic: true,
+        embedding_model: None,
+        eval_query: None,
+        eval_kind: None,
+        eval_limit: 8,
+    })
+    .await
+    .unwrap();
+
+    run(IndexOptions {
+        cwd: Some(tmp.path().to_path_buf()),
+        deterministic: true,
+        embedding_model: None,
+        eval_query: Some("remote rerank query".to_string()),
+        eval_kind: Some("docs".to_string()),
+        eval_limit: 2,
+    })
+    .await
+    .unwrap();
+
+    let requested_documents = server.requested_documents.lock().unwrap().clone().unwrap();
+    let eval_dir = tmp.path().join(".rove").join("rag_eval");
+    let mut reports = std::fs::read_dir(eval_dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect::<Vec<_>>();
+    reports.sort();
+    let report: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(reports.last().unwrap()).unwrap()).unwrap();
+
+    assert_eq!(
+        report["reranker"],
+        format!("rerank-dashscope:{}:qwen3-rerank", server.base_url)
+    );
+    assert_eq!(
+        report["results"][0]["content_preview"],
+        requested_documents[1]
+    );
 }
 
 #[cfg(feature = "rag")]
@@ -264,4 +335,53 @@ fn write_file(path: impl AsRef<Path>, content: &str) {
     let path = path.as_ref();
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path, content).unwrap();
+}
+
+#[cfg(feature = "rag")]
+struct RerankTestServer {
+    base_url: String,
+    requested_documents: std::sync::Arc<std::sync::Mutex<Option<Vec<String>>>>,
+}
+
+#[cfg(feature = "rag")]
+async fn start_rerank_server() -> RerankTestServer {
+    use axum::Json;
+    use axum::Router;
+    use axum::routing::post;
+    use std::sync::{Arc, Mutex};
+
+    let requested_documents = Arc::new(Mutex::new(None));
+    let requested_documents_for_handler = requested_documents.clone();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app = Router::new().route(
+        "/services/rerank/text-rerank/text-rerank",
+        post(move |Json(body): Json<serde_json::Value>| {
+            let requested_documents = requested_documents_for_handler.clone();
+            async move {
+                let documents = body["input"]["documents"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|value| value.as_str().unwrap().to_string())
+                    .collect::<Vec<_>>();
+                *requested_documents.lock().unwrap() = Some(documents);
+                Json(serde_json::json!({
+                    "output": {
+                        "results": [
+                            { "index": 1, "relevance_score": 0.91 },
+                            { "index": 0, "relevance_score": 0.42 }
+                        ]
+                    }
+                }))
+            }
+        }),
+    );
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    RerankTestServer {
+        base_url: format!("http://{addr}"),
+        requested_documents,
+    }
 }

@@ -49,7 +49,7 @@ async fn run_impl(options: IndexOptions) -> anyhow::Result<()> {
     use crate::config::{AppConfig, AppConfigOverrides};
     use crate::core::workspace::Workspace;
     use crate::tools::rag::RagIndex;
-    use crate::tools::rag::eval::{run_retrieval_eval, write_eval_report_to_dir};
+    use crate::tools::rag::eval::{run_retrieval_eval_with_reranker, write_eval_report_to_dir};
 
     let cwd = options
         .cwd
@@ -69,8 +69,16 @@ async fn run_impl(options: IndexOptions) -> anyhow::Result<()> {
     if let Some(query) = options.eval_query {
         let kind = parse_eval_kind(options.eval_kind.as_deref().unwrap_or("docs"))?;
         let embedder = build_rag_embedder(&config, use_deterministic, embedding_model)?;
-        let report =
-            run_retrieval_eval(&index, embedder.as_ref(), kind, &query, options.eval_limit).await?;
+        let reranker = build_rag_reranker(&config)?;
+        let report = run_retrieval_eval_with_reranker(
+            &index,
+            embedder.as_ref(),
+            reranker.as_ref(),
+            kind,
+            &query,
+            options.eval_limit,
+        )
+        .await?;
         let path = write_eval_report_to_dir(&state_dir.join("rag_eval"), &report).await?;
         print!("{}", format_eval_result(&report, &path));
         return Ok(());
@@ -110,6 +118,65 @@ fn build_rag_embedder(
         config.rag.embedding_api_key.clone(),
         embedding_model,
     )))
+}
+
+#[cfg(feature = "rag")]
+pub fn build_rag_reranker(
+    config: &crate::config::AppConfig,
+) -> anyhow::Result<Box<dyn crate::tools::rag::Reranker>> {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use crate::models::health::{HealthConfig, ModelHealthStore};
+    use crate::tools::rag::{DashScopeReranker, NoopReranker, RoutingReranker};
+
+    let Some(provider) = config.rag.rerank_provider.as_deref() else {
+        return Ok(Box::new(NoopReranker));
+    };
+    let Some(model) = config.rag.rerank_model.as_deref() else {
+        return Ok(Box::new(NoopReranker));
+    };
+    let Some(api_key) = config
+        .rag
+        .rerank_api_key
+        .as_deref()
+        .filter(|key| !key.trim().is_empty())
+    else {
+        if config.rag.fallback_to_deterministic {
+            tracing::warn!(
+                "rag.rerank_api_key is missing; falling back to deterministic noop reranker"
+            );
+            return Ok(Box::new(NoopReranker));
+        }
+        anyhow::bail!(
+            "rag.rerank_api_key is required when remote rerank is configured and fallback_to_deterministic=false"
+        );
+    };
+    if !matches!(
+        provider.trim().to_ascii_lowercase().as_str(),
+        "dashscope" | "bailian" | "aliyun"
+    ) {
+        anyhow::bail!("unsupported rag.rerank_provider `{provider}`");
+    }
+
+    let remote = DashScopeReranker::with_timeout(
+        config.rag.embedding_api_base.clone(),
+        api_key.to_string(),
+        model.to_string(),
+        Duration::from_millis(config.rag.timeout_ms),
+    );
+    if config.rag.fallback_to_deterministic {
+        let health = Arc::new(ModelHealthStore::new(HealthConfig {
+            failure_threshold: config.routing.failure_threshold,
+            open_cooldown: Duration::from_millis(config.routing.open_cooldown_ms),
+        }));
+        Ok(Box::new(RoutingReranker::new(
+            vec![Box::new(remote), Box::new(NoopReranker)],
+            health,
+        )))
+    } else {
+        Ok(Box::new(remote))
+    }
 }
 
 #[cfg(feature = "rag")]

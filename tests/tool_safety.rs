@@ -1,7 +1,12 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicUsize, Ordering},
+use std::{
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
+
+use tempfile::TempDir;
 
 use async_trait::async_trait;
 use futures::stream::BoxStream;
@@ -193,10 +198,7 @@ async fn fs_read_rejects_parent_traversal() {
 
 #[tokio::test]
 async fn fs_read_rejects_symlink_escape_when_supported() {
-    let tmp = tempfile::TempDir::new().unwrap();
-    let workspace = Workspace::detect(tmp.path()).unwrap();
-    let outside_file = tmp.path().join("outside.txt");
-    std::fs::write(&outside_file, "outside").unwrap();
+    let (_tmp, workspace, outside_file) = workspace_with_outside_file();
     let link = workspace.root.join("linked-outside.txt");
     if !create_file_symlink(&outside_file, &link) {
         return;
@@ -225,10 +227,7 @@ async fn fs_read_rejects_symlink_escape_when_supported() {
 
 #[tokio::test]
 async fn fs_write_rejects_existing_symlink_escape_when_supported() {
-    let tmp = tempfile::TempDir::new().unwrap();
-    let workspace = Workspace::detect(tmp.path()).unwrap();
-    let outside_file = tmp.path().join("outside.txt");
-    std::fs::write(&outside_file, "outside").unwrap();
+    let (_tmp, workspace, outside_file) = workspace_with_outside_file();
     let link = workspace.root.join("linked-outside.txt");
     if !create_file_symlink(&outside_file, &link) {
         return;
@@ -492,6 +491,25 @@ fn tool_context(workspace: &Workspace) -> ToolContext<'_> {
         cancel_token: CancellationToken::new(),
         input_provider: None,
     }
+}
+
+fn workspace_with_outside_file() -> (TempDir, Workspace, PathBuf) {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace_root = tmp.path().join("workspace");
+    std::fs::create_dir(&workspace_root).unwrap();
+    let workspace = Workspace::detect(&workspace_root).unwrap();
+    let outside_file = tmp.path().join("outside.txt");
+    std::fs::write(&outside_file, "outside").unwrap();
+
+    assert!(
+        !outside_file
+            .canonicalize()
+            .unwrap()
+            .starts_with(&workspace.root),
+        "symlink escape fixture must target a file outside the workspace"
+    );
+
+    (tmp, workspace, outside_file)
 }
 
 #[cfg(unix)]

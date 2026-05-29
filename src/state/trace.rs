@@ -10,6 +10,7 @@ use super::index::StateIndex;
 /// Manages trace file writing for a run.
 ///
 /// Each run gets a `trace.jsonl` file with one JSON event per line.
+#[derive(Clone)]
 pub struct TraceWriter {
     path: PathBuf,
     run_id: Option<RunId>,

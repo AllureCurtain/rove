@@ -3,6 +3,7 @@ use std::time::Instant;
 
 use crate::tools::rag::RagIndex;
 use crate::tools::rag::embed::Embedder;
+use crate::tools::rag::rerank::{NoopReranker, Reranker};
 use crate::tools::rag::retrieve::channel::ChannelStatus;
 use crate::tools::rag::retrieve::pipeline::RetrievalPipeline;
 use crate::tools::rag::types::RetrieveKind;
@@ -50,8 +51,19 @@ pub async fn run_retrieval_eval(
     query: &str,
     limit: usize,
 ) -> anyhow::Result<RetrievalEvalReport> {
+    run_retrieval_eval_with_reranker(index, embedder, &NoopReranker, kind, query, limit).await
+}
+
+pub async fn run_retrieval_eval_with_reranker(
+    index: &RagIndex,
+    embedder: &dyn Embedder,
+    reranker: &dyn Reranker,
+    kind: RetrieveKind,
+    query: &str,
+    limit: usize,
+) -> anyhow::Result<RetrievalEvalReport> {
     let start = Instant::now();
-    let output = RetrievalPipeline::new(index, embedder)
+    let output = RetrievalPipeline::with_reranker(index, embedder, reranker)
         .run(kind, query, limit)
         .await?;
     let duration_ms = start.elapsed().as_millis();
@@ -91,7 +103,7 @@ pub async fn run_retrieval_eval(
             .collect(),
         artifact_path: String::new(),
         embedder: embedder.client_id().to_string(),
-        reranker: "none".to_string(),
+        reranker: reranker.client_id().to_string(),
     })
 }
 
@@ -122,4 +134,56 @@ fn content_preview(content: &str) -> String {
         preview = preview.chars().take(MAX_PREVIEW_CHARS).collect();
     }
     preview
+}
+
+#[cfg(test)]
+mod tests {
+    use async_trait::async_trait;
+
+    use super::run_retrieval_eval_with_reranker;
+    use crate::models::traits::ModelClientId;
+    use crate::tools::rag::embed::DeterministicEmbedder;
+    use crate::tools::rag::rerank::Reranker;
+    use crate::tools::rag::{RagIndex, RetrieveKind, RetrievedChunk};
+
+    struct IdentityReranker;
+
+    #[async_trait]
+    impl Reranker for IdentityReranker {
+        async fn rerank(
+            &self,
+            _query: &str,
+            mut candidates: Vec<RetrievedChunk>,
+            top_n: usize,
+        ) -> anyhow::Result<Vec<RetrievedChunk>> {
+            candidates.truncate(top_n);
+            Ok(candidates)
+        }
+
+        fn client_id(&self) -> ModelClientId {
+            ModelClientId::opaque("rerank-identity")
+        }
+    }
+
+    #[tokio::test]
+    async fn eval_report_records_reranker_identity() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("README.md"), "retrieval eval identity").unwrap();
+        let index = RagIndex::new(tmp.path().to_path_buf());
+        let embedder = DeterministicEmbedder;
+        index.ingest_workspace(&embedder).await.unwrap();
+
+        let report = run_retrieval_eval_with_reranker(
+            &index,
+            &embedder,
+            &IdentityReranker,
+            RetrieveKind::Docs,
+            "retrieval eval",
+            3,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(report.reranker, "rerank-identity");
+    }
 }

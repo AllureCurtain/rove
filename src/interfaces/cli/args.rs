@@ -45,7 +45,6 @@ pub struct Args {
 impl Args {
     pub fn is_sync_fast_path(&self) -> bool {
         matches!(self.command, Some(Command::DumpConfig))
-            || self.command.is_none() && self.message.is_none()
     }
 }
 
@@ -126,6 +125,23 @@ mod tests {
         let args = Args::parse_from(["rove", "dump-config"]);
 
         assert!(args.is_sync_fast_path());
+    }
+
+    #[test]
+    fn no_args_enters_async_cli_path() {
+        let args = Args::parse_from(["rove"]);
+
+        assert!(args.message.is_none());
+        assert!(args.command.is_none());
+        assert!(!args.is_sync_fast_path());
+    }
+
+    #[test]
+    fn quoted_task_still_parses_as_one_shot_message() {
+        let args = Args::parse_from(["rove", "analyze this project"]);
+
+        assert_eq!(args.message.as_deref(), Some("analyze this project"));
+        assert!(args.command.is_none());
     }
 
     #[test]

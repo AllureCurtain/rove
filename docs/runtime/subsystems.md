@@ -134,9 +134,10 @@ The RAG implementation is behind `--features rag` and lives under `src/tools/rag
 - vector, lexical, and path-scoped retrieval channels;
 - postprocessing for dedupe and score normalization;
 - pure retrieval eval reports that record embedder and reranker identity;
+- optional routed remote rerank for eval retrieval with `rerank-noop` fallback;
 - a `RagPromptService` formatting boundary for retrieved evidence.
 
-RAG artifacts resolve under the configured `state.state_dir`; the default remains `.rove/rag.lancedb`, `.rove/rag_manifest.json`, `.rove/rag_index_log.jsonl`, and `.rove/rag_eval/`. Default builds expose stub `retrieve_code` and `retrieve_docs` tools with disabled capability metadata and JSON output explaining the feature requirement. Feature-enabled builds expose enabled capability metadata. Remote rerank config fields exist, but active rerank execution remains local/noop until a routed rerank provider is added.
+RAG artifacts resolve under the configured `state.state_dir`; the default remains `.rove/rag.lancedb`, `.rove/rag_manifest.json`, `.rove/rag_index_log.jsonl`, and `.rove/rag_eval/`. Default builds expose stub `retrieve_code` and `retrieve_docs` tools with disabled capability metadata and JSON output explaining the feature requirement. Feature-enabled builds expose enabled capability metadata. Remote rerank is optional for eval retrieval: when `rag.rerank_provider`, `rag.rerank_model`, and `rag.rerank_api_key` are configured, the routed reranker calls the configured provider endpoint and records the reranker identity in reports; otherwise eval retrieval uses `rerank-noop`.
 
 ## Web
 

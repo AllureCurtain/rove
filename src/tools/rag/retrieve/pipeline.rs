@@ -1,22 +1,39 @@
 use super::channel::{RetrievalContext, SearchChannel, SearchChannelResult};
 use super::channels::{LexicalSearchChannel, PathScopedSearchChannel, VectorSearchChannel};
 use super::postprocess::{
-    DeduplicationPostProcessor, NoopRerankPostProcessor, ScoreNormalizationPostProcessor,
-    SearchResultPostProcessor,
+    DeduplicationPostProcessor, ScoreNormalizationPostProcessor, SearchResultPostProcessor,
 };
 use crate::tools::rag::RagIndex;
 use crate::tools::rag::embed::Embedder;
+use crate::tools::rag::rerank::{NoopReranker, Reranker};
 use crate::tools::rag::rewrite::{DeterministicQueryRewriteService, QueryRewriteService};
 use crate::tools::rag::types::{RetrieveKind, RetrievedChunk};
 
 pub struct RetrievalPipeline<'a> {
     index: &'a RagIndex,
     embedder: &'a dyn Embedder,
+    reranker: &'a dyn Reranker,
 }
 
 impl<'a> RetrievalPipeline<'a> {
     pub fn new(index: &'a RagIndex, embedder: &'a dyn Embedder) -> Self {
-        Self { index, embedder }
+        Self {
+            index,
+            embedder,
+            reranker: &NoopReranker,
+        }
+    }
+
+    pub fn with_reranker(
+        index: &'a RagIndex,
+        embedder: &'a dyn Embedder,
+        reranker: &'a dyn Reranker,
+    ) -> Self {
+        Self {
+            index,
+            embedder,
+            reranker,
+        }
     }
 
     pub async fn retrieve(
@@ -65,7 +82,6 @@ impl<'a> RetrievalPipeline<'a> {
         let mut postprocessors: Vec<Box<dyn SearchResultPostProcessor>> = vec![
             Box::new(DeduplicationPostProcessor),
             Box::new(ScoreNormalizationPostProcessor),
-            Box::new(NoopRerankPostProcessor),
         ];
         postprocessors.sort_by_key(|processor| processor.order());
         for processor in postprocessors {
@@ -73,6 +89,10 @@ impl<'a> RetrievalPipeline<'a> {
                 results = processor.process(&context, results)?;
             }
         }
+        results = self
+            .reranker
+            .rerank(&context.normalized_query, results, limit)
+            .await?;
 
         Ok(RetrievalPipelineOutput {
             context,
@@ -87,4 +107,63 @@ pub struct RetrievalPipelineOutput {
     pub context: RetrievalContext,
     pub channels: Vec<SearchChannelResult>,
     pub results: Vec<RetrievedChunk>,
+}
+
+#[cfg(test)]
+mod tests {
+    use async_trait::async_trait;
+
+    use super::RetrievalPipeline;
+    use crate::models::traits::ModelClientId;
+    use crate::tools::rag::embed::DeterministicEmbedder;
+    use crate::tools::rag::rerank::Reranker;
+    use crate::tools::rag::{RagIndex, RetrieveKind, RetrievedChunk};
+
+    struct ReverseReranker;
+
+    #[async_trait]
+    impl Reranker for ReverseReranker {
+        async fn rerank(
+            &self,
+            _query: &str,
+            mut candidates: Vec<RetrievedChunk>,
+            top_n: usize,
+        ) -> anyhow::Result<Vec<RetrievedChunk>> {
+            candidates.sort_by(|left, right| left.path.cmp(&right.path));
+            candidates.reverse();
+            candidates.truncate(top_n);
+            Ok(candidates)
+        }
+
+        fn client_id(&self) -> ModelClientId {
+            ModelClientId::opaque("rerank-reverse")
+        }
+    }
+
+    #[tokio::test]
+    async fn retrieval_pipeline_uses_configured_reranker() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join("docs")).unwrap();
+        std::fs::write(
+            tmp.path().join("docs").join("a.md"),
+            "shared retrieval query alpha",
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.path().join("docs").join("z.md"),
+            "shared retrieval query zulu",
+        )
+        .unwrap();
+
+        let index = RagIndex::new(tmp.path().to_path_buf());
+        let embedder = DeterministicEmbedder;
+        index.ingest_workspace(&embedder).await.unwrap();
+
+        let output = RetrievalPipeline::with_reranker(&index, &embedder, &ReverseReranker)
+            .run(RetrieveKind::Docs, "shared retrieval query", 2)
+            .await
+            .unwrap();
+
+        assert_eq!(output.results[0].path, "docs/z.md");
+    }
 }

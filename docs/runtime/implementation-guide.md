@@ -822,7 +822,7 @@ cargo run --features rag --bin rove-index -- --deterministic -C .
 cargo test --features rag --test cli_index deterministic_index_run_writes_manifest -- --exact
 ```
 
-The CLI uses deterministic embeddings when requested or when `rag.deterministic = true`. With `rag.deterministic = false`, indexing constructs an OpenAI-compatible embedder from `rag.embedding_api_base`, `rag.embedding_api_key`, and `rag.embedding_model`. If the key is missing and `rag.fallback_to_deterministic = true`, indexing falls back to deterministic embeddings; if fallback is disabled, indexing fails with a config error. Retrieval/eval reports record the embedder and reranker identities. Remote rerank configuration exists, but remote rerank execution is not wired in yet; `NoopRerankPostProcessor` remains the local deterministic fallback and reports `reranker = "none"` unless a future routed rerank client is introduced.
+The CLI uses deterministic embeddings when requested or when `rag.deterministic = true`. With `rag.deterministic = false`, indexing constructs an OpenAI-compatible embedder from `rag.embedding_api_base`, `rag.embedding_api_key`, and `rag.embedding_model`. If the key is missing and `rag.fallback_to_deterministic = true`, indexing falls back to deterministic embeddings; if fallback is disabled, indexing fails with a config error. Retrieval/eval reports record the embedder and reranker identities. Remote rerank is optional: when `rag.rerank_provider` and `rag.rerank_model` are set, eval retrieval builds a routed reranker using `rag.rerank_api_key` and the RAG embedding API base as the first-pass rerank endpoint base. If rerank is unconfigured, or if fallback is enabled after a provider failure, retrieval uses `rerank-noop` and keeps deterministic local behavior.
 
 Relevant code:
 
@@ -979,8 +979,8 @@ When changing provider tool-use:
 
 These are implementation-level issues to keep in mind before extending the system.
 
-1. Remote RAG rerank execution is not wired in.
-   Rerank config fields exist, and eval reports record reranker identity, but the active postprocessor is still local/noop unless future provider integration is added.
+1. Agent tool-time RAG retrieval remains deterministic.
+   Indexing and eval use configurable embedders and rerankers. The in-agent `retrieve_code` and `retrieve_docs` tools still construct deterministic retrieval directly; passing configured RAG provider services into runtime tool construction remains a follow-up.
 
 
 ## 23. Current Verification Baseline

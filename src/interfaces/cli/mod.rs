@@ -4,5 +4,8 @@ pub mod config;
 pub mod index;
 pub mod input;
 pub mod oneshot;
+pub mod render;
+pub mod repl;
+pub mod runtime;
 pub mod sessions;
 pub mod state;
