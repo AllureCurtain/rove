@@ -435,6 +435,40 @@ impl StateIndex {
         Ok(records)
     }
 
+    pub async fn list_run_records_async(
+        &self,
+        limit: usize,
+    ) -> std::io::Result<Vec<RunIndexRecord>> {
+        let index = self.clone();
+        tokio::task::spawn_blocking(move || index.list_run_records(limit))
+            .await
+            .map_err(std::io::Error::other)?
+    }
+
+    pub fn list_run_records(&self, limit: usize) -> std::io::Result<Vec<RunIndexRecord>> {
+        let conn = self.connect()?;
+        let limit = limit.clamp(1, 200) as i64;
+        let mut stmt = conn
+            .prepare(
+                r#"
+                SELECT run_id, session_id, job_id, status, run_dir, trace_path,
+                       task_state_path, report_path, last_event_seq
+                FROM runs
+                ORDER BY updated_at DESC, started_at DESC, run_id DESC
+                LIMIT ?1
+                "#,
+            )
+            .map_err(io_other)?;
+        let rows = stmt
+            .query_map(params![limit], run_record_from_row)
+            .map_err(io_other)?;
+        let mut records = Vec::new();
+        for row in rows {
+            records.push(row.map_err(io_other)?);
+        }
+        Ok(records)
+    }
+
     pub async fn task_state_path_async(&self, run_id: RunId) -> std::io::Result<Option<PathBuf>> {
         let index = self.clone();
         tokio::task::spawn_blocking(move || index.task_state_path(run_id))

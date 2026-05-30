@@ -257,6 +257,8 @@ Routes:
 | `POST /jobs/{job_id}/cancel` | Cancel a live job |
 | `POST /jobs/{job_id}/approvals/{call_id}` | Resolve a pending destructive tool approval |
 | `POST /jobs/{job_id}/inputs/{input_id}` | Resolve a pending `request_input` prompt |
+| `GET /runs` | List recent persisted runs |
+| `GET /runs/{run_id}/report` | Read the indexed `report.json` artifact for a run |
 
 API jobs have two state layers:
 
@@ -270,6 +272,8 @@ the API server workspace.
 `resume` follows the CLI semantics: omit it for a fresh session/job, use `"latest"` for the newest task snapshot, or pass a run id to load that exact snapshot. A resumed API job keeps the loaded `session_id` and `job_id`, creates a new `run_id`, and passes the loaded `TaskState` into `RunRequest` and artifact recording.
 
 After restart, historical job state and SSE events can be read from SQLite. Pending approvals and pending inputs follow Policy A: requests are persisted for audit while live, but their channels are not reconstructed after process restart. API startup marks stale running jobs and pending approval/input rows as `interrupted`; `/jobs/{job_id}/state` then shows no answerable pending approval/input lists for that historical job. Resuming latest from the interrupted task snapshot starts a new run with a new `run_id`.
+
+Historical run discovery is read-only. `/runs` returns recent run identity, status, last indexed event sequence, and report availability from SQLite. `/runs/{run_id}/report` uses the indexed report row to load `report.json`; it does not expose arbitrary filesystem paths.
 
 Relevant code:
 
@@ -299,6 +303,8 @@ The main component:
 3. Applies streamed events through `workbenchReducer`.
 4. Calls approval and input endpoints when user action is required.
 5. Fetches job state on stream errors to resync.
+6. Loads recent runs from `GET /api/runs` on page load and after terminal run states.
+7. Fetches a selected report with `GET /api/runs/{run_id}/report` and displays model, workspace, status, termination reason, steps, tool counts, token count, and final output.
 
 Relevant code:
 
@@ -321,6 +327,8 @@ pnpm build
 Browser-level Playwright tests live under `web-ui/tests/e2e` and run through
 `pnpm test:e2e`. They are separate from the default fast Web checks so the
 unit/type/build loop stays lightweight.
+
+Real provider smoke tests are opt-in and documented in `docs/runtime/provider-smoke.md`. They are intentionally excluded from default CI because they require credentials, network access, local Ollama availability, or provider quota.
 
 ## 7. Core Runtime Types
 

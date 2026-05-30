@@ -3,6 +3,8 @@ import type {
   CreateJobRequest,
   CreateJobResponse,
   JobStateResponse,
+  ListRunsResponse,
+  RunReport,
 } from "./rove-types";
 
 const API_PREFIX = "/api";
@@ -41,6 +43,16 @@ export async function cancelJob(jobId: string): Promise<JobStateResponse> {
 export async function fetchJobState(jobId: string): Promise<JobStateResponse> {
   const response = await fetch(apiUrl(`/jobs/${encodeURIComponent(jobId)}/state`));
   return parseJson<JobStateResponse>(response);
+}
+
+export async function listRuns(limit = 50): Promise<ListRunsResponse> {
+  const response = await fetch(apiUrl(`/runs?limit=${encodeURIComponent(String(limit))}`));
+  return parseJson<ListRunsResponse>(response);
+}
+
+export async function fetchRunReport(runId: string): Promise<RunReport> {
+  const response = await fetch(apiUrl(`/runs/${encodeURIComponent(runId)}/report`));
+  return parseJson<RunReport>(response);
 }
 
 export async function submitApproval(

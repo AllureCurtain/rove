@@ -2,6 +2,10 @@
 
 This matrix compares the runtime hardening target with the current implementation.
 
+## MVP Status
+
+MVP reached for the local-first single-user runtime. The exact boundary, included capabilities, exclusions, golden paths, and verification baseline are documented in [mvp-definition.md](mvp-definition.md).
+
 | Area | Current status | Remaining gap |
 |---|---|---|
 | Local-first default | API defaults to `127.0.0.1:8787`; CLI and state default to the workspace. Remote bind requires token auth unless explicitly marked unsafe. | None for the current local-first target. |

@@ -660,6 +660,28 @@ label {
   border-left-color: var(--accent);
 }
 
+.stack-row--button {
+  width: 100%;
+  min-height: 0;
+  border-color: var(--border);
+  border-radius: 16px;
+  background: var(--surface-strong);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  box-shadow: none;
+}
+
+.stack-row--button:hover {
+  transform: translateY(-1px);
+  border-color: var(--border-strong);
+}
+
+.stack-row--button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 .stack-index {
   display: inline-flex;
   align-items: center;
@@ -707,6 +729,36 @@ label {
   line-height: 1.55;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
+}
+
+.report-panel {
+  display: grid;
+  gap: 10px;
+}
+
+.report-panel__output {
+  display: grid;
+  gap: 4px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--surface-strong);
+}
+
+.report-panel__output span {
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.report-panel__output p {
+  margin: 0;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .approval-panel {

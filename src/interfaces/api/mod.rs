@@ -165,9 +165,29 @@ pub struct JobStateResponse {
     pub pending_inputs: Vec<PendingInputResponse>,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ListRunsResponse {
+    pub runs: Vec<RunSummaryResponse>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RunSummaryResponse {
+    pub run_id: RunId,
+    pub session_id: SessionId,
+    pub job_id: JobId,
+    pub status: RunStatus,
+    pub last_event_seq: u64,
+    pub has_report: bool,
+}
+
 #[derive(Debug, Deserialize)]
 struct JobEventsQuery {
     after: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RunsQuery {
+    limit: Option<usize>,
 }
 
 pub fn router(state: ApiState) -> Router {
@@ -178,6 +198,8 @@ pub fn router(state: ApiState) -> Router {
         .route("/jobs/{job_id}/cancel", post(cancel_job))
         .route("/jobs/{job_id}/approvals/{call_id}", post(submit_approval))
         .route("/jobs/{job_id}/inputs/{input_id}", post(submit_input))
+        .route("/runs", get(list_runs))
+        .route("/runs/{run_id}/report", get(run_report))
         .with_state(state.clone())
         .layer(middleware::from_fn_with_state(
             state,
@@ -478,6 +500,46 @@ async fn submit_input(
     }
     let _ = pending.tx.send(req.answer);
     Ok(Json(job_state_response(&record).await))
+}
+
+async fn list_runs(
+    State(state): State<ApiState>,
+    Query(query): Query<RunsQuery>,
+) -> Result<Json<ListRunsResponse>, ApiError> {
+    let state_store = state_store_for_api(&state);
+    let records = state_store
+        .index
+        .list_run_records_async(query.limit.unwrap_or(50))
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Json(ListRunsResponse {
+        runs: records
+            .into_iter()
+            .map(|record| RunSummaryResponse {
+                run_id: record.run_id,
+                session_id: record.session_id,
+                job_id: record.job_id,
+                status: run_status_from_index(&record.status),
+                last_event_seq: record.last_event_seq,
+                has_report: record.report_path.is_some(),
+            })
+            .collect(),
+    }))
+}
+
+async fn run_report(
+    State(state): State<ApiState>,
+    Path(run_id): Path<RunId>,
+) -> Result<Json<crate::state::report::RunReport>, ApiError> {
+    let state_store = state_store_for_api(&state);
+    let report = state_store
+        .load_report(run_id)
+        .await
+        .map_err(|err| match err.kind() {
+            std::io::ErrorKind::NotFound => ApiError::not_found("run report not found"),
+            _ => ApiError::internal(err),
+        })?;
+    Ok(Json(report))
 }
 
 async fn run_job(state: ApiState, record: Arc<JobRecord>, req: CreateJobRequest) {

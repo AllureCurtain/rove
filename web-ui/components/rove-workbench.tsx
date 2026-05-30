@@ -27,11 +27,18 @@ import {
   cancelJob,
   createJob,
   fetchJobState,
+  fetchRunReport,
+  listRuns,
   openJobStream,
   submitApproval,
   submitInput,
 } from "../lib/rove-client";
-import { STREAM_EVENT_NAMES, type StreamEvent } from "../lib/rove-types";
+import {
+  STREAM_EVENT_NAMES,
+  type RunReport,
+  type RunSummary,
+  type StreamEvent,
+} from "../lib/rove-types";
 import { createWorkbenchState, workbenchReducer, type ToolCallView } from "../lib/rove-state";
 
 export function RoveWorkbench() {
@@ -46,6 +53,10 @@ export function RoveWorkbench() {
   const [submitting, setSubmitting] = useState(false);
   const [approvalBusy, setApprovalBusy] = useState<string | null>(null);
   const [inputBusy, setInputBusy] = useState<string | null>(null);
+  const [runs, setRuns] = useState<RunSummary[]>([]);
+  const [selectedReport, setSelectedReport] = useState<RunReport | null>(null);
+  const [historyBusy, setHistoryBusy] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
 
   const isBusy = submitting || state.busy;
@@ -65,6 +76,7 @@ export function RoveWorkbench() {
   }, [state.activeJobId, state.activeRunId, state.resumedFromRunId]);
 
   useEffect(() => {
+    void refreshRuns();
     return () => {
       eventSourceRef.current?.close();
       eventSourceRef.current = null;
@@ -132,6 +144,9 @@ export function RoveWorkbench() {
     try {
       const jobState = await cancelJob(state.activeJobId);
       dispatch({ type: "job_state_synced", state: jobState });
+      if (isTerminalStatus(jobState.status)) {
+        void refreshRuns();
+      }
     } catch (error) {
       dispatch({ type: "set_error", error: describeError(error) });
     } finally {
@@ -155,6 +170,7 @@ export function RoveWorkbench() {
       dispatch({ type: "job_state_synced", state: jobState });
       if (isTerminalStatus(jobState.status)) {
         closeStream();
+        void refreshRuns();
       }
     } catch (error) {
       dispatch({ type: "set_error", error: describeError(error) });
@@ -175,6 +191,7 @@ export function RoveWorkbench() {
       dispatch({ type: "job_state_synced", state: jobState });
       if (isTerminalStatus(jobState.status)) {
         closeStream();
+        void refreshRuns();
       }
     } catch (error) {
       dispatch({ type: "set_error", error: describeError(error) });
@@ -198,6 +215,7 @@ export function RoveWorkbench() {
           dispatch({ type: "job_state_synced", state: jobState });
           if (jobState.status !== "init" && jobState.status !== "running") {
             closeStream();
+            void refreshRuns();
           }
         })
         .catch((error) => {
@@ -213,12 +231,43 @@ export function RoveWorkbench() {
 
     if (payload.type === "run_completed") {
       closeStream();
+      void refreshRuns();
     }
   }
 
   function closeStream() {
     eventSourceRef.current?.close();
     eventSourceRef.current = null;
+  }
+
+  async function refreshRuns() {
+    setHistoryBusy(true);
+    setHistoryError(null);
+    try {
+      const result = await listRuns(25);
+      setRuns(result.runs);
+    } catch (error) {
+      setHistoryError(describeError(error));
+    } finally {
+      setHistoryBusy(false);
+    }
+  }
+
+  async function handleReportSelect(run: RunSummary) {
+    if (!run.has_report) {
+      setSelectedReport(null);
+      return;
+    }
+
+    setHistoryBusy(true);
+    setHistoryError(null);
+    try {
+      setSelectedReport(await fetchRunReport(run.run_id));
+    } catch (error) {
+      setHistoryError(describeError(error));
+    } finally {
+      setHistoryBusy(false);
+    }
   }
 
   return (
@@ -402,6 +451,63 @@ export function RoveWorkbench() {
               <SummaryRow label="job" value={shortId(state.activeJobId)} />
               <SummaryRow label="run" value={shortId(state.activeRunId)} />
               <SummaryRow label="resumed from" value={shortId(state.resumedFromRunId)} />
+            </InspectorSection>
+
+            <InspectorSection title="History" icon={<ActivityLogIcon />}>
+              {historyError ? <div className="empty-block">{historyError}</div> : null}
+              {historyBusy && runs.length === 0 ? (
+                <EmptyBlock label="Loading runs" busy />
+              ) : runs.length ? (
+                <div className="stack-list">
+                  {runs.map((run) => (
+                    <button
+                      key={run.run_id}
+                      type="button"
+                      className="stack-row stack-row--button"
+                      onClick={() => void handleReportSelect(run)}
+                      disabled={!run.has_report}
+                      title={run.has_report ? "View report" : "Report unavailable"}
+                    >
+                      <div className="stack-row__header">
+                        <strong>{shortId(run.run_id)}</strong>
+                        <span>{run.status}</span>
+                      </div>
+                      <p>
+                        {shortId(run.job_id)} / {run.last_event_seq} events
+                      </p>
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <EmptyBlock label="No historical runs" busy={historyBusy} />
+              )}
+            </InspectorSection>
+
+            <InspectorSection title="Report" icon={<FileTextIcon />}>
+              {selectedReport ? (
+                <div className="report-panel">
+                  <SummaryRow label="run" value={shortId(selectedReport.run_id)} />
+                  <SummaryRow label="model" value={selectedReport.model_id} />
+                  <SummaryRow label="workspace" value={selectedReport.workspace_kind} />
+                  <SummaryRow label="status" value={selectedReport.status} />
+                  <SummaryRow label="reason" value={selectedReport.termination_reason} />
+                  <SummaryRow label="steps" value={String(selectedReport.steps)} />
+                  <SummaryRow
+                    label="tools"
+                    value={`${selectedReport.tool_calls}/${selectedReport.tool_failures}`}
+                  />
+                  <SummaryRow
+                    label="tokens"
+                    value={String(selectedReport.total_usage.total_tokens)}
+                  />
+                  <div className="report-panel__output">
+                    <span>output</span>
+                    <p>{selectedReport.output ?? "No output"}</p>
+                  </div>
+                </div>
+              ) : (
+                <EmptyBlock label="Select a run" busy={historyBusy} />
+              )}
             </InspectorSection>
 
             <InspectorSection title="Plan" icon={<FileTextIcon />}>

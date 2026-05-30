@@ -178,6 +178,37 @@ export interface JobStreamEvent {
   event: StreamEvent;
 }
 
+export interface ListRunsResponse {
+  runs: RunSummary[];
+}
+
+export interface RunSummary {
+  run_id: string;
+  session_id: string;
+  job_id: string;
+  status: RunStatus;
+  last_event_seq: number;
+  has_report: boolean;
+}
+
+export interface RunReport {
+  session_id: string;
+  job_id: string;
+  run_id: string;
+  workspace_root: string;
+  workspace_kind: string;
+  model_id: string;
+  status: string;
+  termination_reason: string;
+  steps: number;
+  total_usage: Usage;
+  tool_calls: number;
+  tool_failures: number;
+  tool_mutations: ToolMutation[];
+  output?: string | null;
+  timestamp: string;
+}
+
 export interface PendingApproval {
   call_id: string;
   name: string;

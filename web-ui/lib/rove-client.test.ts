@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { createJob, submitApproval } from "./rove-client";
+import { createJob, fetchRunReport, listRuns, submitApproval } from "./rove-client";
 
 describe("rove client", () => {
   afterEach(() => {
@@ -97,5 +97,58 @@ describe("rove client", () => {
         resume: "latest",
       }),
     });
+  });
+
+  it("fetches recent runs", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        runs: [
+          {
+            run_id: "run-1",
+            session_id: "session-1",
+            job_id: "job-1",
+            status: "done",
+            last_event_seq: 5,
+            has_report: true,
+          },
+        ],
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await listRuns(25);
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/runs?limit=25");
+    expect(result.runs[0].run_id).toBe("run-1");
+  });
+
+  it("fetches a run report", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        session_id: "session-1",
+        job_id: "job-1",
+        run_id: "run-1",
+        workspace_root: "D:/workspace",
+        workspace_kind: "folder",
+        model_id: "fake",
+        status: "success",
+        termination_reason: "final",
+        steps: 1,
+        total_usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+        tool_calls: 0,
+        tool_failures: 0,
+        tool_mutations: [],
+        output: "done",
+        timestamp: "2026-05-30T00:00:00Z",
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await fetchRunReport("run/1");
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/runs/run%2F1/report");
+    expect(result.output).toBe("done");
   });
 });

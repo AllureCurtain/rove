@@ -157,6 +157,16 @@ impl StateStore {
             .await
     }
 
+    pub async fn load_report(&self, run_id: RunId) -> std::io::Result<RunReport> {
+        let Some(record) = self.index.report_record(run_id)? else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("report not found for run {run_id}"),
+            ));
+        };
+        self.load_report_path(&record.path).await
+    }
+
     pub async fn repair_index(&self) -> std::io::Result<RepairResult> {
         let task_state_count = self.import_task_states().await?;
         let report_count = self.import_reports().await?;

@@ -14,6 +14,12 @@ CLI / API / Web
         -> State store
 ```
 
+## Current MVP
+
+rove has reached its local-first MVP: CLI, API, Web workbench, streaming events, bounded tool execution, persisted state, resume, deterministic benchmarks, and runtime docs are all present. The current MVP boundary is documented in [docs/runtime/mvp-definition.md](docs/runtime/mvp-definition.md).
+
+Browser/Desktop workspaces, hosted multi-user identity, distributed rate limiting, and deeper provider-backed tool-time RAG are outside this MVP.
+
 ## Quick Start
 
 Run a local fake-model task without network credentials:
