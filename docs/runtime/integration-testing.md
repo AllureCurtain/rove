@@ -164,6 +164,17 @@ Open `http://localhost:3000` and run the same scenarios through the UI. The Web 
 powershell -ExecutionPolicy Bypass -File scripts/integration-smoke.ps1
 ```
 
+Run the same local-full profile on non-default ports when `8787` or `3000` is
+busy:
+
+```powershell
+$root = Join-Path $env:TEMP "rove-integration-custom"
+powershell -ExecutionPolicy Bypass -File scripts/integration-smoke.ps1 `
+  -ApiAddr "127.0.0.1:18788" `
+  -WebPort "13000" `
+  -IntegrationRoot $root
+```
+
 Useful focused modes:
 
 ```powershell
@@ -181,7 +192,8 @@ The runner:
 5. Waits until `GET /runs` succeeds.
 6. Runs API smoke scenarios and saves JSON responses under `<integration-root>/artifacts/api`.
 7. Starts `pnpm exec next dev --port <port>` in `web-ui` with `ROVE_API_BASE` pointing to the API.
-8. Runs the gated real-API Playwright suite with `ROVE_REAL_API_E2E=1`.
+8. Runs the gated real-API Playwright suite with `ROVE_REAL_API_E2E=1`,
+   `ROVE_WEB_PORT=<port>`, and `PLAYWRIGHT_BASE_URL=http://127.0.0.1:<port>`.
 9. Stops API and Web processes even when a check fails.
 10. Prints run ids and artifact paths.
 

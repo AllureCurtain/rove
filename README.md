@@ -28,6 +28,31 @@ Run a local fake-model task without network credentials:
 cargo run -- --model fake "echo hello from rove"
 ```
 
+Start the local API and Web workbench together in fake-provider mode:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/dev.ps1
+```
+
+Open `http://localhost:3000`. The launcher starts `rove-api`, starts the
+Next.js workbench, prints the API/Web URLs, and stops both process trees when it
+exits. Use custom ports when the defaults are busy:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/dev.ps1 -ApiAddr 127.0.0.1:18787 -WebPort 3001
+```
+
+Start the same API/Web flow with a real OpenAI-compatible provider by setting
+provider environment first:
+
+```powershell
+$env:ROVE_PROVIDER = "openai-compatible"
+$env:ROVE_MODEL = "Qwen/Qwen3-Coder-30B-A3B-Instruct"
+$env:OPENAI_API_BASE = "https://api.siliconflow.cn/v1"
+$env:OPENAI_API_KEY = "<secret>"
+powershell -ExecutionPolicy Bypass -File scripts/dev.ps1 -Provider
+```
+
 Run in an isolated standalone Task workspace:
 
 ```bash
@@ -56,7 +81,7 @@ Run deterministic local benchmark tasks:
 cargo run --bin rove-bench -- --suite benchmarks/agent-smoke.json --output-dir .rove/bench
 ```
 
-Start the local API server:
+Manual API/Web startup remains available. Start the local API server:
 
 ```bash
 cargo run --bin rove-api
@@ -110,6 +135,8 @@ Common environment variables:
 | `ROVE_API_BIND_ADDR` | API bind address override. Defaults to `127.0.0.1:8787`. |
 | `ROVE_API_TOKEN` | Bearer token required by the Rust API and injected by the Web proxy when set server-side. |
 | `ROVE_API_BASE` | Web proxy upstream API URL. Defaults to `http://127.0.0.1:8787`. |
+| `ROVE_WEB_PORT` | Next.js workbench port used by `scripts/dev.ps1` and Playwright. Defaults to `3000`. |
+| `PLAYWRIGHT_BASE_URL` | Browser E2E base URL override. Defaults to `http://localhost:$ROVE_WEB_PORT`. |
 | `ROVE_FALLBACK_MODELS` | Comma-separated fallback model list using the primary provider. |
 | `ROVE_ROUTING_RETRY_MAX_ATTEMPTS` | Routed provider attempts before fallback. Defaults to `1`. |
 | `ROVE_ROUTING_RETRY_BACKOFF_BASE_MS` | Base retry backoff for routed providers. Defaults to `250`. |

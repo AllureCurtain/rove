@@ -18,6 +18,23 @@ fn runtime_docs_record_phase_12_hygiene_and_source_of_truth_status() {
 }
 
 #[test]
+fn dev_launcher_documents_process_lifecycle_and_modes() {
+    let script = std::fs::read_to_string("scripts/dev.ps1").expect("scripts/dev.ps1 should exist");
+
+    assert!(script.contains("[switch]$Provider"));
+    assert!(script.contains("[switch]$InstallWebDeps"));
+    assert!(script.contains("[int]$RunSeconds"));
+    assert!(script.contains("ROVE_PROVIDER = \"fake\""));
+    assert!(script.contains("ROVE_MODEL = \"fake\""));
+    assert!(script.contains("Test-PortFree $apiPort \"API\""));
+    assert!(script.contains("if ($RunSeconds -gt 0)"));
+    assert!(script.contains("Stop-ProcessTree $webProcess"));
+    assert!(script.contains("Stop-ProcessTree $apiProcess"));
+    assert!(script.contains("http://localhost:$WebPort"));
+    assert!(script.contains("Press Ctrl+C to stop API and Web."));
+}
+
+#[test]
 fn runtime_docs_declare_current_mvp_boundary() {
     let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let runtime_readme = std::fs::read_to_string(root.join("docs/runtime/README.md")).unwrap();
@@ -51,4 +68,18 @@ fn runtime_docs_declare_current_mvp_boundary() {
         mvp_definition.contains("Browser/Desktop"),
         "MVP definition should keep future workspace surfaces out of scope"
     );
+}
+
+#[test]
+fn runtime_docs_index_release_readiness_checklist() {
+    let runtime_readme = std::fs::read_to_string("docs/runtime/README.md").unwrap();
+    let checklist = std::fs::read_to_string("docs/runtime/release-readiness.md")
+        .expect("release readiness checklist should exist");
+
+    assert!(runtime_readme.contains("release-readiness.md"));
+    assert!(checklist.contains("Deterministic Gates"));
+    assert!(checklist.contains("Local-Full Integration"));
+    assert!(checklist.contains("Provider Smoke"));
+    assert!(checklist.contains("Security Posture"));
+    assert!(checklist.contains("Out-of-scope"));
 }

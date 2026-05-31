@@ -309,6 +309,8 @@ try {
 
     if (-not $SkipWebE2E) {
         $env:ROVE_REAL_API_E2E = "1"
+        $env:ROVE_WEB_PORT = $WebPort
+        $env:PLAYWRIGHT_BASE_URL = $WebBase
         $env:PLAYWRIGHT_HTML_REPORT = Join-Path $ArtifactsDir "playwright-report"
         $env:PLAYWRIGHT_TEST_OUTPUT_DIR = Join-Path $ArtifactsDir "playwright-results"
 

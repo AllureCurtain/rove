@@ -24,8 +24,10 @@ fn require_env(name: &str) -> String {
 #[derive(Default)]
 struct ProviderSmokeResult {
     final_output: String,
+    terminal_reason: String,
     saw_tool_call: bool,
     saw_tool_output: bool,
+    event_names: Vec<&'static str>,
 }
 
 async fn run_provider_smoke(provider: &str, model: String, message: &str) -> ProviderSmokeResult {
@@ -60,6 +62,7 @@ async fn run_provider_smoke(provider: &str, model: String, message: &str) -> Pro
     let mut stream = engine.ask(message.to_string(), None);
     let mut result = ProviderSmokeResult::default();
     while let Some(event) = stream.next().await {
+        result.event_names.push(event.event_name());
         match event {
             StreamEvent::ToolCallStarted { name, .. } if name == "echo" => {
                 result.saw_tool_call = true;
@@ -69,7 +72,8 @@ async fn run_provider_smoke(provider: &str, model: String, message: &str) -> Pro
             {
                 result.saw_tool_output = true;
             }
-            StreamEvent::RunCompleted { output, .. } => {
+            StreamEvent::RunCompleted { reason, output } => {
+                result.terminal_reason = format!("{reason:?}");
                 result.final_output = output.unwrap_or_default();
                 break;
             }
@@ -110,12 +114,13 @@ async fn assert_provider_smoke(provider: &str, model: String) {
         "provider smoke did not complete echo tool output containing {TOOL_SMOKE_PHRASE}"
     );
     assert!(
-        tool_use
-            .final_output
-            .to_ascii_lowercase()
-            .contains(SMOKE_PHRASE),
-        "unexpected provider smoke output after tool use: {}",
-        tool_use.final_output
+        matches!(tool_use.terminal_reason.as_str(), "Final" | "StepLimit"),
+        "provider smoke tool-use run did not reach an acceptable terminal reason: output={:?}, reason={}, events={:?}, saw_tool_call={}, saw_tool_output={}",
+        tool_use.final_output,
+        tool_use.terminal_reason,
+        tool_use.event_names,
+        tool_use.saw_tool_call,
+        tool_use.saw_tool_output
     );
 }
 

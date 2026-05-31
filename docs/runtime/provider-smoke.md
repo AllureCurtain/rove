@@ -48,4 +48,15 @@ cargo test --test provider_smoke ollama_real_provider_smoke_when_enabled -- --ex
 
 ## Expected result
 
-Each enabled smoke runs two tiny checks: a direct final-answer request and one native `echo` tool-use request. Passing the smoke proves the configured provider can be reached, stream events can be normalized, native tool-use events can round trip through the engine, and the engine can complete minimal runs through the real provider path.
+Each enabled smoke runs two tiny checks: a direct final-answer request and one
+native `echo` tool-use request. Passing the smoke proves the configured provider
+can be reached, stream events can be normalized, native tool-use events can
+round trip through the engine, and the engine can complete or step-limit the
+minimal tool run without losing the tool call or tool result.
+
+Some OpenAI-compatible models keep calling the same tool after receiving a valid
+tool result instead of producing the requested final text. The smoke therefore
+requires the separate direct final-answer check for text generation, and the
+tool-use check for native tool-call round trip. A tool-use run that reaches the
+configured step limit after successful `echo` completion is classified as model
+follow-up behavior, not as a transport or runtime failure.

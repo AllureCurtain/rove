@@ -1,5 +1,8 @@
 import { defineConfig, devices } from "@playwright/test";
 
+const webPort = process.env.ROVE_WEB_PORT || "3000";
+const baseURL = process.env.PLAYWRIGHT_BASE_URL || `http://localhost:${webPort}`;
+
 export default defineConfig({
   testDir: "./tests/e2e",
   timeout: 30_000,
@@ -7,12 +10,12 @@ export default defineConfig({
     timeout: 10_000,
   },
   use: {
-    baseURL: "http://localhost:3000",
+    baseURL,
     trace: "retain-on-failure",
   },
   webServer: {
-    command: "pnpm dev",
-    url: "http://localhost:3000",
+    command: `pnpm exec next dev --port ${webPort}`,
+    url: baseURL,
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,
   },

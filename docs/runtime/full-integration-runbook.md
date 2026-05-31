@@ -85,6 +85,29 @@ Acceptance:
 - `pnpm test:e2e` skips the gated real-API suite unless `ROVE_REAL_API_E2E=1`;
 - no generated secret/state/log files appear as tracked Git changes.
 
+## Developer Launch
+
+For interactive local verification, use the launcher instead of starting API and
+Web by hand:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/dev.ps1
+```
+
+For provider-backed local use, set provider environment first, then pass
+`-Provider` so the launcher does not force fake mode:
+
+```powershell
+$env:ROVE_PROVIDER = "openai-compatible"
+$env:ROVE_MODEL = "<non-Pro chat/tool model>"
+$env:OPENAI_API_BASE = "https://api.siliconflow.cn/v1"
+$env:OPENAI_API_KEY = $env:SILICONFLOW_API_KEY
+powershell -ExecutionPolicy Bypass -File scripts/dev.ps1 -Provider
+```
+
+The launcher is not the full integration evidence package. It is a convenience
+for manual inspection; the gates below still provide the accepted evidence.
+
 ## Gate 1: `local-full`
 
 Run:
@@ -154,6 +177,9 @@ $artifacts = Join-Path $root "artifacts"
 New-Item -ItemType Directory -Force -Path $artifacts | Out-Null
 $nonPro | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $artifacts "siliconflow-non-pro-models.json")
 ```
+
+Also save the selected non-Pro chat/tool model id in a plain text artifact such
+as `selected-provider-model.txt`. Do not save API keys or bearer tokens.
 
 Choose the provider smoke model in this order:
 
