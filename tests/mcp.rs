@@ -9,7 +9,10 @@ use rove::tools::registry::ToolRegistry;
 use std::collections::HashMap;
 use std::process::Command;
 use std::time::{Duration, Instant};
+use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
+
+static MCP_STDIO_TEST_LOCK: Mutex<()> = Mutex::const_new(());
 
 fn python_command() -> String {
     if cfg!(windows) {
@@ -38,6 +41,7 @@ fn short_mcp_policy() -> McpTransportPolicy {
 
 #[tokio::test]
 async fn mcp_proxy_registers_and_calls_stdio_tools() {
+    let _guard = MCP_STDIO_TEST_LOCK.lock().await;
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
     let mut registry = ToolRegistry::new();
@@ -80,6 +84,7 @@ async fn mcp_proxy_registers_and_calls_stdio_tools() {
 
 #[tokio::test]
 async fn mcp_stdio_requests_time_out_when_server_does_not_respond() {
+    let _guard = MCP_STDIO_TEST_LOCK.lock().await;
     let mut registry = ToolRegistry::new();
     let err = register_mcp_tools(
         &mut registry,
@@ -106,6 +111,7 @@ async fn mcp_stdio_requests_time_out_when_server_does_not_respond() {
 
 #[tokio::test]
 async fn mcp_tool_call_error_maps_to_structured_tool_error() {
+    let _guard = MCP_STDIO_TEST_LOCK.lock().await;
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
     let mut registry = ToolRegistry::new();
@@ -143,6 +149,7 @@ async fn mcp_tool_call_error_maps_to_structured_tool_error() {
 
 #[tokio::test]
 async fn dropping_stdio_mcp_registry_cleans_up_child_process() {
+    let _guard = MCP_STDIO_TEST_LOCK.lock().await;
     let tmp = tempfile::TempDir::new().unwrap();
     let pid_path = tmp.path().join("mcp.pid");
     let mut env = HashMap::new();
@@ -184,6 +191,7 @@ async fn mcp_official_filesystem_server_smoke_when_enabled() {
         eprintln!("skipping filesystem MCP smoke; set ROVE_MCP_FILESYSTEM_SMOKE=1 to run");
         return;
     }
+    let _guard = MCP_STDIO_TEST_LOCK.lock().await;
 
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
