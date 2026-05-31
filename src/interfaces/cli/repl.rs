@@ -2,9 +2,12 @@ use std::path::Path;
 
 use crate::core::types::TerminationReason;
 use crate::core::types::{JobId, RunId, SessionId, TaskState};
-use crate::interfaces::cli::render::{CliRunRenderContext, CliRunRenderOptions, render_run_events};
+use crate::interfaces::cli::render::{
+    CliRunRenderContext, CliRunRenderMode, CliRunRenderOptions, render_run_events,
+};
 use crate::interfaces::cli::runtime::CliRuntime;
 use crate::interfaces::cli::sessions;
+use crate::interfaces::cli::ui::{ReplStatusView, format_repl_help, format_repl_status};
 use crate::state::resume::resolve_resume_state;
 use rustyline::DefaultEditor;
 use rustyline::error::ReadlineError;
@@ -13,6 +16,7 @@ use tokio_util::sync::CancellationToken;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SlashCommand {
     Help,
+    Status,
     Exit,
     Clear,
     Sessions,
@@ -28,6 +32,7 @@ impl SlashCommand {
         let command = parts.next().unwrap_or_default();
         match command {
             "/help" => Self::Help,
+            "/status" => Self::Status,
             "/exit" | "/quit" => Self::Exit,
             "/clear" => Self::Clear,
             "/sessions" => Self::Sessions,
@@ -89,12 +94,20 @@ impl ReplState {
 }
 
 pub async fn run(runtime: CliRuntime) -> anyhow::Result<()> {
-    eprintln!("rove REPL - type /help for commands, /exit to quit");
+    let mut state = ReplState::new(SessionId::new());
+    eprintln!(
+        "{}",
+        format_repl_status(ReplStatusView {
+            workspace: &runtime.workspace,
+            config: &runtime.config,
+            model_id: runtime.engine.model_id(),
+            active_resume_state: state.active_resume_state(),
+        })
+    );
 
     let history_path = runtime.workspace.state_dir.join("repl_history");
     let mut editor = DefaultEditor::new()?;
     load_history(&mut editor, &history_path);
-    let mut state = ReplState::new(SessionId::new());
 
     loop {
         match editor.readline("rove> ") {
@@ -162,7 +175,10 @@ async fn run_prompt(
             workspace: &runtime.workspace,
             model_id: runtime.engine.model_id(),
         },
-        CliRunRenderOptions::default(),
+        CliRunRenderOptions {
+            mode: CliRunRenderMode::ReplCompact,
+            ..CliRunRenderOptions::default()
+        },
     )
     .await;
     signal_task.abort();
@@ -184,7 +200,18 @@ async fn handle_slash_command(
 ) -> anyhow::Result<bool> {
     match SlashCommand::parse(input) {
         SlashCommand::Help => {
-            print_help();
+            eprint!("{}", format_repl_help());
+        }
+        SlashCommand::Status => {
+            eprintln!(
+                "{}",
+                format_repl_status(ReplStatusView {
+                    workspace: &runtime.workspace,
+                    config: &runtime.config,
+                    model_id: runtime.engine.model_id(),
+                    active_resume_state: state.active_resume_state(),
+                })
+            );
         }
         SlashCommand::Exit => return Ok(true),
         SlashCommand::Clear => clear_screen(),
@@ -218,16 +245,6 @@ async fn handle_slash_command(
     }
     save_history(editor, history_path);
     Ok(false)
-}
-
-fn print_help() {
-    eprintln!("Commands:");
-    eprintln!("  /help             show this help");
-    eprintln!("  /exit, /quit      exit the REPL");
-    eprintln!("  /clear            clear the terminal");
-    eprintln!("  /sessions         list resumable task states");
-    eprintln!("  /resume latest    resume the latest task state");
-    eprintln!("  /resume <run_id>  resume a specific task state");
 }
 
 fn clear_screen() {
@@ -296,6 +313,7 @@ mod tests {
     #[test]
     fn slash_command_parser_recognizes_first_pass_commands() {
         assert_eq!(SlashCommand::parse("/help"), SlashCommand::Help);
+        assert_eq!(SlashCommand::parse("/status"), SlashCommand::Status);
         assert_eq!(SlashCommand::parse("/exit"), SlashCommand::Exit);
         assert_eq!(SlashCommand::parse("/quit"), SlashCommand::Exit);
         assert_eq!(SlashCommand::parse("/clear"), SlashCommand::Clear);

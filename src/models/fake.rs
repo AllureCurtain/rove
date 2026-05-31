@@ -3,7 +3,7 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 use futures::stream::BoxStream;
 
-use crate::core::types::{Message, ToolSchema, Usage};
+use crate::core::types::{Message, Role, ToolSchema, Usage};
 use crate::errors::ModelError;
 use crate::models::traits::{ModelClient, ModelClientId, ModelEvent};
 
@@ -109,6 +109,11 @@ impl ModelClient for FakeModelClient {
                 ]
             })
             .to_string()
+        } else if self.response == "fake response" {
+            format!(
+                "fake response: {}",
+                current_user_goal(messages).unwrap_or("message")
+            )
         } else {
             self.response.clone()
         };
@@ -131,4 +136,19 @@ impl ModelClient for FakeModelClient {
     fn client_id(&self) -> ModelClientId {
         ModelClientId::new("fake", "local", self.model_id())
     }
+}
+
+fn current_user_goal(messages: &[Message]) -> Option<&str> {
+    let content = messages
+        .iter()
+        .rev()
+        .find(|message| message.role == Role::User)?
+        .content
+        .trim();
+    content
+        .strip_prefix("Goal: ")
+        .and_then(|rest| rest.lines().next())
+        .map(str::trim)
+        .filter(|goal| !goal.is_empty())
+        .or_else(|| (!content.is_empty()).then_some(content))
 }

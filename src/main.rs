@@ -17,11 +17,12 @@ use rove::state::resume::resolve_resume_state;
 use tokio_util::sync::CancellationToken;
 
 fn main() -> anyhow::Result<()> {
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn"));
+
     tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("rove=info".parse().unwrap()),
-        )
+        .with_writer(std::io::stderr)
+        .with_env_filter(env_filter)
         .init();
 
     let args = Args::parse();

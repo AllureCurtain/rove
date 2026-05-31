@@ -2,7 +2,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::core::engine::Engine;
 use crate::core::types::{TaskState, TerminationReason};
-use crate::interfaces::cli::render::{CliRunRenderContext, CliRunRenderOptions, render_run_events};
+use crate::interfaces::cli::render::{
+    CliRunRenderContext, CliRunRenderMode, CliRunRenderOptions, render_run_events,
+};
 use crate::state::store::RunHandle;
 use crate::state::store::StateStore;
 
@@ -48,7 +50,10 @@ pub async fn run_oneshot_with_cancel(
             workspace: engine.workspace(),
             model_id: engine.model_id(),
         },
-        CliRunRenderOptions::default(),
+        CliRunRenderOptions {
+            mode: CliRunRenderMode::OneShot,
+            ..CliRunRenderOptions::default()
+        },
     )
     .await
 }

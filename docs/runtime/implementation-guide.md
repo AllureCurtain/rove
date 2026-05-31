@@ -198,18 +198,32 @@ cargo run -- --model fake "echo hello from rove"
 
 `Cargo.toml` sets `default-run = "rove"`, so plain `cargo run -- ...` uses the CLI binary.
 
-Running `rove` with no task enters the REPL in the current terminal instead of
-printing help or opening a separate window. The REPL prompt is:
+Running `rove` with no task enters the compact line-oriented REPL in the current
+terminal. Startup prints the active workspace, model, provider, state directory,
+session status, and common commands:
 
 ```text
+rove
+local-first agent runtime
+workspace  repo  <workspace-root>
+model      <model-id>
+provider   <provider>
+state      .rove  ·  session new
+
+/help  /sessions  /resume latest  /status  /clear  /exit
 rove>
 ```
+
+The REPL remains a normal terminal prompt, not a full-screen TUI. During runs it
+prints compact `You`, `Plan`, `Tool`, `Error`, and `Done` sections, while the
+Web workbench remains the richer report/history surface.
 
 Supported slash commands are:
 
 | Command | Purpose |
 |---|---|
 | `/help` | Print REPL commands. |
+| `/status` | Print workspace, model, provider, state directory, and session status. |
 | `/exit`, `/quit` | Exit the REPL. |
 | `/clear` | Clear the terminal screen. |
 | `/sessions` | List resumable task states from the active workspace. |
