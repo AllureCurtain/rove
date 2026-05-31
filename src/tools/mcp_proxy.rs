@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Stdio;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::sync::{Arc, Mutex as StdMutex};
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -159,6 +159,7 @@ pub struct StdioMcpClient {
     server_name: String,
     next_id: AtomicU64,
     policy: McpTransportPolicy,
+    child: StdMutex<Option<Child>>,
     transport: Mutex<StdioTransport>,
     stderr: Arc<Mutex<StderrCapture>>,
 }
@@ -169,6 +170,7 @@ impl StdioMcpClient {
         command
             .args(&config.args)
             .envs(&config.env)
+            .kill_on_drop(true)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -195,8 +197,8 @@ impl StdioMcpClient {
             server_name: config.name,
             next_id: AtomicU64::new(1),
             policy: config.policy,
+            child: StdMutex::new(Some(child)),
             transport: Mutex::new(StdioTransport {
-                child,
                 stdin,
                 lines: BufReader::new(stdout).lines(),
             }),
@@ -331,16 +333,33 @@ impl StdioMcpClient {
 
 impl Drop for StdioMcpClient {
     fn drop(&mut self) {
-        if let Ok(mut transport) = self.transport.try_lock() {
-            let _ = transport.child.start_kill();
+        if let Ok(mut child) = self.child.lock()
+            && let Some(mut child) = child.take()
+        {
+            let _ = child.start_kill();
+            reap_stdio_child(child);
         }
     }
 }
 
 struct StdioTransport {
-    child: Child,
     stdin: ChildStdin,
     lines: Lines<BufReader<ChildStdout>>,
+}
+
+fn reap_stdio_child(mut child: Child) {
+    std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match child.try_wait() {
+                Ok(Some(_)) => return,
+                Ok(None) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                Ok(None) | Err(_) => return,
+            }
+        }
+    });
 }
 
 impl StdioTransport {
