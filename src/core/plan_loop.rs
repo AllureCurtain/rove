@@ -213,6 +213,13 @@ pub(crate) fn run_planned_loop<'a>(
                             index: current_index,
                             reason: reason.clone(),
                         });
+                        if is_permission_denied_tool_failure(&reason) {
+                            yield LoopItem::Complete {
+                                reason: TerminationReason::Final,
+                                output: Some(reason),
+                            };
+                            return;
+                        }
                         let replacement = match replan_after_step_failure(
                             planner,
                             ctx.model,
@@ -232,6 +239,15 @@ pub(crate) fn run_planned_loop<'a>(
                             plan: replacement.clone(),
                         });
                         *active_plan = replacement;
+                    } else {
+                        if let Some(record) = outcome.records.last() {
+                            final_output = Some(record.history_output.clone());
+                        }
+                        active_plan.mark_current_done();
+                        yield LoopItem::Event(StreamEvent::PlanStepCompleted {
+                            step: current_step,
+                            index: current_index,
+                        });
                     }
                 }
                 Action::ToolBatch { calls } => {
@@ -243,6 +259,13 @@ pub(crate) fn run_planned_loop<'a>(
                             index: current_index,
                             reason: reason.clone(),
                         });
+                        if is_permission_denied_tool_failure(&reason) {
+                            yield LoopItem::Complete {
+                                reason: TerminationReason::Final,
+                                output: Some(reason),
+                            };
+                            return;
+                        }
                         let replacement = match replan_after_step_failure(
                             planner,
                             ctx.model,
@@ -262,6 +285,15 @@ pub(crate) fn run_planned_loop<'a>(
                             plan: replacement.clone(),
                         });
                         *active_plan = replacement;
+                    } else {
+                        if let Some(record) = outcome.records.last() {
+                            final_output = Some(record.history_output.clone());
+                        }
+                        active_plan.mark_current_done();
+                        yield LoopItem::Event(StreamEvent::PlanStepCompleted {
+                            step: current_step,
+                            index: current_index,
+                        });
                     }
                 }
                 Action::Final { text } => {
@@ -312,6 +344,10 @@ pub(crate) fn run_planned_loop<'a>(
             output: final_output,
         };
     })
+}
+
+fn is_permission_denied_tool_failure(reason: &str) -> bool {
+    reason.starts_with("Permission denied:")
 }
 
 async fn replan_after_step_failure(

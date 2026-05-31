@@ -194,8 +194,9 @@ async fn mcp_official_filesystem_server_smoke_when_enabled() {
     let _guard = MCP_STDIO_TEST_LOCK.lock().await;
 
     let tmp = tempfile::TempDir::new().unwrap();
-    let workspace = Workspace::detect(tmp.path()).unwrap();
-    let note_path = tmp.path().join("note.txt");
+    let allowed_dir = normalize_windows_extended_path(tmp.path().canonicalize().unwrap());
+    let workspace = Workspace::detect(&allowed_dir).unwrap();
+    let note_path = allowed_dir.join("note.txt");
     std::fs::write(&note_path, "hello from real filesystem mcp").unwrap();
 
     let command = std::env::var("ROVE_MCP_FILESYSTEM_COMMAND").unwrap_or_else(|_| {
@@ -212,7 +213,7 @@ async fn mcp_official_filesystem_server_smoke_when_enabled() {
             vec![
                 "-y".to_string(),
                 "@modelcontextprotocol/server-filesystem".to_string(),
-                tmp.path().to_string_lossy().to_string(),
+                allowed_dir.to_string_lossy().to_string(),
             ]
         });
 
@@ -247,7 +248,22 @@ async fn mcp_official_filesystem_server_smoke_when_enabled() {
         .await
         .unwrap();
 
-    assert!(output.content.contains("hello from real filesystem mcp"));
+    assert!(
+        output.content.contains("hello from real filesystem mcp"),
+        "unexpected filesystem MCP output: {}",
+        output.content
+    );
+}
+
+fn normalize_windows_extended_path(path: std::path::PathBuf) -> std::path::PathBuf {
+    #[cfg(windows)]
+    {
+        let raw = path.to_string_lossy();
+        if let Some(stripped) = raw.strip_prefix(r"\\?\") {
+            return std::path::PathBuf::from(stripped);
+        }
+    }
+    path
 }
 
 fn assert_process_exits(pid: u32, timeout: Duration) {

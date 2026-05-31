@@ -12,6 +12,8 @@ This directory is the authoritative runtime documentation surface. It summarizes
 | [implementation-status.md](implementation-status.md) | Current implementation vs target architecture matrix. |
 | [implementation-guide.md](implementation-guide.md) | Maintainer-focused implementation guide with startup paths, runtime flow, state artifacts, verification, and known gaps. |
 | [acceptance-matrix.md](acceptance-matrix.md) | M0-M6 acceptance criteria mapped to concrete verification commands. |
+| [integration-testing.md](integration-testing.md) | End-to-end integration profiles, required local-full baseline, optional provider/MCP/RAG gates, and runner design. |
+| [full-integration-runbook.md](full-integration-runbook.md) | New-session runbook for full API/Web/provider/MCP/stress integration testing, including SiliconFlow non-Pro model selection. |
 | [provider-smoke.md](provider-smoke.md) | Opt-in real-provider verification for OpenAI-compatible, Anthropic, and Ollama paths. |
 | [browser-workspace-spec.md](browser-workspace-spec.md) | Future Browser workspace design note; not a current runtime implementation. |
 | [desktop-workspace-spec.md](desktop-workspace-spec.md) | Future Desktop workspace design note; not a current runtime implementation. |

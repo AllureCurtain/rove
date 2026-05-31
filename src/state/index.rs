@@ -910,6 +910,7 @@ impl StateIndex {
         let now = now_rfc3339();
         let run_status = match status {
             "success" => "done",
+            "incomplete" => "done",
             "cancelled" => "cancelled",
             "error" => "error",
             _ => "interrupted",

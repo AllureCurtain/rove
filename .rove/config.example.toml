@@ -1,0 +1,73 @@
+# Copy to `.rove/config.toml` for local integration runs.
+# Keep real secrets in environment variables, not in this file.
+
+[runtime]
+max_steps = 20
+system_prompt_path = "prompts/system.md"
+planner_prompt_path = "prompts/planner.md"
+model_compaction_enabled = false
+compaction_failure_threshold = 3
+context_soft_limit_tokens = 24000
+context_hard_limit_tokens = 30000
+context_reserved_tokens = 4000
+
+[provider]
+# `fake` is the required provider for the deterministic `local-full` profile.
+# Use the gated provider-smoke profile for real model endpoints.
+name = "fake"
+model = "fake"
+api_base = "https://api.openai.com/v1"
+api_key = ""
+anthropic_api_key = ""
+fallback_models = []
+fallback_providers = []
+
+[tool]
+mcp_config_path = ".rove/mcp_servers.json"
+
+[tool.shell]
+timeout_ms = 30000
+max_output_bytes = 65536
+inherit_environment = true
+denylist = []
+
+[memory]
+session_dir = ".tmp/integration/state/memory/sessions"
+durable_dir = ".tmp/integration/state/memory"
+recall_limit = 8
+
+[state]
+state_dir = ".tmp/integration/state"
+sqlite_path = ".tmp/integration/state/state.sqlite"
+lazy_migration = true
+sqlite_busy_timeout_ms = 5000
+allow_external_paths = false
+
+[api]
+bind_addr = "127.0.0.1:8787"
+unsafe_remote_without_auth = false
+cors_origins = ["http://127.0.0.1:3000", "http://localhost:3000"]
+rate_limit_per_minute = 120
+# token_auth = "set-via-ROVE_API_TOKEN-when-needed"
+
+[web]
+api_base = "http://127.0.0.1:8787"
+
+[routing]
+failure_threshold = 3
+open_cooldown_ms = 30000
+retry_max_attempts = 1
+retry_backoff_base_ms = 250
+retry_backoff_max_ms = 5000
+
+[rag]
+deterministic = true
+embedding_provider = "deterministic"
+embedding_model = "deterministic-64"
+embedding_api_base = "https://api.openai.com/v1"
+embedding_api_key = ""
+timeout_ms = 30000
+fallback_to_deterministic = true
+# rerank_provider = "dashscope"
+# rerank_model = "qwen3-rerank"
+# rerank_api_key = "set-via-environment"

@@ -1,5 +1,7 @@
 /target
-/.rove
+/.rove/*
+!/.rove/config.example.toml
+!/.rove/mcp_servers.example.json
 /web-ui/node_modules
 /web-ui/.next
 /web-ui/out
@@ -9,3 +11,5 @@
 /web-ui/.vercel
 /web-ui/.rove
 /web-ui/tsconfig.tsbuildinfo
+.env.integration
+.tmp/

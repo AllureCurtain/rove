@@ -582,6 +582,55 @@ async fn api_lists_completed_runs_after_job_finishes() {
 }
 
 #[tokio::test]
+async fn api_lists_step_limited_tool_runs_as_done_not_interrupted() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let app = router(ApiState::new(workspace, test_config()));
+
+    let create = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/jobs")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"message":"{\"tool\":\"echo\",\"args\":{\"message\":\"list step-limited tool run\"}}","model":"fake-raw","approval":"auto","max_steps":1}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(create.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let created: CreateJobResponse = serde_json::from_slice(&body).unwrap();
+
+    let state = wait_for_done(app.clone(), created.job_id.to_string()).await;
+    assert_eq!(state.status, RunStatus::Done);
+
+    let response = app
+        .oneshot(Request::builder().uri("/runs").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let runs = body["runs"].as_array().expect("runs array");
+    assert!(
+        runs.iter().any(|run| {
+            run["run_id"] == created.run_id.to_string()
+                && run["status"] == "done"
+                && run["has_report"] == true
+        }),
+        "step-limited run should appear as done in /runs response: {body}"
+    );
+}
+
+#[tokio::test]
 async fn api_fetches_completed_run_report() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
@@ -1268,6 +1317,50 @@ async fn api_cancel_does_not_rewrite_completed_job() {
 }
 
 #[tokio::test]
+async fn api_planned_tool_step_completes_after_successful_tool_call() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let run_store = rove::state::store::StateStore::new(&workspace.state_dir).run_store;
+    let app = router(ApiState::new(workspace, test_config()));
+
+    let create = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/jobs")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"message":"{\"tool\":\"echo\",\"args\":{\"message\":\"planned tool done\"}}","model":"fake-raw","approval":"auto","max_steps":3}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(create.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let created: CreateJobResponse = serde_json::from_slice(&body).unwrap();
+
+    let state = wait_for_done(app, created.job_id.to_string()).await;
+    let tool_starts = state
+        .events
+        .iter()
+        .filter(|event| matches!(&event.event, StreamEvent::ToolCallStarted { name, .. } if name == "echo"))
+        .count();
+    assert_eq!(tool_starts, 1);
+
+    let report_path = run_store.run_dir(&created.run_id).join("report.json");
+    let report: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(report_path).unwrap()).unwrap();
+    assert_eq!(report["status"], "success");
+    assert_eq!(report["termination_reason"], "final");
+    assert_eq!(report["tool_calls"], 1);
+    assert_eq!(report["output"], "planned tool done");
+}
+
+#[tokio::test]
 async fn api_approves_pending_destructive_tool_call() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
@@ -1388,6 +1481,72 @@ async fn api_rejects_pending_destructive_tool_call() {
         .unwrap();
     let text = String::from_utf8(body.to_vec()).unwrap();
     assert!(text.contains("event: tool_call_failed"));
+}
+
+#[tokio::test]
+async fn api_planned_rejected_destructive_tool_does_not_replan_same_approval() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let app = router(ApiState::new(workspace, test_config()));
+
+    let create = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/jobs")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"message":"{\"tool\":\"fs_write\",\"args\":{\"path\":\"rejected-planned.txt\",\"content\":\"no\"}}","model":"fake-raw","approval":"ask","max_steps":3}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(create.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let created: CreateJobResponse = serde_json::from_slice(&body).unwrap();
+
+    let pending = wait_for_pending_approval(app.clone(), created.job_id.to_string()).await;
+    let approval = pending.pending_approvals.first().unwrap();
+    assert_eq!(approval.name, "fs_write");
+
+    let rejected = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/jobs/{}/approvals/{}",
+                    created.job_id, approval.call_id
+                ))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"decision":"reject"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(rejected.status(), StatusCode::OK);
+
+    let state = wait_for_done(app, created.job_id.to_string()).await;
+    assert!(state.pending_approvals.is_empty());
+    let approval_requests = state
+        .events
+        .iter()
+        .filter(|event| matches!(event.event, StreamEvent::ToolCallApprovalNeeded { .. }))
+        .count();
+    assert_eq!(approval_requests, 1);
+    assert!(state.events.iter().any(|event| {
+        matches!(
+            &event.event,
+            StreamEvent::ToolCallFailed {
+                error: rove::errors::ToolError::PermissionDenied { .. },
+                ..
+            }
+        )
+    }));
 }
 
 #[tokio::test]
