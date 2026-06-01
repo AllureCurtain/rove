@@ -54,6 +54,7 @@ test("starts a resume-latest job and displays resumed source identity", async ({
   page,
 }) => {
   let sawResumeLatest = false;
+  await installRunsMock(page);
   await page.route("/api/jobs", async (route) => {
     const body = route.request().postDataJSON() as { resume?: string };
     sawResumeLatest = body.resume === "latest";
@@ -103,7 +104,191 @@ test("starts a resume-latest job and displays resumed source identity", async ({
   await expect(page.locator(".message-stream").getByText("Resume complete")).toBeVisible();
 });
 
+test("tests and submits an OpenAI-compatible provider profile", async ({ page }) => {
+  let sawProviderTest = false;
+  let sawProviderJob = false;
+  await installRunsMock(page);
+  await page.route("/api/providers/test", async (route) => {
+    const body = route.request().postDataJSON() as {
+      provider?: { name?: string; api_base?: string; api_key_env?: string };
+      model?: string;
+    };
+    sawProviderTest =
+      body.provider?.name === "openai-compatible" &&
+      body.provider.api_base === "https://gateway.test/v1" &&
+      body.provider.api_key_env === "GATEWAY_API_KEY" &&
+      body.model === "relay/deepseek-v3.2";
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        status: "pass",
+        provider: "openai-compatible",
+        api_base: "https://gateway.test/v1",
+        key_env: "GATEWAY_API_KEY",
+        key_present: true,
+        model: "relay/deepseek-v3.2",
+        model_present: true,
+        models_count: 12,
+      }),
+    });
+  });
+  await page.route("/api/jobs", async (route) => {
+    const body = route.request().postDataJSON() as {
+      provider?: { name?: string; api_base?: string; api_key_env?: string };
+      model?: string;
+    };
+    sawProviderJob =
+      body.provider?.name === "openai-compatible" &&
+      body.provider.api_base === "https://gateway.test/v1" &&
+      body.provider.api_key_env === "GATEWAY_API_KEY" &&
+      body.model === "relay/deepseek-v3.2";
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        job_id: "job-provider-1",
+        run_id: "run-provider-1",
+      }),
+    });
+  });
+  await page.route(/\/api\/jobs\/[^/]+\/events$/, async (route) => {
+    await route.fulfill({
+      status: 200,
+      headers: {
+        "content-type": "text/event-stream",
+        "cache-control": "no-cache",
+      },
+      body: [
+        sse("run_started", 1, {
+          type: "run_started",
+          job_id: "job-provider-1",
+          run_id: "run-provider-1",
+          user_message: "Use the configured provider",
+        }),
+        sse("run_completed", 2, {
+          type: "run_completed",
+          reason: "final",
+          output: "Provider run complete",
+        }),
+      ].join(""),
+    });
+  });
+
+  await page.goto("/");
+  await page.getByLabel("Provider").selectOption("openai-compatible");
+  await page.getByLabel("API base").fill("https://gateway.test/v1");
+  await page.getByLabel("Key env").fill("GATEWAY_API_KEY");
+  await page.getByLabel("Model").fill("relay/deepseek-v3.2");
+  await page.getByRole("button", { name: "Test" }).click();
+  await expect(page.getByText("12 models / model ready")).toBeVisible();
+  await page.getByLabel("Task").fill("Use the configured provider");
+  await page.getByRole("button", { name: "Run" }).click();
+
+  await expect
+    .poll(() => sawProviderTest, {
+      message: "provider test should send profile without key value",
+    })
+    .toBe(true);
+  await expect
+    .poll(() => sawProviderJob, {
+      message: "job creation should send provider profile",
+    })
+    .toBe(true);
+  await expect(page.locator(".message-stream").getByText("Provider run complete")).toBeVisible();
+});
+
+test("submits Anthropic and Ollama provider profiles", async ({ page }) => {
+  const jobs: Array<{
+    provider?: { name?: string; api_base?: string; api_key_env?: string };
+    model?: string;
+  }> = [];
+  await installRunsMock(page);
+  await page.route("/api/providers/test", async (route) => {
+    const body = route.request().postDataJSON() as {
+      provider?: { name?: string; api_base?: string; api_key_env?: string };
+      model?: string;
+    };
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        status: "pass",
+        provider: body.provider?.name,
+        api_base: body.provider?.api_base,
+        key_env: body.provider?.api_key_env ?? "",
+        key_present: Boolean(body.provider?.api_key_env),
+        model: body.model,
+        model_present: true,
+        models_count: body.provider?.name === "ollama" ? 1 : 4,
+      }),
+    });
+  });
+  await page.route("/api/jobs", async (route) => {
+    const body = route.request().postDataJSON() as {
+      provider?: { name?: string; api_base?: string; api_key_env?: string };
+      model?: string;
+    };
+    jobs.push(body);
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        job_id: `job-provider-${jobs.length}`,
+        run_id: `run-provider-${jobs.length}`,
+      }),
+    });
+  });
+  await page.route(/\/api\/jobs\/[^/]+\/events$/, async (route) => {
+    await route.fulfill({
+      status: 200,
+      headers: {
+        "content-type": "text/event-stream",
+        "cache-control": "no-cache",
+      },
+      body: [
+        sse("run_started", 1, {
+          type: "run_started",
+          job_id: "job-provider",
+          run_id: "run-provider",
+          user_message: "Use provider",
+        }),
+        sse("run_completed", 2, {
+          type: "run_completed",
+          reason: "final",
+          output: "Provider run complete",
+        }),
+      ].join(""),
+    });
+  });
+
+  await page.goto("/");
+  await page.getByLabel("Provider").selectOption("anthropic");
+  await page.getByLabel("API base").fill("https://api.anthropic.com");
+  await page.getByLabel("Key env").fill("ANTHROPIC_API_KEY");
+  await page.getByLabel("Model").fill("claude-3-5-haiku-latest");
+  await page.getByRole("button", { name: "Run" }).click();
+
+  await expect
+    .poll(() => jobs[0]?.provider?.name, {
+      message: "anthropic job should send provider profile",
+    })
+    .toBe("anthropic");
+  expect(jobs[0].provider?.api_key_env).toBe("ANTHROPIC_API_KEY");
+
+  await page.getByLabel("Provider").selectOption("ollama");
+  await page.getByLabel("API base").fill("http://localhost:11434");
+  await expect(page.getByLabel("Key env")).toHaveCount(0);
+  await page.getByLabel("Model").fill("llama3.2");
+  await page.getByRole("button", { name: "Run" }).click();
+
+  await expect
+    .poll(() => jobs[1]?.provider?.name, {
+      message: "ollama job should send provider profile",
+    })
+    .toBe("ollama");
+  expect(jobs[1].provider?.api_key_env).toBeUndefined();
+});
+
 async function installMockApi(page: Page, mode: MockMode) {
+  await installRunsMock(page);
+
   await page.route("/api/jobs", async (route) => {
     const body = route.request().postDataJSON() as { message?: string };
     await route.fulfill({
@@ -136,6 +321,22 @@ async function installMockApi(page: Page, mode: MockMode) {
 
   await page.route(/\/api\/jobs\/[^/]+\/approvals\/[^/]+$/, async (route) => {
     await fulfillJobState(route, "approval", "done");
+  });
+}
+
+async function installRunsMock(page: Page) {
+  await page.route(/\/api\/runs(?:\?.*)?$/, async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ runs: [] }),
+    });
+  });
+  await page.route(/\/api\/runs\/[^/]+\/report$/, async (route) => {
+    await route.fulfill({
+      status: 404,
+      contentType: "application/json",
+      body: JSON.stringify({ error: "not found" }),
+    });
   });
 }
 

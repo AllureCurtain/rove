@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { createJob, fetchRunReport, listRuns, submitApproval } from "./rove-client";
+import {
+  createJob,
+  fetchRunReport,
+  listRuns,
+  submitApproval,
+  testProvider,
+} from "./rove-client";
 
 describe("rove client", () => {
   afterEach(() => {
@@ -63,6 +69,127 @@ describe("rove client", () => {
         approval: "ask",
       }),
     });
+  });
+
+  it("sends provider profile when creating a job", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        job_id: "job-1",
+        run_id: "run-1",
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await createJob({
+      message: "run against relay",
+      model: "relay/deepseek-v3.2",
+      max_steps: 2,
+      approval: "ask",
+      provider: {
+        name: "openai-compatible",
+        api_base: "https://gateway.test/v1",
+        api_key_env: "GATEWAY_API_KEY",
+      },
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/jobs", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        message: "run against relay",
+        model: "relay/deepseek-v3.2",
+        max_steps: 2,
+        approval: "ask",
+        provider: {
+          name: "openai-compatible",
+          api_base: "https://gateway.test/v1",
+          api_key_env: "GATEWAY_API_KEY",
+        },
+      }),
+    });
+  });
+
+  it("sends non-OpenAI provider profiles when creating a job", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        job_id: "job-1",
+        run_id: "run-1",
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await createJob({
+      message: "run claude",
+      model: "claude-3-5-haiku-latest",
+      provider: {
+        name: "anthropic",
+        api_base: "https://api.anthropic.com",
+        api_key_env: "ANTHROPIC_API_KEY",
+      },
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/jobs", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        message: "run claude",
+        model: "claude-3-5-haiku-latest",
+        provider: {
+          name: "anthropic",
+          api_base: "https://api.anthropic.com",
+          api_key_env: "ANTHROPIC_API_KEY",
+        },
+      }),
+    });
+  });
+
+  it("tests provider profiles without sending key values", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        status: "pass",
+        provider: "openai-compatible",
+        api_base: "https://gateway.test/v1",
+        key_env: "GATEWAY_API_KEY",
+        key_present: true,
+        model: "relay/deepseek-v3.2",
+        model_present: true,
+        models_count: 8,
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await testProvider({
+      provider: {
+        name: "openai-compatible",
+        api_base: "https://gateway.test/v1",
+        api_key_env: "GATEWAY_API_KEY",
+      },
+      model: "relay/deepseek-v3.2",
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/providers/test", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        provider: {
+          name: "openai-compatible",
+          api_base: "https://gateway.test/v1",
+          api_key_env: "GATEWAY_API_KEY",
+        },
+        model: "relay/deepseek-v3.2",
+      }),
+    });
+    expect(JSON.stringify(fetchMock.mock.calls)).not.toContain("secret");
+    expect(result.model_present).toBe(true);
   });
 
   it("sends resume mode when creating a resumed job", async () => {

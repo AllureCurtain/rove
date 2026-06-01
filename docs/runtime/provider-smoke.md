@@ -21,6 +21,96 @@ cargo test --test provider_smoke openai_compatible_real_provider_smoke_when_enab
 
 Set `OPENAI_API_BASE` when testing a compatible endpoint that is not OpenAI.
 
+## Generic Provider Integration
+
+Use `scripts/provider-integration.ps1` when a provider should be treated as a
+real release gate instead of only a unit-level smoke. The runner is generic for
+official OpenAI-compatible APIs and relay or gateway APIs that expose the
+OpenAI-style chat API and, unless skipped, a model-list endpoint.
+
+For product use through the Web workbench, provider targets can be supplied as
+per-run profiles: provider name, API base URL, key environment variable name
+when needed, and model id. The browser sends only the environment variable name,
+never the key value. The API route `POST /providers/test` checks model
+inventory for OpenAI-compatible, Anthropic, and Ollama profiles, then
+`POST /jobs` can carry the same profile for the actual run. `fake` is accepted
+for deterministic local runs.
+
+The dedicated provider runner automates the OpenAI-compatible profile because
+official APIs and relay/gateway APIs share the same `/v1` surface. Anthropic,
+Ollama, and fake are supported by API/Web per-run profiles and their focused
+smoke tests below.
+
+For official OpenAI-compatible APIs:
+
+```powershell
+$env:OPENAI_API_KEY = "<secret>"
+powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
+  -Provider openai-compatible `
+  -ApiBase "https://api.openai.com/v1" `
+  -ApiKeyEnv OPENAI_API_KEY `
+  -Model "gpt-4.1-mini"
+```
+
+For a relay or gateway API, set the relay base URL and choose a model visible to
+that account:
+
+```powershell
+$env:OPENAI_API_KEY = "<relay-or-gateway-secret>"
+powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
+  -Provider openai-compatible `
+  -ApiBase "https://<gateway-host>/v1" `
+  -ApiKeyEnv OPENAI_API_KEY `
+  -Model "<provider/model-id>"
+```
+
+For SiliconFlow, `deepseek-ai/DeepSeek-V3.2` is one tested example, not a
+hard-coded product dependency:
+
+```powershell
+$env:SILICONFLOW_API_KEY = "<secret>"
+powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
+  -Provider openai-compatible `
+  -ApiBase "https://api.siliconflow.cn/v1" `
+  -ApiKeyEnv SILICONFLOW_API_KEY `
+  -Model "deepseek-ai/DeepSeek-V3.2"
+```
+
+The runner writes only non-secret artifacts: provider model inventory, selected
+model id, smoke logs, API run reports, Web screenshot/report, and
+`evidence-summary.json`. Use `-SkipModelInventory` for gateways that do not
+expose `/models`, and use `-SkipWebSmoke` or `-SkipApiSmoke` for focused
+diagnostics.
+
+Add `-RunStress` to run small sequential and concurrent provider job batches
+after the API/Web checks. Tune the counts with `-StressSequentialCount` and
+`-StressConcurrentCount` when quota is limited:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
+  -Provider openai-compatible `
+  -ApiBase "https://<gateway-host>/v1" `
+  -ApiKeyEnv OPENAI_API_KEY `
+  -Model "<provider/model-id>" `
+  -RunStress `
+  -StressSequentialCount 5 `
+  -StressConcurrentCount 3
+```
+
+Add `-RunExternalMcp` to verify a named MCP tool through the API/report path.
+The runner prepares an isolated copy of `.rove/mcp_servers.example.json` for
+the local mock fixture, and the default tool name matches that fixture:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
+  -Provider openai-compatible `
+  -ApiBase "https://<gateway-host>/v1" `
+  -ApiKeyEnv OPENAI_API_KEY `
+  -Model "<provider/model-id>" `
+  -RunExternalMcp `
+  -ExternalMcpToolName "mcp__mock_server__echo_remote"
+```
+
 ## Anthropic
 
 ```powershell

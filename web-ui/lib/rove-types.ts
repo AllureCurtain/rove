@@ -154,6 +154,30 @@ export interface CreateJobRequest {
   max_steps?: number;
   approval?: ApprovalPolicy;
   resume?: ResumeMode;
+  provider?: ProviderProfile;
+}
+
+export interface ProviderProfile {
+  name: "openai-compatible" | "openai" | "anthropic" | "ollama" | "fake";
+  api_base: string;
+  api_key_env?: string;
+}
+
+export interface ProviderTestRequest {
+  provider: ProviderProfile;
+  model?: string;
+  models_endpoint?: string;
+}
+
+export interface ProviderTestResponse {
+  status: string;
+  provider: string;
+  api_base: string;
+  key_env: string;
+  key_present: boolean;
+  model?: string | null;
+  model_present?: boolean | null;
+  models_count: number;
 }
 
 export interface CreateJobResponse {

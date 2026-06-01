@@ -1,5 +1,8 @@
 use axum::body::Body;
-use axum::http::{Request, StatusCode, header::CONTENT_TYPE};
+use axum::extract::State as AxumState;
+use axum::http::{HeaderMap, Request, StatusCode, header::AUTHORIZATION, header::CONTENT_TYPE};
+use axum::routing::{get, post};
+use axum::{Json, Router};
 use rove::config::AppConfig;
 use rove::core::events::StreamEvent;
 use rove::core::types::{Role, RunStatus, TaskState};
@@ -7,6 +10,7 @@ use rove::core::workspace::Workspace;
 use rove::interfaces::api::{
     ApiState, CreateJobResponse, JobStateResponse, router, serve_listener,
 };
+use std::sync::{Arc, Mutex};
 use tokio_util::sync::CancellationToken;
 use tower::ServiceExt;
 
@@ -128,6 +132,247 @@ async fn api_accepts_matching_bearer_token() {
         .await
         .unwrap();
     assert_eq!(allowed.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn api_tests_openai_compatible_provider_profile_without_exposing_key() {
+    let provider = start_openai_compatible_test_server().await;
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let app = router(ApiState::new(workspace, test_config()));
+    let key_env = unique_env_key("ROVE_TEST_PROVIDER_KEY");
+    unsafe {
+        std::env::set_var(&key_env, "dummy-provider-token");
+    }
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/providers/test")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "provider": {
+                            "name": "openai-compatible",
+                            "api_base": format!("{}/v1", provider.base_url),
+                            "api_key_env": key_env
+                        },
+                        "model": "relay/deepseek-v3.2"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    unsafe {
+        std::env::remove_var(&key_env);
+    }
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let text = String::from_utf8(body.to_vec()).unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["status"], "pass");
+    assert_eq!(json["provider"], "openai-compatible");
+    assert_eq!(json["key_env"], key_env);
+    assert_eq!(json["key_present"], true);
+    assert_eq!(json["model"], "relay/deepseek-v3.2");
+    assert_eq!(json["model_present"], true);
+    assert_eq!(json["models_count"], 2);
+    assert!(!text.contains("dummy-provider-token"));
+    assert_eq!(
+        provider.captured.lock().unwrap().models_auth.as_deref(),
+        Some("Bearer dummy-provider-token")
+    );
+}
+
+#[tokio::test]
+async fn api_jobs_accept_openai_compatible_provider_profile_per_request() {
+    let provider = start_openai_compatible_test_server().await;
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let app = router(ApiState::new(workspace, test_config()));
+    let key_env = unique_env_key("ROVE_TEST_JOB_PROVIDER_KEY");
+    unsafe {
+        std::env::set_var(&key_env, "dummy-job-provider-token");
+    }
+
+    let created = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/jobs")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "message": "Reply with exactly: routed provider ok",
+                        "model": "relay/deepseek-v3.2",
+                        "approval": "auto",
+                        "max_steps": 1,
+                        "provider": {
+                            "name": "openai-compatible",
+                            "api_base": format!("{}/v1", provider.base_url),
+                            "api_key_env": key_env
+                        }
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    unsafe {
+        std::env::remove_var(&key_env);
+    }
+
+    assert_eq!(created.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(created.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let created: CreateJobResponse = serde_json::from_slice(&body).unwrap();
+    let state = wait_for_status(app, created.job_id.to_string(), RunStatus::Done).await;
+
+    assert!(state.events.iter().any(|event| {
+        matches!(
+            &event.event,
+            StreamEvent::RunCompleted {
+                output: Some(output),
+                ..
+            } if output.contains("routed provider ok")
+        )
+    }));
+    let captured = provider.captured.lock().unwrap();
+    assert_eq!(
+        captured.chat_auth.as_deref(),
+        Some("Bearer dummy-job-provider-token")
+    );
+    assert_eq!(captured.chat_model.as_deref(), Some("relay/deepseek-v3.2"));
+}
+
+#[tokio::test]
+async fn api_jobs_accept_anthropic_provider_profile_per_request() {
+    let provider = start_anthropic_test_server().await;
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let app = router(ApiState::new(workspace, test_config()));
+    let key_env = unique_env_key("ROVE_TEST_ANTHROPIC_KEY");
+    unsafe {
+        std::env::set_var(&key_env, "dummy-anthropic-token");
+    }
+
+    let created = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/jobs")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "message": "Reply with exactly: anthropic profile ok",
+                        "model": "claude-test",
+                        "approval": "auto",
+                        "max_steps": 1,
+                        "provider": {
+                            "name": "anthropic",
+                            "api_base": provider.base_url,
+                            "api_key_env": key_env
+                        }
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    unsafe {
+        std::env::remove_var(&key_env);
+    }
+
+    assert_eq!(created.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(created.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let created: CreateJobResponse = serde_json::from_slice(&body).unwrap();
+    let state = wait_for_status(app, created.job_id.to_string(), RunStatus::Done).await;
+
+    assert!(state.events.iter().any(|event| {
+        matches!(
+            &event.event,
+            StreamEvent::RunCompleted {
+                output: Some(output),
+                ..
+            } if output.contains("anthropic profile ok")
+        )
+    }));
+    let captured = provider.captured.lock().unwrap();
+    assert_eq!(
+        captured.anthropic_auth.as_deref(),
+        Some("dummy-anthropic-token")
+    );
+    assert_eq!(captured.anthropic_model.as_deref(), Some("claude-test"));
+}
+
+#[tokio::test]
+async fn api_jobs_accept_ollama_provider_profile_without_key() {
+    let provider = start_ollama_test_server().await;
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let app = router(ApiState::new(workspace, test_config()));
+
+    let created = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/jobs")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "message": "Reply with exactly: ollama profile ok",
+                        "model": "llama-test",
+                        "approval": "auto",
+                        "max_steps": 1,
+                        "provider": {
+                            "name": "ollama",
+                            "api_base": provider.base_url
+                        }
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(created.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(created.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let created: CreateJobResponse = serde_json::from_slice(&body).unwrap();
+    let state = wait_for_status(app, created.job_id.to_string(), RunStatus::Done).await;
+
+    assert!(state.events.iter().any(|event| {
+        matches!(
+            &event.event,
+            StreamEvent::RunCompleted {
+                output: Some(output),
+                ..
+            } if output.contains("ollama profile ok")
+        )
+    }));
+    assert_eq!(
+        provider.captured.lock().unwrap().ollama_model.as_deref(),
+        Some("llama-test")
+    );
 }
 
 #[tokio::test]
@@ -2263,6 +2508,253 @@ async fn wait_for_status(
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     }
     panic!("job did not reach {expected:?}; last state: {last_state:?}");
+}
+
+#[derive(Default)]
+struct CapturedProviderRequests {
+    models_auth: Option<String>,
+    chat_auth: Option<String>,
+    chat_model: Option<String>,
+    anthropic_auth: Option<String>,
+    anthropic_model: Option<String>,
+    ollama_model: Option<String>,
+}
+
+struct OpenAiCompatibleTestServer {
+    base_url: String,
+    captured: Arc<Mutex<CapturedProviderRequests>>,
+}
+
+struct ProviderProtocolTestServer {
+    base_url: String,
+    captured: Arc<Mutex<CapturedProviderRequests>>,
+}
+
+async fn start_openai_compatible_test_server() -> OpenAiCompatibleTestServer {
+    let captured = Arc::new(Mutex::new(CapturedProviderRequests::default()));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app = Router::new()
+        .route(
+            "/v1/models",
+            get({
+                let captured = captured.clone();
+                move |headers: HeaderMap| {
+                    let captured = captured.clone();
+                    async move {
+                        captured.lock().unwrap().models_auth = headers
+                            .get(AUTHORIZATION)
+                            .and_then(|value| value.to_str().ok())
+                            .map(str::to_string);
+                        Json(serde_json::json!({
+                            "data": [
+                                { "id": "relay/deepseek-v3.2", "owned_by": "relay" },
+                                { "id": "official/gpt-compatible", "owned_by": "official" }
+                            ]
+                        }))
+                    }
+                }
+            }),
+        )
+        .route(
+            "/v1/chat/completions",
+            post({
+                let captured = captured.clone();
+                move |headers: HeaderMap,
+                      AxumState(()): AxumState<()>,
+                      Json(body): Json<serde_json::Value>| {
+                    let captured = captured.clone();
+                    async move {
+                        let mut captured = captured.lock().unwrap();
+                        captured.chat_auth = headers
+                            .get(AUTHORIZATION)
+                            .and_then(|value| value.to_str().ok())
+                            .map(str::to_string);
+                        captured.chat_model = body
+                            .get("model")
+                            .and_then(|value| value.as_str())
+                            .map(str::to_string);
+                        let content = if body
+                            .get("messages")
+                            .and_then(|value| value.as_array())
+                            .and_then(|messages| messages.first())
+                            .and_then(|message| message.get("content"))
+                            .and_then(|value| value.as_str())
+                            .is_some_and(|content| content.contains("You are the planner for rove"))
+                        {
+                            r#"{"goal":"routed provider job","steps":[{"id":"1","title":"reply"}]}"#
+                        } else {
+                            "routed provider ok"
+                        };
+                        let chunk = serde_json::json!({
+                            "choices": [
+                                {
+                                    "delta": {
+                                        "content": content
+                                    }
+                                }
+                            ]
+                        });
+                        let body = format!("data: {}\n\ndata: [DONE]\n\n", chunk);
+                        ([(CONTENT_TYPE, "text/event-stream")], body)
+                    }
+                }
+            }),
+        )
+        .with_state(());
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    OpenAiCompatibleTestServer {
+        base_url: format!("http://{addr}"),
+        captured,
+    }
+}
+
+async fn start_anthropic_test_server() -> ProviderProtocolTestServer {
+    let captured = Arc::new(Mutex::new(CapturedProviderRequests::default()));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app = Router::new()
+        .route(
+            "/v1/messages",
+            post({
+                let captured = captured.clone();
+                move |headers: HeaderMap, Json(body): Json<serde_json::Value>| {
+                    let captured = captured.clone();
+                    async move {
+                        let mut captured = captured.lock().unwrap();
+                        captured.anthropic_auth = headers
+                            .get("x-api-key")
+                            .and_then(|value| value.to_str().ok())
+                            .map(str::to_string);
+                        captured.anthropic_model = body
+                            .get("model")
+                            .and_then(|value| value.as_str())
+                            .map(str::to_string);
+                        let text = if body
+                            .get("system")
+                            .and_then(|value| value.as_str())
+                            .is_some_and(|content| content.contains("You are the planner for rove"))
+                            || body
+                            .get("messages")
+                            .and_then(|value| value.as_array())
+                            .and_then(|messages| messages.first())
+                            .and_then(|message| message.get("content"))
+                            .and_then(|value| value.as_str())
+                            .is_some_and(|content| content.contains("You are the planner for rove"))
+                        {
+                            r#"{"goal":"anthropic profile job","steps":[{"id":"1","title":"reply"}]}"#
+                        } else {
+                            "anthropic profile ok"
+                        };
+                        let chunk = serde_json::json!({
+                            "type": "content_block_delta",
+                            "index": 0,
+                            "delta": {
+                                "type": "text_delta",
+                                "text": text
+                            }
+                        });
+                        let message_stop = serde_json::json!({ "type": "message_stop" });
+                        let body = format!(
+                            "event: content_block_delta\ndata: {}\n\nevent: message_stop\ndata: {}\n\n",
+                            chunk, message_stop
+                        );
+                        ([(CONTENT_TYPE, "text/event-stream")], body)
+                    }
+                }
+            }),
+        )
+        .route(
+            "/v1/models",
+            get(|| async {
+                Json(serde_json::json!({
+                    "data": [
+                        { "id": "claude-test" }
+                    ]
+                }))
+            }),
+        );
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    ProviderProtocolTestServer {
+        base_url: format!("http://{addr}"),
+        captured,
+    }
+}
+
+async fn start_ollama_test_server() -> ProviderProtocolTestServer {
+    let captured = Arc::new(Mutex::new(CapturedProviderRequests::default()));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app = Router::new()
+        .route(
+            "/api/chat",
+            post({
+                let captured = captured.clone();
+                move |Json(body): Json<serde_json::Value>| {
+                    let captured = captured.clone();
+                    async move {
+                        captured.lock().unwrap().ollama_model = body
+                            .get("model")
+                            .and_then(|value| value.as_str())
+                            .map(str::to_string);
+                        let content = if body
+                            .get("messages")
+                            .and_then(|value| value.as_array())
+                            .and_then(|messages| messages.first())
+                            .and_then(|message| message.get("content"))
+                            .and_then(|value| value.as_str())
+                            .is_some_and(|content| content.contains("You are the planner for rove"))
+                        {
+                            r#"{"goal":"ollama profile job","steps":[{"id":"1","title":"reply"}]}"#
+                        } else {
+                            "ollama profile ok"
+                        };
+                        let chunk = serde_json::json!({
+                            "message": {
+                                "content": content
+                            },
+                            "done": false
+                        });
+                        let done = serde_json::json!({
+                            "done": true,
+                            "prompt_eval_count": 1,
+                            "eval_count": 1
+                        });
+                        let body = format!("{chunk}\n{done}\n");
+                        ([(CONTENT_TYPE, "application/x-ndjson")], body)
+                    }
+                }
+            }),
+        )
+        .route(
+            "/api/tags",
+            get(|| async {
+                Json(serde_json::json!({
+                    "models": [
+                        { "name": "llama-test" }
+                    ]
+                }))
+            }),
+        );
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    ProviderProtocolTestServer {
+        base_url: format!("http://{addr}"),
+        captured,
+    }
+}
+
+fn unique_env_key(prefix: &str) -> String {
+    format!(
+        "{}_{}",
+        prefix,
+        ulid::Ulid::new().to_string().replace('-', "_")
+    )
 }
 
 fn test_config() -> AppConfig {

@@ -8,6 +8,7 @@ This document defines the first full end-to-end integration profile for rove and
 |---|---:|---|---|
 | `local-full` | Yes | No | Proves fake provider, real API, real Web workbench, built-in tools, approval/input resume, persistent state, and Web history. |
 | `provider-smoke` | No | Provider key, network, or local Ollama | Proves a configured real provider can answer and perform one native tool-use round trip. |
+| `provider-integration` | No | OpenAI-compatible provider key and network | Proves a real official API or relay/gateway API through provider smoke, API jobs, Web records, and saved evidence. |
 | `external-tools` | No | MCP server or RAG provider configuration | Proves configured external tools can be discovered, called, and shown in API/Web records. |
 | `stress` | No | Depends on selected profile | Later profile for concurrent runs, long-running jobs, repeated resume, and restart recovery. |
 
@@ -198,6 +199,62 @@ The runner:
 10. Prints run ids and artifact paths.
 
 The runner does not run `provider-smoke`, `external-tools`, or `stress`; those remain explicit follow-up gates.
+
+## Generic Provider Runner
+
+`scripts/provider-integration.ps1` is the provider gate for official
+OpenAI-compatible APIs and relay or gateway APIs. It is intentionally not tied
+to one vendor: the provider, base URL, API-key environment variable, model id,
+ports, and model-list endpoint are parameters.
+
+The API and Web workbench also support provider profiles at runtime. Browser
+code submits `name`, `api_base`, and `api_key_env` when a key is required; the
+Rust API reads the named environment variable and never receives a raw key from
+the browser. `POST /providers/test` verifies model inventory before a run, and
+`POST /jobs` may include the provider profile to route that single job through
+OpenAI-compatible, Anthropic, Ollama, or fake providers. Official APIs and
+relay/gateway APIs are covered through the OpenAI-compatible profile.
+
+Example with an official OpenAI-compatible endpoint:
+
+```powershell
+$env:OPENAI_API_KEY = "<secret>"
+powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
+  -Provider openai-compatible `
+  -ApiBase "https://api.openai.com/v1" `
+  -ApiKeyEnv OPENAI_API_KEY `
+  -Model "gpt-4.1-mini"
+```
+
+Example with a relay or gateway:
+
+```powershell
+$env:OPENAI_API_KEY = "<relay-secret>"
+powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
+  -Provider openai-compatible `
+  -ApiBase "https://<gateway-host>/v1" `
+  -ApiKeyEnv OPENAI_API_KEY `
+  -Model "<provider/model-id>"
+```
+
+The runner:
+
+1. Loads `.env.integration` without overriding existing shell variables.
+2. Queries the model inventory unless `-SkipModelInventory` is set.
+3. Runs the OpenAI-compatible provider smoke unless `-SkipProviderSmoke` is set.
+4. Starts an isolated `rove-api` and runs one plain job plus one `echo` tool job.
+5. Starts the Web workbench and verifies a real provider `echo` tool run through
+   Playwright unless `-SkipWebSmoke` is set.
+6. Runs small sequential/concurrent provider stress only when `-RunStress` is
+   passed.
+7. Runs a configured MCP tool through API/report records only when
+   `-RunExternalMcp` is passed.
+8. Writes non-secret evidence under `<integration-root>/artifacts`, including
+   `evidence-summary.json`.
+
+Keep `.env.integration`, raw keys, bearer tokens, logs containing secrets, and
+runtime state out of git. The runner records only `key_present`, never key
+values.
 
 ## Real-API Playwright Design
 

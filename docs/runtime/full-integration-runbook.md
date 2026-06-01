@@ -1,6 +1,6 @@
 # Full Integration Test Runbook
 
-This runbook is the handoff document for a new session that needs to verify the complete rove call chain, Web records, SiliconFlow real-provider access, external MCP tools, and stress/long-running behavior.
+This runbook is the handoff document for a new session that needs to verify the complete rove call chain, Web records, real-provider access, external MCP tools, and stress/long-running behavior.
 
 Last reviewed: 2026-05-31.
 
@@ -11,36 +11,60 @@ Run the gates in this order:
 | Gate | Required | External dependency | Purpose |
 |---|---:|---|---|
 | `local-full` | Yes | No | Proves the full deterministic API/Web/runtime/tool/state chain. |
-| `siliconflow-model-inventory` | Yes before provider gates | SiliconFlow key | Lists the account-visible models and filters out `Pro/` models. |
-| `provider-smoke` | Yes for real-provider readiness | SiliconFlow key and network | Proves one non-Pro SiliconFlow model can answer and perform native tool use through the OpenAI-compatible provider path. |
-| `provider-full` | Yes after smoke passes | SiliconFlow key and network | Proves real provider + real API + real Web history/detail records. |
+| `provider-model-inventory` | Yes before provider gates | Provider key/network, except local providers | Lists the account-visible models for an official API, relay/gateway API, or local provider. |
+| `provider-smoke` | Yes for real-provider readiness | Provider key/network, except local providers | Proves one selected model can answer and perform native tool use through the selected provider path. |
+| `provider-full` | Yes after smoke passes | Provider key/network, except local providers | Proves real provider + real API + real Web history/detail records. |
 | `external-tools` | Yes after provider-full | Local mock MCP, then real filesystem MCP | Proves MCP discovery, execution, approval, failure records, and Web visibility. |
 | `stress` | Yes after all functional gates | Depends on selected provider profile | Proves repeated jobs, concurrency, restart recovery, and long-run state consistency. |
 
-The current automated runner implements `local-full` only:
+The local deterministic runner implements `local-full`:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/integration-smoke.ps1
 ```
 
-The provider, external MCP, and stress gates are documented here as the next explicit execution plan. Do not treat a provider/MCP/stress failure as a regression in `local-full`; record it under the failed gate.
+The provider runner implements the real OpenAI-compatible provider gate for
+official APIs and relay/gateway APIs:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
+  -Provider openai-compatible `
+  -ApiBase "<provider-or-gateway-v1-base>" `
+  -ApiKeyEnv OPENAI_API_KEY `
+  -Model "<model-id>"
+```
+
+The external MCP and stress gates are still documented here as explicit
+execution plans. Do not treat a provider/MCP/stress failure as a regression in
+`local-full`; record it under the failed gate.
 
 ## Secret Handling
 
 Never commit real keys or generated runtime state. Do not paste keys into `.rove/config.toml`, `.env.integration`, docs, screenshots, or issue descriptions.
 
-For a local session, set the SiliconFlow key only in the current PowerShell process:
+For a local session, set provider keys only in the current PowerShell process:
 
 ```powershell
-$env:SILICONFLOW_API_KEY = Read-Host "SiliconFlow API key"
-$env:OPENAI_API_KEY = $env:SILICONFLOW_API_KEY
+$env:OPENAI_API_KEY = Read-Host "OpenAI-compatible key"
+$env:ANTHROPIC_API_KEY = Read-Host "Anthropic key"
 ```
 
 If a key was pasted into a chat, terminal transcript, or committed file, rotate it in the provider console before running long tests.
 
-## SiliconFlow Facts
+## Provider Facts
 
-Use these official surfaces:
+Provider profiles are not vendor-specific. The runtime can use:
+
+- official OpenAI-compatible APIs and compatible relay/gateway `/v1` APIs;
+- native Anthropic Messages API;
+- local Ollama `/api/chat`;
+- deterministic fake providers for local verification.
+
+The Web workbench and `POST /jobs` accept the same per-run profile shape:
+provider name, API base, key environment variable name when needed, and model id.
+Browser code sends only the environment variable name, never the raw key.
+
+SiliconFlow is one OpenAI-compatible example. Useful public surfaces:
 
 - Platform introduction: `https://api-docs.siliconflow.cn/docs/userguide/get_started/introduction`
 - OpenAI-compatible chat endpoint: `https://api-docs.siliconflow.cn/docs/api/chat-completions-post`
@@ -99,9 +123,9 @@ For provider-backed local use, set provider environment first, then pass
 
 ```powershell
 $env:ROVE_PROVIDER = "openai-compatible"
-$env:ROVE_MODEL = "<non-Pro chat/tool model>"
-$env:OPENAI_API_BASE = "https://api.siliconflow.cn/v1"
-$env:OPENAI_API_KEY = $env:SILICONFLOW_API_KEY
+$env:ROVE_MODEL = "<chat/tool model>"
+$env:OPENAI_API_BASE = "https://<provider-or-gateway>/v1"
+$env:OPENAI_API_KEY = "<secret>"
 powershell -ExecutionPolicy Bypass -File scripts/dev.ps1 -Provider
 ```
 
@@ -150,59 +174,94 @@ Acceptance:
 - printed run ids are present in `GET /runs?limit=25`;
 - `api/*.state.json` and Web records agree on run ids, terminal statuses, approval/input resolution, and tool names.
 
-## Gate 2: `siliconflow-model-inventory`
+## Gate 2: `provider-model-inventory`
 
-Set the key in the current shell:
+For OpenAI-compatible official APIs or relay/gateway APIs, set the key in the
+current shell and query the configured model list endpoint:
 
 ```powershell
-$env:SILICONFLOW_API_KEY = Read-Host "SiliconFlow API key"
+$env:OPENAI_API_KEY = Read-Host "Provider API key"
+$env:OPENAI_API_BASE = "https://<provider-or-gateway>/v1"
 ```
 
 Query account-visible models:
 
 ```powershell
-$headers = @{ Authorization = "Bearer $env:SILICONFLOW_API_KEY" }
-$models = Invoke-RestMethod -Uri "https://api.siliconflow.cn/v1/models" -Headers $headers
-$nonPro = $models.data |
-  Where-Object { $_.id -and -not $_.id.StartsWith("Pro/") } |
+$headers = @{ Authorization = "Bearer $env:OPENAI_API_KEY" }
+$models = Invoke-RestMethod -Uri "$env:OPENAI_API_BASE/models" -Headers $headers
+$visible = $models.data |
+  Where-Object { $_.id } |
   Sort-Object id
-$nonPro | Select-Object id, owned_by
+$visible | Select-Object id, owned_by
 ```
 
 Save evidence without secrets:
 
 ```powershell
-$root = Join-Path $env:TEMP "rove-integration-siliconflow"
+$root = Join-Path $env:TEMP "rove-integration-provider"
 $artifacts = Join-Path $root "artifacts"
 New-Item -ItemType Directory -Force -Path $artifacts | Out-Null
-$nonPro | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $artifacts "siliconflow-non-pro-models.json")
+$visible | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $artifacts "provider-models.json")
 ```
 
-Also save the selected non-Pro chat/tool model id in a plain text artifact such
+Also save the selected chat/tool model id in a plain text artifact such
 as `selected-provider-model.txt`. Do not save API keys or bearer tokens.
 
 Choose the provider smoke model in this order:
 
-1. A non-Pro model from the authenticated list that is documented or observed to support tool calls.
-2. Prefer `Qwen/Qwen3-Coder-30B-A3B-Instruct`, `Qwen/Qwen3-32B`, or `deepseek-ai/DeepSeek-V3.2` if available.
-3. If the first model answers text but fails tool use, keep the text result as evidence and try the next non-Pro model.
+1. A model from the authenticated list that is documented or observed to support tool calls.
+2. Prefer the model configured for the target account or relay route.
+3. If the first model answers text but fails tool use, keep the text result as evidence and try the next compatible model.
+
+For Anthropic, use the provider console or `GET /v1/models` with
+`x-api-key` and `anthropic-version` headers. For Ollama, use
+`GET <ollama-base>/api/tags`.
 
 Acceptance:
 
-- `/v1/models` returns HTTP 200 with a `data` array;
-- saved model inventory contains no id starting with `Pro/`;
+- the provider's model inventory endpoint returns HTTP 200;
 - selected chat model is present in the authenticated inventory;
 - selected model id is recorded in the test notes and artifact directory.
 
 ## Gate 3: `provider-smoke`
 
-Use rove's OpenAI-compatible provider path against SiliconFlow:
+Use the generic provider runner for official OpenAI-compatible endpoints and
+relay/gateway endpoints. It runs model inventory, provider smoke, API provider
+jobs, Web provider records, and evidence capture:
+
+```powershell
+$env:OPENAI_API_KEY = "<secret>"
+powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
+  -Provider openai-compatible `
+  -ApiBase "https://api.openai.com/v1" `
+  -ApiKeyEnv OPENAI_API_KEY `
+  -Model "gpt-4.1-mini"
+```
+
+For SiliconFlow, `deepseek-ai/DeepSeek-V3.2` is one verified example:
+
+```powershell
+$env:SILICONFLOW_API_KEY = "<secret>"
+powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
+  -Provider openai-compatible `
+  -ApiBase "https://api.siliconflow.cn/v1" `
+  -ApiKeyEnv SILICONFLOW_API_KEY `
+  -Model "deepseek-ai/DeepSeek-V3.2"
+```
+
+The API and Web workbench also accept per-run profiles for `anthropic`,
+`ollama`, and `fake`. These paths use the native runtime adapters; the dedicated
+provider runner above currently automates the OpenAI-compatible gate because
+official APIs and relay/gateway APIs share the same `/v1` surface.
+
+For a smoke-only manual check, use rove's OpenAI-compatible provider path
+directly:
 
 ```powershell
 $env:ROVE_PROVIDER_SMOKE_OPENAI = "1"
-$env:OPENAI_API_KEY = $env:SILICONFLOW_API_KEY
-$env:OPENAI_API_BASE = "https://api.siliconflow.cn/v1"
-$env:ROVE_PROVIDER_SMOKE_OPENAI_MODEL = "<non-Pro chat/tool model>"
+$env:OPENAI_API_KEY = "<secret>"
+$env:OPENAI_API_BASE = "https://<provider-or-gateway>/v1"
+$env:ROVE_PROVIDER_SMOKE_OPENAI_MODEL = "<chat/tool model>"
 
 cargo test --test provider_smoke openai_compatible_real_provider_smoke_when_enabled -- --exact --nocapture
 ```
@@ -217,28 +276,34 @@ Acceptance:
 - command exits with code 0;
 - output contains the exact smoke phrase `rove provider smoke ok`;
 - test observes an `echo` tool call and a completed tool output containing `rove provider tool smoke ok`;
+- when using `scripts/provider-integration.ps1`, `evidence-summary.json`
+  records `model_inventory`, `provider_smoke`, `provider_full_api`, and
+  `web_provider` gate statuses;
 - provider errors are classified clearly:
   - `401` or `403`: key/base/model access problem;
   - `429`: quota or rate limit, rerun with lower concurrency or later;
-  - model/tool-call failure: try another authenticated non-Pro chat model.
+  - model/tool-call failure: try another authenticated chat model.
 
 ## Gate 4: `provider-full`
 
-This gate proves real provider + real API + real Web records. It is currently a manual profile; a later implementation can automate it by extending `scripts/integration-smoke.ps1` or adding a dedicated provider runner.
+This gate proves real provider + real API + real Web records. Prefer
+`scripts/provider-integration.ps1` for OpenAI-compatible official APIs and
+relay/gateway APIs. For Anthropic and Ollama, run the manual profile below until
+the provider runner grows native automation for those protocols.
 
 Prepare isolated state:
 
 ```powershell
-$root = Join-Path $env:TEMP "rove-integration-siliconflow"
+$root = Join-Path $env:TEMP "rove-integration-provider"
 $workspace = Join-Path $root "workspace"
 $state = Join-Path $workspace ".rove-integration-state"
 $artifacts = Join-Path $root "artifacts"
 New-Item -ItemType Directory -Force -Path $workspace, $state, $artifacts | Out-Null
 
 $env:ROVE_PROVIDER = "openai-compatible"
-$env:ROVE_MODEL = "<non-Pro chat/tool model>"
-$env:OPENAI_API_BASE = "https://api.siliconflow.cn/v1"
-$env:OPENAI_API_KEY = $env:SILICONFLOW_API_KEY
+$env:ROVE_MODEL = "<chat/tool model>"
+$env:OPENAI_API_BASE = "https://<provider-or-gateway>/v1"
+$env:OPENAI_API_KEY = "<secret>"
 $env:ROVE_STATE_DIR = $state
 $env:ROVE_STATE_SQLITE = Join-Path $state "state.sqlite"
 $env:ROVE_MEMORY_SESSION_DIR = Join-Path $state "memory/sessions"
@@ -297,7 +362,7 @@ $tool = Invoke-RestMethod `
 Approval through Web:
 
 1. Open `http://localhost:3000`.
-2. Use the selected non-Pro model.
+2. Use the selected provider/model profile.
 3. Submit a request asking the model to write a short file through the available file-write tool.
 4. Approve the pending `fs_write` card in the Web panel.
 
@@ -355,7 +420,7 @@ $env:ROVE_MCP_CONFIG = ".rove/mcp_servers.json"
 Start API/Web as in `provider-full`, but use either:
 
 - `fake-raw` for deterministic MCP tool calls; or
-- the selected SiliconFlow non-Pro model if provider tool-use smoke already passed.
+- the selected provider model if provider tool-use smoke already passed.
 
 Deterministic API request:
 
@@ -397,14 +462,15 @@ cargo test --features rag --test cli_index
 cargo test --features rag --test rag
 ```
 
-If using SiliconFlow embeddings, first confirm the embedding model is in the authenticated non-Pro inventory. Then configure:
+If using provider embeddings, first confirm the embedding model is visible to the
+configured provider account. Then configure:
 
 ```powershell
 $env:ROVE_RAG_DETERMINISTIC = "false"
 $env:ROVE_RAG_EMBEDDING_PROVIDER = "openai-compatible"
-$env:ROVE_RAG_EMBEDDING_MODEL = "<non-Pro embedding model>"
-$env:ROVE_RAG_EMBEDDING_API_BASE = "https://api.siliconflow.cn/v1"
-$env:ROVE_RAG_EMBEDDING_API_KEY = $env:SILICONFLOW_API_KEY
+$env:ROVE_RAG_EMBEDDING_MODEL = "<embedding model>"
+$env:ROVE_RAG_EMBEDDING_API_BASE = "https://<provider-or-gateway>/v1"
+$env:ROVE_RAG_EMBEDDING_API_KEY = "<secret>"
 ```
 
 Acceptance:
@@ -509,7 +575,7 @@ Acceptance:
 
 For a full pass, preserve these under the integration artifact directory:
 
-- `siliconflow-non-pro-models.json`
+- `provider-models.json`
 - selected provider model id and endpoint base in a redacted `environment.txt`
 - API stdout/stderr logs
 - Web stdout/stderr logs
@@ -527,8 +593,8 @@ The final report should list:
 |---|---|
 | Date/time | Local date/time and timezone. |
 | Git revision | `git rev-parse HEAD` plus dirty/clean status. |
-| Gates run | `local-full`, `siliconflow-model-inventory`, `provider-smoke`, `provider-full`, `external-tools`, `stress`. |
-| Models | Authenticated non-Pro model selected for chat/tool, embedding, and rerank if used. |
+| Gates run | `local-full`, `provider-model-inventory`, `provider-smoke`, `provider-full`, `external-tools`, `stress`. |
+| Models | Authenticated model selected for chat/tool, embedding, and rerank if used. |
 | Run ids | All run ids from API/Web/provider/stress gates. |
 | Artifacts | Absolute artifact directory. |
 | Failures | Gate name, command, error, classification, and whether rerun passed. |
@@ -542,7 +608,7 @@ When starting a fresh session, paste this request:
 ```text
 我们继续 rove 的完整集成测试。请先阅读 docs/runtime/full-integration-runbook.md、docs/runtime/integration-testing.md、docs/runtime/provider-smoke.md、.env.integration.example，以及本地 .env.integration。当前工作目录是 D:\Study\project\agent\rove。
 
-目标：按 full-integration-runbook 的顺序执行全面测试：先确认 local-full 基线，再用 .env.integration 里的 SiliconFlow/OpenAI-compatible 配置查询 /v1/models，过滤掉 Pro/ 开头模型，选择一个非 Pro 模型做 provider-smoke，然后继续 provider-full、external-tools、stress/长跑测试。每一步都要保存 artifacts，核对 API /runs、/runs/{run_id}/report 和 Web 面板历史/详情记录。遇到失败先定位原因并修复，再继续。
+目标：按 full-integration-runbook 的顺序执行全面测试：先确认 local-full 基线，再用 .env.integration 里的 provider 配置查询模型 inventory，选择一个可用的 chat/tool 模型做 provider-smoke，然后继续 provider-full、external-tools、stress/长跑测试。每一步都要保存 artifacts，核对 API /runs、/runs/{run_id}/report 和 Web 面板历史/详情记录。遇到失败先定位原因并修复，再继续。
 
 注意：真实 provider key 已经写在本地忽略文件 .env.integration 里；不要把 key 写入 tracked 文件或最终报告。先运行 git status，保护已有未提交改动，不要 reset 或 checkout 用户改动。
 ```

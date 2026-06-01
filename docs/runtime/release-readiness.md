@@ -85,29 +85,55 @@ Acceptance:
 Provider smoke is required before claiming real-provider readiness. It is not
 required for deterministic local MVP operation.
 
-For SiliconFlow/OpenAI-compatible:
+For any official OpenAI-compatible API or relay/gateway API, prefer the generic
+provider runner because it verifies provider reachability, API jobs, Web
+records, and evidence capture in one repeatable gate:
 
 ```powershell
-$env:SILICONFLOW_API_KEY = Read-Host "SiliconFlow API key"
-$headers = @{ Authorization = "Bearer $env:SILICONFLOW_API_KEY" }
-$models = Invoke-RestMethod -Uri "https://api.siliconflow.cn/v1/models" -Headers $headers
-$nonPro = $models.data | Where-Object { $_.id -and -not $_.id.StartsWith("Pro/") } | Sort-Object id
+$env:OPENAI_API_KEY = "<secret>"
+powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
+  -Provider openai-compatible `
+  -ApiBase "https://api.openai.com/v1" `
+  -ApiKeyEnv OPENAI_API_KEY `
+  -Model "gpt-4.1-mini"
+```
+
+For relay or gateway APIs, replace `-ApiBase`, `-ApiKeyEnv`, and `-Model` with
+that account's values. If the gateway does not expose `/models`, pass
+`-SkipModelInventory` and record the provider's own model-selection evidence
+separately.
+
+When quota allows, add `-RunStress` to the provider runner before release. This
+runs small sequential and concurrent provider job batches and records
+`stress-summary.json`. Add `-RunExternalMcp` to prove the local mock MCP fixture
+is visible through API/report records.
+
+For OpenAI-compatible official APIs or relay/gateway APIs, manual inventory is
+the same shape regardless of vendor:
+
+```powershell
+$env:OPENAI_API_KEY = Read-Host "Provider API key"
+$env:OPENAI_API_BASE = "https://<provider-or-gateway>/v1"
+$headers = @{ Authorization = "Bearer $env:OPENAI_API_KEY" }
+$models = Invoke-RestMethod -Uri "$env:OPENAI_API_BASE/models" -Headers $headers
+$visible = $models.data | Where-Object { $_.id } | Sort-Object id
 
 $artifactRoot = Join-Path $env:TEMP "rove-provider-smoke"
 New-Item -ItemType Directory -Force -Path $artifactRoot | Out-Null
-$nonPro | Select-Object id, owned_by | ConvertTo-Json -Depth 20 |
-  Set-Content -LiteralPath (Join-Path $artifactRoot "siliconflow-non-pro-models.json")
+$visible | Select-Object id, owned_by | ConvertTo-Json -Depth 20 |
+  Set-Content -LiteralPath (Join-Path $artifactRoot "provider-models.json")
 ```
 
-Select a non-Pro chat/tool model from the authenticated inventory, then run:
+Select a chat/tool model from the authenticated inventory, then run:
 
 ```powershell
 $env:ROVE_PROVIDER_SMOKE_OPENAI = "1"
-$env:OPENAI_API_KEY = $env:SILICONFLOW_API_KEY
-$env:OPENAI_API_BASE = "https://api.siliconflow.cn/v1"
-$env:ROVE_PROVIDER_SMOKE_OPENAI_MODEL = "<selected non-Pro model>"
+$env:ROVE_PROVIDER_SMOKE_OPENAI_MODEL = "<selected model>"
 cargo test --test provider_smoke openai_compatible_real_provider_smoke_when_enabled -- --exact --nocapture
 ```
+
+Per-run API/Web profiles also support `anthropic`, `ollama`, and `fake`; use
+the Web provider selector or include the provider profile in `POST /jobs`.
 
 Acceptance:
 
@@ -115,6 +141,8 @@ Acceptance:
 - the selected model id is saved as a non-secret artifact;
 - the smoke test passes, or the failure is classified as key/configuration,
   quota/rate limit, model tool-call capability, or rove runtime defect.
+- `scripts/provider-integration.ps1` writes `evidence-summary.json` for a full
+  provider gate when API/Web checks are run.
 
 ## External Tools And RAG
 
@@ -207,7 +235,7 @@ For a complete readiness pass, preserve:
 
 - command output or logs for deterministic gates;
 - local-full default and custom-port artifact directories;
-- provider non-Pro model inventory and selected model id;
+- provider model inventory and selected model id;
 - provider smoke output or classified failure notes;
 - MCP/RAG gate output when run;
 - stress snapshots when run;

@@ -12,6 +12,7 @@ import {
   ReloadIcon,
   StopIcon,
   Cross2Icon,
+  Link2Icon,
 } from "@radix-ui/react-icons";
 import {
   type FormEvent,
@@ -32,14 +33,19 @@ import {
   openJobStream,
   submitApproval,
   submitInput,
+  testProvider,
 } from "../lib/rove-client";
 import {
   STREAM_EVENT_NAMES,
+  type ProviderTestResponse,
+  type ProviderProfile,
   type RunReport,
   type RunSummary,
   type StreamEvent,
 } from "../lib/rove-types";
 import { createWorkbenchState, workbenchReducer, type ToolCallView } from "../lib/rove-state";
+
+type ProviderMode = "default" | ProviderProfile["name"];
 
 export function RoveWorkbench() {
   const [state, dispatch] = useReducer(
@@ -49,6 +55,13 @@ export function RoveWorkbench() {
   );
   const [message, setMessage] = useState("inspect this workspace");
   const [model, setModel] = useState("fake");
+  const [providerMode, setProviderMode] = useState<ProviderMode>("default");
+  const [providerApiBase, setProviderApiBase] = useState("https://api.openai.com/v1");
+  const [providerKeyEnv, setProviderKeyEnv] = useState("OPENAI_API_KEY");
+  const [providerTestBusy, setProviderTestBusy] = useState(false);
+  const [providerTestResult, setProviderTestResult] =
+    useState<ProviderTestResponse | null>(null);
+  const [providerTestError, setProviderTestError] = useState<string | null>(null);
   const [maxSteps, setMaxSteps] = useState("8");
   const [submitting, setSubmitting] = useState(false);
   const [approvalBusy, setApprovalBusy] = useState<string | null>(null);
@@ -64,6 +77,11 @@ export function RoveWorkbench() {
   const totalSteps = state.plan?.steps.length ?? 0;
   const activeStep = state.plan?.steps[state.plan.current_step]?.title ?? "idle";
   const modelLabel = model.trim() || "fake";
+  const providerLabel =
+    providerMode === "default"
+      ? "runtime default"
+      : `${providerDisplayName(providerMode)} / ${compactProviderLabel(providerApiBase)}`;
+  const providerNeedsKey = providerMode !== "default" && providerRequiresKey(providerMode);
   const stepsLabel = `${maxSteps || "8"} steps`;
   const runMeta = useMemo(() => {
     if (!state.activeJobId) {
@@ -119,6 +137,16 @@ export function RoveWorkbench() {
         max_steps: Number(maxSteps) || undefined,
         approval: "ask",
         resume: mode === "latest" ? "latest" : undefined,
+        provider:
+          providerMode !== "default"
+            ? {
+                name: providerMode,
+                api_base: providerApiBase.trim(),
+                api_key_env: providerNeedsKey
+                  ? providerKeyEnv.trim() || providerDefaultKeyEnv(providerMode)
+                  : undefined,
+              }
+            : undefined,
       });
 
       dispatch({
@@ -132,6 +160,32 @@ export function RoveWorkbench() {
       dispatch({ type: "set_error", error: describeError(error) });
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  async function handleProviderTest() {
+    if (providerMode === "default" || providerTestBusy) {
+      return;
+    }
+    setProviderTestBusy(true);
+    setProviderTestError(null);
+    setProviderTestResult(null);
+    try {
+      const result = await testProvider({
+        provider: {
+          name: providerMode,
+          api_base: providerApiBase.trim(),
+          api_key_env: providerNeedsKey
+            ? providerKeyEnv.trim() || providerDefaultKeyEnv(providerMode)
+            : undefined,
+        },
+        model: model.trim() || undefined,
+      });
+      setProviderTestResult(result);
+    } catch (error) {
+      setProviderTestError(describeError(error));
+    } finally {
+      setProviderTestBusy(false);
     }
   }
 
@@ -286,6 +340,7 @@ export function RoveWorkbench() {
             </div>
             <div className="hero-band__meta">
               <span>{state.activeJobId ? "connected" : "idle"}</span>
+              <span>{providerLabel}</span>
               <span>{modelLabel}</span>
               <span>{stepsLabel}</span>
             </div>
@@ -318,6 +373,11 @@ export function RoveWorkbench() {
             <p>{state.activeJobId ? state.statusText : "Awaiting a task"}</p>
           </div>
           <div className="signal-band__cell">
+            <span>provider</span>
+            <strong>{providerLabel}</strong>
+            <p>{providerMode === "default" ? "server config" : providerKeySummary(providerMode, providerKeyEnv)}</p>
+          </div>
+          <div className="signal-band__cell">
             <span>model</span>
             <strong>{modelLabel}</strong>
             <p>{stepsLabel}</p>
@@ -343,6 +403,27 @@ export function RoveWorkbench() {
               </label>
 
               <div className="composer-controls">
+                <label className="field">
+                  <span>Provider</span>
+                  <select
+                    value={providerMode}
+                    onChange={(event) => {
+                      const nextMode = event.target.value as ProviderMode;
+                      setProviderMode(nextMode);
+                      setProviderApiBase(providerDefaultApiBase(nextMode));
+                      setProviderKeyEnv(providerDefaultKeyEnv(nextMode));
+                      setProviderTestResult(null);
+                      setProviderTestError(null);
+                    }}
+                  >
+                    <option value="default">Runtime default</option>
+                    <option value="openai-compatible">OpenAI-compatible</option>
+                    <option value="anthropic">Anthropic</option>
+                    <option value="ollama">Ollama</option>
+                    <option value="fake">Fake</option>
+                  </select>
+                </label>
+
                 <label className="field">
                   <span>Model</span>
                   <input
@@ -389,6 +470,62 @@ export function RoveWorkbench() {
                   </button>
                 </div>
               </div>
+
+              {providerMode !== "default" ? (
+                <div className="provider-panel" aria-label="Runtime connection settings">
+                  <label className="field">
+                    <span>API base</span>
+                    <input
+                      value={providerApiBase}
+                      onChange={(event) => {
+                        setProviderApiBase(event.target.value);
+                        setProviderTestResult(null);
+                        setProviderTestError(null);
+                      }}
+                      placeholder={providerDefaultApiBase(providerMode)}
+                    />
+                  </label>
+                  {providerNeedsKey ? (
+                    <label className="field">
+                      <span>Key env</span>
+                      <input
+                        value={providerKeyEnv}
+                        onChange={(event) => {
+                          setProviderKeyEnv(event.target.value);
+                          setProviderTestResult(null);
+                          setProviderTestError(null);
+                        }}
+                        placeholder={providerDefaultKeyEnv(providerMode)}
+                      />
+                    </label>
+                  ) : null}
+                  <button
+                    type="button"
+                    className="secondary provider-panel__test"
+                    onClick={handleProviderTest}
+                    disabled={providerTestBusy || !providerApiBase.trim()}
+                  >
+                    <Link2Icon width={15} height={15} />
+                    Test
+                  </button>
+                  <div className="provider-panel__result" role="status">
+                    {providerTestBusy ? (
+                      <span>Testing provider</span>
+                    ) : providerTestError ? (
+                      <span data-tone="error">{providerTestError}</span>
+                    ) : providerTestResult ? (
+                      <span data-tone="ok">
+                        {providerTestResult.models_count} models /{" "}
+                        {providerTestResult.model_present === false
+                          ? "model not listed"
+                          : "model ready"}
+                      </span>
+                    ) : (
+                      <span>Key values stay on the API server</span>
+                    )}
+                  </div>
+                </div>
+              ) : null}
             </form>
 
             <div className="section-head">
@@ -763,6 +900,73 @@ function PendingInputCard({
 
 function shortId(value: string | null): string {
   return value ? value.slice(0, 10) : "—";
+}
+
+function compactProviderLabel(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return "OpenAI-compatible";
+  }
+  try {
+    return new URL(trimmed).host || trimmed;
+  } catch {
+    return trimmed;
+  }
+}
+
+function providerDisplayName(mode: ProviderMode): string {
+  switch (mode) {
+    case "openai":
+    case "openai-compatible":
+      return "OpenAI-compatible";
+    case "anthropic":
+      return "Anthropic";
+    case "ollama":
+      return "Ollama";
+    case "fake":
+      return "Fake";
+    default:
+      return "Runtime";
+  }
+}
+
+function providerRequiresKey(mode: ProviderMode): boolean {
+  return mode === "openai" || mode === "openai-compatible" || mode === "anthropic";
+}
+
+function providerDefaultApiBase(mode: ProviderMode): string {
+  switch (mode) {
+    case "anthropic":
+      return "https://api.anthropic.com";
+    case "ollama":
+      return "http://localhost:11434";
+    case "fake":
+      return "local";
+    case "openai":
+    case "openai-compatible":
+      return "https://api.openai.com/v1";
+    default:
+      return "https://api.openai.com/v1";
+  }
+}
+
+function providerDefaultKeyEnv(mode: ProviderMode): string {
+  switch (mode) {
+    case "anthropic":
+      return "ANTHROPIC_API_KEY";
+    case "openai":
+    case "openai-compatible":
+      return "OPENAI_API_KEY";
+    default:
+      return "";
+  }
+}
+
+function providerKeySummary(mode: ProviderMode, keyEnv: string): string {
+  if (!providerRequiresKey(mode)) {
+    return "no key required";
+  }
+  return keyEnv.trim() || providerDefaultKeyEnv(mode);
 }
 
 function describeError(error: unknown): string {

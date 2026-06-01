@@ -4,6 +4,8 @@ import type {
   CreateJobResponse,
   JobStateResponse,
   ListRunsResponse,
+  ProviderTestRequest,
+  ProviderTestResponse,
   RunReport,
 } from "./rove-types";
 
@@ -31,6 +33,19 @@ export async function createJob(
     body: JSON.stringify(payload),
   });
   return parseJson<CreateJobResponse>(response);
+}
+
+export async function testProvider(
+  payload: ProviderTestRequest,
+): Promise<ProviderTestResponse> {
+  const response = await fetch(apiUrl("/providers/test"), {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+  return parseJson<ProviderTestResponse>(response);
 }
 
 export async function cancelJob(jobId: string): Promise<JobStateResponse> {

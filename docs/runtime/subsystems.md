@@ -124,8 +124,19 @@ The API routes are:
 - `POST /jobs/{job_id}/cancel`
 - `POST /jobs/{job_id}/approvals/{call_id}`
 - `POST /jobs/{job_id}/inputs/{input_id}`
+- `GET /runs`
+- `GET /runs/{run_id}/report`
+- `POST /providers/test`
 
 The API default is local-only binding. Config supports token auth, CORS origin allowlists, rate limits, and an explicit unsafe remote-without-auth override. Token auth, CORS enforcement, and rate limiting are implemented as API middleware. Multi-user identity and distributed rate limiting are later deployment/product concerns rather than current runtime requirements.
+
+`POST /providers/test` accepts a provider profile with `name`, `api_base`,
+optional `api_key_env`, and optional model id. It checks model inventory for
+OpenAI-compatible, Anthropic, and Ollama profiles with server-side credentials
+when needed, and returns only redacted key presence and model visibility.
+`POST /jobs` may include the same profile to route that single run through an
+official API, relay/gateway API, native Anthropic endpoint, local Ollama, or the
+fake provider without changing the API process defaults.
 
 ## RAG
 
@@ -153,6 +164,13 @@ tool-time retrieval is needed.
 ## Web
 
 `web-ui/` is a standalone Next.js app. Browser code talks to `/api/*`; a server-side Next.js route proxies requests to `ROVE_API_BASE` or `http://127.0.0.1:8787`. When `ROVE_API_TOKEN` is set on the Next.js server, the proxy injects `Authorization: Bearer <token>` upstream and preserves SSE response bodies for `EventSource`.
+
+The workbench exposes a provider selector for runtime default vs.
+OpenAI-compatible per-run profiles. For official APIs and relay/gateway APIs,
+users enter API base URL, key environment variable name, and model id, then use
+the Test action before starting a run. Browser code sends only the key
+environment variable name; raw provider keys stay in the Rust API server
+environment.
 
 The web verification surface is:
 

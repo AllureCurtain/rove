@@ -203,10 +203,11 @@ impl ProviderKind {
 }
 
 fn anthropic_base(api_base: String) -> String {
-    if api_base.contains("anthropic") {
-        api_base
-    } else {
+    let trimmed = api_base.trim();
+    if trimmed.is_empty() || trimmed.contains("api.openai.com") {
         "https://api.anthropic.com".to_string()
+    } else {
+        api_base
     }
 }
 

@@ -33,6 +33,16 @@ Use **Run** to start a fresh job. Use **Resume** to create a job with
 `resume: "latest"` and continue the latest resumable run; the live summary shows
 the new run id and the source run id when the API returns one.
 
+The provider selector can run against the API server's default runtime provider,
+or against a per-run profile for OpenAI-compatible, Anthropic, Ollama, or fake.
+For official APIs or relay/gateway APIs, choose **OpenAI-compatible**, set the
+API base URL, set the server environment variable name that contains the key,
+and enter the model id. Anthropic uses its native API, Ollama uses the local
+`/api/chat` surface, and fake stays deterministic. The browser never sends a raw
+key value; the Rust API reads the named environment variable server-side. Use
+**Test** to call `/providers/test` and verify model visibility before starting
+the job.
+
 To point the workbench at another API server:
 
 ```powershell

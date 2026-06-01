@@ -43,15 +43,20 @@ powershell -ExecutionPolicy Bypass -File scripts/dev.ps1 -ApiAddr 127.0.0.1:1878
 ```
 
 Start the same API/Web flow with a real OpenAI-compatible provider by setting
-provider environment first:
+provider environment first. This can be an official API, a relay, or a gateway
+that exposes an OpenAI-compatible `/v1` API:
 
 ```powershell
 $env:ROVE_PROVIDER = "openai-compatible"
-$env:ROVE_MODEL = "Qwen/Qwen3-Coder-30B-A3B-Instruct"
-$env:OPENAI_API_BASE = "https://api.siliconflow.cn/v1"
+$env:ROVE_MODEL = "<model-id>"
+$env:OPENAI_API_BASE = "https://<provider-or-gateway>/v1"
 $env:OPENAI_API_KEY = "<secret>"
 powershell -ExecutionPolicy Bypass -File scripts/dev.ps1 -Provider
 ```
+
+The Web workbench can also override the provider per run. It supports runtime
+default, OpenAI-compatible, Anthropic, Ollama, and fake profiles without sending
+raw provider keys from the browser.
 
 Run in an isolated standalone Task workspace:
 
