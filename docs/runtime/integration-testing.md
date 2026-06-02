@@ -8,7 +8,7 @@ This document defines the first full end-to-end integration profile for rove and
 |---|---:|---|---|
 | `local-full` | Yes | No | Proves fake provider, real API, real Web workbench, built-in tools, approval/input resume, persistent state, and Web history. |
 | `provider-smoke` | No | Provider key, network, or local Ollama | Proves a configured real provider can answer and perform one native tool-use round trip. |
-| `provider-integration` | No | OpenAI-compatible provider key and network | Proves a real official API or relay/gateway API through provider smoke, API jobs, Web records, and saved evidence. |
+| `provider-integration` | No | Provider key/network, except local Ollama | Proves a real OpenAI-compatible, Anthropic, or Ollama provider through inventory, provider smoke, API jobs, Web records, and saved evidence. |
 | `external-tools` | No | MCP server or RAG provider configuration | Proves configured external tools can be discovered, called, and shown in API/Web records. |
 | `stress` | No | Depends on selected profile | Later profile for concurrent runs, long-running jobs, repeated resume, and restart recovery. |
 
@@ -202,10 +202,11 @@ The runner does not run `provider-smoke`, `external-tools`, or `stress`; those r
 
 ## Generic Provider Runner
 
-`scripts/provider-integration.ps1` is the provider gate for official
-OpenAI-compatible APIs and relay or gateway APIs. It is intentionally not tied
-to one vendor: the provider, base URL, API-key environment variable, model id,
-ports, and model-list endpoint are parameters.
+`scripts/provider-integration.ps1` is the provider gate for
+OpenAI-compatible APIs, Anthropic, and local Ollama. It is intentionally not
+tied to one vendor: the provider, base URL, API-key environment variable, model
+id, ports, stress counts, restart recovery, long-soak settings, and model-list
+endpoint are parameters.
 
 The API and Web workbench also support provider profiles at runtime. Browser
 code submits `name`, `api_base`, and `api_key_env` when a key is required; the
@@ -215,7 +216,7 @@ the browser. `POST /providers/test` verifies model inventory before a run, and
 OpenAI-compatible, Anthropic, Ollama, or fake providers. Official APIs and
 relay/gateway APIs are covered through the OpenAI-compatible profile.
 
-Example with an official OpenAI-compatible endpoint:
+Fast OpenAI-compatible gate:
 
 ```powershell
 $env:OPENAI_API_KEY = "<secret>"
@@ -226,7 +227,7 @@ powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
   -Model "gpt-4.1-mini"
 ```
 
-Example with a relay or gateway:
+Relay or gateway gate:
 
 ```powershell
 $env:OPENAI_API_KEY = "<relay-secret>"
@@ -237,24 +238,76 @@ powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
   -Model "<provider/model-id>"
 ```
 
+Anthropic gate:
+
+```powershell
+$env:ANTHROPIC_API_KEY = "<secret>"
+powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
+  -Provider anthropic `
+  -ApiBase "https://api.anthropic.com" `
+  -ApiKeyEnv ANTHROPIC_API_KEY `
+  -Model "claude-3-5-haiku-latest"
+```
+
+Ollama gate:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
+  -Provider ollama `
+  -ApiBase "http://localhost:11434" `
+  -Model "llama3.2"
+```
+
+Release stress with restart:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
+  -Provider openai-compatible `
+  -ApiBase "https://<provider-or-gateway>/v1" `
+  -ApiKeyEnv OPENAI_API_KEY `
+  -Model "<model-id>" `
+  -RunStress `
+  -RunRestartRecovery `
+  -StressSequentialCount 20 `
+  -StressConcurrentCount 5
+```
+
+Long soak:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
+  -Provider openai-compatible `
+  -ApiBase "https://<provider-or-gateway>/v1" `
+  -ApiKeyEnv OPENAI_API_KEY `
+  -Model "<model-id>" `
+  -RunStress `
+  -RunRestartRecovery `
+  -RunLongSoak `
+  -LongSoakCount 100 `
+  -LongSoakDelayMs 1000
+```
+
 The runner:
 
 1. Loads `.env.integration` without overriding existing shell variables.
-2. Queries the model inventory unless `-SkipModelInventory` is set.
-3. Runs the OpenAI-compatible provider smoke unless `-SkipProviderSmoke` is set.
+2. Queries the provider-specific model inventory unless `-SkipModelInventory` is set.
+3. Runs the provider-specific smoke unless `-SkipProviderSmoke` is set.
 4. Starts an isolated `rove-api` and runs one plain job plus one `echo` tool job.
 5. Starts the Web workbench and verifies a real provider `echo` tool run through
    Playwright unless `-SkipWebSmoke` is set.
-6. Runs small sequential/concurrent provider stress only when `-RunStress` is
-   passed.
-7. Runs a configured MCP tool through API/report records only when
+6. Runs sequential/concurrent provider stress only when `-RunStress` is passed,
+   writes per-job state/report artifacts, and classifies failures.
+7. Restarts the stress API and verifies completed run ids when
+   `-RunRestartRecovery` is passed.
+8. Runs a configurable long sequential soak when `-RunLongSoak` is passed.
+9. Runs a configured MCP tool through API/report records only when
    `-RunExternalMcp` is passed.
-8. Writes non-secret evidence under `<integration-root>/artifacts`, including
+10. Writes non-secret evidence under `<integration-root>/artifacts`, including
    `evidence-summary.json`.
 
 Keep `.env.integration`, raw keys, bearer tokens, logs containing secrets, and
-runtime state out of git. The runner records only `key_present`, never key
-values.
+runtime state out of git. The runner records only `key_present`, key env names,
+and provider bases, never key values.
 
 ## Real-API Playwright Design
 

@@ -85,9 +85,9 @@ Acceptance:
 Provider smoke is required before claiming real-provider readiness. It is not
 required for deterministic local MVP operation.
 
-For any official OpenAI-compatible API or relay/gateway API, prefer the generic
-provider runner because it verifies provider reachability, API jobs, Web
-records, and evidence capture in one repeatable gate:
+Prefer the generic provider runner because it verifies provider reachability,
+API jobs, Web records, stress evidence, and evidence capture in one repeatable
+gate for OpenAI-compatible, Anthropic, and Ollama profiles:
 
 ```powershell
 $env:OPENAI_API_KEY = "<secret>"
@@ -103,10 +103,40 @@ that account's values. If the gateway does not expose `/models`, pass
 `-SkipModelInventory` and record the provider's own model-selection evidence
 separately.
 
-When quota allows, add `-RunStress` to the provider runner before release. This
-runs small sequential and concurrent provider job batches and records
-`stress-summary.json`. Add `-RunExternalMcp` to prove the local mock MCP fixture
-is visible through API/report records.
+Anthropic and Ollama use the same runner with provider-specific inventory and
+smoke dispatch:
+
+```powershell
+$env:ANTHROPIC_API_KEY = "<secret>"
+powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
+  -Provider anthropic `
+  -ApiBase "https://api.anthropic.com" `
+  -ApiKeyEnv ANTHROPIC_API_KEY `
+  -Model "claude-3-5-haiku-latest"
+
+powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
+  -Provider ollama `
+  -ApiBase "http://localhost:11434" `
+  -Model "llama3.2"
+```
+
+When quota allows, add `-RunStress -RunRestartRecovery` to the provider runner
+before release. This runs sequential and concurrent provider job batches,
+restarts the API against the same stress workspace, and records
+`stress-summary.json`, `stress-runs-before-restart.json`, and
+`stress-runs-after-restart.json`. Add `-RunLongSoak` for a release-readiness
+soak. Add `-RunExternalMcp` to prove the local mock MCP fixture is visible
+through API/report records without using the real provider for that
+deterministic fixture.
+
+## Provider Gate Matrix
+
+| Provider | Required before release claim | Long stress required | Notes |
+|---|---:|---:|---|
+| OpenAI-compatible official API | Yes when claiming official API readiness | Yes when quota allows | Includes relay/gateway-compatible surface. |
+| OpenAI-compatible relay/gateway | Yes when claiming relay/gateway readiness | Yes when quota allows | Record gateway model inventory or `-SkipModelInventory` reason. |
+| Anthropic | Yes when claiming Anthropic readiness | Optional unless target release advertises Anthropic as verified | Native Messages API path. |
+| Ollama | Yes when claiming local-model readiness | Optional but recommended | Requires local Ollama server and pulled model. |
 
 For OpenAI-compatible official APIs or relay/gateway APIs, manual inventory is
 the same shape regardless of vendor:

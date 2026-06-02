@@ -25,8 +25,8 @@ Set `OPENAI_API_BASE` when testing a compatible endpoint that is not OpenAI.
 
 Use `scripts/provider-integration.ps1` when a provider should be treated as a
 real release gate instead of only a unit-level smoke. The runner is generic for
-official OpenAI-compatible APIs and relay or gateway APIs that expose the
-OpenAI-style chat API and, unless skipped, a model-list endpoint.
+official OpenAI-compatible APIs, relay or gateway APIs that expose the
+OpenAI-style chat API, Anthropic, and local Ollama.
 
 For product use through the Web workbench, provider targets can be supplied as
 per-run profiles: provider name, API base URL, key environment variable name
@@ -36,10 +36,11 @@ inventory for OpenAI-compatible, Anthropic, and Ollama profiles, then
 `POST /jobs` can carry the same profile for the actual run. `fake` is accepted
 for deterministic local runs.
 
-The dedicated provider runner automates the OpenAI-compatible profile because
-official APIs and relay/gateway APIs share the same `/v1` surface. Anthropic,
-Ollama, and fake are supported by API/Web per-run profiles and their focused
-smoke tests below.
+The dedicated provider runner now automates the release gate for
+OpenAI-compatible, Anthropic, and Ollama profiles. It normalizes provider names,
+queries the provider-specific model inventory endpoint, dispatches the matching
+provider smoke test, submits API jobs with a per-run provider profile, selects
+the same profile in the Web workbench, and writes a redacted evidence summary.
 
 For official OpenAI-compatible APIs:
 
@@ -76,6 +77,26 @@ powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
   -Model "deepseek-ai/DeepSeek-V3.2"
 ```
 
+For Anthropic:
+
+```powershell
+$env:ANTHROPIC_API_KEY = "<secret>"
+powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
+  -Provider anthropic `
+  -ApiBase "https://api.anthropic.com" `
+  -ApiKeyEnv ANTHROPIC_API_KEY `
+  -Model "claude-3-5-haiku-latest"
+```
+
+For Ollama, start the local server and use a pulled model:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
+  -Provider ollama `
+  -ApiBase "http://localhost:11434" `
+  -Model "llama3.2"
+```
+
 The runner writes only non-secret artifacts: provider model inventory, selected
 model id, smoke logs, API run reports, Web screenshot/report, and
 `evidence-summary.json`. Use `-SkipModelInventory` for gateways that do not
@@ -83,8 +104,9 @@ expose `/models`, and use `-SkipWebSmoke` or `-SkipApiSmoke` for focused
 diagnostics.
 
 Add `-RunStress` to run small sequential and concurrent provider job batches
-after the API/Web checks. Tune the counts with `-StressSequentialCount` and
-`-StressConcurrentCount` when quota is limited:
+after the API/Web checks. Add `-RunRestartRecovery` to restart the API against
+the same isolated stress workspace and verify all completed stress run ids are
+still visible. Tune counts and timeouts when quota is limited:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
@@ -93,8 +115,26 @@ powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
   -ApiKeyEnv OPENAI_API_KEY `
   -Model "<provider/model-id>" `
   -RunStress `
+  -RunRestartRecovery `
   -StressSequentialCount 5 `
-  -StressConcurrentCount 3
+  -StressConcurrentCount 3 `
+  -StressJobTimeoutSeconds 180
+```
+
+Use `-RunLongSoak` only for a release-readiness pass where provider quota and
+latency can absorb a longer run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
+  -Provider openai-compatible `
+  -ApiBase "https://<gateway-host>/v1" `
+  -ApiKeyEnv OPENAI_API_KEY `
+  -Model "<provider/model-id>" `
+  -RunStress `
+  -RunRestartRecovery `
+  -RunLongSoak `
+  -LongSoakCount 100 `
+  -LongSoakDelayMs 1000
 ```
 
 Add `-RunExternalMcp` to verify a named MCP tool through the API/report path.

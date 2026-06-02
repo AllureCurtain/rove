@@ -1,8 +1,8 @@
 param(
     [string]$Provider = $(if ($env:ROVE_PROVIDER_INTEGRATION_PROVIDER) { $env:ROVE_PROVIDER_INTEGRATION_PROVIDER } else { "openai-compatible" }),
     [string]$Model = $(if ($env:ROVE_PROVIDER_INTEGRATION_MODEL) { $env:ROVE_PROVIDER_INTEGRATION_MODEL } elseif ($env:ROVE_PROVIDER_SMOKE_OPENAI_MODEL) { $env:ROVE_PROVIDER_SMOKE_OPENAI_MODEL } else { "" }),
-    [string]$ApiBase = $(if ($env:ROVE_PROVIDER_INTEGRATION_API_BASE) { $env:ROVE_PROVIDER_INTEGRATION_API_BASE } elseif ($env:OPENAI_API_BASE) { $env:OPENAI_API_BASE } else { "https://api.openai.com/v1" }),
-    [string]$ApiKeyEnv = $(if ($env:ROVE_PROVIDER_INTEGRATION_API_KEY_ENV) { $env:ROVE_PROVIDER_INTEGRATION_API_KEY_ENV } else { "OPENAI_API_KEY" }),
+    [string]$ApiBase = $(if ($env:ROVE_PROVIDER_INTEGRATION_API_BASE) { $env:ROVE_PROVIDER_INTEGRATION_API_BASE } else { "" }),
+    [string]$ApiKeyEnv = $(if ($env:ROVE_PROVIDER_INTEGRATION_API_KEY_ENV) { $env:ROVE_PROVIDER_INTEGRATION_API_KEY_ENV } else { "" }),
     [string]$ModelsEndpoint = $(if ($env:ROVE_PROVIDER_INTEGRATION_MODELS_ENDPOINT) { $env:ROVE_PROVIDER_INTEGRATION_MODELS_ENDPOINT } else { "" }),
     [string]$IntegrationRoot = $(if ($env:ROVE_PROVIDER_INTEGRATION_ROOT) { $env:ROVE_PROVIDER_INTEGRATION_ROOT } else { (Join-Path $env:TEMP ("rove-provider-integration-" + [guid]::NewGuid().ToString("N"))) }),
     [string]$ApiAddr = $(if ($env:ROVE_PROVIDER_INTEGRATION_API_ADDR) { $env:ROVE_PROVIDER_INTEGRATION_API_ADDR } else { "127.0.0.1:18791" }),
@@ -12,15 +12,23 @@ param(
     [switch]$SkipApiSmoke,
     [switch]$SkipWebSmoke,
     [switch]$RunStress,
+    [switch]$RunRestartRecovery,
+    [switch]$RunLongSoak,
     [switch]$RunExternalMcp,
     [int]$StressSequentialCount = $(if ($env:ROVE_PROVIDER_INTEGRATION_STRESS_SEQUENTIAL_COUNT) { [int]$env:ROVE_PROVIDER_INTEGRATION_STRESS_SEQUENTIAL_COUNT } else { 5 }),
     [int]$StressConcurrentCount = $(if ($env:ROVE_PROVIDER_INTEGRATION_STRESS_CONCURRENT_COUNT) { [int]$env:ROVE_PROVIDER_INTEGRATION_STRESS_CONCURRENT_COUNT } else { 3 }),
+    [int]$StressJobTimeoutSeconds = $(if ($env:ROVE_PROVIDER_INTEGRATION_STRESS_JOB_TIMEOUT_SECONDS) { [int]$env:ROVE_PROVIDER_INTEGRATION_STRESS_JOB_TIMEOUT_SECONDS } else { 180 }),
+    [int]$RestartRecoveryTimeoutSeconds = $(if ($env:ROVE_PROVIDER_INTEGRATION_RESTART_TIMEOUT_SECONDS) { [int]$env:ROVE_PROVIDER_INTEGRATION_RESTART_TIMEOUT_SECONDS } else { 90 }),
+    [int]$LongSoakCount = $(if ($env:ROVE_PROVIDER_INTEGRATION_LONG_SOAK_COUNT) { [int]$env:ROVE_PROVIDER_INTEGRATION_LONG_SOAK_COUNT } else { 20 }),
+    [int]$LongSoakDelayMs = $(if ($env:ROVE_PROVIDER_INTEGRATION_LONG_SOAK_DELAY_MS) { [int]$env:ROVE_PROVIDER_INTEGRATION_LONG_SOAK_DELAY_MS } else { 500 }),
     [string]$ExternalMcpToolName = $(if ($env:ROVE_PROVIDER_INTEGRATION_EXTERNAL_MCP_TOOL) { $env:ROVE_PROVIDER_INTEGRATION_EXTERNAL_MCP_TOOL } else { "mcp__mock_server__echo_remote" }),
     [switch]$KeepState
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$script:StressApiProcess = $null
+$script:CurrentGateName = ""
 
 function Import-DotEnvNoOverride([string]$Path) {
     if (-not (Test-Path -LiteralPath $Path)) {
@@ -46,6 +54,10 @@ function Import-DotEnvNoOverride([string]$Path) {
     }
 }
 
+function Use-TruthyEnvironmentValue([string]$Value) {
+    return $Value -match "^(1|true|yes|on)$"
+}
+
 function Resolve-RepoPath([string]$Path) {
     if ([System.IO.Path]::IsPathRooted($Path)) {
         return $Path
@@ -56,6 +68,47 @@ function Resolve-RepoPath([string]$Path) {
 function Test-CommandAvailable([string]$Name) {
     if (-not (Get-Command $Name -ErrorAction SilentlyContinue)) {
         throw "Required command '$Name' was not found on PATH."
+    }
+}
+
+function Normalize-ProviderName([string]$Name) {
+    $normalized = $Name.Trim().ToLowerInvariant()
+    switch ($normalized) {
+        "openai" { return "openai-compatible" }
+        "openai-compatible" { return "openai-compatible" }
+        "anthropic" { return "anthropic" }
+        "ollama" { return "ollama" }
+        default {
+            throw "Unsupported provider '$Name'. Expected openai-compatible, anthropic, or ollama."
+        }
+    }
+}
+
+function Provider-RequiresKey([string]$Name) {
+    $normalized = Normalize-ProviderName $Name
+    return $normalized -in @("openai-compatible", "anthropic")
+}
+
+function Default-KeyEnvForProvider([string]$Name) {
+    $normalized = Normalize-ProviderName $Name
+    if ($normalized -eq "ollama") {
+        return ""
+    }
+    if ($normalized -eq "anthropic") {
+        return "ANTHROPIC_API_KEY"
+    }
+    return "OPENAI_API_KEY"
+}
+
+function Default-ApiBaseForProvider([string]$Name, [string]$CurrentBase) {
+    $normalized = Normalize-ProviderName $Name
+    if ($CurrentBase) {
+        return $CurrentBase.TrimEnd("/")
+    }
+    switch ($normalized) {
+        "anthropic" { return "https://api.anthropic.com" }
+        "ollama" { return "http://localhost:11434" }
+        default { return "https://api.openai.com/v1" }
     }
 }
 
@@ -117,13 +170,14 @@ function Invoke-Json([string]$Method, [string]$Uri, [object]$Body = $null) {
     return Invoke-RestMethod -Method $Method -Uri $Uri -ContentType "application/json" -Body $json -TimeoutSec 30
 }
 
-function Wait-JobTerminal([string]$JobId, [string]$Name, [int]$TimeoutSeconds = 180) {
+function Wait-JobTerminal([string]$JobId, [string]$Name, [int]$TimeoutSeconds = 180, [string]$StateArtifactName = "") {
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     $lastState = $null
     while ((Get-Date) -lt $deadline) {
         $lastState = Invoke-Json -Method Get -Uri "$ApiBaseLocal/jobs/$JobId/state"
         if ($lastState.status -in @("done", "error", "cancelled", "interrupted")) {
-            $lastState | ConvertTo-Json -Depth 40 | Set-Content -LiteralPath (Join-Path $ArtifactsDir "provider-full-$Name.state.json")
+            $artifactName = if ($StateArtifactName) { $StateArtifactName } else { "provider-full-$Name.state.json" }
+            $lastState | ConvertTo-Json -Depth 40 | Set-Content -LiteralPath (Join-Path $ArtifactsDir $artifactName)
             return $lastState
         }
         Start-Sleep -Milliseconds 750
@@ -133,8 +187,11 @@ function Wait-JobTerminal([string]$JobId, [string]$Name, [int]$TimeoutSeconds = 
 }
 
 function Get-ApiKeyValue {
+    if (-not (Provider-RequiresKey $Provider)) {
+        return ""
+    }
     $value = [Environment]::GetEnvironmentVariable($ApiKeyEnv, "Process")
-    if (-not $value -and $ApiKeyEnv -ne "OPENAI_API_KEY") {
+    if (-not $value -and $Provider -eq "openai-compatible" -and $ApiKeyEnv -ne "OPENAI_API_KEY") {
         $value = [Environment]::GetEnvironmentVariable("OPENAI_API_KEY", "Process")
     }
     if (-not $value) {
@@ -143,38 +200,106 @@ function Get-ApiKeyValue {
     return $value
 }
 
+function Test-ProviderKeyPresent {
+    try {
+        return [bool](Get-ApiKeyValue)
+    } catch {
+        return $false
+    }
+}
+
 function Set-ProviderEnvironment {
     $key = Get-ApiKeyValue
-    if ($Provider -ne "openai-compatible") {
-        throw "provider-integration.ps1 currently automates API/Web gates for openai-compatible providers. Use provider_smoke tests for '$Provider'."
-    }
     $env:ROVE_PROVIDER = $Provider
     $env:ROVE_MODEL = $Model
-    $env:OPENAI_API_KEY = $key
-    $env:OPENAI_API_BASE = $ApiBase
+
+    if ($Provider -eq "openai-compatible") {
+        $env:OPENAI_API_KEY = $key
+        $env:OPENAI_API_BASE = $ApiBase
+        return
+    }
+
+    if ($Provider -eq "anthropic") {
+        $env:ANTHROPIC_API_KEY = $key
+        $env:ROVE_PROVIDER_API_BASE = $ApiBase
+        return
+    }
+
+    if ($Provider -eq "ollama") {
+        $env:ROVE_PROVIDER_API_BASE = $ApiBase
+        return
+    }
 }
 
 function Get-DefaultModelsEndpoint {
     if ($ModelsEndpoint) {
         return $ModelsEndpoint
     }
-    return ($ApiBase.TrimEnd("/") + "/models")
+    switch ($Provider) {
+        "anthropic" { return ($ApiBase.TrimEnd("/") + "/v1/models") }
+        "ollama" { return ($ApiBase.TrimEnd("/") + "/api/tags") }
+        default { return ($ApiBase.TrimEnd("/") + "/models") }
+    }
+}
+
+function Invoke-ProviderRestMethod([string]$Uri, [hashtable]$Headers = $null) {
+    try {
+        if ($Headers) {
+            return Invoke-RestMethod -Uri $Uri -Headers $Headers -TimeoutSec 30
+        }
+        return Invoke-RestMethod -Uri $Uri -TimeoutSec 30
+    } catch {
+        throw "Provider request to $Uri failed: $($_.Exception.Message)"
+    }
+}
+
+function Invoke-OpenAiCompatibleModelInventory {
+    $endpoint = Get-DefaultModelsEndpoint
+    $headers = @{ Authorization = "Bearer $(Get-ApiKeyValue)" }
+    $models = Invoke-ProviderRestMethod -Uri $endpoint -Headers $headers
+    $items = @($models.data)
+    $visible = $items | Where-Object { $_.id } | Sort-Object id
+    $visible | Select-Object id, owned_by | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $ArtifactsDir "provider-models.json")
+    return $visible.id
+}
+
+function Invoke-AnthropicModelInventory {
+    $endpoint = Get-DefaultModelsEndpoint
+    $headers = @{
+        "x-api-key" = Get-ApiKeyValue
+        "anthropic-version" = "2023-06-01"
+    }
+    $models = Invoke-ProviderRestMethod -Uri $endpoint -Headers $headers
+    $items = @($models.data)
+    $visible = $items | Where-Object { $_.id } | Sort-Object id
+    $visible | Select-Object id, display_name, created_at | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $ArtifactsDir "provider-models.json")
+    return $visible.id
+}
+
+function Invoke-OllamaModelInventory {
+    $endpoint = Get-DefaultModelsEndpoint
+    $models = Invoke-ProviderRestMethod -Uri $endpoint
+    $items = @($models.models)
+    $visible = $items | Where-Object { $_.name } | Sort-Object name
+    $visible | Select-Object name, model, modified_at, size | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $ArtifactsDir "provider-models.json")
+    return $visible.name
 }
 
 function Invoke-ModelInventory {
     if ($SkipModelInventory) {
         return "skipped"
     }
-    $endpoint = Get-DefaultModelsEndpoint
-    $headers = @{ Authorization = "Bearer $(Get-ApiKeyValue)" }
-    $models = Invoke-RestMethod -Uri $endpoint -Headers $headers -TimeoutSec 30
-    $items = @($models.data)
-    $visible = $items | Where-Object { $_.id } | Sort-Object id
-    $visible | Select-Object id, owned_by | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $ArtifactsDir "provider-models.json")
+
+    $modelIds = switch ($Provider) {
+        "anthropic" { Invoke-AnthropicModelInventory }
+        "ollama" { Invoke-OllamaModelInventory }
+        default { Invoke-OpenAiCompatibleModelInventory }
+    }
+
     $Model | Set-Content -LiteralPath (Join-Path $ArtifactsDir "selected-provider-model.txt")
 
-    if (-not ($visible | Where-Object { $_.id -eq $Model } | Select-Object -First 1)) {
-        throw "Model '$Model' was not present in provider model inventory from $endpoint."
+    if (-not ($modelIds | Where-Object { $_ -eq $Model } | Select-Object -First 1)) {
+        throw "Model '$Model' was not present in provider model inventory from $(Get-DefaultModelsEndpoint)."
     }
     return "pass"
 }
@@ -183,13 +308,34 @@ function Invoke-ProviderSmoke {
     if ($SkipProviderSmoke) {
         return "skipped"
     }
-    $env:ROVE_PROVIDER_SMOKE_OPENAI = "1"
-    $env:ROVE_PROVIDER_SMOKE_OPENAI_MODEL = $Model
+    $env:ROVE_PROVIDER_SMOKE_OPENAI = "0"
+    $env:ROVE_PROVIDER_SMOKE_ANTHROPIC = "0"
+    $env:ROVE_PROVIDER_SMOKE_OLLAMA = "0"
+
+    $testName = ""
+    switch ($Provider) {
+        "openai-compatible" {
+            $env:ROVE_PROVIDER_SMOKE_OPENAI = "1"
+            $env:ROVE_PROVIDER_SMOKE_OPENAI_MODEL = $Model
+            $testName = "openai_compatible_real_provider_smoke_when_enabled"
+        }
+        "anthropic" {
+            $env:ROVE_PROVIDER_SMOKE_ANTHROPIC = "1"
+            $env:ROVE_PROVIDER_SMOKE_ANTHROPIC_MODEL = $Model
+            $testName = "anthropic_real_provider_smoke_when_enabled"
+        }
+        "ollama" {
+            $env:ROVE_PROVIDER_SMOKE_OLLAMA = "1"
+            $env:ROVE_PROVIDER_SMOKE_OLLAMA_MODEL = $Model
+            $testName = "ollama_real_provider_smoke_when_enabled"
+        }
+    }
+
     $log = Join-Path $ArtifactsDir "provider-smoke.log"
     $previousErrorActionPreference = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     try {
-        $output = & cargo test --test provider_smoke openai_compatible_real_provider_smoke_when_enabled -- --exact --nocapture 2>&1
+        $output = & cargo test --test provider_smoke $testName -- --exact --nocapture 2>&1
         $exit = $LASTEXITCODE
     } finally {
         $ErrorActionPreference = $previousErrorActionPreference
@@ -197,7 +343,9 @@ function Invoke-ProviderSmoke {
     $output | Set-Content -LiteralPath $log
     $classification = Classify-ProviderOutput -ExitCode $exit -Text ($output -join "`n")
     @{
+        provider = $Provider
         model = $Model
+        test = $testName
         exit_code = $exit
         classification = $classification
         log = $log
@@ -208,23 +356,50 @@ function Invoke-ProviderSmoke {
     return $classification
 }
 
+function New-ProviderProfileBody {
+    if (Provider-RequiresKey $Provider) {
+        $provider = @{
+            name = $Provider
+            api_base = $ApiBase
+            api_key_env = $ApiKeyEnv
+        }
+        return $provider
+    }
+    $provider = @{
+        name = $Provider
+        api_base = $ApiBase
+    }
+    return $provider
+}
+
 function Classify-ProviderOutput([int]$ExitCode, [string]$Text) {
     if ($ExitCode -eq 0) {
         return "pass"
     }
-    if ($Text -match "401|403|Unauthorized|Invalid token|invalid api key") {
+    if ($Text -match "401|403|Unauthorized|Invalid token|invalid api key|api key is not set|authentication|permission denied") {
         return "key/configuration"
     }
-    if ($Text -match "429|rate limit|quota") {
+    if ($Text -match "429|rate limit|quota|too many requests") {
         return "quota/rate limit"
     }
-    if ($Text -match "did not emit an echo tool call|did not complete echo tool output|unexpected provider smoke output|tool-use|tool use") {
+    if ($Text -match "did not emit an echo tool call|did not complete echo tool output|unexpected provider smoke output|tool-use|tool use|tool_call|tool call") {
         return "model tool-use/follow-up behavior"
     }
-    if ($Text -match "Connect|timed out|timeout|connection|dns") {
+    if ($Text -match "Provider request to .* failed|Connect|timed out|timeout|connection|dns|NameResolution|refused|unreachable") {
         return "network/connectivity"
     }
+    if ($Text -match "panic|SQLite|database is locked|lost run_id|corrupt|missing report") {
+        return "rove runtime defect"
+    }
     return "rove runtime or assertion failure"
+}
+
+function Classify-RunReport([object]$Report, [object]$State) {
+    $text = (($Report.output, ($Report | ConvertTo-Json -Depth 20 -Compress), ($State | ConvertTo-Json -Depth 20 -Compress)) -join "`n")
+    if ($State.status -eq "done" -and $Report.status -eq "success") {
+        return "pass"
+    }
+    return Classify-ProviderOutput -ExitCode 1 -Text $text
 }
 
 function Invoke-ApiSmoke {
@@ -241,6 +416,7 @@ function Invoke-ApiSmoke {
             model = $Model
             approval = "auto"
             max_steps = 4
+            provider = New-ProviderProfileBody
         }
         $plain | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $ArtifactsDir "provider-full-plain.created.json")
         $plainState = Wait-JobTerminal -JobId $plain.job_id -Name "plain"
@@ -252,6 +428,7 @@ function Invoke-ApiSmoke {
             model = $Model
             approval = "auto"
             max_steps = 4
+            provider = New-ProviderProfileBody
         }
         $tool | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $ArtifactsDir "provider-full-tool.created.json")
         $toolState = Wait-JobTerminal -JobId $tool.job_id -Name "tool"
@@ -316,11 +493,17 @@ function Invoke-WebSmoke {
         $screenshotPath = Join-Path $ArtifactsDir "web-provider.png"
         $env:ROVE_WEB_PROVIDER_RESULT = $resultPath
         $env:ROVE_WEB_PROVIDER_SCREENSHOT = $screenshotPath
+        $env:ROVE_WEB_PROVIDER = $Provider
+        $env:ROVE_WEB_PROVIDER_API_BASE = $ApiBase
+        $env:ROVE_WEB_PROVIDER_KEY_ENV = $ApiKeyEnv
         $nodeScript = @'
 const { chromium } = require('@playwright/test');
 const fs = require('fs');
 const baseURL = process.env.PLAYWRIGHT_BASE_URL;
 const model = process.env.ROVE_MODEL;
+const provider = process.env.ROVE_WEB_PROVIDER;
+const providerApiBase = process.env.ROVE_WEB_PROVIDER_API_BASE;
+const providerKeyEnv = process.env.ROVE_WEB_PROVIDER_KEY_ENV;
 const resultPath = process.env.ROVE_WEB_PROVIDER_RESULT;
 const screenshotPath = process.env.ROVE_WEB_PROVIDER_SCREENSHOT;
 const prompt = 'Use the echo tool exactly once with message "rove provider web ok". After the tool returns, reply only with that exact message.';
@@ -328,6 +511,14 @@ const prompt = 'Use the echo tool exactly once with message "rove provider web o
   const browser = await chromium.launch();
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
   await page.goto(baseURL, { waitUntil: 'networkidle' });
+  if (provider && provider !== 'default') {
+    await page.getByLabel('Provider').selectOption(provider);
+    await page.getByLabel('API base').fill(providerApiBase);
+    const keyEnv = page.getByLabel('Key env');
+    if (await keyEnv.count()) {
+      await keyEnv.fill(providerKeyEnv);
+    }
+  }
   await page.getByLabel('Task').fill(prompt);
   await page.getByLabel('Model').fill(model);
   await page.getByLabel('Steps').fill('4');
@@ -337,6 +528,9 @@ const prompt = 'Use the echo tool exactly once with message "rove provider web o
   const result = {
     baseURL,
     model,
+    provider,
+    providerApiBase,
+    providerKeyEnv: providerKeyEnv || '',
     prompt,
     title: await page.title(),
     runSummary: await page.getByLabel('Run summary').innerText().catch(() => ''),
@@ -382,15 +576,90 @@ const prompt = 'Use the echo tool exactly once with message "rove provider web o
     }
 }
 
+function Invoke-RestartRecoveryGate([array]$CreatedJobs, [string]$StressWorkspace) {
+    if (-not $RunRestartRecovery) {
+        return "skipped"
+    }
+    $before = Invoke-Json -Method Get -Uri "$ApiBaseLocal/runs?limit=100"
+    $before | ConvertTo-Json -Depth 40 | Set-Content -LiteralPath (Join-Path $ArtifactsDir "stress-runs-before-restart.json")
+
+    if ($script:StressApiProcess) {
+        Stop-ProcessTree $script:StressApiProcess
+        $script:StressApiProcess = $null
+    }
+
+    $script:StressApiProcess = Start-BackgroundCommand -Command "cargo" -Arguments @("run", "--bin", "rove-api", "--", "--addr", $ApiAddr, "-C", $StressWorkspace) -WorkingDirectory $RepoRoot -StdoutLog (Join-Path $ArtifactsDir "stress-api-restart.out.log") -StderrLog (Join-Path $ArtifactsDir "stress-api-restart.err.log")
+    Wait-HttpOk -Uri "$ApiBaseLocal/runs?limit=1" -TimeoutSeconds $RestartRecoveryTimeoutSeconds -Name "restarted stress rove-api"
+
+    $after = Invoke-Json -Method Get -Uri "$ApiBaseLocal/runs?limit=100"
+    $after | ConvertTo-Json -Depth 40 | Set-Content -LiteralPath (Join-Path $ArtifactsDir "stress-runs-after-restart.json")
+
+    $afterIds = @($after.runs | ForEach-Object { [string]$_.run_id })
+    foreach ($job in $CreatedJobs) {
+        if (-not ($afterIds -contains [string]$job.run_id)) {
+            @{
+                classification = Classify-ProviderOutput -ExitCode 1 -Text "lost run_id $($job.run_id)"
+                lost_run_id = [string]$job.run_id
+                before_count = @($before.runs).Count
+                after_count = @($after.runs).Count
+            } | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $ArtifactsDir "restart-recovery-failure.json")
+            throw "restart recovery lost run_id $($job.run_id)"
+        }
+    }
+    return "pass"
+}
+
+function Invoke-LongSoakGate {
+    if (-not $RunLongSoak) {
+        return "skipped"
+    }
+    $jobs = @()
+    for ($i = 1; $i -le $LongSoakCount; $i++) {
+        $job = Invoke-Json -Method Post -Uri "$ApiBaseLocal/jobs" -Body @{
+            message = "Reply with exactly: rove provider long soak ok $i"
+            model = $Model
+            approval = "auto"
+            max_steps = 4
+            provider = New-ProviderProfileBody
+        }
+        $state = Wait-JobTerminal -JobId $job.job_id -Name "long-soak-$i" -TimeoutSeconds $StressJobTimeoutSeconds -StateArtifactName "long-soak-$i.state.json"
+        $report = Invoke-Json -Method Get -Uri "$ApiBaseLocal/runs/$($job.run_id)/report"
+        $report | ConvertTo-Json -Depth 40 | Set-Content -LiteralPath (Join-Path $ArtifactsDir "long-soak-$i.report.json")
+        $jobs += @{
+            index = $i
+            job_id = [string]$job.job_id
+            run_id = [string]$job.run_id
+            status = [string]$state.status
+            report_status = [string]$report.status
+            output = [string]$report.output
+        }
+        if ($state.status -ne "done" -or $report.status -ne "success") {
+            $classification = Classify-RunReport -Report $report -State $state
+            @{
+                failed_index = $i
+                classification = $classification
+                jobs = $jobs
+            } | ConvertTo-Json -Depth 40 | Set-Content -LiteralPath (Join-Path $ArtifactsDir "long-soak-summary.json")
+            throw "long soak job $i failed with classification '$classification'"
+        }
+        Start-Sleep -Milliseconds $LongSoakDelayMs
+    }
+    @{
+        count = $LongSoakCount
+        delay_ms = $LongSoakDelayMs
+        jobs = $jobs
+    } | ConvertTo-Json -Depth 40 | Set-Content -LiteralPath (Join-Path $ArtifactsDir "long-soak-summary.json")
+    return "pass"
+}
+
 function Invoke-StressGate {
     if (-not $RunStress) {
         return "skipped"
     }
-    $apiProcess = $null
     try {
         $stressWorkspace = Join-Path $IntegrationRoot "workspace-stress"
         New-Item -ItemType Directory -Force -Path $stressWorkspace | Out-Null
-        $apiProcess = Start-BackgroundCommand -Command "cargo" -Arguments @("run", "--bin", "rove-api", "--", "--addr", $ApiAddr, "-C", $stressWorkspace) -WorkingDirectory $RepoRoot -StdoutLog (Join-Path $ArtifactsDir "stress-api.out.log") -StderrLog (Join-Path $ArtifactsDir "stress-api.err.log")
+        $script:StressApiProcess = Start-BackgroundCommand -Command "cargo" -Arguments @("run", "--bin", "rove-api", "--", "--addr", $ApiAddr, "-C", $stressWorkspace) -WorkingDirectory $RepoRoot -StdoutLog (Join-Path $ArtifactsDir "stress-api.out.log") -StderrLog (Join-Path $ArtifactsDir "stress-api.err.log")
         Wait-HttpOk -Uri "$ApiBaseLocal/runs?limit=1" -TimeoutSeconds 90 -Name "stress rove-api"
 
         $created = @()
@@ -400,17 +669,32 @@ function Invoke-StressGate {
                 model = $Model
                 approval = "auto"
                 max_steps = 4
+                provider = New-ProviderProfileBody
             }
-            $state = Wait-JobTerminal -JobId $job.job_id -Name "stress-sequential-$i" -TimeoutSeconds 180
-            if ($state.status -ne "done") {
-                throw "sequential stress job $i ended with status $($state.status)"
-            }
-            $created += @{
+            $state = Wait-JobTerminal -JobId $job.job_id -Name "stress-sequential-$i" -TimeoutSeconds $StressJobTimeoutSeconds -StateArtifactName "stress-sequential-$i.state.json"
+            $report = Invoke-Json -Method Get -Uri "$ApiBaseLocal/runs/$($job.run_id)/report"
+            $report | ConvertTo-Json -Depth 40 | Set-Content -LiteralPath (Join-Path $ArtifactsDir "stress-sequential-$i.report.json")
+            $classification = Classify-RunReport -Report $report -State $state
+            $record = @{
                 kind = "sequential"
                 index = $i
                 job_id = [string]$job.job_id
                 run_id = [string]$job.run_id
                 status = [string]$state.status
+                report_status = [string]$report.status
+                classification = $classification
+            }
+            $created += $record
+            if ($classification -ne "pass") {
+                @{
+                    sequential_count = $StressSequentialCount
+                    concurrent_count = $StressConcurrentCount
+                    failed_gate = "sequential"
+                    failed_index = $i
+                    classification = $classification
+                    jobs = $created
+                } | ConvertTo-Json -Depth 40 | Set-Content -LiteralPath (Join-Path $ArtifactsDir "stress-summary.json")
+                throw "sequential stress job $i ended with classification '$classification'"
             }
         }
 
@@ -421,34 +705,54 @@ function Invoke-StressGate {
                 model = $Model
                 approval = "auto"
                 max_steps = 4
+                provider = New-ProviderProfileBody
             }
         }
         for ($i = 0; $i -lt $jobs.Count; $i++) {
-            $state = Wait-JobTerminal -JobId $jobs[$i].job_id -Name "stress-concurrent-$($i + 1)" -TimeoutSeconds 180
-            if ($state.status -ne "done") {
-                throw "concurrent stress job $($i + 1) ended with status $($state.status)"
-            }
-            $created += @{
+            $state = Wait-JobTerminal -JobId $jobs[$i].job_id -Name "stress-concurrent-$($i + 1)" -TimeoutSeconds $StressJobTimeoutSeconds -StateArtifactName "stress-concurrent-$($i + 1).state.json"
+            $report = Invoke-Json -Method Get -Uri "$ApiBaseLocal/runs/$($jobs[$i].run_id)/report"
+            $report | ConvertTo-Json -Depth 40 | Set-Content -LiteralPath (Join-Path $ArtifactsDir "stress-concurrent-$($i + 1).report.json")
+            $classification = Classify-RunReport -Report $report -State $state
+            $record = @{
                 kind = "concurrent"
                 index = $i + 1
                 job_id = [string]$jobs[$i].job_id
                 run_id = [string]$jobs[$i].run_id
                 status = [string]$state.status
+                report_status = [string]$report.status
+                classification = $classification
+            }
+            $created += $record
+            if ($classification -ne "pass") {
+                @{
+                    sequential_count = $StressSequentialCount
+                    concurrent_count = $StressConcurrentCount
+                    failed_gate = "concurrent"
+                    failed_index = $i + 1
+                    classification = $classification
+                    jobs = $created
+                } | ConvertTo-Json -Depth 40 | Set-Content -LiteralPath (Join-Path $ArtifactsDir "stress-summary.json")
+                throw "concurrent stress job $($i + 1) ended with classification '$classification'"
             }
         }
 
+        $restartStatus = Invoke-RestartRecoveryGate -CreatedJobs $created -StressWorkspace $stressWorkspace
+        $longSoakStatus = Invoke-LongSoakGate
         $runs = Invoke-Json -Method Get -Uri "$ApiBaseLocal/runs?limit=100"
         @{
             sequential_count = $StressSequentialCount
             concurrent_count = $StressConcurrentCount
+            restart_recovery = $restartStatus
+            long_soak = $longSoakStatus
             jobs = $created
             runs_count = @($runs.runs).Count
         } | ConvertTo-Json -Depth 40 | Set-Content -LiteralPath (Join-Path $ArtifactsDir "stress-summary.json")
         $runs | ConvertTo-Json -Depth 40 | Set-Content -LiteralPath (Join-Path $ArtifactsDir "stress-runs.json")
         return "pass"
     } finally {
-        if ($apiProcess) {
-            Stop-ProcessTree $apiProcess
+        if ($script:StressApiProcess) {
+            Stop-ProcessTree $script:StressApiProcess
+            $script:StressApiProcess = $null
         }
     }
 }
@@ -518,16 +822,145 @@ function Write-EvidenceSummary([hashtable]$Gates) {
         api_base = $ApiBase
         model = $Model
         key_env = $ApiKeyEnv
-        key_present = [bool](Get-ApiKeyValue)
+        key_present = Test-ProviderKeyPresent
         gates = $Gates
     } | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $ArtifactsDir "evidence-summary.json")
+}
+
+function Read-GateClassification([string]$GateName) {
+    $path = switch ($GateName) {
+        "provider_smoke" { Join-Path $ArtifactsDir "provider-smoke-result.json" }
+        default { "" }
+    }
+    if (-not $path -or -not (Test-Path -LiteralPath $path)) {
+        return ""
+    }
+    try {
+        $result = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+        if ($result.classification) {
+            return [string]$result.classification
+        }
+    } catch {
+        return ""
+    }
+    return ""
+}
+
+function New-RequestedGateStatusMap {
+    return @{
+        model_inventory = if ($SkipModelInventory) { "skipped" } else { "not_run" }
+        provider_smoke = if ($SkipProviderSmoke) { "skipped" } else { "not_run" }
+        provider_full_api = if ($SkipApiSmoke) { "skipped" } else { "not_run" }
+        web_provider = if ($SkipWebSmoke) { "skipped" } else { "not_run" }
+        stress = if ($RunStress) { "not_run" } else { "skipped" }
+        external_mcp = if ($RunExternalMcp) { "not_run" } else { "skipped" }
+    }
+}
+
+function Invoke-Gate([hashtable]$Gates, [string]$GateName, [scriptblock]$Action) {
+    $script:CurrentGateName = $GateName
+    try {
+        $Gates[$GateName] = & $Action
+        $script:CurrentGateName = ""
+        return $Gates[$GateName]
+    } catch {
+        $Gates[$GateName] = "failed"
+        throw
+    }
+}
+
+function Write-GateFailureArtifact([hashtable]$Gates, [string]$Message) {
+    if (-not $script:CurrentGateName) {
+        $script:CurrentGateName = "runner_setup"
+    }
+    if ($Gates.ContainsKey($script:CurrentGateName)) {
+        $Gates[$script:CurrentGateName] = "failed"
+    }
+    $classification = Read-GateClassification -GateName $script:CurrentGateName
+    if (-not $classification) {
+        $classification = Classify-ProviderOutput -ExitCode 1 -Text $Message
+    }
+    @{
+        date = (Get-Date).ToString("o")
+        failed_gate = $script:CurrentGateName
+        classification = $classification
+        message = $Message
+        provider = $Provider
+        api_base = $ApiBase
+        model = $Model
+        artifact_dir = $ArtifactsDir
+    } | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $ArtifactsDir "failure-classification.json")
 }
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 Import-DotEnvNoOverride (Join-Path $RepoRoot ".env.integration")
 
-Test-CommandAvailable "cargo"
-Test-CommandAvailable "pnpm"
+if (-not $PSBoundParameters.ContainsKey("Provider") -and $env:ROVE_PROVIDER_INTEGRATION_PROVIDER) {
+    $Provider = $env:ROVE_PROVIDER_INTEGRATION_PROVIDER
+}
+if (-not $PSBoundParameters.ContainsKey("Model") -and $env:ROVE_PROVIDER_INTEGRATION_MODEL) {
+    $Model = $env:ROVE_PROVIDER_INTEGRATION_MODEL
+}
+if (-not $PSBoundParameters.ContainsKey("Model") -and -not $Model -and $env:ROVE_PROVIDER_SMOKE_OPENAI_MODEL) {
+    $Model = $env:ROVE_PROVIDER_SMOKE_OPENAI_MODEL
+}
+if (-not $PSBoundParameters.ContainsKey("ApiBase") -and $env:ROVE_PROVIDER_INTEGRATION_API_BASE) {
+    $ApiBase = $env:ROVE_PROVIDER_INTEGRATION_API_BASE
+}
+if (-not $PSBoundParameters.ContainsKey("ApiKeyEnv") -and $env:ROVE_PROVIDER_INTEGRATION_API_KEY_ENV) {
+    $ApiKeyEnv = $env:ROVE_PROVIDER_INTEGRATION_API_KEY_ENV
+}
+if (-not $PSBoundParameters.ContainsKey("ModelsEndpoint") -and $env:ROVE_PROVIDER_INTEGRATION_MODELS_ENDPOINT) {
+    $ModelsEndpoint = $env:ROVE_PROVIDER_INTEGRATION_MODELS_ENDPOINT
+}
+if (-not $PSBoundParameters.ContainsKey("IntegrationRoot") -and $env:ROVE_PROVIDER_INTEGRATION_ROOT) {
+    $IntegrationRoot = $env:ROVE_PROVIDER_INTEGRATION_ROOT
+}
+if (-not $PSBoundParameters.ContainsKey("ApiAddr") -and $env:ROVE_PROVIDER_INTEGRATION_API_ADDR) {
+    $ApiAddr = $env:ROVE_PROVIDER_INTEGRATION_API_ADDR
+}
+if (-not $PSBoundParameters.ContainsKey("WebPort") -and $env:ROVE_PROVIDER_INTEGRATION_WEB_PORT) {
+    $WebPort = $env:ROVE_PROVIDER_INTEGRATION_WEB_PORT
+}
+if (-not $PSBoundParameters.ContainsKey("StressSequentialCount") -and $env:ROVE_PROVIDER_INTEGRATION_STRESS_SEQUENTIAL_COUNT) {
+    $StressSequentialCount = [int]$env:ROVE_PROVIDER_INTEGRATION_STRESS_SEQUENTIAL_COUNT
+}
+if (-not $PSBoundParameters.ContainsKey("StressConcurrentCount") -and $env:ROVE_PROVIDER_INTEGRATION_STRESS_CONCURRENT_COUNT) {
+    $StressConcurrentCount = [int]$env:ROVE_PROVIDER_INTEGRATION_STRESS_CONCURRENT_COUNT
+}
+if (-not $PSBoundParameters.ContainsKey("StressJobTimeoutSeconds") -and $env:ROVE_PROVIDER_INTEGRATION_STRESS_JOB_TIMEOUT_SECONDS) {
+    $StressJobTimeoutSeconds = [int]$env:ROVE_PROVIDER_INTEGRATION_STRESS_JOB_TIMEOUT_SECONDS
+}
+if (-not $PSBoundParameters.ContainsKey("RestartRecoveryTimeoutSeconds") -and $env:ROVE_PROVIDER_INTEGRATION_RESTART_TIMEOUT_SECONDS) {
+    $RestartRecoveryTimeoutSeconds = [int]$env:ROVE_PROVIDER_INTEGRATION_RESTART_TIMEOUT_SECONDS
+}
+if (-not $PSBoundParameters.ContainsKey("LongSoakCount") -and $env:ROVE_PROVIDER_INTEGRATION_LONG_SOAK_COUNT) {
+    $LongSoakCount = [int]$env:ROVE_PROVIDER_INTEGRATION_LONG_SOAK_COUNT
+}
+if (-not $PSBoundParameters.ContainsKey("LongSoakDelayMs") -and $env:ROVE_PROVIDER_INTEGRATION_LONG_SOAK_DELAY_MS) {
+    $LongSoakDelayMs = [int]$env:ROVE_PROVIDER_INTEGRATION_LONG_SOAK_DELAY_MS
+}
+if (-not $PSBoundParameters.ContainsKey("ExternalMcpToolName") -and $env:ROVE_PROVIDER_INTEGRATION_EXTERNAL_MCP_TOOL) {
+    $ExternalMcpToolName = $env:ROVE_PROVIDER_INTEGRATION_EXTERNAL_MCP_TOOL
+}
+$Provider = Normalize-ProviderName $Provider
+if (-not $PSBoundParameters.ContainsKey("ApiBase") -and -not $ApiBase -and $Provider -eq "openai-compatible" -and $env:OPENAI_API_BASE) {
+    $ApiBase = $env:OPENAI_API_BASE
+}
+if ($Provider -eq "ollama") {
+    $ApiKeyEnv = ""
+} elseif (-not $PSBoundParameters.ContainsKey("ApiKeyEnv") -and $Provider -eq "anthropic" -and (-not $ApiKeyEnv -or $ApiKeyEnv -eq "OPENAI_API_KEY")) {
+    $ApiKeyEnv = Default-KeyEnvForProvider $Provider
+} elseif (-not $ApiKeyEnv) {
+    $ApiKeyEnv = Default-KeyEnvForProvider $Provider
+}
+$ApiBase = Default-ApiBaseForProvider $Provider $ApiBase
+if (-not $PSBoundParameters.ContainsKey("RunRestartRecovery") -and (Use-TruthyEnvironmentValue $env:ROVE_PROVIDER_INTEGRATION_RUN_RESTART_RECOVERY)) {
+    $RunRestartRecovery = $true
+}
+if (-not $PSBoundParameters.ContainsKey("RunLongSoak") -and (Use-TruthyEnvironmentValue $env:ROVE_PROVIDER_INTEGRATION_RUN_LONG_SOAK)) {
+    $RunLongSoak = $true
+}
 
 if (-not $Model) {
     throw "Model is required. Pass -Model or set ROVE_PROVIDER_INTEGRATION_MODEL."
@@ -545,39 +978,41 @@ if (-not $KeepState -and (Test-Path -LiteralPath $IntegrationRoot)) {
 }
 New-Item -ItemType Directory -Force -Path $WorkspaceDir, $WebWorkspaceDir, $ArtifactsDir | Out-Null
 
-Set-ProviderEnvironment
-$env:ROVE_STATE_DIR = ".rove-provider-integration-state"
-$env:ROVE_STATE_SQLITE = ".rove-provider-integration-state/state.sqlite"
-$env:ROVE_MEMORY_SESSION_DIR = ".rove-provider-integration-state/memory/sessions"
-$env:ROVE_MEMORY_DURABLE_DIR = ".rove-provider-integration-state/memory"
-
-@{
-    provider = $Provider
-    model = $Model
-    api_base = $ApiBase
-    key_env = $ApiKeyEnv
-    key_present = [bool](Get-ApiKeyValue)
-    models_endpoint = Get-DefaultModelsEndpoint
-    api_base_local = $ApiBaseLocal
-    web_base = $WebBase
-    integration_root = $IntegrationRoot
-} | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $ArtifactsDir "environment.redacted.json")
-
-$gates = @{}
+$gates = New-RequestedGateStatusMap
 try {
-    $gates["model_inventory"] = Invoke-ModelInventory
-    $gates["provider_smoke"] = Invoke-ProviderSmoke
-    $gates["provider_full_api"] = Invoke-ApiSmoke
-    $gates["web_provider"] = Invoke-WebSmoke
-    $gates["stress"] = Invoke-StressGate
-    $gates["external_mcp"] = Invoke-ExternalMcpGate
+    @{
+        provider = $Provider
+        model = $Model
+        api_base = $ApiBase
+        key_env = $ApiKeyEnv
+        key_present = Test-ProviderKeyPresent
+        models_endpoint = Get-DefaultModelsEndpoint
+        api_base_local = $ApiBaseLocal
+        web_base = $WebBase
+        integration_root = $IntegrationRoot
+    } | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $ArtifactsDir "environment.redacted.json")
+
+    Test-CommandAvailable "cargo"
+    Test-CommandAvailable "pnpm"
+    Set-ProviderEnvironment
+    $env:ROVE_STATE_DIR = ".rove-provider-integration-state"
+    $env:ROVE_STATE_SQLITE = ".rove-provider-integration-state/state.sqlite"
+    $env:ROVE_MEMORY_SESSION_DIR = ".rove-provider-integration-state/memory/sessions"
+    $env:ROVE_MEMORY_DURABLE_DIR = ".rove-provider-integration-state/memory"
+
+    Invoke-Gate -Gates $gates -GateName "model_inventory" -Action { Invoke-ModelInventory } | Out-Null
+    Invoke-Gate -Gates $gates -GateName "provider_smoke" -Action { Invoke-ProviderSmoke } | Out-Null
+    Invoke-Gate -Gates $gates -GateName "provider_full_api" -Action { Invoke-ApiSmoke } | Out-Null
+    Invoke-Gate -Gates $gates -GateName "web_provider" -Action { Invoke-WebSmoke } | Out-Null
+    Invoke-Gate -Gates $gates -GateName "stress" -Action { Invoke-StressGate } | Out-Null
+    Invoke-Gate -Gates $gates -GateName "external_mcp" -Action { Invoke-ExternalMcpGate } | Out-Null
     Write-EvidenceSummary $gates
     Write-Host "provider integration completed"
     Write-Host "Artifacts: $ArtifactsDir"
     Write-Host "Model: $Model"
     Write-Host "Provider: $Provider"
 } catch {
-    $gates["failure"] = $_.Exception.Message
+    Write-GateFailureArtifact -Gates $gates -Message $_.Exception.Message
     Write-EvidenceSummary $gates
     throw
 }

@@ -23,8 +23,8 @@ The local deterministic runner implements `local-full`:
 powershell -ExecutionPolicy Bypass -File scripts/integration-smoke.ps1
 ```
 
-The provider runner implements the real OpenAI-compatible provider gate for
-official APIs and relay/gateway APIs:
+The provider runner implements real provider gates for OpenAI-compatible,
+Anthropic, and Ollama profiles:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
@@ -225,9 +225,9 @@ Acceptance:
 
 ## Gate 3: `provider-smoke`
 
-Use the generic provider runner for official OpenAI-compatible endpoints and
-relay/gateway endpoints. It runs model inventory, provider smoke, API provider
-jobs, Web provider records, and evidence capture:
+Use the generic provider runner for OpenAI-compatible endpoints, relay/gateway
+endpoints, Anthropic, and Ollama. It runs model inventory, provider smoke, API
+provider jobs, Web provider records, and evidence capture:
 
 ```powershell
 $env:OPENAI_API_KEY = "<secret>"
@@ -249,10 +249,30 @@ powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
   -Model "deepseek-ai/DeepSeek-V3.2"
 ```
 
-The API and Web workbench also accept per-run profiles for `anthropic`,
-`ollama`, and `fake`. These paths use the native runtime adapters; the dedicated
-provider runner above currently automates the OpenAI-compatible gate because
-official APIs and relay/gateway APIs share the same `/v1` surface.
+Anthropic uses native model inventory and smoke dispatch:
+
+```powershell
+$env:ANTHROPIC_API_KEY = "<secret>"
+powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
+  -Provider anthropic `
+  -ApiBase "https://api.anthropic.com" `
+  -ApiKeyEnv ANTHROPIC_API_KEY `
+  -Model "claude-3-5-haiku-latest"
+```
+
+Ollama requires a local server and pulled model, but no API key:
+
+```powershell
+ollama list
+powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
+  -Provider ollama `
+  -ApiBase "http://localhost:11434" `
+  -Model "llama3.2"
+```
+
+The API and Web workbench also accept the same per-run profiles for
+`openai-compatible`, `anthropic`, `ollama`, and `fake`. Browser code sends key
+environment variable names only; it never sends raw key values.
 
 For a smoke-only manual check, use rove's OpenAI-compatible provider path
 directly:
@@ -287,9 +307,9 @@ Acceptance:
 ## Gate 4: `provider-full`
 
 This gate proves real provider + real API + real Web records. Prefer
-`scripts/provider-integration.ps1` for OpenAI-compatible official APIs and
-relay/gateway APIs. For Anthropic and Ollama, run the manual profile below until
-the provider runner grows native automation for those protocols.
+`scripts/provider-integration.ps1` for OpenAI-compatible official APIs,
+relay/gateway APIs, Anthropic, and Ollama. Use the manual profile below only for
+diagnostics when the runner needs to be decomposed.
 
 Prepare isolated state:
 
@@ -483,6 +503,41 @@ Acceptance:
 
 Run stress only after `local-full`, `provider-smoke`, `provider-full`, and `external-tools` pass.
 
+The provider runner owns the preferred stress evidence path:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
+  -Provider openai-compatible `
+  -ApiBase "https://<provider-or-gateway>/v1" `
+  -ApiKeyEnv OPENAI_API_KEY `
+  -Model "<model-id>" `
+  -RunStress `
+  -RunRestartRecovery `
+  -StressSequentialCount 20 `
+  -StressConcurrentCount 5
+```
+
+For a long soak:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
+  -Provider openai-compatible `
+  -ApiBase "https://<provider-or-gateway>/v1" `
+  -ApiKeyEnv OPENAI_API_KEY `
+  -Model "<model-id>" `
+  -RunStress `
+  -RunRestartRecovery `
+  -RunLongSoak `
+  -LongSoakCount 100 `
+  -LongSoakDelayMs 1000
+```
+
+The runner writes `stress-summary.json`, per-job state artifacts, per-job report
+artifacts, `stress-runs-before-restart.json`,
+`stress-runs-after-restart.json`, `stress-api.out.log`,
+`stress-api.err.log`, and restart API logs when restart recovery is enabled.
+Failed jobs include a provider/runtime classification in the stress summary.
+
 ### Local deterministic stress
 
 Start API with fake provider and isolated state, then run 100 sequential jobs:
@@ -577,6 +632,8 @@ For a full pass, preserve these under the integration artifact directory:
 
 - `provider-models.json`
 - selected provider model id and endpoint base in a redacted `environment.txt`
+- `environment.redacted.json`
+- `evidence-summary.json`
 - API stdout/stderr logs
 - Web stdout/stderr logs
 - Playwright screenshots/traces if Web automation is used
@@ -584,7 +641,8 @@ For a full pass, preserve these under the integration artifact directory:
 - `api/*.state.json`
 - `/runs` snapshots
 - `/runs/{run_id}/report` snapshots
-- stress created-job and terminal-state snapshots
+- `stress-summary.json`, stress state snapshots, stress report snapshots, and
+  restart snapshots when stress was run
 - MCP config copy with secrets removed
 
 The final report should list:
