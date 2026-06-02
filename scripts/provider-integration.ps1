@@ -382,14 +382,14 @@ function Classify-ProviderOutput([int]$ExitCode, [string]$Text) {
     if ($Text -match "429|rate limit|quota|too many requests") {
         return "quota/rate limit"
     }
-    if ($Text -match "did not emit an echo tool call|did not complete echo tool output|unexpected provider smoke output|tool-use|tool use|tool_call|tool call") {
-        return "model tool-use/follow-up behavior"
-    }
-    if ($Text -match "Provider request to .* failed|Connect|timed out|timeout|connection|dns|NameResolution|refused|unreachable") {
+    if ($Text -match "Provider request to .* failed|request failed|error sending request|Connect|timed out|timeout|connection|dns|NameResolution|refused|unreachable") {
         return "network/connectivity"
     }
     if ($Text -match "panic|SQLite|database is locked|lost run_id|corrupt|missing report") {
         return "rove runtime defect"
+    }
+    if ($Text -match "did not emit an echo tool call|did not complete echo tool output|unexpected provider smoke output|tool-use|tool use") {
+        return "model tool-use/follow-up behavior"
     }
     return "rove runtime or assertion failure"
 }
@@ -652,6 +652,37 @@ function Invoke-LongSoakGate {
     return "pass"
 }
 
+function Write-StressSummary(
+    [array]$CreatedJobs,
+    [string]$RestartStatus,
+    [string]$LongSoakStatus,
+    [string]$FailedGate = "",
+    [int]$FailedIndex = 0,
+    [string]$Classification = ""
+) {
+    $summary = @{
+        sequential_count = $StressSequentialCount
+        concurrent_count = $StressConcurrentCount
+        restart_recovery = $RestartStatus
+        long_soak = $LongSoakStatus
+        jobs = $CreatedJobs
+    }
+    if ($FailedGate) {
+        $summary.failed_gate = $FailedGate
+        $summary.failed_index = $FailedIndex
+        $summary.classification = $Classification
+    }
+    if ($FailedGate -eq "long_soak") {
+        $summary.long_soak_summary = "long-soak-summary.json"
+    }
+    if ($RestartStatus -ne "not_run") {
+        $runs = Invoke-Json -Method Get -Uri "$ApiBaseLocal/runs?limit=100"
+        $summary.runs_count = @($runs.runs).Count
+        $runs | ConvertTo-Json -Depth 40 | Set-Content -LiteralPath (Join-Path $ArtifactsDir "stress-runs.json")
+    }
+    $summary | ConvertTo-Json -Depth 40 | Set-Content -LiteralPath (Join-Path $ArtifactsDir "stress-summary.json")
+}
+
 function Invoke-StressGate {
     if (-not $RunStress) {
         return "skipped"
@@ -686,14 +717,7 @@ function Invoke-StressGate {
             }
             $created += $record
             if ($classification -ne "pass") {
-                @{
-                    sequential_count = $StressSequentialCount
-                    concurrent_count = $StressConcurrentCount
-                    failed_gate = "sequential"
-                    failed_index = $i
-                    classification = $classification
-                    jobs = $created
-                } | ConvertTo-Json -Depth 40 | Set-Content -LiteralPath (Join-Path $ArtifactsDir "stress-summary.json")
+                Write-StressSummary -CreatedJobs $created -RestartStatus "not_run" -LongSoakStatus "not_run" -FailedGate "sequential" -FailedIndex $i -Classification $classification
                 throw "sequential stress job $i ended with classification '$classification'"
             }
         }
@@ -724,30 +748,27 @@ function Invoke-StressGate {
             }
             $created += $record
             if ($classification -ne "pass") {
-                @{
-                    sequential_count = $StressSequentialCount
-                    concurrent_count = $StressConcurrentCount
-                    failed_gate = "concurrent"
-                    failed_index = $i + 1
-                    classification = $classification
-                    jobs = $created
-                } | ConvertTo-Json -Depth 40 | Set-Content -LiteralPath (Join-Path $ArtifactsDir "stress-summary.json")
+                Write-StressSummary -CreatedJobs $created -RestartStatus "not_run" -LongSoakStatus "not_run" -FailedGate "concurrent" -FailedIndex ($i + 1) -Classification $classification
                 throw "concurrent stress job $($i + 1) ended with classification '$classification'"
             }
         }
 
         $restartStatus = Invoke-RestartRecoveryGate -CreatedJobs $created -StressWorkspace $stressWorkspace
-        $longSoakStatus = Invoke-LongSoakGate
-        $runs = Invoke-Json -Method Get -Uri "$ApiBaseLocal/runs?limit=100"
-        @{
-            sequential_count = $StressSequentialCount
-            concurrent_count = $StressConcurrentCount
-            restart_recovery = $restartStatus
-            long_soak = $longSoakStatus
-            jobs = $created
-            runs_count = @($runs.runs).Count
-        } | ConvertTo-Json -Depth 40 | Set-Content -LiteralPath (Join-Path $ArtifactsDir "stress-summary.json")
-        $runs | ConvertTo-Json -Depth 40 | Set-Content -LiteralPath (Join-Path $ArtifactsDir "stress-runs.json")
+        try {
+            $longSoakStatus = Invoke-LongSoakGate
+        } catch {
+            $longSoakSummaryPath = Join-Path $ArtifactsDir "long-soak-summary.json"
+            $classification = Classify-ProviderOutput -ExitCode 1 -Text $_.Exception.Message
+            $failedIndex = 0
+            if (Test-Path -LiteralPath $longSoakSummaryPath) {
+                $longSoakSummary = Get-Content -Raw -LiteralPath $longSoakSummaryPath | ConvertFrom-Json
+                $classification = [string]$longSoakSummary.classification
+                $failedIndex = [int]$longSoakSummary.failed_index
+            }
+            Write-StressSummary -CreatedJobs $created -RestartStatus $restartStatus -LongSoakStatus "failed" -FailedGate "long_soak" -FailedIndex $failedIndex -Classification $classification
+            throw
+        }
+        Write-StressSummary -CreatedJobs $created -RestartStatus $restartStatus -LongSoakStatus $longSoakStatus
         return "pass"
     } finally {
         if ($script:StressApiProcess) {

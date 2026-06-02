@@ -164,7 +164,7 @@ fn provider_integration_runner_supports_native_provider_protocols() {
     assert!(script.contains("function Invoke-ProviderRestMethod"));
     assert!(script.contains("Provider request to $Uri failed:"));
     assert!(script.contains("-Uri $endpoint"));
-    assert!(script.contains("Provider request to .* failed|Connect"));
+    assert!(script.contains("Provider request to .* failed|request failed|error sending request|Connect"));
     assert!(script.contains("anthropic_real_provider_smoke_when_enabled"));
     assert!(script.contains("ollama_real_provider_smoke_when_enabled"));
     assert!(script.contains("provider = @{"));
@@ -224,4 +224,34 @@ fn provider_integration_runner_reuses_gate_classification_artifacts() {
     assert!(script.contains("return [string]$result.classification"));
     assert!(script.contains("Read-GateClassification -GateName $script:CurrentGateName"));
     assert!(script.contains("if (-not $classification)"));
+}
+
+#[test]
+fn provider_integration_runner_classifies_transport_failures_before_tool_fields() {
+    let script = std::fs::read_to_string("scripts/provider-integration.ps1")
+        .expect("scripts/provider-integration.ps1 should exist");
+
+    assert!(script.contains("error sending request"));
+    assert!(script.contains("request failed"));
+    assert!(script.contains("did not emit an echo tool call"));
+    assert!(!script.contains("tool_call|tool call"));
+
+    let network_index = script.find("error sending request").unwrap();
+    let tool_index = script.find("did not emit an echo tool call").unwrap();
+    assert!(
+        network_index < tool_index,
+        "network/transport failures must be classified before tool-use wording"
+    );
+}
+
+#[test]
+fn provider_integration_runner_writes_stress_summary_on_long_soak_failure() {
+    let script = std::fs::read_to_string("scripts/provider-integration.ps1")
+        .expect("scripts/provider-integration.ps1 should exist");
+
+    assert!(script.contains("function Write-StressSummary"));
+    assert!(script.contains("-FailedGate \"long_soak\""));
+    assert!(script.contains("-LongSoakStatus \"failed\""));
+    assert!(script.contains("long_soak_summary = \"long-soak-summary.json\""));
+    assert!(script.contains("Write-StressSummary -CreatedJobs $created -RestartStatus $restartStatus -LongSoakStatus \"failed\""));
 }
