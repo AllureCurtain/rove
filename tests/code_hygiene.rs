@@ -164,7 +164,10 @@ fn provider_integration_runner_supports_native_provider_protocols() {
     assert!(script.contains("function Invoke-ProviderRestMethod"));
     assert!(script.contains("Provider request to $Uri failed:"));
     assert!(script.contains("-Uri $endpoint"));
-    assert!(script.contains("Provider request to .* failed|request failed|error sending request|Connect"));
+    assert!(
+        script
+            .contains("Provider request to .* failed|request failed|error sending request|Connect")
+    );
     assert!(script.contains("anthropic_real_provider_smoke_when_enabled"));
     assert!(script.contains("ollama_real_provider_smoke_when_enabled"));
     assert!(script.contains("provider = @{"));
