@@ -72,7 +72,7 @@ async fn async_main(args: Args) -> anyhow::Result<()> {
         None => {}
     }
 
-    let message = args.message.clone();
+    let message = args.message();
     let runtime = build_cli_runtime(CliRuntimeOptions {
         cwd: args.cwd.clone().map(PathBuf::from),
         model: args.model.clone(),

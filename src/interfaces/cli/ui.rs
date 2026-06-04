@@ -1,13 +1,14 @@
 use std::path::Path;
 
 use crate::config::AppConfig;
-use crate::core::types::TaskState;
+use crate::core::types::{SessionId, TaskState};
 use crate::core::workspace::{Workspace, WorkspaceKind};
 
 pub struct ReplStatusView<'a> {
     pub workspace: &'a Workspace,
     pub config: &'a AppConfig,
     pub model_id: &'a str,
+    pub session_id: SessionId,
     pub active_resume_state: Option<&'a TaskState>,
 }
 
@@ -20,6 +21,19 @@ pub fn format_repl_status(view: ReplStatusView<'_>) -> String {
         Some(state) => format!("resumed {}", short_id(state.run_id.to_string())),
         None => "new".to_string(),
     };
+    let active_run = view
+        .active_resume_state
+        .map(|state| state.run_id.to_string())
+        .unwrap_or_else(|| "none".to_string());
+    let active_job = view
+        .active_resume_state
+        .map(|state| state.job_id.to_string())
+        .unwrap_or_else(|| "none".to_string());
+    let memory_paths = view.config.memory_paths();
+    let session_memory_path = memory_paths
+        .session_dir
+        .join(format!("{}.md", view.session_id));
+    let session_memory = display_path(&session_memory_path, &view.workspace.root);
 
     format!(
         "\
@@ -29,11 +43,15 @@ workspace  {workspace_kind}  {workspace_root}
 model      {model}
 provider   {provider}
 state      {state}  ·  session {session}
+session id {session_id}
+active    run {active_run}  ·  job {active_job}
+memory    {session_memory}
 
 {commands}
 ",
         model = truncate_middle(view.model_id, 96),
         provider = provider,
+        session_id = view.session_id,
         commands = command_hint_line(),
     )
 }
@@ -42,7 +60,7 @@ pub fn format_repl_help() -> String {
     "\
 Commands:
   /help             show this help
-  /status           show workspace, model, provider, state, and session
+  /status           show workspace, model, provider, state, session, run, and memory
   /exit, /quit      exit the REPL
   /clear            clear the terminal
   /sessions         list resumable task states
@@ -130,6 +148,8 @@ mod tests {
     use crate::config::AppConfig;
     use crate::core::workspace::Workspace;
 
+    use crate::core::types::SessionId;
+
     use super::{ReplStatusView, format_repl_help, format_repl_status, short_id};
 
     #[test]
@@ -139,11 +159,13 @@ mod tests {
         let mut config = AppConfig::default();
         config.provider.name = "openai-compatible".to_string();
         config.provider.model = "test-model".to_string();
+        let session_id = SessionId::new();
 
         let output = format_repl_status(ReplStatusView {
             workspace: &workspace,
             config: &config,
             model_id: "test-model",
+            session_id,
             active_resume_state: None,
         });
 
@@ -158,6 +180,10 @@ mod tests {
         assert!(output.contains("state"));
         assert!(output.contains("session"));
         assert!(output.contains("new"));
+        assert!(output.contains(&session_id.to_string()));
+        assert!(output.contains("active"));
+        assert!(output.contains("memory"));
+        assert!(output.contains(".rove/memory/sessions"));
         assert!(output.contains("/status"));
         assert!(output.contains("/resume latest"));
     }
@@ -175,6 +201,7 @@ mod tests {
             workspace: &workspace,
             config: &config,
             model_id: "fake",
+            session_id: SessionId::new(),
             active_resume_state: None,
         });
 

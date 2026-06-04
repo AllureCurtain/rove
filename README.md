@@ -28,6 +28,12 @@ Run a local fake-model task without network credentials:
 cargo run -- --model fake "echo hello from rove"
 ```
 
+Multi-word tasks can also be typed without shell quotes:
+
+```bash
+cargo run -- --model fake inspect this workspace
+```
+
 Start the local API and Web workbench together in fake-provider mode:
 
 ```powershell

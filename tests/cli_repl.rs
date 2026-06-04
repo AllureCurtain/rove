@@ -59,6 +59,10 @@ fn repl_status_command_prints_runtime_context() {
     assert!(stderr.contains("provider"));
     assert!(stderr.contains("state"));
     assert!(stderr.contains("session new"));
+    assert!(stderr.contains("session id"));
+    assert!(stderr.contains("active"));
+    assert!(stderr.contains("memory"));
+    assert!(stderr.contains(".rove/memory/sessions"));
 }
 
 #[test]
@@ -123,4 +127,25 @@ fn one_shot_message_does_not_wait_for_repl_input() {
     assert!(!stdout.contains("Workspace detected"));
     assert!(!stderr.contains("INFO"));
     assert!(!stderr.contains("Workspace detected"));
+}
+
+#[test]
+fn unquoted_multi_word_one_shot_joins_message() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_rove"))
+        .arg("--cwd")
+        .arg(tmp.path())
+        .arg("--model")
+        .arg("fake")
+        .arg("--approval")
+        .arg("never")
+        .args(["hello", "world"])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stdout.contains("fake response: hello world"));
+    assert!(!stderr.contains("unexpected argument"));
 }

@@ -196,6 +196,13 @@ Current one-shot smoke command:
 cargo run -- --model fake "echo hello from rove"
 ```
 
+The CLI also accepts unquoted multi-word tasks and joins them into the one-shot
+message:
+
+```powershell
+cargo run -- --model fake inspect this workspace
+```
+
 `Cargo.toml` sets `default-run = "rove"`, so plain `cargo run -- ...` uses the CLI binary.
 
 Running `rove` with no task enters the compact line-oriented REPL in the current
@@ -223,7 +230,7 @@ Supported slash commands are:
 | Command | Purpose |
 |---|---|
 | `/help` | Print REPL commands. |
-| `/status` | Print workspace, model, provider, state directory, and session status. |
+| `/status` | Print workspace, model, provider, state directory, session id, active run/job, and session memory path. |
 | `/exit`, `/quit` | Exit the REPL. |
 | `/clear` | Clear the terminal screen. |
 | `/sessions` | List resumable task states from the active workspace. |

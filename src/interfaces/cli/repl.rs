@@ -76,6 +76,10 @@ impl ReplState {
         self.active_resume_state.as_ref()
     }
 
+    pub fn session_id(&self) -> SessionId {
+        self.session_id
+    }
+
     pub fn set_active_resume_state(&mut self, active_resume_state: Option<TaskState>) {
         self.active_resume_state = active_resume_state;
     }
@@ -101,6 +105,7 @@ pub async fn run(runtime: CliRuntime) -> anyhow::Result<()> {
             workspace: &runtime.workspace,
             config: &runtime.config,
             model_id: runtime.engine.model_id(),
+            session_id: state.session_id(),
             active_resume_state: state.active_resume_state(),
         })
     );
@@ -209,6 +214,7 @@ async fn handle_slash_command(
                     workspace: &runtime.workspace,
                     config: &runtime.config,
                     model_id: runtime.engine.model_id(),
+                    session_id: state.session_id(),
                     active_resume_state: state.active_resume_state(),
                 })
             );
