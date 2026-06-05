@@ -47,8 +47,7 @@ pub(crate) async fn api_security(
 }
 
 fn disallowed_origin_response(state: &ApiState, origin: &str) -> Option<Response> {
-    let origins = &state.inner.config.api.cors_origins;
-    if origins.is_empty() || origins.iter().any(|allowed| allowed == origin) {
+    if is_origin_allowed(state, origin) {
         return None;
     }
 
@@ -148,7 +147,7 @@ fn apply_cors_headers(headers: &mut axum::http::HeaderMap, origin: &str) {
 
 fn is_origin_allowed(state: &ApiState, origin: &str) -> bool {
     let origins = &state.inner.config.api.cors_origins;
-    origins.is_empty() || origins.iter().any(|allowed| allowed == origin)
+    !origins.is_empty() && origins.iter().any(|allowed| allowed == origin)
 }
 
 fn parse_bearer_token(header: &str) -> Option<&str> {

@@ -93,7 +93,9 @@ pnpm test:e2e
 ```
 
 Playwright uses `PLAYWRIGHT_BASE_URL` when set, otherwise it uses
-`ROVE_WEB_PORT`, otherwise `http://localhost:3000`.
+`ROVE_WEB_PORT`, otherwise `http://127.0.0.1:13043`. By default Playwright
+starts its own Next.js server; set `PLAYWRIGHT_BASE_URL` when a script has
+already started the Web server and the test should reuse it.
 
 The Playwright tests start the Next.js dev server and mock the API at the browser
 boundary. They cover create job to SSE completion, pending approval submission,

@@ -398,6 +398,32 @@ async fn api_rejects_disallowed_cors_origin() {
 }
 
 #[tokio::test]
+async fn api_rejects_browser_origin_when_cors_is_not_configured() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let app = router(ApiState::new(workspace, test_config()));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/jobs/01ARZ3NDEKTSV4RRFFQ69G5FAV/state")
+                .header("origin", "https://evil.example")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert!(
+        response
+            .headers()
+            .get("access-control-allow-origin")
+            .is_none()
+    );
+}
+
+#[tokio::test]
 async fn api_allows_configured_cors_origin_and_sets_headers() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
@@ -1466,6 +1492,63 @@ async fn api_restart_marks_pending_input_interrupted() {
             .as_deref(),
         Some("interrupted")
     );
+}
+
+#[tokio::test]
+async fn api_replays_input_needed_event_after_restart() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let app = router(ApiState::new(workspace.clone(), test_config()));
+    let message = serde_json::json!({
+        "tool": "request_input",
+        "args": { "prompt": "Which branch should I use?" }
+    })
+    .to_string();
+    let body = serde_json::json!({
+        "message": message,
+        "model": "fake-raw",
+        "max_steps": 1
+    });
+
+    let create = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/jobs")
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(create.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let created: CreateJobResponse = serde_json::from_slice(&body).unwrap();
+
+    let pending = wait_for_pending_input(app.clone(), created.job_id.to_string()).await;
+    assert_eq!(pending.status, RunStatus::Running);
+
+    let restarted = router(ApiState::new(workspace, test_config()));
+    let events = restarted
+        .oneshot(
+            Request::builder()
+                .uri(format!("/jobs/{}/events", created.job_id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(events.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(events.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let text = String::from_utf8(body.to_vec()).unwrap();
+
+    assert!(text.contains("event: input_needed"), "{text}");
+    assert!(text.contains("Which branch should I use?"), "{text}");
 }
 
 #[tokio::test]

@@ -1107,7 +1107,8 @@ impl UserInputProvider for ApiInputProvider {
             .lock()
             .await
             .insert(input_id, PendingInput { request, tx });
-        append_job_event(&self.record, StreamEvent::InputNeeded { input_id, prompt }).await;
+        append_persisted_job_event(&self.record, StreamEvent::InputNeeded { input_id, prompt })
+            .await;
         rx.await.map_err(|_| ToolError::ExecutionFailed {
             reason: "input request cancelled".to_string(),
         })
@@ -1229,6 +1230,26 @@ async fn append_job_event(record: &JobRecord, event: StreamEvent) -> JobStreamEv
     };
     let _ = record.tx.send(stored.clone());
     stored
+}
+
+async fn append_persisted_job_event(record: &JobRecord, event: StreamEvent) -> JobStreamEvent {
+    let stored = append_job_event(record, event).await;
+    if let Err(err) = persist_job_event(record, &stored) {
+        tracing::warn!(
+            job_id = %record.job_id,
+            run_id = %record.run_id,
+            seq = stored.seq,
+            event = stored.event.event_name(),
+            "failed to persist API-side job event: {err}"
+        );
+    }
+    stored
+}
+
+fn persist_job_event(record: &JobRecord, stored: &JobStreamEvent) -> std::io::Result<()> {
+    let state_store = state_store_for_record(record);
+    let trace_writer = state_store.run_store.create_trace(&record.run_id)?;
+    trace_writer.append_with_seq(stored.seq, &stored.event)
 }
 
 async fn pending_approvals_response(record: &JobRecord) -> Vec<PendingApprovalResponse> {

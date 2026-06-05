@@ -38,17 +38,31 @@ impl TraceWriter {
 
     /// Append an event to the trace file.
     pub fn append(&self, event: &StreamEvent) -> std::io::Result<()> {
+        if let (Some(index), Some(run_id)) = (&self.index, self.run_id) {
+            let seq = index.last_event_seq(run_id)? + 1;
+            return self.append_with_seq(seq, event);
+        }
+
+        self.append_line(event).map(|_| ())
+    }
+
+    /// Append an event with an interface-assigned sequence number.
+    pub fn append_with_seq(&self, seq: u64, event: &StreamEvent) -> std::io::Result<()> {
+        let json = self.append_line(event)?;
+        if let (Some(index), Some(run_id)) = (&self.index, self.run_id) {
+            index.append_event(run_id, seq, event, &json)?;
+        }
+        Ok(())
+    }
+
+    fn append_line(&self, event: &StreamEvent) -> std::io::Result<String> {
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
             .open(&self.path)?;
         let json = serde_json::to_string(event).map_err(std::io::Error::other)?;
         writeln!(file, "{}", json)?;
-        if let (Some(index), Some(run_id)) = (&self.index, self.run_id) {
-            let seq = index.last_event_seq(run_id)? + 1;
-            index.append_event(run_id, seq, event, &json)?;
-        }
-        Ok(())
+        Ok(json)
     }
 
     pub fn path(&self) -> &Path {
