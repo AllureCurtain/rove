@@ -7,7 +7,9 @@ use crate::interfaces::cli::render::{
 };
 use crate::interfaces::cli::runtime::CliRuntime;
 use crate::interfaces::cli::sessions;
-use crate::interfaces::cli::ui::{ReplStatusView, format_repl_help, format_repl_status};
+use crate::interfaces::cli::ui::{
+    ReplStatusView, ReplWelcomeView, format_repl_help, format_repl_status, format_repl_welcome,
+};
 use crate::state::resume::resolve_resume_state;
 use rustyline::DefaultEditor;
 use rustyline::error::ReadlineError;
@@ -99,14 +101,14 @@ impl ReplState {
 
 pub async fn run(runtime: CliRuntime) -> anyhow::Result<()> {
     let mut state = ReplState::new(SessionId::new());
+    let session_label = repl_session_label(state.active_resume_state());
     eprintln!(
         "{}",
-        format_repl_status(ReplStatusView {
-            workspace: &runtime.workspace,
-            config: &runtime.config,
+        format_repl_welcome(ReplWelcomeView {
+            cwd: &runtime.workspace.root,
             model_id: runtime.engine.model_id(),
-            session_id: state.session_id(),
-            active_resume_state: state.active_resume_state(),
+            session_label: &session_label,
+            width: repl_welcome_width(),
         })
     );
 
@@ -148,6 +150,24 @@ pub async fn run(runtime: CliRuntime) -> anyhow::Result<()> {
             Err(err) => return Err(err.into()),
         }
     }
+}
+
+fn repl_session_label(active_resume_state: Option<&TaskState>) -> String {
+    match active_resume_state {
+        Some(state) => format!(
+            "resumed {}",
+            crate::interfaces::cli::ui::short_id(state.run_id.to_string())
+        ),
+        None => "new".to_string(),
+    }
+}
+
+fn repl_welcome_width() -> usize {
+    std::env::var("COLUMNS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .filter(|width| *width > 0)
+        .unwrap_or(80)
 }
 
 async fn run_prompt(

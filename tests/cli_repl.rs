@@ -21,8 +21,16 @@ fn no_args_accepts_exit_command_and_exits_zero() {
 
     assert!(output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("local-first agent runtime"));
-    assert!(stderr.contains("/status"));
+    assert!(stderr.contains("R O V E"));
+    assert!(stderr.contains("local agent runtime"));
+    assert!(stderr.contains("model   fake"));
+    assert!(stderr.contains("session  new"));
+    assert!(stderr.contains("mode    repl"));
+    assert!(stderr.contains("status   ready"));
+    assert!(stderr.contains("Type your task, or use /help for commands."));
+    assert!(!stderr.contains("provider"));
+    assert!(!stderr.contains("session id"));
+    assert!(!stderr.contains("memory"));
     assert!(tmp.path().join(".rove").join("repl_history").exists());
 }
 
@@ -127,6 +135,7 @@ fn one_shot_message_does_not_wait_for_repl_input() {
     assert!(!stdout.contains("Workspace detected"));
     assert!(!stderr.contains("INFO"));
     assert!(!stderr.contains("Workspace detected"));
+    assert!(!stderr.contains("R O V E"));
 }
 
 #[test]
