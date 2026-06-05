@@ -1,5 +1,6 @@
 /target
 /.worktrees
+/.superpowers/
 /.rove/*
 !/.rove/config.example.toml
 !/.rove/mcp_servers.example.json
