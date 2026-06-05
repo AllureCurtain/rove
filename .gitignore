@@ -1,4 +1,5 @@
 /target
+/.worktrees
 /.rove/*
 !/.rove/config.example.toml
 !/.rove/mcp_servers.example.json

@@ -21,8 +21,16 @@ fn no_args_accepts_exit_command_and_exits_zero() {
 
     assert!(output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("local-first agent runtime"));
-    assert!(stderr.contains("/status"));
+    assert!(stderr.contains("R O V E"));
+    assert!(stderr.contains("local agent runtime"));
+    assert!(stderr.contains("model   fake"));
+    assert!(stderr.contains("session  new"));
+    assert!(stderr.contains("mode    repl"));
+    assert!(stderr.contains("status   ready"));
+    assert!(stderr.contains("Type your task, or use /help for commands."));
+    assert!(!stderr.contains("provider"));
+    assert!(!stderr.contains("session id"));
+    assert!(!stderr.contains("memory"));
     assert!(tmp.path().join(".rove").join("repl_history").exists());
 }
 
@@ -59,6 +67,10 @@ fn repl_status_command_prints_runtime_context() {
     assert!(stderr.contains("provider"));
     assert!(stderr.contains("state"));
     assert!(stderr.contains("session new"));
+    assert!(stderr.contains("session id"));
+    assert!(stderr.contains("active"));
+    assert!(stderr.contains("memory"));
+    assert!(stderr.contains(".rove/memory/sessions"));
 }
 
 #[test]
@@ -123,4 +135,26 @@ fn one_shot_message_does_not_wait_for_repl_input() {
     assert!(!stdout.contains("Workspace detected"));
     assert!(!stderr.contains("INFO"));
     assert!(!stderr.contains("Workspace detected"));
+    assert!(!stderr.contains("R O V E"));
+}
+
+#[test]
+fn unquoted_multi_word_one_shot_joins_message() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_rove"))
+        .arg("--cwd")
+        .arg(tmp.path())
+        .arg("--model")
+        .arg("fake")
+        .arg("--approval")
+        .arg("never")
+        .args(["hello", "world"])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stdout.contains("fake response: hello world"));
+    assert!(!stderr.contains("unexpected argument"));
 }

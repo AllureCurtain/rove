@@ -1,14 +1,53 @@
 use std::path::Path;
 
 use crate::config::AppConfig;
-use crate::core::types::TaskState;
+use crate::core::types::{SessionId, TaskState};
 use crate::core::workspace::{Workspace, WorkspaceKind};
 
 pub struct ReplStatusView<'a> {
     pub workspace: &'a Workspace,
     pub config: &'a AppConfig,
     pub model_id: &'a str,
+    pub session_id: SessionId,
     pub active_resume_state: Option<&'a TaskState>,
+}
+
+pub struct ReplWelcomeView<'a> {
+    pub cwd: &'a Path,
+    pub model_id: &'a str,
+    pub session_label: &'a str,
+    pub width: usize,
+}
+
+pub fn format_repl_welcome(view: ReplWelcomeView<'_>) -> String {
+    let width = view.width.max(24);
+    if width < 44 {
+        return format_compact_welcome(view, width);
+    }
+
+    let block_width = width.min(56);
+    let cwd = truncate_start(
+        &display_absolute_path(view.cwd),
+        block_width.saturating_sub(2),
+    );
+    let model_width = block_width.saturating_sub(24).max(8);
+    let model = truncate_end(view.model_id, model_width);
+    let session = truncate_end(view.session_label, block_width.saturating_sub(42).max(3));
+
+    format!(
+        "\
+  R O V E
+  local agent runtime
+
+  {cwd}
+
+  model   {model:<model_width$}  session  {session}
+  mode    repl{mode_pad}status   ready
+
+  Type your task, or use /help for commands.
+",
+        mode_pad = " ".repeat(model_width.saturating_sub(3) + 2),
+    )
 }
 
 pub fn format_repl_status(view: ReplStatusView<'_>) -> String {
@@ -20,6 +59,19 @@ pub fn format_repl_status(view: ReplStatusView<'_>) -> String {
         Some(state) => format!("resumed {}", short_id(state.run_id.to_string())),
         None => "new".to_string(),
     };
+    let active_run = view
+        .active_resume_state
+        .map(|state| state.run_id.to_string())
+        .unwrap_or_else(|| "none".to_string());
+    let active_job = view
+        .active_resume_state
+        .map(|state| state.job_id.to_string())
+        .unwrap_or_else(|| "none".to_string());
+    let memory_paths = view.config.memory_paths();
+    let session_memory_path = memory_paths
+        .session_dir
+        .join(format!("{}.md", view.session_id));
+    let session_memory = display_path(&session_memory_path, &view.workspace.root);
 
     format!(
         "\
@@ -29,11 +81,15 @@ workspace  {workspace_kind}  {workspace_root}
 model      {model}
 provider   {provider}
 state      {state}  ·  session {session}
+session id {session_id}
+active    run {active_run}  ·  job {active_job}
+memory    {session_memory}
 
 {commands}
 ",
         model = truncate_middle(view.model_id, 96),
         provider = provider,
+        session_id = view.session_id,
         commands = command_hint_line(),
     )
 }
@@ -42,7 +98,7 @@ pub fn format_repl_help() -> String {
     "\
 Commands:
   /help             show this help
-  /status           show workspace, model, provider, state, and session
+  /status           show workspace, model, provider, state, session, run, and memory
   /exit, /quit      exit the REPL
   /clear            clear the terminal
   /sessions         list resumable task states
@@ -82,6 +138,52 @@ pub fn truncate_middle(value: &str, max_chars: usize) -> String {
         .rev()
         .collect();
     format!("{prefix}...{suffix}")
+}
+
+fn format_compact_welcome(view: ReplWelcomeView<'_>, width: usize) -> String {
+    let content_width = width.saturating_sub(2).max(8);
+    let cwd = truncate_start(&display_absolute_path(view.cwd), content_width);
+    let model = truncate_end(view.model_id, content_width.saturating_sub(6).max(3));
+    let session = truncate_end(view.session_label, content_width.saturating_sub(8).max(3));
+    let hint = truncate_end("Type your task, or use /help.", content_width);
+
+    format!(
+        "\
+R O V E
+local agent runtime
+{cwd}
+model {model}
+session {session}
+mode repl  status ready
+{hint}
+"
+    )
+}
+
+fn truncate_start(value: &str, max_chars: usize) -> String {
+    let total = value.chars().count();
+    if total <= max_chars || max_chars < 8 {
+        return value.to_string();
+    }
+    let tail_len = max_chars - 3;
+    let tail: String = value
+        .chars()
+        .rev()
+        .take(tail_len)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    format!("...{tail}")
+}
+
+fn truncate_end(value: &str, max_chars: usize) -> String {
+    let total = value.chars().count();
+    if total <= max_chars || max_chars < 8 {
+        return value.to_string();
+    }
+    let prefix: String = value.chars().take(max_chars - 3).collect();
+    format!("{prefix}...")
 }
 
 fn display_path(path: &Path, workspace_root: &Path) -> String {
@@ -130,7 +232,74 @@ mod tests {
     use crate::config::AppConfig;
     use crate::core::workspace::Workspace;
 
-    use super::{ReplStatusView, format_repl_help, format_repl_status, short_id};
+    use crate::core::types::SessionId;
+
+    use super::{
+        ReplStatusView, ReplWelcomeView, format_repl_help, format_repl_status, format_repl_welcome,
+        short_id,
+    };
+
+    #[test]
+    fn repl_welcome_wide_layout_contains_compact_startup_context() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = Workspace::detect(tmp.path()).unwrap();
+
+        let output = format_repl_welcome(ReplWelcomeView {
+            cwd: workspace.root.as_path(),
+            model_id: "qwen/qwen3-coder",
+            session_label: "new",
+            width: 80,
+        });
+
+        assert!(output.contains("R O V E"));
+        assert!(output.contains("local agent runtime"));
+        assert!(output.contains(tmp.path().file_name().unwrap().to_string_lossy().as_ref()));
+        assert!(output.contains("model   qwen/qwen3-coder"));
+        assert!(output.contains("session  new"));
+        assert!(output.contains("mode    repl"));
+        assert!(output.contains("status   ready"));
+        assert!(output.contains("Type your task, or use /help for commands."));
+        assert!(!output.contains("provider"));
+        assert!(!output.contains("session id"));
+        assert!(!output.contains("memory"));
+    }
+
+    #[test]
+    fn repl_welcome_truncates_long_windows_paths_from_the_start() {
+        let cwd = std::path::Path::new(
+            r"C:\Users\AllureLove\Documents\Projects\Deeply\Nested\Workspace\rove",
+        );
+
+        let output = format_repl_welcome(ReplWelcomeView {
+            cwd,
+            model_id: "test-model",
+            session_label: "resumed 01ARYZ6S41",
+            width: 56,
+        });
+
+        assert!(output.contains("..."));
+        assert!(output.contains(r"Nested\Workspace\rove"));
+        assert!(!output.contains(r"C:\Users\AllureLove\Documents\Projects\Deeply"));
+    }
+
+    #[test]
+    fn repl_welcome_narrow_layout_is_compact_and_bounded() {
+        let cwd = std::path::Path::new(r"C:\Users\AllureLove\repo\rove");
+
+        let output = format_repl_welcome(ReplWelcomeView {
+            cwd,
+            model_id: "qwen/qwen3-coder-with-a-long-suffix",
+            session_label: "new",
+            width: 34,
+        });
+
+        assert!(output.contains("R O V E"));
+        assert!(output.contains("model qwen/qwen3"));
+        assert!(output.contains("session new"));
+        assert!(output.contains("/help"));
+        assert!(!output.contains("model   "));
+        assert!(output.lines().all(|line| line.chars().count() <= 34));
+    }
 
     #[test]
     fn repl_status_includes_runtime_context_and_commands() {
@@ -139,11 +308,13 @@ mod tests {
         let mut config = AppConfig::default();
         config.provider.name = "openai-compatible".to_string();
         config.provider.model = "test-model".to_string();
+        let session_id = SessionId::new();
 
         let output = format_repl_status(ReplStatusView {
             workspace: &workspace,
             config: &config,
             model_id: "test-model",
+            session_id,
             active_resume_state: None,
         });
 
@@ -158,6 +329,10 @@ mod tests {
         assert!(output.contains("state"));
         assert!(output.contains("session"));
         assert!(output.contains("new"));
+        assert!(output.contains(&session_id.to_string()));
+        assert!(output.contains("active"));
+        assert!(output.contains("memory"));
+        assert!(output.contains(".rove/memory/sessions"));
         assert!(output.contains("/status"));
         assert!(output.contains("/resume latest"));
     }
@@ -175,6 +350,7 @@ mod tests {
             workspace: &workspace,
             config: &config,
             model_id: "fake",
+            session_id: SessionId::new(),
             active_resume_state: None,
         });
 

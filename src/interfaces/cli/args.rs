@@ -7,8 +7,8 @@ use clap::{Parser, Subcommand, ValueEnum};
 #[command(name = "rove", version, about)]
 pub struct Args {
     /// The task or question to give the agent.
-    #[arg()]
-    pub message: Option<String>,
+    #[arg(value_name = "MESSAGE", num_args = 1..)]
+    pub message: Vec<String>,
 
     /// Model to use (overrides ROVE_MODEL env var).
     #[arg(short, long)]
@@ -45,6 +45,15 @@ pub struct Args {
 impl Args {
     pub fn is_sync_fast_path(&self) -> bool {
         matches!(self.command, Some(Command::DumpConfig))
+    }
+
+    pub fn message(&self) -> Option<String> {
+        let message = self.message.join(" ").trim().to_string();
+        if message.is_empty() {
+            None
+        } else {
+            Some(message)
+        }
     }
 }
 
@@ -108,7 +117,7 @@ mod tests {
     fn sessions_subcommand_parses_without_message() {
         let args = Args::parse_from(["rove", "sessions"]);
 
-        assert!(args.message.is_none());
+        assert!(args.message().is_none());
         assert!(matches!(args.command, Some(Command::Sessions)));
     }
 
@@ -116,7 +125,7 @@ mod tests {
     fn dump_config_subcommand_parses_without_message() {
         let args = Args::parse_from(["rove", "dump-config"]);
 
-        assert!(args.message.is_none());
+        assert!(args.message().is_none());
         assert!(matches!(args.command, Some(Command::DumpConfig)));
     }
 
@@ -131,7 +140,7 @@ mod tests {
     fn no_args_enters_async_cli_path() {
         let args = Args::parse_from(["rove"]);
 
-        assert!(args.message.is_none());
+        assert!(args.message().is_none());
         assert!(args.command.is_none());
         assert!(!args.is_sync_fast_path());
     }
@@ -140,7 +149,15 @@ mod tests {
     fn quoted_task_still_parses_as_one_shot_message() {
         let args = Args::parse_from(["rove", "analyze this project"]);
 
-        assert_eq!(args.message.as_deref(), Some("analyze this project"));
+        assert_eq!(args.message().as_deref(), Some("analyze this project"));
+        assert!(args.command.is_none());
+    }
+
+    #[test]
+    fn unquoted_multi_word_task_parses_as_one_shot_message() {
+        let args = Args::try_parse_from(["rove", "analyze", "this", "project"]).unwrap();
+
+        assert_eq!(args.message().as_deref(), Some("analyze this project"));
         assert!(args.command.is_none());
     }
 
@@ -155,7 +172,7 @@ mod tests {
             "text-embedding-3-large",
         ]);
 
-        assert!(args.message.is_none());
+        assert!(args.message().is_none());
         match args.command {
             Some(Command::Index {
                 path,
@@ -174,7 +191,7 @@ mod tests {
     fn state_repair_subcommand_parses_without_message() {
         let args = Args::parse_from(["rove", "state", "repair"]);
 
-        assert!(args.message.is_none());
+        assert!(args.message().is_none());
         assert!(matches!(
             args.command,
             Some(Command::State {
@@ -187,7 +204,7 @@ mod tests {
     fn state_cleanup_subcommand_parses_without_message() {
         let args = Args::parse_from(["rove", "state", "cleanup"]);
 
-        assert!(args.message.is_none());
+        assert!(args.message().is_none());
         assert!(matches!(
             args.command,
             Some(Command::State {
