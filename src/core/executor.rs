@@ -1,5 +1,8 @@
 use crate::core::boundary::check_tool_allowed;
-use crate::core::types::{CallId, ToolContext, ToolResult};
+use crate::core::types::{
+    CallId, ToolContext, ToolExecutionMetadata, ToolExecutionStatus, ToolMutation, ToolResult,
+    ToolRiskLevel, ToolSchema,
+};
 use crate::errors::ToolError;
 use crate::hooks::{HookRegistry, PostToolHookContext};
 use crate::tools::registry::ToolRegistry;
@@ -48,12 +51,14 @@ impl<'a> Executor<'a> {
 
         // Step 5: execute
         let output = self.registry.execute(name, args.clone(), ctx).await?;
+        let metadata = success_metadata(&schema, &output.mutations);
 
         // Step 6: result wrapping
         let result = ToolResult {
             call_id,
             output: output.content,
             mutations: output.mutations,
+            metadata,
         };
 
         // Step 7: post-tool hooks
@@ -286,6 +291,29 @@ fn invalid_args<T>(reason: String) -> Result<T, ToolError> {
     Err(ToolError::InvalidArgs { reason })
 }
 
+fn success_metadata(schema: &ToolSchema, mutations: &[ToolMutation]) -> ToolExecutionMetadata {
+    ToolExecutionMetadata {
+        status: ToolExecutionStatus::Ok,
+        error_code: None,
+        security_event_type: None,
+        risk_level: if schema.destructive {
+            ToolRiskLevel::High
+        } else {
+            ToolRiskLevel::Low
+        },
+        read_only: !schema.destructive,
+        affected_paths: mutations
+            .iter()
+            .map(|mutation| mutation.path.clone())
+            .collect(),
+        workspace_changed: !mutations.is_empty(),
+        diff_summary: mutations
+            .iter()
+            .map(|mutation| format!("{:?}: {}", mutation.operation, mutation.path))
+            .collect(),
+    }
+}
+
 #[derive(Debug, Clone)]
 struct JsonPath(String);
 
@@ -316,5 +344,79 @@ impl JsonPath {
 
     fn is_root(&self) -> bool {
         self.0.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use async_trait::async_trait;
+    use tokio_util::sync::CancellationToken;
+
+    use super::Executor;
+    use crate::core::types::{
+        ApprovalPolicy, CallId, ToolContext, ToolExecutionStatus, ToolMutation,
+        ToolMutationOperation, ToolRiskLevel, ToolSchema,
+    };
+    use crate::core::workspace::Workspace;
+    use crate::memory::paths::MemoryPaths;
+    use crate::tools::registry::ToolRegistry;
+    use crate::tools::traits::{Tool, ToolOutput};
+
+    struct MutatingTool;
+
+    #[async_trait]
+    impl Tool for MutatingTool {
+        fn schema(&self) -> ToolSchema {
+            ToolSchema {
+                name: "write_note".to_string(),
+                description: "Write a note".to_string(),
+                parameters: serde_json::json!({"type": "object"}),
+                destructive: true,
+                parallel_safe: false,
+                capability: None,
+            }
+        }
+
+        async fn execute(
+            &self,
+            _args: serde_json::Value,
+            _ctx: &ToolContext<'_>,
+        ) -> Result<ToolOutput, crate::errors::ToolError> {
+            Ok(ToolOutput {
+                content: "wrote note".to_string(),
+                mutations: vec![ToolMutation {
+                    path: "notes/today.md".to_string(),
+                    operation: ToolMutationOperation::Update,
+                    diff: Some("+hello".to_string()),
+                }],
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn successful_tool_result_includes_execution_metadata() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let workspace = Workspace::detect(tmp.path()).unwrap();
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(MutatingTool));
+        let ctx = ToolContext {
+            workspace: &workspace,
+            memory_paths: MemoryPaths::from_workspace(&workspace, 8),
+            approval_policy: ApprovalPolicy::Auto,
+            cancel_token: CancellationToken::new(),
+            input_provider: None,
+        };
+
+        let result = Executor::new(&registry)
+            .run(&ctx, "write_note", serde_json::json!({}), CallId::new())
+            .await
+            .unwrap();
+
+        assert_eq!(result.metadata.status, ToolExecutionStatus::Ok);
+        assert_eq!(result.metadata.risk_level, ToolRiskLevel::High);
+        assert!(!result.metadata.read_only);
+        assert!(result.metadata.workspace_changed);
+        assert_eq!(result.metadata.affected_paths, vec!["notes/today.md"]);
+        assert_eq!(result.metadata.diff_summary, vec!["Update: notes/today.md"]);
     }
 }

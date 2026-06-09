@@ -50,6 +50,8 @@ pub struct TaskState {
     pub checkpoint: Option<PromptCheckpoint>,
     #[serde(default)]
     pub plan: Option<TaskPlan>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_identity: Option<crate::core::runtime_identity::RuntimeIdentity>,
 }
 
 /// Resumable prompt checkpoint used to rebuild context without replaying the full audit history.
@@ -66,6 +68,8 @@ pub struct PromptCheckpoint {
     pub compacted_history_messages: usize,
     #[serde(default)]
     pub compaction: PromptCompactionState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_identity: Option<crate::core::runtime_identity::RuntimeIdentity>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -341,6 +345,8 @@ pub struct ToolResult {
     pub output: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mutations: Vec<ToolMutation>,
+    #[serde(default)]
+    pub metadata: ToolExecutionMetadata,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -360,12 +366,48 @@ pub enum ToolMutationOperation {
     Unknown,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolExecutionStatus {
+    #[default]
+    Ok,
+    Error,
+    Rejected,
+    PartialSuccess,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolRiskLevel {
+    #[default]
+    Low,
+    High,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ToolExecutionMetadata {
+    pub status: ToolExecutionStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub security_event_type: Option<String>,
+    pub risk_level: ToolRiskLevel,
+    pub read_only: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub affected_paths: Vec<String>,
+    pub workspace_changed: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub diff_summary: Vec<String>,
+}
+
 /// Token usage from a single LLM call.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Usage {
     pub prompt_tokens: u32,
     pub completion_tokens: u32,
     pub total_tokens: u32,
+    #[serde(default)]
+    pub cached_tokens: u32,
 }
 
 /// Why a run terminated.

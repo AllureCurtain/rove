@@ -215,6 +215,7 @@ async fn run_prompt(
             state_store: &runtime.state_store,
             workspace: &runtime.workspace,
             model_id: runtime.engine.model_id(),
+            runtime_identity: Some(runtime.engine.runtime_identity()),
         },
         CliRunRenderOptions {
             mode: CliRunRenderMode::ReplCompact,
@@ -437,6 +438,7 @@ mod tests {
             summary: None,
             checkpoint: None,
             plan: None,
+            runtime_identity: None,
         }
     }
 }

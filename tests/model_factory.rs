@@ -79,6 +79,28 @@ fn build_model_client_routes_mixed_native_fallback_providers() {
 }
 
 #[test]
+fn build_model_client_routes_openai_responses_provider() {
+    let mut config = AppConfig::default();
+    config.provider.name = "openai-responses".to_string();
+    config.provider.api_base = "https://api.openai.com/v1".to_string();
+    config.provider.api_key = "secret-token".to_string();
+    config.provider.model = "gpt-4.1-mini".to_string();
+    config.provider.fallback_providers = vec![FallbackProviderConfig {
+        name: "openai-compatible".to_string(),
+        api_base: "https://fallback.test/v1".to_string(),
+        api_key: "fallback-secret".to_string(),
+        model: "chat-fallback".to_string(),
+    }];
+
+    let model = build_model_client(&config, "gpt-4.1-mini".to_string());
+
+    assert_eq!(
+        model.model_id(),
+        "routing(openai-responses:https://api.openai.com/v1:gpt-4.1-mini,openai-compatible:https://fallback.test/v1:chat-fallback)"
+    );
+}
+
+#[test]
 fn fallback_models_inherit_primary_provider() {
     let mut config = AppConfig::default();
     config.provider.name = "anthropic".to_string();

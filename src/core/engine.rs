@@ -14,6 +14,9 @@ use crate::core::events::StreamEvent;
 use crate::core::plan_loop::{PlanLoopState, run_planned_loop};
 use crate::core::planner::Planner;
 use crate::core::run_loop::{LoopContext, LoopItem, RunLoopState, run_unplanned_loop};
+use crate::core::runtime_identity::{
+    RuntimeIdentity, RuntimeIdentityInput, RuntimeIdentityStatus, build_runtime_identity,
+};
 use crate::core::types::{
     ApprovalDecision, ApprovalPolicy, JobId, Message, RunId, RunRequest, SessionId,
     TerminationReason, ToolApprovalProvider, UserInputProvider,
@@ -241,6 +244,21 @@ impl Engine {
         &self.workspace
     }
 
+    pub fn runtime_identity(&self) -> RuntimeIdentity {
+        let tools = self.registry.schemas();
+        build_runtime_identity(RuntimeIdentityInput {
+            workspace: &self.workspace,
+            model_id: self.model.model_id(),
+            provider_target: self.model.client_id().as_str(),
+            approval_policy: self.approval_policy,
+            max_steps: self.config.max_steps,
+            plan_enabled: self.config.plan_enabled,
+            system_prompt: self.context_manager.system_prompt(),
+            planner_prompt: self.planner.prompt(),
+            tools: &tools,
+        })
+    }
+
     async fn run_post_run_hooks(&self, ctx: CompletedRunContext) {
         let ctx = PostRunHookContext {
             workspace: &self.workspace,
@@ -291,6 +309,7 @@ impl Engine {
         let user_message = req.user_message;
         let resume_state = req.resume_state;
         let stream_cancel = cancel.clone();
+        let runtime_identity = self.runtime_identity();
 
         RunStream::new(
             session_id,
@@ -342,6 +361,8 @@ impl Engine {
                 if stream_cancel.is_cancelled() {
                     complete_run!(TerminationReason::Cancelled, None);
                 }
+
+                warn_on_runtime_identity_mismatch(resume_state.as_ref(), &runtime_identity);
 
                 let resume_checkpoint = resume_state
                     .as_ref()
@@ -461,5 +482,26 @@ struct CompletedRunContext {
 fn append_trace(trace_writer: &Option<TraceWriter>, event: &StreamEvent) {
     if let Some(tw) = trace_writer {
         let _ = tw.append(event);
+    }
+}
+
+fn warn_on_runtime_identity_mismatch(
+    resume_state: Option<&crate::core::types::TaskState>,
+    current: &RuntimeIdentity,
+) {
+    let Some(resume_state) = resume_state else {
+        return;
+    };
+    let saved = resume_state
+        .checkpoint
+        .as_ref()
+        .and_then(|checkpoint| checkpoint.runtime_identity.as_ref())
+        .or(resume_state.runtime_identity.as_ref());
+    let evaluation = crate::core::runtime_identity::evaluate_runtime_identity(saved, current);
+    if evaluation.status == RuntimeIdentityStatus::RuntimeMismatch {
+        tracing::warn!(
+            mismatch_fields = ?evaluation.mismatch_fields,
+            "resume runtime identity mismatch"
+        );
     }
 }

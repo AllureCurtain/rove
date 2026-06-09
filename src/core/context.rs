@@ -1,3 +1,4 @@
+use crate::core::prompt_metadata::{PromptBuildMetadata, prompt_hash, stable_hash};
 use crate::core::types::Message;
 
 const MESSAGE_OVERHEAD_TOKENS: usize = 4;
@@ -32,6 +33,7 @@ pub struct ContextBuild {
     pub dropped_history_messages: usize,
     pub over_hard_limit: bool,
     pub auto_compaction_needed: bool,
+    pub metadata: PromptBuildMetadata,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -187,6 +189,12 @@ impl ContextManager {
         messages.push(Message::user(user_message));
 
         let token_estimate = estimate_messages_tokens(&messages);
+        let metadata = self.build_metadata(
+            &messages,
+            token_estimate,
+            history.len().saturating_sub(start),
+            start,
+        );
         ContextBuild {
             messages,
             token_estimate,
@@ -194,6 +202,7 @@ impl ContextManager {
             dropped_history_messages: start,
             over_hard_limit: false,
             auto_compaction_needed: start > 0,
+            metadata,
         }
     }
 
@@ -245,19 +254,46 @@ impl ContextManager {
                 .saturating_sub(budget.reserved_tokens)
             || history.len().saturating_sub(included_history_messages) > 0;
 
+        let dropped_history_messages = history.len().saturating_sub(included_history_messages);
+        let metadata = self.build_metadata(
+            &messages,
+            token_estimate,
+            included_history_messages,
+            dropped_history_messages,
+        );
         ContextBuild {
             messages,
             token_estimate,
             included_history_messages,
-            dropped_history_messages: history.len().saturating_sub(included_history_messages),
+            dropped_history_messages,
             over_hard_limit,
             auto_compaction_needed,
+            metadata,
         }
     }
 
     /// Get the system prompt.
     pub fn system_prompt(&self) -> &str {
         &self.system_prompt
+    }
+
+    fn build_metadata(
+        &self,
+        messages: &[Message],
+        token_estimate: usize,
+        included_history_messages: usize,
+        dropped_history_messages: usize,
+    ) -> PromptBuildMetadata {
+        PromptBuildMetadata {
+            prompt_hash: prompt_hash(messages),
+            stable_prefix_hash: stable_hash(&self.system_prompt),
+            workspace_fingerprint: String::new(),
+            tool_signature: String::new(),
+            token_estimate,
+            included_history_messages,
+            dropped_history_messages,
+            prompt_cache_key: None,
+        }
     }
 }
 
@@ -333,5 +369,28 @@ mod tests {
         );
 
         assert!(estimate_message_tokens(&with_tool_call) > estimate_message_tokens(&plain));
+    }
+
+    #[test]
+    fn build_metadata_matches_prompt_and_history_selection() {
+        let context = ContextManager::with_max_history("system".to_string(), 1);
+        let history = vec![Message::user("old"), Message::assistant("new")];
+
+        let built = context.build_with_checkpoint("current", &[], None, &history);
+
+        assert_eq!(
+            built.metadata.prompt_hash,
+            crate::core::prompt_metadata::prompt_hash(&built.messages)
+        );
+        assert_eq!(
+            built.metadata.stable_prefix_hash,
+            crate::core::prompt_metadata::stable_hash("system")
+        );
+        assert_eq!(built.metadata.token_estimate, built.token_estimate);
+        assert_eq!(built.metadata.included_history_messages, 1);
+        assert_eq!(built.metadata.dropped_history_messages, 1);
+        assert!(built.metadata.workspace_fingerprint.is_empty());
+        assert!(built.metadata.tool_signature.is_empty());
+        assert!(built.metadata.prompt_cache_key.is_none());
     }
 }

@@ -2,8 +2,9 @@ use serde::{Deserialize, Serialize};
 
 use super::types::{
     CallId, JobId, PlanStep, PromptCompactionState, RunId, TaskPlan, TerminationReason,
-    ToolCallRef, ToolResult, Usage,
+    ToolCallRef, ToolExecutionMetadata, ToolResult, Usage,
 };
+use crate::core::prompt_metadata::PromptBuildMetadata;
 use crate::errors::ToolError;
 
 /// All events emitted by the engine's streaming main loop.
@@ -55,7 +56,12 @@ pub enum StreamEvent {
     ToolCallCompleted { call_id: CallId, result: ToolResult },
 
     /// A tool call failed.
-    ToolCallFailed { call_id: CallId, error: ToolError },
+    ToolCallFailed {
+        call_id: CallId,
+        error: ToolError,
+        #[serde(default)]
+        metadata: ToolExecutionMetadata,
+    },
 
     /// The `request_input` tool is waiting for user input.
     InputNeeded { input_id: CallId, prompt: String },
@@ -82,6 +88,9 @@ pub enum StreamEvent {
         state: PromptCompactionState,
     },
 
+    /// Prompt context has been assembled for a model turn.
+    PromptBuilt { metadata: PromptBuildMetadata },
+
     /// The run has completed.
     RunCompleted {
         reason: TerminationReason,
@@ -107,6 +116,7 @@ impl StreamEvent {
             Self::PlanStepCompleted { .. } => "plan_step_completed",
             Self::PlanStepFailed { .. } => "plan_step_failed",
             Self::PromptCompacted { .. } => "prompt_compacted",
+            Self::PromptBuilt { .. } => "prompt_built",
             Self::RunCompleted { .. } => "run_completed",
         }
     }

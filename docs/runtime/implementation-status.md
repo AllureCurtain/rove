@@ -78,3 +78,14 @@ MVP reached for the local-first single-user runtime. The exact boundary, include
 | Root README explains the project mainline. | Met |
 | Dead code warnings are enforced instead of globally allowed. | Met |
 | Runtime docs are the source of truth for current behavior. | Met |
+
+## Pico-Inspired Runtime Provider Upgrades
+
+- OpenAI Responses provider: implemented as `openai-responses`, separate from
+  `openai-compatible`.
+- Runtime loop: documented as Plan outside, ReAct inside.
+- Runtime identity: persisted in checkpoints and reports for resume diagnostics.
+- Prompt build metadata: recorded in prompt events and run reports.
+- Tool execution metadata: recorded for success and failure paths.
+- Benchmark evidence: result package format documented under
+  `benchmarks/results/`.

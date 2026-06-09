@@ -87,7 +87,7 @@ required for deterministic local MVP operation.
 
 Prefer the generic provider runner because it verifies provider reachability,
 API jobs, Web records, stress evidence, and evidence capture in one repeatable
-gate for OpenAI-compatible, Anthropic, and Ollama profiles:
+gate for OpenAI-compatible, OpenAI Responses, Anthropic, and Ollama profiles:
 
 ```powershell
 $env:OPENAI_API_KEY = "<secret>"
@@ -102,6 +102,20 @@ For relay or gateway APIs, replace `-ApiBase`, `-ApiKeyEnv`, and `-Model` with
 that account's values. If the gateway does not expose `/models`, pass
 `-SkipModelInventory` and record the provider's own model-selection evidence
 separately.
+
+OpenAI Responses is a separate native provider gate from OpenAI-compatible chat
+completions:
+
+```powershell
+$env:OPENAI_API_KEY = "<secret>"
+powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
+  -Provider openai-responses `
+  -ApiBase "https://api.openai.com/v1" `
+  -ApiKeyEnv OPENAI_API_KEY `
+  -Model "gpt-4.1-mini" `
+  -RunStress `
+  -RunRestartRecovery
+```
 
 Anthropic and Ollama use the same runner with provider-specific inventory and
 smoke dispatch:
@@ -134,6 +148,7 @@ deterministic fixture.
 | Provider | Required before release claim | Long stress required | Notes |
 |---|---:|---:|---|
 | OpenAI-compatible official API | Yes when claiming official API readiness | Yes when quota allows | Includes relay/gateway-compatible surface. |
+| OpenAI Responses official API | Yes when claiming Codex-style/OpenAI Responses readiness | Yes when quota allows | Uses `/v1/responses`; separate from chat completions. |
 | OpenAI-compatible relay/gateway | Yes when claiming relay/gateway readiness | Yes when quota allows | Record gateway model inventory or `-SkipModelInventory` reason. |
 | Anthropic | Yes when claiming Anthropic readiness | Optional unless target release advertises Anthropic as verified | Native Messages API path. |
 | Ollama | Yes when claiming local-model readiness | Optional but recommended | Requires local Ollama server and pulled model. |
@@ -264,6 +279,8 @@ Current local-first posture:
 For a complete readiness pass, preserve:
 
 - command output or logs for deterministic gates;
+- `benchmarks/results/<scenario>-<YYYY-MM-DD>/` evidence packages with
+  `DATA_PROVENANCE.md`, `rove-benchmark-core-report.md`, and `metrics.json`;
 - local-full default and custom-port artifact directories;
 - provider model inventory and selected model id;
 - provider smoke output or classified failure notes;

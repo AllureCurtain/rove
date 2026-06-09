@@ -44,6 +44,8 @@ pub struct ProviderConfig {
     pub api_key: String,
     pub anthropic_api_key: String,
     pub model: String,
+    pub responses_prompt_cache: bool,
+    pub responses_prompt_cache_retention: Option<String>,
     pub fallback_models: Vec<String>,
     pub fallback_providers: Vec<FallbackProviderConfig>,
 }
@@ -171,6 +173,8 @@ impl Default for ProviderConfig {
             api_key: String::new(),
             anthropic_api_key: String::new(),
             model: "gpt-4o".to_string(),
+            responses_prompt_cache: false,
+            responses_prompt_cache_retention: None,
             fallback_models: Vec::new(),
             fallback_providers: Vec::new(),
         }
@@ -391,7 +395,7 @@ impl AppConfig {
         let provider = self.provider.name.as_str();
         if canonical_provider_name(provider).is_none() {
             anyhow::bail!(
-                "invalid provider `{provider}`; expected openai, openai-compatible, anthropic, ollama, or fake"
+                "invalid provider `{provider}`; expected openai, openai-compatible, openai-responses, anthropic, ollama, or fake"
             );
         }
         if self.provider.model.trim().is_empty() {
@@ -409,7 +413,7 @@ impl AppConfig {
             let fallback_provider = fallback.name.as_str();
             let Some(fallback_kind) = canonical_provider_name(fallback_provider) else {
                 anyhow::bail!(
-                    "invalid fallback provider `{fallback_provider}`; expected openai, openai-compatible, anthropic, ollama, or fake"
+                    "invalid fallback provider `{fallback_provider}`; expected openai, openai-compatible, openai-responses, anthropic, ollama, or fake"
                 );
             };
             if fallback_kind == "openai-compatible" && fallback.api_base.trim().is_empty() {
@@ -529,6 +533,7 @@ impl AppConfig {
 fn canonical_provider_name(name: &str) -> Option<&'static str> {
     match name.trim().to_ascii_lowercase().as_str() {
         "openai" | "openai-compatible" => Some("openai-compatible"),
+        "openai-responses" | "responses" => Some("openai-responses"),
         "anthropic" => Some("anthropic"),
         "ollama" => Some("ollama"),
         "fake" => Some("fake"),
@@ -612,6 +617,10 @@ struct ProviderConfigLayer {
     anthropic_api_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    responses_prompt_cache: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    responses_prompt_cache_retention: Option<Option<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     fallback_models: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -823,6 +832,17 @@ fn env_layer() -> anyhow::Result<NamedConfigLayer> {
     if let Some(value) = env_string("ROVE_MODEL") {
         provider.model = Some(value);
         keys.push("ROVE_MODEL".to_string());
+    }
+    if let Some(value) = env_string("ROVE_OPENAI_RESPONSES_PROMPT_CACHE") {
+        provider.responses_prompt_cache = Some(parse_env_bool(
+            "ROVE_OPENAI_RESPONSES_PROMPT_CACHE",
+            &value,
+        )?);
+        keys.push("ROVE_OPENAI_RESPONSES_PROMPT_CACHE".to_string());
+    }
+    if let Some(value) = env_string("ROVE_OPENAI_RESPONSES_PROMPT_CACHE_RETENTION") {
+        provider.responses_prompt_cache_retention = Some(Some(value));
+        keys.push("ROVE_OPENAI_RESPONSES_PROMPT_CACHE_RETENTION".to_string());
     }
     if let Some(value) = env_string("ROVE_FALLBACK_MODELS") {
         provider.fallback_models = Some(parse_csv(&value));
@@ -1060,6 +1080,8 @@ fn has_provider_values(layer: &ProviderConfigLayer) -> bool {
         || layer.api_key.is_some()
         || layer.anthropic_api_key.is_some()
         || layer.model.is_some()
+        || layer.responses_prompt_cache.is_some()
+        || layer.responses_prompt_cache_retention.is_some()
         || layer.fallback_models.is_some()
         || layer.fallback_providers.is_some()
 }
@@ -1265,6 +1287,53 @@ retry_backoff_max_ms = 456
 
         assert_eq!(fallback.name, "openai-compatible");
         assert_eq!(fallback.model, "fallback-model");
+    }
+
+    #[test]
+    fn validation_accepts_openai_responses_provider_name() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let config_dir = tmp.path().join(".rove");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::write(
+            config_dir.join("config.toml"),
+            r#"
+[provider]
+name = "openai-responses"
+model = "gpt-4.1-mini"
+api_base = "https://api.openai.com/v1"
+"#,
+        )
+        .unwrap();
+
+        let config = AppConfig::load(tmp.path(), AppConfigOverrides::default()).unwrap();
+
+        assert_eq!(config.provider.name, "openai-responses");
+    }
+
+    #[test]
+    fn validation_accepts_openai_responses_fallback_provider() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let config_dir = tmp.path().join(".rove");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::write(
+            config_dir.join("config.toml"),
+            r#"
+[provider]
+name = "openai-compatible"
+model = "primary-model"
+fallback_providers = [
+  { name = "openai-responses", api_base = "https://api.openai.com/v1", api_key = "secret", model = "gpt-4.1-mini" }
+]
+"#,
+        )
+        .unwrap();
+
+        let config = AppConfig::load(tmp.path(), AppConfigOverrides::default()).unwrap();
+
+        assert_eq!(
+            config.provider.fallback_providers[0].name,
+            "openai-responses"
+        );
     }
 
     #[test]

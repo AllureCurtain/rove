@@ -253,6 +253,7 @@ fn normalize_openai_chat_chunk(
                 .get("total_tokens")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0) as u32,
+            cached_tokens: 0,
         };
         events.push(ModelEvent::Usage { usage });
     }

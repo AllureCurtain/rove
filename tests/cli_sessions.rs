@@ -19,6 +19,7 @@ fn task_state(
         summary: Some(format!("summary for {goal}")),
         checkpoint: None,
         plan: None,
+        runtime_identity: None,
     }
 }
 

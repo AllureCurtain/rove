@@ -5,6 +5,7 @@ use std::path::Path;
 use futures::{Stream, StreamExt};
 
 use crate::core::events::StreamEvent;
+use crate::core::runtime_identity::RuntimeIdentity;
 use crate::core::types::{CallId, TaskState, TerminationReason};
 use crate::core::workspace::Workspace;
 use crate::interfaces::terminal::view::{RunViewState, RunViewUpdate};
@@ -18,6 +19,7 @@ pub struct CliRunRenderContext<'a> {
     pub state_store: &'a StateStore,
     pub workspace: &'a Workspace,
     pub model_id: &'a str,
+    pub runtime_identity: Option<RuntimeIdentity>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,6 +61,7 @@ where
         state_store,
         workspace,
         model_id,
+        runtime_identity,
     } = context;
     let resume_state_for_recorder = resume_state.clone();
     let RunHandle {
@@ -74,6 +77,7 @@ where
         run_id,
         message,
         resume_state_for_recorder.as_ref(),
+        runtime_identity,
     );
     let mut terminal_reason = TerminationReason::Error;
     let mut view_state = RunViewState::default();
@@ -426,6 +430,7 @@ mod tests {
                 state_store: &state_store,
                 workspace: &workspace,
                 model_id: "fake",
+                runtime_identity: None,
             },
             CliRunRenderOptions::default(),
         )
@@ -465,6 +470,7 @@ mod tests {
                 state_store: &state_store,
                 workspace: &workspace,
                 model_id: "fake",
+                runtime_identity: None,
             },
             CliRunRenderOptions {
                 mode: CliRunRenderMode::ReplCompact,
@@ -517,6 +523,7 @@ mod tests {
                     call_id,
                     output: "hello".to_string(),
                     mutations: Vec::new(),
+                    metadata: Default::default(),
                 },
             },
             StreamEvent::RunCompleted {
@@ -534,6 +541,7 @@ mod tests {
                 state_store: &state_store,
                 workspace: &workspace,
                 model_id: "fake",
+                runtime_identity: None,
             },
             CliRunRenderOptions {
                 mode: CliRunRenderMode::ReplCompact,
@@ -574,6 +582,7 @@ mod tests {
                 error: ToolError::ExecutionFailed {
                     reason: "boom".to_string(),
                 },
+                metadata: Default::default(),
             },
             StreamEvent::RunCompleted {
                 reason: TerminationReason::Error,
@@ -590,6 +599,7 @@ mod tests {
                 state_store: &state_store,
                 workspace: &workspace,
                 model_id: "fake",
+                runtime_identity: None,
             },
             CliRunRenderOptions {
                 mode: CliRunRenderMode::ReplCompact,
@@ -708,6 +718,7 @@ mod tests {
                 state_store: &state_store,
                 workspace: &workspace,
                 model_id: "fake",
+                runtime_identity: None,
             },
             CliRunRenderOptions {
                 mode: CliRunRenderMode::ReplCompact,

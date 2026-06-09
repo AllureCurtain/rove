@@ -100,6 +100,20 @@ pub enum ToolError {
     Timeout { timeout_ms: u64 },
 }
 
+impl ToolError {
+    pub fn error_code(&self) -> &'static str {
+        match self {
+            ToolError::UnknownTool { .. } => "unknown_tool",
+            ToolError::InvalidArgs { .. } => "invalid_args",
+            ToolError::InvalidInput { .. } => "invalid_input",
+            ToolError::HookBlocked { .. } => "hook_blocked",
+            ToolError::PermissionDenied { .. } => "permission_denied",
+            ToolError::ExecutionFailed { .. } => "execution_failed",
+            ToolError::Timeout { .. } => "timeout",
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::ModelError;

@@ -9,7 +9,8 @@ use crate::core::events::StreamEvent;
 use crate::core::executor::Executor;
 use crate::core::types::{
     ApprovalDecision, ApprovalPolicy, CallId, Message, ToolApprovalProvider, ToolApprovalRequest,
-    ToolCallAction, ToolCallRef, ToolContext, ToolResult, UserInputProvider,
+    ToolCallAction, ToolCallRef, ToolContext, ToolExecutionMetadata, ToolExecutionStatus,
+    ToolResult, ToolRiskLevel, UserInputProvider,
 };
 use crate::core::workspace::Workspace;
 use crate::errors::ToolError;
@@ -292,6 +293,7 @@ pub(crate) fn run_tool_turn<'a>(
                     });
                 }
                 Err(error) => {
+                    let metadata = failure_metadata(&error);
                     let reason = error.to_string();
                     records.push(ToolExecutionRecord {
                         call: execution.call.clone(),
@@ -301,6 +303,7 @@ pub(crate) fn run_tool_turn<'a>(
                     yield ToolTurnItem::Event(StreamEvent::ToolCallFailed {
                         call_id: execution.call.call_id,
                         error,
+                        metadata,
                     });
                 }
             }
@@ -308,6 +311,29 @@ pub(crate) fn run_tool_turn<'a>(
 
         yield ToolTurnItem::Finished(ToolTurnOutcome { records });
     })
+}
+
+fn failure_metadata(error: &ToolError) -> ToolExecutionMetadata {
+    ToolExecutionMetadata {
+        status: ToolExecutionStatus::Error,
+        error_code: Some(error.error_code().to_string()),
+        security_event_type: security_event_type(error),
+        risk_level: ToolRiskLevel::High,
+        read_only: false,
+        affected_paths: Vec::new(),
+        workspace_changed: false,
+        diff_summary: Vec::new(),
+    }
+}
+
+fn security_event_type(error: &ToolError) -> Option<String> {
+    match error {
+        ToolError::PermissionDenied { reason } if reason.contains("path escapes workspace") => {
+            Some("path_escape".to_string())
+        }
+        ToolError::PermissionDenied { .. } => Some("approval_denied".to_string()),
+        _ => None,
+    }
 }
 
 pub(crate) fn append_tool_history(
@@ -339,5 +365,58 @@ pub(crate) fn append_tool_history(
             record.history_output.clone(),
             record.call.tool_use_id.clone(),
         ));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use futures::StreamExt;
+    use tokio_util::sync::CancellationToken;
+
+    use super::{ToolAction, ToolTurnContext, ToolTurnItem, run_tool_turn};
+    use crate::core::types::{
+        ApprovalDecision, ApprovalPolicy, CallId, ToolCallAction, ToolExecutionStatus,
+    };
+    use crate::core::workspace::Workspace;
+    use crate::hooks::HookRegistry;
+    use crate::memory::paths::MemoryPaths;
+    use crate::tools::registry::ToolRegistry;
+
+    #[tokio::test]
+    async fn failed_tool_call_event_includes_execution_metadata() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let workspace = Workspace::detect(tmp.path()).unwrap();
+        let memory_paths = MemoryPaths::from_workspace(&workspace, 8);
+        let registry = ToolRegistry::new();
+        let ctx = ToolTurnContext {
+            registry: &registry,
+            workspace: &workspace,
+            memory_paths: &memory_paths,
+            approval_policy: ApprovalPolicy::Auto,
+            approval_decision: ApprovalDecision::Approve,
+            approval_provider: None,
+            input_provider: None,
+            hooks: HookRegistry::default(),
+            cancel_token: CancellationToken::new(),
+        };
+        let action = ToolAction::Call(ToolCallAction {
+            call_id: CallId::new(),
+            tool_use_id: None,
+            name: "missing_tool".to_string(),
+            args: serde_json::json!({}),
+        });
+
+        let events = run_tool_turn(ctx, action).collect::<Vec<_>>().await;
+
+        assert!(events.iter().any(|item| {
+            matches!(
+                item,
+                ToolTurnItem::Event(crate::core::events::StreamEvent::ToolCallFailed {
+                    metadata,
+                    ..
+                }) if metadata.status == ToolExecutionStatus::Error
+                    && metadata.error_code.as_deref() == Some("unknown_tool")
+            )
+        }));
     }
 }

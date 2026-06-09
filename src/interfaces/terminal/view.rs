@@ -1,4 +1,5 @@
 use crate::core::events::StreamEvent;
+use crate::core::prompt_metadata::PromptBuildMetadata;
 use crate::core::types::{
     CallId, JobId, PlanStep, PromptCompactionState, RunId, TaskPlan, TerminationReason, ToolResult,
     Usage,
@@ -66,6 +67,9 @@ pub enum RunViewUpdate {
     PromptCompacted {
         summary: Option<String>,
         state: PromptCompactionState,
+    },
+    PromptBuilt {
+        metadata: PromptBuildMetadata,
     },
     RunCompleted {
         reason: TerminationReason,
@@ -239,6 +243,7 @@ impl RunViewState {
             RunViewUpdate::PromptCompacted { summary, state } => {
                 self.prompt_compaction = Some((summary, state));
             }
+            RunViewUpdate::PromptBuilt { .. } => {}
             RunViewUpdate::RunCompleted { reason, output } => {
                 self.completed = Some(RunCompletionView { reason, output });
             }
@@ -320,7 +325,7 @@ impl From<&StreamEvent> for RunViewUpdate {
                 call_id: *call_id,
                 result: result.clone(),
             },
-            StreamEvent::ToolCallFailed { call_id, error } => Self::ToolCallFailed {
+            StreamEvent::ToolCallFailed { call_id, error, .. } => Self::ToolCallFailed {
                 call_id: *call_id,
                 error: error.clone(),
             },
@@ -350,6 +355,9 @@ impl From<&StreamEvent> for RunViewUpdate {
                 summary: summary.clone(),
                 state: state.clone(),
             },
+            StreamEvent::PromptBuilt { metadata } => Self::PromptBuilt {
+                metadata: metadata.clone(),
+            },
             StreamEvent::RunCompleted { reason, output } => Self::RunCompleted {
                 reason: reason.clone(),
                 output: output.clone(),
@@ -361,6 +369,7 @@ impl From<&StreamEvent> for RunViewUpdate {
 #[cfg(test)]
 mod tests {
     use crate::core::events::StreamEvent;
+    use crate::core::prompt_metadata::PromptBuildMetadata;
     use crate::core::types::{
         CallId, JobId, PlanStep, PromptCompactionMode, PromptCompactionState, RunId, TaskPlan,
         TerminationReason, ToolResult, Usage,
@@ -373,6 +382,7 @@ mod tests {
             prompt_tokens: 1,
             completion_tokens: 2,
             total_tokens: 3,
+            cached_tokens: 0,
         }
     }
 
@@ -442,6 +452,7 @@ mod tests {
                     call_id,
                     output: "done".to_string(),
                     mutations: Vec::new(),
+                    metadata: Default::default(),
                 },
             },
             StreamEvent::ToolCallFailed {
@@ -449,6 +460,7 @@ mod tests {
                 error: ToolError::ExecutionFailed {
                     reason: "boom".to_string(),
                 },
+                metadata: Default::default(),
             },
             StreamEvent::InputNeeded {
                 input_id,
@@ -472,6 +484,9 @@ mod tests {
                 summary: Some("summary".to_string()),
                 state: compaction,
             },
+            StreamEvent::PromptBuilt {
+                metadata: PromptBuildMetadata::default(),
+            },
             StreamEvent::RunCompleted {
                 reason: TerminationReason::Final,
                 output: Some("ok".to_string()),
@@ -480,7 +495,7 @@ mod tests {
 
         let updates: Vec<RunViewUpdate> = events.iter().map(RunViewUpdate::from).collect();
 
-        assert_eq!(updates.len(), 15);
+        assert_eq!(updates.len(), 16);
         assert!(matches!(
             updates[0],
             RunViewUpdate::RunStarted {
@@ -496,8 +511,9 @@ mod tests {
             updates[8],
             RunViewUpdate::InputNeeded { ref prompt, .. } if prompt == "Which branch?"
         ));
+        assert!(matches!(updates[14], RunViewUpdate::PromptBuilt { .. }));
         assert!(matches!(
-            updates[14],
+            updates[15],
             RunViewUpdate::RunCompleted {
                 reason: TerminationReason::Final,
                 ..

@@ -21,26 +21,52 @@ cargo test --test provider_smoke openai_compatible_real_provider_smoke_when_enab
 
 Set `OPENAI_API_BASE` when testing a compatible endpoint that is not OpenAI.
 
+## OpenAI Responses
+
+Use `openai-responses` for OpenAI's `/v1/responses` endpoint. This path is
+separate from `openai-compatible`, which continues to use `/chat/completions`.
+
+```powershell
+$env:OPENAI_API_KEY = "<secret>"
+$env:ROVE_PROVIDER_SMOKE_OPENAI_RESPONSES = "1"
+$env:ROVE_PROVIDER_SMOKE_OPENAI_RESPONSES_MODEL = "gpt-4.1-mini"
+cargo test --test provider_smoke openai_responses_real_provider_smoke_when_enabled -- --exact --nocapture
+```
+
+For a full provider evidence package when quota allows:
+
+```powershell
+$env:OPENAI_API_KEY = "<secret>"
+powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
+  -Provider openai-responses `
+  -ApiBase "https://api.openai.com/v1" `
+  -ApiKeyEnv OPENAI_API_KEY `
+  -Model "gpt-4.1-mini" `
+  -RunStress `
+  -RunRestartRecovery
+```
+
 ## Generic Provider Integration
 
 Use `scripts/provider-integration.ps1` when a provider should be treated as a
 real release gate instead of only a unit-level smoke. The runner is generic for
-official OpenAI-compatible APIs, relay or gateway APIs that expose the
-OpenAI-style chat API, Anthropic, and local Ollama.
+official OpenAI-compatible APIs, OpenAI Responses, relay or gateway APIs that
+expose the OpenAI-style chat API, Anthropic, and local Ollama.
 
 For product use through the Web workbench, provider targets can be supplied as
 per-run profiles: provider name, API base URL, key environment variable name
 when needed, and model id. The browser sends only the environment variable name,
 never the key value. The API route `POST /providers/test` checks model
-inventory for OpenAI-compatible, Anthropic, and Ollama profiles, then
+inventory for OpenAI-compatible, OpenAI Responses, Anthropic, and Ollama profiles, then
 `POST /jobs` can carry the same profile for the actual run. `fake` is accepted
 for deterministic local runs.
 
 The dedicated provider runner now automates the release gate for
-OpenAI-compatible, Anthropic, and Ollama profiles. It normalizes provider names,
-queries the provider-specific model inventory endpoint, dispatches the matching
-provider smoke test, submits API jobs with a per-run provider profile, selects
-the same profile in the Web workbench, and writes a redacted evidence summary.
+OpenAI-compatible, OpenAI Responses, Anthropic, and Ollama profiles. It
+normalizes provider names, queries the provider-specific model inventory
+endpoint, dispatches the matching provider smoke test, submits API jobs with a
+per-run provider profile, selects the same profile in the Web workbench, and
+writes a redacted evidence summary.
 
 For official OpenAI-compatible APIs:
 

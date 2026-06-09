@@ -74,6 +74,7 @@ impl ModelClient for FakeModelClient {
                     prompt_tokens: 10,
                     completion_tokens: 5,
                     total_tokens: 15,
+                    cached_tokens: 0,
                 },
             }),
         ]))
@@ -196,6 +197,7 @@ impl ModelClient for RecordingModelClient {
                     prompt_tokens: 1,
                     completion_tokens: 1,
                     total_tokens: 2,
+                    cached_tokens: 0,
                 },
             }),
         ]))
@@ -1226,6 +1228,7 @@ async fn latest_task_state_is_loaded_for_resume() {
         summary: Some("working summary".to_string()),
         checkpoint: None,
         plan: None,
+        runtime_identity: None,
     };
 
     store.write_task_state(&state).await.unwrap();
@@ -1250,6 +1253,7 @@ async fn latest_task_state_rejects_unsupported_schema_version() {
         summary: None,
         checkpoint: None,
         plan: None,
+        runtime_identity: None,
     };
 
     store.write_task_state(&state).await.unwrap();
@@ -1280,6 +1284,7 @@ async fn list_resumable_task_states_filters_by_session_and_newest_first() {
         summary: None,
         checkpoint: None,
         plan: None,
+        runtime_identity: None,
     };
     let unrelated = TaskState {
         schema_version: 1,
@@ -1292,6 +1297,7 @@ async fn list_resumable_task_states_filters_by_session_and_newest_first() {
         summary: None,
         checkpoint: None,
         plan: None,
+        runtime_identity: None,
     };
     let newer = TaskState {
         schema_version: 1,
@@ -1304,6 +1310,7 @@ async fn list_resumable_task_states_filters_by_session_and_newest_first() {
         summary: None,
         checkpoint: None,
         plan: None,
+        runtime_identity: None,
     };
 
     store.write_task_state(&older).await.unwrap();
@@ -1343,6 +1350,7 @@ async fn list_task_states_returns_all_snapshots_newest_first() {
         summary: None,
         checkpoint: None,
         plan: None,
+        runtime_identity: None,
     };
     let newer = TaskState {
         schema_version: 1,
@@ -1355,6 +1363,7 @@ async fn list_task_states_returns_all_snapshots_newest_first() {
         summary: None,
         checkpoint: None,
         plan: None,
+        runtime_identity: None,
     };
 
     store.write_task_state(&older).await.unwrap();
@@ -1387,6 +1396,7 @@ async fn load_task_state_reads_exact_run_id() {
         summary: Some("target summary".to_string()),
         checkpoint: None,
         plan: None,
+        runtime_identity: None,
     };
     let other = TaskState {
         schema_version: 1,
@@ -1399,6 +1409,7 @@ async fn load_task_state_reads_exact_run_id() {
         summary: None,
         checkpoint: None,
         plan: None,
+        runtime_identity: None,
     };
 
     store.write_task_state(&target).await.unwrap();
@@ -1479,6 +1490,7 @@ async fn lazy_import_indexes_existing_task_state_artifacts() {
         summary: Some("legacy summary".to_string()),
         checkpoint: None,
         plan: None,
+        runtime_identity: None,
     };
     let run_dir = tmp.path().join("runs").join(state.run_id.to_string());
     std::fs::create_dir_all(&run_dir).unwrap();
@@ -1521,6 +1533,7 @@ async fn repair_index_explicitly_imports_legacy_task_state_artifacts() {
         summary: Some("legacy summary".to_string()),
         checkpoint: None,
         plan: None,
+        runtime_identity: None,
     };
     let run_dir = tmp.path().join("runs").join(state.run_id.to_string());
     std::fs::create_dir_all(&run_dir).unwrap();
@@ -1566,6 +1579,7 @@ async fn repair_index_rebuilds_events_and_report_from_artifacts() {
         summary: Some("done".to_string()),
         checkpoint: None,
         plan: None,
+        runtime_identity: None,
     };
     store.write_task_state(&state).await.unwrap();
     let report = RunReport::new(
@@ -1617,6 +1631,7 @@ async fn repair_index_reports_corrupted_trace_lines_without_aborting() {
         summary: None,
         checkpoint: None,
         plan: None,
+        runtime_identity: None,
     };
     std::fs::write(
         run_dir.join("task_state.json"),
@@ -1698,6 +1713,7 @@ async fn cleanup_expired_state_rows_removes_only_expired_entries() {
         summary: None,
         checkpoint: None,
         plan: None,
+        runtime_identity: None,
     };
     store.write_task_state(&expired_state).await.unwrap();
     let run_dir = tmp.path().join("runs").join(active_run.to_string());
@@ -1918,6 +1934,7 @@ async fn resumed_run_includes_session_summary_in_prompt() {
             summary: Some("previous session summary".to_string()),
             checkpoint: None,
             plan: None,
+            runtime_identity: None,
         }),
     };
 
@@ -2497,6 +2514,7 @@ async fn planner_resumes_at_current_step() {
             summary: None,
             checkpoint: None,
             plan: Some(plan),
+            runtime_identity: None,
         }),
     };
     let engine = build_planner_test_engine(vec!["step 2 done".to_string()]);
@@ -2559,8 +2577,10 @@ async fn planner_resume_checkpoint_does_not_repeat_completed_steps() {
                 token_estimate: 12,
                 compacted_history_messages: 0,
                 compaction: Default::default(),
+                runtime_identity: None,
             }),
             plan: None,
+            runtime_identity: None,
         }),
     };
     let engine = build_planner_test_engine(vec!["step 2 done".to_string()]);
@@ -2723,6 +2743,7 @@ async fn resumed_run_uses_persisted_replanned_task_state() {
             summary: None,
             checkpoint: None,
             plan: Some(plan),
+            runtime_identity: None,
         }),
     };
     let engine = build_planner_test_engine(vec!["resumed replanned step done".to_string()]);
@@ -3103,6 +3124,7 @@ fn compaction_policy_requests_auto_compaction_after_soft_limit() {
         dropped_history_messages: 2,
         over_hard_limit: false,
         auto_compaction_needed: true,
+        metadata: Default::default(),
     };
 
     let decision = rove::core::context::CompactionPolicy::default().decide(&build, budget);
@@ -3128,6 +3150,7 @@ fn compaction_policy_opens_circuit_after_repeated_failures() {
         dropped_history_messages: 2,
         over_hard_limit: false,
         auto_compaction_needed: true,
+        metadata: Default::default(),
     };
 
     let decision = rove::core::context::CompactionPolicy {
@@ -3382,8 +3405,10 @@ async fn resumed_run_prefers_prompt_checkpoint_tail_and_summary() {
             token_estimate: 12,
             compacted_history_messages: 1,
             compaction: Default::default(),
+            runtime_identity: None,
         }),
         plan: None,
+        runtime_identity: None,
     };
     let req = RunRequest {
         session_id: SessionId::new(),

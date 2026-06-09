@@ -155,6 +155,7 @@ fn provider_integration_runner_is_generic_and_documented() {
 fn provider_integration_runner_supports_native_provider_protocols() {
     let script = std::fs::read_to_string("scripts/provider-integration.ps1")
         .expect("scripts/provider-integration.ps1 should exist");
+    let env_example = std::fs::read_to_string(".env.integration.example").unwrap();
     let provider_docs = std::fs::read_to_string("docs/runtime/provider-smoke.md").unwrap();
     let readiness = std::fs::read_to_string("docs/runtime/release-readiness.md").unwrap();
 
@@ -177,11 +178,16 @@ fn provider_integration_runner_supports_native_provider_protocols() {
     assert!(script.contains("return \"\""));
     assert!(script.contains("ROVE_PROVIDER_SMOKE_ANTHROPIC"));
     assert!(script.contains("ROVE_PROVIDER_SMOKE_OLLAMA"));
+    assert!(script.contains("openai-responses"));
+    assert!(script.contains("openai_responses_real_provider_smoke_when_enabled"));
     assert!(!script.contains("currently automates API/Web gates for openai-compatible providers"));
 
+    assert!(env_example.contains("ROVE_PROVIDER_SMOKE_OPENAI_RESPONSES"));
     assert!(provider_docs.contains("-Provider anthropic"));
     assert!(provider_docs.contains("-Provider ollama"));
+    assert!(provider_docs.contains("-Provider openai-responses"));
     assert!(readiness.contains("Provider Gate Matrix"));
+    assert!(readiness.contains("OpenAI Responses official API"));
 }
 
 #[test]
@@ -257,4 +263,32 @@ fn provider_integration_runner_writes_stress_summary_on_long_soak_failure() {
     assert!(script.contains("-LongSoakStatus \"failed\""));
     assert!(script.contains("long_soak_summary = \"long-soak-summary.json\""));
     assert!(script.contains("Write-StressSummary -CreatedJobs $created -RestartStatus $restartStatus -LongSoakStatus \"failed\""));
+}
+
+#[test]
+fn runtime_docs_explain_plan_react_core() {
+    let doc = std::fs::read_to_string("docs/runtime/react-loop.md").unwrap();
+    let runtime_readme = std::fs::read_to_string("docs/runtime/README.md").unwrap();
+    let root_readme = std::fs::read_to_string("README.md").unwrap();
+
+    assert!(doc.contains("Plan Outside, ReAct Inside"));
+    assert!(doc.contains("run_unplanned_loop"));
+    assert!(doc.contains("run_planned_loop"));
+    assert!(doc.contains("run_model_turn"));
+    assert!(doc.contains("run_tool_turn"));
+    assert!(doc.contains("ReactTurn"));
+    assert!(runtime_readme.contains("react-loop.md"));
+    assert!(root_readme.contains("react-loop.md"));
+}
+
+#[test]
+fn benchmark_evidence_format_is_documented() {
+    let results = std::fs::read_to_string("benchmarks/results/README.md").unwrap();
+    let docs = std::fs::read_to_string("docs/runtime/benchmark-evidence.md").unwrap();
+
+    assert!(results.contains("DATA_PROVENANCE.md"));
+    assert!(results.contains("rove-benchmark-core-report.md"));
+    assert!(results.contains("metrics.json"));
+    assert!(docs.contains("harness regression"));
+    assert!(docs.contains("recovery/resume ablation"));
 }
