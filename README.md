@@ -107,6 +107,8 @@ pnpm dev
 ```
 
 By default the API binds to `127.0.0.1:8787`, and the web workbench proxies `/api/*` to that local API.
+Generated HTTP API reference is available from the API server at `/swagger-ui`
+and `/api/openapi.json`.
 For token-protected API deployments, set the same `ROVE_API_TOKEN` in the Rust
 API environment and the Next.js server environment. The web proxy injects the
 bearer token server-side and does not expose it to browser JavaScript.

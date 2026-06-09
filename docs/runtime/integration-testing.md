@@ -116,6 +116,23 @@ List historical runs:
 Invoke-RestMethod http://127.0.0.1:8787/runs
 ```
 
+### Generated API Reference
+
+Fetch the generated OpenAPI document:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8787/api/openapi.json
+```
+
+Open Swagger UI in a browser:
+
+```text
+http://127.0.0.1:8787/swagger-ui
+```
+
+If `api.token_auth` is configured, use Swagger UI's authorize control or pass
+`Authorization: Bearer <token>` for business API calls.
+
 For pending approval and input scenarios, poll job state:
 
 ```powershell

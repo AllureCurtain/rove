@@ -128,6 +128,16 @@ The API routes are:
 - `GET /runs/{run_id}/report`
 - `POST /providers/test`
 
+The API server also exposes generated documentation:
+
+- `GET /api/openapi.json` returns the OpenAPI specification generated from the route annotations.
+- `GET /swagger-ui` serves Swagger UI for browsing the current API surface.
+
+The generated spec documents bearer-token support as `BearerAuth`. Runtime enforcement still follows
+`api.token_auth`: business routes require `Authorization: Bearer <token>` when configured, while the
+documentation endpoints only expose the static API reference. Provider profiles continue to pass
+credential environment variable names through `api_key_env`; raw provider keys are not API fields.
+
 The API default is local-only binding. Config supports token auth, CORS origin allowlists, rate limits, and an explicit unsafe remote-without-auth override. Token auth, CORS enforcement, and rate limiting are implemented as API middleware. Multi-user identity and distributed rate limiting are later deployment/product concerns rather than current runtime requirements.
 
 `POST /providers/test` accepts a provider profile with `name`, `api_base`,
