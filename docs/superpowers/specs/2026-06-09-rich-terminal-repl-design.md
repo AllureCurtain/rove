@@ -31,13 +31,12 @@ Non-interactive usage moves to an explicit subcommand:
 
 ```text
 rove exec "inspect this repo"
-rove exec --json "inspect this repo"
 ```
 
 `rove exec` inherits the current one-shot behavior: run the task, stream output,
-persist trace/state/report artifacts, and exit. Future script-focused options
-such as `--json`, `--output-last-message`, and CI-friendly output should belong
-under `exec`.
+persist trace/state/report artifacts, and exit. Script-focused options such as
+`--json`, `--output-last-message`, and CI-friendly output belong under `exec`,
+but JSON output is not part of the first implementation pass.
 
 ## Reference Behavior
 
