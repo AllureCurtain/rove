@@ -1,5 +1,6 @@
 /target
 /.worktrees
+/graphify-out/
 /.superpowers/
 /.rove/*
 !/.rove/config.example.toml
