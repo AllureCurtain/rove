@@ -166,14 +166,15 @@ async fn api_exposes_swagger_ui() {
             format!("/{location}")
         };
 
-        app.oneshot(
-            Request::builder()
-                .uri(follow_uri)
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap()
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .uri(follow_uri)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
     } else {
         response
     };
@@ -192,9 +193,28 @@ async fn api_exposes_swagger_ui() {
         text.contains("Swagger UI") || text.contains("swagger-ui"),
         "Swagger UI response should include Swagger UI content: {text}"
     );
+
+    let initializer = app
+        .oneshot(
+            Request::builder()
+                .uri("/swagger-ui/swagger-initializer.js")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        initializer.status().is_success(),
+        "Swagger UI initializer should be reachable, got {}",
+        initializer.status()
+    );
+    let body = axum::body::to_bytes(initializer.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let text = String::from_utf8(body.to_vec()).unwrap();
     assert!(
         text.contains("/api/openapi.json"),
-        "Swagger UI response should reference the OpenAPI spec: {text}"
+        "Swagger UI initializer should reference the OpenAPI spec: {text}"
     );
 }
 

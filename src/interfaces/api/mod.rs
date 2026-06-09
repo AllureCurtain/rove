@@ -10,14 +10,15 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::middleware;
 use axum::response::sse::{Event, KeepAlive, Sse};
-use axum::routing::{get, post};
 use axum::{Json, Router};
 use futures::{Stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock, broadcast, oneshot};
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_util::sync::CancellationToken;
-use utoipa::ToSchema;
+use utoipa::{OpenApi, ToSchema};
+use utoipa_axum::{router::OpenApiRouter, routes};
+use utoipa_swagger_ui::SwaggerUi;
 
 use crate::config::{AppConfig, AppConfigOverrides};
 use crate::core::context::{ContextBudget, ContextManager};
@@ -241,21 +242,24 @@ struct RunsQuery {
 }
 
 pub fn router(state: ApiState) -> Router {
-    Router::new()
-        .route("/providers/test", post(test_provider))
-        .route("/jobs", post(create_job))
-        .route("/jobs/{job_id}/events", get(job_events))
-        .route("/jobs/{job_id}/state", get(job_state))
-        .route("/jobs/{job_id}/cancel", post(cancel_job))
-        .route("/jobs/{job_id}/approvals/{call_id}", post(submit_approval))
-        .route("/jobs/{job_id}/inputs/{input_id}", post(submit_input))
-        .route("/runs", get(list_runs))
-        .route("/runs/{run_id}/report", get(run_report))
+    let (api_router, api) = OpenApiRouter::with_openapi(docs::ApiDoc::openapi())
+        .routes(routes!(test_provider))
+        .routes(routes!(create_job))
+        .routes(routes!(job_events))
+        .routes(routes!(job_state))
+        .routes(routes!(cancel_job))
+        .routes(routes!(submit_approval))
+        .routes(routes!(submit_input))
+        .routes(routes!(list_runs))
+        .routes(routes!(run_report))
         .with_state(state.clone())
         .layer(middleware::from_fn_with_state(
             state,
             security::api_security,
         ))
+        .split_for_parts();
+
+    api_router.merge(SwaggerUi::new("/swagger-ui").url("/api/openapi.json", api))
 }
 
 pub async fn serve(addr: Option<SocketAddr>, cwd: PathBuf) -> anyhow::Result<()> {
@@ -347,6 +351,19 @@ impl ApiState {
     }
 }
 
+#[utoipa::path(
+    post,
+    path = "/jobs",
+    tag = docs::JOBS_TAG,
+    security(("BearerAuth" = [])),
+    request_body = CreateJobRequest,
+    responses(
+        (status = 200, description = "Job created", body = CreateJobResponse, content_type = "application/json"),
+        (status = 400, description = "Invalid job request", body = serde_json::Value, content_type = "application/json"),
+        (status = 409, description = "Requested resume target is still active", body = serde_json::Value, content_type = "application/json"),
+        (status = 500, description = "Internal runtime error", body = serde_json::Value, content_type = "application/json")
+    )
+)]
 async fn create_job(
     State(state): State<ApiState>,
     Json(req): Json<CreateJobRequest>,
@@ -420,6 +437,19 @@ async fn create_job(
     }))
 }
 
+#[utoipa::path(
+    post,
+    path = "/providers/test",
+    tag = docs::PROVIDERS_TAG,
+    security(("BearerAuth" = [])),
+    request_body = ProviderTestRequest,
+    responses(
+        (status = 200, description = "Provider inventory check result", body = ProviderTestResponse, content_type = "application/json"),
+        (status = 400, description = "Invalid provider profile", body = serde_json::Value, content_type = "application/json"),
+        (status = 502, description = "Provider inventory request failed", body = serde_json::Value, content_type = "application/json"),
+        (status = 500, description = "Internal runtime error", body = serde_json::Value, content_type = "application/json")
+    )
+)]
 async fn test_provider(
     State(_state): State<ApiState>,
     Json(req): Json<ProviderTestRequest>,
@@ -443,6 +473,21 @@ async fn test_provider(
     }))
 }
 
+#[utoipa::path(
+    get,
+    path = "/jobs/{job_id}/events",
+    tag = docs::JOB_EVENTS_TAG,
+    security(("BearerAuth" = [])),
+    params(
+        ("job_id" = String, Path, description = "Job ULID"),
+        ("after" = Option<u64>, Query, description = "Replay only events with seq greater than this value")
+    ),
+    responses(
+        (status = 200, description = "Server-Sent Events stream of JobStreamEvent payloads", body = JobStreamEvent, content_type = "text/event-stream"),
+        (status = 400, description = "Invalid Last-Event-ID header", body = serde_json::Value, content_type = "application/json"),
+        (status = 500, description = "Failed to load persisted events", body = serde_json::Value, content_type = "application/json")
+    )
+)]
 async fn job_events(
     State(state): State<ApiState>,
     Path(job_id): Path<JobId>,
@@ -493,6 +538,20 @@ async fn job_events(
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
+#[utoipa::path(
+    get,
+    path = "/jobs/{job_id}/state",
+    tag = docs::JOBS_TAG,
+    security(("BearerAuth" = [])),
+    params(
+        ("job_id" = String, Path, description = "Job ULID")
+    ),
+    responses(
+        (status = 200, description = "Current or persisted job state", body = JobStateResponse, content_type = "application/json"),
+        (status = 404, description = "Job not found", body = serde_json::Value, content_type = "application/json"),
+        (status = 500, description = "Failed to load persisted job state", body = serde_json::Value, content_type = "application/json")
+    )
+)]
 async fn job_state(
     State(state): State<ApiState>,
     Path(job_id): Path<JobId>,
@@ -503,6 +562,20 @@ async fn job_state(
     Ok(Json(persisted_job_state_response(&state, job_id).await?))
 }
 
+#[utoipa::path(
+    post,
+    path = "/jobs/{job_id}/cancel",
+    tag = docs::JOBS_TAG,
+    security(("BearerAuth" = [])),
+    params(
+        ("job_id" = String, Path, description = "Job ULID")
+    ),
+    responses(
+        (status = 200, description = "Job state after cancellation request", body = JobStateResponse, content_type = "application/json"),
+        (status = 404, description = "Live job not found", body = serde_json::Value, content_type = "application/json"),
+        (status = 500, description = "Internal runtime error", body = serde_json::Value, content_type = "application/json")
+    )
+)]
 async fn cancel_job(
     State(state): State<ApiState>,
     Path(job_id): Path<JobId>,
@@ -530,6 +603,22 @@ async fn cancel_job(
     Ok(Json(job_state_response(&record).await))
 }
 
+#[utoipa::path(
+    post,
+    path = "/jobs/{job_id}/approvals/{call_id}",
+    tag = docs::APPROVALS_TAG,
+    security(("BearerAuth" = [])),
+    params(
+        ("job_id" = String, Path, description = "Job ULID"),
+        ("call_id" = String, Path, description = "Tool call ULID")
+    ),
+    request_body = SubmitApprovalRequest,
+    responses(
+        (status = 200, description = "Job state after resolving approval", body = JobStateResponse, content_type = "application/json"),
+        (status = 404, description = "Job or pending approval not found", body = serde_json::Value, content_type = "application/json"),
+        (status = 500, description = "Internal runtime error", body = serde_json::Value, content_type = "application/json")
+    )
+)]
 async fn submit_approval(
     State(state): State<ApiState>,
     Path((job_id, call_id)): Path<(JobId, CallId)>,
@@ -553,6 +642,22 @@ async fn submit_approval(
     Ok(Json(job_state_response(&record).await))
 }
 
+#[utoipa::path(
+    post,
+    path = "/jobs/{job_id}/inputs/{input_id}",
+    tag = docs::APPROVALS_TAG,
+    security(("BearerAuth" = [])),
+    params(
+        ("job_id" = String, Path, description = "Job ULID"),
+        ("input_id" = String, Path, description = "Pending input ULID")
+    ),
+    request_body = SubmitInputRequest,
+    responses(
+        (status = 200, description = "Job state after answering input request", body = JobStateResponse, content_type = "application/json"),
+        (status = 404, description = "Job or pending input not found", body = serde_json::Value, content_type = "application/json"),
+        (status = 500, description = "Internal runtime error", body = serde_json::Value, content_type = "application/json")
+    )
+)]
 async fn submit_input(
     State(state): State<ApiState>,
     Path((job_id, input_id)): Path<(JobId, CallId)>,
@@ -576,6 +681,19 @@ async fn submit_input(
     Ok(Json(job_state_response(&record).await))
 }
 
+#[utoipa::path(
+    get,
+    path = "/runs",
+    tag = docs::RUNS_TAG,
+    security(("BearerAuth" = [])),
+    params(
+        ("limit" = Option<usize>, Query, description = "Maximum number of run summaries to return")
+    ),
+    responses(
+        (status = 200, description = "Recent run summaries", body = ListRunsResponse, content_type = "application/json"),
+        (status = 500, description = "Failed to list runs", body = serde_json::Value, content_type = "application/json")
+    )
+)]
 async fn list_runs(
     State(state): State<ApiState>,
     Query(query): Query<RunsQuery>,
@@ -601,6 +719,20 @@ async fn list_runs(
     }))
 }
 
+#[utoipa::path(
+    get,
+    path = "/runs/{run_id}/report",
+    tag = docs::RUNS_TAG,
+    security(("BearerAuth" = [])),
+    params(
+        ("run_id" = String, Path, description = "Run ULID")
+    ),
+    responses(
+        (status = 200, description = "Persisted run report", body = serde_json::Value, content_type = "application/json"),
+        (status = 404, description = "Run report not found", body = serde_json::Value, content_type = "application/json"),
+        (status = 500, description = "Failed to load run report", body = serde_json::Value, content_type = "application/json")
+    )
+)]
 async fn run_report(
     State(state): State<ApiState>,
     Path(run_id): Path<RunId>,
