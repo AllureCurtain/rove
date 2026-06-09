@@ -10,6 +10,7 @@ use crate::interfaces::cli::sessions;
 use crate::interfaces::cli::ui::{
     ReplStatusView, ReplWelcomeView, format_repl_help, format_repl_status, format_repl_welcome,
 };
+use crate::interfaces::terminal::action::TerminalAction;
 use crate::state::resume::resolve_resume_state;
 use rustyline::DefaultEditor;
 use rustyline::error::ReadlineError;
@@ -44,6 +45,21 @@ impl SlashCommand {
                 _ => Self::Unknown("/resume".to_string()),
             },
             other => Self::Unknown(other.to_string()),
+        }
+    }
+}
+
+impl SlashCommand {
+    pub fn to_action(&self) -> TerminalAction {
+        match self {
+            Self::Help => TerminalAction::Help,
+            Self::Status => TerminalAction::ShowStatus,
+            Self::Exit => TerminalAction::Exit,
+            Self::Clear => TerminalAction::Clear,
+            Self::Sessions => TerminalAction::ShowSessions,
+            Self::ResumeLatest => TerminalAction::ResumeLatest,
+            Self::ResumeRun(run_id) => TerminalAction::ResumeRun(run_id.clone()),
+            Self::Unknown(command) => TerminalAction::Unknown(command.clone()),
         }
     }
 }
@@ -333,6 +349,7 @@ fn spawn_repl_run_signal_listener(cancel: CancellationToken) -> tokio::task::Joi
 #[cfg(test)]
 mod tests {
     use crate::core::types::{JobId, RunId, SessionId, TaskState};
+    use crate::interfaces::terminal::action::TerminalAction;
 
     use super::{ReplState, SlashCommand};
 
@@ -355,6 +372,33 @@ mod tests {
         assert_eq!(
             SlashCommand::parse("/model gpt"),
             SlashCommand::Unknown("/model".to_string())
+        );
+    }
+
+    #[test]
+    fn slash_commands_convert_to_terminal_actions() {
+        assert_eq!(SlashCommand::parse("/help").to_action(), TerminalAction::Help);
+        assert_eq!(
+            SlashCommand::parse("/status").to_action(),
+            TerminalAction::ShowStatus
+        );
+        assert_eq!(SlashCommand::parse("/clear").to_action(), TerminalAction::Clear);
+        assert_eq!(
+            SlashCommand::parse("/sessions").to_action(),
+            TerminalAction::ShowSessions
+        );
+        assert_eq!(
+            SlashCommand::parse("/resume latest").to_action(),
+            TerminalAction::ResumeLatest
+        );
+        assert_eq!(
+            SlashCommand::parse("/resume 01ARYZ6S41").to_action(),
+            TerminalAction::ResumeRun("01ARYZ6S41".to_string())
+        );
+        assert_eq!(SlashCommand::parse("/exit").to_action(), TerminalAction::Exit);
+        assert_eq!(
+            SlashCommand::parse("/model gpt").to_action(),
+            TerminalAction::Unknown("/model".to_string())
         );
     }
 
