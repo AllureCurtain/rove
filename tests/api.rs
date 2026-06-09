@@ -134,7 +134,7 @@ async fn api_exposes_swagger_ui() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/swagger-ui/")
+                .uri("/swagger-ui")
                 .body(Body::empty())
                 .unwrap(),
         )
