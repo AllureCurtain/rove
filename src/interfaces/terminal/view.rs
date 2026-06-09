@@ -73,6 +73,199 @@ pub enum RunViewUpdate {
     },
 }
 
+#[derive(Debug, Clone)]
+pub struct ToolCallView {
+    pub call_id: CallId,
+    pub name: String,
+    pub args: serde_json::Value,
+    pub status: ToolCallStatus,
+    pub output: Option<String>,
+    pub error: Option<ToolError>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolCallStatus {
+    Started,
+    WaitingApproval,
+    Completed,
+    Failed,
+}
+
+#[derive(Debug, Clone)]
+pub struct PendingApprovalView {
+    pub call_id: CallId,
+    pub name: String,
+    pub args: serde_json::Value,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingInputView {
+    pub input_id: CallId,
+    pub prompt: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct RunCompletionView {
+    pub reason: TerminationReason,
+    pub output: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct RunViewState {
+    pub run_id: Option<RunId>,
+    pub job_id: Option<JobId>,
+    pub user_message: Option<String>,
+    pub assistant_text: String,
+    pub model_status: Option<(String, String)>,
+    pub last_usage: Option<Usage>,
+    pub plan: Option<TaskPlan>,
+    pub current_step: Option<(usize, PlanStep)>,
+    pub failed_steps: Vec<(usize, PlanStep, String)>,
+    pub prompt_compaction: Option<(Option<String>, PromptCompactionState)>,
+    pub tool_calls: Vec<ToolCallView>,
+    pub pending_approvals: Vec<PendingApprovalView>,
+    pub pending_inputs: Vec<PendingInputView>,
+    pub completed: Option<RunCompletionView>,
+}
+
+impl RunViewState {
+    pub fn apply_event(&mut self, event: &StreamEvent) -> RunViewUpdate {
+        let update = RunViewUpdate::from(event);
+        self.apply_update(update.clone());
+        update
+    }
+
+    pub fn apply_update(&mut self, update: RunViewUpdate) {
+        match update {
+            RunViewUpdate::RunStarted {
+                run_id,
+                job_id,
+                user_message,
+            } => {
+                self.run_id = Some(run_id);
+                self.job_id = Some(job_id);
+                self.user_message = Some(user_message);
+            }
+            RunViewUpdate::AssistantDelta { delta } => {
+                self.assistant_text.push_str(&delta);
+            }
+            RunViewUpdate::ModelStatus { status, message } => {
+                self.model_status = Some((status, message));
+            }
+            RunViewUpdate::LlmMessage { usage, .. } => {
+                self.last_usage = Some(usage);
+            }
+            RunViewUpdate::ToolCallStarted {
+                call_id,
+                name,
+                args,
+            } => {
+                self.tool_calls.push(ToolCallView {
+                    call_id,
+                    name,
+                    args,
+                    status: ToolCallStatus::Started,
+                    output: None,
+                    error: None,
+                });
+            }
+            RunViewUpdate::ToolCallApprovalNeeded {
+                call_id,
+                name,
+                args,
+                reason,
+            } => {
+                self.pending_approvals.push(PendingApprovalView {
+                    call_id,
+                    name: name.clone(),
+                    args: args.clone(),
+                    reason,
+                });
+                upsert_tool_status(
+                    &mut self.tool_calls,
+                    call_id,
+                    name,
+                    args,
+                    ToolCallStatus::WaitingApproval,
+                );
+            }
+            RunViewUpdate::ToolCallCompleted { call_id, result } => {
+                if let Some(tool) = self
+                    .tool_calls
+                    .iter_mut()
+                    .rev()
+                    .find(|tool| tool.call_id == call_id)
+                {
+                    tool.status = ToolCallStatus::Completed;
+                    tool.output = Some(result.output);
+                }
+                self.pending_approvals
+                    .retain(|approval| approval.call_id != call_id);
+            }
+            RunViewUpdate::ToolCallFailed { call_id, error } => {
+                if let Some(tool) = self
+                    .tool_calls
+                    .iter_mut()
+                    .rev()
+                    .find(|tool| tool.call_id == call_id)
+                {
+                    tool.status = ToolCallStatus::Failed;
+                    tool.error = Some(error);
+                }
+                self.pending_approvals
+                    .retain(|approval| approval.call_id != call_id);
+            }
+            RunViewUpdate::InputNeeded { input_id, prompt } => {
+                self.pending_inputs.push(PendingInputView { input_id, prompt });
+            }
+            RunViewUpdate::PlanCreated { plan } => {
+                self.plan = Some(plan);
+            }
+            RunViewUpdate::PlanStepStarted { step, index } => {
+                self.current_step = Some((index, step));
+            }
+            RunViewUpdate::PlanStepCompleted { step, index } => {
+                self.current_step = Some((index, step));
+            }
+            RunViewUpdate::PlanStepFailed {
+                step,
+                index,
+                reason,
+            } => {
+                self.failed_steps.push((index, step, reason));
+            }
+            RunViewUpdate::PromptCompacted { summary, state } => {
+                self.prompt_compaction = Some((summary, state));
+            }
+            RunViewUpdate::RunCompleted { reason, output } => {
+                self.completed = Some(RunCompletionView { reason, output });
+            }
+        }
+    }
+}
+
+fn upsert_tool_status(
+    tools: &mut Vec<ToolCallView>,
+    call_id: CallId,
+    name: String,
+    args: serde_json::Value,
+    status: ToolCallStatus,
+) {
+    if let Some(tool) = tools.iter_mut().rev().find(|tool| tool.call_id == call_id) {
+        tool.status = status;
+    } else {
+        tools.push(ToolCallView {
+            call_id,
+            name,
+            args,
+            status,
+            output: None,
+            error: None,
+        });
+    }
+}
+
 impl From<&StreamEvent> for RunViewUpdate {
     fn from(event: &StreamEvent) -> Self {
         match event {
@@ -309,5 +502,62 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn run_view_state_tracks_plan_tools_pending_items_and_completion() {
+        let run_id = RunId::new();
+        let job_id = JobId::new();
+        let call_id = CallId::new();
+        let input_id = CallId::new();
+        let mut state = super::RunViewState::default();
+
+        state.apply_update(RunViewUpdate::RunStarted {
+            run_id,
+            job_id,
+            user_message: "hello".to_string(),
+        });
+        state.apply_update(RunViewUpdate::AssistantDelta {
+            delta: "hi".to_string(),
+        });
+        state.apply_update(RunViewUpdate::PlanCreated {
+            plan: TaskPlan {
+                goal: "goal".to_string(),
+                steps: vec![step()],
+                current_step: 0,
+            },
+        });
+        state.apply_update(RunViewUpdate::ToolCallStarted {
+            call_id,
+            name: "fs_read".to_string(),
+            args: serde_json::json!({"path":"README.md"}),
+        });
+        state.apply_update(RunViewUpdate::ToolCallApprovalNeeded {
+            call_id,
+            name: "fs_write".to_string(),
+            args: serde_json::json!({"path":"out.txt"}),
+            reason: "writes a file".to_string(),
+        });
+        state.apply_update(RunViewUpdate::InputNeeded {
+            input_id,
+            prompt: "Which branch?".to_string(),
+        });
+        state.apply_update(RunViewUpdate::RunCompleted {
+            reason: TerminationReason::Final,
+            output: Some("ok".to_string()),
+        });
+
+        assert_eq!(state.run_id, Some(run_id));
+        assert_eq!(state.job_id, Some(job_id));
+        assert_eq!(state.user_message.as_deref(), Some("hello"));
+        assert_eq!(state.assistant_text, "hi");
+        assert_eq!(state.plan.as_ref().unwrap().steps.len(), 1);
+        assert_eq!(state.tool_calls.len(), 1);
+        assert_eq!(state.pending_approvals.len(), 1);
+        assert_eq!(state.pending_inputs.len(), 1);
+        assert_eq!(
+            state.completed.as_ref().unwrap().reason,
+            TerminationReason::Final
+        );
     }
 }
