@@ -4,6 +4,7 @@ use crate::models::fake::FakeModelClient;
 use crate::models::health::{HealthConfig, ModelHealthStore};
 use crate::models::ollama::OllamaClient;
 use crate::models::openai::OpenAiClient;
+use crate::models::openai_responses::OpenAiResponsesClient;
 use crate::models::routing::{RetryPolicy, RoutingModelClient};
 use crate::models::traits::ModelClient;
 use std::sync::Arc;
@@ -94,6 +95,11 @@ fn build_provider_client(spec: ProviderSpec) -> Box<dyn ModelClient> {
         ProviderKind::OpenAiCompatible => {
             Box::new(OpenAiClient::new(spec.api_base, spec.api_key, spec.model))
         }
+        ProviderKind::OpenAiResponses => Box::new(OpenAiResponsesClient::new(
+            spec.api_base,
+            spec.api_key,
+            spec.model,
+        )),
         ProviderKind::Anthropic => Box::new(AnthropicClient::new(
             anthropic_base(spec.api_base),
             spec.api_key,
@@ -119,6 +125,7 @@ impl ProviderSpec {
     fn primary(config: &AppConfig, model: String) -> Self {
         match ProviderKind::from_name(&config.provider.name) {
             ProviderKind::OpenAiCompatible => Self::openai_compatible(config, model),
+            ProviderKind::OpenAiResponses => Self::openai_responses(config, model),
             ProviderKind::Anthropic => Self::anthropic(config, model),
             ProviderKind::Ollama => Self::ollama(config, model),
             ProviderKind::Fake => Self::fake(model),
@@ -128,6 +135,15 @@ impl ProviderSpec {
     fn openai_compatible(config: &AppConfig, model: String) -> Self {
         Self {
             kind: ProviderKind::OpenAiCompatible,
+            api_base: config.provider.api_base.clone(),
+            api_key: config.provider.api_key.clone(),
+            model,
+        }
+    }
+
+    fn openai_responses(config: &AppConfig, model: String) -> Self {
+        Self {
+            kind: ProviderKind::OpenAiResponses,
             api_base: config.provider.api_base.clone(),
             api_key: config.provider.api_key.clone(),
             model,
@@ -186,6 +202,7 @@ impl ProviderSpec {
 #[derive(Clone, Copy)]
 enum ProviderKind {
     OpenAiCompatible,
+    OpenAiResponses,
     Anthropic,
     Ollama,
     Fake,
@@ -194,6 +211,7 @@ enum ProviderKind {
 impl ProviderKind {
     fn from_name(name: &str) -> Self {
         match name.trim().to_ascii_lowercase().as_str() {
+            "openai-responses" | "responses" => Self::OpenAiResponses,
             "anthropic" => Self::Anthropic,
             "ollama" => Self::Ollama,
             "fake" => Self::Fake,
