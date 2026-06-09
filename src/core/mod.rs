@@ -8,6 +8,7 @@ pub(crate) mod model_turn;
 pub mod parser;
 pub(crate) mod plan_loop;
 pub mod planner;
+pub mod prompt_metadata;
 pub(crate) mod run_loop;
 pub mod session;
 pub(crate) mod tool_turn;

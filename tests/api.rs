@@ -1086,6 +1086,34 @@ async fn api_writes_run_artifacts_for_completed_job() {
     assert_eq!(report["run_id"], created.run_id.to_string());
     assert_eq!(report["status"], "success");
     assert_eq!(report["output"], "fake response: artifact api");
+    let prompt_build = report["prompt_builds"][0]
+        .as_object()
+        .expect("report should include prompt build metadata");
+    assert!(
+        prompt_build["prompt_hash"]
+            .as_str()
+            .is_some_and(|value| value.starts_with("sha256:"))
+    );
+    assert!(
+        prompt_build["stable_prefix_hash"]
+            .as_str()
+            .is_some_and(|value| value.starts_with("sha256:"))
+    );
+    assert!(
+        prompt_build["workspace_fingerprint"]
+            .as_str()
+            .is_some_and(|value| value.starts_with("sha256:"))
+    );
+    assert!(
+        prompt_build["tool_signature"]
+            .as_str()
+            .is_some_and(|value| value.starts_with("sha256:"))
+    );
+    assert!(
+        prompt_build["prompt_cache_key"]
+            .as_str()
+            .is_some_and(|value| value.starts_with("sha256:"))
+    );
 
     assert!(
         state_store.index.path().exists(),

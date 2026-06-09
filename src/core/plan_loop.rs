@@ -8,7 +8,7 @@ use crate::core::engine::planned_step_failure_message;
 use crate::core::events::StreamEvent;
 use crate::core::model_turn::{ModelTurnItem, run_model_turn};
 use crate::core::planner::Planner;
-use crate::core::run_loop::{LoopContext, LoopItem};
+use crate::core::run_loop::{LoopContext, LoopItem, enrich_prompt_metadata};
 use crate::core::tool_turn::{ToolAction, ToolTurnItem, append_tool_history, run_tool_turn};
 use crate::core::types::{Action, Message, TaskPlan, TerminationReason, ToolCallAction};
 
@@ -129,6 +129,10 @@ pub(crate) fn run_planned_loop<'a>(
                 state.compact_summary.as_deref(),
                 &state.history,
             );
+            let tool_schemas = ctx.registry.schemas();
+            yield LoopItem::Event(StreamEvent::PromptBuilt {
+                metadata: enrich_prompt_metadata(&ctx, context.metadata.clone(), &tool_schemas),
+            });
             if context.over_hard_limit {
                 yield LoopItem::Complete {
                     reason: TerminationReason::TokenLimit,
@@ -160,7 +164,7 @@ pub(crate) fn run_planned_loop<'a>(
             let mut turn_stream = run_model_turn(
                 ctx.model,
                 context.messages,
-                ctx.registry.schemas(),
+                tool_schemas,
                 cancel_token.clone(),
             );
             let model_turn = loop {

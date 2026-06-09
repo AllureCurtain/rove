@@ -3105,6 +3105,7 @@ fn compaction_policy_requests_auto_compaction_after_soft_limit() {
         dropped_history_messages: 2,
         over_hard_limit: false,
         auto_compaction_needed: true,
+        metadata: Default::default(),
     };
 
     let decision = rove::core::context::CompactionPolicy::default().decide(&build, budget);
@@ -3130,6 +3131,7 @@ fn compaction_policy_opens_circuit_after_repeated_failures() {
         dropped_history_messages: 2,
         over_hard_limit: false,
         auto_compaction_needed: true,
+        metadata: Default::default(),
     };
 
     let decision = rove::core::context::CompactionPolicy {

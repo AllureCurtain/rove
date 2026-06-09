@@ -4,6 +4,7 @@ use std::path::Path;
 use crate::core::context::estimate_messages_tokens;
 use crate::core::engine::planned_step_failure_message;
 use crate::core::events::StreamEvent;
+use crate::core::prompt_metadata::PromptBuildMetadata;
 use crate::core::types::{
     CallId, JobId, Message, PromptCheckpoint, PromptCompactionMode, PromptCompactionState, Role,
     RunId, SessionId, TaskPlan, TaskState, TerminationReason, ToolMutation, Usage,
@@ -29,6 +30,7 @@ pub struct RunArtifactRecorder {
     tool_calls: u32,
     tool_failures: u32,
     tool_mutations: Vec<ToolMutation>,
+    prompt_builds: Vec<PromptBuildMetadata>,
     total_usage: Usage,
     final_reason: TerminationReason,
     final_output: Option<String>,
@@ -68,6 +70,7 @@ impl RunArtifactRecorder {
             tool_calls: 0,
             tool_failures: 0,
             tool_mutations: Vec::new(),
+            prompt_builds: Vec::new(),
             total_usage: Usage::default(),
             final_reason: TerminationReason::Error,
             final_output: None,
@@ -100,6 +103,11 @@ impl RunArtifactRecorder {
                 self.total_usage.prompt_tokens += usage.prompt_tokens;
                 self.total_usage.completion_tokens += usage.completion_tokens;
                 self.total_usage.total_tokens += usage.total_tokens;
+                self.total_usage.cached_tokens += usage.cached_tokens;
+                self.write_snapshot(state_store).await;
+            }
+            StreamEvent::PromptBuilt { metadata } => {
+                self.prompt_builds.push(metadata.clone());
                 self.write_snapshot(state_store).await;
             }
             StreamEvent::ToolCallStarted {
@@ -245,6 +253,7 @@ impl RunArtifactRecorder {
         report.tool_calls = self.tool_calls;
         report.tool_failures = self.tool_failures;
         report.tool_mutations = self.tool_mutations.clone();
+        report.prompt_builds = self.prompt_builds.clone();
         report.output = self.final_output.clone();
 
         match write_report(run_dir, &report) {

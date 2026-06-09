@@ -28,7 +28,7 @@ path = "src/lib.rs"
 
 [features]
 default = []
-rag = ["dep:arrow-array", "dep:arrow-schema", "dep:lancedb", "dep:walkdir", "dep:sha2"]
+rag = ["dep:arrow-array", "dep:arrow-schema", "dep:lancedb", "dep:walkdir"]
 
 [dependencies]
 # Async runtime
@@ -72,7 +72,7 @@ arrow-array = { version = "58.3.0", optional = true }
 arrow-schema = { version = "58.3.0", optional = true }
 lancedb = { version = "0.29.0", optional = true }
 walkdir = { version = "2.5.0", optional = true }
-sha2 = { version = "0.10", optional = true }
+sha2 = "0.10"
 rustyline = "18.0.0"
 utoipa = { version = "5.5.0", features = ["chrono"] }
 utoipa-axum = "0.2.0"

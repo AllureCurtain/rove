@@ -9,12 +9,15 @@ use crate::core::compaction::{CompactionRuntime, maybe_compact_history};
 use crate::core::context::ContextManager;
 use crate::core::events::StreamEvent;
 use crate::core::model_turn::{ModelTurnItem, run_model_turn};
+use crate::core::prompt_metadata::{
+    PromptBuildMetadata, prompt_cache_key, tool_signature, workspace_fingerprint,
+};
 use crate::core::tool_turn::{
     ToolAction, ToolTurnContext, ToolTurnItem, append_tool_history, run_tool_turn,
 };
 use crate::core::types::{
     Action, ApprovalDecision, ApprovalPolicy, Message, TerminationReason, ToolApprovalProvider,
-    UserInputProvider,
+    ToolSchema, UserInputProvider,
 };
 use crate::core::workspace::Workspace;
 use crate::hooks::HookRegistry;
@@ -52,6 +55,20 @@ impl<'a> LoopContext<'a> {
             cancel_token,
         }
     }
+}
+
+pub(crate) fn enrich_prompt_metadata(
+    ctx: &LoopContext<'_>,
+    mut metadata: PromptBuildMetadata,
+    tools: &[ToolSchema],
+) -> PromptBuildMetadata {
+    metadata.workspace_fingerprint = workspace_fingerprint(ctx.workspace);
+    metadata.tool_signature = tool_signature(tools);
+    metadata.prompt_cache_key = Some(prompt_cache_key(
+        &metadata.stable_prefix_hash,
+        &metadata.tool_signature,
+    ));
+    metadata
 }
 
 pub(crate) struct RunLoopState {
@@ -102,6 +119,10 @@ pub(crate) fn run_unplanned_loop<'a>(
                 state.compact_summary.as_deref(),
                 &state.history,
             );
+            let tool_schemas = ctx.registry.schemas();
+            yield LoopItem::Event(StreamEvent::PromptBuilt {
+                metadata: enrich_prompt_metadata(&ctx, context.metadata.clone(), &tool_schemas),
+            });
             if context.over_hard_limit {
                 yield LoopItem::Complete {
                     reason: TerminationReason::TokenLimit,
@@ -133,7 +154,7 @@ pub(crate) fn run_unplanned_loop<'a>(
             let mut turn_stream = run_model_turn(
                 ctx.model,
                 context.messages,
-                ctx.registry.schemas(),
+                tool_schemas,
                 cancel_token.clone(),
             );
             let model_turn = loop {
