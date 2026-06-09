@@ -87,7 +87,7 @@ required for deterministic local MVP operation.
 
 Prefer the generic provider runner because it verifies provider reachability,
 API jobs, Web records, stress evidence, and evidence capture in one repeatable
-gate for OpenAI-compatible, Anthropic, and Ollama profiles:
+gate for OpenAI-compatible, OpenAI Responses, Anthropic, and Ollama profiles:
 
 ```powershell
 $env:OPENAI_API_KEY = "<secret>"
@@ -134,6 +134,7 @@ deterministic fixture.
 | Provider | Required before release claim | Long stress required | Notes |
 |---|---:|---:|---|
 | OpenAI-compatible official API | Yes when claiming official API readiness | Yes when quota allows | Includes relay/gateway-compatible surface. |
+| OpenAI Responses official API | Yes when claiming Codex-style/OpenAI Responses readiness | Yes when quota allows | Uses `/v1/responses`; separate from chat completions. |
 | OpenAI-compatible relay/gateway | Yes when claiming relay/gateway readiness | Yes when quota allows | Record gateway model inventory or `-SkipModelInventory` reason. |
 | Anthropic | Yes when claiming Anthropic readiness | Optional unless target release advertises Anthropic as verified | Native Messages API path. |
 | Ollama | Yes when claiming local-model readiness | Optional but recommended | Requires local Ollama server and pulled model. |

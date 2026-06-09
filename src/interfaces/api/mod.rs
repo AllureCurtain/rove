@@ -1008,17 +1008,22 @@ fn normalize_provider_profile(
     let name = profile.name.trim().to_ascii_lowercase();
     let canonical_name = match name.as_str() {
         "openai" | "openai-compatible" => "openai-compatible",
+        "openai-responses" | "responses" => "openai-responses",
         "anthropic" => "anthropic",
         "ollama" => "ollama",
         "fake" => "fake",
         _ => {
             return Err(ApiError::bad_request(
-                "provider profile supports openai-compatible, anthropic, ollama, or fake providers",
+                "provider profile supports openai-compatible, openai-responses, anthropic, ollama, or fake providers",
             ));
         }
     };
     let api_base = profile.api_base.trim().trim_end_matches('/').to_string();
-    if matches!(canonical_name, "openai-compatible" | "anthropic") && api_base.is_empty() {
+    if matches!(
+        canonical_name,
+        "openai-compatible" | "openai-responses" | "anthropic"
+    ) && api_base.is_empty()
+    {
         return Err(ApiError::bad_request("provider.api_base must not be empty"));
     }
     if canonical_name == "ollama" && api_base.is_empty() {
@@ -1068,7 +1073,7 @@ async fn provider_inventory(
     requested_endpoint: Option<&str>,
 ) -> Result<ProviderInventory, ApiError> {
     match profile.name.as_str() {
-        "openai-compatible" => {
+        "openai-compatible" | "openai-responses" => {
             openai_compatible_inventory(profile, key_env, requested_endpoint).await
         }
         "anthropic" => anthropic_inventory(profile, key_env, requested_endpoint).await,

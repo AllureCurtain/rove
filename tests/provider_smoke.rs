@@ -136,6 +136,17 @@ async fn openai_compatible_real_provider_smoke_when_enabled() {
 }
 
 #[tokio::test]
+async fn openai_responses_real_provider_smoke_when_enabled() {
+    if !smoke_enabled("ROVE_PROVIDER_SMOKE_OPENAI_RESPONSES") {
+        return;
+    }
+    require_env("OPENAI_API_KEY");
+    let model = std::env::var("ROVE_PROVIDER_SMOKE_OPENAI_RESPONSES_MODEL")
+        .unwrap_or_else(|_| "gpt-4.1-mini".to_string());
+    assert_provider_smoke("openai-responses", model).await;
+}
+
+#[tokio::test]
 async fn anthropic_real_provider_smoke_when_enabled() {
     if !smoke_enabled("ROVE_PROVIDER_SMOKE_ANTHROPIC") {
         return;

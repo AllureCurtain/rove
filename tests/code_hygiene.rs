@@ -155,6 +155,7 @@ fn provider_integration_runner_is_generic_and_documented() {
 fn provider_integration_runner_supports_native_provider_protocols() {
     let script = std::fs::read_to_string("scripts/provider-integration.ps1")
         .expect("scripts/provider-integration.ps1 should exist");
+    let env_example = std::fs::read_to_string(".env.integration.example").unwrap();
     let provider_docs = std::fs::read_to_string("docs/runtime/provider-smoke.md").unwrap();
     let readiness = std::fs::read_to_string("docs/runtime/release-readiness.md").unwrap();
 
@@ -177,11 +178,16 @@ fn provider_integration_runner_supports_native_provider_protocols() {
     assert!(script.contains("return \"\""));
     assert!(script.contains("ROVE_PROVIDER_SMOKE_ANTHROPIC"));
     assert!(script.contains("ROVE_PROVIDER_SMOKE_OLLAMA"));
+    assert!(script.contains("openai-responses"));
+    assert!(script.contains("openai_responses_real_provider_smoke_when_enabled"));
     assert!(!script.contains("currently automates API/Web gates for openai-compatible providers"));
 
+    assert!(env_example.contains("ROVE_PROVIDER_SMOKE_OPENAI_RESPONSES"));
     assert!(provider_docs.contains("-Provider anthropic"));
     assert!(provider_docs.contains("-Provider ollama"));
+    assert!(provider_docs.contains("-Provider openai-responses"));
     assert!(readiness.contains("Provider Gate Matrix"));
+    assert!(readiness.contains("OpenAI Responses official API"));
 }
 
 #[test]

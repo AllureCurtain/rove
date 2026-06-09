@@ -401,6 +401,63 @@ async fn api_tests_openai_compatible_provider_profile_without_exposing_key() {
 }
 
 #[tokio::test]
+async fn api_tests_openai_responses_provider_profile_without_exposing_key() {
+    let provider = start_openai_compatible_test_server().await;
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let app = router(ApiState::new(workspace, test_config()));
+    let key_env = unique_env_key("ROVE_TEST_RESPONSES_PROVIDER_KEY");
+    unsafe {
+        std::env::set_var(&key_env, "dummy-responses-provider-token");
+    }
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/providers/test")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "provider": {
+                            "name": "openai-responses",
+                            "api_base": format!("{}/v1", provider.base_url),
+                            "api_key_env": key_env
+                        },
+                        "model": "gpt-4.1-mini"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    unsafe {
+        std::env::remove_var(&key_env);
+    }
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let text = String::from_utf8(body.to_vec()).unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["status"], "pass");
+    assert_eq!(json["provider"], "openai-responses");
+    assert_eq!(json["key_env"], key_env);
+    assert_eq!(json["key_present"], true);
+    assert_eq!(json["model"], "gpt-4.1-mini");
+    assert_eq!(json["model_present"], false);
+    assert_eq!(json["models_count"], 2);
+    assert!(!text.contains("dummy-responses-provider-token"));
+    assert_eq!(
+        provider.captured.lock().unwrap().models_auth.as_deref(),
+        Some("Bearer dummy-responses-provider-token")
+    );
+}
+
+#[tokio::test]
 async fn api_jobs_accept_openai_compatible_provider_profile_per_request() {
     let provider = start_openai_compatible_test_server().await;
     let tmp = tempfile::TempDir::new().unwrap();
@@ -463,6 +520,72 @@ async fn api_jobs_accept_openai_compatible_provider_profile_per_request() {
         Some("Bearer dummy-job-provider-token")
     );
     assert_eq!(captured.chat_model.as_deref(), Some("relay/deepseek-v3.2"));
+}
+
+#[tokio::test]
+async fn api_jobs_accept_openai_responses_provider_profile_per_request() {
+    let provider = start_openai_compatible_test_server().await;
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let app = router(ApiState::new(workspace, test_config()));
+    let key_env = unique_env_key("ROVE_TEST_RESPONSES_PROVIDER_KEY");
+    unsafe {
+        std::env::set_var(&key_env, "dummy-responses-provider-token");
+    }
+
+    let created = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/jobs")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "message": "Reply with exactly: responses profile ok",
+                        "model": "gpt-4.1-mini",
+                        "approval": "auto",
+                        "max_steps": 1,
+                        "provider": {
+                            "name": "openai-responses",
+                            "api_base": format!("{}/v1", provider.base_url),
+                            "api_key_env": key_env
+                        }
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    unsafe {
+        std::env::remove_var(&key_env);
+    }
+
+    assert_eq!(created.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(created.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let created: CreateJobResponse = serde_json::from_slice(&body).unwrap();
+    let state = wait_for_status(app, created.job_id.to_string(), RunStatus::Done).await;
+
+    assert!(state.events.iter().any(|event| {
+        matches!(
+            &event.event,
+            StreamEvent::RunCompleted {
+                output: Some(output),
+                ..
+            } if output.contains("responses profile ok")
+        )
+    }));
+    let captured = provider.captured.lock().unwrap();
+    assert_eq!(
+        captured.responses_auth.as_deref(),
+        Some("Bearer dummy-responses-provider-token")
+    );
+    assert_eq!(captured.responses_model.as_deref(), Some("gpt-4.1-mini"));
+    assert!(captured.responses_body.is_some());
 }
 
 #[tokio::test]
@@ -2807,6 +2930,9 @@ struct CapturedProviderRequests {
     models_auth: Option<String>,
     chat_auth: Option<String>,
     chat_model: Option<String>,
+    responses_auth: Option<String>,
+    responses_model: Option<String>,
+    responses_body: Option<serde_json::Value>,
     anthropic_auth: Option<String>,
     anthropic_model: Option<String>,
     ollama_model: Option<String>,
@@ -2820,6 +2946,16 @@ struct OpenAiCompatibleTestServer {
 struct ProviderProtocolTestServer {
     base_url: String,
     captured: Arc<Mutex<CapturedProviderRequests>>,
+}
+
+fn sse_response(
+    frames: Vec<serde_json::Value>,
+) -> ([(axum::http::HeaderName, &'static str); 1], String) {
+    let body = frames
+        .into_iter()
+        .map(|frame| format!("data: {frame}\n\n"))
+        .collect::<String>();
+    ([(CONTENT_TYPE, "text/event-stream")], body)
 }
 
 async fn start_openai_compatible_test_server() -> OpenAiCompatibleTestServer {
@@ -2889,6 +3025,73 @@ async fn start_openai_compatible_test_server() -> OpenAiCompatibleTestServer {
                         });
                         let body = format!("data: {}\n\ndata: [DONE]\n\n", chunk);
                         ([(CONTENT_TYPE, "text/event-stream")], body)
+                    }
+                }
+            }),
+        )
+        .route(
+            "/v1/responses",
+            post({
+                let captured = captured.clone();
+                move |headers: HeaderMap, Json(body): Json<serde_json::Value>| {
+                    let captured = captured.clone();
+                    async move {
+                        {
+                            let mut captured = captured.lock().unwrap();
+                            captured.responses_auth = headers
+                                .get(AUTHORIZATION)
+                                .and_then(|value| value.to_str().ok())
+                                .map(str::to_string);
+                            captured.responses_model = body
+                                .get("model")
+                                .and_then(|value| value.as_str())
+                                .map(str::to_string);
+                            captured.responses_body = Some(body.clone());
+                        }
+                        let text = if body
+                            .get("instructions")
+                            .and_then(|value| value.as_str())
+                            .is_some_and(|content| content.contains("You are the planner for rove"))
+                            || body
+                            .get("input")
+                            .and_then(|value| value.as_array())
+                            .into_iter()
+                            .flatten()
+                            .any(|item| {
+                                item.get("content")
+                                    .and_then(|value| value.as_array())
+                                    .into_iter()
+                                    .flatten()
+                                    .any(|content| {
+                                        content
+                                            .get("text")
+                                            .and_then(|value| value.as_str())
+                                            .is_some_and(|text| {
+                                                text.contains("You are the planner for rove")
+                                            })
+                                    })
+                            })
+                        {
+                            r#"{"goal":"responses profile job","steps":[{"id":"1","title":"reply"}]}"#
+                        } else {
+                            "responses profile ok"
+                        };
+                        sse_response(vec![
+                            serde_json::json!({
+                                "type": "response.output_text.delta",
+                                "delta": text
+                            }),
+                            serde_json::json!({
+                                "type": "response.completed",
+                                "response": {
+                                    "usage": {
+                                        "input_tokens": 1,
+                                        "output_tokens": 1,
+                                        "total_tokens": 2
+                                    }
+                                }
+                            }),
+                        ])
                     }
                 }
             }),

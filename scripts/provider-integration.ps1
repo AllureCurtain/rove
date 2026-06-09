@@ -76,17 +76,19 @@ function Normalize-ProviderName([string]$Name) {
     switch ($normalized) {
         "openai" { return "openai-compatible" }
         "openai-compatible" { return "openai-compatible" }
+        "openai-responses" { return "openai-responses" }
+        "responses" { return "openai-responses" }
         "anthropic" { return "anthropic" }
         "ollama" { return "ollama" }
         default {
-            throw "Unsupported provider '$Name'. Expected openai-compatible, anthropic, or ollama."
+            throw "Unsupported provider '$Name'. Expected openai-compatible, openai-responses, anthropic, or ollama."
         }
     }
 }
 
 function Provider-RequiresKey([string]$Name) {
     $normalized = Normalize-ProviderName $Name
-    return $normalized -in @("openai-compatible", "anthropic")
+    return $normalized -in @("openai-compatible", "openai-responses", "anthropic")
 }
 
 function Default-KeyEnvForProvider([string]$Name) {
@@ -213,7 +215,7 @@ function Set-ProviderEnvironment {
     $env:ROVE_PROVIDER = $Provider
     $env:ROVE_MODEL = $Model
 
-    if ($Provider -eq "openai-compatible") {
+    if ($Provider -in @("openai-compatible", "openai-responses")) {
         $env:OPENAI_API_KEY = $key
         $env:OPENAI_API_BASE = $ApiBase
         return
@@ -309,6 +311,7 @@ function Invoke-ProviderSmoke {
         return "skipped"
     }
     $env:ROVE_PROVIDER_SMOKE_OPENAI = "0"
+    $env:ROVE_PROVIDER_SMOKE_OPENAI_RESPONSES = "0"
     $env:ROVE_PROVIDER_SMOKE_ANTHROPIC = "0"
     $env:ROVE_PROVIDER_SMOKE_OLLAMA = "0"
 
@@ -318,6 +321,11 @@ function Invoke-ProviderSmoke {
             $env:ROVE_PROVIDER_SMOKE_OPENAI = "1"
             $env:ROVE_PROVIDER_SMOKE_OPENAI_MODEL = $Model
             $testName = "openai_compatible_real_provider_smoke_when_enabled"
+        }
+        "openai-responses" {
+            $env:ROVE_PROVIDER_SMOKE_OPENAI_RESPONSES = "1"
+            $env:ROVE_PROVIDER_SMOKE_OPENAI_RESPONSES_MODEL = $Model
+            $testName = "openai_responses_real_provider_smoke_when_enabled"
         }
         "anthropic" {
             $env:ROVE_PROVIDER_SMOKE_ANTHROPIC = "1"
@@ -922,6 +930,9 @@ if (-not $PSBoundParameters.ContainsKey("Provider") -and $env:ROVE_PROVIDER_INTE
 if (-not $PSBoundParameters.ContainsKey("Model") -and $env:ROVE_PROVIDER_INTEGRATION_MODEL) {
     $Model = $env:ROVE_PROVIDER_INTEGRATION_MODEL
 }
+if (-not $PSBoundParameters.ContainsKey("Model") -and -not $Model -and $env:ROVE_PROVIDER_SMOKE_OPENAI_RESPONSES_MODEL) {
+    $Model = $env:ROVE_PROVIDER_SMOKE_OPENAI_RESPONSES_MODEL
+}
 if (-not $PSBoundParameters.ContainsKey("Model") -and -not $Model -and $env:ROVE_PROVIDER_SMOKE_OPENAI_MODEL) {
     $Model = $env:ROVE_PROVIDER_SMOKE_OPENAI_MODEL
 }
@@ -965,7 +976,7 @@ if (-not $PSBoundParameters.ContainsKey("ExternalMcpToolName") -and $env:ROVE_PR
     $ExternalMcpToolName = $env:ROVE_PROVIDER_INTEGRATION_EXTERNAL_MCP_TOOL
 }
 $Provider = Normalize-ProviderName $Provider
-if (-not $PSBoundParameters.ContainsKey("ApiBase") -and -not $ApiBase -and $Provider -eq "openai-compatible" -and $env:OPENAI_API_BASE) {
+if (-not $PSBoundParameters.ContainsKey("ApiBase") -and -not $ApiBase -and ($Provider -in @("openai-compatible", "openai-responses")) -and $env:OPENAI_API_BASE) {
     $ApiBase = $env:OPENAI_API_BASE
 }
 if ($Provider -eq "ollama") {
