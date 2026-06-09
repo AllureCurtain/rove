@@ -225,6 +225,15 @@ The REPL remains a normal terminal prompt, not a full-screen TUI. During runs it
 prints compact `You`, `Plan`, `Tool`, `Error`, and `Done` sections, while the
 Web workbench remains the richer report/history surface.
 
+The compact REPL is backed by a terminal view/action layer. `StreamEvent` values
+are first projected into terminal view updates and accumulated into view state;
+the current REPL renders those updates as line-oriented output. This keeps the
+terminal surface ready for a future full TUI without adding full-screen terminal
+dependencies or moving UI concerns into `core`.
+
+This pass does not add `ratatui`, `crossterm`, alternate-screen rendering,
+mouse interaction, panels, or a full-screen session picker.
+
 Supported slash commands are:
 
 | Command | Purpose |
