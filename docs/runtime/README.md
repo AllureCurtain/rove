@@ -8,6 +8,7 @@ This directory is the authoritative runtime documentation surface. It summarizes
 |---|---|
 | [mvp-definition.md](mvp-definition.md) | Current local-first MVP boundary, included capabilities, exclusions, golden paths, and verification baseline. |
 | [architecture.md](architecture.md) | Top-level runtime architecture and cross-module boundaries. |
+| [react-loop.md](react-loop.md) | Plan outside, ReAct inside runtime loop explanation and pico relationship. |
 | [subsystems.md](subsystems.md) | Config, state/job, context, provider, memory, tool, API/security, RAG, web, and CI subsystem notes. |
 | [implementation-status.md](implementation-status.md) | Current implementation vs target architecture matrix. |
 | [implementation-guide.md](implementation-guide.md) | Maintainer-focused implementation guide with startup paths, runtime flow, state artifacts, verification, and known gaps. |

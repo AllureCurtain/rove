@@ -238,6 +238,7 @@ cargo run --bin rove-bench -- --suite benchmarks/agent-smoke.json --output-dir .
 Start here:
 
 - [Runtime Architecture](docs/runtime/architecture.md)
+- [Plan plus ReAct Runtime Loop](docs/runtime/react-loop.md)
 - [Subsystem Design](docs/runtime/subsystems.md)
 - [Implementation Status](docs/runtime/implementation-status.md)
 - [Acceptance Matrix](docs/runtime/acceptance-matrix.md)

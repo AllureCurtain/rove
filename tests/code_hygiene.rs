@@ -264,3 +264,19 @@ fn provider_integration_runner_writes_stress_summary_on_long_soak_failure() {
     assert!(script.contains("long_soak_summary = \"long-soak-summary.json\""));
     assert!(script.contains("Write-StressSummary -CreatedJobs $created -RestartStatus $restartStatus -LongSoakStatus \"failed\""));
 }
+
+#[test]
+fn runtime_docs_explain_plan_react_core() {
+    let doc = std::fs::read_to_string("docs/runtime/react-loop.md").unwrap();
+    let runtime_readme = std::fs::read_to_string("docs/runtime/README.md").unwrap();
+    let root_readme = std::fs::read_to_string("README.md").unwrap();
+
+    assert!(doc.contains("Plan Outside, ReAct Inside"));
+    assert!(doc.contains("run_unplanned_loop"));
+    assert!(doc.contains("run_planned_loop"));
+    assert!(doc.contains("run_model_turn"));
+    assert!(doc.contains("run_tool_turn"));
+    assert!(doc.contains("ReactTurn"));
+    assert!(runtime_readme.contains("react-loop.md"));
+    assert!(root_readme.contains("react-loop.md"));
+}
