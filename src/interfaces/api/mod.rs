@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock, broadcast, oneshot};
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_util::sync::CancellationToken;
+use utoipa::ToSchema;
 
 use crate::config::{AppConfig, AppConfigOverrides};
 use crate::core::context::{ContextBudget, ContextManager};
@@ -39,6 +40,7 @@ use crate::state::resume::resolve_resume_state;
 use crate::state::store::StateStore;
 use crate::tools::runtime_tool_registry;
 
+mod docs;
 mod security;
 
 const EVENT_BUFFER: usize = 256;
@@ -93,88 +95,103 @@ struct PendingInput {
     tx: oneshot::Sender<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct PendingApprovalResponse {
+    #[schema(value_type = String, format = "ulid")]
     pub call_id: CallId,
     pub name: String,
+    #[schema(value_type = Object)]
     pub args: serde_json::Value,
     pub reason: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct PendingInputResponse {
+    #[schema(value_type = String, format = "ulid")]
     pub input_id: CallId,
     pub prompt: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct CreateJobRequest {
     pub message: String,
     pub model: Option<String>,
     pub max_steps: Option<u32>,
+    #[schema(value_type = String, example = "ask")]
     pub approval: Option<ApprovalPolicy>,
     pub resume: Option<String>,
     pub workspace: Option<CreateJobWorkspace>,
     pub provider: Option<ProviderProfileRequest>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ProviderProfileRequest {
     pub name: String,
     pub api_base: String,
     pub api_key_env: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct ProviderTestRequest {
     pub provider: ProviderProfileRequest,
     pub model: Option<String>,
     pub models_endpoint: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct CreateJobWorkspace {
+    #[schema(value_type = String, example = "task")]
     pub kind: CreateJobWorkspaceKind,
     pub name: Option<String>,
+    #[schema(value_type = String)]
     pub base: Option<PathBuf>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum CreateJobWorkspaceKind {
     Task,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct SubmitApprovalRequest {
+    #[schema(value_type = String, example = "approve")]
     pub decision: ApprovalDecision,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct SubmitInputRequest {
     pub answer: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct JobStreamEvent {
     pub seq: u64,
+    #[schema(value_type = Object)]
     pub event: StreamEvent,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct CreateJobResponse {
+    #[schema(value_type = String, format = "ulid")]
     pub job_id: JobId,
+    #[schema(value_type = String, format = "ulid")]
     pub run_id: RunId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>, format = "ulid")]
     pub resumed_from_run_id: Option<RunId>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct JobStateResponse {
+    #[schema(value_type = String, format = "ulid")]
     pub job_id: JobId,
+    #[schema(value_type = String, format = "ulid")]
     pub run_id: RunId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>, format = "ulid")]
     pub resumed_from_run_id: Option<RunId>,
+    #[schema(value_type = String, example = "running")]
     pub status: RunStatus,
     pub event_count: usize,
     pub events: Vec<JobStreamEvent>,
@@ -182,22 +199,26 @@ pub struct JobStateResponse {
     pub pending_inputs: Vec<PendingInputResponse>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct ListRunsResponse {
     pub runs: Vec<RunSummaryResponse>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct RunSummaryResponse {
+    #[schema(value_type = String, format = "ulid")]
     pub run_id: RunId,
+    #[schema(value_type = String, format = "ulid")]
     pub session_id: SessionId,
+    #[schema(value_type = String, format = "ulid")]
     pub job_id: JobId,
+    #[schema(value_type = String, example = "done")]
     pub status: RunStatus,
     pub last_event_seq: u64,
     pub has_report: bool,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct ProviderTestResponse {
     pub status: String,
     pub provider: String,
