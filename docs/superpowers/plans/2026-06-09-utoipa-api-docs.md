@@ -165,7 +165,7 @@ Run:
 ```powershell
 cargo add utoipa@5.5.0 --features chrono
 cargo add utoipa-axum@0.2.0
-cargo add utoipa-swagger-ui@9.0.2
+cargo add utoipa-swagger-ui@9.0.2 --features axum
 ```
 
 Expected `Cargo.toml` dependency block additions:
@@ -173,7 +173,7 @@ Expected `Cargo.toml` dependency block additions:
 ```toml
 utoipa = { version = "5.5.0", features = ["chrono"] }
 utoipa-axum = "0.2.0"
-utoipa-swagger-ui = "9.0.2"
+utoipa-swagger-ui = { version = "9.0.2", features = ["axum"] }
 ```
 
 - [ ] **Step 2: Verify dependency-only build**
