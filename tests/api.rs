@@ -44,6 +44,104 @@ async fn api_does_not_serve_embedded_web_ui_anymore() {
 }
 
 #[tokio::test]
+async fn api_exposes_openapi_json_for_all_routes() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let app = router(ApiState::new(workspace, test_config()));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/openapi.json")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let text = String::from_utf8(body.to_vec()).unwrap();
+    let spec: serde_json::Value = serde_json::from_str(&text).unwrap();
+
+    assert!(
+        spec["openapi"]
+            .as_str()
+            .is_some_and(|version| version.starts_with("3.")),
+        "OpenAPI version should be present: {spec:#}"
+    );
+    assert_eq!(spec["info"]["title"], "rove HTTP API");
+
+    let paths = spec["paths"].as_object().expect("paths object");
+    for path in [
+        "/providers/test",
+        "/jobs",
+        "/jobs/{job_id}/events",
+        "/jobs/{job_id}/state",
+        "/jobs/{job_id}/cancel",
+        "/jobs/{job_id}/approvals/{call_id}",
+        "/jobs/{job_id}/inputs/{input_id}",
+        "/runs",
+        "/runs/{run_id}/report",
+    ] {
+        assert!(paths.contains_key(path), "missing OpenAPI path {path}");
+    }
+
+    let schemas = spec["components"]["schemas"]
+        .as_object()
+        .expect("components.schemas object");
+    for schema in [
+        "CreateJobRequest",
+        "CreateJobResponse",
+        "JobStateResponse",
+        "ListRunsResponse",
+        "ProviderProfileRequest",
+        "ProviderTestRequest",
+        "ProviderTestResponse",
+        "SubmitApprovalRequest",
+        "SubmitInputRequest",
+    ] {
+        assert!(schemas.contains_key(schema), "missing schema {schema}");
+    }
+
+    assert!(
+        spec.pointer("/components/securitySchemes/BearerAuth")
+            .is_some(),
+        "missing BearerAuth security scheme"
+    );
+    assert!(text.contains("api_key_env"));
+    assert!(text.contains("key_present"));
+    assert!(!text.contains("dummy-provider-token"));
+    assert!(!text.contains("\"api_key\""));
+}
+
+#[tokio::test]
+async fn api_exposes_swagger_ui() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let app = router(ApiState::new(workspace, test_config()));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/swagger-ui")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_ne!(response.status(), StatusCode::NOT_FOUND);
+    assert!(
+        response.status().is_success() || response.status().is_redirection(),
+        "Swagger UI should be reachable, got {}",
+        response.status()
+    );
+}
+
+#[tokio::test]
 async fn api_server_stops_when_shutdown_token_is_cancelled() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
