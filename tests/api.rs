@@ -75,18 +75,25 @@ async fn api_exposes_openapi_json_for_all_routes() {
     assert_eq!(spec["info"]["title"], "rove HTTP API");
 
     let paths = spec["paths"].as_object().expect("paths object");
-    for path in [
-        "/providers/test",
-        "/jobs",
-        "/jobs/{job_id}/events",
-        "/jobs/{job_id}/state",
-        "/jobs/{job_id}/cancel",
-        "/jobs/{job_id}/approvals/{call_id}",
-        "/jobs/{job_id}/inputs/{input_id}",
-        "/runs",
-        "/runs/{run_id}/report",
+    for (path, method) in [
+        ("/providers/test", "post"),
+        ("/jobs", "post"),
+        ("/jobs/{job_id}/events", "get"),
+        ("/jobs/{job_id}/state", "get"),
+        ("/jobs/{job_id}/cancel", "post"),
+        ("/jobs/{job_id}/approvals/{call_id}", "post"),
+        ("/jobs/{job_id}/inputs/{input_id}", "post"),
+        ("/runs", "get"),
+        ("/runs/{run_id}/report", "get"),
     ] {
-        assert!(paths.contains_key(path), "missing OpenAPI path {path}");
+        let path_item = paths
+            .get(path)
+            .and_then(|value| value.as_object())
+            .unwrap_or_else(|| panic!("missing OpenAPI path {path}"));
+        assert!(
+            path_item.contains_key(method),
+            "missing OpenAPI operation {method} {path}"
+        );
     }
 
     let schemas = spec["components"]["schemas"]
@@ -126,19 +133,45 @@ async fn api_exposes_swagger_ui() {
     let response = app
         .oneshot(
             Request::builder()
-                .uri("/swagger-ui")
+                .uri("/swagger-ui/")
                 .body(Body::empty())
                 .unwrap(),
         )
         .await
         .unwrap();
 
-    assert_ne!(response.status(), StatusCode::NOT_FOUND);
+    let status = response.status();
     assert!(
-        response.status().is_success() || response.status().is_redirection(),
+        status.is_success() || status.is_redirection(),
         "Swagger UI should be reachable, got {}",
-        response.status()
+        status
     );
+
+    if status.is_success() {
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let text = String::from_utf8(body.to_vec()).unwrap();
+
+        assert!(
+            text.contains("Swagger UI") || text.contains("swagger-ui"),
+            "Swagger UI response should include Swagger UI content: {text}"
+        );
+        assert!(
+            text.contains("/api/openapi.json"),
+            "Swagger UI response should reference the OpenAPI spec: {text}"
+        );
+    } else {
+        let location = response
+            .headers()
+            .get("location")
+            .and_then(|value| value.to_str().ok())
+            .expect("redirect should include Location header");
+        assert!(
+            location.contains("swagger-ui"),
+            "Swagger UI redirect should target swagger-ui, got {location}"
+        );
+    }
 }
 
 #[tokio::test]
