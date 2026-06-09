@@ -128,7 +128,7 @@ where
                     eprintln!("  [result] {}", truncate(&result.output, 200));
                 }
             }
-            StreamEvent::ToolCallFailed { call_id, error } => {
+            StreamEvent::ToolCallFailed { call_id, error, .. } => {
                 tool_failure_count += 1;
                 let tool_name = tool_names
                     .remove(&call_id)
@@ -397,6 +397,7 @@ mod tests {
                     call_id,
                     output: "hello".to_string(),
                     mutations: Vec::new(),
+                    metadata: Default::default(),
                 },
             },
             StreamEvent::RunCompleted {
@@ -455,6 +456,7 @@ mod tests {
                 error: ToolError::ExecutionFailed {
                     reason: "boom".to_string(),
                 },
+                metadata: Default::default(),
             },
             StreamEvent::RunCompleted {
                 reason: TerminationReason::Error,

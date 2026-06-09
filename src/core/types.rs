@@ -345,6 +345,8 @@ pub struct ToolResult {
     pub output: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mutations: Vec<ToolMutation>,
+    #[serde(default)]
+    pub metadata: ToolExecutionMetadata,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -362,6 +364,50 @@ pub enum ToolMutationOperation {
     Update,
     Delete,
     Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolExecutionStatus {
+    Ok,
+    Error,
+    Rejected,
+    PartialSuccess,
+}
+
+impl Default for ToolExecutionStatus {
+    fn default() -> Self {
+        Self::Ok
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolRiskLevel {
+    Low,
+    High,
+}
+
+impl Default for ToolRiskLevel {
+    fn default() -> Self {
+        Self::Low
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ToolExecutionMetadata {
+    pub status: ToolExecutionStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub security_event_type: Option<String>,
+    pub risk_level: ToolRiskLevel,
+    pub read_only: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub affected_paths: Vec<String>,
+    pub workspace_changed: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub diff_summary: Vec<String>,
 }
 
 /// Token usage from a single LLM call.

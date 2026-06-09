@@ -8,7 +8,8 @@ use crate::core::prompt_metadata::PromptBuildMetadata;
 use crate::core::runtime_identity::RuntimeIdentity;
 use crate::core::types::{
     CallId, JobId, Message, PromptCheckpoint, PromptCompactionMode, PromptCompactionState, Role,
-    RunId, SessionId, TaskPlan, TaskState, TerminationReason, ToolMutation, Usage,
+    RunId, SessionId, TaskPlan, TaskState, TerminationReason, ToolExecutionMetadata, ToolMutation,
+    Usage,
 };
 use crate::core::workspace::Workspace;
 
@@ -31,6 +32,7 @@ pub struct RunArtifactRecorder {
     tool_calls: u32,
     tool_failures: u32,
     tool_mutations: Vec<ToolMutation>,
+    tool_execution_metadata: Vec<ToolExecutionMetadata>,
     prompt_builds: Vec<PromptBuildMetadata>,
     runtime_identity: Option<RuntimeIdentity>,
     total_usage: Usage,
@@ -73,6 +75,7 @@ impl RunArtifactRecorder {
             tool_calls: 0,
             tool_failures: 0,
             tool_mutations: Vec::new(),
+            tool_execution_metadata: Vec::new(),
             prompt_builds: Vec::new(),
             runtime_identity: runtime_identity
                 .or_else(|| resume_state.and_then(|state| state.runtime_identity.clone())),
@@ -130,13 +133,19 @@ impl RunArtifactRecorder {
                 self.history
                     .push(Message::tool(result.output.clone(), tool_use_id));
                 self.tool_mutations.extend(result.mutations.clone());
+                self.tool_execution_metadata.push(result.metadata.clone());
                 self.write_snapshot(state_store).await;
             }
-            StreamEvent::ToolCallFailed { call_id, error } => {
+            StreamEvent::ToolCallFailed {
+                call_id,
+                error,
+                metadata,
+            } => {
                 self.tool_failures += 1;
                 let tool_use_id = self.pending_tool_use_ids.remove(call_id).flatten();
                 self.history
                     .push(Message::tool(format!("Error: {error}"), tool_use_id));
+                self.tool_execution_metadata.push(metadata.clone());
                 self.write_snapshot(state_store).await;
             }
             StreamEvent::PlanCreated { plan } => {
@@ -259,6 +268,7 @@ impl RunArtifactRecorder {
         report.tool_calls = self.tool_calls;
         report.tool_failures = self.tool_failures;
         report.tool_mutations = self.tool_mutations.clone();
+        report.tool_execution_metadata = self.tool_execution_metadata.clone();
         report.prompt_builds = self.prompt_builds.clone();
         report.runtime_identity = self.runtime_identity.clone();
         report.output = self.final_output.clone();
@@ -400,7 +410,10 @@ mod tests {
     use super::RunArtifactRecorder;
     use crate::core::events::StreamEvent;
     use crate::core::runtime_identity::RuntimeIdentity;
-    use crate::core::types::{ApprovalPolicy, JobId, RunId, SessionId};
+    use crate::core::types::{
+        ApprovalPolicy, CallId, JobId, RunId, SessionId, ToolExecutionMetadata,
+        ToolExecutionStatus, ToolResult,
+    };
     use crate::core::workspace::{Workspace, WorkspaceKind};
     use crate::state::store::StateStore;
 
@@ -473,5 +486,57 @@ mod tests {
         let report: crate::state::report::RunReport = serde_json::from_str(&report_json).unwrap();
 
         assert_eq!(report.runtime_identity.as_ref(), Some(&identity));
+    }
+
+    #[tokio::test]
+    async fn recorder_persists_tool_execution_metadata_in_report() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state_store = StateStore::new(tmp.path());
+        let session_id = SessionId::new();
+        let job_id = JobId::new();
+        let run_id = RunId::new();
+        let call_id = CallId::new();
+        let metadata = ToolExecutionMetadata {
+            status: ToolExecutionStatus::Ok,
+            ..ToolExecutionMetadata::default()
+        };
+        let mut recorder = RunArtifactRecorder::new(
+            session_id,
+            job_id,
+            run_id,
+            "inspect".to_string(),
+            None,
+            None,
+        );
+        recorder
+            .record_event(
+                &StreamEvent::ToolCallCompleted {
+                    call_id,
+                    result: ToolResult {
+                        call_id,
+                        output: "done".to_string(),
+                        mutations: Vec::new(),
+                        metadata: metadata.clone(),
+                    },
+                },
+                &state_store,
+            )
+            .await;
+
+        let workspace = Workspace {
+            root: tmp.path().to_path_buf(),
+            kind: WorkspaceKind::Folder,
+            state_dir: tmp.path().join(".rove"),
+        };
+        let run_dir = tmp.path().join("tool-report-run");
+        recorder
+            .finalize(&state_store, &workspace, "fake", &run_dir)
+            .await;
+        let report_json = tokio::fs::read_to_string(run_dir.join("report.json"))
+            .await
+            .unwrap();
+        let report: crate::state::report::RunReport = serde_json::from_str(&report_json).unwrap();
+
+        assert_eq!(report.tool_execution_metadata, vec![metadata]);
     }
 }

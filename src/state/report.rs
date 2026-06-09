@@ -5,7 +5,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::core::prompt_metadata::PromptBuildMetadata;
 use crate::core::runtime_identity::RuntimeIdentity;
-use crate::core::types::{JobId, RunId, SessionId, TerminationReason, ToolMutation, Usage};
+use crate::core::types::{
+    JobId, RunId, SessionId, TerminationReason, ToolExecutionMetadata, ToolMutation, Usage,
+};
 use crate::core::workspace::WorkspaceKind;
 
 /// Summary report for a completed run.
@@ -26,6 +28,8 @@ pub struct RunReport {
     pub tool_calls: u32,
     pub tool_failures: u32,
     pub tool_mutations: Vec<ToolMutation>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_execution_metadata: Vec<ToolExecutionMetadata>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub prompt_builds: Vec<PromptBuildMetadata>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -63,6 +67,7 @@ impl RunReport {
             tool_calls: 0,
             tool_failures: 0,
             tool_mutations: Vec::new(),
+            tool_execution_metadata: Vec::new(),
             prompt_builds: Vec::new(),
             runtime_identity: None,
             output: None,

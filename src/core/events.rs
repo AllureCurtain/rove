@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use super::types::{
     CallId, JobId, PlanStep, PromptCompactionState, RunId, TaskPlan, TerminationReason,
-    ToolCallRef, ToolResult, Usage,
+    ToolCallRef, ToolExecutionMetadata, ToolResult, Usage,
 };
 use crate::core::prompt_metadata::PromptBuildMetadata;
 use crate::errors::ToolError;
@@ -56,7 +56,12 @@ pub enum StreamEvent {
     ToolCallCompleted { call_id: CallId, result: ToolResult },
 
     /// A tool call failed.
-    ToolCallFailed { call_id: CallId, error: ToolError },
+    ToolCallFailed {
+        call_id: CallId,
+        error: ToolError,
+        #[serde(default)]
+        metadata: ToolExecutionMetadata,
+    },
 
     /// The `request_input` tool is waiting for user input.
     InputNeeded { input_id: CallId, prompt: String },
