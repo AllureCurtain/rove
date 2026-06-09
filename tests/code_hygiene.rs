@@ -280,3 +280,15 @@ fn runtime_docs_explain_plan_react_core() {
     assert!(runtime_readme.contains("react-loop.md"));
     assert!(root_readme.contains("react-loop.md"));
 }
+
+#[test]
+fn benchmark_evidence_format_is_documented() {
+    let results = std::fs::read_to_string("benchmarks/results/README.md").unwrap();
+    let docs = std::fs::read_to_string("docs/runtime/benchmark-evidence.md").unwrap();
+
+    assert!(results.contains("DATA_PROVENANCE.md"));
+    assert!(results.contains("rove-benchmark-core-report.md"));
+    assert!(results.contains("metrics.json"));
+    assert!(docs.contains("harness regression"));
+    assert!(docs.contains("recovery/resume ablation"));
+}
