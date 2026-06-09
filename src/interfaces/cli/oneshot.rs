@@ -49,6 +49,7 @@ pub async fn run_oneshot_with_cancel(
             state_store,
             workspace: engine.workspace(),
             model_id: engine.model_id(),
+            runtime_identity: Some(engine.runtime_identity()),
         },
         CliRunRenderOptions {
             mode: CliRunRenderMode::OneShot,

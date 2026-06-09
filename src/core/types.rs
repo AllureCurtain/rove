@@ -50,6 +50,8 @@ pub struct TaskState {
     pub checkpoint: Option<PromptCheckpoint>,
     #[serde(default)]
     pub plan: Option<TaskPlan>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_identity: Option<crate::core::runtime_identity::RuntimeIdentity>,
 }
 
 /// Resumable prompt checkpoint used to rebuild context without replaying the full audit history.
@@ -66,6 +68,8 @@ pub struct PromptCheckpoint {
     pub compacted_history_messages: usize,
     #[serde(default)]
     pub compaction: PromptCompactionState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_identity: Option<crate::core::runtime_identity::RuntimeIdentity>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

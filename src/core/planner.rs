@@ -39,6 +39,10 @@ impl Planner {
         Self::new(DEFAULT_PLANNER_PROMPT)
     }
 
+    pub fn prompt(&self) -> &str {
+        &self.prompt
+    }
+
     pub async fn draft(
         &self,
         model: &dyn ModelClient,

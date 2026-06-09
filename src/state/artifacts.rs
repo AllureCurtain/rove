@@ -5,6 +5,7 @@ use crate::core::context::estimate_messages_tokens;
 use crate::core::engine::planned_step_failure_message;
 use crate::core::events::StreamEvent;
 use crate::core::prompt_metadata::PromptBuildMetadata;
+use crate::core::runtime_identity::RuntimeIdentity;
 use crate::core::types::{
     CallId, JobId, Message, PromptCheckpoint, PromptCompactionMode, PromptCompactionState, Role,
     RunId, SessionId, TaskPlan, TaskState, TerminationReason, ToolMutation, Usage,
@@ -31,6 +32,7 @@ pub struct RunArtifactRecorder {
     tool_failures: u32,
     tool_mutations: Vec<ToolMutation>,
     prompt_builds: Vec<PromptBuildMetadata>,
+    runtime_identity: Option<RuntimeIdentity>,
     total_usage: Usage,
     final_reason: TerminationReason,
     final_output: Option<String>,
@@ -46,6 +48,7 @@ impl RunArtifactRecorder {
         run_id: RunId,
         goal: String,
         resume_state: Option<&TaskState>,
+        runtime_identity: Option<RuntimeIdentity>,
     ) -> Self {
         let mut history = resume_state
             .map(|state| state.history.clone())
@@ -71,6 +74,8 @@ impl RunArtifactRecorder {
             tool_failures: 0,
             tool_mutations: Vec::new(),
             prompt_builds: Vec::new(),
+            runtime_identity: runtime_identity
+                .or_else(|| resume_state.and_then(|state| state.runtime_identity.clone())),
             total_usage: Usage::default(),
             final_reason: TerminationReason::Error,
             final_output: None,
@@ -214,6 +219,7 @@ impl RunArtifactRecorder {
             summary: self.summary.clone(),
             checkpoint: Some(self.prompt_checkpoint()),
             plan: self.plan.clone(),
+            runtime_identity: self.runtime_identity.clone(),
         };
         if let Err(err) = state_store.write_task_state(&state).await {
             tracing::warn!("Failed to write task_state.json: {}", err);
@@ -254,6 +260,7 @@ impl RunArtifactRecorder {
         report.tool_failures = self.tool_failures;
         report.tool_mutations = self.tool_mutations.clone();
         report.prompt_builds = self.prompt_builds.clone();
+        report.runtime_identity = self.runtime_identity.clone();
         report.output = self.final_output.clone();
 
         match write_report(run_dir, &report) {
@@ -310,6 +317,7 @@ impl RunArtifactRecorder {
             token_estimate,
             compacted_history_messages,
             compaction: self.checkpoint_compaction_state(compacted_history_messages),
+            runtime_identity: self.runtime_identity.clone(),
         }
     }
 
@@ -384,5 +392,86 @@ fn termination_reason_label(reason: &TerminationReason) -> &'static str {
         TerminationReason::TimeLimit => "time_limit",
         TerminationReason::Error => "error",
         TerminationReason::Cancelled => "cancelled",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RunArtifactRecorder;
+    use crate::core::events::StreamEvent;
+    use crate::core::runtime_identity::RuntimeIdentity;
+    use crate::core::types::{ApprovalPolicy, JobId, RunId, SessionId};
+    use crate::core::workspace::{Workspace, WorkspaceKind};
+    use crate::state::store::StateStore;
+
+    fn runtime_identity() -> RuntimeIdentity {
+        RuntimeIdentity {
+            cwd: "D:/workspace".to_string(),
+            workspace_kind: WorkspaceKind::Repo,
+            model_id: "gpt-4.1-mini".to_string(),
+            provider_target: "openai-responses:https://api.openai.com/v1:gpt-4.1-mini".to_string(),
+            approval_policy: ApprovalPolicy::Auto,
+            max_steps: 12,
+            plan_enabled: true,
+            system_prompt_hash: "sha256:system".to_string(),
+            planner_prompt_hash: "sha256:planner".to_string(),
+            workspace_fingerprint: "sha256:workspace".to_string(),
+            tool_signature: "sha256:tools".to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn recorder_persists_runtime_identity_in_state_and_checkpoint() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state_store = StateStore::new(tmp.path());
+        let session_id = SessionId::new();
+        let job_id = JobId::new();
+        let run_id = RunId::new();
+        let identity = runtime_identity();
+        let mut recorder = RunArtifactRecorder::new(
+            session_id,
+            job_id,
+            run_id,
+            "inspect".to_string(),
+            None,
+            Some(identity.clone()),
+        );
+
+        recorder
+            .record_event(
+                &StreamEvent::RunStarted {
+                    run_id,
+                    job_id,
+                    user_message: "inspect".to_string(),
+                },
+                &state_store,
+            )
+            .await;
+
+        let state = state_store.load_task_state(run_id).await.unwrap();
+        assert_eq!(state.runtime_identity.as_ref(), Some(&identity));
+        assert_eq!(
+            state
+                .checkpoint
+                .as_ref()
+                .and_then(|checkpoint| checkpoint.runtime_identity.as_ref()),
+            Some(&identity)
+        );
+
+        let workspace = Workspace {
+            root: tmp.path().to_path_buf(),
+            kind: WorkspaceKind::Folder,
+            state_dir: tmp.path().join(".rove"),
+        };
+        let run_dir = tmp.path().join("report-run");
+        recorder
+            .finalize(&state_store, &workspace, "gpt-4.1-mini", &run_dir)
+            .await;
+        let report_json = tokio::fs::read_to_string(run_dir.join("report.json"))
+            .await
+            .unwrap();
+        let report: crate::state::report::RunReport = serde_json::from_str(&report_json).unwrap();
+
+        assert_eq!(report.runtime_identity.as_ref(), Some(&identity));
     }
 }

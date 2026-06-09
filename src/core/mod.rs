@@ -10,6 +10,7 @@ pub(crate) mod plan_loop;
 pub mod planner;
 pub mod prompt_metadata;
 pub(crate) mod run_loop;
+pub mod runtime_identity;
 pub mod session;
 pub(crate) mod tool_turn;
 pub mod types;

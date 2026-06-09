@@ -264,6 +264,7 @@ async fn run_engine_collect_output(
         run_id,
         message,
         resume_state_for_recorder.as_ref(),
+        Some(engine.runtime_identity()),
     );
     let mut stream =
         std::pin::pin!(engine.run_with_cancel(req, Some(trace_writer), CancellationToken::new()));
@@ -303,6 +304,7 @@ fn build_resume_state(session_id: SessionId, resume_state: &BenchmarkResumeState
         summary: Some(resume_state.summary.clone()),
         checkpoint: None,
         plan: None,
+        runtime_identity: None,
     }
 }
 

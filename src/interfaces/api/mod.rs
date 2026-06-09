@@ -771,6 +771,7 @@ async fn run_job_inner(
         record.run_id,
         record.message.clone(),
         record.resume_state.as_ref(),
+        Some(engine.runtime_identity()),
     );
     let model_id = engine.model_id().to_string();
     let workspace = engine.workspace().clone();
@@ -841,6 +842,7 @@ async fn finalize_cancelled_job(_state: &ApiState, record: &Arc<JobRecord>) {
         record.job_id,
         record.run_id,
         record.message.clone(),
+        None,
         None,
     );
     for event in &events_for_recorder {

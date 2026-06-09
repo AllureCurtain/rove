@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::core::prompt_metadata::PromptBuildMetadata;
+use crate::core::runtime_identity::RuntimeIdentity;
 use crate::core::types::{JobId, RunId, SessionId, TerminationReason, ToolMutation, Usage};
 use crate::core::workspace::WorkspaceKind;
 
@@ -27,6 +28,8 @@ pub struct RunReport {
     pub tool_mutations: Vec<ToolMutation>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub prompt_builds: Vec<PromptBuildMetadata>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_identity: Option<RuntimeIdentity>,
     pub output: Option<String>,
     pub timestamp: String,
 }
@@ -61,6 +64,7 @@ impl RunReport {
             tool_failures: 0,
             tool_mutations: Vec::new(),
             prompt_builds: Vec::new(),
+            runtime_identity: None,
             output: None,
             timestamp: chrono::Utc::now().to_rfc3339(),
         }

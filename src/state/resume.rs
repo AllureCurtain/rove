@@ -1,3 +1,6 @@
+use crate::core::runtime_identity::{
+    RuntimeIdentity, RuntimeIdentityEvaluation, evaluate_runtime_identity,
+};
 use crate::core::types::{RunId, TaskState};
 use crate::state::store::StateStore;
 
@@ -19,6 +22,18 @@ pub async fn resolve_resume_state(
     Ok(Some(state_store.load_task_state(RunId(run_id)).await?))
 }
 
+pub fn evaluate_resume_runtime_identity(
+    state: &TaskState,
+    current: &RuntimeIdentity,
+) -> RuntimeIdentityEvaluation {
+    let saved = state
+        .checkpoint
+        .as_ref()
+        .and_then(|checkpoint| checkpoint.runtime_identity.as_ref())
+        .or(state.runtime_identity.as_ref());
+    evaluate_runtime_identity(saved, current)
+}
+
 #[cfg(test)]
 mod tests {
     use super::resolve_resume_state;
@@ -37,6 +52,7 @@ mod tests {
             summary: None,
             checkpoint: None,
             plan: None,
+            runtime_identity: None,
         }
     }
 
@@ -87,5 +103,16 @@ mod tests {
             .unwrap_err();
 
         assert!(err.to_string().contains("expected latest or run_id"));
+    }
+
+    #[test]
+    fn old_task_state_without_runtime_identity_deserializes() {
+        let state = task_state(RunId::new(), "old");
+        let mut value = serde_json::to_value(state).unwrap();
+        value.as_object_mut().unwrap().remove("runtime_identity");
+
+        let state: TaskState = serde_json::from_value(value).unwrap();
+
+        assert!(state.runtime_identity.is_none());
     }
 }
