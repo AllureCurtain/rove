@@ -1,7 +1,7 @@
 use crate::core::events::StreamEvent;
 use crate::core::types::{
-    CallId, JobId, PlanStep, PromptCompactionState, RunId, TaskPlan, TerminationReason,
-    ToolResult, Usage,
+    CallId, JobId, PlanStep, PromptCompactionState, RunId, TaskPlan, TerminationReason, ToolResult,
+    Usage,
 };
 use crate::errors::ToolError;
 
@@ -217,7 +217,8 @@ impl RunViewState {
                     .retain(|approval| approval.call_id != call_id);
             }
             RunViewUpdate::InputNeeded { input_id, prompt } => {
-                self.pending_inputs.push(PendingInputView { input_id, prompt });
+                self.pending_inputs
+                    .push(PendingInputView { input_id, prompt });
             }
             RunViewUpdate::PlanCreated { plan } => {
                 self.plan = Some(plan);

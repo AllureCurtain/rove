@@ -377,12 +377,18 @@ mod tests {
 
     #[test]
     fn slash_commands_convert_to_terminal_actions() {
-        assert_eq!(SlashCommand::parse("/help").to_action(), TerminalAction::Help);
+        assert_eq!(
+            SlashCommand::parse("/help").to_action(),
+            TerminalAction::Help
+        );
         assert_eq!(
             SlashCommand::parse("/status").to_action(),
             TerminalAction::ShowStatus
         );
-        assert_eq!(SlashCommand::parse("/clear").to_action(), TerminalAction::Clear);
+        assert_eq!(
+            SlashCommand::parse("/clear").to_action(),
+            TerminalAction::Clear
+        );
         assert_eq!(
             SlashCommand::parse("/sessions").to_action(),
             TerminalAction::ShowSessions
@@ -395,7 +401,10 @@ mod tests {
             SlashCommand::parse("/resume 01ARYZ6S41").to_action(),
             TerminalAction::ResumeRun("01ARYZ6S41".to_string())
         );
-        assert_eq!(SlashCommand::parse("/exit").to_action(), TerminalAction::Exit);
+        assert_eq!(
+            SlashCommand::parse("/exit").to_action(),
+            TerminalAction::Exit
+        );
         assert_eq!(
             SlashCommand::parse("/model gpt").to_action(),
             TerminalAction::Unknown("/model".to_string())
