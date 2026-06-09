@@ -272,6 +272,40 @@ async fn api_rejects_missing_bearer_token_when_configured() {
 }
 
 #[tokio::test]
+async fn api_docs_do_not_disable_bearer_token_for_business_routes() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let mut config = test_config();
+    config.api.token_auth = Some("secret-token".to_string());
+    let app = router(ApiState::new(workspace, config));
+
+    let docs = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/openapi.json")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(docs.status(), StatusCode::OK);
+
+    let business = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/jobs")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"message":"secured api","model":"fake"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(business.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
 async fn api_accepts_matching_bearer_token() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
