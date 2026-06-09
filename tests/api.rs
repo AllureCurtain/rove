@@ -131,6 +131,7 @@ async fn api_exposes_swagger_ui() {
     let app = router(ApiState::new(workspace, test_config()));
 
     let response = app
+        .clone()
         .oneshot(
             Request::builder()
                 .uri("/swagger-ui/")
@@ -147,31 +148,54 @@ async fn api_exposes_swagger_ui() {
         status
     );
 
-    if status.is_success() {
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let text = String::from_utf8(body.to_vec()).unwrap();
-
-        assert!(
-            text.contains("Swagger UI") || text.contains("swagger-ui"),
-            "Swagger UI response should include Swagger UI content: {text}"
-        );
-        assert!(
-            text.contains("/api/openapi.json"),
-            "Swagger UI response should reference the OpenAPI spec: {text}"
-        );
-    } else {
+    let response = if status.is_redirection() {
         let location = response
             .headers()
-            .get("location")
+            .get(axum::http::header::LOCATION)
             .and_then(|value| value.to_str().ok())
-            .expect("redirect should include Location header");
-        assert!(
-            location.contains("swagger-ui"),
-            "Swagger UI redirect should target swagger-ui, got {location}"
-        );
-    }
+            .expect("redirect should include Location header")
+            .to_string();
+        let follow_uri = if location.starts_with("http://") || location.starts_with("https://") {
+            let uri: axum::http::Uri = location.parse().expect("redirect Location should be a URI");
+            uri.path_and_query()
+                .map(|path| path.as_str().to_string())
+                .unwrap_or_else(|| "/".to_string())
+        } else if location.starts_with('/') {
+            location
+        } else {
+            format!("/{location}")
+        };
+
+        app.oneshot(
+            Request::builder()
+                .uri(follow_uri)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+    } else {
+        response
+    };
+
+    assert!(
+        response.status().is_success(),
+        "Swagger UI final response should be successful, got {}",
+        response.status()
+    );
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let text = String::from_utf8(body.to_vec()).unwrap();
+
+    assert!(
+        text.contains("Swagger UI") || text.contains("swagger-ui"),
+        "Swagger UI response should include Swagger UI content: {text}"
+    );
+    assert!(
+        text.contains("/api/openapi.json"),
+        "Swagger UI response should reference the OpenAPI spec: {text}"
+    );
 }
 
 #[tokio::test]
