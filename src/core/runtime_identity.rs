@@ -26,18 +26,25 @@ pub struct RuntimeIdentityEvaluation {
     pub mismatch_fields: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeIdentityStatus {
     FullValid,
     RuntimeMismatch,
+    #[default]
     Missing,
 }
 
-impl Default for RuntimeIdentityStatus {
-    fn default() -> Self {
-        Self::Missing
-    }
+pub struct RuntimeIdentityInput<'a> {
+    pub workspace: &'a Workspace,
+    pub model_id: &'a str,
+    pub provider_target: &'a str,
+    pub approval_policy: ApprovalPolicy,
+    pub max_steps: u32,
+    pub plan_enabled: bool,
+    pub system_prompt: &'a str,
+    pub planner_prompt: &'a str,
+    pub tools: &'a [ToolSchema],
 }
 
 pub fn workspace_fingerprint(workspace: &Workspace) -> String {
@@ -50,29 +57,19 @@ pub fn workspace_fingerprint(workspace: &Workspace) -> String {
     )
 }
 
-pub fn build_runtime_identity(
-    workspace: &Workspace,
-    model_id: &str,
-    provider_target: &str,
-    approval_policy: ApprovalPolicy,
-    max_steps: u32,
-    plan_enabled: bool,
-    system_prompt: &str,
-    planner_prompt: &str,
-    tools: &[ToolSchema],
-) -> RuntimeIdentity {
+pub fn build_runtime_identity(input: RuntimeIdentityInput<'_>) -> RuntimeIdentity {
     RuntimeIdentity {
-        cwd: workspace.root.display().to_string(),
-        workspace_kind: workspace.kind.clone(),
-        model_id: model_id.to_string(),
-        provider_target: provider_target.to_string(),
-        approval_policy,
-        max_steps,
-        plan_enabled,
-        system_prompt_hash: stable_hash(system_prompt),
-        planner_prompt_hash: stable_hash(planner_prompt),
-        workspace_fingerprint: workspace_fingerprint(workspace),
-        tool_signature: tool_signature(tools),
+        cwd: input.workspace.root.display().to_string(),
+        workspace_kind: input.workspace.kind.clone(),
+        model_id: input.model_id.to_string(),
+        provider_target: input.provider_target.to_string(),
+        approval_policy: input.approval_policy,
+        max_steps: input.max_steps,
+        plan_enabled: input.plan_enabled,
+        system_prompt_hash: stable_hash(input.system_prompt),
+        planner_prompt_hash: stable_hash(input.planner_prompt),
+        workspace_fingerprint: workspace_fingerprint(input.workspace),
+        tool_signature: tool_signature(input.tools),
     }
 }
 
@@ -138,7 +135,10 @@ mod tests {
     use crate::core::types::{ApprovalPolicy, ToolSchema};
     use crate::core::workspace::{Workspace, WorkspaceKind};
 
-    use super::{RuntimeIdentityStatus, build_runtime_identity, evaluate_runtime_identity};
+    use super::{
+        RuntimeIdentityInput, RuntimeIdentityStatus, build_runtime_identity,
+        evaluate_runtime_identity,
+    };
 
     fn workspace() -> Workspace {
         let root = std::env::current_dir().unwrap();
@@ -165,17 +165,17 @@ mod tests {
         let workspace = workspace();
         let tools = tools();
 
-        let identity = build_runtime_identity(
-            &workspace,
-            "gpt-4.1-mini",
-            "openai-responses:https://api.openai.com/v1:gpt-4.1-mini",
-            ApprovalPolicy::Auto,
-            12,
-            true,
-            "system prompt",
-            "planner prompt",
-            &tools,
-        );
+        let identity = build_runtime_identity(RuntimeIdentityInput {
+            workspace: &workspace,
+            model_id: "gpt-4.1-mini",
+            provider_target: "openai-responses:https://api.openai.com/v1:gpt-4.1-mini",
+            approval_policy: ApprovalPolicy::Auto,
+            max_steps: 12,
+            plan_enabled: true,
+            system_prompt: "system prompt",
+            planner_prompt: "planner prompt",
+            tools: &tools,
+        });
 
         assert_eq!(identity.cwd, workspace.root.display().to_string());
         assert_eq!(identity.workspace_kind, WorkspaceKind::Repo);
@@ -197,28 +197,28 @@ mod tests {
     fn evaluate_runtime_identity_reports_mismatch_fields() {
         let workspace = workspace();
         let tools = tools();
-        let saved = build_runtime_identity(
-            &workspace,
-            "gpt-4.1-mini",
-            "openai-responses:https://api.openai.com/v1:gpt-4.1-mini",
-            ApprovalPolicy::Auto,
-            12,
-            true,
-            "system prompt",
-            "planner prompt",
-            &tools,
-        );
-        let current = build_runtime_identity(
-            &workspace,
-            "gpt-4.1",
-            "openai-compatible:https://api.openai.com/v1:gpt-4.1",
-            ApprovalPolicy::Never,
-            8,
-            false,
-            "changed system prompt",
-            "planner prompt",
-            &[],
-        );
+        let saved = build_runtime_identity(RuntimeIdentityInput {
+            workspace: &workspace,
+            model_id: "gpt-4.1-mini",
+            provider_target: "openai-responses:https://api.openai.com/v1:gpt-4.1-mini",
+            approval_policy: ApprovalPolicy::Auto,
+            max_steps: 12,
+            plan_enabled: true,
+            system_prompt: "system prompt",
+            planner_prompt: "planner prompt",
+            tools: &tools,
+        });
+        let current = build_runtime_identity(RuntimeIdentityInput {
+            workspace: &workspace,
+            model_id: "gpt-4.1",
+            provider_target: "openai-compatible:https://api.openai.com/v1:gpt-4.1",
+            approval_policy: ApprovalPolicy::Never,
+            max_steps: 8,
+            plan_enabled: false,
+            system_prompt: "changed system prompt",
+            planner_prompt: "planner prompt",
+            tools: &[],
+        });
 
         let evaluation = evaluate_runtime_identity(Some(&saved), &current);
 
@@ -249,17 +249,17 @@ mod tests {
     #[test]
     fn evaluate_runtime_identity_treats_missing_saved_identity_as_missing() {
         let workspace = workspace();
-        let current = build_runtime_identity(
-            &workspace,
-            "fake",
-            "fake:local:fake",
-            ApprovalPolicy::Auto,
-            20,
-            false,
-            "system",
-            "planner",
-            &[],
-        );
+        let current = build_runtime_identity(RuntimeIdentityInput {
+            workspace: &workspace,
+            model_id: "fake",
+            provider_target: "fake:local:fake",
+            approval_policy: ApprovalPolicy::Auto,
+            max_steps: 20,
+            plan_enabled: false,
+            system_prompt: "system",
+            planner_prompt: "planner",
+            tools: &[],
+        });
 
         let evaluation = evaluate_runtime_identity(None, &current);
 

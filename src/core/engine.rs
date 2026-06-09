@@ -15,7 +15,7 @@ use crate::core::plan_loop::{PlanLoopState, run_planned_loop};
 use crate::core::planner::Planner;
 use crate::core::run_loop::{LoopContext, LoopItem, RunLoopState, run_unplanned_loop};
 use crate::core::runtime_identity::{
-    RuntimeIdentity, RuntimeIdentityStatus, build_runtime_identity,
+    RuntimeIdentity, RuntimeIdentityInput, RuntimeIdentityStatus, build_runtime_identity,
 };
 use crate::core::types::{
     ApprovalDecision, ApprovalPolicy, JobId, Message, RunId, RunRequest, SessionId,
@@ -245,17 +245,18 @@ impl Engine {
     }
 
     pub fn runtime_identity(&self) -> RuntimeIdentity {
-        build_runtime_identity(
-            &self.workspace,
-            self.model.model_id(),
-            self.model.client_id().as_str(),
-            self.approval_policy,
-            self.config.max_steps,
-            self.config.plan_enabled,
-            self.context_manager.system_prompt(),
-            self.planner.prompt(),
-            &self.registry.schemas(),
-        )
+        let tools = self.registry.schemas();
+        build_runtime_identity(RuntimeIdentityInput {
+            workspace: &self.workspace,
+            model_id: self.model.model_id(),
+            provider_target: self.model.client_id().as_str(),
+            approval_policy: self.approval_policy,
+            max_steps: self.config.max_steps,
+            plan_enabled: self.config.plan_enabled,
+            system_prompt: self.context_manager.system_prompt(),
+            planner_prompt: self.planner.prompt(),
+            tools: &tools,
+        })
     }
 
     async fn run_post_run_hooks(&self, ctx: CompletedRunContext) {

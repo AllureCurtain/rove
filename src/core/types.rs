@@ -366,32 +366,22 @@ pub enum ToolMutationOperation {
     Unknown,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolExecutionStatus {
+    #[default]
     Ok,
     Error,
     Rejected,
     PartialSuccess,
 }
 
-impl Default for ToolExecutionStatus {
-    fn default() -> Self {
-        Self::Ok
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolRiskLevel {
+    #[default]
     Low,
     High,
-}
-
-impl Default for ToolRiskLevel {
-    fn default() -> Self {
-        Self::Low
-    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
