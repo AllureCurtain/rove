@@ -28,11 +28,22 @@ separate from `openai-compatible`, which continues to use `/chat/completions`.
 
 ```powershell
 $env:OPENAI_API_KEY = "<secret>"
+$env:ROVE_PROVIDER_SMOKE_OPENAI_RESPONSES = "1"
+$env:ROVE_PROVIDER_SMOKE_OPENAI_RESPONSES_MODEL = "gpt-4.1-mini"
+cargo test --test provider_smoke openai_responses_real_provider_smoke_when_enabled -- --exact --nocapture
+```
+
+For a full provider evidence package when quota allows:
+
+```powershell
+$env:OPENAI_API_KEY = "<secret>"
 powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
   -Provider openai-responses `
   -ApiBase "https://api.openai.com/v1" `
   -ApiKeyEnv OPENAI_API_KEY `
-  -Model "gpt-4.1-mini"
+  -Model "gpt-4.1-mini" `
+  -RunStress `
+  -RunRestartRecovery
 ```
 
 ## Generic Provider Integration

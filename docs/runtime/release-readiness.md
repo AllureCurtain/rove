@@ -103,6 +103,20 @@ that account's values. If the gateway does not expose `/models`, pass
 `-SkipModelInventory` and record the provider's own model-selection evidence
 separately.
 
+OpenAI Responses is a separate native provider gate from OpenAI-compatible chat
+completions:
+
+```powershell
+$env:OPENAI_API_KEY = "<secret>"
+powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
+  -Provider openai-responses `
+  -ApiBase "https://api.openai.com/v1" `
+  -ApiKeyEnv OPENAI_API_KEY `
+  -Model "gpt-4.1-mini" `
+  -RunStress `
+  -RunRestartRecovery
+```
+
 Anthropic and Ollama use the same runner with provider-specific inventory and
 smoke dispatch:
 
@@ -265,6 +279,8 @@ Current local-first posture:
 For a complete readiness pass, preserve:
 
 - command output or logs for deterministic gates;
+- `benchmarks/results/<scenario>-<YYYY-MM-DD>/` evidence packages with
+  `DATA_PROVENANCE.md`, `rove-benchmark-core-report.md`, and `metrics.json`;
 - local-full default and custom-port artifact directories;
 - provider model inventory and selected model id;
 - provider smoke output or classified failure notes;

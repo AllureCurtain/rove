@@ -61,8 +61,8 @@ powershell -ExecutionPolicy Bypass -File scripts/dev.ps1 -Provider
 ```
 
 The Web workbench can also override the provider per run. It supports runtime
-default, OpenAI-compatible, Anthropic, Ollama, and fake profiles without sending
-raw provider keys from the browser.
+default, OpenAI-compatible, OpenAI Responses, Anthropic, Ollama, and fake
+profiles without sending raw provider keys from the browser.
 
 Run in an isolated standalone Task workspace:
 
@@ -123,7 +123,7 @@ bearer token server-side and does not expose it to browser JavaScript.
 | Web | `web-ui/` | Next.js workbench that consumes the API and SSE job stream. |
 | Core runtime | `src/core/` | Engine loop, context building, planner, parser, executor, IDs, and workspace detection. |
 | State | `src/state/` | File artifacts under `.rove/runs/` plus SQLite indexing in `.rove/state.sqlite`. |
-| Models | `src/models/` | OpenAI-compatible, Anthropic, Ollama, fake providers, and routing fallback. |
+| Models | `src/models/` | OpenAI-compatible chat completions, OpenAI Responses, Anthropic, Ollama, fake providers, and routing fallback. |
 | Tools | `src/tools/` | Filesystem, shell, memory, request input, MCP proxy, and optional RAG tools. |
 | Memory | `src/memory/` | Session summaries and bounded durable memory recall. |
 | Docs | `docs/runtime/` | Current architecture, subsystem boundaries, and implementation status. |
@@ -141,7 +141,7 @@ Common environment variables:
 | Variable | Purpose |
 |---|---|
 | `ROVE_MODEL` | Primary model override. Use `fake` for local deterministic smoke runs. |
-| `ROVE_PROVIDER` | Provider name: `openai`, `openai-compatible`, `anthropic`, `ollama`, or `fake`. |
+| `ROVE_PROVIDER` | Provider name: `openai`, `openai-compatible`, `openai-responses`, `anthropic`, `ollama`, or `fake`. |
 | `OPENAI_API_KEY` | OpenAI-compatible API key. |
 | `OPENAI_API_BASE` | OpenAI-compatible API base URL. |
 | `ANTHROPIC_API_KEY` | Anthropic API key. |
@@ -242,6 +242,7 @@ Start here:
 - [Subsystem Design](docs/runtime/subsystems.md)
 - [Implementation Status](docs/runtime/implementation-status.md)
 - [Acceptance Matrix](docs/runtime/acceptance-matrix.md)
+- [Benchmark Evidence](docs/runtime/benchmark-evidence.md)
 
 Current runtime source of truth is the `docs/runtime/` directory. Older design
 notes remain in `docs/` and `docs/superpowers/specs/` as historical context
