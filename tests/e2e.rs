@@ -74,6 +74,7 @@ impl ModelClient for FakeModelClient {
                     prompt_tokens: 10,
                     completion_tokens: 5,
                     total_tokens: 15,
+                    cached_tokens: 0,
                 },
             }),
         ]))
@@ -196,6 +197,7 @@ impl ModelClient for RecordingModelClient {
                     prompt_tokens: 1,
                     completion_tokens: 1,
                     total_tokens: 2,
+                    cached_tokens: 0,
                 },
             }),
         ]))

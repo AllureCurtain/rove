@@ -95,11 +95,12 @@ fn build_provider_client(spec: ProviderSpec) -> Box<dyn ModelClient> {
         ProviderKind::OpenAiCompatible => {
             Box::new(OpenAiClient::new(spec.api_base, spec.api_key, spec.model))
         }
-        ProviderKind::OpenAiResponses => Box::new(OpenAiResponsesClient::new(
-            spec.api_base,
-            spec.api_key,
-            spec.model,
-        )),
+        ProviderKind::OpenAiResponses => Box::new(
+            OpenAiResponsesClient::new(spec.api_base, spec.api_key, spec.model).with_prompt_cache(
+                spec.responses_prompt_cache,
+                spec.responses_prompt_cache_retention,
+            ),
+        ),
         ProviderKind::Anthropic => Box::new(AnthropicClient::new(
             anthropic_base(spec.api_base),
             spec.api_key,
@@ -119,6 +120,8 @@ struct ProviderSpec {
     api_base: String,
     api_key: String,
     model: String,
+    responses_prompt_cache: bool,
+    responses_prompt_cache_retention: Option<String>,
 }
 
 impl ProviderSpec {
@@ -138,6 +141,8 @@ impl ProviderSpec {
             api_base: config.provider.api_base.clone(),
             api_key: config.provider.api_key.clone(),
             model,
+            responses_prompt_cache: false,
+            responses_prompt_cache_retention: None,
         }
     }
 
@@ -147,6 +152,11 @@ impl ProviderSpec {
             api_base: config.provider.api_base.clone(),
             api_key: config.provider.api_key.clone(),
             model,
+            responses_prompt_cache: config.provider.responses_prompt_cache,
+            responses_prompt_cache_retention: config
+                .provider
+                .responses_prompt_cache_retention
+                .clone(),
         }
     }
 
@@ -161,6 +171,8 @@ impl ProviderSpec {
             api_base: config.provider.api_base.clone(),
             api_key,
             model,
+            responses_prompt_cache: false,
+            responses_prompt_cache_retention: None,
         }
     }
 
@@ -170,6 +182,8 @@ impl ProviderSpec {
             api_base: config.provider.api_base.clone(),
             api_key: String::new(),
             model,
+            responses_prompt_cache: false,
+            responses_prompt_cache_retention: None,
         }
     }
 
@@ -179,6 +193,8 @@ impl ProviderSpec {
             api_base: String::new(),
             api_key: String::new(),
             model,
+            responses_prompt_cache: false,
+            responses_prompt_cache_retention: None,
         }
     }
 
@@ -188,6 +204,8 @@ impl ProviderSpec {
             api_base: provider.api_base.clone(),
             api_key: provider.api_key.clone(),
             model: provider.model.clone(),
+            responses_prompt_cache: false,
+            responses_prompt_cache_retention: None,
         }
     }
 

@@ -170,6 +170,7 @@ fn normalize_ollama_chat_line(line: &str) -> serde_json::Result<Vec<ModelEvent>>
                 .and_then(|value| value.as_u64())
                 .unwrap_or(0) as u32,
             total_tokens: 0,
+            cached_tokens: 0,
         };
         let total_tokens = usage.prompt_tokens + usage.completion_tokens;
         events.push(ModelEvent::Usage {

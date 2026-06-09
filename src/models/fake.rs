@@ -124,6 +124,7 @@ impl ModelClient for FakeModelClient {
                     prompt_tokens: 0,
                     completion_tokens: 0,
                     total_tokens: 0,
+                    cached_tokens: 0,
                 },
             }),
         ]))
