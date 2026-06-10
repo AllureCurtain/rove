@@ -7,8 +7,8 @@ use rove::config::AppConfigOverrides;
 use rove::core::types::{RunId, TerminationReason};
 use rove::interfaces::cli::args::{Args, Command};
 use rove::interfaces::cli::config as cli_config;
+use rove::interfaces::cli::exec::run_exec_with_cancel;
 use rove::interfaces::cli::index::{self as cli_index, IndexOptions};
-use rove::interfaces::cli::oneshot::run_oneshot_with_cancel;
 use rove::interfaces::cli::repl;
 use rove::interfaces::cli::runtime::{CliRuntimeOptions, build_cli_runtime};
 use rove::interfaces::cli::sessions;
@@ -50,14 +50,14 @@ fn run_sync_fast_path(args: Args) -> anyhow::Result<()> {
 }
 
 async fn async_main(args: Args) -> anyhow::Result<()> {
-    match args.command {
+    match args.command.clone() {
         Some(Command::Index {
             path,
             deterministic,
             embedding_model,
         }) => {
             return cli_index::run(IndexOptions {
-                cwd: path.or_else(|| args.cwd.map(PathBuf::from)),
+                cwd: path.or_else(|| args.cwd.clone().map(PathBuf::from)),
                 deterministic,
                 embedding_model,
                 eval_query: None,
@@ -66,34 +66,48 @@ async fn async_main(args: Args) -> anyhow::Result<()> {
             })
             .await;
         }
-        Some(Command::Sessions) => return sessions::run(args.cwd).await,
-        Some(Command::State { command }) => return cli_state::run(args.cwd, command).await,
+        Some(Command::Sessions) => return sessions::run(args.cwd.clone()).await,
+        Some(Command::State { command }) => return cli_state::run(args.cwd.clone(), command).await,
+        Some(Command::Exec { message }) => {
+            let message = join_message(message);
+            let runtime = build_runtime(&args, Some(&message)).await?;
+            return run_exec(args, runtime, message).await;
+        }
         Some(Command::DumpConfig) => unreachable!("dump-config is handled before runtime startup"),
         None => {}
     }
 
     let message = args.message();
-    let runtime = build_cli_runtime(CliRuntimeOptions {
+    let runtime = build_runtime(&args, message.as_ref()).await?;
+
+    if let Some(message) = message {
+        run_exec(args, runtime, message).await
+    } else {
+        repl::run(runtime).await
+    }
+}
+
+async fn build_runtime(
+    args: &Args,
+    fake_message: Option<&String>,
+) -> anyhow::Result<rove::interfaces::cli::runtime::CliRuntime> {
+    build_cli_runtime(CliRuntimeOptions {
         cwd: args.cwd.clone().map(PathBuf::from),
         model: args.model.clone(),
         max_steps: args.max_steps,
         approval: args.approval,
         task_workspace: args.task_workspace.clone(),
         task_base: args.task_base.clone(),
-        initial_fake_response: message
-            .as_ref()
-            .map(|message| format!("fake response: {message}")),
+        initial_fake_response: fake_message.map(|message| format!("fake response: {message}")),
     })
-    .await?;
-
-    if let Some(message) = message {
-        run_oneshot(args, runtime, message).await
-    } else {
-        repl::run(runtime).await
-    }
+    .await
 }
 
-async fn run_oneshot(
+fn join_message(message: Vec<String>) -> String {
+    message.join(" ").trim().to_string()
+}
+
+async fn run_exec(
     args: Args,
     runtime: rove::interfaces::cli::runtime::CliRuntime,
     message: String,
@@ -112,11 +126,11 @@ async fn run_oneshot(
         run_id,
     )?;
 
-    tracing::info!(%run_handle.run_id, "Starting run");
+    tracing::info!(%run_handle.run_id, "Starting exec run");
 
     let cli_cancel = CancellationToken::new();
     let signal_exit_code = spawn_cli_signal_listener(cli_cancel.clone());
-    let termination = run_oneshot_with_cancel(
+    let termination = run_exec_with_cancel(
         &runtime.engine,
         message,
         run_handle,

@@ -114,9 +114,75 @@ fn repl_fake_run_uses_compact_sections() {
 }
 
 #[test]
-fn one_shot_message_does_not_wait_for_repl_input() {
+fn message_enters_repl_runs_first_prompt_and_accepts_exit() {
     let tmp = tempfile::TempDir::new().unwrap();
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_rove"))
+        .arg("--cwd")
+        .arg(tmp.path())
+        .arg("--model")
+        .arg("fake")
+        .arg("--approval")
+        .arg("never")
+        .arg("hello")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            use std::io::Write as _;
+            child.stdin.as_mut().unwrap().write_all(b"/exit\n")?;
+            child.wait_with_output()
+        })
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stdout.contains("fake response: hello"));
+    assert!(stderr.contains("R O V E") || stderr.contains("Rove"));
+    assert!(stderr.contains("You"));
+    assert!(stderr.contains("hello"));
+    assert!(stderr.contains("Assistant"));
+    assert!(stderr.contains("Done"));
+    assert!(!stderr.contains("unexpected argument"));
+}
+
+#[test]
+fn unquoted_multi_word_message_enters_repl_as_initial_prompt() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_rove"))
+        .arg("--cwd")
+        .arg(tmp.path())
+        .arg("--model")
+        .arg("fake")
+        .arg("--approval")
+        .arg("never")
+        .args(["hello", "world"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            use std::io::Write as _;
+            child.stdin.as_mut().unwrap().write_all(b"/exit\n")?;
+            child.wait_with_output()
+        })
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stdout.contains("fake response: hello world"));
+    assert!(stderr.contains("You"));
+    assert!(stderr.contains("hello world"));
+    assert!(!stderr.contains("unexpected argument"));
+}
+
+#[test]
+fn exec_message_does_not_wait_for_repl_input() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_rove"))
+        .arg("exec")
         .arg("--cwd")
         .arg(tmp.path())
         .arg("--model")
@@ -131,17 +197,17 @@ fn one_shot_message_does_not_wait_for_repl_input() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stdout.contains("fake response: hello"));
-    assert!(!stdout.contains("INFO"));
-    assert!(!stdout.contains("Workspace detected"));
-    assert!(!stderr.contains("INFO"));
-    assert!(!stderr.contains("Workspace detected"));
     assert!(!stderr.contains("R O V E"));
+    assert!(!stderr.contains("Rove"));
+    assert!(!stderr.contains("mode    repl"));
+    assert!(!stderr.contains("mode       interactive"));
 }
 
 #[test]
-fn unquoted_multi_word_one_shot_joins_message() {
+fn exec_unquoted_multi_word_message_joins_message() {
     let tmp = tempfile::TempDir::new().unwrap();
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_rove"))
+        .arg("exec")
         .arg("--cwd")
         .arg(tmp.path())
         .arg("--model")

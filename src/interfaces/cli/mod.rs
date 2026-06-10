@@ -1,6 +1,7 @@
 pub mod approval;
 pub mod args;
 pub mod config;
+pub mod exec;
 pub mod index;
 pub mod input;
 pub mod oneshot;
