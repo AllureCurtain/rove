@@ -3,6 +3,7 @@ use std::io::Write;
 use std::path::Path;
 
 use futures::{Stream, StreamExt};
+use serde::Deserialize;
 
 use crate::core::events::StreamEvent;
 use crate::core::runtime_identity::RuntimeIdentity;
@@ -128,6 +129,65 @@ impl ReplLineRenderState {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ReplToolStartBlock {
+    Tool { name: String, args: String },
+    Command { command: String },
+}
+
+#[derive(Debug, Deserialize)]
+struct ShellOutputView {
+    exit_code: Option<i32>,
+    stdout: String,
+    stderr: String,
+    stdout_truncated: bool,
+    stderr_truncated: bool,
+}
+
+fn repl_tool_start_block(name: &str, args: &serde_json::Value) -> ReplToolStartBlock {
+    if name == "shell"
+        && let Some(command) = args.get("command").and_then(|value| value.as_str())
+    {
+        return ReplToolStartBlock::Command {
+            command: command.to_string(),
+        };
+    }
+
+    ReplToolStartBlock::Tool {
+        name: name.to_string(),
+        args: args.to_string(),
+    }
+}
+
+fn shell_result_summary(result: &crate::core::types::ToolResult) -> Option<Vec<String>> {
+    let output: ShellOutputView = serde_json::from_str(&result.output).ok()?;
+    let mut lines = Vec::new();
+    let exit = output
+        .exit_code
+        .map(|code| code.to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    lines.push(format!("exit {exit}"));
+
+    let stdout = output.stdout.trim();
+    if !stdout.is_empty() {
+        lines.push(format!("stdout {}", truncate(stdout, 200)));
+    }
+
+    let stderr = output.stderr.trim();
+    if !stderr.is_empty() {
+        lines.push(format!("stderr {}", truncate(stderr, 200)));
+    }
+
+    if output.stdout_truncated {
+        lines.push("stdout truncated".to_string());
+    }
+    if output.stderr_truncated {
+        lines.push("stderr truncated".to_string());
+    }
+
+    Some(lines)
+}
+
 fn render_repl_update(
     update: RunViewUpdate,
     options: CliRunRenderOptions,
@@ -173,8 +233,16 @@ fn render_repl_update(
             render_state.tool_call_count += 1;
             render_state.tool_names.insert(call_id, name.clone());
             if is_repl(options) {
-                eprintln!("\nTool · {name}");
-                eprintln!("  {}", truncate(&args.to_string(), 200));
+                match repl_tool_start_block(&name, &args) {
+                    ReplToolStartBlock::Command { command } => {
+                        eprintln!("\nCommand");
+                        eprintln!("  {command}");
+                    }
+                    ReplToolStartBlock::Tool { name, args } => {
+                        eprintln!("\nTool · {name}");
+                        eprintln!("  {}", truncate(&args, 200));
+                    }
+                }
             } else {
                 eprintln!("\n  [tool] {}({})", name, args);
             }
@@ -202,9 +270,24 @@ fn render_repl_update(
             }
             None
         }
-        RunViewUpdate::ToolCallCompleted { result, .. } => {
+        RunViewUpdate::ToolCallCompleted { call_id, result } => {
             if is_repl(options) {
-                eprintln!("  {}", truncate(&result.output, 200));
+                if render_state
+                    .tool_names
+                    .get(&call_id)
+                    .map(|name| name == "shell")
+                    .unwrap_or(false)
+                {
+                    if let Some(lines) = shell_result_summary(&result) {
+                        for line in lines {
+                            eprintln!("  {line}");
+                        }
+                    } else {
+                        eprintln!("  {}", truncate(&result.output, 200));
+                    }
+                } else {
+                    eprintln!("  {}", truncate(&result.output, 200));
+                }
             } else {
                 eprintln!("  [result] {}", truncate(&result.output, 200));
             }
@@ -656,6 +739,74 @@ mod tests {
             }),
             Some("Context · compacted".to_string())
         );
+    }
+
+    #[test]
+    fn repl_tool_start_block_uses_command_for_shell_tool() {
+        assert_eq!(
+            super::repl_tool_start_block("shell", &serde_json::json!({"command":"cargo test"})),
+            super::ReplToolStartBlock::Command {
+                command: "cargo test".to_string()
+            }
+        );
+        assert_eq!(
+            super::repl_tool_start_block("fs_read", &serde_json::json!({"path":"README.md"})),
+            super::ReplToolStartBlock::Tool {
+                name: "fs_read".to_string(),
+                args: "{\"path\":\"README.md\"}".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn shell_result_summary_formats_exit_code_and_streams() {
+        let call_id = CallId::new();
+        let result = ToolResult {
+            call_id,
+            output: serde_json::json!({
+                "command": "cargo test",
+                "success": true,
+                "exit_code": 0,
+                "stdout": "ok\n",
+                "stderr": "",
+                "stdout_truncated": false,
+                "stderr_truncated": false
+            })
+            .to_string(),
+            mutations: Vec::new(),
+            metadata: Default::default(),
+        };
+
+        let lines = super::shell_result_summary(&result).unwrap();
+
+        assert_eq!(lines[0], "exit 0");
+        assert_eq!(lines[1], "stdout ok");
+    }
+
+    #[test]
+    fn shell_result_summary_marks_truncated_output() {
+        let call_id = CallId::new();
+        let result = ToolResult {
+            call_id,
+            output: serde_json::json!({
+                "command": "cargo test",
+                "success": false,
+                "exit_code": 101,
+                "stdout": "",
+                "stderr": "failure\n",
+                "stdout_truncated": false,
+                "stderr_truncated": true
+            })
+            .to_string(),
+            mutations: Vec::new(),
+            metadata: Default::default(),
+        };
+
+        let lines = super::shell_result_summary(&result).unwrap();
+
+        assert_eq!(lines[0], "exit 101");
+        assert_eq!(lines[1], "stderr failure");
+        assert_eq!(lines[2], "stderr truncated");
     }
 
     #[tokio::test]
