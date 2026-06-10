@@ -11,31 +11,31 @@ pub struct Args {
     pub message: Vec<String>,
 
     /// Model to use (overrides ROVE_MODEL env var).
-    #[arg(short, long)]
+    #[arg(short, long, global = true)]
     pub model: Option<String>,
 
     /// Maximum steps for this run.
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub max_steps: Option<u32>,
 
     /// Resume a previous task state. Use "latest" for the most recent snapshot.
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub resume: Option<String>,
 
     /// Tool approval policy.
-    #[arg(long, value_enum, default_value_t = CliApprovalPolicy::Ask)]
+    #[arg(long, value_enum, default_value_t = CliApprovalPolicy::Ask, global = true)]
     pub approval: CliApprovalPolicy,
 
     /// Working directory (defaults to current directory).
-    #[arg(short = 'C', long)]
+    #[arg(short = 'C', long, global = true)]
     pub cwd: Option<String>,
 
     /// Create or use an isolated standalone task workspace by name.
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub task_workspace: Option<String>,
 
     /// Base directory for task workspaces. Defaults to <state_dir>/tasks.
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub task_base: Option<PathBuf>,
 
     #[command(subcommand)]
@@ -68,6 +68,12 @@ pub enum CliApprovalPolicy {
 pub enum Command {
     /// Print the effective runtime configuration.
     DumpConfig,
+    /// Run a prompt non-interactively and exit.
+    Exec {
+        /// The task or question to give the agent.
+        #[arg(value_name = "MESSAGE", num_args = 1.., required = true)]
+        message: Vec<String>,
+    },
     /// Index a workspace for RAG retrieval.
     Index {
         /// Workspace path to index. Defaults to the current working directory.
@@ -146,7 +152,7 @@ mod tests {
     }
 
     #[test]
-    fn quoted_task_still_parses_as_one_shot_message() {
+    fn quoted_task_parses_as_initial_prompt() {
         let args = Args::parse_from(["rove", "analyze this project"]);
 
         assert_eq!(args.message().as_deref(), Some("analyze this project"));
@@ -154,11 +160,64 @@ mod tests {
     }
 
     #[test]
-    fn unquoted_multi_word_task_parses_as_one_shot_message() {
+    fn unquoted_multi_word_task_parses_as_initial_prompt() {
         let args = Args::try_parse_from(["rove", "analyze", "this", "project"]).unwrap();
 
         assert_eq!(args.message().as_deref(), Some("analyze this project"));
         assert!(args.command.is_none());
+    }
+
+    #[test]
+    fn exec_subcommand_parses_noninteractive_message() {
+        let args = Args::parse_from(["rove", "exec", "analyze this project"]);
+
+        assert!(args.message().is_none());
+        match args.command {
+            Some(Command::Exec { message }) => {
+                assert_eq!(message, vec!["analyze this project".to_string()]);
+            }
+            other => panic!("expected exec subcommand, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn exec_subcommand_joins_unquoted_multi_word_message() {
+        let args = Args::parse_from(["rove", "exec", "analyze", "this", "project"]);
+
+        assert!(args.message().is_none());
+        match args.command {
+            Some(Command::Exec { message }) => {
+                assert_eq!(message.join(" "), "analyze this project".to_string());
+            }
+            other => panic!("expected exec subcommand, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn exec_subcommand_requires_message() {
+        let err = Args::try_parse_from(["rove", "exec"]).unwrap_err();
+
+        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+    }
+
+    #[test]
+    fn runtime_flags_parse_after_exec_subcommand() {
+        let args = Args::parse_from([
+            "rove",
+            "exec",
+            "--model",
+            "fake",
+            "--approval",
+            "never",
+            "hello",
+        ]);
+
+        assert_eq!(args.model.as_deref(), Some("fake"));
+        assert!(matches!(args.approval, CliApprovalPolicy::Never));
+        match args.command {
+            Some(Command::Exec { message }) => assert_eq!(message, vec!["hello".to_string()]),
+            other => panic!("expected exec subcommand, got {other:?}"),
+        }
     }
 
     #[test]
