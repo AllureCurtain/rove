@@ -115,7 +115,7 @@ impl ReplState {
     }
 }
 
-pub async fn run(runtime: CliRuntime) -> anyhow::Result<()> {
+pub async fn run(runtime: CliRuntime, initial_prompt: Option<String>) -> anyhow::Result<()> {
     let mut state = ReplState::new(SessionId::new());
     let session_label = repl_session_label(state.active_resume_state());
     eprintln!(
@@ -131,6 +131,17 @@ pub async fn run(runtime: CliRuntime) -> anyhow::Result<()> {
     let history_path = runtime.workspace.state_dir.join("repl_history");
     let mut editor = DefaultEditor::new()?;
     load_history(&mut editor, &history_path);
+
+    if let Some(initial_prompt) = initial_prompt {
+        let input = initial_prompt.trim();
+        if !input.is_empty() {
+            if let Err(err) = editor.add_history_entry(input) {
+                eprintln!("warning: failed to record REPL history: {err}");
+            }
+            run_prompt(input.to_string(), &runtime, &mut state).await?;
+            save_history(&mut editor, &history_path);
+        }
+    }
 
     loop {
         match editor.readline("rove> ") {

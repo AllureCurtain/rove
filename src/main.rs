@@ -80,11 +80,7 @@ async fn async_main(args: Args) -> anyhow::Result<()> {
     let message = args.message();
     let runtime = build_runtime(&args, message.as_ref()).await?;
 
-    if let Some(message) = message {
-        run_exec(args, runtime, message).await
-    } else {
-        repl::run(runtime).await
-    }
+    repl::run(runtime, message).await
 }
 
 async fn build_runtime(
