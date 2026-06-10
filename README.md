@@ -22,16 +22,22 @@ Browser/Desktop workspaces, hosted multi-user identity, distributed rate limitin
 
 ## Quick Start
 
-Run a local fake-model task without network credentials:
+Start the interactive terminal REPL without network credentials:
+
+```bash
+cargo run -- --model fake
+```
+
+Start the same REPL with an initial prompt:
 
 ```bash
 cargo run -- --model fake "echo hello from rove"
 ```
 
-Multi-word tasks can also be typed without shell quotes:
+Run a non-interactive exec prompt and exit:
 
 ```bash
-cargo run -- --model fake inspect this workspace
+cargo run -- exec --model fake "echo hello from rove"
 ```
 
 Start the local API and Web workbench together in fake-provider mode:
@@ -117,7 +123,7 @@ bearer token server-side and does not expose it to browser JavaScript.
 
 | Area | Path | Purpose |
 |---|---|---|
-| CLI | `src/main.rs` | One-shot task runs, config dump, sessions, and RAG indexing command dispatch. |
+| CLI | `src/main.rs` | Rich terminal REPL, explicit `exec` runs, config dump, sessions, and RAG indexing command dispatch. |
 | API | `src/bin/rove-api.rs`, `src/interfaces/api/` | HTTP job lifecycle, SSE event streaming, approvals, inputs, and cancellation. |
 | Benchmarks | `src/bin/rove-bench.rs`, `benchmarks/` | Deterministic no-network benchmark tasks with artifact-path reports. |
 | Web | `web-ui/` | Next.js workbench that consumes the API and SSE job stream. |

@@ -185,29 +185,45 @@ High-level flow in `src/main.rs`:
 9. Register the shared runtime tool registry, including configured MCP tools.
 10. Build `ContextManager`.
 11. Build `Engine`.
-12. Create `StateStore` and `RunHandle`.
-13. Resolve optional CLI resume state.
-14. If a message argument is present, run `run_oneshot_with_cancel`.
-15. If no message and no subcommand are present, enter the line-oriented REPL.
+12. Create `StateStore`.
+13. Resolve optional CLI resume state when an exec run starts.
+14. If `exec <message>` is present, run the non-interactive exec backend.
+15. If a bare message argument is present, enter the rich terminal REPL and
+    submit that message as the first prompt.
+16. If no message and no subcommand are present, enter the rich terminal REPL
+    and wait for input.
 
-Current one-shot smoke command:
+Interactive REPL smoke command:
+
+```powershell
+cargo run -- --model fake
+```
+
+Interactive REPL with an initial prompt:
 
 ```powershell
 cargo run -- --model fake "echo hello from rove"
 ```
 
-The CLI also accepts unquoted multi-word tasks and joins them into the one-shot
-message:
+Non-interactive exec smoke command:
+
+```powershell
+cargo run -- exec --model fake "echo hello from rove"
+```
+
+The CLI accepts unquoted multi-word initial prompts and exec prompts by joining
+the trailing message words:
 
 ```powershell
 cargo run -- --model fake inspect this workspace
+cargo run -- exec --model fake inspect this workspace
 ```
 
 `Cargo.toml` sets `default-run = "rove"`, so plain `cargo run -- ...` uses the CLI binary.
 
-Running `rove` with no task enters the compact line-oriented REPL in the current
-terminal. Startup prints the active workspace, model, provider, state directory,
-session status, and common commands:
+Running `rove` with no task enters the rich scrollback terminal REPL in the
+current terminal. Startup prints the active workspace, model, provider, state
+directory, session status, and common commands:
 
 ```text
 rove

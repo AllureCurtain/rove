@@ -22,10 +22,10 @@ fn no_args_accepts_exit_command_and_exits_zero() {
     assert!(output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("R O V E"));
-    assert!(stderr.contains("local agent runtime"));
+    assert!(stderr.contains("local-first agent runtime"));
     assert!(stderr.contains("model   fake"));
     assert!(stderr.contains("session  new"));
-    assert!(stderr.contains("mode    repl"));
+    assert!(stderr.contains("mode    interactive"));
     assert!(stderr.contains("status   ready"));
     assert!(stderr.contains("Type your task, or use /help for commands."));
     assert!(!stderr.contains("provider"));

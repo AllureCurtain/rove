@@ -37,16 +37,16 @@ pub fn format_repl_welcome(view: ReplWelcomeView<'_>) -> String {
     format!(
         "\
   R O V E
-  local agent runtime
+  local-first agent runtime
 
   {cwd}
 
   model   {model:<model_width$}  session  {session}
-  mode    repl{mode_pad}status   ready
+  mode    interactive{mode_pad}status   ready
 
   Type your task, or use /help for commands.
 ",
-        mode_pad = " ".repeat(model_width.saturating_sub(3) + 2),
+        mode_pad = " ".repeat(model_width.saturating_sub("interactive".len()) + 2),
     )
 }
 
@@ -150,11 +150,11 @@ fn format_compact_welcome(view: ReplWelcomeView<'_>, width: usize) -> String {
     format!(
         "\
 R O V E
-local agent runtime
+local-first agent runtime
 {cwd}
 model {model}
 session {session}
-mode repl  status ready
+mode interactive  status ready
 {hint}
 "
     )
@@ -252,11 +252,11 @@ mod tests {
         });
 
         assert!(output.contains("R O V E"));
-        assert!(output.contains("local agent runtime"));
+        assert!(output.contains("local-first agent runtime"));
         assert!(output.contains(tmp.path().file_name().unwrap().to_string_lossy().as_ref()));
         assert!(output.contains("model   qwen/qwen3-coder"));
         assert!(output.contains("session  new"));
-        assert!(output.contains("mode    repl"));
+        assert!(output.contains("mode    interactive"));
         assert!(output.contains("status   ready"));
         assert!(output.contains("Type your task, or use /help for commands."));
         assert!(!output.contains("provider"));
@@ -294,6 +294,7 @@ mod tests {
         });
 
         assert!(output.contains("R O V E"));
+        assert!(output.contains("mode interactive  status ready"));
         assert!(output.contains("model qwen/qwen3"));
         assert!(output.contains("session new"));
         assert!(output.contains("/help"));
