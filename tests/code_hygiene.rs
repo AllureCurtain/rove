@@ -214,6 +214,45 @@ fn provider_integration_runner_records_requested_gate_failures() {
 }
 
 #[test]
+fn integration_runners_allow_web_origins_before_api_start() {
+    let local_script = std::fs::read_to_string("scripts/integration-smoke.ps1")
+        .expect("scripts/integration-smoke.ps1 should exist");
+    let provider_script = std::fs::read_to_string("scripts/provider-integration.ps1")
+        .expect("scripts/provider-integration.ps1 should exist");
+
+    assert!(local_script.contains("function Add-CorsOrigins"));
+    assert!(local_script.contains("ROVE_API_CORS_ORIGINS"));
+    let local_cors_index = local_script
+        .find("Add-CorsOrigins @($WebBase, \"http://localhost:$WebPort\")")
+        .expect("local-full runner should allow both 127.0.0.1 and localhost web origins");
+    let local_api_start_index = local_script
+        .find("$apiArgs = @(\"run\", \"--bin\", \"rove-api\"")
+        .expect("local-full runner should start rove-api");
+    assert!(
+        local_cors_index < local_api_start_index,
+        "local-full runner must set CORS origins before starting rove-api"
+    );
+
+    assert!(provider_script.contains("function Add-CorsOrigins"));
+    assert!(provider_script.contains("ROVE_API_CORS_ORIGINS"));
+    let provider_web_index = provider_script
+        .find("function Invoke-WebSmoke")
+        .expect("provider runner should define a Web smoke gate");
+    let provider_cors_index = provider_script[provider_web_index..]
+        .find("Add-CorsOrigins @($WebBase, \"http://localhost:$WebPort\")")
+        .map(|offset| provider_web_index + offset)
+        .expect("provider Web runner should allow both 127.0.0.1 and localhost web origins");
+    let provider_api_start_index = provider_script[provider_web_index..]
+        .find("web-provider-api.out.log")
+        .map(|offset| provider_web_index + offset)
+        .expect("provider Web runner should start rove-api for Web smoke");
+    assert!(
+        provider_cors_index < provider_api_start_index,
+        "provider Web runner must set CORS origins before starting rove-api"
+    );
+}
+
+#[test]
 fn provider_integration_runner_keeps_ollama_keyless_after_env_import() {
     let script = std::fs::read_to_string("scripts/provider-integration.ps1")
         .expect("scripts/provider-integration.ps1 should exist");

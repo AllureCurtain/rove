@@ -1,0 +1,29 @@
+{
+    "artifact_dir":  "C:\\Users\\ALLURE~1\\AppData\\Local\\Temp\\rove-release-evidence-2026-06-13-provider-skipped\\artifacts",
+    "key_env":  "",
+    "api_base":  "http://localhost:11434",
+    "gates":  {
+                  "model_inventory":  "skipped",
+                  "provider_full_api":  "skipped",
+                  "external_mcp":  "skipped",
+                  "web_provider":  "skipped",
+                  "provider_smoke":  "skipped",
+                  "stress":  "skipped"
+              },
+    "dirty":  [
+                  " M scripts/integration-smoke.ps1",
+                  " M scripts/provider-integration.ps1",
+                  " M tests/code_hygiene.rs",
+                  " M web-ui/lib/rove-state.test.ts",
+                  " M web-ui/lib/rove-state.ts",
+                  " M web-ui/lib/rove-types.test.ts",
+                  " M web-ui/lib/rove-types.ts",
+                  " M web-ui/next-env.d.ts",
+                  "?? benchmarks/results/local-full-2026-06-12/"
+              ],
+    "date":  "2026-06-13T12:54:21.5560671+08:00",
+    "model":  "not-configured",
+    "key_present":  false,
+    "provider":  "ollama",
+    "git":  "ece76d2bcf1ff89592169f0c9d40e87bfbe0c23b"
+}

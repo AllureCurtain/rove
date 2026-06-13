@@ -1,0 +1,11 @@
+{
+    "key_env":  "",
+    "integration_root":  "C:\\Users\\ALLURE~1\\AppData\\Local\\Temp\\rove-release-evidence-2026-06-13-provider-skipped",
+    "web_base":  "http://127.0.0.1:13021",
+    "api_base":  "http://localhost:11434",
+    "model":  "not-configured",
+    "key_present":  false,
+    "provider":  "ollama",
+    "api_base_local":  "http://127.0.0.1:18791",
+    "models_endpoint":  "http://localhost:11434/api/tags"
+}

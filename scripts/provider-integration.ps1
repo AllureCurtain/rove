@@ -71,6 +71,21 @@ function Test-CommandAvailable([string]$Name) {
     }
 }
 
+function Add-CorsOrigins([string[]]$Origins) {
+    $existing = @()
+    if ($env:ROVE_API_CORS_ORIGINS) {
+        $existing = $env:ROVE_API_CORS_ORIGINS.Split(",") | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+    }
+
+    $merged = [System.Collections.Generic.List[string]]::new()
+    foreach ($origin in @($existing + $Origins)) {
+        if ($origin -and -not $merged.Contains($origin)) {
+            [void]$merged.Add($origin)
+        }
+    }
+    $env:ROVE_API_CORS_ORIGINS = $merged -join ","
+}
+
 function Normalize-ProviderName([string]$Name) {
     $normalized = $Name.Trim().ToLowerInvariant()
     switch ($normalized) {
@@ -488,6 +503,7 @@ function Invoke-WebSmoke {
     $apiProcess = $null
     $webProcess = $null
     try {
+        Add-CorsOrigins @($WebBase, "http://localhost:$WebPort")
         $apiProcess = Start-BackgroundCommand -Command "cargo" -Arguments @("run", "--bin", "rove-api", "--", "--addr", $ApiAddr, "-C", $WebWorkspaceDir) -WorkingDirectory $RepoRoot -StdoutLog (Join-Path $ArtifactsDir "web-provider-api.out.log") -StderrLog (Join-Path $ArtifactsDir "web-provider-api.err.log")
         Wait-HttpOk -Uri "$ApiBaseLocal/runs?limit=1" -TimeoutSeconds 90 -Name "rove-api"
 

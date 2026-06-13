@@ -115,6 +115,19 @@ const streamEventFixtures: StreamEvent[] = [
     },
   },
   {
+    type: "prompt_built",
+    metadata: {
+      prompt_hash: "sha256:prompt",
+      stable_prefix_hash: "sha256:prefix",
+      workspace_fingerprint: "sha256:workspace",
+      tool_signature: "sha256:tools",
+      token_estimate: 42,
+      included_history_messages: 1,
+      dropped_history_messages: 0,
+      prompt_cache_key: "sha256:cache",
+    },
+  },
+  {
     type: "run_completed",
     reason: "final",
     output: "done",

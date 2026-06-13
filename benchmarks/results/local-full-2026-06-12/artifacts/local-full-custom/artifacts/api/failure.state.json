@@ -1,0 +1,125 @@
+{
+    "job_id":  "01KTZN3Z3X6N223X7NZVRKFYMD",
+    "run_id":  "01KTZN3Z3X2Y6W4G0Y160D0M9Z",
+    "status":  "running",
+    "event_count":  9,
+    "events":  [
+                   {
+                       "seq":  1,
+                       "event":  {
+                                     "type":  "run_started",
+                                     "run_id":  "01KTZN3Z3X2Y6W4G0Y160D0M9Z",
+                                     "job_id":  "01KTZN3Z3X6N223X7NZVRKFYMD",
+                                     "user_message":  "{\"tool\":\"fs_read\",\"args\":{\"path\":\"missing-api-smoke.txt\"}}"
+                                 }
+                   },
+                   {
+                       "seq":  2,
+                       "event":  {
+                                     "type":  "plan_created",
+                                     "plan":  {
+                                                  "goal":  "{\"tool\":\"fs_read\",\"args\":{\"path\":\"missing-api-smoke.txt\"}}",
+                                                  "steps":  [
+                                                                {
+                                                                    "id":  "1",
+                                                                    "title":  "answer the request",
+                                                                    "done":  false
+                                                                }
+                                                            ],
+                                                  "current_step":  0
+                                              }
+                                 }
+                   },
+                   {
+                       "seq":  3,
+                       "event":  {
+                                     "type":  "plan_step_started",
+                                     "step":  {
+                                                  "id":  "1",
+                                                  "title":  "answer the request",
+                                                  "done":  false
+                                              },
+                                     "index":  0
+                                 }
+                   },
+                   {
+                       "seq":  4,
+                       "event":  {
+                                     "type":  "prompt_built",
+                                     "metadata":  {
+                                                      "prompt_hash":  "sha256:14e543da6972a6c6f170e9ce84d78e121eef0436c40d574a222e13728fd8ef67",
+                                                      "stable_prefix_hash":  "sha256:7fa6db21c8b275f928a689df0f7df7a58a7d3ec8388331639078653dc4221b0d",
+                                                      "workspace_fingerprint":  "sha256:62d09e413ffd0a8531f620be32588792cf6f7b16cf91d3e0c3b97e3ed2c0ac69",
+                                                      "tool_signature":  "sha256:2cd1b22a9a9988805e64ad9ee38f1cc984f187ba32a3f955e0f86c4802ee55fd",
+                                                      "token_estimate":  63,
+                                                      "included_history_messages":  0,
+                                                      "dropped_history_messages":  0,
+                                                      "prompt_cache_key":  "sha256:b782195468d6a3f52e368bb9169ff7ec04def3c8f0eae2a8793acf9a7474de5b"
+                                                  }
+                                 }
+                   },
+                   {
+                       "seq":  5,
+                       "event":  {
+                                     "type":  "model_status",
+                                     "status":  "thinking",
+                                     "message":  "Model is thinking"
+                                 }
+                   },
+                   {
+                       "seq":  6,
+                       "event":  {
+                                     "type":  "llm_chunk",
+                                     "delta":  "{\"tool\":\"fs_read\",\"args\":{\"path\":\"missing-api-smoke.txt\"}}"
+                                 }
+                   },
+                   {
+                       "seq":  7,
+                       "event":  {
+                                     "type":  "llm_message",
+                                     "full":  "{\"tool\":\"fs_read\",\"args\":{\"path\":\"missing-api-smoke.txt\"}}",
+                                     "usage":  {
+                                                   "prompt_tokens":  0,
+                                                   "completion_tokens":  0,
+                                                   "total_tokens":  0,
+                                                   "cached_tokens":  0
+                                               }
+                                 }
+                   },
+                   {
+                       "seq":  8,
+                       "event":  {
+                                     "type":  "tool_call_started",
+                                     "call_id":  "01KTZN3ZECH00CW7K9F3SRP1TA",
+                                     "name":  "fs_read",
+                                     "args":  {
+                                                  "path":  "missing-api-smoke.txt"
+                                              }
+                                 }
+                   },
+                   {
+                       "seq":  9,
+                       "event":  {
+                                     "type":  "tool_call_failed",
+                                     "call_id":  "01KTZN3ZECH00CW7K9F3SRP1TA",
+                                     "error":  {
+                                                   "code":  "invalid_input",
+                                                   "reason":  "invalid path: ?3????????????бу?????????????????? (os error 2)"
+                                               },
+                                     "metadata":  {
+                                                      "status":  "error",
+                                                      "error_code":  "invalid_input",
+                                                      "risk_level":  "high",
+                                                      "read_only":  false,
+                                                      "workspace_changed":  false
+                                                  }
+                                 }
+                   }
+               ],
+    "pending_approvals":  [
+
+                          ],
+    "pending_inputs":  [
+
+                       ]
+}

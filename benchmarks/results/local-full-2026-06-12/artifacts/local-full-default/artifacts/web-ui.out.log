@@ -1,0 +1,25 @@
+▲ Next.js 16.2.6 (Turbopack)
+- Local:         http://localhost:3000
+- Network:       http://198.18.0.1:3000
+✓ Ready in 2.5s
+
+ GET / 200 in 587ms (next.js: 316ms, application-code: 271ms)
+ GET / 200 in 54ms (next.js: 6ms, application-code: 48ms)
+ GET / 200 in 46ms (next.js: 5ms, application-code: 41ms)
+ GET / 200 in 62ms (next.js: 8ms, application-code: 54ms)
+ POST /api/jobs 200 in 2.0s (next.js: 1957ms, application-code: 55ms)
+ GET /api/runs?limit=25 200 in 2.3s (next.js: 2.2s, application-code: 69ms)
+ GET /api/jobs/01KTZN2N52MPSN9GVA755MVNQH/events 200 in 818ms (next.js: 35ms, application-code: 783ms)
+ GET /api/runs?limit=25 200 in 24ms (next.js: 4ms, application-code: 20ms)
+ GET / 200 in 62ms (next.js: 7ms, application-code: 55ms)
+ GET /api/runs?limit=25 200 in 30ms (next.js: 6ms, application-code: 23ms)
+ POST /api/jobs 200 in 23ms (next.js: 7ms, application-code: 17ms)
+ POST /api/jobs/01KTZN2Q129A7SW2QKXZC3JC5T/approvals/01KTZN2QCM6VW1BAT3MMY39K1F 200 in 74ms (next.js: 29ms, application-code: 44ms)
+ GET /api/jobs/01KTZN2Q129A7SW2QKXZC3JC5T/events 200 in 1234ms (next.js: 6ms, application-code: 1228ms)
+ GET /api/runs?limit=25 200 in 26ms (next.js: 5ms, application-code: 21ms)
+ GET / 200 in 73ms (next.js: 7ms, application-code: 66ms)
+ GET /api/runs?limit=25 200 in 31ms (next.js: 5ms, application-code: 26ms)
+ POST /api/jobs 200 in 22ms (next.js: 5ms, application-code: 17ms)
+ POST /api/jobs/01KTZN2S5YEHBY1MPH8GGQ5AVW/inputs/01KTZN2SK7SCQY15VE57TNP53V 200 in 64ms (next.js: 31ms, application-code: 33ms)
+ GET /api/jobs/01KTZN2S5YEHBY1MPH8GGQ5AVW/events 200 in 1391ms (next.js: 7ms, application-code: 1384ms)
+ GET /api/runs?limit=25 200 in 31ms (next.js: 6ms, application-code: 24ms)

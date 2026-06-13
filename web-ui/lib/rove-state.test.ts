@@ -312,6 +312,60 @@ describe("workbenchReducer", () => {
     expect(state.trace.length).toBeGreaterThanOrEqual(4);
   });
 
+  it("preserves state when syncing prompt-built events from job history", () => {
+    const state = workbenchReducer(createWorkbenchState(), {
+      type: "job_state_synced",
+      state: {
+        job_id: "job-1",
+        run_id: "run-1",
+        status: "done",
+        event_count: 3,
+        events: [
+          {
+            seq: 1,
+            event: {
+              type: "run_started",
+              job_id: "job-1",
+              run_id: "run-1",
+              user_message: "hello",
+            },
+          },
+          {
+            seq: 2,
+            event: {
+              type: "prompt_built",
+              metadata: {
+                prompt_hash: "sha256:prompt",
+                stable_prefix_hash: "sha256:prefix",
+                workspace_fingerprint: "sha256:workspace",
+                tool_signature: "sha256:tools",
+                token_estimate: 42,
+                included_history_messages: 1,
+                dropped_history_messages: 0,
+                prompt_cache_key: "sha256:cache",
+              },
+            },
+          },
+          {
+            seq: 3,
+            event: {
+              type: "run_completed",
+              reason: "final",
+              output: "done",
+            },
+          },
+        ],
+        pending_approvals: [],
+        pending_inputs: [],
+      },
+    });
+
+    expect(state.activeJobId).toBe("job-1");
+    expect(state.statusText).toBe("Run completed");
+    expect(state.seenEventSeqs).toEqual([1, 2, 3]);
+    expect(state.trace.map((entry) => entry.label)).toContain("prompt_built");
+  });
+
   it("renders every runtime stream event variant into recoverable UI state", () => {
     const events: StreamEvent[] = [
       {

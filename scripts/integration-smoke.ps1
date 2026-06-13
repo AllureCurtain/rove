@@ -46,6 +46,21 @@ function Test-CommandAvailable([string]$Name) {
     }
 }
 
+function Add-CorsOrigins([string[]]$Origins) {
+    $existing = @()
+    if ($env:ROVE_API_CORS_ORIGINS) {
+        $existing = $env:ROVE_API_CORS_ORIGINS.Split(",") | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+    }
+
+    $merged = [System.Collections.Generic.List[string]]::new()
+    foreach ($origin in @($existing + $Origins)) {
+        if ($origin -and -not $merged.Contains($origin)) {
+            [void]$merged.Add($origin)
+        }
+    }
+    $env:ROVE_API_CORS_ORIGINS = $merged -join ","
+}
+
 function Start-BackgroundCommand(
     [string]$Command,
     [string[]]$Arguments,
@@ -298,6 +313,9 @@ try {
     $env:ROVE_MEMORY_DURABLE_DIR = ".rove-integration-state/memory"
     $env:ROVE_API_BIND_ADDR = $ApiAddr
     $env:ROVE_API_BASE = $ApiBase
+    if (-not $SkipWebE2E) {
+        Add-CorsOrigins @($WebBase, "http://localhost:$WebPort")
+    }
 
     $apiArgs = @("run", "--bin", "rove-api", "--", "--addr", $ApiAddr, "-C", $WorkspaceDir)
     $apiProcess = Start-BackgroundCommand -Command "cargo" -Arguments $apiArgs -WorkingDirectory $RepoRoot -StdoutLog $ApiStdoutLog -StderrLog $ApiStderrLog

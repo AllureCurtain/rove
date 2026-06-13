@@ -1,0 +1,152 @@
+{
+    "job_id":  "01KTZN23FZG99T27BP3ZVNX6HH",
+    "run_id":  "01KTZN23FZ10PGP4XEJT96WF8E",
+    "status":  "done",
+    "event_count":  12,
+    "events":  [
+                   {
+                       "seq":  1,
+                       "event":  {
+                                     "type":  "run_started",
+                                     "run_id":  "01KTZN23FZ10PGP4XEJT96WF8E",
+                                     "job_id":  "01KTZN23FZG99T27BP3ZVNX6HH",
+                                     "user_message":  "{\"tool\":\"request_input\",\"args\":{\"prompt\":\"Which branch should I use?\"}}"
+                                 }
+                   },
+                   {
+                       "seq":  2,
+                       "event":  {
+                                     "type":  "plan_created",
+                                     "plan":  {
+                                                  "goal":  "{\"tool\":\"request_input\",\"args\":{\"prompt\":\"Which branch should I use?\"}}",
+                                                  "steps":  [
+                                                                {
+                                                                    "id":  "1",
+                                                                    "title":  "answer the request",
+                                                                    "done":  false
+                                                                }
+                                                            ],
+                                                  "current_step":  0
+                                              }
+                                 }
+                   },
+                   {
+                       "seq":  3,
+                       "event":  {
+                                     "type":  "plan_step_started",
+                                     "step":  {
+                                                  "id":  "1",
+                                                  "title":  "answer the request",
+                                                  "done":  false
+                                              },
+                                     "index":  0
+                                 }
+                   },
+                   {
+                       "seq":  4,
+                       "event":  {
+                                     "type":  "prompt_built",
+                                     "metadata":  {
+                                                      "prompt_hash":  "sha256:29fe718ddb137ef7b7ef8d6bafc2065e6346c2f182cdfba2625d1480e435d5ec",
+                                                      "stable_prefix_hash":  "sha256:7fa6db21c8b275f928a689df0f7df7a58a7d3ec8388331639078653dc4221b0d",
+                                                      "workspace_fingerprint":  "sha256:26ea150165676c75567b9479ecb6907901ae314f6d723e30d8c63a16ba50b366",
+                                                      "tool_signature":  "sha256:2cd1b22a9a9988805e64ad9ee38f1cc984f187ba32a3f955e0f86c4802ee55fd",
+                                                      "token_estimate":  66,
+                                                      "included_history_messages":  0,
+                                                      "dropped_history_messages":  0,
+                                                      "prompt_cache_key":  "sha256:b782195468d6a3f52e368bb9169ff7ec04def3c8f0eae2a8793acf9a7474de5b"
+                                                  }
+                                 }
+                   },
+                   {
+                       "seq":  5,
+                       "event":  {
+                                     "type":  "model_status",
+                                     "status":  "thinking",
+                                     "message":  "Model is thinking"
+                                 }
+                   },
+                   {
+                       "seq":  6,
+                       "event":  {
+                                     "type":  "llm_chunk",
+                                     "delta":  "{\"tool\":\"request_input\",\"args\":{\"prompt\":\"Which branch should I use?\"}}"
+                                 }
+                   },
+                   {
+                       "seq":  7,
+                       "event":  {
+                                     "type":  "llm_message",
+                                     "full":  "{\"tool\":\"request_input\",\"args\":{\"prompt\":\"Which branch should I use?\"}}",
+                                     "usage":  {
+                                                   "prompt_tokens":  0,
+                                                   "completion_tokens":  0,
+                                                   "total_tokens":  0,
+                                                   "cached_tokens":  0
+                                               }
+                                 }
+                   },
+                   {
+                       "seq":  8,
+                       "event":  {
+                                     "type":  "tool_call_started",
+                                     "call_id":  "01KTZN23SAR8QAJ6G95CQJRP34",
+                                     "name":  "request_input",
+                                     "args":  {
+                                                  "prompt":  "Which branch should I use?"
+                                              }
+                                 }
+                   },
+                   {
+                       "seq":  9,
+                       "event":  {
+                                     "type":  "input_needed",
+                                     "input_id":  "01KTZN23TKRH9RANFFZDQWGZBW",
+                                     "prompt":  "Which branch should I use?"
+                                 }
+                   },
+                   {
+                       "seq":  10,
+                       "event":  {
+                                     "type":  "tool_call_completed",
+                                     "call_id":  "01KTZN23SAR8QAJ6G95CQJRP34",
+                                     "result":  {
+                                                    "call_id":  "01KTZN23SAR8QAJ6G95CQJRP34",
+                                                    "output":  "main",
+                                                    "metadata":  {
+                                                                     "status":  "ok",
+                                                                     "risk_level":  "low",
+                                                                     "read_only":  true,
+                                                                     "workspace_changed":  false
+                                                                 }
+                                                }
+                                 }
+                   },
+                   {
+                       "seq":  11,
+                       "event":  {
+                                     "type":  "plan_step_completed",
+                                     "step":  {
+                                                  "id":  "1",
+                                                  "title":  "answer the request",
+                                                  "done":  false
+                                              },
+                                     "index":  0
+                                 }
+                   },
+                   {
+                       "seq":  12,
+                       "event":  {
+                                     "type":  "run_completed",
+                                     "reason":  "final",
+                                     "output":  "main"
+                                 }
+                   }
+               ],
+    "pending_approvals":  [
+
+                          ],
+    "pending_inputs":  [
+
+                       ]
+}

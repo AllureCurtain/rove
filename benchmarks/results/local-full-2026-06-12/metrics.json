@@ -1,0 +1,96 @@
+{
+  "scenario": "local-full",
+  "recorded_at": "2026-06-13T12:57:19+08:00",
+  "commit": "ece76d2bcf1ff89592169f0c9d40e87bfbe0c23b",
+  "branch": "release-evidence-2026-06-12",
+  "network": {
+    "local_loopback_used": true,
+    "real_provider_network_used": false,
+    "real_provider_reason": "No provider credentials, model, base URL, or reachable local Ollama service were configured."
+  },
+  "profiles": [
+    {
+      "name": "local-full-default",
+      "api_addr": "127.0.0.1:8787",
+      "web_base": "http://127.0.0.1:3000",
+      "integration_root": "%TEMP%\\rove-release-evidence-2026-06-13-default-final",
+      "api_state_files": 6,
+      "api_runs_listed": 6,
+      "web_e2e_tests": 3,
+      "web_e2e_passed": 3,
+      "terminal_done_state_files": 5,
+      "failure_tool_event_observed": true,
+      "failure_state_status": "running",
+      "run_ids": [
+        "01KTZN204QRXX3FTV05BMVNWHW",
+        "01KTZN20SY9YBRK770WFA038NV",
+        "01KTZN21BFVP6VEPQZBQMR0QV4",
+        "01KTZN22EGFK83H2DJRSC0P55H",
+        "01KTZN23FZ10PGP4XEJT96WF8E",
+        "01KTZN24J69GXBMZ3X5RJSWWYM"
+      ]
+    },
+    {
+      "name": "local-full-custom",
+      "api_addr": "127.0.0.1:18788",
+      "web_base": "http://127.0.0.1:13000",
+      "integration_root": "%TEMP%\\rove-release-evidence-2026-06-13-custom-final",
+      "api_state_files": 6,
+      "api_runs_listed": 6,
+      "web_e2e_tests": 3,
+      "web_e2e_passed": 3,
+      "terminal_done_state_files": 5,
+      "failure_tool_event_observed": true,
+      "failure_state_status": "running",
+      "run_ids": [
+        "01KTZN3TVSA8H4TGVDMN793WWW",
+        "01KTZN3VFQRFG4VSJHEN3RW0HH",
+        "01KTZN3W0RANCBPK68R43N3MFB",
+        "01KTZN3X21N18TMCZ58MTATWRK",
+        "01KTZN3Y32PHQ5G6Z0TBPQ4MKZ",
+        "01KTZN3Z3X2Y6W4G0Y160D0M9Z"
+      ]
+    }
+  ],
+  "provider": {
+    "configured": false,
+    "classification": "external configuration missing",
+    "unit_smoke_default": {
+      "command": "cargo test --test provider_smoke",
+      "exit_code": 0,
+      "tests_passed": 4,
+      "real_calls_enabled": false
+    },
+    "integration_runner_skipped": {
+      "provider": "ollama",
+      "api_base": "http://localhost:11434",
+      "model": "not-configured",
+      "key_present": false,
+      "gates": {
+        "model_inventory": "skipped",
+        "provider_smoke": "skipped",
+        "provider_full_api": "skipped",
+        "web_provider": "skipped",
+        "stress": "skipped",
+        "external_mcp": "skipped"
+      }
+    }
+  },
+  "verification": {
+    "cargo_test_code_hygiene": {
+      "exit_code": 0,
+      "tests_passed": 15
+    },
+    "web_ui_pnpm_test": {
+      "exit_code": 0,
+      "test_files_passed": 5,
+      "tests_passed": 31
+    },
+    "web_ui_pnpm_typecheck": {
+      "exit_code": 0
+    },
+    "web_ui_pnpm_build": {
+      "exit_code": 0
+    }
+  }
+}

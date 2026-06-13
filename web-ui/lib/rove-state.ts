@@ -439,6 +439,15 @@ function applyStreamEvent(
           formatPromptCompaction(event.summary, event.state),
         ),
       };
+    case "prompt_built":
+      return {
+        ...next,
+        trace: prependTrace(
+          state.trace,
+          event.type,
+          formatPromptBuildMetadata(event.metadata),
+        ),
+      };
     case "run_completed":
       return {
         ...next,
@@ -452,6 +461,8 @@ function applyStreamEvent(
           event.output ? truncate(event.output, 220) : event.reason,
         ),
       };
+    default:
+      return next;
   }
 }
 
@@ -627,6 +638,13 @@ function formatPromptCompaction(
   const fallback = state.degraded ? " degraded" : "";
   const summaryText = summary ? `: ${truncate(summary, 160)}` : "";
   return `${mode}${fallback}; ${source}${summaryText}`;
+}
+
+function formatPromptBuildMetadata(
+  metadata: Extract<StreamEvent, { type: "prompt_built" }>["metadata"],
+): string {
+  const history = `${metadata.included_history_messages}/${metadata.dropped_history_messages}`;
+  return `${metadata.token_estimate} tokens; history ${history}; ${metadata.prompt_hash}`;
 }
 
 function formatValue(value: unknown): string {

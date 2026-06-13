@@ -1,0 +1,11 @@
+    Finished `test` profile [unoptimized] target(s) in 1.74s
+     Running tests\provider_smoke.rs (D:\Study\project\agent\rove\target\debug\deps\provider_smoke-3811973403bfd7af.exe)
+
+running 4 tests
+test anthropic_real_provider_smoke_when_enabled ... ok
+test openai_compatible_real_provider_smoke_when_enabled ... ok
+test ollama_real_provider_smoke_when_enabled ... ok
+test openai_responses_real_provider_smoke_when_enabled ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

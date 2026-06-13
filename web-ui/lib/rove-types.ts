@@ -38,6 +38,17 @@ export interface PromptCompactionState {
   last_error?: string;
 }
 
+export interface PromptBuildMetadata {
+  prompt_hash: string;
+  stable_prefix_hash: string;
+  workspace_fingerprint: string;
+  tool_signature: string;
+  token_estimate: number;
+  included_history_messages: number;
+  dropped_history_messages: number;
+  prompt_cache_key: string;
+}
+
 export interface ToolResult {
   call_id: string;
   output: string;
@@ -141,6 +152,10 @@ export type StreamEvent =
       type: "prompt_compacted";
       summary?: string | null;
       state: PromptCompactionState;
+    }
+  | {
+      type: "prompt_built";
+      metadata: PromptBuildMetadata;
     }
   | {
       type: "run_completed";
@@ -266,6 +281,7 @@ export const STREAM_EVENT_NAMES = [
   "plan_step_completed",
   "plan_step_failed",
   "prompt_compacted",
+  "prompt_built",
   "run_completed",
 ] as const;
 

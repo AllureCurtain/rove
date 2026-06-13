@@ -1,0 +1,11 @@
+
+Running 3 tests using 1 worker
+
+  ✓  1 [chromium] › tests\e2e\real-api.spec.ts:9:7 › real API workbench integration › creates a plain fake-provider run and shows it in history (3.2s)
+  ✓  2 [chromium] › tests\e2e\real-api.spec.ts:24:7 › real API workbench integration › approves a real fs_write tool call from the UI (2.0s)
+  ✓  3 [chromium] › tests\e2e\real-api.spec.ts:48:7 › real API workbench integration › answers a request_input tool call from the UI (1.5s)
+
+  3 passed (8.2s)
+local-full integration smoke completed
+Artifacts: C:\Users\ALLURE~1\AppData\Local\Temp\rove-release-evidence-2026-06-13-custom-final\artifacts
+Run ids: 01KTZN3TVSA8H4TGVDMN793WWW, 01KTZN3VFQRFG4VSJHEN3RW0HH, 01KTZN3W0RANCBPK68R43N3MFB, 01KTZN3X21N18TMCZ58MTATWRK, 01KTZN3Y32PHQ5G6Z0TBPQ4MKZ, 01KTZN3Z3X2Y6W4G0Y160D0M9Z
