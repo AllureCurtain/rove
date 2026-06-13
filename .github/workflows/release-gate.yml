@@ -1,0 +1,193 @@
+name: Release Gate
+
+# Heavier release-readiness gates that are not part of the per-PR CI.
+#
+# - local-full: the deterministic full API/Web/runtime/tool/state chain
+#   (scripts/integration-smoke.ps1). No external dependency, runs on every
+#   scheduled and manual invocation.
+# - provider-gate: the real OpenAI-compatible/Anthropic/Ollama provider chain
+#   (scripts/provider-integration.ps1). Requires a provider key and is skipped
+#   automatically when the ROVE_PROVIDER_API_KEY secret is absent.
+#
+# Both scripts are Windows PowerShell, so this workflow runs on windows-latest.
+# Configure the provider gate with the repository secret ROVE_PROVIDER_API_KEY
+# and repository variables ROVE_PROVIDER_NAME / ROVE_PROVIDER_API_BASE /
+# ROVE_PROVIDER_MODEL / ROVE_PROVIDER_MODELS_ENDPOINT, or override per run via
+# the workflow_dispatch inputs below.
+
+on:
+  schedule:
+    # 08:10 UTC nightly.
+    - cron: "10 8 * * *"
+  workflow_dispatch:
+    inputs:
+      run_provider_gate:
+        description: "Run the real provider gate (needs ROVE_PROVIDER_API_KEY)"
+        type: boolean
+        default: true
+      run_stress:
+        description: "Add stress + long-soak gates to the provider run"
+        type: boolean
+        default: false
+      provider:
+        description: "Provider profile name (openai-compatible | anthropic | ollama)"
+        type: string
+        default: ""
+      api_base:
+        description: "Provider /v1 (or native) API base URL"
+        type: string
+        default: ""
+      model:
+        description: "Model id to smoke test"
+        type: string
+        default: ""
+      models_endpoint:
+        description: "Optional explicit models inventory endpoint"
+        type: string
+        default: ""
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
+  RUST_BACKTRACE: 1
+
+concurrency:
+  group: release-gate-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  local-full:
+    name: local-full deterministic gate
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-release-gate-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-release-gate-
+
+      - name: Install Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Install pnpm
+        run: corepack enable pnpm
+
+      - name: pnpm install
+        working-directory: web-ui
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Playwright chromium
+        working-directory: web-ui
+        run: pnpm exec playwright install chromium
+
+      - name: Run local-full integration gate
+        shell: powershell
+        env:
+          ROVE_INTEGRATION_ROOT: ${{ github.workspace }}\.release-gate\local-full
+        run: powershell -ExecutionPolicy Bypass -File scripts/integration-smoke.ps1
+
+      - name: Upload local-full artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: local-full-artifacts
+          path: .release-gate/local-full/artifacts
+          if-no-files-found: warn
+          retention-days: 14
+
+  provider-gate:
+    name: real provider gate
+    runs-on: windows-latest
+    timeout-minutes: 60
+    if: ${{ github.event_name == 'schedule' || inputs.run_provider_gate }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Detect provider key secret
+        id: secret
+        shell: bash
+        env:
+          PROVIDER_KEY: ${{ secrets.ROVE_PROVIDER_API_KEY }}
+        run: |
+          if [ -n "$PROVIDER_KEY" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::ROVE_PROVIDER_API_KEY is not configured; skipping the real provider gate."
+          fi
+
+      - name: Install Rust toolchain
+        if: steps.secret.outputs.present == 'true'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        if: steps.secret.outputs.present == 'true'
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-release-gate-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-release-gate-
+
+      - name: Install Node.js
+        if: steps.secret.outputs.present == 'true'
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Install pnpm
+        if: steps.secret.outputs.present == 'true'
+        run: corepack enable pnpm
+
+      - name: pnpm install
+        if: steps.secret.outputs.present == 'true'
+        working-directory: web-ui
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Playwright chromium
+        if: steps.secret.outputs.present == 'true'
+        working-directory: web-ui
+        run: pnpm exec playwright install chromium
+
+      - name: Run provider integration gate
+        if: steps.secret.outputs.present == 'true'
+        shell: powershell
+        env:
+          OPENAI_API_KEY: ${{ secrets.ROVE_PROVIDER_API_KEY }}
+          ROVE_PROVIDER_INTEGRATION_API_KEY_ENV: OPENAI_API_KEY
+          ROVE_PROVIDER_INTEGRATION_PROVIDER: ${{ inputs.provider || vars.ROVE_PROVIDER_NAME || 'openai-compatible' }}
+          ROVE_PROVIDER_INTEGRATION_API_BASE: ${{ inputs.api_base || vars.ROVE_PROVIDER_API_BASE }}
+          ROVE_PROVIDER_INTEGRATION_MODEL: ${{ inputs.model || vars.ROVE_PROVIDER_MODEL }}
+          ROVE_PROVIDER_INTEGRATION_MODELS_ENDPOINT: ${{ inputs.models_endpoint || vars.ROVE_PROVIDER_MODELS_ENDPOINT }}
+          ROVE_PROVIDER_INTEGRATION_ROOT: ${{ github.workspace }}\.release-gate\provider
+          RUN_STRESS: ${{ inputs.run_stress }}
+        run: |
+          $flags = @("-RunRestartRecovery")
+          if ($env:RUN_STRESS -eq "true") {
+            $flags += "-RunStress"
+            $flags += "-RunLongSoak"
+          }
+          powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 @flags
+
+      - name: Upload provider gate artifacts
+        if: always() && steps.secret.outputs.present == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: provider-gate-artifacts
+          path: .release-gate/provider/artifacts
+          if-no-files-found: warn
+          retention-days: 14

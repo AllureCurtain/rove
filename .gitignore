@@ -16,3 +16,4 @@
 /web-ui/tsconfig.tsbuildinfo
 .env.integration
 .tmp/
+/.release-gate/

@@ -38,6 +38,39 @@ The external MCP and stress gates are still documented here as explicit
 execution plans. Do not treat a provider/MCP/stress failure as a regression in
 `local-full`; record it under the failed gate.
 
+## Continuous Gates (CI)
+
+Two GitHub Actions workflows automate the gates above:
+
+- `.github/workflows/ci.yml` runs on every push and pull request: Rust
+  `fmt` / `clippy` / `test` and Web `test` / `typecheck` / `build`. This is the
+  fast per-change gate and stays free of external dependencies.
+- `.github/workflows/release-gate.yml` runs nightly (and on manual
+  `workflow_dispatch`) on `windows-latest`, because the integration scripts are
+  Windows PowerShell. It has two jobs:
+  - `local-full` runs `scripts/integration-smoke.ps1` and uploads
+    `local-full-artifacts`. It needs no secrets.
+  - `provider-gate` runs `scripts/provider-integration.ps1` with
+    `-RunRestartRecovery` (and `-RunStress -RunLongSoak` when the `run_stress`
+    input is set) and uploads `provider-gate-artifacts`. It is skipped
+    automatically when the provider key secret is absent, so it never fails a
+    repo that has not configured a provider.
+
+Configure the provider gate once at the repository level:
+
+| Kind | Name | Purpose |
+|---|---|---|
+| Secret | `ROVE_PROVIDER_API_KEY` | Provider key, injected as `OPENAI_API_KEY` for the run. |
+| Variable | `ROVE_PROVIDER_NAME` | Provider profile (defaults to `openai-compatible`). |
+| Variable | `ROVE_PROVIDER_API_BASE` | Provider `/v1` (or native) base URL. |
+| Variable | `ROVE_PROVIDER_MODEL` | Model id to smoke test. |
+| Variable | `ROVE_PROVIDER_MODELS_ENDPOINT` | Optional explicit models inventory endpoint. |
+
+A manual run can override the provider, API base, model, and models endpoint via
+the `workflow_dispatch` inputs without touching repository variables. The key
+still comes only from the secret, never from an input, matching the secret
+handling rules below.
+
 ## Secret Handling
 
 Never commit real keys or generated runtime state. Do not paste keys into `.rove/config.toml`, `.env.integration`, docs, screenshots, or issue descriptions.
