@@ -199,8 +199,10 @@ fn normalize_openai_chat_chunk(
                     }
                     if let Some(function) = tool_call.get("function") {
                         if let Some(name) = function.get("name").and_then(|value| value.as_str()) {
-                            partial.name = Some(name.to_string());
-                            if !partial.started {
+                            if !name.is_empty() {
+                                partial.name = Some(name.to_string());
+                            }
+                            if !name.is_empty() && !partial.started {
                                 partial.started = true;
                                 events.push(ModelEvent::ToolUseStart {
                                     id: openai_tool_call_id(index, partial),
@@ -548,6 +550,55 @@ mod tests {
                 event,
                 ModelEvent::ToolUseDone { id, name, args }
                     if id == "call_1" && name == "fs_read" && args["path"] == "Cargo.toml"
+            )
+        }));
+    }
+
+    #[test]
+    fn openai_tool_call_empty_name_deltas_do_not_overwrite_started_name() {
+        let mut state = OpenAiToolCallState::default();
+        let first = serde_json::json!({
+            "choices": [{
+                "delta": {
+                    "tool_calls": [{
+                        "index": 0,
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "echo",
+                            "arguments": ""
+                        }
+                    }]
+                }
+            }]
+        })
+        .to_string();
+        let second = serde_json::json!({
+            "choices": [{
+                "delta": {
+                    "tool_calls": [{
+                        "index": 0,
+                        "id": null,
+                        "type": null,
+                        "function": {
+                            "name": "",
+                            "arguments": "{\"message\":\"hello\"}"
+                        }
+                    }]
+                },
+                "finish_reason": "tool_calls"
+            }]
+        })
+        .to_string();
+
+        let mut events = normalize_openai_chat_chunk(&mut state, &first).unwrap();
+        events.extend(normalize_openai_chat_chunk(&mut state, &second).unwrap());
+
+        assert!(events.iter().any(|event| {
+            matches!(
+                event,
+                ModelEvent::ToolUseDone { id, name, args }
+                    if id == "call_1" && name == "echo" && args["message"] == "hello"
             )
         }));
     }

@@ -399,7 +399,7 @@ function Classify-ProviderOutput([int]$ExitCode, [string]$Text) {
     if ($ExitCode -eq 0) {
         return "pass"
     }
-    if ($Text -match "401|403|Unauthorized|Invalid token|invalid api key|api key is not set|authentication|permission denied") {
+    if ($Text -match "\b(401|403)\b|Unauthorized|Invalid token|invalid api key|api key is not set|authentication|permission denied") {
         return "key/configuration"
     }
     if ($Text -match "429|rate limit|quota|too many requests") {
@@ -408,11 +408,11 @@ function Classify-ProviderOutput([int]$ExitCode, [string]$Text) {
     if ($Text -match "Provider request to .* failed|request failed|error sending request|Connect|timed out|timeout|connection|dns|NameResolution|refused|unreachable") {
         return "network/connectivity"
     }
-    if ($Text -match "panic|SQLite|database is locked|lost run_id|corrupt|missing report") {
-        return "rove runtime defect"
-    }
     if ($Text -match "did not emit an echo tool call|did not complete echo tool output|unexpected provider smoke output|tool-use|tool use") {
         return "model tool-use/follow-up behavior"
+    }
+    if ($Text -match "panic|SQLite|database is locked|lost run_id|corrupt|missing report") {
+        return "rove runtime defect"
     }
     return "rove runtime or assertion failure"
 }

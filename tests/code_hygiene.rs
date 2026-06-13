@@ -293,6 +293,32 @@ fn provider_integration_runner_classifies_transport_failures_before_tool_fields(
 }
 
 #[test]
+fn provider_integration_runner_does_not_match_status_codes_inside_paths() {
+    let script = std::fs::read_to_string("scripts/provider-integration.ps1")
+        .expect("scripts/provider-integration.ps1 should exist");
+
+    assert!(
+        !script.contains("\"401|403|Unauthorized"),
+        "provider classification must not match bare status-code substrings inside paths or hashes"
+    );
+    assert!(script.contains("\\b(401|403)\\b"));
+    assert!(script.contains("did not emit an echo tool call"));
+}
+
+#[test]
+fn provider_integration_runner_classifies_tool_assertions_before_panic_text() {
+    let script = std::fs::read_to_string("scripts/provider-integration.ps1")
+        .expect("scripts/provider-integration.ps1 should exist");
+
+    let tool_index = script.find("did not emit an echo tool call").unwrap();
+    let panic_index = script.find("panic|SQLite").unwrap();
+    assert!(
+        tool_index < panic_index,
+        "provider smoke assertion failures include panic text, so tool-use behavior must win first"
+    );
+}
+
+#[test]
 fn provider_integration_runner_writes_stress_summary_on_long_soak_failure() {
     let script = std::fs::read_to_string("scripts/provider-integration.ps1")
         .expect("scripts/provider-integration.ps1 should exist");
