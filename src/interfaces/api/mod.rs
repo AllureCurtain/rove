@@ -12,11 +12,11 @@ use axum::middleware;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::{Json, Router};
 use futures::{Stream, StreamExt};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use tokio::sync::{Mutex, RwLock, broadcast, oneshot};
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_util::sync::CancellationToken;
-use utoipa::{OpenApi, ToSchema};
+use utoipa::OpenApi;
 use utoipa_axum::{router::OpenApiRouter, routes};
 use utoipa_swagger_ui::SwaggerUi;
 
@@ -42,11 +42,17 @@ use crate::state::store::StateStore;
 use crate::tools::runtime_tool_registry;
 
 mod docs;
+mod provider;
 mod security;
+mod types;
+
+pub use types::*;
+
+use provider::{
+    apply_provider_profile, normalize_provider_profile, provider_inventory, provider_key_env,
+};
 
 const EVENT_BUFFER: usize = 256;
-const DEFAULT_PROVIDER_KEY_ENV: &str = "OPENAI_API_KEY";
-const DEFAULT_ANTHROPIC_KEY_ENV: &str = "ANTHROPIC_API_KEY";
 
 #[derive(Clone)]
 pub struct ApiState {
@@ -94,141 +100,6 @@ struct PendingApproval {
 struct PendingInput {
     request: UserInputRequest,
     tx: oneshot::Sender<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-pub struct PendingApprovalResponse {
-    #[schema(value_type = String, format = "ulid")]
-    pub call_id: CallId,
-    pub name: String,
-    #[schema(value_type = Object)]
-    pub args: serde_json::Value,
-    pub reason: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-pub struct PendingInputResponse {
-    #[schema(value_type = String, format = "ulid")]
-    pub input_id: CallId,
-    pub prompt: String,
-}
-
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
-pub struct CreateJobRequest {
-    pub message: String,
-    pub model: Option<String>,
-    pub max_steps: Option<u32>,
-    #[schema(value_type = String, example = "ask")]
-    pub approval: Option<ApprovalPolicy>,
-    pub resume: Option<String>,
-    pub workspace: Option<CreateJobWorkspace>,
-    pub provider: Option<ProviderProfileRequest>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-pub struct ProviderProfileRequest {
-    pub name: String,
-    pub api_base: String,
-    pub api_key_env: Option<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
-pub struct ProviderTestRequest {
-    pub provider: ProviderProfileRequest,
-    pub model: Option<String>,
-    pub models_endpoint: Option<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
-pub struct CreateJobWorkspace {
-    #[schema(value_type = String, example = "task")]
-    pub kind: CreateJobWorkspaceKind,
-    pub name: Option<String>,
-    #[schema(value_type = String)]
-    pub base: Option<PathBuf>,
-}
-
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum CreateJobWorkspaceKind {
-    Task,
-}
-
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
-pub struct SubmitApprovalRequest {
-    #[schema(value_type = String, example = "approve")]
-    pub decision: ApprovalDecision,
-}
-
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
-pub struct SubmitInputRequest {
-    pub answer: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-pub struct JobStreamEvent {
-    pub seq: u64,
-    #[schema(value_type = Object)]
-    pub event: StreamEvent,
-}
-
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
-pub struct CreateJobResponse {
-    #[schema(value_type = String, format = "ulid")]
-    pub job_id: JobId,
-    #[schema(value_type = String, format = "ulid")]
-    pub run_id: RunId,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schema(value_type = Option<String>, format = "ulid")]
-    pub resumed_from_run_id: Option<RunId>,
-}
-
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
-pub struct JobStateResponse {
-    #[schema(value_type = String, format = "ulid")]
-    pub job_id: JobId,
-    #[schema(value_type = String, format = "ulid")]
-    pub run_id: RunId,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schema(value_type = Option<String>, format = "ulid")]
-    pub resumed_from_run_id: Option<RunId>,
-    #[schema(value_type = String, example = "running")]
-    pub status: RunStatus,
-    pub event_count: usize,
-    pub events: Vec<JobStreamEvent>,
-    pub pending_approvals: Vec<PendingApprovalResponse>,
-    pub pending_inputs: Vec<PendingInputResponse>,
-}
-
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
-pub struct ListRunsResponse {
-    pub runs: Vec<RunSummaryResponse>,
-}
-
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
-pub struct RunSummaryResponse {
-    #[schema(value_type = String, format = "ulid")]
-    pub run_id: RunId,
-    #[schema(value_type = String, format = "ulid")]
-    pub session_id: SessionId,
-    #[schema(value_type = String, format = "ulid")]
-    pub job_id: JobId,
-    #[schema(value_type = String, example = "done")]
-    pub status: RunStatus,
-    pub last_event_seq: u64,
-    pub has_report: bool,
-}
-
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
-pub struct ProviderTestResponse {
-    pub status: String,
-    pub provider: String,
-    pub api_base: String,
-    pub key_env: String,
-    pub key_present: bool,
-    pub model: Option<String>,
-    pub model_present: Option<bool>,
-    pub models_count: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -978,202 +849,6 @@ fn workspace_for_create_job(
             Ok((workspace, config))
         }
     }
-}
-
-fn apply_provider_profile(
-    config: &mut AppConfig,
-    profile: &ProviderProfileRequest,
-    model: Option<&str>,
-) -> Result<(), ApiError> {
-    let profile = normalize_provider_profile(profile)?;
-    let key_env = provider_key_env(&profile);
-    let api_key = provider_api_key(&profile.name, &key_env)?;
-    config.provider.name = profile.name.clone();
-    config.provider.api_base = profile.api_base;
-    config.provider.api_key = api_key.clone();
-    config.provider.anthropic_api_key = if profile.name == "anthropic" {
-        api_key
-    } else {
-        String::new()
-    };
-    if let Some(model) = model.filter(|model| !model.trim().is_empty()) {
-        config.provider.model = model.trim().to_string();
-    }
-    config.provider.fallback_models.clear();
-    config.provider.fallback_providers.clear();
-    Ok(())
-}
-
-fn normalize_provider_profile(
-    profile: &ProviderProfileRequest,
-) -> Result<ProviderProfileRequest, ApiError> {
-    let name = profile.name.trim().to_ascii_lowercase();
-    let canonical_name = match name.as_str() {
-        "openai" | "openai-compatible" => "openai-compatible",
-        "openai-responses" | "responses" => "openai-responses",
-        "anthropic" => "anthropic",
-        "ollama" => "ollama",
-        "fake" => "fake",
-        _ => {
-            return Err(ApiError::bad_request(
-                "provider profile supports openai-compatible, openai-responses, anthropic, ollama, or fake providers",
-            ));
-        }
-    };
-    let api_base = profile.api_base.trim().trim_end_matches('/').to_string();
-    if matches!(
-        canonical_name,
-        "openai-compatible" | "openai-responses" | "anthropic"
-    ) && api_base.is_empty()
-    {
-        return Err(ApiError::bad_request("provider.api_base must not be empty"));
-    }
-    if canonical_name == "ollama" && api_base.is_empty() {
-        return Err(ApiError::bad_request(
-            "provider.api_base must not be empty for ollama providers",
-        ));
-    }
-    Ok(ProviderProfileRequest {
-        name: canonical_name.to_string(),
-        api_base,
-        api_key_env: profile.api_key_env.clone(),
-    })
-}
-
-fn provider_key_env(profile: &ProviderProfileRequest) -> String {
-    let default = match profile.name.as_str() {
-        "anthropic" => DEFAULT_ANTHROPIC_KEY_ENV,
-        _ => DEFAULT_PROVIDER_KEY_ENV,
-    };
-    profile
-        .api_key_env
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or(default)
-        .to_string()
-}
-
-fn provider_api_key(provider: &str, key_env: &str) -> Result<String, ApiError> {
-    if matches!(provider, "ollama" | "fake") {
-        return Ok(String::new());
-    }
-    std::env::var(key_env)
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| ApiError::bad_request(format!("provider key env '{key_env}' is not set")))
-}
-
-struct ProviderInventory {
-    key_present: bool,
-    models: Vec<String>,
-}
-
-async fn provider_inventory(
-    profile: &ProviderProfileRequest,
-    key_env: &str,
-    requested_endpoint: Option<&str>,
-) -> Result<ProviderInventory, ApiError> {
-    match profile.name.as_str() {
-        "openai-compatible" | "openai-responses" => {
-            openai_compatible_inventory(profile, key_env, requested_endpoint).await
-        }
-        "anthropic" => anthropic_inventory(profile, key_env, requested_endpoint).await,
-        "ollama" => ollama_inventory(profile, requested_endpoint).await,
-        "fake" => Ok(ProviderInventory {
-            key_present: false,
-            models: vec!["fake".to_string(), "fake-raw".to_string()],
-        }),
-        _ => Err(ApiError::bad_request("unsupported provider profile")),
-    }
-}
-
-async fn openai_compatible_inventory(
-    profile: &ProviderProfileRequest,
-    key_env: &str,
-    requested_endpoint: Option<&str>,
-) -> Result<ProviderInventory, ApiError> {
-    let api_key = provider_api_key(&profile.name, key_env)?;
-    let endpoint = requested_endpoint
-        .filter(|endpoint| !endpoint.trim().is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(|| format!("{}/models", profile.api_base.trim_end_matches('/')));
-    let response = reqwest::Client::new()
-        .get(&endpoint)
-        .bearer_auth(&api_key)
-        .send()
-        .await
-        .map_err(|err| ApiError::bad_gateway(format!("provider model inventory failed: {err}")))?;
-    model_inventory_response(response, "data", "id", true).await
-}
-
-async fn anthropic_inventory(
-    profile: &ProviderProfileRequest,
-    key_env: &str,
-    requested_endpoint: Option<&str>,
-) -> Result<ProviderInventory, ApiError> {
-    let api_key = provider_api_key(&profile.name, key_env)?;
-    let endpoint = requested_endpoint
-        .filter(|endpoint| !endpoint.trim().is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(|| format!("{}/v1/models", profile.api_base.trim_end_matches('/')));
-    let response = reqwest::Client::new()
-        .get(&endpoint)
-        .header("x-api-key", api_key)
-        .header("anthropic-version", "2023-06-01")
-        .send()
-        .await
-        .map_err(|err| ApiError::bad_gateway(format!("provider model inventory failed: {err}")))?;
-    model_inventory_response(response, "data", "id", true).await
-}
-
-async fn ollama_inventory(
-    profile: &ProviderProfileRequest,
-    requested_endpoint: Option<&str>,
-) -> Result<ProviderInventory, ApiError> {
-    let endpoint = requested_endpoint
-        .filter(|endpoint| !endpoint.trim().is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(|| format!("{}/api/tags", profile.api_base.trim_end_matches('/')));
-    let response = reqwest::Client::new()
-        .get(&endpoint)
-        .send()
-        .await
-        .map_err(|err| ApiError::bad_gateway(format!("provider model inventory failed: {err}")))?;
-    model_inventory_response(response, "models", "name", false).await
-}
-
-async fn model_inventory_response(
-    response: reqwest::Response,
-    array_field: &str,
-    id_field: &str,
-    key_present: bool,
-) -> Result<ProviderInventory, ApiError> {
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        return Err(ApiError::bad_gateway(format!(
-            "provider model inventory returned HTTP {status}: {body}"
-        )));
-    }
-    let body: serde_json::Value = response.json().await.map_err(|err| {
-        ApiError::bad_gateway(format!("provider model inventory JSON failed: {err}"))
-    })?;
-    let models = body
-        .get(array_field)
-        .and_then(|value| value.as_array())
-        .into_iter()
-        .flatten()
-        .filter_map(|item| {
-            item.get(id_field)
-                .and_then(|id| id.as_str())
-                .map(str::to_string)
-        })
-        .collect();
-    Ok(ProviderInventory {
-        key_present,
-        models,
-    })
 }
 
 fn state_store_for_parts(workspace: &Workspace, config: &AppConfig) -> StateStore {
