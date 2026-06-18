@@ -51,8 +51,9 @@ Two GitHub Actions workflows automate the gates above:
   - `local-full` runs `scripts/integration-smoke.ps1` and uploads
     `local-full-artifacts`. It needs no secrets.
   - `provider-gate` runs `scripts/provider-integration.ps1` with
-    `-RunRestartRecovery` (and `-RunStress -RunLongSoak` when the `run_stress`
-    input is set) and uploads `provider-gate-artifacts`. It is skipped
+    the functional provider gates by default. When the `run_stress` input is
+    set, it also passes `-RunStress -RunRestartRecovery -RunLongSoak` and
+    uploads `provider-gate-artifacts`. It is skipped
     automatically when the provider key secret is absent, so it never fails a
     repo that has not configured a provider.
 
@@ -60,7 +61,7 @@ Configure the provider gate once at the repository level:
 
 | Kind | Name | Purpose |
 |---|---|---|
-| Secret | `ROVE_PROVIDER_API_KEY` | Provider key, injected as `OPENAI_API_KEY` for the run. |
+| Secret | `ROVE_PROVIDER_API_KEY` | Provider key, injected as `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` for the run. |
 | Variable | `ROVE_PROVIDER_NAME` | Provider profile (defaults to `openai-compatible`). |
 | Variable | `ROVE_PROVIDER_API_BASE` | Provider `/v1` (or native) base URL. |
 | Variable | `ROVE_PROVIDER_MODEL` | Model id to smoke test. |

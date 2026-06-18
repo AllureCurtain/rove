@@ -168,6 +168,7 @@ jobs:
         shell: powershell
         env:
           OPENAI_API_KEY: ${{ secrets.ROVE_PROVIDER_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ROVE_PROVIDER_API_KEY }}
           ROVE_PROVIDER_INTEGRATION_API_KEY_ENV: OPENAI_API_KEY
           ROVE_PROVIDER_INTEGRATION_PROVIDER: ${{ inputs.provider || vars.ROVE_PROVIDER_NAME || 'openai-compatible' }}
           ROVE_PROVIDER_INTEGRATION_API_BASE: ${{ inputs.api_base || vars.ROVE_PROVIDER_API_BASE }}
@@ -176,9 +177,10 @@ jobs:
           ROVE_PROVIDER_INTEGRATION_ROOT: ${{ github.workspace }}\.release-gate\provider
           RUN_STRESS: ${{ inputs.run_stress }}
         run: |
-          $flags = @("-RunRestartRecovery")
+          $flags = @()
           if ($env:RUN_STRESS -eq "true") {
             $flags += "-RunStress"
+            $flags += "-RunRestartRecovery"
             $flags += "-RunLongSoak"
           }
           powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 @flags
