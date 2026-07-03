@@ -68,6 +68,9 @@ pub enum RunViewUpdate {
         summary: Option<String>,
         state: PromptCompactionState,
     },
+    MemoryFlushed {
+        note_count: usize,
+    },
     PromptBuilt {
         metadata: PromptBuildMetadata,
     },
@@ -243,6 +246,7 @@ impl RunViewState {
             RunViewUpdate::PromptCompacted { summary, state } => {
                 self.prompt_compaction = Some((summary, state));
             }
+            RunViewUpdate::MemoryFlushed { .. } => {}
             RunViewUpdate::PromptBuilt { .. } => {}
             RunViewUpdate::RunCompleted { reason, output } => {
                 self.completed = Some(RunCompletionView { reason, output });
@@ -354,6 +358,9 @@ impl From<&StreamEvent> for RunViewUpdate {
             StreamEvent::PromptCompacted { summary, state } => Self::PromptCompacted {
                 summary: summary.clone(),
                 state: state.clone(),
+            },
+            StreamEvent::MemoryFlushed { notes } => Self::MemoryFlushed {
+                note_count: notes.len(),
             },
             StreamEvent::PromptBuilt { metadata } => Self::PromptBuilt {
                 metadata: metadata.clone(),
@@ -484,6 +491,9 @@ mod tests {
                 summary: Some("summary".to_string()),
                 state: compaction,
             },
+            StreamEvent::MemoryFlushed {
+                notes: vec!["tool result: created file src/memory/session.rs".to_string()],
+            },
             StreamEvent::PromptBuilt {
                 metadata: PromptBuildMetadata::default(),
             },
@@ -495,7 +505,7 @@ mod tests {
 
         let updates: Vec<RunViewUpdate> = events.iter().map(RunViewUpdate::from).collect();
 
-        assert_eq!(updates.len(), 16);
+        assert_eq!(updates.len(), 17);
         assert!(matches!(
             updates[0],
             RunViewUpdate::RunStarted {
@@ -511,9 +521,13 @@ mod tests {
             updates[8],
             RunViewUpdate::InputNeeded { ref prompt, .. } if prompt == "Which branch?"
         ));
-        assert!(matches!(updates[14], RunViewUpdate::PromptBuilt { .. }));
         assert!(matches!(
-            updates[15],
+            updates[14],
+            RunViewUpdate::MemoryFlushed { note_count: 1 }
+        ));
+        assert!(matches!(updates[15], RunViewUpdate::PromptBuilt { .. }));
+        assert!(matches!(
+            updates[16],
             RunViewUpdate::RunCompleted {
                 reason: TerminationReason::Final,
                 ..

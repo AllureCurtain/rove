@@ -8,9 +8,12 @@ use crate::core::engine::planned_step_failure_message;
 use crate::core::events::StreamEvent;
 use crate::core::model_turn::{ModelTurnItem, run_model_turn};
 use crate::core::planner::Planner;
-use crate::core::run_loop::{LoopContext, LoopItem, enrich_prompt_metadata};
+use crate::core::run_loop::{
+    LoopContext, LoopItem, enrich_prompt_metadata, extract_session_memory_notes,
+};
 use crate::core::tool_turn::{ToolAction, ToolTurnItem, append_tool_history, run_tool_turn};
 use crate::core::types::{Action, Message, TaskPlan, TerminationReason, ToolCallAction};
+use crate::memory::session::append_session_notes_to_dir_sync;
 
 pub(crate) struct PlanLoopState {
     pub user_message: String,
@@ -142,11 +145,33 @@ pub(crate) fn run_planned_loop<'a>(
             }
             if context.auto_compaction_needed && context.dropped_history_messages > 0 {
                 let compacted_count = context.dropped_history_messages.min(state.history.len());
+
+                // Pre-compaction flush: extract durable-worthy notes from the
+                // messages about to be compacted and persist them to session
+                // memory before the detail is summarized away.
+                let mut flush_notes = Vec::new();
+                if compacted_count > 0 {
+                    let candidate_notes = extract_session_memory_notes(&state.history[..compacted_count]);
+                    if !candidate_notes.is_empty()
+                        && append_session_notes_to_dir_sync(
+                            &ctx.memory_paths.session_dir,
+                            ctx.session_id,
+                            &candidate_notes,
+                        )
+                        .is_ok()
+                    {
+                        flush_notes = candidate_notes;
+                        yield LoopItem::Event(StreamEvent::MemoryFlushed {
+                            notes: flush_notes.clone(),
+                        });
+                    }
+                }
+
                 if let Some(update) = maybe_compact_history(
                     &mut compaction,
                     ctx.model,
                     &state.history[..compacted_count],
-                    Vec::new(),
+                    flush_notes,
                     cancel_token.clone(),
                 )
                 .await

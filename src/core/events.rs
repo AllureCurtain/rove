@@ -88,6 +88,10 @@ pub enum StreamEvent {
         state: PromptCompactionState,
     },
 
+    /// Durable-worthy notes were flushed from the soon-to-be-compacted history
+    /// to session memory before compaction collapsed the detail away.
+    MemoryFlushed { notes: Vec<String> },
+
     /// Prompt context has been assembled for a model turn.
     PromptBuilt { metadata: PromptBuildMetadata },
 
@@ -116,6 +120,7 @@ impl StreamEvent {
             Self::PlanStepCompleted { .. } => "plan_step_completed",
             Self::PlanStepFailed { .. } => "plan_step_failed",
             Self::PromptCompacted { .. } => "prompt_compacted",
+            Self::MemoryFlushed { .. } => "memory_flushed",
             Self::PromptBuilt { .. } => "prompt_built",
             Self::RunCompleted { .. } => "run_completed",
         }

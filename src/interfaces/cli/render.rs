@@ -354,6 +354,15 @@ fn render_repl_update(
             }
             None
         }
+        RunViewUpdate::MemoryFlushed { note_count } => {
+            if is_repl(options) {
+                eprintln!(
+                    "\n{}",
+                    repl_update_label(&RunViewUpdate::MemoryFlushed { note_count })?
+                );
+            }
+            None
+        }
         RunViewUpdate::RunCompleted { reason, output } => {
             Some(render_completion(reason, output, options, render_state))
         }
@@ -396,6 +405,9 @@ fn repl_update_label(update: &RunViewUpdate) -> Option<String> {
         RunViewUpdate::ToolCallApprovalNeeded { name, .. } => Some(format!("Approval · {name}")),
         RunViewUpdate::InputNeeded { .. } => Some("Input".to_string()),
         RunViewUpdate::PromptCompacted { .. } => Some("Context · compacted".to_string()),
+        RunViewUpdate::MemoryFlushed { note_count } => {
+            Some(format!("Context · flushed {note_count} memory note(s)"))
+        }
         _ => None,
     }
 }

@@ -3297,6 +3297,123 @@ async fn model_compaction_stores_generated_summary_in_checkpoint() {
 }
 
 #[tokio::test]
+async fn compaction_flushes_tool_notes_to_session_memory_before_summarizing() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let state_store = StateStore::new(&workspace.state_dir);
+    let session_id = SessionId::new();
+    let run_id = RunId::new();
+    let run = state_store
+        .start_run(session_id, JobId::new(), run_id)
+        .unwrap();
+    let model = Box::new(FakeModelClient::new(vec![
+        r#"{"tool":"echo","args":{"message":"created file src/memory/session.rs"}}"#.to_string(),
+        "MODEL GENERATED COMPACTION SUMMARY".to_string(),
+        "done".to_string(),
+    ]));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(EchoTool));
+    let engine = Engine::with_workspace(
+        model,
+        registry,
+        ContextManager::with_max_history("You are a test agent.".to_string(), 0),
+        EngineConfig {
+            max_steps: 3,
+            plan_enabled: false,
+        },
+        workspace.clone(),
+        ApprovalPolicy::Auto,
+    )
+    .with_model_compaction(true, 3);
+
+    run_oneshot(
+        &engine,
+        "build model checkpoint".to_string(),
+        run,
+        None,
+        &state_store,
+    )
+    .await;
+
+    let session_summary_path = workspace
+        .state_dir
+        .join("memory")
+        .join("sessions")
+        .join(format!("{session_id}.md"));
+    let session_summary = std::fs::read_to_string(session_summary_path)
+        .expect("pre-compaction flush should write the session summary file");
+    assert!(
+        session_summary.contains("## Flush at "),
+        "flush block should include a timestamp, got: {session_summary}"
+    );
+    assert!(
+        session_summary.contains("tool result: created file src/memory/session.rs"),
+        "flush should preserve the soon-to-be-compacted tool result, got: {session_summary}"
+    );
+}
+
+#[tokio::test]
+async fn planned_compaction_flushes_tool_notes_to_session_memory_before_summarizing() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let session_id = SessionId::new();
+    let model = Box::new(FakeModelClient::new(vec![
+        r#"{"goal":"planned flush","steps":[{"id":"1","title":"make durable note"},{"id":"2","title":"finish"}]}"#.to_string(),
+        r#"{"tool":"echo","args":{"message":"modified file src/core/plan_loop.rs"}}"#.to_string(),
+        "MODEL GENERATED COMPACTION SUMMARY".to_string(),
+        "done".to_string(),
+    ]));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(EchoTool));
+    let engine = Engine::with_workspace(
+        model,
+        registry,
+        ContextManager::with_max_history("You are a test agent.".to_string(), 0),
+        EngineConfig {
+            max_steps: 4,
+            plan_enabled: true,
+        },
+        workspace.clone(),
+        ApprovalPolicy::Auto,
+    )
+    .with_model_compaction(true, 3);
+
+    let events = collect_events_with_request(
+        &engine,
+        RunRequest {
+            session_id,
+            job_id: JobId::new(),
+            run_id: RunId::new(),
+            user_message: "run planned flush".to_string(),
+            resume_state: None,
+        },
+    )
+    .await;
+
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, StreamEvent::MemoryFlushed { .. })),
+        "planned loop should emit MemoryFlushed before compaction"
+    );
+    let session_summary_path = workspace
+        .state_dir
+        .join("memory")
+        .join("sessions")
+        .join(format!("{session_id}.md"));
+    let session_summary = std::fs::read_to_string(session_summary_path)
+        .expect("planned pre-compaction flush should write the session summary file");
+    assert!(
+        session_summary.contains("## Flush at "),
+        "planned flush block should include a timestamp, got: {session_summary}"
+    );
+    assert!(
+        session_summary.contains("tool result: modified file src/core/plan_loop.rs"),
+        "planned flush should preserve the soon-to-be-compacted tool result, got: {session_summary}"
+    );
+}
+
+#[tokio::test]
 async fn failing_model_compaction_falls_back_to_deterministic_summary_with_circuit_metadata() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();

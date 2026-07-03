@@ -62,7 +62,14 @@ pub fn write_session_summary_to_dir_sync(
     }
 
     std::fs::create_dir_all(session_dir)?;
-    std::fs::write(session_dir.join(format!("{session_id}.md")), trimmed)
+    let path = session_dir.join(format!("{session_id}.md"));
+    let content = match std::fs::read_to_string(&path) {
+        Ok(existing) => merge_summary_with_existing_flushes(trimmed, &existing),
+        Err(err) if err.kind() == ErrorKind::NotFound => trimmed.to_string(),
+        Err(err) => return Err(err),
+    };
+    let truncated = truncate_session_summary(&content);
+    std::fs::write(path, truncated.trim_end())
 }
 
 fn truncate_session_summary(content: &str) -> String {
@@ -72,6 +79,23 @@ fn truncate_session_summary(content: &str) -> String {
         .take(MAX_SESSION_SUMMARY_LINES)
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+fn merge_summary_with_existing_flushes(summary: &str, existing: &str) -> String {
+    let Some(flush_start) = existing
+        .find("\n## Flush at ")
+        .map(|idx| idx + 1)
+        .or_else(|| existing.starts_with("## Flush at ").then_some(0))
+    else {
+        return summary.to_string();
+    };
+
+    let flush_blocks = existing[flush_start..].trim();
+    if flush_blocks.is_empty() {
+        summary.to_string()
+    } else {
+        format!("{}\n\n{}", summary.trim_end(), flush_blocks)
+    }
 }
 
 fn truncate_to_byte_boundary(content: &str, max_bytes: usize) -> &str {
@@ -88,4 +112,40 @@ fn truncate_to_byte_boundary(content: &str, max_bytes: usize) -> &str {
         end = next;
     }
     &content[..end]
+}
+
+/// Append mid-session notes to the session summary file (pre-compaction flush).
+///
+/// Called from the run loops immediately before history is compacted, to
+/// persist durable-worthy observations before the detailed messages are
+/// summarized away. Each flush block is stamped with `## Flush at <timestamp>`
+/// so the running summary stays readable as an append log. Returns `Ok(())`
+/// even when there is nothing to append.
+pub fn append_session_notes_to_dir_sync(
+    session_dir: &Path,
+    session_id: SessionId,
+    notes: &[String],
+) -> std::io::Result<()> {
+    if notes.is_empty() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(session_dir)?;
+    let path = session_dir.join(format!("{session_id}.md"));
+
+    let timestamp = chrono::Utc::now().to_rfc3339();
+    let mut addition = String::new();
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    if existing.trim().is_empty() {
+        addition.push_str("# Session Summary\n\n");
+    }
+    addition.push_str(&format!("## Flush at {timestamp}\n"));
+    for note in notes {
+        addition.push_str(&format!("- {note}\n"));
+    }
+    addition.push('\n');
+
+    let mut content = existing;
+    content.push_str(&addition);
+    let truncated = truncate_session_summary(&content);
+    std::fs::write(path, format!("{}\n", truncated.trim_end()))
 }

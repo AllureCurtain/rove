@@ -16,12 +16,13 @@ use crate::core::tool_turn::{
     ToolAction, ToolTurnContext, ToolTurnItem, append_tool_history, run_tool_turn,
 };
 use crate::core::types::{
-    Action, ApprovalDecision, ApprovalPolicy, Message, TerminationReason, ToolApprovalProvider,
-    ToolSchema, UserInputProvider,
+    Action, ApprovalDecision, ApprovalPolicy, Message, SessionId, TerminationReason,
+    ToolApprovalProvider, ToolSchema, UserInputProvider,
 };
 use crate::core::workspace::Workspace;
 use crate::hooks::HookRegistry;
 use crate::memory::paths::MemoryPaths;
+use crate::memory::session::append_session_notes_to_dir_sync;
 use crate::models::traits::ModelClient;
 use crate::tools::registry::ToolRegistry;
 
@@ -32,6 +33,7 @@ pub(crate) struct LoopContext<'a> {
     pub context_manager: &'a ContextManager,
     pub workspace: &'a Workspace,
     pub memory_paths: &'a MemoryPaths,
+    pub session_id: SessionId,
     pub max_steps: u32,
     pub approval_policy: ApprovalPolicy,
     pub approval_decision: ApprovalDecision,
@@ -69,6 +71,51 @@ pub(crate) fn enrich_prompt_metadata(
         &metadata.tool_signature,
     ));
     metadata
+}
+
+/// Extract durable-worthy notes from messages that are about to be compacted.
+///
+/// Looks for tool results that report file modifications, and assistant
+/// messages that state decisions or plans, returning a deduplicated list of
+/// short notes suitable for the session-summary flush.
+pub(crate) fn extract_session_memory_notes(messages: &[Message]) -> Vec<String> {
+    let mut notes = Vec::new();
+
+    for msg in messages {
+        let content = msg.content.trim();
+        if content.is_empty() {
+            continue;
+        }
+        // Tool results that mention file modifications.
+        if msg.role == crate::core::types::Role::Tool {
+            let lower = content.to_ascii_lowercase();
+            if lower.contains("created")
+                || lower.contains("wrote")
+                || lower.contains("modified")
+                || lower.contains("saved")
+            {
+                let snippet: String = content.chars().take(160).collect();
+                notes.push(format!("tool result: {snippet}"));
+            }
+        }
+        // Assistant messages that state decisions or intent.
+        if msg.role == crate::core::types::Role::Assistant {
+            let lower = content.to_ascii_lowercase();
+            if lower.contains("i decided")
+                || lower.contains("i will")
+                || lower.contains("decision:")
+                || lower.contains("approach:")
+                || lower.contains("plan:")
+            {
+                let snippet: String = content.chars().take(200).collect();
+                notes.push(format!("assistant note: {snippet}"));
+            }
+        }
+    }
+
+    notes.sort();
+    notes.dedup();
+    notes
 }
 
 pub(crate) struct RunLoopState {
@@ -132,11 +179,33 @@ pub(crate) fn run_unplanned_loop<'a>(
             }
             if context.auto_compaction_needed && context.dropped_history_messages > 0 {
                 let compacted_count = context.dropped_history_messages.min(state.history.len());
+
+                // Pre-compaction flush: extract durable-worthy notes from the
+                // messages about to be compacted and persist them to session
+                // memory before the detail is summarized away.
+                let mut flush_notes = Vec::new();
+                if compacted_count > 0 {
+                    let candidate_notes = extract_session_memory_notes(&state.history[..compacted_count]);
+                    if !candidate_notes.is_empty()
+                        && append_session_notes_to_dir_sync(
+                            &ctx.memory_paths.session_dir,
+                            ctx.session_id,
+                            &candidate_notes,
+                        )
+                        .is_ok()
+                    {
+                        flush_notes = candidate_notes;
+                        yield LoopItem::Event(StreamEvent::MemoryFlushed {
+                            notes: flush_notes.clone(),
+                        });
+                    }
+                }
+
                 if let Some(update) = maybe_compact_history(
                     &mut compaction,
                     ctx.model,
                     &state.history[..compacted_count],
-                    Vec::new(),
+                    flush_notes,
                     cancel_token.clone(),
                 )
                 .await

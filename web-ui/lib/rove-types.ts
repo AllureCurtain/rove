@@ -154,6 +154,10 @@ export type StreamEvent =
       state: PromptCompactionState;
     }
   | {
+      type: "memory_flushed";
+      notes: string[];
+    }
+  | {
       type: "prompt_built";
       metadata: PromptBuildMetadata;
     }
@@ -281,6 +285,7 @@ export const STREAM_EVENT_NAMES = [
   "plan_step_completed",
   "plan_step_failed",
   "prompt_compacted",
+  "memory_flushed",
   "prompt_built",
   "run_completed",
 ] as const;

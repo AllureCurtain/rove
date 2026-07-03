@@ -404,6 +404,7 @@ impl Engine {
                     context_manager: &self.context_manager,
                     workspace: &self.workspace,
                     memory_paths: &self.memory_paths,
+                    session_id,
                     max_steps: self.config.max_steps,
                     approval_policy: self.approval_policy,
                     approval_decision: self.approval_decision,
