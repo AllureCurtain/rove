@@ -6,6 +6,7 @@ use reqwest::{
 };
 use std::collections::BTreeMap;
 
+use crate::config::ProviderOptions;
 use crate::core::types::{Message, Role, ToolSchema, Usage};
 use crate::errors::ModelError;
 use crate::models::traits::{ModelClient, ModelClientId, ModelEvent};
@@ -19,6 +20,8 @@ pub struct AnthropicClient {
     api_key: String,
     model: String,
     max_tokens: u32,
+    temperature: Option<f64>,
+    top_p: Option<f64>,
 }
 
 impl AnthropicClient {
@@ -29,12 +32,20 @@ impl AnthropicClient {
             api_key,
             model,
             max_tokens: DEFAULT_MAX_TOKENS,
+            temperature: None,
+            top_p: None,
         }
     }
 
     pub fn with_max_tokens(mut self, max_tokens: u32) -> Self {
         self.max_tokens = max_tokens;
         self
+    }
+
+    pub fn apply_options(&mut self, options: &ProviderOptions) {
+        self.max_tokens = options.max_tokens_or(DEFAULT_MAX_TOKENS);
+        self.temperature = options.temperature;
+        self.top_p = options.top_p;
     }
 
     fn build_request_body(&self, messages: &[Message], tools: &[ToolSchema]) -> serde_json::Value {
@@ -49,6 +60,17 @@ impl AnthropicClient {
             "messages": msgs,
             "stream": true,
         });
+
+        if let Some(temperature) = self.temperature
+            && let Some(number) = serde_json::Number::from_f64(temperature)
+        {
+            body["temperature"] = serde_json::Value::Number(number);
+        }
+        if let Some(top_p) = self.top_p
+            && let Some(number) = serde_json::Number::from_f64(top_p)
+        {
+            body["top_p"] = serde_json::Value::Number(number);
+        }
 
         if let Some(system) = system_prompt {
             body["system"] = serde_json::Value::String(system);
@@ -385,6 +407,7 @@ impl ModelClient for AnthropicClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::ProviderOptions;
     use crate::core::types::{Message, ToolSchema};
     use reqwest::header::{HeaderMap, HeaderValue, RETRY_AFTER};
 
@@ -433,6 +456,27 @@ mod tests {
         assert_eq!(body["tools"][0]["name"], "fs_read");
         assert_eq!(body["tools"][0]["description"], "Read a file");
         assert!(body["tools"][0]["input_schema"].is_object());
+    }
+
+    #[test]
+    fn request_body_includes_provider_options() {
+        let mut client = AnthropicClient::new(
+            "https://api.anthropic.com".to_string(),
+            "sk-test".to_string(),
+            "claude-sonnet-4-6".to_string(),
+        );
+        client.apply_options(&ProviderOptions {
+            max_tokens: Some(8192),
+            temperature: Some(0.7),
+            top_p: Some(0.95),
+            ..Default::default()
+        });
+
+        let body = client.build_request_body(&[Message::user("hi")], &[]);
+
+        assert_eq!(body["max_tokens"], 8192);
+        assert_eq!(body["temperature"], 0.7);
+        assert_eq!(body["top_p"], 0.95);
     }
 
     #[test]

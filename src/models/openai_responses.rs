@@ -6,6 +6,7 @@ use reqwest::{
 };
 use std::collections::BTreeMap;
 
+use crate::config::ProviderOptions;
 use crate::core::types::{Message, Role, ToolSchema, Usage};
 use crate::errors::ModelError;
 use crate::models::traits::{ModelClient, ModelClientId, ModelEvent};
@@ -18,6 +19,7 @@ pub struct OpenAiResponsesClient {
     model: String,
     prompt_cache_enabled: bool,
     prompt_cache_retention: Option<String>,
+    options: ProviderOptions,
 }
 
 impl OpenAiResponsesClient {
@@ -29,6 +31,7 @@ impl OpenAiResponsesClient {
             model,
             prompt_cache_enabled: false,
             prompt_cache_retention: None,
+            options: ProviderOptions::default(),
         }
     }
 
@@ -36,6 +39,10 @@ impl OpenAiResponsesClient {
         self.prompt_cache_enabled = enabled;
         self.prompt_cache_retention = retention;
         self
+    }
+
+    pub fn apply_options(&mut self, options: &ProviderOptions) {
+        self.options = *options;
     }
 
     fn build_request_body(&self, messages: &[Message], tools: &[ToolSchema]) -> serde_json::Value {
@@ -61,6 +68,14 @@ impl OpenAiResponsesClient {
         if !tool_defs.is_empty() {
             body.insert("tools".to_string(), serde_json::Value::Array(tool_defs));
         }
+        if let Some(max_tokens) = self.options.max_tokens {
+            body.insert(
+                "max_output_tokens".to_string(),
+                serde_json::Value::Number(max_tokens.into()),
+            );
+        }
+        insert_float_option(&mut body, "temperature", self.options.temperature);
+        insert_float_option(&mut body, "top_p", self.options.top_p);
         if self.prompt_cache_enabled {
             body.insert(
                 "prompt_cache_key".to_string(),
@@ -75,6 +90,18 @@ impl OpenAiResponsesClient {
         }
 
         serde_json::Value::Object(body)
+    }
+}
+
+fn insert_float_option(
+    body: &mut serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    value: Option<f64>,
+) {
+    if let Some(value) = value
+        && let Some(number) = serde_json::Number::from_f64(value)
+    {
+        body.insert(key.to_string(), serde_json::Value::Number(number));
     }
 }
 
@@ -517,6 +544,7 @@ impl ModelClient for OpenAiResponsesClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::ProviderOptions;
     use crate::core::types::{Message, ToolCallRef, ToolSchema};
     use reqwest::header::{HeaderMap, HeaderValue, RETRY_AFTER};
 
@@ -606,6 +634,27 @@ mod tests {
                 .is_some_and(|value| value.starts_with("rove-responses-"))
         );
         assert_eq!(cached["prompt_cache_retention"], "24h");
+    }
+
+    #[test]
+    fn request_body_includes_provider_options() {
+        let mut client = OpenAiResponsesClient::new(
+            "https://api.openai.com/v1".to_string(),
+            "secret".to_string(),
+            "gpt-4.1-mini".to_string(),
+        );
+        client.apply_options(&ProviderOptions {
+            max_tokens: Some(1024),
+            temperature: Some(0.4),
+            top_p: Some(0.9),
+            ..Default::default()
+        });
+
+        let body = client.build_request_body(&[Message::user("inspect")], &[]);
+
+        assert_eq!(body["max_output_tokens"], 1024);
+        assert_eq!(body["temperature"], 0.4);
+        assert_eq!(body["top_p"], 0.9);
     }
 
     #[test]

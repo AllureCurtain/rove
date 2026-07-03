@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::memory::paths::MemoryPaths;
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct AppConfig {
     pub runtime: RuntimeConfig,
@@ -36,7 +36,7 @@ pub struct RuntimeConfig {
     pub context_reserved_tokens: usize,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct ProviderConfig {
     pub name: String,
@@ -48,15 +48,59 @@ pub struct ProviderConfig {
     pub responses_prompt_cache_retention: Option<String>,
     pub fallback_models: Vec<String>,
     pub fallback_providers: Vec<FallbackProviderConfig>,
+    pub options: ProviderOptions,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct FallbackProviderConfig {
     #[serde(default = "default_fallback_provider_name")]
     pub name: String,
     pub api_base: String,
     pub api_key: String,
     pub model: String,
+    #[serde(default)]
+    pub options: Option<ProviderOptions>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct ProviderOptions {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_p: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frequency_penalty: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub presence_penalty: Option<f64>,
+}
+
+impl ProviderOptions {
+    pub fn max_tokens_or(&self, default: u32) -> u32 {
+        self.max_tokens.unwrap_or(default)
+    }
+
+    fn validate(&self, prefix: &str) -> anyhow::Result<()> {
+        if self.max_tokens == Some(0) {
+            anyhow::bail!("{prefix}.max_tokens must be greater than 0");
+        }
+        validate_finite_option(prefix, "temperature", self.temperature)?;
+        validate_finite_option(prefix, "top_p", self.top_p)?;
+        validate_finite_option(prefix, "frequency_penalty", self.frequency_penalty)?;
+        validate_finite_option(prefix, "presence_penalty", self.presence_penalty)?;
+        Ok(())
+    }
+}
+
+fn validate_finite_option(prefix: &str, field: &str, value: Option<f64>) -> anyhow::Result<()> {
+    if let Some(value) = value
+        && !value.is_finite()
+    {
+        anyhow::bail!("{prefix}.{field} must be finite");
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -177,6 +221,7 @@ impl Default for ProviderConfig {
             responses_prompt_cache_retention: None,
             fallback_models: Vec::new(),
             fallback_providers: Vec::new(),
+            options: ProviderOptions::default(),
         }
     }
 }
@@ -424,7 +469,11 @@ impl AppConfig {
             if fallback.model.trim().is_empty() {
                 anyhow::bail!("provider.fallback_providers.model must not be empty");
             }
+            if let Some(options) = &fallback.options {
+                options.validate("provider.fallback_providers.options")?;
+            }
         }
+        self.provider.options.validate("provider.options")?;
         if self.runtime.max_steps == 0 {
             anyhow::bail!("runtime.max_steps must be greater than 0");
         }
@@ -625,6 +674,8 @@ struct ProviderConfigLayer {
     fallback_models: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     fallback_providers: Option<Vec<FallbackProviderConfig>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    options: Option<ProviderOptions>,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -1084,6 +1135,7 @@ fn has_provider_values(layer: &ProviderConfigLayer) -> bool {
         || layer.responses_prompt_cache_retention.is_some()
         || layer.fallback_models.is_some()
         || layer.fallback_providers.is_some()
+        || layer.options.is_some()
 }
 
 fn has_tool_values(layer: &ToolConfigLayer) -> bool {
@@ -1333,6 +1385,85 @@ fallback_providers = [
         assert_eq!(
             config.provider.fallback_providers[0].name,
             "openai-responses"
+        );
+    }
+
+    #[test]
+    fn project_config_parses_provider_options() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let config_dir = tmp.path().join(".rove");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::write(
+            config_dir.join("config.toml"),
+            r#"
+[provider]
+name = "openai-compatible"
+model = "primary-model"
+fallback_providers = [
+  { name = "openai-compatible", api_base = "https://fallback.test/v1", api_key = "secret", model = "fallback-model", options = { max_tokens = 512, temperature = 0.1 } }
+]
+
+[provider.options]
+max_tokens = 2048
+temperature = 0.2
+top_p = 0.8
+frequency_penalty = 0.3
+presence_penalty = 0.4
+"#,
+        )
+        .unwrap();
+
+        let config = AppConfig::load(tmp.path(), AppConfigOverrides::default()).unwrap();
+
+        assert_eq!(config.provider.options.max_tokens, Some(2048));
+        assert_eq!(config.provider.options.temperature, Some(0.2));
+        assert_eq!(config.provider.options.top_p, Some(0.8));
+        assert_eq!(config.provider.options.frequency_penalty, Some(0.3));
+        assert_eq!(config.provider.options.presence_penalty, Some(0.4));
+        let fallback_options = config.provider.fallback_providers[0]
+            .options
+            .as_ref()
+            .unwrap();
+        assert_eq!(fallback_options.max_tokens, Some(512));
+        assert_eq!(fallback_options.temperature, Some(0.1));
+    }
+
+    #[test]
+    fn validation_rejects_invalid_provider_options() {
+        let mut config = AppConfig::default();
+        config.provider.options.max_tokens = Some(0);
+        let err = config.validate().unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("provider.options.max_tokens must be greater than 0")
+        );
+
+        let mut config = AppConfig::default();
+        config.provider.options.temperature = Some(f64::NAN);
+        let err = config.validate().unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("provider.options.temperature must be finite")
+        );
+
+        let mut config = AppConfig::default();
+        config
+            .provider
+            .fallback_providers
+            .push(FallbackProviderConfig {
+                name: "openai-compatible".to_string(),
+                api_base: "https://fallback.test/v1".to_string(),
+                api_key: "secret".to_string(),
+                model: "fallback-model".to_string(),
+                options: Some(ProviderOptions {
+                    top_p: Some(f64::INFINITY),
+                    ..Default::default()
+                }),
+            });
+        let err = config.validate().unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("provider.fallback_providers.options.top_p must be finite")
         );
     }
 

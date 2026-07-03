@@ -6,6 +6,7 @@ use reqwest::{
 };
 use std::collections::BTreeMap;
 
+use crate::config::ProviderOptions;
 use crate::core::types::{Message, Role, ToolSchema, Usage};
 use crate::errors::ModelError;
 use crate::models::traits::{ModelClient, ModelClientId, ModelEvent};
@@ -19,6 +20,7 @@ pub struct OpenAiClient {
     api_base: String,
     api_key: String,
     model: String,
+    options: ProviderOptions,
 }
 
 impl OpenAiClient {
@@ -28,7 +30,12 @@ impl OpenAiClient {
             api_base,
             api_key,
             model,
+            options: ProviderOptions::default(),
         }
+    }
+
+    pub fn apply_options(&mut self, options: &ProviderOptions) {
+        self.options = *options;
     }
 
     fn build_request_body(&self, messages: &[Message], tools: &[ToolSchema]) -> serde_json::Value {
@@ -65,7 +72,34 @@ impl OpenAiClient {
             );
         }
 
+        if let Some(max_tokens) = self.options.max_tokens {
+            body.insert(
+                "max_tokens".to_string(),
+                serde_json::Value::Number(max_tokens.into()),
+            );
+        }
+        insert_float_option(&mut body, "temperature", self.options.temperature);
+        insert_float_option(&mut body, "top_p", self.options.top_p);
+        insert_float_option(
+            &mut body,
+            "frequency_penalty",
+            self.options.frequency_penalty,
+        );
+        insert_float_option(&mut body, "presence_penalty", self.options.presence_penalty);
+
         serde_json::Value::Object(body)
+    }
+}
+
+fn insert_float_option(
+    body: &mut serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    value: Option<f64>,
+) {
+    if let Some(value) = value
+        && let Some(number) = serde_json::Number::from_f64(value)
+    {
+        body.insert(key.to_string(), serde_json::Value::Number(number));
     }
 }
 
@@ -417,6 +451,7 @@ impl ModelClient for OpenAiClient {
 mod tests {
     use super::*;
 
+    use crate::config::ProviderOptions;
     use crate::core::types::{Message, ToolSchema};
     use reqwest::{
         StatusCode,
@@ -451,6 +486,30 @@ mod tests {
         assert_eq!(body["tools"][0]["function"]["name"], "fs_read");
         assert_eq!(body["tools"][0]["function"]["description"], "Read a file");
         assert_eq!(body["tool_choice"], "auto");
+    }
+
+    #[test]
+    fn request_body_includes_provider_options() {
+        let mut client = OpenAiClient::new(
+            "https://example.invalid/v1".to_string(),
+            "secret".to_string(),
+            "gpt-4o".to_string(),
+        );
+        client.apply_options(&ProviderOptions {
+            max_tokens: Some(2048),
+            temperature: Some(0.2),
+            top_p: Some(0.8),
+            frequency_penalty: Some(0.3),
+            presence_penalty: Some(0.4),
+        });
+
+        let body = client.build_request_body(&[Message::user("inspect")], &[]);
+
+        assert_eq!(body["max_tokens"], 2048);
+        assert_eq!(body["temperature"], 0.2);
+        assert_eq!(body["top_p"], 0.8);
+        assert_eq!(body["frequency_penalty"], 0.3);
+        assert_eq!(body["presence_penalty"], 0.4);
     }
 
     #[test]

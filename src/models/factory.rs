@@ -1,4 +1,5 @@
 use crate::config::AppConfig;
+use crate::config::ProviderOptions;
 use crate::models::anthropic::AnthropicClient;
 use crate::models::fake::FakeModelClient;
 use crate::models::health::{HealthConfig, ModelHealthStore};
@@ -93,20 +94,30 @@ fn fallback_specs(config: &AppConfig, primary: &ProviderSpec) -> Vec<ProviderSpe
 fn build_provider_client(spec: ProviderSpec) -> Box<dyn ModelClient> {
     match spec.kind {
         ProviderKind::OpenAiCompatible => {
-            Box::new(OpenAiClient::new(spec.api_base, spec.api_key, spec.model))
+            let mut client = OpenAiClient::new(spec.api_base, spec.api_key, spec.model);
+            client.apply_options(&spec.options);
+            Box::new(client)
         }
-        ProviderKind::OpenAiResponses => Box::new(
-            OpenAiResponsesClient::new(spec.api_base, spec.api_key, spec.model).with_prompt_cache(
-                spec.responses_prompt_cache,
-                spec.responses_prompt_cache_retention,
-            ),
-        ),
-        ProviderKind::Anthropic => Box::new(AnthropicClient::new(
-            anthropic_base(spec.api_base),
-            spec.api_key,
-            spec.model,
-        )),
-        ProviderKind::Ollama => Box::new(OllamaClient::new(ollama_base(spec.api_base), spec.model)),
+        ProviderKind::OpenAiResponses => {
+            let mut client = OpenAiResponsesClient::new(spec.api_base, spec.api_key, spec.model)
+                .with_prompt_cache(
+                    spec.responses_prompt_cache,
+                    spec.responses_prompt_cache_retention,
+                );
+            client.apply_options(&spec.options);
+            Box::new(client)
+        }
+        ProviderKind::Anthropic => {
+            let mut client =
+                AnthropicClient::new(anthropic_base(spec.api_base), spec.api_key, spec.model);
+            client.apply_options(&spec.options);
+            Box::new(client)
+        }
+        ProviderKind::Ollama => {
+            let mut client = OllamaClient::new(ollama_base(spec.api_base), spec.model);
+            client.apply_options(&spec.options);
+            Box::new(client)
+        }
         ProviderKind::Fake => Box::new(FakeModelClient::new(format!(
             "fake response from {}",
             spec.model
@@ -120,6 +131,7 @@ struct ProviderSpec {
     api_base: String,
     api_key: String,
     model: String,
+    options: ProviderOptions,
     responses_prompt_cache: bool,
     responses_prompt_cache_retention: Option<String>,
 }
@@ -141,6 +153,7 @@ impl ProviderSpec {
             api_base: config.provider.api_base.clone(),
             api_key: config.provider.api_key.clone(),
             model,
+            options: config.provider.options,
             responses_prompt_cache: false,
             responses_prompt_cache_retention: None,
         }
@@ -152,6 +165,7 @@ impl ProviderSpec {
             api_base: config.provider.api_base.clone(),
             api_key: config.provider.api_key.clone(),
             model,
+            options: config.provider.options,
             responses_prompt_cache: config.provider.responses_prompt_cache,
             responses_prompt_cache_retention: config
                 .provider
@@ -171,6 +185,7 @@ impl ProviderSpec {
             api_base: config.provider.api_base.clone(),
             api_key,
             model,
+            options: config.provider.options,
             responses_prompt_cache: false,
             responses_prompt_cache_retention: None,
         }
@@ -182,6 +197,7 @@ impl ProviderSpec {
             api_base: config.provider.api_base.clone(),
             api_key: String::new(),
             model,
+            options: config.provider.options,
             responses_prompt_cache: false,
             responses_prompt_cache_retention: None,
         }
@@ -193,6 +209,7 @@ impl ProviderSpec {
             api_base: String::new(),
             api_key: String::new(),
             model,
+            options: ProviderOptions::default(),
             responses_prompt_cache: false,
             responses_prompt_cache_retention: None,
         }
@@ -204,6 +221,7 @@ impl ProviderSpec {
             api_base: provider.api_base.clone(),
             api_key: provider.api_key.clone(),
             model: provider.model.clone(),
+            options: provider.options.unwrap_or_default(),
             responses_prompt_cache: false,
             responses_prompt_cache_retention: None,
         }

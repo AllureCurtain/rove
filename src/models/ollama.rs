@@ -5,6 +5,7 @@ use reqwest::{
     header::{HeaderMap, RETRY_AFTER},
 };
 
+use crate::config::ProviderOptions;
 use crate::core::types::{Message, Role, ToolSchema, Usage};
 use crate::errors::ModelError;
 use crate::models::traits::{ModelClient, ModelClientId, ModelEvent};
@@ -15,6 +16,14 @@ pub struct OllamaClient {
     client: reqwest::Client,
     api_base: String,
     model: String,
+    options: OllamaRequestOptions,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct OllamaRequestOptions {
+    num_predict: Option<u32>,
+    temperature: Option<f64>,
+    top_p: Option<f64>,
 }
 
 impl OllamaClient {
@@ -28,7 +37,14 @@ impl OllamaClient {
             client: reqwest::Client::new(),
             api_base: base,
             model,
+            options: OllamaRequestOptions::default(),
         }
+    }
+
+    pub fn apply_options(&mut self, provider_options: &ProviderOptions) {
+        self.options.num_predict = provider_options.max_tokens;
+        self.options.temperature = provider_options.temperature;
+        self.options.top_p = provider_options.top_p;
     }
 
     fn build_request_body(&self, messages: &[Message], tools: &[ToolSchema]) -> serde_json::Value {
@@ -39,6 +55,11 @@ impl OllamaClient {
             "messages": msgs,
             "stream": true,
         });
+
+        let options = self.request_options_json();
+        if !options.as_object().is_some_and(|object| object.is_empty()) {
+            body["options"] = options;
+        }
 
         if !tools.is_empty() {
             let tool_defs: Vec<serde_json::Value> = tools
@@ -58,6 +79,24 @@ impl OllamaClient {
         }
 
         body
+    }
+
+    fn request_options_json(&self) -> serde_json::Value {
+        let mut options = serde_json::json!({});
+        if let Some(num_predict) = self.options.num_predict {
+            options["num_predict"] = serde_json::Value::Number(num_predict.into());
+        }
+        if let Some(temperature) = self.options.temperature
+            && let Some(number) = serde_json::Number::from_f64(temperature)
+        {
+            options["temperature"] = serde_json::Value::Number(number);
+        }
+        if let Some(top_p) = self.options.top_p
+            && let Some(number) = serde_json::Number::from_f64(top_p)
+        {
+            options["top_p"] = serde_json::Value::Number(number);
+        }
+        options
     }
 }
 
@@ -291,6 +330,7 @@ impl ModelClient for OllamaClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::ProviderOptions;
     use crate::core::types::{Message, ToolSchema};
     use reqwest::header::{HeaderMap, HeaderValue, RETRY_AFTER};
 
@@ -330,6 +370,23 @@ mod tests {
 
         assert_eq!(body["tools"][0]["type"], "function");
         assert_eq!(body["tools"][0]["function"]["name"], "fs_read");
+    }
+
+    #[test]
+    fn request_body_includes_provider_options() {
+        let mut client = OllamaClient::new(String::new(), "llama3".to_string());
+        client.apply_options(&ProviderOptions {
+            max_tokens: Some(2048),
+            temperature: Some(0.8),
+            top_p: Some(0.9),
+            ..Default::default()
+        });
+
+        let body = client.build_request_body(&[Message::user("hi")], &[]);
+
+        assert_eq!(body["options"]["num_predict"], 2048);
+        assert_eq!(body["options"]["temperature"], 0.8);
+        assert_eq!(body["options"]["top_p"], 0.9);
     }
 
     #[test]

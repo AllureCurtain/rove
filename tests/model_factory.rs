@@ -31,12 +31,14 @@ fn build_openai_model_client_uses_configured_fallback_providers() {
             api_base: "https://fallback-a.test/v1".to_string(),
             api_key: "fallback-a-secret".to_string(),
             model: "provider-a".to_string(),
+            options: None,
         },
         FallbackProviderConfig {
             name: "openai-compatible".to_string(),
             api_base: "https://fallback-b.test/v1".to_string(),
             api_key: "fallback-b-secret".to_string(),
             model: "provider-b".to_string(),
+            options: None,
         },
     ];
 
@@ -61,12 +63,14 @@ fn build_model_client_routes_mixed_native_fallback_providers() {
             api_base: String::new(),
             api_key: "anthropic-secret".to_string(),
             model: "claude-fallback".to_string(),
+            options: None,
         },
         FallbackProviderConfig {
             name: "ollama".to_string(),
             api_base: String::new(),
             api_key: String::new(),
             model: "llama-fallback".to_string(),
+            options: None,
         },
     ];
 
@@ -90,6 +94,7 @@ fn build_model_client_routes_openai_responses_provider() {
         api_base: "https://fallback.test/v1".to_string(),
         api_key: "fallback-secret".to_string(),
         model: "chat-fallback".to_string(),
+        options: None,
     }];
 
     let model = build_model_client(&config, "gpt-4.1-mini".to_string());

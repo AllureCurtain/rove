@@ -22,6 +22,7 @@ pub fn format_effective_config(config: &AppConfig) -> String {
                 "api_base": provider.api_base,
                 "api_key_set": !provider.api_key.is_empty(),
                 "model": provider.model,
+                "options": provider.options,
             })
         })
         .collect();
@@ -42,6 +43,7 @@ pub fn format_effective_config(config: &AppConfig) -> String {
             "api_key_set": !config.provider.api_key.is_empty(),
             "anthropic_api_key_set": !config.provider.anthropic_api_key.is_empty(),
             "model": config.provider.model,
+            "options": config.provider.options,
             "fallback_models": config.provider.fallback_models,
             "fallback_providers": fallback_providers,
         },

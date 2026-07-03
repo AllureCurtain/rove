@@ -1,4 +1,4 @@
-use rove::config::{AppConfig, FallbackProviderConfig};
+use rove::config::{AppConfig, FallbackProviderConfig, ProviderOptions};
 use rove::interfaces::cli::config::format_effective_config;
 
 #[test]
@@ -15,7 +15,19 @@ fn format_effective_config_prints_json_without_secret_value() {
         api_base: "https://fallback.test/v1".to_string(),
         api_key: "fallback-secret".to_string(),
         model: "fallback-provider-model".to_string(),
+        options: Some(ProviderOptions {
+            max_tokens: Some(512),
+            temperature: Some(0.3),
+            ..Default::default()
+        }),
     }];
+    config.provider.options = ProviderOptions {
+        max_tokens: Some(2048),
+        temperature: Some(0.2),
+        top_p: Some(0.8),
+        frequency_penalty: Some(0.3),
+        presence_penalty: Some(0.4),
+    };
     config.routing.failure_threshold = 5;
     config.routing.open_cooldown_ms = 45_000;
     config.routing.retry_max_attempts = 4;
@@ -54,6 +66,11 @@ fn format_effective_config_prints_json_without_secret_value() {
     assert_eq!(json["provider"]["api_key_set"], true);
     assert_eq!(json["provider"]["anthropic_api_key_set"], true);
     assert_eq!(json["provider"]["model"], "model-a");
+    assert_eq!(json["provider"]["options"]["max_tokens"], 2048);
+    assert_eq!(json["provider"]["options"]["temperature"], 0.2);
+    assert_eq!(json["provider"]["options"]["top_p"], 0.8);
+    assert_eq!(json["provider"]["options"]["frequency_penalty"], 0.3);
+    assert_eq!(json["provider"]["options"]["presence_penalty"], 0.4);
     assert_eq!(json["provider"]["fallback_models"][0], "model-b");
     assert_eq!(json["provider"]["fallback_models"][1], "model-c");
     assert_eq!(
@@ -71,6 +88,14 @@ fn format_effective_config_prints_json_without_secret_value() {
     assert_eq!(
         json["provider"]["fallback_providers"][0]["model"],
         "fallback-provider-model"
+    );
+    assert_eq!(
+        json["provider"]["fallback_providers"][0]["options"]["max_tokens"],
+        512
+    );
+    assert_eq!(
+        json["provider"]["fallback_providers"][0]["options"]["temperature"],
+        0.3
     );
     assert_eq!(json["routing"]["failure_threshold"], 5);
     assert_eq!(json["routing"]["open_cooldown_ms"], 45_000);
