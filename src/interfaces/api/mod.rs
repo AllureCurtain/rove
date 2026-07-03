@@ -41,6 +41,7 @@ use crate::state::resume::resolve_resume_state;
 use crate::state::store::StateStore;
 use crate::tools::runtime_tool_registry;
 
+mod debug;
 mod docs;
 mod provider;
 mod security;
@@ -123,6 +124,9 @@ pub fn router(state: ApiState) -> Router {
         .routes(routes!(submit_input))
         .routes(routes!(list_runs))
         .routes(routes!(run_report))
+        .routes(routes!(debug::list_memory))
+        .routes(routes!(debug::get_memory_topic))
+        .routes(routes!(debug::test_recall))
         .with_state(state.clone())
         .layer(middleware::from_fn_with_state(
             state,

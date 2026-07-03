@@ -8,6 +8,7 @@ pub const JOB_EVENTS_TAG: &str = "Job Events";
 pub const APPROVALS_TAG: &str = "Approvals";
 pub const RUNS_TAG: &str = "Runs";
 pub const PROVIDERS_TAG: &str = "Providers";
+pub const DEBUG_TAG: &str = "Debug";
 
 #[derive(OpenApi)]
 #[openapi(
@@ -25,11 +26,17 @@ pub const PROVIDERS_TAG: &str = "Providers";
             super::JobStateResponse,
             super::JobStreamEvent,
             super::ListRunsResponse,
+            super::debug::MemoryListResponse,
+            super::debug::MemoryTopicContentResponse,
+            super::debug::MemoryTopicResponse,
             super::PendingApprovalResponse,
             super::PendingInputResponse,
             super::ProviderProfileRequest,
             super::ProviderTestRequest,
             super::ProviderTestResponse,
+            super::debug::RecallHitResponse,
+            super::debug::RecallTestRequest,
+            super::debug::RecallTestResponse,
             super::RunSummaryResponse,
             super::SubmitApprovalRequest,
             super::SubmitInputRequest
@@ -40,7 +47,8 @@ pub const PROVIDERS_TAG: &str = "Providers";
         (name = JOB_EVENTS_TAG, description = "Stream job lifecycle events over Server-Sent Events"),
         (name = APPROVALS_TAG, description = "Resolve pending tool approvals and user input requests"),
         (name = RUNS_TAG, description = "List completed runs and fetch persisted run reports"),
-        (name = PROVIDERS_TAG, description = "Validate per-request provider profiles without exposing provider secrets")
+        (name = PROVIDERS_TAG, description = "Validate per-request provider profiles without exposing provider secrets"),
+        (name = DEBUG_TAG, description = "Inspect durable memory topics and recall scoring")
     ),
     modifiers(&BearerAuth)
 )]

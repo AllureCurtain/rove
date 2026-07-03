@@ -85,6 +85,9 @@ async fn api_exposes_openapi_json_for_all_routes() {
         ("/jobs/{job_id}/inputs/{input_id}", "post"),
         ("/runs", "get"),
         ("/runs/{run_id}/report", "get"),
+        ("/debug/memory", "get"),
+        ("/debug/memory/topics/{slug}", "get"),
+        ("/debug/memory/recall", "post"),
     ] {
         let path_item = paths
             .get(path)
@@ -107,6 +110,8 @@ async fn api_exposes_openapi_json_for_all_routes() {
         "ProviderProfileRequest",
         "ProviderTestRequest",
         "ProviderTestResponse",
+        "RecallTestRequest",
+        "RecallTestResponse",
         "SubmitApprovalRequest",
         "SubmitInputRequest",
     ] {
@@ -2579,6 +2584,97 @@ async fn api_registers_memory_index_and_topic_read_tools_for_jobs() {
         .unwrap();
     let text = String::from_utf8(events_body.to_vec()).unwrap();
     assert!(text.contains("Manual durable fact from API."));
+}
+
+#[tokio::test]
+async fn api_debug_memory_lists_topics_and_scores_recall() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let memory_dir = workspace.root.join(".rove").join("memory");
+    let topics_dir = memory_dir.join("topics");
+    std::fs::create_dir_all(&topics_dir).unwrap();
+    std::fs::write(
+        topics_dir.join("db-config.md"),
+        "---\ntitle: 数据库配置\ntype: project\nscope: project\nsource: test\nconfidence: 0.90\ncreated_at: 2026-07-03T00:00:00Z\nupdated_at: 2026-07-03T00:00:00Z\n---\n\nMySQL 数据库连接字符串使用 DATABASE_URL。\n",
+    )
+    .unwrap();
+    std::fs::write(
+        memory_dir.join("MEMORY.md"),
+        "# rove Memory\n\n- [数据库配置](topics/db-config.md) — project project memory\n",
+    )
+    .unwrap();
+    let app = router(ApiState::new(workspace, test_config()));
+
+    let list = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/debug/memory")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(list.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(list.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let list_json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(list_json["total"], 1);
+    assert_eq!(list_json["topics"][0]["slug"], "db-config");
+    assert_eq!(list_json["topics"][0]["memory_type"], "project");
+
+    let topic = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/debug/memory/topics/db-config")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(topic.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(topic.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let topic_json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(
+        topic_json["content"]
+            .as_str()
+            .is_some_and(|content| content.contains("DATABASE_URL"))
+    );
+
+    let recall = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/debug/memory/recall")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "query": "数据库",
+                        "type_filter": "project",
+                        "limit": 5
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(recall.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(recall.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let recall_json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(recall_json["total_hits"], 1);
+    assert_eq!(recall_json["hits"][0]["slug"], "db-config");
+    assert!(
+        recall_json["hits"][0]["score"]
+            .as_f64()
+            .is_some_and(|score| score > 0.0)
+    );
 }
 
 #[cfg(not(feature = "rag"))]
