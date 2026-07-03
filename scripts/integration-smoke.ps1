@@ -317,8 +317,21 @@ try {
         Add-CorsOrigins @($WebBase, "http://localhost:$WebPort")
     }
 
-    $apiArgs = @("run", "--bin", "rove-api", "--", "--addr", $ApiAddr, "-C", $WorkspaceDir)
-    $apiProcess = Start-BackgroundCommand -Command "cargo" -Arguments $apiArgs -WorkingDirectory $RepoRoot -StdoutLog $ApiStdoutLog -StderrLog $ApiStderrLog
+    $apiBuildArgs = @("build", "--bin", "rove-api")
+    Push-Location $RepoRoot
+    try {
+        & cargo @apiBuildArgs
+        if ($LASTEXITCODE -ne 0) {
+            throw "cargo build --bin rove-api failed with exit code $LASTEXITCODE"
+        }
+    } finally {
+        Pop-Location
+    }
+
+    $apiBinaryName = if ($env:OS -eq "Windows_NT") { "rove-api.exe" } else { "rove-api" }
+    $apiBinary = Join-Path (Join-Path (Join-Path $RepoRoot "target") "debug") $apiBinaryName
+    $apiArgs = @("--addr", $ApiAddr, "-C", $WorkspaceDir)
+    $apiProcess = Start-BackgroundCommand -Command $apiBinary -Arguments $apiArgs -WorkingDirectory $RepoRoot -StdoutLog $ApiStdoutLog -StderrLog $ApiStderrLog
     Wait-HttpOk -Uri "$ApiBase/runs?limit=1" -TimeoutSeconds 60 -Name "rove-api"
 
     if (-not $SkipApiSmoke) {

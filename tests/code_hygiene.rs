@@ -226,7 +226,7 @@ fn integration_runners_allow_web_origins_before_api_start() {
         .find("Add-CorsOrigins @($WebBase, \"http://localhost:$WebPort\")")
         .expect("local-full runner should allow both 127.0.0.1 and localhost web origins");
     let local_api_start_index = local_script
-        .find("$apiArgs = @(\"run\", \"--bin\", \"rove-api\"")
+        .find("Start-BackgroundCommand -Command $apiBinary")
         .expect("local-full runner should start rove-api");
     assert!(
         local_cors_index < local_api_start_index,
@@ -249,6 +249,61 @@ fn integration_runners_allow_web_origins_before_api_start() {
     assert!(
         provider_cors_index < provider_api_start_index,
         "provider Web runner must set CORS origins before starting rove-api"
+    );
+}
+
+#[test]
+fn local_full_runner_builds_rove_api_before_starting_service() {
+    let script = std::fs::read_to_string("scripts/integration-smoke.ps1")
+        .expect("scripts/integration-smoke.ps1 should exist");
+
+    let build_args_index = script
+        .find("$apiBuildArgs = @(\"build\", \"--bin\", \"rove-api\")")
+        .expect("local-full runner should build rove-api explicitly");
+    let build_location_index = script
+        .find("Push-Location $RepoRoot")
+        .expect("local-full runner should build from the repository root");
+    let build_invoke_index = script
+        .find("& cargo @apiBuildArgs")
+        .expect("local-full runner should run the rove-api build before startup");
+    let pop_location_index = script[build_location_index..]
+        .find("Pop-Location")
+        .map(|offset| build_location_index + offset)
+        .expect("local-full runner should restore the previous location after building");
+    let binary_path_index = script
+        .find("$apiBinary = Join-Path")
+        .expect("local-full runner should resolve the compiled rove-api binary");
+    let start_index = script
+        .find("Start-BackgroundCommand -Command $apiBinary")
+        .expect("local-full runner should start the compiled rove-api binary");
+
+    assert!(
+        build_args_index < build_invoke_index,
+        "local-full runner should define build args before invoking cargo"
+    );
+    assert!(
+        build_location_index < build_invoke_index,
+        "local-full runner should switch to the repository root before building"
+    );
+    assert!(
+        build_invoke_index < pop_location_index,
+        "local-full runner should restore the previous location after the build command"
+    );
+    assert!(
+        pop_location_index < binary_path_index,
+        "local-full runner should build before resolving the compiled binary"
+    );
+    assert!(
+        binary_path_index < start_index,
+        "local-full runner should resolve the compiled binary before starting it"
+    );
+    assert!(
+        !script.contains("$apiArgs = @(\"run\", \"--bin\", \"rove-api\""),
+        "local-full runner should not include Cargo execution in the API readiness window"
+    );
+    assert!(
+        !script.contains("Start-BackgroundCommand -Command \"cargo\" -Arguments $apiArgs"),
+        "local-full runner should not start rove-api through cargo run"
     );
 }
 
