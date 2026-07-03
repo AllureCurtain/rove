@@ -146,6 +146,7 @@ impl ContextManager {
         compact_summary: Option<&str>,
         history: &[Message],
     ) -> ContextBuild {
+        let stable_prefix_hash = self.stable_prefix_hash(working_memory, compact_summary);
         match self.history_limit {
             HistoryLimit::MessageCount(max_history) => self.build_by_message_count(
                 user_message,
@@ -153,6 +154,7 @@ impl ContextManager {
                 compact_summary,
                 history,
                 max_history,
+                &stable_prefix_hash,
             ),
             HistoryLimit::TokenBudget(budget) => self.build_by_token_budget(
                 user_message,
@@ -160,6 +162,7 @@ impl ContextManager {
                 compact_summary,
                 history,
                 budget,
+                &stable_prefix_hash,
             ),
         }
     }
@@ -171,6 +174,7 @@ impl ContextManager {
         compact_summary: Option<&str>,
         history: &[Message],
         max_history: usize,
+        stable_prefix_hash: &str,
     ) -> ContextBuild {
         let mut messages = Vec::new();
 
@@ -194,6 +198,7 @@ impl ContextManager {
             token_estimate,
             history.len().saturating_sub(start),
             start,
+            stable_prefix_hash,
         );
         ContextBuild {
             messages,
@@ -213,6 +218,7 @@ impl ContextManager {
         compact_summary: Option<&str>,
         history: &[Message],
         budget: ContextBudget,
+        stable_prefix_hash: &str,
     ) -> ContextBuild {
         let current_user = Message::user(user_message);
         let mut prefix = Vec::new();
@@ -260,6 +266,7 @@ impl ContextManager {
             token_estimate,
             included_history_messages,
             dropped_history_messages,
+            stable_prefix_hash,
         );
         ContextBuild {
             messages,
@@ -283,10 +290,11 @@ impl ContextManager {
         token_estimate: usize,
         included_history_messages: usize,
         dropped_history_messages: usize,
+        stable_prefix_hash: &str,
     ) -> PromptBuildMetadata {
         PromptBuildMetadata {
             prompt_hash: prompt_hash(messages),
-            stable_prefix_hash: stable_hash(&self.system_prompt),
+            stable_prefix_hash: stable_prefix_hash.to_string(),
             workspace_fingerprint: String::new(),
             tool_signature: String::new(),
             token_estimate,
@@ -294,6 +302,24 @@ impl ContextManager {
             dropped_history_messages,
             prompt_cache_key: None,
         }
+    }
+
+    fn stable_prefix_hash(
+        &self,
+        working_memory: &[Message],
+        compact_summary: Option<&str>,
+    ) -> String {
+        if working_memory.is_empty() && compact_summary.is_none() {
+            return stable_hash(&self.system_prompt);
+        }
+        stable_hash(
+            &serde_json::json!({
+                "system_prompt": self.system_prompt,
+                "working_memory": working_memory,
+                "compact_summary": compact_summary,
+            })
+            .to_string(),
+        )
     }
 }
 
@@ -392,5 +418,68 @@ mod tests {
         assert!(built.metadata.workspace_fingerprint.is_empty());
         assert!(built.metadata.tool_signature.is_empty());
         assert!(built.metadata.prompt_cache_key.is_none());
+    }
+
+    #[test]
+    fn stable_prefix_hash_changes_with_memory_and_compact_summary() {
+        let context = ContextManager::with_max_history("system".to_string(), 4);
+        let first_memory = vec![Message::system("Durable memory:\none")];
+        let second_memory = vec![Message::system("Durable memory:\ntwo")];
+
+        let first = context.build_with_checkpoint("first", &first_memory, Some("summary"), &[]);
+        let second = context.build_with_checkpoint("second", &second_memory, Some("summary"), &[]);
+        let third =
+            context.build_with_checkpoint("third", &second_memory, Some("new summary"), &[]);
+
+        assert_ne!(
+            first.metadata.stable_prefix_hash,
+            second.metadata.stable_prefix_hash
+        );
+        assert_ne!(
+            second.metadata.stable_prefix_hash,
+            third.metadata.stable_prefix_hash
+        );
+    }
+
+    #[test]
+    fn context_manager_keeps_stable_prefix_on_repeated_builds() {
+        let context = ContextManager::with_max_history("system".to_string(), 4);
+        let working_memory = vec![Message::system("Durable memory:\nproject facts")];
+
+        let first =
+            context.build_with_checkpoint("first", &working_memory, Some("stable summary"), &[]);
+        let second =
+            context.build_with_checkpoint("second", &working_memory, Some("stable summary"), &[]);
+
+        assert!(first.messages.iter().any(|msg| msg.content == "system"));
+        assert!(
+            first
+                .messages
+                .iter()
+                .any(|msg| msg.content == "Durable memory:\nproject facts")
+        );
+        assert!(
+            first
+                .messages
+                .iter()
+                .any(|msg| msg.content == "Compact summary: stable summary")
+        );
+        assert!(second.messages.iter().any(|msg| msg.content == "system"));
+        assert!(
+            second
+                .messages
+                .iter()
+                .any(|msg| msg.content == "Durable memory:\nproject facts")
+        );
+        assert!(
+            second
+                .messages
+                .iter()
+                .any(|msg| msg.content == "Compact summary: stable summary")
+        );
+        assert_eq!(
+            first.metadata.stable_prefix_hash,
+            second.metadata.stable_prefix_hash
+        );
     }
 }
