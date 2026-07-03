@@ -62,7 +62,7 @@ system -> durable memory -> session memory -> compact summary -> recent history 
 
 `TaskState` can include a `PromptCheckpoint` with summary, preserved tail, plan pointer, memory pointers, last step, last event seq, token estimate, and compacted message count. The event sequence matches the SQLite high-water mark for the run. Resume prefers this checkpoint over replaying full audit history.
 
-Default compaction is deterministic and artifact-based. Optional model-generated compaction can be enabled through `runtime.model_compaction_enabled`; when old history is dropped from the active prompt, the runtime asks the current model to produce a resume summary using prompt version `rove.compaction.v1`. Failures do not block the run: rove writes a deterministic fallback summary, records degraded metadata and the last error, and opens a circuit after `runtime.compaction_failure_threshold` consecutive failures.
+Default compaction is deterministic and artifact-based. Optional model-generated compaction can be enabled through `runtime.model_compaction_enabled`; when old history is dropped from the active prompt, the runtime first flushes durable-worthy notes from the compacted segment into session memory, then asks the current model to produce a structured resume summary using prompt version `rove.compaction.v2`. Failures do not block the run: rove writes a deterministic structured fallback summary, records degraded metadata and the last error, and opens a circuit after `runtime.compaction_failure_threshold` consecutive failures.
 
 ## Provider And Routing
 
@@ -112,7 +112,7 @@ The memory model has three layers:
 - session memory: `memory.session_dir/<session_id>.md`, written by a post-run hook and used on resume;
 - durable memory: `memory.durable_dir/MEMORY.md` plus `topics/*.md`, managed through memory tools.
 
-Durable recall is bounded by `memory.recall_limit` and query relevance. The `save_memory` tool rejects unsafe topic names, obvious secrets, and transient one-off content before writing durable files. CLI and API runs use the same resolved memory paths from config, and session summaries are deterministic markdown with goal, status, output, completed plan steps, tools used, and write-set metadata when available.
+Durable recall is bounded by `memory.recall_limit` and query relevance. Recall is CJK-aware, uses smoothed IDF with field weighting, scales by topic confidence, and supports a hard type filter for lower-level callers. The prompt path recalls all memory types. The `save_memory` tool rejects unsafe topic names, obvious secrets, and transient one-off content before writing durable files with `type`, `scope`, `source`, `confidence`, and timestamp metadata. CLI and API runs use the same resolved memory paths from config, and session summaries are deterministic markdown with goal, status, output, completed plan steps, tools used, and write-set metadata when available. Pre-compaction flush blocks are appended to session memory and preserved by final summaries.
 
 ## API And Security
 

@@ -511,7 +511,7 @@ Checkpoint compaction has two paths:
 - default deterministic compaction, used when model compaction is disabled or as fallback;
 - optional model-generated compaction when `runtime.model_compaction_enabled = true`.
 
-When automatic compaction is needed and old history has been dropped from the active prompt, the engine attempts a model summary behind prompt version `rove.compaction.v1`. A successful model summary emits `prompt_compacted` and records `mode = "model_generated"` with model and source-message metadata. If summary generation fails, the run continues with a deterministic fallback summary, degraded/circuit metadata, and the last error. After `runtime.compaction_failure_threshold` consecutive failures, model compaction is circuit-opened for that runtime and deterministic behavior remains available through normal checkpointing.
+When automatic compaction is needed and old history has been dropped from the active prompt, the engine first flushes durable-worthy notes from the soon-to-be-compacted messages into session memory and emits `memory_flushed` when notes were written. It then attempts a structured model summary behind prompt version `rove.compaction.v2`. A successful model summary emits `prompt_compacted` and records `mode = "model_generated"` with model and source-message metadata. If summary generation fails, the run continues with a deterministic structured fallback summary, degraded/circuit metadata, and the last error. After `runtime.compaction_failure_threshold` consecutive failures, model compaction is circuit-opened for that runtime and deterministic behavior remains available through normal checkpointing.
 
 `RunArtifactRecorder` writes `PromptCheckpoint` with:
 
@@ -773,7 +773,7 @@ Memory has three layers:
 | Session memory | `memory.session_dir/<session_id>.md` | Loaded on resume / same session |
 | Durable memory | `memory.durable_dir/MEMORY.md` + `topics/*.md` | Recalled by lexical relevance |
 
-Session memory is written by a post-run hook when a run completes with `TerminationReason::Final`. The summary is deterministic markdown containing the goal, final status, output excerpt, completed plan steps, tools used, and file write-set metadata when tools report mutations.
+Session memory is written by a post-run hook when a run completes with `TerminationReason::Final`. The summary is deterministic markdown containing the goal, final status, output excerpt, completed plan steps, tools used, and file write-set metadata when tools report mutations. Run and plan loops also append `## Flush at <timestamp>` blocks before compaction so useful notes are not lost when detailed history is summarized; final summaries preserve those flush blocks.
 
 Durable memory is managed by tools:
 
@@ -781,7 +781,9 @@ Durable memory is managed by tools:
 - `update_memory_index`
 - `read_memory_topic`
 
-`save_memory` rejects unsafe topic names, likely secrets, and transient one-off content before writing.
+`save_memory` rejects unsafe topic names, likely secrets, and transient one-off content before writing. Topic frontmatter records `type` (`user`, `feedback`, `project`, or `reference`), `scope`, `source`, `confidence`, and timestamps.
+
+Durable recall is bounded by `memory.recall_limit` and uses CJK-aware tokenization, smoothed IDF scoring, field weights, confidence scaling, and a small recency boost. The prompt path recalls all memory types; lower-level recall calls can provide a hard `type_filter`.
 
 CLI and API engine assembly pass `AppConfig::memory_paths()` into the runtime, so prompt memory loading, the session-memory post-run hook, and memory tools all use the same resolved `memory.session_dir`, `memory.durable_dir`, and `memory.recall_limit` values. Defaults still resolve to `.rove/memory/sessions` and `.rove/memory`.
 
