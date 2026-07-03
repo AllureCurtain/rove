@@ -136,6 +136,7 @@ pub(crate) fn run_unplanned_loop<'a>(
                     &mut compaction,
                     ctx.model,
                     &state.history[..compacted_count],
+                    Vec::new(),
                     cancel_token.clone(),
                 )
                 .await

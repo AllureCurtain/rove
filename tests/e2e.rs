@@ -3278,9 +3278,13 @@ async fn model_compaction_stores_generated_summary_in_checkpoint() {
     let checkpoint = task_state
         .checkpoint
         .expect("task_state should include a prompt checkpoint");
+    // v2 structured compaction: the fake model's free text ("MODEL GENERATED
+    // COMPACTION SUMMARY") has no section headings, so StructuredSummary::parse
+    // treats it as unguided prose and stores it as the goal. The stored
+    // checkpoint summary is the structured render of that, not the raw text.
     assert_eq!(
         checkpoint.summary.as_deref(),
-        Some("MODEL GENERATED COMPACTION SUMMARY")
+        Some("Compact summary:\nGoal: MODEL GENERATED COMPACTION SUMMARY")
     );
     assert_eq!(
         checkpoint.compaction.mode,
@@ -3338,11 +3342,21 @@ async fn failing_model_compaction_falls_back_to_deterministic_summary_with_circu
         checkpoint.compaction.mode,
         rove::core::types::PromptCompactionMode::Degraded
     );
+    // v2 structured fallback: deterministic_structured_summary renders as a
+    // non-empty "Compact summary" (Goal/Key results/etc.) rather than the old
+    // flat "N earlier message(s) compacted" line. The exact sections depend on
+    // what survived into the compacted window, so we only assert the envelope
+    // and non-emptiness here; the metadata assertions below pin the behavior.
+    let summary = checkpoint
+        .summary
+        .expect("degraded summary must be present");
     assert!(
-        checkpoint
-            .summary
-            .unwrap()
-            .contains("earlier message(s) compacted")
+        summary.starts_with("Compact summary:\n"),
+        "degraded summary should be a structured render, got: {summary}"
+    );
+    assert!(
+        !summary.trim().is_empty(),
+        "degraded summary must not be empty: got: {summary}"
     );
     assert!(checkpoint.compaction.degraded);
     assert!(checkpoint.compaction.circuit_open);
