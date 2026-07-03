@@ -8,6 +8,7 @@ use serde_json::Value;
 use super::traits::{Tool, ToolOutput};
 use crate::core::types::{ToolContext, ToolSchema};
 use crate::errors::ToolError;
+use crate::memory::durable::{MemoryScope, MemoryType, parse_frontmatter};
 
 const MAX_MEMORY_INDEX_LINES: usize = 200;
 const MAX_MEMORY_INDEX_BYTES: usize = 25_000;
@@ -50,6 +51,19 @@ impl Tool for SaveMemoryTool {
                         "type": "string",
                         "enum": ["user", "feedback", "project", "reference"],
                         "description": "Memory category"
+                    },
+                    "scope": {
+                        "type": "string",
+                        "enum": ["global", "project", "session"],
+                        "default": "project",
+                        "description": "Scope of the memory: global (all projects), project (current project), session (current conversation)"
+                    },
+                    "confidence": {
+                        "type": "number",
+                        "minimum": 0.0,
+                        "maximum": 1.0,
+                        "default": 0.7,
+                        "description": "Confidence score 0.0-1.0 for this memory entry"
                     }
                 },
                 "required": ["topic", "content", "type"]
@@ -65,10 +79,22 @@ impl Tool for SaveMemoryTool {
         let raw_content = required_string(&args, "content")?;
         let raw_type = required_string(&args, "type")?;
         let slug = normalize_topic(raw_topic)?;
-        let memory_type = MemoryType::parse(raw_type)?;
+        let memory_type = parse_memory_type(raw_type)?;
         let content = validate_content(raw_content)?;
         validate_promotion_policy(raw_topic, &content)?;
         let title = display_title(raw_topic);
+
+        let scope = args
+            .get("scope")
+            .and_then(|v| v.as_str())
+            .map(MemoryScope::parse)
+            .unwrap_or_default();
+        let confidence = args
+            .get("confidence")
+            .and_then(|v| v.as_f64())
+            .map(|v| v as f32)
+            .unwrap_or(0.7)
+            .clamp(0.0, 1.0);
 
         let memory_dir = memory_dir(ctx);
         let topics_dir = memory_dir.join("topics");
@@ -79,16 +105,19 @@ impl Tool for SaveMemoryTool {
         let topic_path = topics_dir.join(format!("{slug}.md"));
         let now = Utc::now().to_rfc3339();
         let created_at = match tokio::fs::read_to_string(&topic_path).await {
-            Ok(existing) => {
-                parse_frontmatter_field(&existing, "created_at").unwrap_or_else(|| now.clone())
-            }
+            Ok(existing) => parse_frontmatter(&existing)
+                .get("created_at")
+                .cloned()
+                .unwrap_or_else(|| now.clone()),
             Err(err) if err.kind() == ErrorKind::NotFound => now.clone(),
             Err(err) => return Err(execution_failed(err)),
         };
 
         let topic_document = format!(
-            "---\ntitle: {title}\ntype: {}\ncreated_at: {created_at}\nupdated_at: {now}\n---\n\n{content}\n",
-            memory_type.as_str()
+            "---\ntitle: {title}\ntype: {}\nscope: {}\nsource: llm_tool\nconfidence: {:.2}\ncreated_at: {created_at}\nupdated_at: {now}\n---\n\n{content}\n",
+            memory_type.as_str(),
+            scope.as_str(),
+            confidence,
         );
         tokio::fs::write(&topic_path, topic_document)
             .await
@@ -199,43 +228,11 @@ impl Tool for ReadMemoryTopicTool {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-enum MemoryType {
-    User,
-    Feedback,
-    Project,
-    Reference,
-}
-
-impl MemoryType {
-    fn parse(raw: &str) -> Result<Self, ToolError> {
-        match raw.trim() {
-            "user" => Ok(Self::User),
-            "feedback" => Ok(Self::Feedback),
-            "project" => Ok(Self::Project),
-            "reference" => Ok(Self::Reference),
-            other => Err(ToolError::InvalidInput {
-                reason: format!(
-                    "memory type must be one of user, feedback, project, reference; got {other}"
-                ),
-            }),
-        }
-    }
-
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::User => "user",
-            Self::Feedback => "feedback",
-            Self::Project => "project",
-            Self::Reference => "reference",
-        }
-    }
-}
-
 struct IndexEntry {
     slug: String,
     title: String,
     memory_type: String,
+    scope: String,
 }
 
 fn memory_dir(ctx: &ToolContext<'_>) -> PathBuf {
@@ -272,14 +269,24 @@ async fn update_memory_index(memory_dir: &Path) -> Result<(), ToolError> {
         let Some(slug) = path.file_stem().and_then(|stem| stem.to_str()) else {
             continue;
         };
-        let title =
-            parse_frontmatter_field(&content, "title").unwrap_or_else(|| slug.replace('-', " "));
-        let memory_type =
-            parse_frontmatter_field(&content, "type").unwrap_or_else(|| "reference".to_string());
+        let fm = parse_frontmatter(&content);
+        let title = fm
+            .get("title")
+            .cloned()
+            .unwrap_or_else(|| slug.replace('-', " "));
+        let memory_type = fm
+            .get("type")
+            .cloned()
+            .unwrap_or_else(|| "reference".to_string());
+        let scope = fm
+            .get("scope")
+            .cloned()
+            .unwrap_or_else(|| "project".to_string());
         index_entries.push(IndexEntry {
             slug: slug.to_string(),
             title,
             memory_type,
+            scope,
         });
     }
 
@@ -293,8 +300,8 @@ fn build_memory_index(entries: Vec<IndexEntry>) -> String {
     let mut index = "# rove Memory\n\n".to_string();
     for entry in entries {
         let line = format!(
-            "- [{}](topics/{}.md) \u{2014} {} memory\n",
-            entry.title, entry.slug, entry.memory_type
+            "- [{}](topics/{}.md) \u{2014} {} {} memory\n",
+            entry.title, entry.slug, entry.scope, entry.memory_type
         );
         if index.lines().count() + line.lines().count() > MAX_MEMORY_INDEX_LINES {
             break;
@@ -315,6 +322,11 @@ fn required_string<'a>(args: &'a Value, field: &str) -> Result<&'a str, ToolErro
         })
 }
 
+/// Normalize a topic name to a filesystem-safe slug.
+///
+/// Supports CJK and other Unicode characters by allowing any alphanumeric Unicode
+/// character (using Unicode-aware `is_alphanumeric()` instead of ASCII-only).
+/// Spaces, hyphens, and underscores become dashes. Path-traversal characters are rejected.
 fn normalize_topic(raw: &str) -> Result<String, ToolError> {
     let trimmed = raw.trim();
     if trimmed.is_empty()
@@ -328,17 +340,22 @@ fn normalize_topic(raw: &str) -> Result<String, ToolError> {
     let mut slug = String::new();
     let mut pending_dash = false;
     for ch in trimmed.chars() {
-        if ch.is_ascii_alphanumeric() {
+        if ch.is_alphanumeric() {
+            // Unicode-aware: accepts CJK, Latin, Cyrillic, etc.
             if pending_dash && !slug.is_empty() {
                 slug.push('-');
             }
-            slug.push(ch.to_ascii_lowercase());
+            for lower_ch in ch.to_lowercase() {
+                slug.push(lower_ch);
+            }
             pending_dash = false;
         } else if matches!(ch, ' ' | '-' | '_') {
             if !slug.is_empty() {
                 pending_dash = true;
             }
         } else {
+            // Disallow punctuation/symbols that are not safe for filenames
+            // (but allow CJK and other alphanumeric which pass is_alphanumeric above).
             return Err(unsafe_topic_error());
         }
     }
@@ -421,26 +438,17 @@ fn display_title(raw: &str) -> String {
     raw.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn parse_frontmatter_field(content: &str, field: &str) -> Option<String> {
-    let mut lines = content.lines();
-    if lines.next()? != "---" {
-        return None;
-    }
-    let prefix = format!("{field}: ");
-    for line in lines {
-        if line == "---" {
-            return None;
-        }
-        if let Some(value) = line.strip_prefix(&prefix) {
-            return Some(value.to_string());
-        }
-    }
-    None
+/// Bridge durable memory [`MemoryType::parse`] (which returns `Option`) into a
+/// typed [`ToolError`] for the tool's argument validation.
+fn parse_memory_type(raw: &str) -> Result<MemoryType, ToolError> {
+    MemoryType::parse(raw).ok_or_else(|| ToolError::InvalidInput {
+        reason: format!("memory type must be one of user, feedback, project, reference; got {raw}"),
+    })
 }
 
 fn unsafe_topic_error() -> ToolError {
     ToolError::InvalidInput {
-        reason: "topic must be a safe topic name using letters, numbers, spaces, hyphens, or underscores".to_string(),
+        reason: "topic must be a safe topic name using letters (including Unicode), numbers, spaces, hyphens, or underscores".to_string(),
     }
 }
 
