@@ -1,6 +1,9 @@
 use async_trait::async_trait;
 use futures::stream::BoxStream;
-use reqwest::{StatusCode, header::HeaderMap};
+use reqwest::{
+    StatusCode,
+    header::{HeaderMap, RETRY_AFTER},
+};
 use std::collections::BTreeMap;
 
 use crate::core::types::{Message, Role, ToolSchema, Usage};
@@ -165,17 +168,26 @@ struct ResponsesFunctionCall {
     done: bool,
 }
 
+struct NormalizedResponse {
+    events: Vec<ModelEvent>,
+    fatal_error: Option<String>,
+}
+
 fn normalize_responses_event(
     state: &mut ResponsesStreamState,
     data: &str,
-) -> serde_json::Result<Vec<ModelEvent>> {
+) -> serde_json::Result<NormalizedResponse> {
     if data.trim() == "[DONE]" {
-        return Ok(vec![ModelEvent::Done]);
+        return Ok(NormalizedResponse {
+            events: vec![ModelEvent::Done],
+            fatal_error: None,
+        });
     }
 
     let json = serde_json::from_str::<serde_json::Value>(data)?;
     let event_type = json.get("type").and_then(|value| value.as_str());
     let mut events = Vec::new();
+    let mut fatal_error = None;
 
     match event_type {
         Some("response.output_text.delta") => {
@@ -245,13 +257,32 @@ fn normalize_responses_event(
             }
             events.push(ModelEvent::Done);
         }
-        Some("response.failed") | Some("response.incomplete") => {
-            events.push(ModelEvent::Done);
+        Some("response.failed") => {
+            let message = json
+                .get("response")
+                .and_then(|response| response.get("error"))
+                .and_then(|error| error.get("message"))
+                .and_then(|message| message.as_str())
+                .unwrap_or("response failed")
+                .to_string();
+            fatal_error = Some(message);
+        }
+        Some("response.incomplete") => {
+            let reason = json
+                .get("response")
+                .and_then(|response| response.get("incomplete_details"))
+                .and_then(|details| details.get("reason"))
+                .and_then(|reason| reason.as_str())
+                .unwrap_or("response incomplete");
+            fatal_error = Some(format!("response incomplete: {reason}"));
         }
         _ => {}
     }
 
-    Ok(events)
+    Ok(NormalizedResponse {
+        events,
+        fatal_error,
+    })
 }
 
 fn capture_function_call_start(
@@ -373,9 +404,19 @@ fn parse_responses_usage(usage: &serde_json::Value) -> Usage {
     }
 }
 
+fn parse_retry_after_ms(headers: &HeaderMap) -> Option<u64> {
+    headers
+        .get(RETRY_AFTER)?
+        .to_str()
+        .ok()?
+        .parse::<u64>()
+        .ok()
+        .map(|seconds| seconds.saturating_mul(1000))
+}
+
 fn classify_responses_http_error(
     status: StatusCode,
-    _headers: &HeaderMap,
+    headers: &HeaderMap,
     body: &str,
 ) -> ModelError {
     if matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) {
@@ -383,7 +424,7 @@ fn classify_responses_http_error(
     }
     if status == StatusCode::TOO_MANY_REQUESTS {
         return ModelError::RateLimited {
-            retry_after_ms: 1000,
+            retry_after_ms: parse_retry_after_ms(headers).unwrap_or(1000),
         };
     }
     let body_lower = body.to_ascii_lowercase();
@@ -445,9 +486,13 @@ impl ModelClient for OpenAiResponsesClient {
                         continue;
                     }
                     if let Some(data) = line.strip_prefix("data:")
-                        && let Ok(events) = normalize_responses_event(&mut state, data.trim_start())
+                        && let Ok(normalized) = normalize_responses_event(&mut state, data.trim_start())
                     {
-                        for event in events {
+                        if let Some(message) = normalized.fatal_error {
+                            yield Err(ModelError::RequestFailed(message));
+                            return;
+                        }
+                        for event in normalized.events {
                             let done = matches!(event, ModelEvent::Done);
                             yield Ok(event);
                             if done {
@@ -473,6 +518,7 @@ impl ModelClient for OpenAiResponsesClient {
 mod tests {
     use super::*;
     use crate::core::types::{Message, ToolCallRef, ToolSchema};
+    use reqwest::header::{HeaderMap, HeaderValue, RETRY_AFTER};
 
     #[test]
     fn request_body_uses_responses_input_items_and_function_tools() {
@@ -571,10 +617,11 @@ mod tests {
         })
         .to_string();
 
-        let events = normalize_responses_event(&mut state, &event).unwrap();
+        let normalized = normalize_responses_event(&mut state, &event).unwrap();
+        assert!(normalized.fatal_error.is_none());
 
         assert_eq!(
-            events,
+            normalized.events,
             vec![ModelEvent::TextDelta {
                 text: "hello".to_string()
             }]
@@ -596,9 +643,10 @@ mod tests {
         })
         .to_string();
 
-        let events = normalize_responses_event(&mut state, &item_done).unwrap();
+        let normalized = normalize_responses_event(&mut state, &item_done).unwrap();
+        assert!(normalized.fatal_error.is_none());
 
-        assert!(events.iter().any(|event| {
+        assert!(normalized.events.iter().any(|event| {
             matches!(
                 event,
                 ModelEvent::ToolUseDone { id, name, args }
@@ -623,9 +671,10 @@ mod tests {
         })
         .to_string();
 
-        let events = normalize_responses_event(&mut state, &completed).unwrap();
+        let normalized = normalize_responses_event(&mut state, &completed).unwrap();
+        assert!(normalized.fatal_error.is_none());
 
-        assert!(events.iter().any(|event| {
+        assert!(normalized.events.iter().any(|event| {
             matches!(
                 event,
                 ModelEvent::Usage { usage }
@@ -635,6 +684,68 @@ mod tests {
                         && usage.cached_tokens == 4
             )
         }));
-        assert!(events.iter().any(|event| matches!(event, ModelEvent::Done)));
+        assert!(
+            normalized
+                .events
+                .iter()
+                .any(|event| matches!(event, ModelEvent::Done))
+        );
+    }
+
+    #[test]
+    fn responses_failed_event_produces_fatal_error() {
+        let mut state = ResponsesStreamState::default();
+        let failed = serde_json::json!({
+            "type": "response.failed",
+            "response": {
+                "error": { "message": "server overloaded" }
+            }
+        })
+        .to_string();
+
+        let normalized = normalize_responses_event(&mut state, &failed).unwrap();
+
+        assert!(normalized.fatal_error.is_some());
+        assert!(
+            normalized
+                .fatal_error
+                .unwrap()
+                .contains("server overloaded")
+        );
+    }
+
+    #[test]
+    fn responses_incomplete_event_produces_fatal_error() {
+        let mut state = ResponsesStreamState::default();
+        let incomplete = serde_json::json!({
+            "type": "response.incomplete",
+            "response": {
+                "incomplete_details": { "reason": "max_output_tokens" }
+            }
+        })
+        .to_string();
+
+        let normalized = normalize_responses_event(&mut state, &incomplete).unwrap();
+
+        assert!(normalized.fatal_error.is_some());
+        assert!(
+            normalized
+                .fatal_error
+                .unwrap()
+                .contains("max_output_tokens")
+        );
+    }
+
+    #[test]
+    fn classify_error_reads_retry_after_header() {
+        let mut headers = HeaderMap::new();
+        headers.insert(RETRY_AFTER, HeaderValue::from_static("10"));
+
+        assert!(matches!(
+            classify_responses_http_error(StatusCode::TOO_MANY_REQUESTS, &headers, "rate limited"),
+            ModelError::RateLimited {
+                retry_after_ms: 10000
+            }
+        ));
     }
 }

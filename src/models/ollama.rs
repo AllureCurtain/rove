@@ -1,6 +1,9 @@
 use async_trait::async_trait;
 use futures::stream::BoxStream;
-use reqwest::StatusCode;
+use reqwest::{
+    StatusCode,
+    header::{HeaderMap, RETRY_AFTER},
+};
 
 use crate::core::types::{Message, Role, ToolSchema, Usage};
 use crate::errors::ModelError;
@@ -111,11 +114,37 @@ fn ollama_role(role: &Role) -> &'static str {
     }
 }
 
-fn classify_ollama_error(status: StatusCode, body: &str) -> ModelError {
-    if status == StatusCode::NOT_FOUND {
-        return ModelError::RequestFailed(format!("model not found: {body}"));
+fn parse_retry_after_ms(headers: &HeaderMap) -> Option<u64> {
+    headers
+        .get(RETRY_AFTER)?
+        .to_str()
+        .ok()?
+        .parse::<u64>()
+        .ok()
+        .map(|seconds| seconds.saturating_mul(1000))
+}
+
+fn classify_ollama_error(status: StatusCode, headers: &HeaderMap, body: &str) -> ModelError {
+    match status {
+        StatusCode::NOT_FOUND => ModelError::RequestFailed(format!("model not found: {body}")),
+        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => ModelError::AuthFailed,
+        StatusCode::TOO_MANY_REQUESTS => ModelError::RateLimited {
+            retry_after_ms: parse_retry_after_ms(headers).unwrap_or(1000),
+        },
+        StatusCode::BAD_REQUEST if is_ollama_context_length_error(body) => {
+            ModelError::ContextLengthExceeded { used: 0, max: 0 }
+        }
+        _ => ModelError::RequestFailed(format!("HTTP {}: {}", status, body)),
     }
-    ModelError::RequestFailed(format!("HTTP {}: {}", status, body))
+}
+
+fn is_ollama_context_length_error(body: &str) -> bool {
+    let lower = body.to_ascii_lowercase();
+    (lower.contains("context") && lower.contains("token"))
+        || lower.contains("context length")
+        || lower.contains("context window")
+        || lower.contains("prompt is too long")
+        || lower.contains("input too long")
 }
 
 fn normalize_ollama_chat_line(line: &str) -> serde_json::Result<Vec<ModelEvent>> {
@@ -207,8 +236,9 @@ impl ModelClient for OllamaClient {
 
             if !response.status().is_success() {
                 let status = response.status();
+                let headers = response.headers().clone();
                 let text = response.text().await.unwrap_or_default();
-                yield Err(classify_ollama_error(status, &text));
+                yield Err(classify_ollama_error(status, &headers, &text));
                 return;
             }
 
@@ -262,6 +292,7 @@ impl ModelClient for OllamaClient {
 mod tests {
     use super::*;
     use crate::core::types::{Message, ToolSchema};
+    use reqwest::header::{HeaderMap, HeaderValue, RETRY_AFTER};
 
     #[test]
     fn request_body_uses_ollama_roles() {
@@ -383,8 +414,44 @@ mod tests {
     }
 
     #[test]
+    fn classify_error_maps_auth_to_auth_failed() {
+        assert!(matches!(
+            classify_ollama_error(StatusCode::UNAUTHORIZED, &HeaderMap::new(), "unauthorized"),
+            ModelError::AuthFailed
+        ));
+        assert!(matches!(
+            classify_ollama_error(StatusCode::FORBIDDEN, &HeaderMap::new(), "forbidden"),
+            ModelError::AuthFailed
+        ));
+    }
+
+    #[test]
+    fn classify_error_maps_rate_limit_with_retry_after() {
+        let mut headers = HeaderMap::new();
+        headers.insert(RETRY_AFTER, HeaderValue::from_static("2"));
+
+        assert!(matches!(
+            classify_ollama_error(StatusCode::TOO_MANY_REQUESTS, &headers, "slow down"),
+            ModelError::RateLimited {
+                retry_after_ms: 2000
+            }
+        ));
+    }
+
+    #[test]
+    fn classify_error_maps_context_length() {
+        let body = r#"{"error":"context window exceeded: input too long"}"#;
+
+        assert!(matches!(
+            classify_ollama_error(StatusCode::BAD_REQUEST, &HeaderMap::new(), body),
+            ModelError::ContextLengthExceeded { .. }
+        ));
+    }
+
+    #[test]
     fn classify_error_maps_not_found() {
-        let err = classify_ollama_error(StatusCode::NOT_FOUND, "model not found");
+        let err =
+            classify_ollama_error(StatusCode::NOT_FOUND, &HeaderMap::new(), "model not found");
         assert!(matches!(err, ModelError::RequestFailed(msg) if msg.contains("model not found")));
     }
 }

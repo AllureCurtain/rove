@@ -1,6 +1,9 @@
 use async_trait::async_trait;
 use futures::stream::BoxStream;
-use reqwest::StatusCode;
+use reqwest::{
+    StatusCode,
+    header::{HeaderMap, RETRY_AFTER},
+};
 use std::collections::BTreeMap;
 
 use crate::core::types::{Message, Role, ToolSchema, Usage};
@@ -135,14 +138,24 @@ fn anthropic_role(role: &Role) -> &'static str {
     }
 }
 
-fn classify_anthropic_error(status: StatusCode, body: &str) -> ModelError {
+fn parse_retry_after_ms(headers: &HeaderMap) -> Option<u64> {
+    headers
+        .get(RETRY_AFTER)?
+        .to_str()
+        .ok()?
+        .parse::<u64>()
+        .ok()
+        .map(|seconds| seconds.saturating_mul(1000))
+}
+
+fn classify_anthropic_error(status: StatusCode, headers: &HeaderMap, body: &str) -> ModelError {
     if matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) {
         return ModelError::AuthFailed;
     }
 
     if status == StatusCode::TOO_MANY_REQUESTS {
         return ModelError::RateLimited {
-            retry_after_ms: 1000,
+            retry_after_ms: parse_retry_after_ms(headers).unwrap_or(1000),
         };
     }
 
@@ -314,8 +327,9 @@ impl ModelClient for AnthropicClient {
 
             if !response.status().is_success() {
                 let status = response.status();
+                let headers = response.headers().clone();
                 let text = response.text().await.unwrap_or_default();
-                yield Err(classify_anthropic_error(status, &text));
+                yield Err(classify_anthropic_error(status, &headers, &text));
                 return;
             }
 
@@ -372,6 +386,7 @@ impl ModelClient for AnthropicClient {
 mod tests {
     use super::*;
     use crate::core::types::{Message, ToolSchema};
+    use reqwest::header::{HeaderMap, HeaderValue, RETRY_AFTER};
 
     #[test]
     fn request_body_separates_system_message() {
@@ -516,20 +531,39 @@ mod tests {
     #[test]
     fn classify_error_maps_auth_statuses() {
         assert!(matches!(
-            classify_anthropic_error(StatusCode::UNAUTHORIZED, "invalid key"),
+            classify_anthropic_error(StatusCode::UNAUTHORIZED, &HeaderMap::new(), "invalid key"),
             ModelError::AuthFailed
         ));
         assert!(matches!(
-            classify_anthropic_error(StatusCode::FORBIDDEN, "forbidden"),
+            classify_anthropic_error(StatusCode::FORBIDDEN, &HeaderMap::new(), "forbidden"),
             ModelError::AuthFailed
         ));
     }
 
     #[test]
-    fn classify_error_maps_rate_limit() {
+    fn classify_error_reads_retry_after_header() {
+        let mut headers = HeaderMap::new();
+        headers.insert(RETRY_AFTER, HeaderValue::from_static("5"));
+
         assert!(matches!(
-            classify_anthropic_error(StatusCode::TOO_MANY_REQUESTS, "slow down"),
-            ModelError::RateLimited { .. }
+            classify_anthropic_error(StatusCode::TOO_MANY_REQUESTS, &headers, "slow down"),
+            ModelError::RateLimited {
+                retry_after_ms: 5000
+            }
+        ));
+    }
+
+    #[test]
+    fn classify_error_rate_limit_defaults_to_1000ms() {
+        assert!(matches!(
+            classify_anthropic_error(
+                StatusCode::TOO_MANY_REQUESTS,
+                &HeaderMap::new(),
+                "slow down"
+            ),
+            ModelError::RateLimited {
+                retry_after_ms: 1000
+            }
         ));
     }
 
@@ -537,7 +571,7 @@ mod tests {
     fn classify_error_detects_context_length() {
         let body = r#"{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 100000 tokens > 200000 token limit"}}"#;
         assert!(matches!(
-            classify_anthropic_error(StatusCode::BAD_REQUEST, body),
+            classify_anthropic_error(StatusCode::BAD_REQUEST, &HeaderMap::new(), body),
             ModelError::ContextLengthExceeded { .. }
         ));
     }
