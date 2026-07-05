@@ -96,7 +96,8 @@ jobs:
       - name: Run local-full integration gate
         shell: powershell
         env:
-          ROVE_INTEGRATION_ROOT: ${{ github.workspace }}\.release-gate\local-full
+          ROVE_INTEGRATION_ROOT: ${{ runner.temp }}\rove-release-gate\local-full
+          ROVE_INTEGRATION_ARTIFACTS: ${{ github.workspace }}\.release-gate\local-full\artifacts
         run: powershell -ExecutionPolicy Bypass -File scripts/integration-smoke.ps1
 
       - name: Upload local-full artifacts

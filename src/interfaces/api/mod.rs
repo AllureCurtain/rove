@@ -21,8 +21,7 @@ use utoipa_axum::{router::OpenApiRouter, routes};
 use utoipa_swagger_ui::SwaggerUi;
 
 use crate::config::{AppConfig, AppConfigOverrides};
-use crate::core::context::{ContextBudget, ContextManager};
-use crate::core::engine::{Engine, EngineConfig};
+use crate::core::engine::Engine;
 use crate::core::events::StreamEvent;
 use crate::core::types::{
     ApprovalDecision, ApprovalPolicy, CallId, JobId, RunId, RunStatus, SessionId, TaskState,
@@ -31,6 +30,7 @@ use crate::core::types::{
 };
 use crate::core::workspace::Workspace;
 use crate::errors::ToolError;
+use crate::interfaces::runtime::{EngineAssemblyOptions, build_interface_engine};
 use crate::models::factory::build_model_client_with_health;
 use crate::models::fake::FakeModelClient;
 use crate::models::health::{HealthConfig, ModelHealthStore};
@@ -39,7 +39,6 @@ use crate::state::artifacts::RunArtifactRecorder;
 use crate::state::index::StateIndex;
 use crate::state::resume::resolve_resume_state;
 use crate::state::store::StateStore;
-use crate::tools::runtime_tool_registry;
 
 mod debug;
 mod docs;
@@ -757,52 +756,29 @@ async fn build_engine(
     };
 
     let workspace = record.workspace.clone();
-    let memory_paths = config.memory_paths();
     let state_store = state_store_for_record(&record);
-    let registry = runtime_tool_registry(
-        &workspace,
-        config.shell_policy(),
-        config.resolve_path(&config.tool.mcp_config_path),
-    )
-    .await?;
-
     let approval_policy = req.approval.unwrap_or(ApprovalPolicy::Ask);
-    let engine = Engine::with_workspace(
-        model,
-        registry,
-        ContextManager::with_token_budget(
-            config.load_system_prompt(),
-            ContextBudget {
-                soft_limit_tokens: config.runtime.context_soft_limit_tokens,
-                hard_limit_tokens: config.runtime.context_hard_limit_tokens,
-                reserved_tokens: config.runtime.context_reserved_tokens,
-            },
-        ),
-        EngineConfig {
-            max_steps: req.max_steps.unwrap_or(config.runtime.max_steps),
-            plan_enabled: true,
-        },
-        workspace,
-        approval_policy,
-    )
-    .with_planner_prompt(config.load_planner_prompt())
-    .with_memory_paths(memory_paths)
-    .with_model_compaction(
-        config.runtime.model_compaction_enabled,
-        config.runtime.compaction_failure_threshold,
-    )
-    .with_input_provider(Arc::new(ApiInputProvider {
+    let input_provider: Arc<dyn UserInputProvider> = Arc::new(ApiInputProvider {
         record: record.clone(),
         index: state_store.index.clone(),
-    }));
-    if approval_policy == ApprovalPolicy::Ask {
-        Ok(engine.with_approval_provider(Arc::new(ApiApprovalProvider {
-            record,
+    });
+    let approval_provider = (approval_policy == ApprovalPolicy::Ask).then(|| {
+        Arc::new(ApiApprovalProvider {
+            record: record.clone(),
             index: state_store.index.clone(),
-        })))
-    } else {
-        Ok(engine)
-    }
+        }) as Arc<dyn ToolApprovalProvider>
+    });
+
+    build_interface_engine(EngineAssemblyOptions {
+        model,
+        workspace: &workspace,
+        config,
+        max_steps: req.max_steps.unwrap_or(config.runtime.max_steps),
+        approval_policy,
+        input_provider: Some(input_provider),
+        approval_provider,
+    })
+    .await
 }
 
 fn state_store_for_api(state: &ApiState) -> StateStore {

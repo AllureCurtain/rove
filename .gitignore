@@ -1,6 +1,10 @@
 /target
 /.worktrees
 /graphify-out/
+/outputs/
+/benchmarks/results/*
+!/benchmarks/results/README.md
+/软件著作权申请资料/
 /.superpowers/
 /.rove/*
 !/.rove/config.example.toml

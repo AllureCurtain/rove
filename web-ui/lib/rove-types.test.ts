@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { STREAM_EVENT_NAMES, type StreamEvent } from "./rove-types";
+import { STREAM_EVENT_NAMES, type ProviderProfile, type StreamEvent } from "./rove-types";
 
 const streamEventFixtures: StreamEvent[] = [
   {
@@ -115,6 +115,10 @@ const streamEventFixtures: StreamEvent[] = [
     },
   },
   {
+    type: "memory_flushed",
+    notes: ["Promoted durable memory before compaction"],
+  },
+  {
     type: "prompt_built",
     metadata: {
       prompt_hash: "sha256:prompt",
@@ -134,8 +138,26 @@ const streamEventFixtures: StreamEvent[] = [
   },
 ];
 
+const providerProfileFixtures = [
+  { name: "openai-compatible", api_base: "https://api.openai.com/v1" },
+  { name: "openai-responses", api_base: "https://api.openai.com/v1" },
+  { name: "anthropic", api_base: "https://api.anthropic.com" },
+  { name: "ollama", api_base: "http://localhost:11434" },
+  { name: "fake", api_base: "local" },
+] satisfies ProviderProfile[];
+
 describe("rove stream event types", () => {
   it("lists every current runtime event name", () => {
     expect(STREAM_EVENT_NAMES).toEqual(streamEventFixtures.map((event) => event.type));
+  });
+
+  it("keeps web provider profiles aligned with the API provider surface", () => {
+    expect(providerProfileFixtures.map((profile) => profile.name)).toEqual([
+      "openai-compatible",
+      "openai-responses",
+      "anthropic",
+      "ollama",
+      "fake",
+    ]);
   });
 });

@@ -196,6 +196,96 @@ test("tests and submits an OpenAI-compatible provider profile", async ({ page })
   await expect(page.locator(".message-stream").getByText("Provider run complete")).toBeVisible();
 });
 
+test("tests and submits an OpenAI Responses provider profile", async ({ page }) => {
+  let sawProviderTest = false;
+  let sawProviderJob = false;
+  await installRunsMock(page);
+  await page.route("/api/providers/test", async (route) => {
+    const body = route.request().postDataJSON() as {
+      provider?: { name?: string; api_base?: string; api_key_env?: string };
+      model?: string;
+    };
+    sawProviderTest =
+      body.provider?.name === "openai-responses" &&
+      body.provider.api_base === "https://api.openai.com/v1" &&
+      body.provider.api_key_env === "OPENAI_API_KEY" &&
+      body.model === "gpt-4.1-mini";
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        status: "pass",
+        provider: "openai-responses",
+        api_base: "https://api.openai.com/v1",
+        key_env: "OPENAI_API_KEY",
+        key_present: true,
+        model: "gpt-4.1-mini",
+        model_present: true,
+        models_count: 8,
+      }),
+    });
+  });
+  await page.route("/api/jobs", async (route) => {
+    const body = route.request().postDataJSON() as {
+      provider?: { name?: string; api_base?: string; api_key_env?: string };
+      model?: string;
+    };
+    sawProviderJob =
+      body.provider?.name === "openai-responses" &&
+      body.provider.api_base === "https://api.openai.com/v1" &&
+      body.provider.api_key_env === "OPENAI_API_KEY" &&
+      body.model === "gpt-4.1-mini";
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        job_id: "job-responses-1",
+        run_id: "run-responses-1",
+      }),
+    });
+  });
+  await page.route(/\/api\/jobs\/[^/]+\/events$/, async (route) => {
+    await route.fulfill({
+      status: 200,
+      headers: {
+        "content-type": "text/event-stream",
+        "cache-control": "no-cache",
+      },
+      body: [
+        sse("run_started", 1, {
+          type: "run_started",
+          job_id: "job-responses-1",
+          run_id: "run-responses-1",
+          user_message: "Use responses provider",
+        }),
+        sse("run_completed", 2, {
+          type: "run_completed",
+          reason: "final",
+          output: "Responses run complete",
+        }),
+      ].join(""),
+    });
+  });
+
+  await page.goto("/");
+  await page.getByLabel("Provider").selectOption("openai-responses");
+  await page.getByLabel("Model").fill("gpt-4.1-mini");
+  await page.getByRole("button", { name: "Test" }).click();
+  await expect(page.getByText("8 models / model ready")).toBeVisible();
+  await page.getByLabel("Task").fill("Use responses provider");
+  await page.getByRole("button", { name: "Run" }).click();
+
+  await expect
+    .poll(() => sawProviderTest, {
+      message: "responses provider test should send profile without key value",
+    })
+    .toBe(true);
+  await expect
+    .poll(() => sawProviderJob, {
+      message: "responses job creation should send provider profile",
+    })
+    .toBe(true);
+  await expect(page.locator(".message-stream").getByText("Responses run complete")).toBeVisible();
+});
+
 test("submits Anthropic and Ollama provider profiles", async ({ page }) => {
   const jobs: Array<{
     provider?: { name?: string; api_base?: string; api_key_env?: string };

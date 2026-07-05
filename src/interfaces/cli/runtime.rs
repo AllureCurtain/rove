@@ -1,13 +1,13 @@
 use std::path::PathBuf;
 
 use crate::config::{AppConfig, AppConfigOverrides};
-use crate::core::context::{ContextBudget, ContextManager};
-use crate::core::engine::{Engine, EngineConfig};
+use crate::core::engine::Engine;
 use crate::core::types::ApprovalPolicy;
 use crate::core::workspace::Workspace;
 use crate::interfaces::cli::approval::stdin_approval_provider;
 use crate::interfaces::cli::args::CliApprovalPolicy;
 use crate::interfaces::cli::input::stdin_input_provider;
+use crate::interfaces::runtime::{EngineAssemblyOptions, build_interface_engine};
 use crate::models::factory::build_model_client;
 use crate::models::fake::FakeModelClient;
 use crate::models::traits::ModelClient;
@@ -84,47 +84,17 @@ pub async fn build_cli_runtime(options: CliRuntimeOptions) -> anyhow::Result<Cli
         build_model_client(&config, model_id)
     };
 
-    let mcp_config_path = config.resolve_path(&config.tool.mcp_config_path);
-    let registry =
-        crate::tools::runtime_tool_registry(&workspace, config.shell_policy(), mcp_config_path)
-            .await?;
-
-    let system_prompt = config.load_system_prompt();
-    let context_manager = ContextManager::with_token_budget(
-        system_prompt,
-        ContextBudget {
-            soft_limit_tokens: config.runtime.context_soft_limit_tokens,
-            hard_limit_tokens: config.runtime.context_hard_limit_tokens,
-            reserved_tokens: config.runtime.context_reserved_tokens,
-        },
-    );
-
-    let memory_paths = config.memory_paths();
-    let engine_config = EngineConfig {
-        max_steps: config.runtime.max_steps,
-        plan_enabled: true,
-    };
     let approval_policy = cli_approval_policy(options.approval);
-    let engine = Engine::with_workspace(
+    let engine = build_interface_engine(EngineAssemblyOptions {
         model,
-        registry,
-        context_manager,
-        engine_config,
-        workspace.clone(),
+        workspace: &workspace,
+        config: &config,
+        max_steps: config.runtime.max_steps,
         approval_policy,
-    )
-    .with_planner_prompt(config.load_planner_prompt())
-    .with_memory_paths(memory_paths)
-    .with_model_compaction(
-        config.runtime.model_compaction_enabled,
-        config.runtime.compaction_failure_threshold,
-    )
-    .with_input_provider(stdin_input_provider());
-    let engine = if approval_policy == ApprovalPolicy::Ask {
-        engine.with_approval_provider(stdin_approval_provider())
-    } else {
-        engine
-    };
+        input_provider: Some(stdin_input_provider()),
+        approval_provider: (approval_policy == ApprovalPolicy::Ask).then(stdin_approval_provider),
+    })
+    .await?;
 
     let state_store = StateStore::with_index_path(
         &workspace.state_dir,

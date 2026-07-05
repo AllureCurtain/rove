@@ -1,5 +1,6 @@
 pub mod api;
 pub mod cli;
+pub(crate) mod runtime;
 pub mod terminal;
 
 #[cfg(test)]

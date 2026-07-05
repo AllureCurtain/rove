@@ -177,7 +177,7 @@ export interface CreateJobRequest {
 }
 
 export interface ProviderProfile {
-  name: "openai-compatible" | "openai" | "anthropic" | "ollama" | "fake";
+  name: "openai-compatible" | "openai-responses" | "openai" | "anthropic" | "ollama" | "fake";
   api_base: string;
   api_key_env?: string;
 }

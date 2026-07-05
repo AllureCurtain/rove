@@ -35,6 +35,61 @@ fn dev_launcher_documents_process_lifecycle_and_modes() {
 }
 
 #[test]
+fn config_tests_clear_every_env_key_loaded_by_env_layer() {
+    let source = std::fs::read_to_string("src/config.rs").expect("src/config.rs should exist");
+    let loaded = extract_env_string_keys(&source);
+    let clear_start = source
+        .find("fn clear_config_env()")
+        .expect("config tests should define clear_config_env");
+    let clear_rest = &source[clear_start..];
+    let clear_end = clear_rest
+        .find("\n    }\n\n    #[test]")
+        .expect("clear_config_env should be followed by config tests");
+    let cleared = extract_quoted_env_keys(&clear_rest[..clear_end]);
+    let missing: Vec<_> = loaded.difference(&cleared).cloned().collect();
+
+    assert!(
+        missing.is_empty(),
+        "clear_config_env must remove every env var read by env_layer; missing: {missing:?}"
+    );
+}
+
+#[test]
+fn cli_and_api_share_interface_engine_assembly() {
+    let shared = std::fs::read_to_string("src/interfaces/runtime.rs")
+        .expect("shared interface runtime assembly should exist");
+    let cli = std::fs::read_to_string("src/interfaces/cli/runtime.rs")
+        .expect("CLI runtime builder should exist");
+    let api =
+        std::fs::read_to_string("src/interfaces/api/mod.rs").expect("API module should exist");
+
+    assert!(shared.contains("pub(crate) struct EngineAssemblyOptions"));
+    assert!(shared.contains("pub(crate) async fn build_interface_engine"));
+    assert!(cli.contains("build_interface_engine"));
+    assert!(api.contains("build_interface_engine"));
+    assert!(!cli.contains("ContextManager::with_token_budget"));
+    assert!(!api.contains("ContextManager::with_token_budget"));
+}
+
+#[test]
+fn runtime_docs_and_ignore_rules_match_release_artifact_policy() {
+    let status = std::fs::read_to_string("docs/runtime/implementation-status.md").unwrap();
+    let ignore = std::fs::read_to_string(".gitignore").unwrap();
+
+    assert!(
+        status.contains("scheduled/manual release-gate workflow"),
+        "implementation status should mention the current release-gate workflow"
+    );
+    assert!(
+        !status.contains("Optional nightly/full workflow is not present"),
+        "implementation status should not describe an obsolete CI gap"
+    );
+    assert!(ignore.contains("/outputs/"));
+    assert!(ignore.contains("/benchmarks/results/*"));
+    assert!(ignore.contains("!/benchmarks/results/README.md"));
+}
+
+#[test]
 fn runtime_docs_declare_current_mvp_boundary() {
     let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let runtime_readme = std::fs::read_to_string(root.join("docs/runtime/README.md")).unwrap();
@@ -308,6 +363,27 @@ fn local_full_runner_builds_rove_api_before_starting_service() {
 }
 
 #[test]
+fn release_gate_keeps_local_full_workspace_outside_checked_out_repo() {
+    let workflow = std::fs::read_to_string(".github/workflows/release-gate.yml")
+        .expect("release-gate workflow should exist");
+
+    assert!(
+        !workflow.contains("ROVE_INTEGRATION_ROOT: ${{ github.workspace }}"),
+        "local-full workspace must not live under github.workspace because Workspace::detect will promote nested paths to the git root"
+    );
+    assert!(
+        workflow
+            .contains("ROVE_INTEGRATION_ROOT: ${{ runner.temp }}\\rove-release-gate\\local-full"),
+        "local-full runtime workspace should live under runner.temp"
+    );
+    assert!(
+        workflow.contains("ROVE_INTEGRATION_ARTIFACTS: ${{ github.workspace }}\\.release-gate\\local-full\\artifacts"),
+        "local-full artifacts should still be written under github.workspace for upload-artifact"
+    );
+    assert!(workflow.contains("path: .release-gate/local-full/artifacts"));
+}
+
+#[test]
 fn provider_integration_runner_keeps_ollama_keyless_after_env_import() {
     let script = std::fs::read_to_string("scripts/provider-integration.ps1")
         .expect("scripts/provider-integration.ps1 should exist");
@@ -411,4 +487,34 @@ fn benchmark_evidence_format_is_documented() {
     assert!(results.contains("metrics.json"));
     assert!(docs.contains("harness regression"));
     assert!(docs.contains("recovery/resume ablation"));
+}
+
+fn extract_env_string_keys(source: &str) -> std::collections::BTreeSet<String> {
+    let mut keys = std::collections::BTreeSet::new();
+    let mut rest = source;
+    while let Some(index) = rest.find("env_string(\"") {
+        rest = &rest[index + "env_string(\"".len()..];
+        if let Some(end) = rest.find('"') {
+            keys.insert(rest[..end].to_string());
+            rest = &rest[end + 1..];
+        } else {
+            break;
+        }
+    }
+    keys
+}
+
+fn extract_quoted_env_keys(source: &str) -> std::collections::BTreeSet<String> {
+    source
+        .split('"')
+        .skip(1)
+        .step_by(2)
+        .filter(|value| {
+            !value.is_empty()
+                && value
+                    .chars()
+                    .all(|ch| ch == '_' || ch.is_ascii_uppercase() || ch.is_ascii_digit())
+        })
+        .map(str::to_string)
+        .collect()
 }

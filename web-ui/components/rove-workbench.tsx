@@ -418,6 +418,7 @@ export function RoveWorkbench() {
                   >
                     <option value="default">Runtime default</option>
                     <option value="openai-compatible">OpenAI-compatible</option>
+                    <option value="openai-responses">OpenAI Responses</option>
                     <option value="anthropic">Anthropic</option>
                     <option value="ollama">Ollama</option>
                     <option value="fake">Fake</option>
@@ -919,6 +920,8 @@ function providerDisplayName(mode: ProviderMode): string {
     case "openai":
     case "openai-compatible":
       return "OpenAI-compatible";
+    case "openai-responses":
+      return "OpenAI Responses";
     case "anthropic":
       return "Anthropic";
     case "ollama":
@@ -931,7 +934,12 @@ function providerDisplayName(mode: ProviderMode): string {
 }
 
 function providerRequiresKey(mode: ProviderMode): boolean {
-  return mode === "openai" || mode === "openai-compatible" || mode === "anthropic";
+  return (
+    mode === "openai" ||
+    mode === "openai-compatible" ||
+    mode === "openai-responses" ||
+    mode === "anthropic"
+  );
 }
 
 function providerDefaultApiBase(mode: ProviderMode): string {
@@ -944,6 +952,7 @@ function providerDefaultApiBase(mode: ProviderMode): string {
       return "local";
     case "openai":
     case "openai-compatible":
+    case "openai-responses":
       return "https://api.openai.com/v1";
     default:
       return "https://api.openai.com/v1";
@@ -956,6 +965,7 @@ function providerDefaultKeyEnv(mode: ProviderMode): string {
       return "ANTHROPIC_API_KEY";
     case "openai":
     case "openai-compatible":
+    case "openai-responses":
       return "OPENAI_API_KEY";
     default:
       return "";
