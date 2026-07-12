@@ -2,6 +2,7 @@
 
 import {
   ActivityLogIcon,
+  BarChartIcon,
   CheckIcon,
   ClockIcon,
   CounterClockwiseClockIcon,
@@ -44,10 +45,13 @@ import {
   type StreamEvent,
 } from "../lib/rove-types";
 import { createWorkbenchState, workbenchReducer, type ToolCallView } from "../lib/rove-state";
+import { BenchmarkPanel } from "./benchmark-panel";
 
 type ProviderMode = "default" | ProviderProfile["name"];
+type ViewTab = "agent" | "benchmark";
 
 export function RoveWorkbench() {
+  const [activeTab, setActiveTab] = useState<ViewTab>("agent");
   const [state, dispatch] = useReducer(
     workbenchReducer,
     undefined,
@@ -361,6 +365,29 @@ export function RoveWorkbench() {
           </div>
         </header>
 
+        <nav className="tab-bar" aria-label="View tabs">
+          <button
+            type="button"
+            className={`tab-button ${activeTab === "agent" ? "tab-button--active" : ""}`}
+            onClick={() => setActiveTab("agent")}
+          >
+            <ActivityLogIcon width={14} height={14} />
+            Agent
+          </button>
+          <button
+            type="button"
+            className={`tab-button ${activeTab === "benchmark" ? "tab-button--active" : ""}`}
+            onClick={() => setActiveTab("benchmark")}
+          >
+            <BarChartIcon width={14} height={14} />
+            Benchmarks
+          </button>
+        </nav>
+
+        {activeTab === "benchmark" ? (
+          <BenchmarkPanel />
+        ) : (
+        <>
         <section className="signal-band" aria-label="Run summary">
           <div className="signal-band__cell">
             <span>workspace</span>
@@ -745,6 +772,8 @@ export function RoveWorkbench() {
             </InspectorSection>
           </aside>
         </section>
+        </>
+        )}
       </div>
     </main>
   );

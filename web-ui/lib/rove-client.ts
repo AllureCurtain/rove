@@ -1,12 +1,18 @@
 import type {
   ApprovalDecision,
+  BenchRunDetail,
+  BenchTaskResult,
   CreateJobRequest,
   CreateJobResponse,
   JobStateResponse,
+  ListBenchRunsResponse,
+  ListBenchSuitesResponse,
   ListRunsResponse,
   ProviderTestRequest,
   ProviderTestResponse,
   RunReport,
+  StartBenchRunRequest,
+  StartBenchRunResponse,
 } from "./rove-types";
 
 const API_PREFIX = "/api";
@@ -108,4 +114,52 @@ export async function submitInput(
 
 export function openJobStream(jobId: string): EventSource {
   return new EventSource(apiUrl(`/jobs/${encodeURIComponent(jobId)}/events`));
+}
+
+// ─── Benchmark API ─────────────────────────────────────────────────────────
+
+export async function listBenchSuites(): Promise<ListBenchSuitesResponse> {
+  const response = await fetch(apiUrl("/bench/suites"));
+  return parseJson<ListBenchSuitesResponse>(response);
+}
+
+export async function startBenchRun(
+  payload: StartBenchRunRequest,
+): Promise<StartBenchRunResponse> {
+  const response = await fetch(apiUrl("/bench/runs"), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  return parseJson<StartBenchRunResponse>(response);
+}
+
+export async function listBenchRuns(): Promise<ListBenchRunsResponse> {
+  const response = await fetch(apiUrl("/bench/runs"));
+  return parseJson<ListBenchRunsResponse>(response);
+}
+
+export async function fetchBenchRun(benchRunId: string): Promise<BenchRunDetail> {
+  const response = await fetch(
+    apiUrl(`/bench/runs/${encodeURIComponent(benchRunId)}`),
+  );
+  return parseJson<BenchRunDetail>(response);
+}
+
+export async function fetchBenchTask(
+  benchRunId: string,
+  taskName: string,
+): Promise<BenchTaskResult> {
+  const response = await fetch(
+    apiUrl(
+      `/bench/runs/${encodeURIComponent(benchRunId)}/tasks/${encodeURIComponent(taskName)}`,
+    ),
+  );
+  return parseJson<BenchTaskResult>(response);
+}
+
+export function benchEvidenceUrl(benchRunId: string, path: string): string {
+  return apiUrl(
+    `/bench/runs/${encodeURIComponent(benchRunId)}/evidence/${path}`,
+  );
 }

@@ -1,6 +1,9 @@
 use std::collections::BTreeSet;
 
-use rove::bench::{BenchmarkOutcome, load_benchmark_suite, run_benchmark_suite};
+use rove::bench::{
+    BenchmarkOutcome, default_profile_params, generate_dataprep_suite, load_benchmark_suite,
+    resolve_suite, run_benchmark_suite, stress_profile_params,
+};
 
 #[tokio::test]
 async fn default_benchmark_suite_has_at_least_three_no_network_tasks() {
@@ -32,10 +35,15 @@ async fn default_benchmark_suite_passes_and_reports_artifact_paths() {
         .await
         .unwrap();
 
-    let report = run_benchmark_suite(&suite, tmp.path()).await.unwrap();
+    let report = run_benchmark_suite(&suite, tmp.path(), "default")
+        .await
+        .unwrap();
 
-    assert!(report.passed);
+    assert!(report.passed, "{report:?}");
     assert!(report.tasks.len() >= 3);
+    assert!(report.evidence_root.is_dir());
+    assert!(report.evidence_root.join("metrics.json").is_file());
+    assert!(report.evidence_root.join("summary.md").is_file());
     for task in &report.tasks {
         assert_eq!(task.outcome, BenchmarkOutcome::Passed, "{task:?}");
         assert!(task.artifacts.run_dir.is_dir(), "{task:?}");
@@ -43,6 +51,110 @@ async fn default_benchmark_suite_passes_and_reports_artifact_paths() {
         assert!(task.artifacts.task_state_json.is_file(), "{task:?}");
         assert!(task.artifacts.report_json.is_file(), "{task:?}");
     }
+}
+
+#[tokio::test]
+async fn dataprep_default_profile_passes_with_multi_phase_checks() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let suite = generate_dataprep_suite(&default_profile_params());
+    assert!(suite.tasks.len() >= 4);
+
+    let report = run_benchmark_suite(&suite, tmp.path(), "default")
+        .await
+        .unwrap();
+    assert!(report.passed, "{report:?}");
+    assert_eq!(report.failed_tasks, 0);
+    for task in &report.tasks {
+        assert!(
+            task.check_results.iter().any(|c| c.kind == "file_exists"),
+            "{task:?}"
+        );
+        assert!(
+            task.check_results
+                .iter()
+                .any(|c| c.kind == "file_content_contains"),
+            "{task:?}"
+        );
+        assert!(
+            task.check_results
+                .iter()
+                .any(|c| c.kind == "trace_has_event"),
+            "{task:?}"
+        );
+        assert!(
+            task.check_results
+                .iter()
+                .any(|c| c.kind == "command_oracle"),
+            "{task:?}"
+        );
+        assert!(
+            task.check_results.iter().any(|c| c.kind == "report_field"),
+            "{task:?}"
+        );
+        assert!(
+            task.check_results
+                .iter()
+                .any(|c| c.kind == "artifact_exists"),
+            "{task:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn dataprep_stress_includes_cancel_resume_task() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let suite = generate_dataprep_suite(&stress_profile_params());
+    assert!(
+        suite
+            .tasks
+            .iter()
+            .any(|t| t.cancel_resume_after_turns.is_some()),
+        "stress suite should include a cancel+resume task"
+    );
+
+    let report = run_benchmark_suite(&suite, tmp.path(), "stress")
+        .await
+        .unwrap();
+    assert!(report.passed, "{report:?}");
+    assert!(
+        report.tasks.iter().any(|t| t.resumed),
+        "at least one task should report resumed=true: {:?}",
+        report.tasks
+    );
+}
+
+#[test]
+fn dataprep_stress_profile_meets_scale_floors() {
+    let params = stress_profile_params();
+    let suite = generate_dataprep_suite(&params);
+    assert!(suite.tasks.len() >= 12, "task count {}", suite.tasks.len());
+
+    let mut input_files = 0usize;
+    for task in &suite.tasks {
+        input_files += task
+            .setup_files
+            .iter()
+            .filter(|f| f.path.starts_with("inputs/"))
+            .count();
+    }
+    assert!(input_files >= 20, "input files {input_files}");
+
+    let phases = ["read", "summarize", "recover", "aggregate"];
+    let scripted = serde_json::to_string(&suite.tasks[0].turns).unwrap();
+    for phase in phases {
+        assert!(scripted.contains(phase), "missing phase {phase}");
+    }
+}
+
+#[test]
+fn resolve_suite_supports_dataprep_and_agent_smoke() {
+    let dataprep = resolve_suite("dataprep", "default").unwrap();
+    assert_eq!(dataprep.name, "dataprep");
+    assert!(dataprep.tasks.len() >= 4);
+
+    let smoke = resolve_suite("agent-smoke", "default").unwrap();
+    assert_eq!(smoke.name, "agent-smoke");
+    assert!(smoke.tasks.len() >= 3);
 }
 
 #[test]
