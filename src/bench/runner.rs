@@ -318,16 +318,15 @@ async fn run_task_with_cancel_resume(
             StreamEvent::ToolCallStarted { .. } => {
                 run1_tc += 1;
             }
+            StreamEvent::ToolCallFailed { .. } if cancel_after_tool => {
+                run1_tf += 1;
+                cancel_token.cancel();
+            }
             StreamEvent::ToolCallFailed { .. } => {
                 run1_tf += 1;
-                if cancel_after_tool {
-                    cancel_token.cancel();
-                }
             }
-            StreamEvent::ToolCallCompleted { .. } => {
-                if cancel_after_tool {
-                    cancel_token.cancel();
-                }
+            StreamEvent::ToolCallCompleted { .. } if cancel_after_tool => {
+                cancel_token.cancel();
             }
             _ => {}
         }

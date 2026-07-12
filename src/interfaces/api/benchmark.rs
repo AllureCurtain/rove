@@ -142,25 +142,33 @@ pub(crate) async fn list_bench_runs(State(state): State<ApiState>) -> Json<ListB
         .values()
         .map(|h| {
             let result = h.result.try_read().ok().and_then(|r| r.clone());
+            let (status, total_tasks, passed_tasks, failed_tasks, finished_at, evidence_root) =
+                match &result {
+                    Some(report) => (
+                        if report.passed {
+                            "passed".to_string()
+                        } else {
+                            "failed".to_string()
+                        },
+                        report.total_tasks,
+                        report.passed_tasks,
+                        report.failed_tasks,
+                        Some(report.finished_at.clone()),
+                        Some(report.evidence_root.display().to_string()),
+                    ),
+                    None => ("running".to_string(), 0, 0, 0, None, None),
+                };
             BenchRunSummary {
                 bench_run_id: h.bench_run_id.clone(),
                 suite: h.suite.clone(),
                 profile: h.profile.clone(),
-                status: if result.is_some() {
-                    if result.as_ref().unwrap().passed {
-                        "passed".to_string()
-                    } else {
-                        "failed".to_string()
-                    }
-                } else {
-                    "running".to_string()
-                },
-                total_tasks: result.as_ref().map(|r| r.total_tasks).unwrap_or(0),
-                passed_tasks: result.as_ref().map(|r| r.passed_tasks).unwrap_or(0),
-                failed_tasks: result.as_ref().map(|r| r.failed_tasks).unwrap_or(0),
+                status,
+                total_tasks,
+                passed_tasks,
+                failed_tasks,
                 started_at: Some(h.started_at.clone()),
-                finished_at: result.as_ref().map(|r| r.finished_at.clone()),
-                evidence_root: result.map(|r| r.evidence_root.display().to_string()),
+                finished_at,
+                evidence_root,
             }
         })
         .collect();
