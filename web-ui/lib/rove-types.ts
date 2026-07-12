@@ -291,3 +291,84 @@ export const STREAM_EVENT_NAMES = [
 ] as const;
 
 export type StreamEventName = (typeof STREAM_EVENT_NAMES)[number];
+
+export interface BenchSuiteInfo {
+  name: string;
+  description: string;
+  profiles: string[];
+}
+
+export interface ListBenchSuitesResponse {
+  suites: BenchSuiteInfo[];
+}
+
+export interface StartBenchRunRequest {
+  suite: string;
+  profile: string;
+}
+
+export interface StartBenchRunResponse {
+  bench_run_id: string;
+  suite: string;
+  profile: string;
+  status: string;
+}
+
+export interface BenchRunSummary {
+  bench_run_id: string;
+  suite: string;
+  profile: string;
+  status: string;
+  total_tasks: number;
+  passed_tasks: number;
+  failed_tasks: number;
+  started_at: string | null;
+  finished_at: string | null;
+  evidence_root: string | null;
+}
+
+export interface ListBenchRunsResponse {
+  runs: BenchRunSummary[];
+}
+
+export interface BenchCheckResult {
+  kind: string;
+  description: string;
+  passed: boolean;
+  detail: string;
+}
+
+export interface BenchArtifacts {
+  run_dir: string;
+  trace_jsonl: string;
+  task_state_json: string;
+  report_json: string;
+}
+
+export interface BenchTaskResult {
+  name: string;
+  outcome: string;
+  termination_reason: string;
+  steps: number;
+  tool_calls: number;
+  tool_failures: number;
+  artifacts: BenchArtifacts;
+  output: string | null;
+  check_results: BenchCheckResult[];
+  failures: string[];
+}
+
+export interface BenchRunDetail {
+  bench_run_id: string;
+  suite: string;
+  profile: string;
+  status: string;
+  started_at: string | null;
+  finished_at: string | null;
+  total_tasks: number;
+  passed_tasks: number;
+  failed_tasks: number;
+  evidence_root: string | null;
+  summary_md: string | null;
+  tasks: BenchTaskResult[];
+}

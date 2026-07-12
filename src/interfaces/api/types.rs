@@ -149,3 +149,101 @@ pub struct ProviderTestResponse {
     pub model_present: Option<bool>,
     pub models_count: usize,
 }
+
+// ─── Benchmark DTOs ─────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct BenchSuiteInfoResponse {
+    pub name: String,
+    pub description: String,
+    pub profiles: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct ListBenchSuitesResponse {
+    pub suites: Vec<BenchSuiteInfoResponse>,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct StartBenchRunRequest {
+    pub suite: String,
+    #[serde(default = "default_bench_profile")]
+    pub profile: String,
+}
+
+fn default_bench_profile() -> String {
+    "default".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct StartBenchRunResponse {
+    pub bench_run_id: String,
+    pub suite: String,
+    pub profile: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct BenchRunSummary {
+    pub bench_run_id: String,
+    pub suite: String,
+    pub profile: String,
+    pub status: String,
+    pub total_tasks: usize,
+    pub passed_tasks: usize,
+    pub failed_tasks: usize,
+    pub started_at: Option<String>,
+    pub finished_at: Option<String>,
+    pub evidence_root: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct ListBenchRunsResponse {
+    pub runs: Vec<BenchRunSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct BenchCheckResultResponse {
+    pub kind: String,
+    pub description: String,
+    pub passed: bool,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct BenchArtifactsResponse {
+    pub run_dir: String,
+    pub trace_jsonl: String,
+    pub task_state_json: String,
+    pub report_json: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct BenchTaskResultResponse {
+    pub name: String,
+    pub outcome: String,
+    pub termination_reason: String,
+    pub steps: u32,
+    pub tool_calls: u32,
+    pub tool_failures: u32,
+    pub artifacts: BenchArtifactsResponse,
+    pub output: Option<String>,
+    pub check_results: Vec<BenchCheckResultResponse>,
+    pub failures: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct BenchRunDetailResponse {
+    pub bench_run_id: String,
+    pub suite: String,
+    pub profile: String,
+    pub status: String,
+    pub started_at: Option<String>,
+    pub finished_at: Option<String>,
+    pub total_tasks: usize,
+    pub passed_tasks: usize,
+    pub failed_tasks: usize,
+    pub evidence_root: Option<String>,
+    pub summary_md: Option<String>,
+    pub tasks: Vec<BenchTaskResultResponse>,
+}

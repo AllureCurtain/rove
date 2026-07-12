@@ -75,7 +75,16 @@ function proxyRequestHeaders(
 ): Headers {
   const headers = new Headers();
   source.forEach((value, key) => {
-    if (!HOP_BY_HOP_HEADERS.has(key) && key !== "host" && key !== "content-length") {
+    // Browser Origin/Referer belong to the Next.js hop. Forwarding them makes the
+    // Rust API treat a same-origin proxy call as a cross-origin browser request
+    // and reject it when cors_origins is empty.
+    if (
+      !HOP_BY_HOP_HEADERS.has(key) &&
+      key !== "host" &&
+      key !== "content-length" &&
+      key !== "origin" &&
+      key !== "referer"
+    ) {
       headers.set(key, value);
     }
   });

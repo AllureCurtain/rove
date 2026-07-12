@@ -42,6 +42,31 @@ describe("rove API proxy", () => {
     expect(new Headers(init.headers).has("authorization")).toBe(false);
   });
 
+  it("does not forward browser Origin/Referer to the Rust API", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(new Response("{}", { status: 200 }));
+    const request = new Request("http://localhost:3000/api/bench/runs", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        origin: "http://localhost:3000",
+        referer: "http://localhost:3000/",
+      },
+      body: JSON.stringify({ suite: "dataprep", profile: "default" }),
+    });
+
+    await proxyRoveApiRequest(request, ["bench", "runs"], {
+      apiBase: "http://127.0.0.1:8787",
+      fetchImpl,
+    });
+
+    const [url, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("http://127.0.0.1:8787/bench/runs");
+    const headers = new Headers(init.headers);
+    expect(headers.has("origin")).toBe(false);
+    expect(headers.has("referer")).toBe(false);
+    expect(headers.get("content-type")).toBe("application/json");
+  });
+
   it("passes through SSE response bodies and streaming headers", async () => {
     const stream = new ReadableStream({
       start(controller) {

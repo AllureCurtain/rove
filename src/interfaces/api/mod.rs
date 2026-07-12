@@ -40,12 +40,14 @@ use crate::state::index::StateIndex;
 use crate::state::resume::resolve_resume_state;
 use crate::state::store::StateStore;
 
+mod benchmark;
 mod debug;
 mod docs;
 mod provider;
 mod security;
 mod types;
 
+use benchmark::BenchState;
 pub use types::*;
 
 use provider::{
@@ -66,6 +68,7 @@ struct ApiStateInner {
     jobs: RwLock<HashMap<JobId, Arc<JobRecord>>>,
     model_health: Arc<ModelHealthStore>,
     rate_limit: tokio::sync::Mutex<RateLimitState>,
+    bench_runs: Arc<BenchState>,
 }
 
 #[derive(Debug, Default)]
@@ -126,6 +129,12 @@ pub fn router(state: ApiState) -> Router {
         .routes(routes!(debug::list_memory))
         .routes(routes!(debug::get_memory_topic))
         .routes(routes!(debug::test_recall))
+        .routes(routes!(benchmark::list_bench_suites))
+        .routes(routes!(benchmark::start_bench_run))
+        .routes(routes!(benchmark::list_bench_runs))
+        .routes(routes!(benchmark::get_bench_run))
+        .routes(routes!(benchmark::get_bench_task))
+        .routes(routes!(benchmark::get_bench_evidence))
         .with_state(state.clone())
         .layer(middleware::from_fn_with_state(
             state,
@@ -220,6 +229,7 @@ impl ApiState {
                 jobs: RwLock::new(HashMap::new()),
                 model_health,
                 rate_limit: tokio::sync::Mutex::new(RateLimitState::default()),
+                bench_runs: Arc::new(BenchState::default()),
             }),
         }
     }
