@@ -328,3 +328,11 @@ Deferred / follow-ups:
 - Split `src/bench.rs` into `src/bench/` modules (Aegis structure polish)
 - Cipher true cancel+resume task (scripted recoverable failure is present; mid-run cancel not yet)
 - Optional richer Cipher check kinds beyond the current four+legacy checks
+
+### Phase 2 completed (2026-07-12)
+
+- Split into `src/bench/{mod,schema,checks,runner,evidence,suites}.rs`
+- Added Cipher-style cancel+resume on stress last task (`resumed=true`)
+- Added `report_field` + `artifact_exists` checks
+- Verified: bench tests 7/7, default 4/4, stress 14/14 with resume task
+

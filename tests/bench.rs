@@ -87,7 +87,40 @@ async fn dataprep_default_profile_passes_with_multi_phase_checks() {
                 .any(|c| c.kind == "command_oracle"),
             "{task:?}"
         );
+        assert!(
+            task.check_results.iter().any(|c| c.kind == "report_field"),
+            "{task:?}"
+        );
+        assert!(
+            task.check_results
+                .iter()
+                .any(|c| c.kind == "artifact_exists"),
+            "{task:?}"
+        );
     }
+}
+
+#[tokio::test]
+async fn dataprep_stress_includes_cancel_resume_task() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let suite = generate_dataprep_suite(&stress_profile_params());
+    assert!(
+        suite
+            .tasks
+            .iter()
+            .any(|t| t.cancel_resume_after_turns.is_some()),
+        "stress suite should include a cancel+resume task"
+    );
+
+    let report = run_benchmark_suite(&suite, tmp.path(), "stress")
+        .await
+        .unwrap();
+    assert!(report.passed, "{report:?}");
+    assert!(
+        report.tasks.iter().any(|t| t.resumed),
+        "at least one task should report resumed=true: {:?}",
+        report.tasks
+    );
 }
 
 #[test]
