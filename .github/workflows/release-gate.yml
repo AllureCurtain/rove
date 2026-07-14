@@ -4,7 +4,7 @@ name: Release Gate
 #
 # - local-full: the deterministic full API/Web/runtime/tool/state chain
 #   (scripts/integration-smoke.ps1). No external dependency, runs on every
-#   scheduled and manual invocation.
+#   manual invocation.
 # - provider-gate: the real OpenAI-compatible/Anthropic/Ollama provider chain
 #   (scripts/provider-integration.ps1). Requires a provider key and is skipped
 #   automatically when the ROVE_PROVIDER_API_KEY secret is absent.
@@ -16,9 +16,6 @@ name: Release Gate
 # the workflow_dispatch inputs below.
 
 on:
-  schedule:
-    # 08:10 UTC nightly.
-    - cron: "10 8 * * *"
   workflow_dispatch:
     inputs:
       run_provider_gate:
@@ -113,7 +110,7 @@ jobs:
     name: real provider gate
     runs-on: windows-latest
     timeout-minutes: 60
-    if: ${{ github.event_name == 'schedule' || inputs.run_provider_gate }}
+    if: ${{ inputs.run_provider_gate }}
     steps:
       - uses: actions/checkout@v6
 
