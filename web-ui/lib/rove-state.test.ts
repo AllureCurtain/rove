@@ -312,6 +312,42 @@ describe("workbenchReducer", () => {
     expect(state.trace.length).toBeGreaterThanOrEqual(4);
   });
 
+  it("does not let a stale job snapshot overwrite newer stream events", () => {
+    const created = workbenchReducer(createWorkbenchState(), {
+      type: "job_created",
+      jobId: "job-1",
+      runId: "run-1",
+    });
+    const completed = workbenchReducer(created, {
+      type: "stream_event",
+      seq: 12,
+      event: {
+        type: "run_completed",
+        reason: "final",
+        output: "main",
+      },
+    });
+
+    const synced = workbenchReducer(completed, {
+      type: "job_state_synced",
+      state: {
+        job_id: "job-1",
+        run_id: "run-1",
+        status: "running",
+        event_count: 9,
+        events: [],
+        pending_approvals: [],
+        pending_inputs: [],
+      },
+    });
+
+    expect(synced).toBe(completed);
+    expect(synced.eventCount).toBe(12);
+    expect(synced.busy).toBe(false);
+    expect(synced.statusText).toBe("Run completed: final");
+    expect(synced.lastSignal).toBe("Run completed");
+  });
+
   it("preserves state when syncing prompt-built events from job history", () => {
     const state = workbenchReducer(createWorkbenchState(), {
       type: "job_state_synced",

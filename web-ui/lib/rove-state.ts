@@ -165,6 +165,14 @@ function applyJobState(
   state: WorkbenchState,
   jobState: JobStateResponse,
 ): WorkbenchState {
+  // Interaction responses can arrive after the SSE stream has already advanced.
+  if (
+    state.activeJobId === jobState.job_id &&
+    jobState.event_count < state.eventCount
+  ) {
+    return state;
+  }
+
   const hydrated = jobState.events.reduce(
     (current, stored) => applyStreamEvent(current, stored.event, stored.seq),
     state,
