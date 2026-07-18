@@ -1,10 +1,10 @@
 # TUI Interaction M2 Parallel Plan - 2026-07-18
 
-> Status: **Active / Foundation Verified, Parallel Lanes Ready**
+> Status: **Completed / Implemented (2026-07-19)**
 >
 > Scope: complete live approval and `request_input` interaction in `rove tui`.
-> This plan does not claim that M2 is implemented until code, tests, and
-> `docs/runtime/` agree.
+> The implementation, focused and full Rust tests, and current runtime docs now
+> agree on the capability-gated behavior described below.
 
 ## Objective
 
@@ -19,15 +19,22 @@ provider registers responder
   -> tool continues, fails closed, or is cancelled
 ```
 
-## Verified Foundation Checkpoint
+## Integrated Checkpoint
 
-All worker branches start from foundation commit `5cf976b`.
+All worker branches started from foundation commit `5cf976b` and were
+integrated on `feat/tui-interaction-m2` in this order:
 
-The checkpoint passed `cargo fmt --all --check`,
+1. foundation verification docs: `7f00db2`;
+2. interaction I/O: `2408921` (from worker `57d22cc`);
+3. modal renderer: `0a33310` (from worker `c8daa43`);
+4. modal state: `2d08e88` (from worker `d2852f9`).
+
+The coordinator then added the runtime wiring, lifecycle cleanup, capability
+gating, arming boundary, and regression tests in the same integration branch.
+The final Rust gate passed `cargo fmt --all --check`,
 `cargo clippy --all-targets -- -D warnings`, `cargo test`, and
-`git diff --check`. Independent input-contract and I/O-safety reviews found no
-remaining foundation P0-P2. The full test run included 225 library tests, 53
-API tests, and 88 E2E tests in addition to the other integration suites.
+`git diff --check`. The full test run included 261 library tests, 53 API tests,
+88 E2E tests, and the remaining integration suites.
 
 ## Foundation Owned By The Coordinator
 
@@ -68,17 +75,25 @@ Workers must not edit `app.rs`, `main.rs`, runtime documentation, or another
 lane's files. Each worker commits its result and reports the commit SHA and
 focused checks.
 
-## Frozen Modal Semantics
+## Implemented Modal Semantics
 
-The parallel lanes must implement the same interaction contract:
+The integrated implementation follows this interaction contract:
 
-- approval accepts `Y` only from a real `KeyEventKind::Press` and rejects on
-  `N` or `Esc` from a real press;
-- Enter, key repeat, and paste must never authorize a destructive action;
-- input Enter submits the exact draft, including empty or whitespace-only
-  text; input `Esc` is a no-op in M2;
-- input characters, backspace repeats, and paste are accepted up to a 32 KiB
-  UTF-8 byte limit without splitting a character;
+- On a direct-capability terminal (non-Windows with keyboard enhancement),
+  approval accepts `Y` only from a fresh real `KeyEventKind::Press` and rejects
+  on `N` or `Esc` from a real press. Input submits on a fresh `Enter` press.
+- On Windows native events, approval `Y` only stages a selection and a fresh
+  non-text `F8` press confirms it. Input submits with a fresh `F8` press;
+  `Enter` does not submit it.
+- On terminals without a trustworthy key-event mode, approval is rejected and
+  input returns a typed unavailable error without opening a modal.
+- For all modes, repeat, release, paste, wrong IDs/types, and actions received
+  before the modal's visible-frame arming boundary cannot resolve an
+  interaction.
+- Input preserves the exact draft, including empty or whitespace-only text;
+  input `Esc` is a no-op in M2.
+- When a modal is actionable, input characters, backspace repeats, and paste
+  are accepted up to a 32 KiB UTF-8 byte limit without splitting a character;
 - while a modal is open, composer edits, focus changes, and transcript
   scrolling are blocked, while Ctrl+C and Ctrl+Q retain their global meaning;
 - modal resolution and close operations match both the interaction variant
@@ -109,3 +124,14 @@ The parallel lanes must implement the same interaction contract:
 - PTY and cross-platform terminal automation beyond regressions needed by M2;
 - strict chronological transcript reconstruction;
 - new permission policy, MCP, AgentDefinition, or background-task semantics.
+
+## Completion Evidence
+
+- Active-loop regressions cover the Windows `Y`-then-`F8` path, stale-key and
+  paste/repeat rejection, and propagation of the selected interaction mode
+  through `run_loop`.
+- Terminal lifecycle tests cover Native, keyboard Enhancement, and Unavailable
+  capability modes and restore every attempted terminal setting.
+- The implementation remains single-session; session browsing, strict timeline
+  reconstruction, mouse interaction, and PTY-level real-terminal automation are
+  intentionally outside this milestone.

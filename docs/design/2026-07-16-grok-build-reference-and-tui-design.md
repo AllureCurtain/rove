@@ -1,10 +1,13 @@
 # rove 对 Grok Build 的借鉴与 TUI 方向 - 2026-07-16
 
-> Status: **Partially Implemented / First vertical slice landed 2026-07-18**
+> Status: **Partially Implemented / Capability-gated human interaction slice landed 2026-07-18**
 >
 > 本文记录对 Grok Build 的参考分析，并为可选的全屏 `rove tui`
-> 定义目标方向。首个纵向切片已经实现；本文仍不是完整当前运行时说明，
-> 未实现的 approval/input modal、session picker 和 PTY hardening 仍属于后续工作。
+> 定义目标方向。基础纵向切片已经实现；非 Windows 且支持 keyboard enhancement
+> 的终端使用 direct `Y`/`Enter`，Windows 使用 `Y` 后接非文本 `F8` 确认 approval、`F8`
+> 提交 input。其他终端保留基础 TUI，但 live interaction 会 fail closed。
+> 本文仍不是完整当前运行时说明，未实现的 session picker、严格时间线和 PTY
+> hardening 仍属于后续工作。
 > 当前事实仍以 [`docs/runtime/`](../runtime/README.md) 为准。
 
 ## 1. 决策摘要
@@ -15,7 +18,7 @@
 | 运行时 | 复用 `CliRuntime`、`Engine`、`StreamEvent`、状态 artifacts、approval 与 input providers，不创建 TUI 私有 agent loop。 |
 | UI 架构 | 使用 reducer 风格的 `State -> Action -> Effect` 边界；运行时事件继续通过现有 `RunViewState` 投影。 |
 | 终端技术栈 | 第一版使用上游 `ratatui` 与 `crossterm`、alternate screen 和统一的终端清理 guard。 |
-| 第一版目标 | 键盘优先、单会话，目标包含 transcript、plan/tool 活动、composer、状态、approval/input、cancel 和 resume；当前已落地基础 transcript、plan/tool、composer、状态、cancel 和启动时 `--resume`。 |
+| 第一版目标 | 键盘优先、单会话，目标包含 transcript、plan/tool 活动、composer、状态、approval/input、cancel 和 resume；当前已落地基础界面、cancel、启动时 `--resume`，以及 direct enhanced-terminal 与 Windows F8 safety path 上的 approval/input modal。 |
 | 兼容性 | 默认 REPL、`rove exec`、API、Web、事件名、report、trace 和 resume 行为保持兼容。 |
 | 参考边界 | 学习 Grok Build 的模式，不整体移植其 pager、shell、permission 或 MCP 子系统。 |
 
@@ -32,9 +35,9 @@ rove 已有最重要的 renderer-neutral 基础：
 - CLI、API 与 Web 复用相同的 engine 和 durable state model；
 - Web workbench 继续作为更丰富的浏览器界面。
 
-首个切片已补齐键盘事件、焦点、布局、渲染、terminal lifecycle、共享异步
-run driver 和 artifact finalization。当前仍缺少 modal 交互、session picker
-和 PTY 级验证。本文是现有
+现有切片已补齐键盘事件、焦点、布局、渲染、terminal lifecycle、共享异步
+run driver、artifact finalization，以及可靠按键事件终端上的 fail-closed
+approval/input modal。当前仍缺少 session picker、严格时间线和 PTY 级验证。本文是现有
 [TUI-ready terminal plan](../plans/2026-06-09-tui-ready-terminal-architecture.md#follow-up-plan-after-this-one)
 所预留的后续方向。
 
@@ -116,8 +119,12 @@ rove tui             可选的全屏终端 UI
 +----------------------------------------------+
 ```
 
-Approval、user input、session selection 和展开后的 tool detail 使用 modal
-overlay。第一版不要求 mouse interaction 和复杂 pane resize。
+当前 approval 与 user input 使用 modal overlay。非 Windows 且支持 keyboard
+enhancement 的终端直接用 `Y`/`Enter`；Windows 使用原生 key events，但 approval 必须先按
+`Y` 再按非文本 `F8`，input 用 `F8` 提交，以避免把粘贴文本当成授权键。不满足
+条件时 approval 直接 Reject、input 返回 typed unavailable error，并且不打开
+modal。目标设计中的 session selection 和展开后的 tool detail 也使用 modal，
+但尚未实现。第一版不要求 mouse interaction 和复杂 pane resize。
 
 ### 5.3 数据流
 
@@ -142,19 +149,21 @@ ToolApprovalProvider / UserInputProvider
 effect completion、cancellation 和低频 animation tick。异步 Effect 不得在
 `await` 期间持有可变 UI state。
 
-### 5.4 目标交互（部分实现）
+### 5.4 目标交互（human interaction 已按终端能力实现）
 
-以下列表描述完整目标，不代表首个纵向切片已经全部支持。当前已实现
-prompt、cancel、focus、transcript scroll 和确认退出；approval/input modal
-与 session modal 仍未实现。
+当前已实现 prompt、cancel、focus、transcript scroll 和确认退出；在可靠按键
+事件终端上还实现了 approval/input modal。session modal 仍未实现。
 
 - `Enter`：idle 时提交 prompt；
 - `Ctrl+C`：取消 active run，idle 时清空 draft；
 - `Tab`：切换 transcript/composer focus；
 - 方向键和 PageUp/PageDown：浏览 transcript；
-- approval modal：approve once 或 reject once；
-- input modal：提交回答；
-- session modal：列出并 resume 已有 task states；
+- approval modal：direct 终端上的真实 `Y` key press approve once，真实
+  `N`/`Esc` press reject once；Windows 上 `Y` 只选择，必须再用真实 `F8`
+  press 确认；Enter、repeat、release 与 paste 均不能直接授权；
+- input modal：direct 终端用 Enter，Windows 用 F8，提交不经 trim 的原始回答，
+  包含空字符串与纯空白；
+- session modal（未实现）：列出并 resume 已有 task states；
 - `Ctrl+Q`：存在 active work 时确认后退出。
 
 精确键位可以在实现期调整，但每个动作必须映射为 typed action，不能在
@@ -183,30 +192,33 @@ TUI 必须保持：
 
 ## 7. 实现切片
 
-1. **Terminal shell**：增加 `rove tui`、Ratatui/Crossterm 初始化、cleanup
+1. **Terminal shell（已实现）**：增加 `rove tui`、Ratatui/Crossterm 初始化、cleanup
    guard、基础 state/reducer 和 TestBackend render。
-2. **Runtime stream**：提交 fake-provider prompt、消费 `StreamEvent`、渲染
+2. **Runtime stream（已实现）**：提交 fake-provider prompt、消费 `StreamEvent`、渲染
    transcript/activity、取消 run，并保持 report finalization。
-3. **Human interaction**：增加 channel-backed approval/input providers 和
-   对应 modal。
-4. **State navigation**：增加 session list/resume、tool detail、scroll、
-   resize 和 narrow-terminal fallback。
-5. **Hardening**：增加 PTY smoke、terminal restore、Windows/Unix 验证、help；
-   行为真实落地后再更新 current runtime docs。
+3. **Human interaction（按终端能力已实现）**：增加 channel-backed approval/input
+   providers；非 Windows 且支持 keyboard enhancement 的终端使用 direct modal，Windows 使用
+   F8 safety path；其他终端 fail closed。
+4. **State navigation（部分实现）**：scroll、resize、narrow-terminal fallback
+   已实现；session picker/resume selection 和展开后的 tool detail 仍待实现。
+5. **Hardening（部分实现）**：terminal restore guard 与 TestBackend 错误路径
+   已实现；PTY smoke、Windows/Unix 真实交互验证和完整 help 仍待实现。
 
 每个切片都必须保持默认 REPL 和 `rove exec` 测试通过。
 
 ## 8. 完整目标验收条件（部分未实现）
 
 以下条件用于判断完整 TUI MVP，而不是首个纵向切片的当前验收声明。
-当前已满足 shared engine/artifacts、基础 cancel/exit、resize/narrow render
-和默认测试门禁；approval/input、session picker、PTY 及 Windows/Unix
-交互验证仍待后续切片完成。
+当前已满足 shared engine/artifacts、基础 cancel/exit、resize/narrow render、
+capability-gated approval/input 和默认测试门禁；session picker、PTY 及
+Windows/Unix 真实交互验证仍待后续切片完成。
 
 - `rove tui --model fake` 不依赖 provider credential 即可启动；
 - prompt 进入 shared engine，流式显示并写出原有 trace/task/report artifacts；
-- destructive tool approval 与 `request_input` 可在 TUI 内完成；
-- cancel、error、completion 和 exit 都能正确恢复 terminal；
+- 在可靠按键事件终端上，destructive tool approval 与 `request_input` 可在 TUI
+  内完成；其他终端明确 fail closed；
+- 单次 run cancel/completion 后返回当前 TUI session；TUI exit、loop error 和
+  panic unwind 能正确恢复 terminal；
 - 可列出并 resume 已有 task states；
 - resize 和窄终端不会 panic 或丢失 composer；
 - 不引入 TUI-only runtime lifecycle 或 persistence format；

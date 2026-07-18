@@ -74,6 +74,20 @@ pub enum InteractionModalKind {
     Input,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum InteractionKeyMode {
+    #[default]
+    Direct,
+    ConfirmWithFunctionKey,
+    Unavailable,
+}
+
+impl InteractionKeyMode {
+    pub fn is_available(self) -> bool {
+        !matches!(self, Self::Unavailable)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InteractionModalView {
     Approval {
@@ -120,6 +134,8 @@ pub struct TuiState {
     pub terminal_width: u16,
     pub terminal_height: u16,
     pub modal: Option<InteractionModalView>,
+    pub interaction_key_mode: InteractionKeyMode,
+    pub approval_confirmation: Option<CallId>,
     pub quit_confirmation: bool,
     pub should_quit: bool,
 }
@@ -148,6 +164,7 @@ impl TuiState {
         if run_completed {
             self.run_lifecycle = RunLifecycle::Completed;
             self.modal = None;
+            self.approval_confirmation = None;
             self.quit_confirmation = false;
         }
     }
@@ -169,6 +186,7 @@ impl TuiState {
         self.run = RunViewState::default();
         self.transcript_scroll.reset();
         self.modal = None;
+        self.approval_confirmation = None;
     }
 }
 
@@ -184,6 +202,8 @@ impl Default for TuiState {
             terminal_width: 80,
             terminal_height: 24,
             modal: None,
+            interaction_key_mode: InteractionKeyMode::Direct,
+            approval_confirmation: None,
             quit_confirmation: false,
             should_quit: false,
         }

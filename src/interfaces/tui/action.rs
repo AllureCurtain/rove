@@ -10,6 +10,9 @@ pub enum TuiAction {
         kind: InteractionModalKind,
         request_id: CallId,
     },
+    PrepareApproval {
+        call_id: CallId,
+    },
     ApproveInteraction {
         call_id: CallId,
     },

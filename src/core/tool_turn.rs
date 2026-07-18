@@ -112,6 +112,9 @@ impl<'a> ToolTurnContext<'a> {
 
     fn can_run_parallel_batch(&self, calls: &[ToolCallAction]) -> bool {
         calls.len() > 1
+            // Dynamic input requests need the serial event/ack path. Tool
+            // schemas cannot currently declare whether execution may ask.
+            && self.input_provider.is_none()
             && calls
                 .iter()
                 .all(|call| self.tool_is_parallel_safe(&call.name))
@@ -242,6 +245,10 @@ pub(crate) fn run_tool_turn<'a>(
                         pending = ctx.begin_approval(call.call_id, &call.name, &call.args) => pending,
                     };
                     if let Ok(pending_approval) = pending_approval {
+                        yield ToolTurnItem::Event(StreamEvent::ModelStatus {
+                            status: "waiting_for_approval".to_string(),
+                            message: "Waiting for tool approval".to_string(),
+                        });
                         yield ToolTurnItem::Event(StreamEvent::ToolCallApprovalNeeded {
                             call_id: call.call_id,
                             name: call.name.clone(),
@@ -320,6 +327,10 @@ pub(crate) fn run_tool_turn<'a>(
                                 pending = ctx.begin_approval(call.call_id, &call.name, &call.args) => pending,
                             };
                             if let Ok(pending_approval) = pending_approval {
+                                yield ToolTurnItem::Event(StreamEvent::ModelStatus {
+                                    status: "waiting_for_approval".to_string(),
+                                    message: "Waiting for tool approval".to_string(),
+                                });
                                 yield ToolTurnItem::Event(StreamEvent::ToolCallApprovalNeeded {
                                     call_id: call.call_id,
                                     name: call.name.clone(),
@@ -463,17 +474,79 @@ pub(crate) fn append_tool_history(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use async_trait::async_trait;
     use futures::StreamExt;
     use tokio_util::sync::CancellationToken;
 
     use super::{ToolAction, ToolTurnContext, ToolTurnItem, run_tool_turn};
     use crate::core::types::{
-        ApprovalDecision, ApprovalPolicy, CallId, ToolCallAction, ToolExecutionStatus,
+        ApprovalDecision, ApprovalPolicy, CallId, PendingUserInput, ToolCallAction,
+        ToolExecutionStatus, UserInputProvider, UserInputRequest,
     };
     use crate::core::workspace::Workspace;
+    use crate::errors::ToolError;
     use crate::hooks::HookRegistry;
     use crate::memory::paths::MemoryPaths;
+    use crate::tools::echo::EchoTool;
     use crate::tools::registry::ToolRegistry;
+
+    struct ImmediateInputProvider;
+
+    #[async_trait]
+    impl UserInputProvider for ImmediateInputProvider {
+        async fn begin_input(
+            &self,
+            _input_id: CallId,
+            _request: UserInputRequest,
+        ) -> Result<PendingUserInput, ToolError> {
+            Ok(PendingUserInput::new(async { Ok("answer".to_string()) }))
+        }
+    }
+
+    #[test]
+    fn interactive_input_provider_forces_batches_through_the_serial_event_path() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let workspace = Workspace::detect(tmp.path()).unwrap();
+        let memory_paths = MemoryPaths::from_workspace(&workspace, 8);
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(EchoTool));
+        let calls = vec![
+            ToolCallAction {
+                call_id: CallId::new(),
+                tool_use_id: None,
+                name: "echo".to_string(),
+                args: serde_json::json!({"message":"one"}),
+            },
+            ToolCallAction {
+                call_id: CallId::new(),
+                tool_use_id: None,
+                name: "echo".to_string(),
+                args: serde_json::json!({"message":"two"}),
+            },
+        ];
+        let base = ToolTurnContext {
+            registry: &registry,
+            workspace: &workspace,
+            memory_paths: &memory_paths,
+            approval_policy: ApprovalPolicy::Auto,
+            approval_decision: ApprovalDecision::Approve,
+            approval_provider: None,
+            input_provider: None,
+            hooks: HookRegistry::default(),
+            cancel_token: CancellationToken::new(),
+        };
+
+        assert!(base.can_run_parallel_batch(&calls));
+        assert!(
+            !ToolTurnContext {
+                input_provider: Some(Arc::new(ImmediateInputProvider)),
+                ..base
+            }
+            .can_run_parallel_batch(&calls)
+        );
+    }
 
     #[tokio::test]
     async fn failed_tool_call_event_includes_execution_metadata() {

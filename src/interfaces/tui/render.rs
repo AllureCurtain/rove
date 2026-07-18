@@ -40,7 +40,13 @@ pub fn render(frame: &mut Frame<'_>, state: &TuiState) {
     }
 
     if let Some(modal) = &state.modal {
-        render_modal(frame, modal, frame_area);
+        render_modal(
+            frame,
+            modal,
+            frame_area,
+            state.interaction_key_mode,
+            state.approval_confirmation == Some(modal.request_id()),
+        );
     }
 }
 
@@ -116,7 +122,9 @@ mod tests {
         PendingApprovalView, PendingInputView, RunCompletionView, RunViewState, ToolCallStatus,
         ToolCallView,
     };
-    use crate::interfaces::tui::state::{InteractionModalView, RunLifecycle, TuiFocus, TuiState};
+    use crate::interfaces::tui::state::{
+        InteractionKeyMode, InteractionModalView, RunLifecycle, TuiFocus, TuiState,
+    };
     use crate::interfaces::tui::widgets::modal_area;
 
     fn populated_state() -> TuiState {
@@ -469,6 +477,47 @@ mod tests {
         assert!(rendered.contains("ARG_MARKER"));
         assert!(rendered.contains("[Y] Approve once"));
         assert!(rendered.contains("[N / Esc] Reject once"));
+    }
+
+    #[test]
+    fn function_key_mode_exposes_the_non_text_confirmation_boundary() {
+        let call_id = CallId::new();
+        let approval = InteractionModalView::Approval {
+            call_id,
+            name: "fs_write".to_string(),
+            args: serde_json::json!({"path":"out.txt"}),
+            reason: "writes a file".to_string(),
+        };
+        let state = TuiState {
+            modal: Some(approval.clone()),
+            interaction_key_mode: InteractionKeyMode::ConfirmWithFunctionKey,
+            ..TuiState::default()
+        };
+        let rendered = buffer_text(&draw(80, 20, &state));
+        assert!(rendered.contains("Y select"));
+        assert!(rendered.contains("F8 confirm"));
+        assert!(!rendered.contains("[Y] Approve once"));
+
+        let confirmed = TuiState {
+            modal: Some(approval),
+            interaction_key_mode: InteractionKeyMode::ConfirmWithFunctionKey,
+            approval_confirmation: Some(call_id),
+            ..TuiState::default()
+        };
+        assert!(buffer_text(&draw(80, 20, &confirmed)).contains("[F8] Confirm approve"));
+
+        let input = TuiState {
+            modal: Some(InteractionModalView::Input {
+                input_id: CallId::new(),
+                prompt: "answer".to_string(),
+                draft: String::new(),
+            }),
+            interaction_key_mode: InteractionKeyMode::ConfirmWithFunctionKey,
+            ..TuiState::default()
+        };
+        let input_rendered = buffer_text(&draw(80, 20, &input));
+        assert!(input_rendered.contains("[F8] Submit response"));
+        assert!(!input_rendered.contains("[Enter] Submit response"));
     }
 
     #[test]

@@ -4,7 +4,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
-use crate::interfaces::tui::state::InteractionModalView;
+use crate::interfaces::tui::state::{InteractionKeyMode, InteractionModalView};
 
 const MAX_MODAL_WIDTH: u16 = 88;
 const MAX_APPROVAL_HEIGHT: u16 = 16;
@@ -12,7 +12,13 @@ const MAX_INPUT_HEIGHT: u16 = 14;
 const NORMAL_MIN_WIDTH: u16 = 28;
 const NORMAL_MIN_HEIGHT: u16 = 8;
 
-pub(crate) fn render_modal(frame: &mut Frame<'_>, modal: &InteractionModalView, viewport: Rect) {
+pub(crate) fn render_modal(
+    frame: &mut Frame<'_>,
+    modal: &InteractionModalView,
+    viewport: Rect,
+    interaction_key_mode: InteractionKeyMode,
+    approval_confirmation: bool,
+) {
     let area = modal_area(viewport, modal);
     if area.width == 0 || area.height == 0 {
         return;
@@ -20,16 +26,30 @@ pub(crate) fn render_modal(frame: &mut Frame<'_>, modal: &InteractionModalView, 
 
     frame.render_widget(Clear, area);
     if area.width < NORMAL_MIN_WIDTH || area.height < NORMAL_MIN_HEIGHT {
-        render_compact(frame, modal, area);
+        render_compact(
+            frame,
+            modal,
+            area,
+            interaction_key_mode,
+            approval_confirmation,
+        );
         return;
     }
 
     match modal {
         InteractionModalView::Approval {
             name, args, reason, ..
-        } => render_approval(frame, area, name, args, reason),
+        } => render_approval(
+            frame,
+            area,
+            name,
+            args,
+            reason,
+            interaction_key_mode,
+            approval_confirmation,
+        ),
         InteractionModalView::Input { prompt, draft, .. } => {
-            render_input(frame, area, prompt, draft);
+            render_input(frame, area, prompt, draft, interaction_key_mode);
         }
     }
 }
@@ -69,6 +89,8 @@ fn render_approval(
     name: &str,
     args: &serde_json::Value,
     reason: &str,
+    interaction_key_mode: InteractionKeyMode,
+    approval_confirmation: bool,
 ) {
     let accent = Style::default()
         .fg(Color::Yellow)
@@ -105,10 +127,19 @@ fn render_approval(
         Paragraph::new(labeled_text("Arguments", &arguments, accent)).wrap(Wrap { trim: false }),
         arguments_area,
     );
-    frame.render_widget(approval_actions(actions.width), actions);
+    frame.render_widget(
+        approval_actions(actions.width, interaction_key_mode, approval_confirmation),
+        actions,
+    );
 }
 
-fn render_input(frame: &mut Frame<'_>, area: Rect, prompt: &str, draft: &str) {
+fn render_input(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    prompt: &str,
+    draft: &str,
+    interaction_key_mode: InteractionKeyMode,
+) {
     let accent = Style::default()
         .fg(Color::Cyan)
         .add_modifier(Modifier::BOLD);
@@ -135,16 +166,30 @@ fn render_input(frame: &mut Frame<'_>, area: Rect, prompt: &str, draft: &str) {
         response_label,
     );
     frame.render_widget(draft_paragraph(draft, draft_area), draft_area);
-    frame.render_widget(input_actions(actions.width), actions);
+    frame.render_widget(input_actions(actions.width, interaction_key_mode), actions);
 }
 
-fn render_compact(frame: &mut Frame<'_>, modal: &InteractionModalView, area: Rect) {
+fn render_compact(
+    frame: &mut Frame<'_>,
+    modal: &InteractionModalView,
+    area: Rect,
+    interaction_key_mode: InteractionKeyMode,
+    approval_confirmation: bool,
+) {
     match modal {
         InteractionModalView::Approval {
             name, args, reason, ..
-        } => render_compact_approval(frame, area, name, args, reason),
+        } => render_compact_approval(
+            frame,
+            area,
+            name,
+            args,
+            reason,
+            interaction_key_mode,
+            approval_confirmation,
+        ),
         InteractionModalView::Input { prompt, draft, .. } => {
-            render_compact_input(frame, area, prompt, draft);
+            render_compact_input(frame, area, prompt, draft, interaction_key_mode);
         }
     }
 }
@@ -155,6 +200,8 @@ fn render_compact_approval(
     name: &str,
     args: &serde_json::Value,
     reason: &str,
+    interaction_key_mode: InteractionKeyMode,
+    approval_confirmation: bool,
 ) {
     let (body, actions) = split_actions(area);
     let accent = Style::default()
@@ -183,10 +230,19 @@ fn render_compact_approval(
         );
     }
 
-    frame.render_widget(approval_actions(actions.width), actions);
+    frame.render_widget(
+        approval_actions(actions.width, interaction_key_mode, approval_confirmation),
+        actions,
+    );
 }
 
-fn render_compact_input(frame: &mut Frame<'_>, area: Rect, prompt: &str, draft: &str) {
+fn render_compact_input(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    prompt: &str,
+    draft: &str,
+    interaction_key_mode: InteractionKeyMode,
+) {
     let (body, actions) = split_actions(area);
     let accent = Style::default()
         .fg(Color::Cyan)
@@ -200,7 +256,7 @@ fn render_compact_input(frame: &mut Frame<'_>, area: Rect, prompt: &str, draft: 
         frame.render_widget(draft_paragraph(draft, body), body);
     }
 
-    frame.render_widget(input_actions(actions.width), actions);
+    frame.render_widget(input_actions(actions.width, interaction_key_mode), actions);
 }
 
 fn modal_block(title: &'static str, accent: Style) -> Block<'static> {
@@ -254,17 +310,35 @@ fn compact_line(label: &'static str, value: &str, accent: Style) -> Paragraph<'s
     ]))
 }
 
-fn approval_actions(width: u16) -> Paragraph<'static> {
-    let text = if width >= 46 {
-        "[Y] Approve once   [N / Esc] Reject once"
-    } else if width >= 24 {
-        "Y approve | N/Esc reject"
-    } else if width >= 18 {
-        "Y approve N/Esc no"
-    } else if width >= 13 {
-        "Y ok N/Esc no"
-    } else {
-        "Y/N"
+fn approval_actions(
+    width: u16,
+    interaction_key_mode: InteractionKeyMode,
+    approval_confirmation: bool,
+) -> Paragraph<'static> {
+    let text = match interaction_key_mode {
+        InteractionKeyMode::Direct => {
+            if width >= 46 {
+                "[Y] Approve once   [N / Esc] Reject once"
+            } else if width >= 24 {
+                "Y approve | N/Esc reject"
+            } else if width >= 18 {
+                "Y approve N/Esc no"
+            } else if width >= 13 {
+                "Y ok N/Esc no"
+            } else {
+                "Y/N"
+            }
+        }
+        InteractionKeyMode::ConfirmWithFunctionKey => {
+            if approval_confirmation {
+                "[F8] Confirm approve   [N / Esc] Reject"
+            } else if width >= 24 {
+                "Y select | F8 confirm | N/Esc reject"
+            } else {
+                "Y then F8; N/Esc no"
+            }
+        }
+        InteractionKeyMode::Unavailable => "interaction unavailable",
     };
     Paragraph::new(text).style(
         Style::default()
@@ -273,11 +347,23 @@ fn approval_actions(width: u16) -> Paragraph<'static> {
     )
 }
 
-fn input_actions(width: u16) -> Paragraph<'static> {
-    let text = if width >= 24 {
-        "[Enter] Submit response"
-    } else {
-        "Enter submit"
+fn input_actions(width: u16, interaction_key_mode: InteractionKeyMode) -> Paragraph<'static> {
+    let text = match interaction_key_mode {
+        InteractionKeyMode::Direct => {
+            if width >= 24 {
+                "[Enter] Submit response"
+            } else {
+                "Enter submit"
+            }
+        }
+        InteractionKeyMode::ConfirmWithFunctionKey => {
+            if width >= 24 {
+                "[F8] Submit response"
+            } else {
+                "F8 submit"
+            }
+        }
+        InteractionKeyMode::Unavailable => "interaction unavailable",
     };
     Paragraph::new(text).style(
         Style::default()

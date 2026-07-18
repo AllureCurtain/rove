@@ -14,6 +14,7 @@ use rove::interfaces::cli::runtime::{CliRuntimeInteraction, CliRuntimeOptions, b
 use rove::interfaces::cli::sessions;
 use rove::interfaces::cli::state as cli_state;
 use rove::interfaces::tui::app as tui_app;
+use rove::interfaces::tui::providers::TuiInteractionBroker;
 use rove::state::resume::resolve_resume_state;
 use tokio_util::sync::CancellationToken;
 
@@ -80,18 +81,19 @@ async fn async_main(args: Args) -> anyhow::Result<()> {
         Some(Command::Sessions) => return sessions::run(args.cwd.clone()).await,
         Some(Command::State { command }) => return cli_state::run(args.cwd.clone(), command).await,
         Some(Command::Tui) => {
+            let (interaction, interaction_rx) = TuiInteractionBroker::default().into_parts();
             let runtime = build_runtime_with_interaction(
                 &args,
                 None,
                 CliRuntimeInteraction::Providers {
-                    input_provider: None,
-                    approval_provider: None,
+                    input_provider: Some(interaction.input_provider),
+                    approval_provider: Some(interaction.approval_provider),
                 },
             )
             .await?;
             let resume_state =
                 resolve_resume_state(&runtime.state_store, args.resume.as_deref()).await?;
-            return tui_app::run(runtime, resume_state).await;
+            return tui_app::run(runtime, resume_state, interaction_rx).await;
         }
         Some(Command::Exec { message }) => {
             let message = join_message(message);

@@ -28,12 +28,20 @@ Start the interactive terminal REPL without network credentials:
 cargo run -- --model fake
 ```
 
-Start the full-screen TUI vertical slice without network credentials. This
-command requires an interactive terminal:
+Start the full-screen TUI without network credentials. This command requires
+an interactive terminal:
 
 ```bash
 cargo run -- tui --model fake
 ```
+
+Approval and input modals additionally require reliable key events. Non-Windows
+terminals with Crossterm keyboard enhancement use direct `Y`/`Enter` actions. Windows
+uses a non-text `F8` confirmation boundary (`Y` selects approval, `F8` confirms;
+`F8` submits input), because its backend cannot reliably identify pasted text.
+On an unsupported terminal the rest of the TUI continues to run, but approval
+is rejected and `request_input` returns an unavailable error without opening a
+modal.
 
 Start the same REPL with an initial prompt:
 
@@ -130,7 +138,7 @@ bearer token server-side and does not expose it to browser JavaScript.
 
 | Area | Path | Purpose |
 |---|---|---|
-| CLI / TUI | `src/main.rs`, `src/interfaces/tui/` | Rich terminal REPL, full-screen TUI vertical slice, explicit `exec` runs, config dump, sessions, and RAG indexing command dispatch. |
+| CLI / TUI | `src/main.rs`, `src/interfaces/tui/` | Rich terminal REPL, full-screen TUI with capability-gated approval/input modals, explicit `exec` runs, config dump, sessions, and RAG indexing command dispatch. |
 | API | `src/bin/rove-api.rs`, `src/interfaces/api/` | HTTP job lifecycle, SSE event streaming, approvals, inputs, and cancellation. |
 | Benchmarks | `src/bin/rove-bench.rs`, `benchmarks/` | Deterministic no-network benchmark tasks with artifact-path reports. |
 | Web | `web-ui/` | Next.js workbench that consumes the API and SSE job stream. |

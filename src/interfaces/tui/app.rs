@@ -1,10 +1,11 @@
+use std::collections::HashSet;
 use std::error::Error;
 use std::io;
 use std::time::Duration;
 
 use anyhow::Context;
-use crossterm::event::{Event, EventStream};
-use futures::{Stream, StreamExt};
+use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use futures::{FutureExt, Stream, StreamExt};
 use ratatui::Terminal;
 use ratatui::backend::Backend;
 use ratatui::layout::Rect;
@@ -12,27 +13,36 @@ use tokio::sync::mpsc;
 use tokio::time::MissedTickBehavior;
 use tokio_util::sync::CancellationToken;
 
-use crate::core::types::{JobId, RunId, SessionId, TaskState, TerminationReason};
+use crate::core::types::{
+    ApprovalDecision, CallId, JobId, RunId, SessionId, TaskState, TerminationReason,
+};
 use crate::interfaces::cli::runtime::CliRuntime;
 use crate::interfaces::terminal::action::TerminalAction;
 use crate::interfaces::terminal::view::RunViewUpdate;
 use crate::interfaces::tui::action::TuiAction;
 use crate::interfaces::tui::effect::TuiEffect;
-use crate::interfaces::tui::keymap::map_key_event;
+use crate::interfaces::tui::keymap::map_key_event_with_modal_mode;
+use crate::interfaces::tui::providers::{
+    TuiInteractionKind, TuiInteractionReceiver, TuiInteractionRequest,
+};
 use crate::interfaces::tui::reducer::reduce;
 use crate::interfaces::tui::render::{render, sync_viewport};
 use crate::interfaces::tui::run::{TuiRunContext, drive_tui_run_events};
-use crate::interfaces::tui::state::TuiState;
+use crate::interfaces::tui::state::{
+    InteractionKeyMode, InteractionModalKind, InteractionModalView, RunLifecycle, TuiState,
+};
 use crate::interfaces::tui::terminal::TerminalSession;
 
 const RUN_UPDATE_CAPACITY: usize = 32;
 const FRAME_INTERVAL: Duration = Duration::from_millis(33);
+const MAX_ARMING_DRAIN_EVENTS: usize = 1024;
 
 #[derive(Debug)]
 pub struct TuiApp {
     pub state: TuiState,
     session_id: SessionId,
     active_resume_state: Option<TaskState>,
+    pressed_keys: PressedKeys,
 }
 
 impl TuiApp {
@@ -45,6 +55,7 @@ impl TuiApp {
             state: TuiState::default(),
             session_id,
             active_resume_state,
+            pressed_keys: PressedKeys::default(),
         }
     }
 
@@ -81,6 +92,297 @@ struct ActiveUiResult {
     exit_requested: bool,
 }
 
+#[derive(Default)]
+struct InteractionController {
+    waiting_request: Option<TuiInteractionRequest>,
+    waiting_view: Option<InteractionModalView>,
+    active_request: Option<TuiInteractionRequest>,
+    active_armed: bool,
+    modal_drawn: bool,
+}
+
+impl InteractionController {
+    fn offer_request(&mut self, request: TuiInteractionRequest, state: &mut TuiState) {
+        if request.responder_is_closed()
+            || state.run_lifecycle != RunLifecycle::Running
+            || self.active_request.is_some()
+            || self.waiting_request.is_some()
+        {
+            return;
+        }
+
+        if let Some(view) = self.waiting_view.take() {
+            if request_matches_view(&request, &view) {
+                self.activate(request, view, state);
+            } else {
+                self.waiting_view = Some(view);
+            }
+        } else {
+            self.waiting_request = Some(request);
+        }
+    }
+
+    fn offer_view(&mut self, view: InteractionModalView, state: &mut TuiState) {
+        if state.run_lifecycle != RunLifecycle::Running || self.active_request.is_some() {
+            return;
+        }
+
+        if let Some(request) = self.waiting_request.take() {
+            if request_matches_view(&request, &view) {
+                self.activate(request, view, state);
+            } else {
+                self.waiting_request = Some(request);
+            }
+        } else if self.waiting_view.is_none() {
+            self.waiting_view = Some(view);
+        }
+    }
+
+    fn activate(
+        &mut self,
+        request: TuiInteractionRequest,
+        view: InteractionModalView,
+        state: &mut TuiState,
+    ) {
+        if state.modal.is_some() || request.responder_is_closed() {
+            return;
+        }
+        self.active_request = Some(request);
+        self.active_armed = false;
+        self.modal_drawn = false;
+        reduce(state, TuiAction::OpenInteraction(view));
+    }
+
+    fn observe_update(&mut self, update: &RunViewUpdate, state: &mut TuiState) {
+        match update {
+            RunViewUpdate::ToolCallApprovalNeeded {
+                call_id,
+                name,
+                args,
+                reason,
+            } => self.offer_view(
+                InteractionModalView::Approval {
+                    call_id: *call_id,
+                    name: name.clone(),
+                    args: args.clone(),
+                    reason: reason.clone(),
+                },
+                state,
+            ),
+            RunViewUpdate::InputNeeded { input_id, prompt } => self.offer_view(
+                InteractionModalView::Input {
+                    input_id: *input_id,
+                    prompt: prompt.clone(),
+                    draft: String::new(),
+                },
+                state,
+            ),
+            RunViewUpdate::ToolCallCompleted { call_id, .. }
+            | RunViewUpdate::ToolCallFailed { call_id, .. } => {
+                self.drop_request(*call_id, state);
+            }
+            RunViewUpdate::RunCompleted { .. } => self.clear(state),
+            _ => {}
+        }
+    }
+
+    fn resolve(&mut self, action: &TerminalAction) {
+        let matches = self.active_armed
+            && self
+                .active_request
+                .as_ref()
+                .is_some_and(|request| action_matches_request(action, request));
+        if !matches {
+            return;
+        }
+
+        let request = self
+            .active_request
+            .take()
+            .expect("matching request was checked above");
+        self.active_armed = false;
+        self.modal_drawn = false;
+        match (request, action) {
+            (
+                TuiInteractionRequest::Approval { respond_to, .. },
+                TerminalAction::ApproveTool { .. },
+            ) => {
+                let _ = respond_to.send(ApprovalDecision::Approve);
+            }
+            (
+                TuiInteractionRequest::Approval { respond_to, .. },
+                TerminalAction::RejectTool { .. },
+            ) => {
+                let _ = respond_to.send(ApprovalDecision::Reject);
+            }
+            (
+                TuiInteractionRequest::Input { respond_to, .. },
+                TerminalAction::SubmitInput { answer, .. },
+            ) => {
+                let _ = respond_to.send(answer.clone());
+            }
+            _ => unreachable!("request/action type was checked above"),
+        }
+    }
+
+    fn drop_request(&mut self, request_id: CallId, state: &mut TuiState) {
+        if self
+            .active_request
+            .as_ref()
+            .is_some_and(|request| request.request_id() == request_id)
+        {
+            self.active_request = None;
+        }
+        if self
+            .waiting_request
+            .as_ref()
+            .is_some_and(|request| request.request_id() == request_id)
+        {
+            self.waiting_request = None;
+        }
+        if self
+            .waiting_view
+            .as_ref()
+            .is_some_and(|view| view.request_id() == request_id)
+        {
+            self.waiting_view = None;
+        }
+        close_modal(state, request_id);
+        if self.active_request.is_none() {
+            self.active_armed = false;
+            self.modal_drawn = false;
+        }
+    }
+
+    fn clear(&mut self, state: &mut TuiState) {
+        self.active_request = None;
+        self.waiting_request = None;
+        self.waiting_view = None;
+        self.active_armed = false;
+        self.modal_drawn = false;
+        if let Some(modal) = state.modal.as_ref() {
+            let kind = modal.kind();
+            let request_id = modal.request_id();
+            reduce(state, TuiAction::CloseInteraction { kind, request_id });
+        }
+    }
+
+    fn needs_arming(&self) -> bool {
+        self.active_request.is_some() && !self.active_armed
+    }
+
+    fn is_armed(&self) -> bool {
+        self.active_armed
+    }
+
+    fn after_modal_draw(&mut self, no_keys_down: bool) {
+        if !self.needs_arming() {
+            return;
+        }
+        if self.modal_drawn && no_keys_down {
+            self.active_armed = true;
+        } else {
+            self.modal_drawn = true;
+        }
+    }
+
+    fn discard_closed_active(&mut self, state: &mut TuiState) -> bool {
+        let Some(request_id) = self
+            .active_request
+            .as_ref()
+            .filter(|request| request.responder_is_closed())
+            .map(TuiInteractionRequest::request_id)
+        else {
+            return false;
+        };
+        self.drop_request(request_id, state);
+        true
+    }
+}
+
+#[derive(Debug, Default)]
+struct PressedKeys {
+    keys: HashSet<KeyCode>,
+}
+
+impl PressedKeys {
+    fn observe(&mut self, event: &Event) -> bool {
+        let Event::Key(key) = event else {
+            return false;
+        };
+        match key.kind {
+            KeyEventKind::Press => self.keys.insert(key.code),
+            KeyEventKind::Repeat => {
+                self.keys.insert(key.code);
+                false
+            }
+            KeyEventKind::Release => {
+                self.keys.remove(&key.code);
+                false
+            }
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.keys.is_empty()
+    }
+}
+
+fn request_matches_view(request: &TuiInteractionRequest, view: &InteractionModalView) -> bool {
+    interaction_kind(request) == view.kind() && request.request_id() == view.request_id()
+}
+
+fn interaction_kind(request: &TuiInteractionRequest) -> InteractionModalKind {
+    match request.kind() {
+        TuiInteractionKind::Approval => InteractionModalKind::Approval,
+        TuiInteractionKind::Input => InteractionModalKind::Input,
+    }
+}
+
+fn action_matches_request(action: &TerminalAction, request: &TuiInteractionRequest) -> bool {
+    match (action, request) {
+        (
+            TerminalAction::ApproveTool { call_id } | TerminalAction::RejectTool { call_id },
+            TuiInteractionRequest::Approval { request, .. },
+        ) => *call_id == request.call_id,
+        (
+            TerminalAction::SubmitInput { input_id, .. },
+            TuiInteractionRequest::Input {
+                input_id: request_id,
+                ..
+            },
+        ) => input_id == request_id,
+        _ => false,
+    }
+}
+
+fn close_modal(state: &mut TuiState, request_id: CallId) {
+    if let Some(modal) = state.modal.as_ref()
+        && modal.request_id() == request_id
+    {
+        let kind = modal.kind();
+        reduce(state, TuiAction::CloseInteraction { kind, request_id });
+    }
+}
+
+fn discard_queued_interactions(interactions: &mut TuiInteractionReceiver) -> usize {
+    let mut discarded = 0;
+    while let Ok(request) = interactions.try_recv() {
+        drop(request);
+        discarded += 1;
+    }
+    discarded
+}
+
+fn clear_interactions(
+    controller: &mut InteractionController,
+    interactions: &mut TuiInteractionReceiver,
+    state: &mut TuiState,
+) {
+    controller.clear(state);
+    discard_queued_interactions(interactions);
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ShutdownSignal {
     Interrupt,
@@ -88,11 +390,23 @@ enum ShutdownSignal {
     Terminate,
 }
 
+struct ShutdownInput<'a> {
+    receiver: &'a mut mpsc::Receiver<ShutdownSignal>,
+    open: &'a mut bool,
+}
+
+struct ActiveUiControl<'a> {
+    cancel: CancellationToken,
+    pressed_keys: &'a mut PressedKeys,
+}
+
 pub async fn run(
     runtime: CliRuntime,
     active_resume_state: Option<TaskState>,
+    mut interactions: TuiInteractionReceiver,
 ) -> anyhow::Result<()> {
     let mut terminal = TerminalSession::enter().context("failed to enter TUI terminal mode")?;
+    let interaction_key_mode = terminal.interaction_key_mode();
     let mut events = EventStream::new();
     let (signal_task, mut shutdown) = spawn_shutdown_listener();
 
@@ -102,9 +416,13 @@ pub async fn run(
         &mut shutdown,
         &runtime,
         active_resume_state,
+        &mut interactions,
+        interaction_key_mode,
     )
     .await;
     signal_task.abort();
+    discard_queued_interactions(&mut interactions);
+    interactions.close();
     let restore_result = terminal.restore();
 
     match (app_result, restore_result) {
@@ -123,6 +441,8 @@ async fn run_loop<B, E>(
     shutdown: &mut mpsc::Receiver<ShutdownSignal>,
     runtime: &CliRuntime,
     active_resume_state: Option<TaskState>,
+    interactions: &mut TuiInteractionReceiver,
+    interaction_key_mode: InteractionKeyMode,
 ) -> anyhow::Result<TuiApp>
 where
     B: Backend,
@@ -130,6 +450,7 @@ where
     E: Stream<Item = io::Result<Event>> + Unpin,
 {
     let mut app = TuiApp::new(active_resume_state);
+    app.state.interaction_key_mode = interaction_key_mode;
     let mut shutdown_open = true;
     draw_app(terminal, &mut app.state)?;
 
@@ -139,7 +460,9 @@ where
                 let Some(event) = event else {
                     return Ok(app);
                 };
-                let effects = reduce_event(&mut app.state, event?);
+                let event = event?;
+                let fresh_press = app.pressed_keys.observe(&event);
+                let effects = reduce_event(&mut app.state, event, true, fresh_press);
                 let mut prompt = None;
                 for effect in effects {
                     match effect {
@@ -155,11 +478,14 @@ where
                     let result = run_prompt(
                         terminal,
                         events,
-                        shutdown,
-                        &mut shutdown_open,
+                        ShutdownInput {
+                            receiver: shutdown,
+                            open: &mut shutdown_open,
+                        },
                         runtime,
                         &mut app,
                         message,
+                        interactions,
                     )
                     .await?;
                     tracing::debug!(
@@ -197,17 +523,18 @@ where
 async fn run_prompt<B, E>(
     terminal: &mut Terminal<B>,
     events: &mut E,
-    shutdown: &mut mpsc::Receiver<ShutdownSignal>,
-    shutdown_open: &mut bool,
+    shutdown: ShutdownInput<'_>,
     runtime: &CliRuntime,
     app: &mut TuiApp,
     message: String,
+    interactions: &mut TuiInteractionReceiver,
 ) -> anyhow::Result<ActiveRunResult>
 where
     B: Backend,
     B::Error: Error + Send + Sync + 'static,
     E: Stream<Item = io::Result<Event>> + Unpin,
 {
+    discard_queued_interactions(interactions);
     let (session_id, job_id, run_id) = app.next_run_identity();
     let run = runtime.state_store.start_run(session_id, job_id, run_id)?;
     let resume_state = app.active_resume_state.clone();
@@ -240,13 +567,17 @@ where
         terminal,
         events,
         shutdown,
-        shutdown_open,
         updates_rx,
-        cancel,
+        interactions,
+        ActiveUiControl {
+            cancel,
+            pressed_keys: &mut app.pressed_keys,
+        },
         &mut app.state,
     );
 
     let (outcome, ui_result) = tokio::join!(driver, ui);
+    discard_queued_interactions(interactions);
     let ui_result = ui_result?;
     if !matches!(outcome.reason, TerminationReason::Cancelled)
         && let Ok(latest) = runtime.state_store.load_task_state(run_id).await
@@ -262,13 +593,79 @@ where
     })
 }
 
+fn apply_active_effects(
+    effects: Vec<TuiEffect>,
+    interaction: &mut InteractionController,
+    interactions: &mut TuiInteractionReceiver,
+    control: &ActiveUiControl<'_>,
+    state: &mut TuiState,
+    exit_requested: &mut bool,
+) {
+    for effect in effects {
+        match effect {
+            TuiEffect::Dispatch(
+                action @ (TerminalAction::ApproveTool { .. }
+                | TerminalAction::RejectTool { .. }
+                | TerminalAction::SubmitInput { .. }),
+            ) => {
+                // Core cannot enqueue the next legitimate request until this
+                // responder is released, so only pre-existing extras are drained.
+                discard_queued_interactions(interactions);
+                interaction.resolve(&action);
+            }
+            TuiEffect::Dispatch(TerminalAction::CancelRun) => {
+                control.cancel.cancel();
+                clear_interactions(interaction, interactions, state);
+            }
+            TuiEffect::ExitAfterRun => {
+                *exit_requested = true;
+                control.cancel.cancel();
+                clear_interactions(interaction, interactions, state);
+            }
+            TuiEffect::Exit => {
+                *exit_requested = true;
+                clear_interactions(interaction, interactions, state);
+            }
+            TuiEffect::Dispatch(_) => {}
+        }
+    }
+}
+
+fn drain_ready_unarmed_events<E>(
+    events: &mut E,
+    state: &mut TuiState,
+    pressed_keys: &mut PressedKeys,
+) -> anyhow::Result<Vec<TuiEffect>>
+where
+    E: Stream<Item = io::Result<Event>> + Unpin,
+{
+    let mut effects = Vec::new();
+    for _ in 0..MAX_ARMING_DRAIN_EVENTS {
+        let Some(event) = events.next().now_or_never() else {
+            return Ok(effects);
+        };
+        let Some(event) = event else {
+            return Err(anyhow::anyhow!(
+                "terminal input stream closed while arming an interaction"
+            ));
+        };
+        let event = event?;
+        let fresh_press = pressed_keys.observe(&event);
+        effects.extend(reduce_event(state, event, false, fresh_press));
+    }
+
+    Err(anyhow::anyhow!(
+        "terminal input backlog exceeded the interaction arming limit"
+    ))
+}
+
 async fn active_ui_loop<B, E>(
     terminal: &mut Terminal<B>,
     events: &mut E,
-    shutdown: &mut mpsc::Receiver<ShutdownSignal>,
-    shutdown_open: &mut bool,
+    shutdown: ShutdownInput<'_>,
     mut updates: mpsc::Receiver<RunViewUpdate>,
-    cancel: CancellationToken,
+    interactions: &mut TuiInteractionReceiver,
+    control: ActiveUiControl<'_>,
     state: &mut TuiState,
 ) -> anyhow::Result<ActiveUiResult>
 where
@@ -278,88 +675,174 @@ where
 {
     let mut exit_requested = false;
     let mut dirty = true;
+    let mut interaction = InteractionController::default();
     let mut redraw = tokio::time::interval(FRAME_INTERVAL);
     redraw.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
     loop {
         tokio::select! {
-            _ = redraw.tick(), if dirty => {
+            _ = redraw.tick(), if dirty || interaction.needs_arming() => {
+                interaction.discard_closed_active(state);
+                if interaction.needs_arming() {
+                    let effects = match drain_ready_unarmed_events(
+                        events,
+                        state,
+                        control.pressed_keys,
+                    ) {
+                        Ok(effects) => effects,
+                        Err(error) => {
+                            control.cancel.cancel();
+                            clear_interactions(&mut interaction, interactions, state);
+                            return Err(error);
+                        }
+                    };
+                    apply_active_effects(
+                        effects,
+                        &mut interaction,
+                        interactions,
+                        &control,
+                        state,
+                        &mut exit_requested,
+                    );
+                }
                 if let Err(error) = draw_app(terminal, state) {
-                    cancel.cancel();
+                    control.cancel.cancel();
+                    clear_interactions(&mut interaction, interactions, state);
                     return Err(error);
                 }
+                interaction.after_modal_draw(control.pressed_keys.is_empty());
                 dirty = false;
             }
             update = updates.recv() => {
                 let Some(update) = update else {
+                    control.cancel.cancel();
+                    clear_interactions(&mut interaction, interactions, state);
                     return Err(anyhow::anyhow!(
                         "runtime event stream ended without a completion update"
                     ));
                 };
                 let completed = matches!(&update, RunViewUpdate::RunCompleted { .. });
-                state.apply_run_update(update);
+                state.apply_run_update(update.clone());
+                interaction.observe_update(&update, state);
                 dirty = true;
                 if completed {
+                    clear_interactions(&mut interaction, interactions, state);
                     draw_app(terminal, state)?;
                     return Ok(ActiveUiResult { exit_requested });
                 }
             }
+            request = interactions.recv() => {
+                let Some(request) = request else {
+                    control.cancel.cancel();
+                    clear_interactions(&mut interaction, interactions, state);
+                    return Err(anyhow::anyhow!("terminal interaction channel closed during an active run"));
+                };
+                if control.cancel.is_cancelled()
+                    || state.run_lifecycle != RunLifecycle::Running
+                    || !state.interaction_key_mode.is_available()
+                {
+                    drop(request);
+                } else {
+                    interaction.offer_request(request, state);
+                }
+                dirty = true;
+            }
             event = events.next() => {
                 let Some(event) = event else {
-                    cancel.cancel();
+                    control.cancel.cancel();
+                    clear_interactions(&mut interaction, interactions, state);
                     return Err(anyhow::anyhow!("terminal input stream closed during an active run"));
                 };
                 let event = match event {
                     Ok(event) => event,
                     Err(error) => {
-                        cancel.cancel();
+                        control.cancel.cancel();
+                        clear_interactions(&mut interaction, interactions, state);
                         return Err(error.into());
                     }
                 };
-                for effect in reduce_event(state, event) {
-                    match effect {
-                        TuiEffect::Dispatch(TerminalAction::CancelRun) => cancel.cancel(),
-                        TuiEffect::ExitAfterRun => {
-                            exit_requested = true;
-                            cancel.cancel();
-                        }
-                        TuiEffect::Exit => exit_requested = true,
-                        TuiEffect::Dispatch(_) => {}
-                    }
-                }
+                let fresh_press = control.pressed_keys.observe(&event);
+                let effects = reduce_event(state, event, interaction.is_armed(), fresh_press);
+                apply_active_effects(
+                    effects,
+                    &mut interaction,
+                    interactions,
+                    &control,
+                    state,
+                    &mut exit_requested,
+                );
                 dirty = true;
             }
-            signal = shutdown.recv(), if *shutdown_open => {
+            signal = shutdown.receiver.recv(), if *shutdown.open => {
                 match signal {
                     Some(ShutdownSignal::Interrupt) => {
                         reduce(state, TuiAction::Terminal(TerminalAction::CancelRun));
-                        cancel.cancel();
+                        control.cancel.cancel();
+                        clear_interactions(&mut interaction, interactions, state);
                         dirty = true;
                     }
                     #[cfg(unix)]
                     Some(ShutdownSignal::Terminate) => {
                         reduce(state, TuiAction::Terminal(TerminalAction::CancelRun));
                         exit_requested = true;
-                        cancel.cancel();
+                        control.cancel.cancel();
+                        clear_interactions(&mut interaction, interactions, state);
                         dirty = true;
                     }
-                    None => *shutdown_open = false,
+                    None => *shutdown.open = false,
                 }
             }
         }
     }
 }
 
-fn reduce_event(state: &mut TuiState, event: Event) -> Vec<TuiEffect> {
+fn reduce_event(
+    state: &mut TuiState,
+    event: Event,
+    interaction_armed: bool,
+    fresh_press: bool,
+) -> Vec<TuiEffect> {
     match event {
-        Event::Key(key) => map_key_event(key).map_or_else(Vec::new, |action| reduce(state, action)),
+        Event::Key(key)
+            if state.modal.is_none() || interaction_armed || is_global_key_event(key) =>
+        {
+            let action = map_key_event_with_modal_mode(
+                key,
+                state.modal.as_ref(),
+                state.interaction_key_mode,
+            );
+            match action {
+                Some(action) if fresh_press || !is_interaction_decision(&action) => {
+                    reduce(state, action)
+                }
+                Some(_) | None => Vec::new(),
+            }
+        }
+        Event::Key(_) => Vec::new(),
         Event::Resize(width, height) => reduce(state, TuiAction::Resize { width, height }),
+        Event::Paste(_) if state.modal.is_some() && !interaction_armed => Vec::new(),
         Event::Paste(text) => text
             .chars()
             .flat_map(|ch| reduce(state, TuiAction::InsertChar(ch)))
             .collect(),
         Event::FocusGained | Event::FocusLost | Event::Mouse(_) => Vec::new(),
     }
+}
+
+fn is_interaction_decision(action: &TuiAction) -> bool {
+    matches!(
+        action,
+        TuiAction::PrepareApproval { .. }
+            | TuiAction::ApproveInteraction { .. }
+            | TuiAction::RejectInteraction { .. }
+            | TuiAction::SubmitInteraction { .. }
+    )
+}
+
+fn is_global_key_event(key: KeyEvent) -> bool {
+    key.kind == KeyEventKind::Press
+        && key.modifiers.contains(KeyModifiers::CONTROL)
+        && matches!(key.code, KeyCode::Char(ch) if ch.eq_ignore_ascii_case(&'c') || ch.eq_ignore_ascii_case(&'q'))
 }
 
 fn draw_app<B>(terminal: &mut Terminal<B>, state: &mut TuiState) -> anyhow::Result<()>
@@ -439,25 +922,157 @@ async fn listen_for_interrupts(sender: mpsc::Sender<ShutdownSignal>) {
 #[cfg(test)]
 mod tests {
     use std::io;
+    use std::sync::Arc;
     use std::time::Duration;
 
-    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+    use futures::stream::BoxStream;
     use futures::{StreamExt, stream};
     use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
-    use tokio::sync::mpsc;
+    use ratatui::backend::{Backend, ClearType, TestBackend, WindowSize};
+    use ratatui::buffer::Cell;
+    use ratatui::layout::{Position, Size};
+    use tokio::sync::{Notify, mpsc, oneshot};
     use tokio_stream::wrappers::ReceiverStream;
     use tokio_util::sync::CancellationToken;
 
-    use crate::core::types::{JobId, RunId, TerminationReason};
+    use crate::config::AppConfig;
+    use crate::core::context::ContextManager;
+    use crate::core::engine::{Engine, EngineConfig};
+    use crate::core::events::StreamEvent;
+    use crate::core::types::{
+        ApprovalDecision, ApprovalPolicy, CallId, JobId, Message, RunId, RunRequest, SessionId,
+        TerminationReason, ToolApprovalRequest, ToolSchema, Usage, UserInputRequest,
+    };
+    use crate::core::workspace::Workspace;
+    use crate::errors::ModelError;
     use crate::interfaces::cli::args::CliApprovalPolicy;
     use crate::interfaces::cli::runtime::{
-        CliRuntimeInteraction, CliRuntimeOptions, build_cli_runtime,
+        CliRuntime, CliRuntimeInteraction, CliRuntimeOptions, build_cli_runtime,
+    };
+    use crate::interfaces::terminal::action::TerminalAction;
+    use crate::interfaces::terminal::interaction::{
+        TerminalInteractionProviders, TerminalInteractionRequest, bounded_interaction_channel,
     };
     use crate::interfaces::terminal::view::RunViewUpdate;
-    use crate::interfaces::tui::state::{RunLifecycle, TuiState};
+    use crate::interfaces::tui::action::TuiAction;
+    use crate::interfaces::tui::reducer::reduce;
+    use crate::interfaces::tui::state::{
+        InteractionKeyMode, InteractionModalView, RunLifecycle, TuiState,
+    };
+    use crate::models::fake::{FakeModelClient, FakeTurn};
+    use crate::models::traits::{ModelClient, ModelClientId, ModelEvent};
+    use crate::state::store::StateStore;
+    use crate::tools::default_tool_registry;
 
-    use super::{ShutdownSignal, TuiApp, active_ui_loop, run_loop, run_prompt};
+    use super::{
+        ActiveUiControl, InteractionController, PressedKeys, ShutdownInput, ShutdownSignal, TuiApp,
+        active_ui_loop, discard_queued_interactions, run_loop, run_prompt,
+    };
+
+    struct FailingDrawBackend {
+        inner: TestBackend,
+    }
+
+    struct GatedModelClient {
+        entered: Arc<Notify>,
+        release: Arc<Notify>,
+    }
+
+    impl ModelClient for GatedModelClient {
+        fn stream(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolSchema],
+        ) -> BoxStream<'_, Result<ModelEvent, ModelError>> {
+            let entered = Arc::clone(&self.entered);
+            let release = Arc::clone(&self.release);
+            Box::pin(
+                stream::once(async move {
+                    entered.notify_one();
+                    release.notified().await;
+                    Ok(ModelEvent::TextDelta {
+                        text: "TUI_GATED_RESPONSE".to_string(),
+                    })
+                })
+                .chain(stream::iter([Ok(ModelEvent::Usage {
+                    usage: Usage::default(),
+                })])),
+            )
+        }
+
+        fn model_id(&self) -> &str {
+            "gated-test"
+        }
+
+        fn client_id(&self) -> ModelClientId {
+            ModelClientId::new("fake", "local", self.model_id())
+        }
+    }
+
+    impl FailingDrawBackend {
+        fn new(width: u16, height: u16) -> Self {
+            Self {
+                inner: TestBackend::new(width, height),
+            }
+        }
+    }
+
+    impl Backend for FailingDrawBackend {
+        type Error = io::Error;
+
+        fn draw<'a, I>(&mut self, _content: I) -> Result<(), Self::Error>
+        where
+            I: Iterator<Item = (u16, u16, &'a Cell)>,
+        {
+            Err(io::Error::other("injected draw failure"))
+        }
+
+        fn hide_cursor(&mut self) -> Result<(), Self::Error> {
+            self.inner.hide_cursor().map_err(|never| match never {})
+        }
+
+        fn show_cursor(&mut self) -> Result<(), Self::Error> {
+            self.inner.show_cursor().map_err(|never| match never {})
+        }
+
+        fn get_cursor_position(&mut self) -> Result<Position, Self::Error> {
+            self.inner
+                .get_cursor_position()
+                .map_err(|never| match never {})
+        }
+
+        fn set_cursor_position<P: Into<Position>>(
+            &mut self,
+            position: P,
+        ) -> Result<(), Self::Error> {
+            self.inner
+                .set_cursor_position(position)
+                .map_err(|never| match never {})
+        }
+
+        fn clear(&mut self) -> Result<(), Self::Error> {
+            self.inner.clear().map_err(|never| match never {})
+        }
+
+        fn clear_region(&mut self, clear_type: ClearType) -> Result<(), Self::Error> {
+            self.inner
+                .clear_region(clear_type)
+                .map_err(|never| match never {})
+        }
+
+        fn size(&self) -> Result<Size, Self::Error> {
+            self.inner.size().map_err(|never| match never {})
+        }
+
+        fn window_size(&mut self) -> Result<WindowSize, Self::Error> {
+            self.inner.window_size().map_err(|never| match never {})
+        }
+
+        fn flush(&mut self) -> Result<(), Self::Error> {
+            self.inner.flush().map_err(|never| match never {})
+        }
+    }
 
     async fn send_and_wait_for_receive<T>(sender: &mpsc::Sender<T>, value: T) {
         sender.send(value).await.unwrap();
@@ -465,24 +1080,899 @@ mod tests {
         drop(permit);
     }
 
-    #[tokio::test]
-    async fn fake_prompt_reaches_shared_engine_and_finalizes_artifacts() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let runtime = build_cli_runtime(CliRuntimeOptions {
-            cwd: Some(tmp.path().to_path_buf()),
-            model: Some("fake".to_string()),
-            max_steps: None,
-            approval: CliApprovalPolicy::Never,
-            task_workspace: None,
-            task_base: None,
-            initial_fake_response: Some("TUI_FAKE_RESPONSE".to_string()),
-            interaction: CliRuntimeInteraction::Providers {
-                input_provider: None,
-                approval_provider: None,
-            },
+    async fn wait_until_interaction_dequeued(providers: &TerminalInteractionProviders) {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                match providers
+                    .input_provider
+                    .begin_input(
+                        CallId::new(),
+                        UserInputRequest {
+                            prompt: "capacity probe".to_string(),
+                        },
+                    )
+                    .await
+                {
+                    Ok(probe) => {
+                        drop(probe);
+                        return;
+                    }
+                    Err(error) if error.to_string().contains("full") => {
+                        tokio::task::yield_now().await;
+                    }
+                    Err(error) => panic!("interaction probe failed unexpectedly: {error}"),
+                }
+            }
         })
         .await
+        .expect("active loop must dequeue the live interaction");
+        tokio::task::yield_now().await;
+    }
+
+    fn approval_request(
+        call_id: CallId,
+    ) -> (
+        TerminalInteractionRequest,
+        oneshot::Receiver<ApprovalDecision>,
+    ) {
+        let (respond_to, response) = oneshot::channel();
+        (
+            TerminalInteractionRequest::Approval {
+                request: ToolApprovalRequest {
+                    call_id,
+                    name: "fs_write".to_string(),
+                    args: serde_json::json!({"path":"out.txt"}),
+                    reason: "writes a file".to_string(),
+                },
+                respond_to,
+            },
+            response,
+        )
+    }
+
+    fn input_request(input_id: CallId) -> (TerminalInteractionRequest, oneshot::Receiver<String>) {
+        let (respond_to, response) = oneshot::channel();
+        (
+            TerminalInteractionRequest::Input {
+                input_id,
+                request: UserInputRequest {
+                    prompt: "Which branch?".to_string(),
+                },
+                respond_to,
+            },
+            response,
+        )
+    }
+
+    fn approval_view(call_id: CallId) -> InteractionModalView {
+        InteractionModalView::Approval {
+            call_id,
+            name: "fs_write".to_string(),
+            args: serde_json::json!({"path":"out.txt"}),
+            reason: "writes a file".to_string(),
+        }
+    }
+
+    fn input_view(input_id: CallId) -> InteractionModalView {
+        InteractionModalView::Input {
+            input_id,
+            prompt: "Which branch?".to_string(),
+            draft: String::new(),
+        }
+    }
+
+    fn arm_controller(controller: &mut InteractionController) {
+        controller.after_modal_draw(true);
+        assert!(!controller.is_armed());
+        controller.after_modal_draw(true);
+        assert!(controller.is_armed());
+    }
+
+    #[test]
+    fn controller_requires_both_halves_and_supports_either_arrival_order() {
+        let approval_id = CallId::new();
+        let (approval, mut approval_response) = approval_request(approval_id);
+        let mut state = TuiState {
+            run_lifecycle: RunLifecycle::Running,
+            ..TuiState::default()
+        };
+        let mut controller = InteractionController::default();
+
+        controller.offer_request(approval, &mut state);
+        assert!(state.modal.is_none());
+        controller.offer_view(approval_view(approval_id), &mut state);
+        assert!(matches!(
+            state.modal,
+            Some(InteractionModalView::Approval { call_id, .. }) if call_id == approval_id
+        ));
+        controller.resolve(&TerminalAction::ApproveTool {
+            call_id: approval_id,
+        });
+        assert!(matches!(
+            approval_response.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+        arm_controller(&mut controller);
+
+        let wrong_id = CallId::new();
+        controller.resolve(&TerminalAction::ApproveTool { call_id: wrong_id });
+        assert!(matches!(
+            approval_response.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+
+        let effect = reduce(
+            &mut state,
+            TuiAction::ApproveInteraction {
+                call_id: approval_id,
+            },
+        )
+        .pop()
         .unwrap();
+        let crate::interfaces::tui::effect::TuiEffect::Dispatch(action) = effect else {
+            panic!("approval must produce a dispatch effect");
+        };
+        controller.resolve(&action);
+        assert_eq!(
+            approval_response.try_recv().unwrap(),
+            ApprovalDecision::Approve
+        );
+        controller.resolve(&action);
+
+        let input_id = CallId::new();
+        let (input, mut input_response) = input_request(input_id);
+        controller.offer_view(input_view(input_id), &mut state);
+        assert!(state.modal.is_none());
+        controller.offer_request(input, &mut state);
+        assert!(matches!(
+            state.modal,
+            Some(InteractionModalView::Input { input_id: current, .. }) if current == input_id
+        ));
+        arm_controller(&mut controller);
+        reduce(&mut state, TuiAction::InsertChar(' '));
+        reduce(&mut state, TuiAction::InsertChar(' '));
+        let effect = reduce(&mut state, TuiAction::SubmitInteraction { input_id })
+            .pop()
+            .unwrap();
+        let crate::interfaces::tui::effect::TuiEffect::Dispatch(action) = effect else {
+            panic!("input must produce a dispatch effect");
+        };
+        controller.resolve(&action);
+        assert_eq!(input_response.try_recv().unwrap(), "  ");
+
+        let empty_id = CallId::new();
+        let (empty_input, mut empty_response) = input_request(empty_id);
+        controller.offer_request(empty_input, &mut state);
+        controller.offer_view(input_view(empty_id), &mut state);
+        arm_controller(&mut controller);
+        let effect = reduce(
+            &mut state,
+            TuiAction::SubmitInteraction { input_id: empty_id },
+        )
+        .pop()
+        .unwrap();
+        let crate::interfaces::tui::effect::TuiEffect::Dispatch(action) = effect else {
+            panic!("empty input must still produce a dispatch effect");
+        };
+        controller.resolve(&action);
+        assert_eq!(empty_response.try_recv().unwrap(), "");
+    }
+
+    #[test]
+    fn controller_fails_closed_for_closed_mismatched_and_extra_requests() {
+        let first_id = CallId::new();
+        let (closed, closed_response) = approval_request(first_id);
+        let mut state = TuiState {
+            run_lifecycle: RunLifecycle::Running,
+            ..TuiState::default()
+        };
+        let mut controller = InteractionController::default();
+        controller.offer_request(closed, &mut state);
+        drop(closed_response);
+        controller.offer_view(approval_view(first_id), &mut state);
+        assert!(state.modal.is_none());
+        assert!(controller.active_request.is_none());
+
+        let mismatch_id = CallId::new();
+        let (mismatched, mut mismatched_response) = approval_request(mismatch_id);
+        controller.offer_request(mismatched, &mut state);
+        controller.offer_view(input_view(mismatch_id), &mut state);
+        assert!(state.modal.is_none());
+        assert!(matches!(
+            mismatched_response.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+
+        controller.offer_view(approval_view(mismatch_id), &mut state);
+        assert!(matches!(
+            state.modal,
+            Some(InteractionModalView::Approval { call_id, .. }) if call_id == mismatch_id
+        ));
+
+        let extra_id = CallId::new();
+        let (extra, mut extra_response) = input_request(extra_id);
+        controller.offer_request(extra, &mut state);
+        assert!(matches!(
+            extra_response.try_recv(),
+            Err(oneshot::error::TryRecvError::Closed)
+        ));
+        assert!(matches!(
+            state.modal,
+            Some(InteractionModalView::Approval { call_id, .. }) if call_id == mismatch_id
+        ));
+
+        controller.clear(&mut state);
+        assert!(matches!(
+            mismatched_response.try_recv(),
+            Err(oneshot::error::TryRecvError::Closed)
+        ));
+
+        let wrong_view_id = CallId::new();
+        let (request, mut response) = approval_request(extra_id);
+        controller.offer_request(request, &mut state);
+        controller.offer_view(approval_view(wrong_view_id), &mut state);
+        assert!(state.modal.is_none());
+        assert!(matches!(
+            response.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+        controller.offer_view(approval_view(extra_id), &mut state);
+        assert!(state.modal.is_some());
+    }
+
+    #[tokio::test]
+    async fn discarding_queued_requests_releases_waiters_before_the_next_run() {
+        let (providers, mut interactions) = bounded_interaction_channel(2);
+        let pending = providers
+            .approval_provider
+            .begin_approval(ToolApprovalRequest {
+                call_id: CallId::new(),
+                name: "fs_write".to_string(),
+                args: serde_json::json!({"path":"old.txt"}),
+                reason: "old run".to_string(),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(discard_queued_interactions(&mut interactions), 1);
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), pending.resolve())
+                .await
+                .unwrap(),
+            ApprovalDecision::Reject
+        );
+        assert!(interactions.is_empty());
+        assert_eq!(interactions.capacity(), interactions.max_capacity());
+    }
+
+    #[tokio::test]
+    async fn rejected_tui_approval_never_runs_the_destructive_tool() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let workspace = Workspace::detect(tmp.path()).unwrap();
+        let blocked_path = workspace.root.join("blocked.txt");
+        let (providers, mut interactions) = bounded_interaction_channel(2);
+        let engine = Engine::with_workspace(
+            Box::new(FakeModelClient::with_turns(
+                "finished".to_string(),
+                vec![
+                    FakeTurn::ToolUse {
+                        id: "write-1".to_string(),
+                        name: "fs_write".to_string(),
+                        args: serde_json::json!({
+                            "path": "blocked.txt",
+                            "content": "must not be written"
+                        }),
+                    },
+                    FakeTurn::Text("finished".to_string()),
+                ],
+            )),
+            default_tool_registry(&workspace),
+            ContextManager::new("You are a test agent.".to_string()),
+            EngineConfig {
+                max_steps: 3,
+                plan_enabled: false,
+            },
+            workspace,
+            ApprovalPolicy::Ask,
+        )
+        .with_approval_provider(providers.approval_provider.clone());
+        let cancel = CancellationToken::new();
+        let stream = engine.run_with_cancel(
+            RunRequest {
+                session_id: SessionId::new(),
+                job_id: JobId::new(),
+                run_id: RunId::new(),
+                user_message: "write a blocked file".to_string(),
+                resume_state: None,
+            },
+            None,
+            cancel,
+        );
+        futures::pin_mut!(stream);
+        let mut state = TuiState {
+            run_lifecycle: RunLifecycle::Running,
+            ..TuiState::default()
+        };
+        let mut controller = InteractionController::default();
+        let mut saw_canonical_approval = false;
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                tokio::select! {
+                    request = interactions.recv() => {
+                        controller.offer_request(request.unwrap(), &mut state);
+                    }
+                    event = stream.next() => {
+                        let event = event.expect("engine must emit RunCompleted");
+                        let canonical_approval =
+                            matches!(event, StreamEvent::ToolCallApprovalNeeded { .. });
+                        if canonical_approval {
+                            saw_canonical_approval = true;
+                        }
+                        let completed = matches!(event, StreamEvent::RunCompleted { .. });
+                        let update = RunViewUpdate::from(&event);
+                        state.apply_run_update(update.clone());
+                        controller.observe_update(&update, &mut state);
+                        if canonical_approval {
+                            assert!(
+                                controller.waiting_request.is_some()
+                                    || controller.active_request.is_some()
+                                    || !interactions.is_empty(),
+                                "canonical approval must not precede responder registration"
+                            );
+                        }
+                        if completed {
+                            break;
+                        }
+                    }
+                }
+
+                if let Some(InteractionModalView::Approval { call_id, .. }) = state.modal.as_ref() {
+                    let call_id = *call_id;
+                    arm_controller(&mut controller);
+                    let effect = reduce(&mut state, TuiAction::RejectInteraction { call_id })
+                        .pop()
+                        .unwrap();
+                    let crate::interfaces::tui::effect::TuiEffect::Dispatch(action) = effect else {
+                        panic!("rejection must produce a dispatch effect");
+                    };
+                    controller.resolve(&action);
+                }
+            }
+        })
+        .await
+        .expect("rejected destructive run must finish promptly");
+
+        assert!(saw_canonical_approval);
+        assert!(!blocked_path.exists());
+        assert!(state.modal.is_none());
+    }
+
+    #[tokio::test]
+    async fn active_loop_approval_requires_a_matching_real_key_press() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let (event_tx, event_rx) = mpsc::channel(1);
+        let _event_keepalive = event_tx.clone();
+        let mut events = ReceiverStream::new(event_rx);
+        let (_shutdown_tx, mut shutdown) = mpsc::channel(1);
+        let mut shutdown_open = true;
+        let (updates_tx, updates_rx) = mpsc::channel(1);
+        let (providers, mut interactions) = bounded_interaction_channel(1);
+        let _provider_keepalive = providers.clone();
+        let call_id = CallId::new();
+        let pending = providers
+            .approval_provider
+            .begin_approval(ToolApprovalRequest {
+                call_id,
+                name: "fs_write".to_string(),
+                args: serde_json::json!({"path":"approved.txt"}),
+                reason: "writes a file".to_string(),
+            })
+            .await
+            .unwrap();
+        let decision = tokio::spawn(pending.resolve());
+        let cancel = CancellationToken::new();
+        let mut state = TuiState {
+            run_lifecycle: RunLifecycle::Running,
+            ..TuiState::default()
+        };
+        let mut pressed_keys = PressedKeys::default();
+
+        let producer = async move {
+            send_and_wait_for_receive(
+                &updates_tx,
+                RunViewUpdate::RunStarted {
+                    run_id: RunId::new(),
+                    job_id: JobId::new(),
+                    user_message: "approve safely".to_string(),
+                },
+            )
+            .await;
+            send_and_wait_for_receive(
+                &event_tx,
+                Ok(Event::Key(KeyEvent::new(
+                    KeyCode::Char('y'),
+                    KeyModifiers::NONE,
+                ))),
+            )
+            .await;
+            send_and_wait_for_receive(
+                &updates_tx,
+                RunViewUpdate::ToolCallApprovalNeeded {
+                    call_id,
+                    name: "fs_write".to_string(),
+                    args: serde_json::json!({"path":"approved.txt"}),
+                    reason: "writes a file".to_string(),
+                },
+            )
+            .await;
+            wait_until_interaction_dequeued(&providers).await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            assert!(!decision.is_finished());
+
+            for event in [
+                Event::Key(KeyEvent::new_with_kind(
+                    KeyCode::Char('y'),
+                    KeyModifiers::NONE,
+                    KeyEventKind::Repeat,
+                )),
+                Event::Key(KeyEvent::new_with_kind(
+                    KeyCode::Char('y'),
+                    KeyModifiers::NONE,
+                    KeyEventKind::Release,
+                )),
+                Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+                Event::Key(KeyEvent::new_with_kind(
+                    KeyCode::Enter,
+                    KeyModifiers::NONE,
+                    KeyEventKind::Release,
+                )),
+                Event::Paste("y".to_string()),
+            ] {
+                send_and_wait_for_receive(&event_tx, Ok(event)).await;
+            }
+            tokio::task::yield_now().await;
+            assert!(!decision.is_finished());
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            assert!(!decision.is_finished());
+
+            send_and_wait_for_receive(
+                &event_tx,
+                Ok(Event::Key(KeyEvent::new(
+                    KeyCode::Char('y'),
+                    KeyModifiers::NONE,
+                ))),
+            )
+            .await;
+            let decision = tokio::time::timeout(Duration::from_secs(1), decision)
+                .await
+                .unwrap()
+                .unwrap();
+            updates_tx
+                .send(RunViewUpdate::RunCompleted {
+                    reason: TerminationReason::Final,
+                    output: Some("approved".to_string()),
+                })
+                .await
+                .unwrap();
+            decision
+        };
+        let ui = active_ui_loop(
+            &mut terminal,
+            &mut events,
+            ShutdownInput {
+                receiver: &mut shutdown,
+                open: &mut shutdown_open,
+            },
+            updates_rx,
+            &mut interactions,
+            ActiveUiControl {
+                cancel,
+                pressed_keys: &mut pressed_keys,
+            },
+            &mut state,
+        );
+
+        let (decision, ui_result) =
+            tokio::time::timeout(Duration::from_secs(2), async { tokio::join!(producer, ui) })
+                .await
+                .unwrap();
+
+        assert_eq!(decision, ApprovalDecision::Approve);
+        ui_result.unwrap();
+        assert!(state.modal.is_none());
+    }
+
+    #[tokio::test]
+    async fn active_loop_function_key_mode_requires_fresh_y_then_f8() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let (event_tx, event_rx) = mpsc::channel(1);
+        let _event_keepalive = event_tx.clone();
+        let mut events = ReceiverStream::new(event_rx);
+        let (_shutdown_tx, mut shutdown) = mpsc::channel(1);
+        let mut shutdown_open = true;
+        let (updates_tx, updates_rx) = mpsc::channel(1);
+        let (providers, mut interactions) = bounded_interaction_channel(1);
+        let _provider_keepalive = providers.clone();
+        let call_id = CallId::new();
+        let pending = providers
+            .approval_provider
+            .begin_approval(ToolApprovalRequest {
+                call_id,
+                name: "fs_write".to_string(),
+                args: serde_json::json!({"path":"approved.txt"}),
+                reason: "writes a file".to_string(),
+            })
+            .await
+            .unwrap();
+        let decision = tokio::spawn(pending.resolve());
+        let cancel = CancellationToken::new();
+        let mut state = TuiState {
+            run_lifecycle: RunLifecycle::Running,
+            interaction_key_mode: InteractionKeyMode::ConfirmWithFunctionKey,
+            ..TuiState::default()
+        };
+        let mut pressed_keys = PressedKeys::default();
+
+        let producer = async move {
+            send_and_wait_for_receive(
+                &updates_tx,
+                RunViewUpdate::ToolCallApprovalNeeded {
+                    call_id,
+                    name: "fs_write".to_string(),
+                    args: serde_json::json!({"path":"approved.txt"}),
+                    reason: "writes a file".to_string(),
+                },
+            )
+            .await;
+            wait_until_interaction_dequeued(&providers).await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
+
+            for event in [
+                Event::Key(KeyEvent::new(KeyCode::F(8), KeyModifiers::NONE)),
+                Event::Key(KeyEvent::new_with_kind(
+                    KeyCode::F(8),
+                    KeyModifiers::NONE,
+                    KeyEventKind::Release,
+                )),
+                Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+                Event::Key(KeyEvent::new_with_kind(
+                    KeyCode::Enter,
+                    KeyModifiers::NONE,
+                    KeyEventKind::Release,
+                )),
+                Event::Paste("y".to_string()),
+                Event::Key(KeyEvent::new_with_kind(
+                    KeyCode::Char('y'),
+                    KeyModifiers::NONE,
+                    KeyEventKind::Repeat,
+                )),
+                Event::Key(KeyEvent::new_with_kind(
+                    KeyCode::Char('y'),
+                    KeyModifiers::NONE,
+                    KeyEventKind::Release,
+                )),
+                Event::Key(KeyEvent::new_with_kind(
+                    KeyCode::F(8),
+                    KeyModifiers::NONE,
+                    KeyEventKind::Repeat,
+                )),
+                Event::Key(KeyEvent::new_with_kind(
+                    KeyCode::F(8),
+                    KeyModifiers::NONE,
+                    KeyEventKind::Release,
+                )),
+            ] {
+                send_and_wait_for_receive(&event_tx, Ok(event)).await;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            assert!(!decision.is_finished());
+
+            send_and_wait_for_receive(
+                &event_tx,
+                Ok(Event::Key(KeyEvent::new(
+                    KeyCode::Char('y'),
+                    KeyModifiers::NONE,
+                ))),
+            )
+            .await;
+            send_and_wait_for_receive(
+                &event_tx,
+                Ok(Event::Key(KeyEvent::new_with_kind(
+                    KeyCode::Char('y'),
+                    KeyModifiers::NONE,
+                    KeyEventKind::Release,
+                ))),
+            )
+            .await;
+            tokio::task::yield_now().await;
+            assert!(!decision.is_finished());
+
+            for event in [
+                Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+                Event::Key(KeyEvent::new_with_kind(
+                    KeyCode::Enter,
+                    KeyModifiers::NONE,
+                    KeyEventKind::Release,
+                )),
+                Event::Paste("f8".to_string()),
+                Event::Key(KeyEvent::new_with_kind(
+                    KeyCode::F(8),
+                    KeyModifiers::NONE,
+                    KeyEventKind::Repeat,
+                )),
+                Event::Key(KeyEvent::new_with_kind(
+                    KeyCode::F(8),
+                    KeyModifiers::NONE,
+                    KeyEventKind::Release,
+                )),
+            ] {
+                send_and_wait_for_receive(&event_tx, Ok(event)).await;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            assert!(!decision.is_finished());
+
+            send_and_wait_for_receive(
+                &event_tx,
+                Ok(Event::Key(KeyEvent::new(KeyCode::F(8), KeyModifiers::NONE))),
+            )
+            .await;
+            let decision = tokio::time::timeout(Duration::from_secs(1), decision)
+                .await
+                .unwrap()
+                .unwrap();
+            updates_tx
+                .send(RunViewUpdate::RunCompleted {
+                    reason: TerminationReason::Final,
+                    output: Some("approved".to_string()),
+                })
+                .await
+                .unwrap();
+            decision
+        };
+        let ui = active_ui_loop(
+            &mut terminal,
+            &mut events,
+            ShutdownInput {
+                receiver: &mut shutdown,
+                open: &mut shutdown_open,
+            },
+            updates_rx,
+            &mut interactions,
+            ActiveUiControl {
+                cancel,
+                pressed_keys: &mut pressed_keys,
+            },
+            &mut state,
+        );
+
+        let (decision, ui_result) =
+            tokio::time::timeout(Duration::from_secs(3), async { tokio::join!(producer, ui) })
+                .await
+                .unwrap();
+
+        assert_eq!(decision, ApprovalDecision::Approve);
+        ui_result.unwrap();
+        assert!(state.modal.is_none());
+        assert_eq!(state.approval_confirmation, None);
+    }
+
+    #[tokio::test]
+    async fn active_loop_input_submits_pasted_whitespace_without_normalizing_it() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let (event_tx, event_rx) = mpsc::channel(1);
+        let _event_keepalive = event_tx.clone();
+        let mut events = ReceiverStream::new(event_rx);
+        let (_shutdown_tx, mut shutdown) = mpsc::channel(1);
+        let mut shutdown_open = true;
+        let (updates_tx, updates_rx) = mpsc::channel(1);
+        let (providers, mut interactions) = bounded_interaction_channel(1);
+        let _provider_keepalive = providers.clone();
+        let input_id = CallId::new();
+        let pending = providers
+            .input_provider
+            .begin_input(
+                input_id,
+                UserInputRequest {
+                    prompt: "Exact answer?".to_string(),
+                },
+            )
+            .await
+            .unwrap();
+        let answer = tokio::spawn(pending.resolve());
+        let cancel = CancellationToken::new();
+        let mut state = TuiState {
+            run_lifecycle: RunLifecycle::Running,
+            ..TuiState::default()
+        };
+        let mut pressed_keys = PressedKeys::default();
+
+        let producer = async move {
+            send_and_wait_for_receive(
+                &updates_tx,
+                RunViewUpdate::InputNeeded {
+                    input_id,
+                    prompt: "Exact answer?".to_string(),
+                },
+            )
+            .await;
+            wait_until_interaction_dequeued(&providers).await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            send_and_wait_for_receive(&event_tx, Ok(Event::Paste("  \t ".to_string()))).await;
+            send_and_wait_for_receive(
+                &event_tx,
+                Ok(Event::Key(KeyEvent::new(
+                    KeyCode::Enter,
+                    KeyModifiers::NONE,
+                ))),
+            )
+            .await;
+            let answer = tokio::time::timeout(Duration::from_secs(1), answer)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            updates_tx
+                .send(RunViewUpdate::RunCompleted {
+                    reason: TerminationReason::Final,
+                    output: Some("answered".to_string()),
+                })
+                .await
+                .unwrap();
+            answer
+        };
+        let ui = active_ui_loop(
+            &mut terminal,
+            &mut events,
+            ShutdownInput {
+                receiver: &mut shutdown,
+                open: &mut shutdown_open,
+            },
+            updates_rx,
+            &mut interactions,
+            ActiveUiControl {
+                cancel,
+                pressed_keys: &mut pressed_keys,
+            },
+            &mut state,
+        );
+
+        let (answer, ui_result) =
+            tokio::time::timeout(Duration::from_secs(2), async { tokio::join!(producer, ui) })
+                .await
+                .unwrap();
+
+        assert_eq!(answer, "  \t ");
+        ui_result.unwrap();
+        assert!(state.modal.is_none());
+    }
+
+    #[tokio::test]
+    async fn active_loop_rejects_interactions_when_key_event_types_are_unreliable() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut events = stream::pending::<io::Result<Event>>();
+        let (_shutdown_tx, mut shutdown) = mpsc::channel(1);
+        let mut shutdown_open = true;
+        let (updates_tx, updates_rx) = mpsc::channel(1);
+        let (providers, mut interactions) = bounded_interaction_channel(2);
+        let approval_id = CallId::new();
+        let input_id = CallId::new();
+        let approval = providers
+            .approval_provider
+            .begin_approval(ToolApprovalRequest {
+                call_id: approval_id,
+                name: "fs_write".to_string(),
+                args: serde_json::json!({"path":"blocked.txt"}),
+                reason: "writes a file".to_string(),
+            })
+            .await
+            .unwrap();
+        let input = providers
+            .input_provider
+            .begin_input(
+                input_id,
+                UserInputRequest {
+                    prompt: "Unsafe terminal?".to_string(),
+                },
+            )
+            .await
+            .unwrap();
+        let approval = tokio::spawn(approval.resolve());
+        let input = tokio::spawn(input.resolve());
+        let cancel = CancellationToken::new();
+        let mut state = TuiState {
+            run_lifecycle: RunLifecycle::Running,
+            interaction_key_mode: InteractionKeyMode::Unavailable,
+            ..TuiState::default()
+        };
+        let mut pressed_keys = PressedKeys::default();
+
+        let producer = async move {
+            updates_tx
+                .send(RunViewUpdate::ToolCallApprovalNeeded {
+                    call_id: approval_id,
+                    name: "fs_write".to_string(),
+                    args: serde_json::json!({"path":"blocked.txt"}),
+                    reason: "writes a file".to_string(),
+                })
+                .await
+                .unwrap();
+            updates_tx
+                .send(RunViewUpdate::InputNeeded {
+                    input_id,
+                    prompt: "Unsafe terminal?".to_string(),
+                })
+                .await
+                .unwrap();
+            let approval = approval.await.unwrap();
+            let input = input.await.unwrap().unwrap_err();
+            updates_tx
+                .send(RunViewUpdate::RunCompleted {
+                    reason: TerminationReason::Final,
+                    output: None,
+                })
+                .await
+                .unwrap();
+            (approval, input)
+        };
+        let ui = active_ui_loop(
+            &mut terminal,
+            &mut events,
+            ShutdownInput {
+                receiver: &mut shutdown,
+                open: &mut shutdown_open,
+            },
+            updates_rx,
+            &mut interactions,
+            ActiveUiControl {
+                cancel,
+                pressed_keys: &mut pressed_keys,
+            },
+            &mut state,
+        );
+
+        let ((approval, input), ui_result) =
+            tokio::time::timeout(Duration::from_secs(2), async { tokio::join!(producer, ui) })
+                .await
+                .unwrap();
+
+        assert_eq!(approval, ApprovalDecision::Reject);
+        assert!(input.to_string().contains("response was dropped"));
+        ui_result.unwrap();
+        assert!(state.modal.is_none());
+    }
+
+    #[tokio::test]
+    async fn run_prompt_rejects_stale_interaction_before_polling_next_run() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let workspace = Workspace::detect(tmp.path()).unwrap();
+        workspace.ensure_state_dir().unwrap();
+        let entered = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let engine = Engine::with_workspace(
+            Box::new(GatedModelClient {
+                entered: Arc::clone(&entered),
+                release: Arc::clone(&release),
+            }),
+            default_tool_registry(&workspace),
+            ContextManager::new("You are a test agent.".to_string()),
+            EngineConfig {
+                max_steps: 1,
+                plan_enabled: false,
+            },
+            workspace.clone(),
+            ApprovalPolicy::Never,
+        );
+        let runtime = CliRuntime {
+            state_store: StateStore::new(&workspace.state_dir),
+            workspace,
+            config: AppConfig::default(),
+            engine,
+        };
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut events = stream::pending::<io::Result<Event>>();
@@ -490,22 +1980,54 @@ mod tests {
         let mut shutdown_open = true;
         let mut app = TuiApp::default();
         app.state.run_lifecycle = RunLifecycle::Running;
+        let (interaction_providers, mut interactions) = bounded_interaction_channel(8);
+        let stale_approval = interaction_providers
+            .approval_provider
+            .begin_approval(ToolApprovalRequest {
+                call_id: CallId::new(),
+                name: "fs_write".to_string(),
+                args: serde_json::json!({"path":"stale.txt"}),
+                reason: "belongs to an earlier run".to_string(),
+            })
+            .await
+            .unwrap();
 
-        let result = run_prompt(
+        let run = run_prompt(
             &mut terminal,
             &mut events,
-            &mut shutdown,
-            &mut shutdown_open,
+            ShutdownInput {
+                receiver: &mut shutdown,
+                open: &mut shutdown_open,
+            },
             &runtime,
             &mut app,
             "hello from tui".to_string(),
-        )
+            &mut interactions,
+        );
+        let stale_before_completion = async {
+            entered.notified().await;
+            let result =
+                tokio::time::timeout(Duration::from_secs(1), stale_approval.resolve()).await;
+            release.notify_one();
+            result
+        };
+        let (result, stale_decision) = tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(run, stale_before_completion)
+        })
         .await
         .unwrap();
+        let result = result.unwrap();
 
         assert_eq!(result.reason, TerminationReason::Final);
+        assert_eq!(
+            stale_decision
+                .expect("stale interaction must be rejected before the model is released"),
+            ApprovalDecision::Reject
+        );
+        assert!(interactions.is_empty());
+        assert_eq!(interactions.capacity(), interactions.max_capacity());
         assert_eq!(app.state.run_lifecycle, RunLifecycle::Completed);
-        assert!(app.state.run.assistant_text.contains("TUI_FAKE_RESPONSE"));
+        assert!(app.state.run.assistant_text.contains("TUI_GATED_RESPONSE"));
         let run_dir = runtime.state_store.run_store.run_dir(&result.run_id);
         assert!(run_dir.join("trace.jsonl").exists());
         assert!(run_dir.join("task_state.json").exists());
@@ -523,8 +2045,9 @@ mod tests {
     async fn ctrl_c_cancels_an_active_run_and_waits_for_canonical_completion() {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
-        let key = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
-        let mut events = stream::iter(vec![Ok(Event::Key(key))]).chain(stream::pending());
+        let (event_tx, event_rx) = mpsc::channel(1);
+        let _event_keepalive = event_tx.clone();
+        let mut events = ReceiverStream::new(event_rx);
         let (_shutdown_tx, mut shutdown) = mpsc::channel(1);
         let mut shutdown_open = true;
         let (updates_tx, updates_rx) = mpsc::channel(1);
@@ -534,6 +2057,20 @@ mod tests {
             run_lifecycle: RunLifecycle::Running,
             ..TuiState::default()
         };
+        let mut pressed_keys = PressedKeys::default();
+        let (interaction_providers, mut interactions) = bounded_interaction_channel(8);
+        let _provider_keepalive = interaction_providers.clone();
+        let call_id = CallId::new();
+        let pending_approval = interaction_providers
+            .approval_provider
+            .begin_approval(ToolApprovalRequest {
+                call_id,
+                name: "fs_write".to_string(),
+                args: serde_json::json!({"path":"cancelled.txt"}),
+                reason: "writes a file".to_string(),
+            })
+            .await
+            .unwrap();
         let run_id = RunId::new();
         let producer = async move {
             updates_tx
@@ -544,7 +2081,38 @@ mod tests {
                 })
                 .await
                 .unwrap();
+            send_and_wait_for_receive(
+                &updates_tx,
+                RunViewUpdate::ToolCallApprovalNeeded {
+                    call_id,
+                    name: "fs_write".to_string(),
+                    args: serde_json::json!({"path":"cancelled.txt"}),
+                    reason: "writes a file".to_string(),
+                },
+            )
+            .await;
+            wait_until_interaction_dequeued(&interaction_providers).await;
+            send_and_wait_for_receive(
+                &event_tx,
+                Ok(Event::Key(KeyEvent::new_with_kind(
+                    KeyCode::Char('y'),
+                    KeyModifiers::NONE,
+                    KeyEventKind::Repeat,
+                ))),
+            )
+            .await;
+            send_and_wait_for_receive(
+                &event_tx,
+                Ok(Event::Key(KeyEvent::new(
+                    KeyCode::Char('c'),
+                    KeyModifiers::CONTROL,
+                ))),
+            )
+            .await;
             cancel_for_producer.cancelled().await;
+            let decision = tokio::time::timeout(Duration::from_secs(1), pending_approval.resolve())
+                .await
+                .unwrap();
             updates_tx
                 .send(RunViewUpdate::RunCompleted {
                     reason: TerminationReason::Cancelled,
@@ -552,23 +2120,29 @@ mod tests {
                 })
                 .await
                 .unwrap();
+            decision
         };
         let ui = active_ui_loop(
             &mut terminal,
             &mut events,
-            &mut shutdown,
-            &mut shutdown_open,
+            ShutdownInput {
+                receiver: &mut shutdown,
+                open: &mut shutdown_open,
+            },
             updates_rx,
-            cancel.clone(),
+            &mut interactions,
+            ActiveUiControl {
+                cancel: cancel.clone(),
+                pressed_keys: &mut pressed_keys,
+            },
             &mut state,
         );
 
-        tokio::time::timeout(Duration::from_secs(2), async {
-            let ((), result) = tokio::join!(producer, ui);
-            result.unwrap();
-        })
-        .await
-        .unwrap();
+        let (decision, result) =
+            tokio::time::timeout(Duration::from_secs(2), async { tokio::join!(producer, ui) })
+                .await
+                .unwrap();
+        result.unwrap();
 
         assert!(cancel.is_cancelled());
         assert_eq!(state.run_lifecycle, RunLifecycle::Completed);
@@ -576,6 +2150,8 @@ mod tests {
             state.run.completed.as_ref().map(|view| &view.reason),
             Some(TerminationReason::Cancelled)
         ));
+        assert!(state.modal.is_none());
+        assert_eq!(decision, ApprovalDecision::Reject);
     }
 
     #[tokio::test]
@@ -601,6 +2177,7 @@ mod tests {
         let (event_tx, event_rx) = mpsc::channel(1);
         let mut events = ReceiverStream::new(event_rx);
         let (shutdown_tx, mut shutdown) = mpsc::channel(1);
+        let (_interaction_providers, mut interactions) = bounded_interaction_channel(8);
 
         let producer = async move {
             send_and_wait_for_receive(
@@ -629,7 +2206,15 @@ mod tests {
                 .await
                 .unwrap();
         };
-        let app = run_loop(&mut terminal, &mut events, &mut shutdown, &runtime, None);
+        let app = run_loop(
+            &mut terminal,
+            &mut events,
+            &mut shutdown,
+            &runtime,
+            None,
+            &mut interactions,
+            InteractionKeyMode::Direct,
+        );
 
         let ((), result) = tokio::time::timeout(Duration::from_secs(2), async {
             tokio::join!(producer, app)
@@ -638,6 +2223,48 @@ mod tests {
         .expect("the second interrupt must still be consumed");
 
         assert!(result.unwrap().state.composer.is_empty());
+    }
+
+    #[tokio::test]
+    async fn run_loop_propagates_terminal_interaction_mode() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let runtime = build_cli_runtime(CliRuntimeOptions {
+            cwd: Some(tmp.path().to_path_buf()),
+            model: Some("fake".to_string()),
+            max_steps: None,
+            approval: CliApprovalPolicy::Never,
+            task_workspace: None,
+            task_base: None,
+            initial_fake_response: Some("unused".to_string()),
+            interaction: CliRuntimeInteraction::Providers {
+                input_provider: None,
+                approval_provider: None,
+            },
+        })
+        .await
+        .unwrap();
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut events = stream::empty::<io::Result<Event>>();
+        let (_shutdown_tx, mut shutdown) = mpsc::channel(1);
+        let (_interaction_providers, mut interactions) = bounded_interaction_channel(1);
+
+        let app = run_loop(
+            &mut terminal,
+            &mut events,
+            &mut shutdown,
+            &runtime,
+            None,
+            &mut interactions,
+            InteractionKeyMode::ConfirmWithFunctionKey,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            app.state.interaction_key_mode,
+            InteractionKeyMode::ConfirmWithFunctionKey
+        );
     }
 
     #[tokio::test]
@@ -661,6 +2288,18 @@ mod tests {
             run_lifecycle: RunLifecycle::Running,
             ..TuiState::default()
         };
+        let mut pressed_keys = PressedKeys::default();
+        let (interaction_providers, mut interactions) = bounded_interaction_channel(8);
+        let pending_input = interaction_providers
+            .input_provider
+            .begin_input(
+                CallId::new(),
+                UserInputRequest {
+                    prompt: "must be released".to_string(),
+                },
+            )
+            .await
+            .unwrap();
         let producer = async move {
             loop {
                 if updates_tx
@@ -677,10 +2316,16 @@ mod tests {
         let ui = active_ui_loop(
             &mut terminal,
             &mut events,
-            &mut shutdown,
-            &mut shutdown_open,
+            ShutdownInput {
+                receiver: &mut shutdown,
+                open: &mut shutdown_open,
+            },
             updates_rx,
-            cancel.clone(),
+            &mut interactions,
+            ActiveUiControl {
+                cancel: cancel.clone(),
+                pressed_keys: &mut pressed_keys,
+            },
             &mut state,
         );
 
@@ -691,5 +2336,73 @@ mod tests {
 
         assert!(ui_result.is_err());
         assert!(cancel.is_cancelled());
+        let error = tokio::time::timeout(Duration::from_secs(1), pending_input.resolve())
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert!(error.to_string().contains("response was dropped"));
+    }
+
+    #[tokio::test]
+    async fn draw_failure_releases_a_pending_approval_before_returning() {
+        let backend = FailingDrawBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut events = stream::pending::<io::Result<Event>>();
+        let (_shutdown_tx, mut shutdown) = mpsc::channel(1);
+        let mut shutdown_open = true;
+        let (_updates_tx, updates_rx) = mpsc::channel(1);
+        let (providers, mut interactions) = bounded_interaction_channel(1);
+        let pending = providers
+            .approval_provider
+            .begin_approval(ToolApprovalRequest {
+                call_id: CallId::new(),
+                name: "fs_write".to_string(),
+                args: serde_json::json!({"path":"must-not-exist.txt"}),
+                reason: "writes a file".to_string(),
+            })
+            .await
+            .unwrap();
+        let cancel = CancellationToken::new();
+        let mut state = TuiState {
+            run_lifecycle: RunLifecycle::Running,
+            ..TuiState::default()
+        };
+        let mut pressed_keys = PressedKeys::default();
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(1),
+            active_ui_loop(
+                &mut terminal,
+                &mut events,
+                ShutdownInput {
+                    receiver: &mut shutdown,
+                    open: &mut shutdown_open,
+                },
+                updates_rx,
+                &mut interactions,
+                ActiveUiControl {
+                    cancel: cancel.clone(),
+                    pressed_keys: &mut pressed_keys,
+                },
+                &mut state,
+            ),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("injected draw failure")
+        );
+        assert!(cancel.is_cancelled());
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), pending.resolve())
+                .await
+                .unwrap(),
+            ApprovalDecision::Reject
+        );
+        assert!(state.modal.is_none());
     }
 }

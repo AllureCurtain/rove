@@ -876,12 +876,25 @@ async fn engine_emits_approval_needed_before_blocking_destructive_tool() {
 
     let events = collect_events(&engine, "run danger").await;
 
-    assert!(events.iter().any(|event| {
-        matches!(
-            event,
-            StreamEvent::ToolCallApprovalNeeded { name, .. } if name == "danger"
-        )
-    }));
+    let waiting_index = events
+        .iter()
+        .position(|event| {
+            matches!(
+                event,
+                StreamEvent::ModelStatus { status, .. } if status == "waiting_for_approval"
+            )
+        })
+        .expect("successful registration must preserve the waiting status event");
+    let approval_index = events
+        .iter()
+        .position(|event| {
+            matches!(
+                event,
+                StreamEvent::ToolCallApprovalNeeded { name, .. } if name == "danger"
+            )
+        })
+        .expect("registered approval must publish its canonical event");
+    assert!(waiting_index < approval_index);
     assert!(events.iter().any(|event| {
         matches!(
             event,
@@ -923,6 +936,12 @@ async fn failed_approval_registration_emits_no_actionable_event_and_runs_no_tool
             .iter()
             .any(|event| { matches!(event, StreamEvent::ToolCallApprovalNeeded { .. }) })
     );
+    assert!(!events.iter().any(|event| {
+        matches!(
+            event,
+            StreamEvent::ModelStatus { status, .. } if status == "waiting_for_approval"
+        )
+    }));
     assert!(!events.iter().any(|event| {
         matches!(event, StreamEvent::ToolCallCompleted { result, .. } if result.output == "should never run")
     }));

@@ -3,8 +3,8 @@ use crate::interfaces::terminal::action::TerminalAction;
 use crate::interfaces::tui::action::TuiAction;
 use crate::interfaces::tui::effect::TuiEffect;
 use crate::interfaces::tui::state::{
-    InteractionModalView, MAX_COMPOSER_BYTES, MAX_INTERACTION_INPUT_BYTES, RunLifecycle, TuiFocus,
-    TuiState,
+    InteractionKeyMode, InteractionModalView, MAX_COMPOSER_BYTES, MAX_INTERACTION_INPUT_BYTES,
+    RunLifecycle, TuiFocus, TuiState,
 };
 
 pub fn reduce(state: &mut TuiState, action: TuiAction) -> Vec<TuiEffect> {
@@ -19,6 +19,7 @@ pub fn reduce(state: &mut TuiState, action: TuiAction) -> Vec<TuiEffect> {
         TuiAction::OpenInteraction(modal) => {
             if state.modal.is_none() {
                 state.modal = Some(modal);
+                state.approval_confirmation = None;
             }
             Vec::new()
         }
@@ -29,9 +30,11 @@ pub fn reduce(state: &mut TuiState, action: TuiAction) -> Vec<TuiEffect> {
                 .is_some_and(|modal| modal.matches_request(kind, request_id))
             {
                 state.modal = None;
+                state.approval_confirmation = None;
             }
             Vec::new()
         }
+        TuiAction::PrepareApproval { call_id } => prepare_approval(state, call_id),
         TuiAction::ApproveInteraction { call_id } => resolve_approval(state, call_id, true),
         TuiAction::RejectInteraction { call_id } => resolve_approval(state, call_id, false),
         TuiAction::SubmitInteraction { input_id } => resolve_input(state, input_id),
@@ -41,6 +44,7 @@ pub fn reduce(state: &mut TuiState, action: TuiAction) -> Vec<TuiEffect> {
                     state.quit_confirmation = false;
                     state.run_lifecycle = RunLifecycle::Cancelling;
                     state.modal = None;
+                    state.approval_confirmation = None;
                     vec![
                         TuiEffect::Dispatch(TerminalAction::CancelRun),
                         TuiEffect::ExitAfterRun,
@@ -51,6 +55,7 @@ pub fn reduce(state: &mut TuiState, action: TuiAction) -> Vec<TuiEffect> {
                 }
             } else {
                 state.modal = None;
+                state.approval_confirmation = None;
                 state.should_quit = true;
                 vec![TuiEffect::Exit]
             }
@@ -156,6 +161,7 @@ pub fn reduce(state: &mut TuiState, action: TuiAction) -> Vec<TuiEffect> {
 
 fn cancel_or_clear(state: &mut TuiState) -> Vec<TuiEffect> {
     state.modal = None;
+    state.approval_confirmation = None;
     match state.run_lifecycle {
         RunLifecycle::Running => {
             state.run_lifecycle = RunLifecycle::Cancelling;
@@ -167,6 +173,23 @@ fn cancel_or_clear(state: &mut TuiState) -> Vec<TuiEffect> {
             Vec::new()
         }
     }
+}
+
+fn prepare_approval(state: &mut TuiState, call_id: CallId) -> Vec<TuiEffect> {
+    let matches = state.interaction_key_mode == InteractionKeyMode::ConfirmWithFunctionKey
+        && state.modal.as_ref().is_some_and(|modal| {
+            matches!(
+                modal,
+                InteractionModalView::Approval {
+                    call_id: current,
+                    ..
+                } if *current == call_id
+            )
+        });
+    if matches {
+        state.approval_confirmation = Some(call_id);
+    }
+    Vec::new()
 }
 
 fn dispatch_prompt(state: &mut TuiState, message: String) -> Vec<TuiEffect> {
@@ -192,7 +215,20 @@ fn resolve_approval(state: &mut TuiState, call_id: CallId, approve: bool) -> Vec
         return Vec::new();
     }
 
+    if approve
+        && match state.interaction_key_mode {
+            InteractionKeyMode::Direct => false,
+            InteractionKeyMode::ConfirmWithFunctionKey => {
+                state.approval_confirmation != Some(call_id)
+            }
+            InteractionKeyMode::Unavailable => true,
+        }
+    {
+        return Vec::new();
+    }
+
     state.modal = None;
+    state.approval_confirmation = None;
     let action = if approve {
         TerminalAction::ApproveTool { call_id }
     } else {
@@ -202,6 +238,9 @@ fn resolve_approval(state: &mut TuiState, call_id: CallId, approve: bool) -> Vec
 }
 
 fn resolve_input(state: &mut TuiState, input_id: CallId) -> Vec<TuiEffect> {
+    if !state.interaction_key_mode.is_available() {
+        return Vec::new();
+    }
     let Some(InteractionModalView::Input {
         input_id: current,
         draft,
@@ -216,6 +255,7 @@ fn resolve_input(state: &mut TuiState, input_id: CallId) -> Vec<TuiEffect> {
 
     let answer = draft.clone();
     state.modal = None;
+    state.approval_confirmation = None;
     vec![TuiEffect::Dispatch(TerminalAction::SubmitInput {
         input_id,
         answer,
@@ -229,8 +269,8 @@ mod tests {
     use crate::interfaces::tui::action::TuiAction;
     use crate::interfaces::tui::effect::TuiEffect;
     use crate::interfaces::tui::state::{
-        InteractionModalKind, InteractionModalView, MAX_INTERACTION_INPUT_BYTES, RunLifecycle,
-        TuiFocus, TuiState,
+        InteractionKeyMode, InteractionModalKind, InteractionModalView,
+        MAX_INTERACTION_INPUT_BYTES, RunLifecycle, TuiFocus, TuiState,
     };
 
     use super::reduce;
@@ -551,6 +591,29 @@ mod tests {
             vec![TuiEffect::Dispatch(TerminalAction::RejectTool { call_id })]
         );
         assert!(state.modal.is_none());
+    }
+
+    #[test]
+    fn function_key_mode_requires_a_text_selection_before_approval() {
+        let call_id = CallId::new();
+        let mut state = TuiState {
+            modal: Some(approval_modal(call_id)),
+            interaction_key_mode: InteractionKeyMode::ConfirmWithFunctionKey,
+            ..TuiState::default()
+        };
+
+        assert!(reduce(&mut state, TuiAction::ApproveInteraction { call_id }).is_empty());
+        assert_eq!(state.approval_confirmation, None);
+        assert!(state.modal.is_some());
+
+        assert!(reduce(&mut state, TuiAction::PrepareApproval { call_id }).is_empty());
+        assert_eq!(state.approval_confirmation, Some(call_id));
+        assert_eq!(
+            reduce(&mut state, TuiAction::ApproveInteraction { call_id }),
+            vec![TuiEffect::Dispatch(TerminalAction::ApproveTool { call_id })]
+        );
+        assert!(state.modal.is_none());
+        assert_eq!(state.approval_confirmation, None);
     }
 
     #[test]

@@ -22,8 +22,12 @@ The interface layers are shells. They detect the workspace, load a config snapsh
 
 The optional full-screen TUI adds only a presentation shell around that path:
 `EventStream -> TuiAction -> reducer -> shared Engine`, followed by an awaited
-bounded run-update sink into Ratatui. It does not introduce a second event
-lifecycle or persistence format.
+bounded run-update sink into Ratatui. Approval and input providers additionally
+register process-local responders through a bounded channel; the TUI exposes a
+modal only when that request matches the canonical event by kind and ID. It does
+not introduce a second event lifecycle or persistence format. Modal responses
+are armed only after a visible-frame and held-key boundary; terminals that
+cannot supply trustworthy interaction events fail closed.
 
 ## Core Flow
 

@@ -2,7 +2,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use crate::interfaces::terminal::action::TerminalAction;
 use crate::interfaces::tui::action::TuiAction;
-use crate::interfaces::tui::state::InteractionModalView;
+use crate::interfaces::tui::state::{InteractionKeyMode, InteractionModalView};
 
 pub fn map_key_event(event: KeyEvent) -> Option<TuiAction> {
     map_key_event_with_modal(event, None)
@@ -11,6 +11,14 @@ pub fn map_key_event(event: KeyEvent) -> Option<TuiAction> {
 pub fn map_key_event_with_modal(
     event: KeyEvent,
     modal: Option<&InteractionModalView>,
+) -> Option<TuiAction> {
+    map_key_event_with_modal_mode(event, modal, InteractionKeyMode::Direct)
+}
+
+pub fn map_key_event_with_modal_mode(
+    event: KeyEvent,
+    modal: Option<&InteractionModalView>,
+    interaction_key_mode: InteractionKeyMode,
 ) -> Option<TuiAction> {
     if !matches!(event.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
         return None;
@@ -29,7 +37,7 @@ pub fn map_key_event_with_modal(
     }
 
     if let Some(modal) = modal {
-        return map_modal_key_event(event, modal);
+        return map_modal_key_event(event, modal, interaction_key_mode);
     }
 
     match (event.code, event.modifiers) {
@@ -47,7 +55,15 @@ pub fn map_key_event_with_modal(
     }
 }
 
-fn map_modal_key_event(event: KeyEvent, modal: &InteractionModalView) -> Option<TuiAction> {
+fn map_modal_key_event(
+    event: KeyEvent,
+    modal: &InteractionModalView,
+    interaction_key_mode: InteractionKeyMode,
+) -> Option<TuiAction> {
+    if !interaction_key_mode.is_available() {
+        return None;
+    }
+
     match modal {
         InteractionModalView::Approval { call_id, .. } => {
             if event.kind != KeyEventKind::Press {
@@ -58,7 +74,15 @@ fn map_modal_key_event(event: KeyEvent, modal: &InteractionModalView) -> Option<
                 (KeyCode::Char(ch), KeyModifiers::NONE | KeyModifiers::SHIFT)
                     if ch.eq_ignore_ascii_case(&'y') =>
                 {
-                    Some(TuiAction::ApproveInteraction { call_id: *call_id })
+                    match interaction_key_mode {
+                        InteractionKeyMode::Direct => {
+                            Some(TuiAction::ApproveInteraction { call_id: *call_id })
+                        }
+                        InteractionKeyMode::ConfirmWithFunctionKey => {
+                            Some(TuiAction::PrepareApproval { call_id: *call_id })
+                        }
+                        InteractionKeyMode::Unavailable => None,
+                    }
                 }
                 (KeyCode::Char(ch), KeyModifiers::NONE | KeyModifiers::SHIFT)
                     if ch.eq_ignore_ascii_case(&'n') =>
@@ -68,14 +92,30 @@ fn map_modal_key_event(event: KeyEvent, modal: &InteractionModalView) -> Option<
                 (KeyCode::Esc, KeyModifiers::NONE) => {
                     Some(TuiAction::RejectInteraction { call_id: *call_id })
                 }
+                (KeyCode::F(8), KeyModifiers::NONE)
+                    if interaction_key_mode == InteractionKeyMode::ConfirmWithFunctionKey =>
+                {
+                    Some(TuiAction::ApproveInteraction { call_id: *call_id })
+                }
                 _ => None,
             }
         }
         InteractionModalView::Input { input_id, .. } => {
             match (event.kind, event.code, event.modifiers) {
-                (KeyEventKind::Press, KeyCode::Enter, _) => Some(TuiAction::SubmitInteraction {
-                    input_id: *input_id,
-                }),
+                (KeyEventKind::Press, KeyCode::Enter, _)
+                    if interaction_key_mode == InteractionKeyMode::Direct =>
+                {
+                    Some(TuiAction::SubmitInteraction {
+                        input_id: *input_id,
+                    })
+                }
+                (KeyEventKind::Press, KeyCode::F(8), KeyModifiers::NONE)
+                    if interaction_key_mode == InteractionKeyMode::ConfirmWithFunctionKey =>
+                {
+                    Some(TuiAction::SubmitInteraction {
+                        input_id: *input_id,
+                    })
+                }
                 (
                     KeyEventKind::Press | KeyEventKind::Repeat,
                     KeyCode::Backspace,
@@ -99,9 +139,9 @@ mod tests {
     use crate::core::types::CallId;
     use crate::interfaces::terminal::action::TerminalAction;
     use crate::interfaces::tui::action::TuiAction;
-    use crate::interfaces::tui::state::InteractionModalView;
+    use crate::interfaces::tui::state::{InteractionKeyMode, InteractionModalView};
 
-    use super::{map_key_event, map_key_event_with_modal};
+    use super::{map_key_event, map_key_event_with_modal, map_key_event_with_modal_mode};
 
     fn approval_modal(call_id: CallId) -> InteractionModalView {
         InteractionModalView::Approval {
@@ -292,6 +332,47 @@ mod tests {
         let repeated_enter =
             KeyEvent::new_with_kind(KeyCode::Enter, KeyModifiers::NONE, KeyEventKind::Repeat);
         assert_eq!(map_key_event_with_modal(repeated_enter, Some(&modal)), None);
+    }
+
+    #[test]
+    fn function_key_mode_separates_text_from_approval_and_submission() {
+        let call_id = CallId::new();
+        let approval = approval_modal(call_id);
+        assert_eq!(
+            map_key_event_with_modal_mode(
+                KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE),
+                Some(&approval),
+                InteractionKeyMode::ConfirmWithFunctionKey,
+            ),
+            Some(TuiAction::PrepareApproval { call_id })
+        );
+        assert_eq!(
+            map_key_event_with_modal_mode(
+                KeyEvent::new(KeyCode::F(8), KeyModifiers::NONE),
+                Some(&approval),
+                InteractionKeyMode::ConfirmWithFunctionKey,
+            ),
+            Some(TuiAction::ApproveInteraction { call_id })
+        );
+
+        let input_id = CallId::new();
+        let input = input_modal(input_id);
+        assert_eq!(
+            map_key_event_with_modal_mode(
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+                Some(&input),
+                InteractionKeyMode::ConfirmWithFunctionKey,
+            ),
+            None
+        );
+        assert_eq!(
+            map_key_event_with_modal_mode(
+                KeyEvent::new(KeyCode::F(8), KeyModifiers::NONE),
+                Some(&input),
+                InteractionKeyMode::ConfirmWithFunctionKey,
+            ),
+            Some(TuiAction::SubmitInteraction { input_id })
+        );
     }
 
     #[test]

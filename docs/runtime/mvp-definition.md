@@ -2,7 +2,7 @@
 
 Status: MVP reached for the local-first single-user runtime.
 Date: 2026-05-30
-Last interface update: 2026-07-18 (first full-screen TUI vertical slice).
+Last interface update: 2026-07-18 (capability-gated full-screen TUI approval/input interaction slice).
 
 ## Definition
 
@@ -12,8 +12,11 @@ This MVP is not a SaaS product, browser automation runtime, desktop automation r
 
 ## Included
 
-- CLI one-shot runs, line-oriented REPL, and the optional first full-screen TUI
-  vertical slice (`rove tui --model fake`).
+- CLI one-shot runs, line-oriented REPL, and the optional full-screen TUI with
+  bounded approval/input interaction (`rove tui --model fake`). Non-Windows
+  terminals with keyboard enhancement use direct `Y`/`Enter` actions; Windows uses the
+  non-text `F8` confirmation/submission path. Unsupported terminals retain the
+  basic TUI and fail closed for live interaction.
 - HTTP API job lifecycle with SSE, cancel, approval, input, resume, and persisted replay.
 - Standalone Web workbench for submitting jobs, streaming events, approving tools, answering input requests, cancelling runs, resuming latest state, and viewing historical run reports.
 - Core engine with planned and unplanned loops sharing model turns, tool turns, context checkpoints, and history writeback.

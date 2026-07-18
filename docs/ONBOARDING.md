@@ -580,9 +580,14 @@ All four are proposed until code/tests/current docs say otherwise.
 
 - [Grok Build reference and TUI direction](design/2026-07-16-grok-build-reference-and-tui-design.md)
 
-This design is partially implemented: the first `rove tui` vertical slice
-preserves the existing REPL and `rove exec` contracts. Approval/input modals,
-session navigation, and PTY hardening remain proposed follow-up work.
+This design is partially implemented: `rove tui` preserves the existing REPL
+and `rove exec` contracts and now supports bounded, fail-closed approval/input
+modals. Non-Windows terminals with keyboard-event enhancement use direct
+`Y`/`Enter` actions; Windows uses `Y` followed by non-text `F8` for approval and
+`F8` for input submission. Other terminals keep the basic TUI but reject
+approval and input requests without opening a modal. Session navigation,
+strict timeline reconstruction, and PTY hardening remain proposed follow-up
+work.
 
 ### Historical design
 

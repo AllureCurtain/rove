@@ -190,8 +190,9 @@ High-level flow in `src/main.rs`:
 11. Build `Engine`.
 12. Create `StateStore`.
 13. Resolve optional CLI resume state when an exec or TUI run starts.
-14. If `tui` is present, build the TUI runtime with non-stdin interaction
-    providers and enter the alternate-screen application loop.
+14. If `tui` is present, split a bounded interaction broker into providers for
+    the shared Engine and one receiver for the alternate-screen application
+    loop.
 15. If `exec <message>` is present, run the non-interactive exec backend.
 16. If a bare message argument is present, enter the rich terminal REPL and
     submit that message as the first prompt.
@@ -254,7 +255,7 @@ loop or persistence format.
 
 ### Full-screen TUI
 
-The first full-screen vertical slice is available with:
+The current full-screen TUI is available with:
 
 ```powershell
 cargo run -- tui --model fake
@@ -262,13 +263,36 @@ cargo run -- tui --model fake
 
 `rove tui` enters raw mode and the alternate screen through the RAII
 `TerminalSession`, then runs a fair asynchronous loop over Crossterm input,
-canonical run updates, cancellation signals, and redraw ticks. A prompt follows
-this path:
+canonical run updates, process-local interaction requests, cancellation
+signals, and redraw ticks. A prompt follows this path:
 
 ```text
 key event -> TuiAction -> reducer -> shared Engine
 Engine StreamEvent -> RunViewState -> bounded update channel -> Ratatui
+approval/input provider -> bounded request channel -> matching modal -> oneshot response
 ```
+
+Approval and input become actionable only after two independently delivered
+halves agree on both interaction kind and `CallId`: the canonical
+`RunViewUpdate` supplies display state, while the process-local request owns the
+live responder. The responder stays outside cloneable `TuiState`. A second
+request cannot replace it, and cancellation, completion, exit, terminal EOF,
+draw failure, and restoration failure all drop it fail closed. Queued requests
+are discarded between runs so stale capabilities cannot cross a run boundary.
+
+Terminal setup enables bracketed paste and requests enhanced keyboard event
+types where the terminal supports them. Non-Windows terminals with that
+capability use direct `Y` approval and `Enter` input submission. Windows uses
+native key events but does not expose a trustworthy paste-vs-key distinction,
+so approval requires `Y` to select and a fresh non-text `F8` to confirm, while
+input uses `F8` to submit. Without a usable key-event mode the basic TUI
+remains available, but an approval request resolves as Reject and an input
+request returns a typed unavailable error without opening a modal. A matched
+modal is initially unarmed: the event loop drains already-ready input, tracks
+keys held before the modal, draws the modal successfully, and waits one
+additional frame with no keys held before accepting a response. This prevents a
+queued composer `y`, held-key repeat, old Enter, or pasted text from resolving
+an interaction that was not yet visible.
 
 The run driver uses an awaited bounded sink. It continues polling the Engine
 after `RunCompleted` so post-run hooks execute, finalizes the shared trace/task
@@ -280,17 +304,20 @@ confirmation, then cancels and waits before leaving the terminal.
 The TUI currently supports prompt editing (bounded to 32 KiB), focus switching,
 wrapped transcript scrolling with bottom anchoring, archived runs in the current
 session, plan/tool/activity rendering, resize and narrow-terminal layouts, and
-the startup `--resume` option. Existing REPL and `rove exec` behavior is
-unchanged. Tracing is routed to a sink while the alternate screen is active so
-runtime logs cannot corrupt the display.
+startup `--resume`. On direct-capability terminals it also supports
+destructive-tool approval and `request_input`: approval accepts `Y` only from a
+real key press and rejects on a real `N` or `Esc` press; Enter, repeat, release,
+and paste cannot authorize. On Windows, `Y` only stages approval and a fresh
+`F8` press confirms it; input is submitted with `F8` rather than Enter. Direct
+input accepts typed and bracketed-paste UTF-8 up to 32 KiB and submits the exact
+draft, including an empty or whitespace-only answer. Existing REPL and `rove
+exec` behavior is unchanged. Tracing is routed to a sink while the alternate
+screen is active so runtime logs cannot corrupt the display.
 
-Interactive stdin providers are deliberately not installed in this first slice:
-destructive `ask` approvals therefore use the engine's existing reject fallback,
-and `request_input` uses its existing no-provider result. There is no modal for
-answering either request yet. Session browsing/resume selection, mouse
-interaction, PTY smoke coverage, and a strict event-timeline transcript remain
-follow-up work. The renderer shows the current projected state rather than
-exposing hidden model reasoning.
+Session browsing/resume selection, mouse interaction, PTY smoke coverage,
+cross-platform real-terminal automation, and a strict event-timeline transcript
+remain follow-up work. The renderer shows the current projected state rather
+than exposing hidden model reasoning.
 
 ### REPL Commands
 
@@ -322,10 +349,12 @@ Relevant code:
 - `src/interfaces/cli/state.rs`
 - `src/interfaces/cli/index.rs`
 - `src/interfaces/tui/app.rs`
+- `src/interfaces/tui/providers.rs`
 - `src/interfaces/tui/state.rs`
 - `src/interfaces/tui/reducer.rs`
 - `src/interfaces/tui/render.rs`
 - `src/interfaces/tui/terminal.rs`
+- `src/interfaces/terminal/interaction.rs`
 - `src/interfaces/terminal/run.rs`
 - `src/state/resume.rs`
 
@@ -728,10 +757,14 @@ Pending approval/input answer channels are live-only. API rows are persisted whi
 
 Relevant code:
 
+- `src/core/tool_input.rs`
+- `src/core/tool_turn.rs`
 - `src/core/types.rs`
 - `src/interfaces/cli/approval.rs`
 - `src/interfaces/cli/input.rs`
 - `src/interfaces/api/mod.rs`
+- `src/interfaces/terminal/interaction.rs`
+- `src/interfaces/tui/providers.rs`
 - `src/tools/request_input.rs`
 
 ## 14. State Artifacts

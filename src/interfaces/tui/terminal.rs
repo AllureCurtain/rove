@@ -2,12 +2,18 @@ use std::io::{self, Stdout};
 use std::ops::{Deref, DerefMut};
 
 use crossterm::cursor::{Hide, Show};
+use crossterm::event::{
+    DisableBracketedPaste, EnableBracketedPaste, KeyboardEnhancementFlags,
+    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
+
+use crate::interfaces::tui::state::InteractionKeyMode;
 
 pub type TuiTerminal = Terminal<CrosstermBackend<Stdout>>;
 
@@ -36,6 +42,10 @@ impl TerminalSession {
     pub fn restore(&mut self) -> io::Result<()> {
         self.lifecycle.restore()
     }
+
+    pub fn interaction_key_mode(&self) -> InteractionKeyMode {
+        self.lifecycle.interaction_key_mode
+    }
 }
 
 impl Deref for TerminalSession {
@@ -55,10 +65,23 @@ impl DerefMut for TerminalSession {
 trait TerminalControl {
     fn enable_raw_mode(&mut self) -> io::Result<()>;
     fn enter_alternate_screen(&mut self) -> io::Result<()>;
+    fn enable_bracketed_paste(&mut self) -> io::Result<()>;
+    fn keyboard_event_type_support(&mut self) -> io::Result<KeyboardEventTypeSupport>;
+    fn push_keyboard_enhancement(&mut self) -> io::Result<()>;
     fn hide_cursor(&mut self) -> io::Result<()>;
     fn show_cursor(&mut self) -> io::Result<()>;
+    fn pop_keyboard_enhancement(&mut self) -> io::Result<()>;
+    fn disable_bracketed_paste(&mut self) -> io::Result<()>;
     fn leave_alternate_screen(&mut self) -> io::Result<()>;
     fn disable_raw_mode(&mut self) -> io::Result<()>;
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum KeyboardEventTypeSupport {
+    Native,
+    Enhancement,
+    #[default]
+    Unavailable,
 }
 
 struct CrosstermTerminalControl;
@@ -72,12 +95,53 @@ impl TerminalControl for CrosstermTerminalControl {
         execute!(io::stdout(), EnterAlternateScreen)
     }
 
+    fn enable_bracketed_paste(&mut self) -> io::Result<()> {
+        execute!(io::stdout(), EnableBracketedPaste)
+    }
+
+    fn keyboard_event_type_support(&mut self) -> io::Result<KeyboardEventTypeSupport> {
+        #[cfg(windows)]
+        {
+            Ok(KeyboardEventTypeSupport::Native)
+        }
+        #[cfg(not(windows))]
+        {
+            match crossterm::terminal::supports_keyboard_enhancement() {
+                Ok(true) => Ok(KeyboardEventTypeSupport::Enhancement),
+                Ok(false) => Ok(KeyboardEventTypeSupport::Unavailable),
+                Err(error) => {
+                    tracing::debug!(%error, "keyboard enhancement probe unavailable");
+                    Ok(KeyboardEventTypeSupport::Unavailable)
+                }
+            }
+        }
+    }
+
+    fn push_keyboard_enhancement(&mut self) -> io::Result<()> {
+        execute!(
+            io::stdout(),
+            PushKeyboardEnhancementFlags(
+                KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                    | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+                    | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES
+            )
+        )
+    }
+
     fn hide_cursor(&mut self) -> io::Result<()> {
         execute!(io::stdout(), Hide)
     }
 
     fn show_cursor(&mut self) -> io::Result<()> {
         execute!(io::stdout(), Show)
+    }
+
+    fn pop_keyboard_enhancement(&mut self) -> io::Result<()> {
+        execute!(io::stdout(), PopKeyboardEnhancementFlags)
+    }
+
+    fn disable_bracketed_paste(&mut self) -> io::Result<()> {
+        execute!(io::stdout(), DisableBracketedPaste)
     }
 
     fn leave_alternate_screen(&mut self) -> io::Result<()> {
@@ -93,6 +157,9 @@ struct TerminalLifecycle<C: TerminalControl> {
     control: C,
     raw_mode_attempted: bool,
     alternate_screen_attempted: bool,
+    bracketed_paste_attempted: bool,
+    keyboard_enhancement_attempted: bool,
+    interaction_key_mode: InteractionKeyMode,
     cursor_hide_attempted: bool,
 }
 
@@ -102,6 +169,9 @@ impl<C: TerminalControl> TerminalLifecycle<C> {
             control,
             raw_mode_attempted: false,
             alternate_screen_attempted: false,
+            bracketed_paste_attempted: false,
+            keyboard_enhancement_attempted: false,
+            interaction_key_mode: InteractionKeyMode::Unavailable,
             cursor_hide_attempted: false,
         };
 
@@ -109,6 +179,18 @@ impl<C: TerminalControl> TerminalLifecycle<C> {
         lifecycle.control.enable_raw_mode()?;
         lifecycle.alternate_screen_attempted = true;
         lifecycle.control.enter_alternate_screen()?;
+        lifecycle.bracketed_paste_attempted = true;
+        lifecycle.control.enable_bracketed_paste()?;
+        let keyboard_support = lifecycle.control.keyboard_event_type_support()?;
+        if keyboard_support == KeyboardEventTypeSupport::Enhancement {
+            lifecycle.keyboard_enhancement_attempted = true;
+            lifecycle.control.push_keyboard_enhancement()?;
+        }
+        lifecycle.interaction_key_mode = match keyboard_support {
+            KeyboardEventTypeSupport::Native => InteractionKeyMode::ConfirmWithFunctionKey,
+            KeyboardEventTypeSupport::Enhancement => InteractionKeyMode::Direct,
+            KeyboardEventTypeSupport::Unavailable => InteractionKeyMode::Unavailable,
+        };
         lifecycle.cursor_hide_attempted = true;
         lifecycle.control.hide_cursor()?;
 
@@ -125,6 +207,21 @@ impl<C: TerminalControl> TerminalLifecycle<C> {
             }
             remember_first_error(&mut first_error, result);
         }
+        if self.keyboard_enhancement_attempted {
+            let result = self.control.pop_keyboard_enhancement();
+            if result.is_ok() {
+                self.keyboard_enhancement_attempted = false;
+                self.interaction_key_mode = InteractionKeyMode::Unavailable;
+            }
+            remember_first_error(&mut first_error, result);
+        }
+        if self.bracketed_paste_attempted {
+            let result = self.control.disable_bracketed_paste();
+            if result.is_ok() {
+                self.bracketed_paste_attempted = false;
+            }
+            remember_first_error(&mut first_error, result);
+        }
         if self.alternate_screen_attempted {
             let result = self.control.leave_alternate_screen();
             if result.is_ok() {
@@ -138,6 +235,10 @@ impl<C: TerminalControl> TerminalLifecycle<C> {
                 self.raw_mode_attempted = false;
             }
             remember_first_error(&mut first_error, result);
+        }
+
+        if !self.raw_mode_attempted {
+            self.interaction_key_mode = InteractionKeyMode::Unavailable;
         }
 
         first_error.map_or(Ok(()), Err)
@@ -163,14 +264,20 @@ mod tests {
     use std::io;
     use std::sync::{Arc, Mutex};
 
-    use super::{TerminalControl, TerminalLifecycle};
+    use crate::interfaces::tui::state::InteractionKeyMode;
+
+    use super::{KeyboardEventTypeSupport, TerminalControl, TerminalLifecycle};
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum Operation {
         EnableRawMode,
         EnterAlternateScreen,
+        EnableBracketedPaste,
+        PushKeyboardEnhancement,
         HideCursor,
         ShowCursor,
+        PopKeyboardEnhancement,
+        DisableBracketedPaste,
         LeaveAlternateScreen,
         DisableRawMode,
     }
@@ -178,6 +285,7 @@ mod tests {
     struct FakeTerminalControl {
         operations: Arc<Mutex<Vec<Operation>>>,
         fail_on: Option<Operation>,
+        keyboard_support: KeyboardEventTypeSupport,
     }
 
     impl FakeTerminalControl {
@@ -200,12 +308,32 @@ mod tests {
             self.record(Operation::EnterAlternateScreen)
         }
 
+        fn enable_bracketed_paste(&mut self) -> io::Result<()> {
+            self.record(Operation::EnableBracketedPaste)
+        }
+
+        fn keyboard_event_type_support(&mut self) -> io::Result<KeyboardEventTypeSupport> {
+            Ok(self.keyboard_support)
+        }
+
+        fn push_keyboard_enhancement(&mut self) -> io::Result<()> {
+            self.record(Operation::PushKeyboardEnhancement)
+        }
+
         fn hide_cursor(&mut self) -> io::Result<()> {
             self.record(Operation::HideCursor)
         }
 
         fn show_cursor(&mut self) -> io::Result<()> {
             self.record(Operation::ShowCursor)
+        }
+
+        fn pop_keyboard_enhancement(&mut self) -> io::Result<()> {
+            self.record(Operation::PopKeyboardEnhancement)
+        }
+
+        fn disable_bracketed_paste(&mut self) -> io::Result<()> {
+            self.record(Operation::DisableBracketedPaste)
         }
 
         fn leave_alternate_screen(&mut self) -> io::Result<()> {
@@ -223,6 +351,7 @@ mod tests {
         let lifecycle = TerminalLifecycle::enter(FakeTerminalControl {
             operations: Arc::clone(&operations),
             fail_on: None,
+            keyboard_support: KeyboardEventTypeSupport::Enhancement,
         })
         .unwrap();
 
@@ -233,8 +362,12 @@ mod tests {
             vec![
                 Operation::EnableRawMode,
                 Operation::EnterAlternateScreen,
+                Operation::EnableBracketedPaste,
+                Operation::PushKeyboardEnhancement,
                 Operation::HideCursor,
                 Operation::ShowCursor,
+                Operation::PopKeyboardEnhancement,
+                Operation::DisableBracketedPaste,
                 Operation::LeaveAlternateScreen,
                 Operation::DisableRawMode,
             ]
@@ -247,6 +380,7 @@ mod tests {
         let result = TerminalLifecycle::enter(FakeTerminalControl {
             operations: Arc::clone(&operations),
             fail_on: Some(Operation::HideCursor),
+            keyboard_support: KeyboardEventTypeSupport::Enhancement,
         });
 
         assert!(result.is_err());
@@ -255,12 +389,66 @@ mod tests {
             vec![
                 Operation::EnableRawMode,
                 Operation::EnterAlternateScreen,
+                Operation::EnableBracketedPaste,
+                Operation::PushKeyboardEnhancement,
                 Operation::HideCursor,
                 Operation::ShowCursor,
+                Operation::PopKeyboardEnhancement,
+                Operation::DisableBracketedPaste,
                 Operation::LeaveAlternateScreen,
                 Operation::DisableRawMode,
             ]
         );
+    }
+
+    #[test]
+    fn interaction_key_mode_matches_terminal_event_support() {
+        for (support, mode, uses_enhancement) in [
+            (
+                KeyboardEventTypeSupport::Native,
+                InteractionKeyMode::ConfirmWithFunctionKey,
+                false,
+            ),
+            (
+                KeyboardEventTypeSupport::Enhancement,
+                InteractionKeyMode::Direct,
+                true,
+            ),
+            (
+                KeyboardEventTypeSupport::Unavailable,
+                InteractionKeyMode::Unavailable,
+                false,
+            ),
+        ] {
+            let operations = Arc::new(Mutex::new(Vec::new()));
+            let lifecycle = TerminalLifecycle::enter(FakeTerminalControl {
+                operations: Arc::clone(&operations),
+                fail_on: None,
+                keyboard_support: support,
+            })
+            .unwrap();
+
+            assert_eq!(lifecycle.interaction_key_mode, mode);
+            drop(lifecycle);
+            let mut expected = vec![
+                Operation::EnableRawMode,
+                Operation::EnterAlternateScreen,
+                Operation::EnableBracketedPaste,
+            ];
+            if uses_enhancement {
+                expected.push(Operation::PushKeyboardEnhancement);
+            }
+            expected.extend([Operation::HideCursor, Operation::ShowCursor]);
+            if uses_enhancement {
+                expected.push(Operation::PopKeyboardEnhancement);
+            }
+            expected.extend([
+                Operation::DisableBracketedPaste,
+                Operation::LeaveAlternateScreen,
+                Operation::DisableRawMode,
+            ]);
+            assert_eq!(*operations.lock().unwrap(), expected);
+        }
     }
 
     #[test]
@@ -269,6 +457,7 @@ mod tests {
         let mut lifecycle = TerminalLifecycle::enter(FakeTerminalControl {
             operations: Arc::clone(&operations),
             fail_on: None,
+            keyboard_support: KeyboardEventTypeSupport::Enhancement,
         })
         .unwrap();
         lifecycle.control.fail_on = Some(Operation::ShowCursor);
@@ -281,8 +470,12 @@ mod tests {
             vec![
                 Operation::EnableRawMode,
                 Operation::EnterAlternateScreen,
+                Operation::EnableBracketedPaste,
+                Operation::PushKeyboardEnhancement,
                 Operation::HideCursor,
                 Operation::ShowCursor,
+                Operation::PopKeyboardEnhancement,
+                Operation::DisableBracketedPaste,
                 Operation::LeaveAlternateScreen,
                 Operation::DisableRawMode,
                 Operation::ShowCursor,
@@ -299,6 +492,7 @@ mod tests {
                 let _lifecycle = TerminalLifecycle::enter(FakeTerminalControl {
                     operations,
                     fail_on: None,
+                    keyboard_support: KeyboardEventTypeSupport::Enhancement,
                 })
                 .unwrap();
                 panic!("injected panic");
@@ -311,8 +505,12 @@ mod tests {
             vec![
                 Operation::EnableRawMode,
                 Operation::EnterAlternateScreen,
+                Operation::EnableBracketedPaste,
+                Operation::PushKeyboardEnhancement,
                 Operation::HideCursor,
                 Operation::ShowCursor,
+                Operation::PopKeyboardEnhancement,
+                Operation::DisableBracketedPaste,
                 Operation::LeaveAlternateScreen,
                 Operation::DisableRawMode,
             ]
