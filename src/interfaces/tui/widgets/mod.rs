@@ -1,9 +1,13 @@
 //! Ratatui widgets owned by the TUI renderer worker.
 
 mod chrome;
+mod modal;
 mod transcript;
 
 pub(crate) use chrome::{activity, composer, minimal_line, status_line};
+#[cfg(test)]
+pub(crate) use modal::modal_area;
+pub(crate) use modal::render_modal;
 pub(crate) use transcript::{transcript, transcript_viewport};
 
 use crate::core::types::TerminationReason;

@@ -3,7 +3,7 @@ use ratatui::layout::Rect;
 
 use crate::interfaces::tui::state::TuiState;
 use crate::interfaces::tui::widgets::{
-    activity, composer, minimal_line, status_line, transcript, transcript_viewport,
+    activity, composer, minimal_line, render_modal, status_line, transcript, transcript_viewport,
 };
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -16,27 +16,31 @@ struct RenderLayout {
 }
 
 pub fn render(frame: &mut Frame<'_>, state: &TuiState) {
-    let layout = render_layout(frame.area());
+    let frame_area = frame.area();
+    let layout = render_layout(frame_area);
 
     if let Some(area) = layout.minimal {
         frame.render_widget(minimal_line(state), area);
-        return;
+    } else {
+        if let Some(area) = layout.transcript {
+            let bordered = area.width >= 24 && area.height >= 3;
+            frame.render_widget(transcript(state, area, bordered), area);
+        }
+        if let Some(area) = layout.activity {
+            let bordered = area.width >= 24 && area.height >= 3;
+            frame.render_widget(activity(state, bordered), area);
+        }
+        if let Some(area) = layout.composer {
+            let bordered = area.width >= 24 && area.height >= 3;
+            frame.render_widget(composer(state, area, bordered), area);
+        }
+        if let Some(area) = layout.status {
+            frame.render_widget(status_line(state, area.width), area);
+        }
     }
 
-    if let Some(area) = layout.transcript {
-        let bordered = area.width >= 24 && area.height >= 3;
-        frame.render_widget(transcript(state, area, bordered), area);
-    }
-    if let Some(area) = layout.activity {
-        let bordered = area.width >= 24 && area.height >= 3;
-        frame.render_widget(activity(state, bordered), area);
-    }
-    if let Some(area) = layout.composer {
-        let bordered = area.width >= 24 && area.height >= 3;
-        frame.render_widget(composer(state, area, bordered), area);
-    }
-    if let Some(area) = layout.status {
-        frame.render_widget(status_line(state, area.width), area);
+    if let Some(modal) = &state.modal {
+        render_modal(frame, modal, frame_area);
     }
 }
 
@@ -112,7 +116,8 @@ mod tests {
         PendingApprovalView, PendingInputView, RunCompletionView, RunViewState, ToolCallStatus,
         ToolCallView,
     };
-    use crate::interfaces::tui::state::{RunLifecycle, TuiFocus, TuiState};
+    use crate::interfaces::tui::state::{InteractionModalView, RunLifecycle, TuiFocus, TuiState};
+    use crate::interfaces::tui::widgets::modal_area;
 
     fn populated_state() -> TuiState {
         let completed_call = CallId::new();
@@ -224,6 +229,26 @@ mod tests {
     fn rect_text(buffer: &Buffer, width: u16, area: Rect) -> String {
         (area.y..area.y + area.height)
             .map(|y| row_text(buffer, width, y))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn outside_rect_text(buffer: &Buffer, width: u16, height: u16, area: Rect) -> String {
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .filter(|x| {
+                        *x < area.x
+                            || *x >= area.x.saturating_add(area.width)
+                            || y < area.y
+                            || y >= area.y.saturating_add(area.height)
+                    })
+                    .map(|x| {
+                        let index = usize::from(y) * usize::from(width) + usize::from(x);
+                        buffer.content()[index].symbol()
+                    })
+                    .collect::<String>()
+            })
             .collect::<Vec<_>>()
             .join("\n")
     }
@@ -413,5 +438,154 @@ mod tests {
         assert!(rendered.contains("Tool"));
         assert!(rendered.contains("fs_write"));
         assert!(!rendered.contains("stale"));
+    }
+
+    #[test]
+    fn approval_modal_renders_complete_decision_context_at_120_by_40() {
+        let modal = InteractionModalView::Approval {
+            call_id: CallId::new(),
+            name: "WRITE_MARKER_工具写入".to_string(),
+            args: serde_json::json!({
+                "path": "输出/ARG_MARKER.txt",
+                "content": "多语言内容"
+            }),
+            reason: "REASON_MARKER 修改工作区中的文件，需要明确确认。".to_string(),
+        };
+        let area = modal_area(Rect::new(0, 0, 120, 40), &modal);
+        let state = TuiState {
+            modal: Some(modal),
+            ..TuiState::default()
+        };
+        let buffer = draw(120, 40, &state);
+        let rendered = rect_text(&buffer, 120, area);
+
+        assert_eq!((area.width, area.height), (88, 16));
+        assert!(rendered.contains("Approval required"));
+        assert!(rendered.contains("Tool"));
+        assert!(rendered.contains("WRITE_MARKER"));
+        assert!(rendered.contains("Reason"));
+        assert!(rendered.contains("REASON_MARKER"));
+        assert!(rendered.contains("Arguments"));
+        assert!(rendered.contains("ARG_MARKER"));
+        assert!(rendered.contains("[Y] Approve once"));
+        assert!(rendered.contains("[N / Esc] Reject once"));
+    }
+
+    #[test]
+    fn approval_modal_clears_its_overlay_and_does_not_leak_at_60_by_20() {
+        let modal = InteractionModalView::Approval {
+            call_id: CallId::new(),
+            name: "MODAL_ONLY_MARKER_删除工具".to_string(),
+            args: serde_json::json!({"target": "临时文件", "recursive": true}),
+            reason: format!("危险操作 REASON_TAIL {}", "理由很长 ".repeat(80)),
+        };
+        let viewport = Rect::new(0, 0, 60, 20);
+        let area = modal_area(viewport, &modal);
+        let mut state = TuiState {
+            modal: Some(modal),
+            ..TuiState::default()
+        };
+        state.run.assistant_text =
+            "BACKGROUND_MARKER\nBACKGROUND_MARKER\nBACKGROUND_MARKER".to_string();
+
+        let buffer = draw(60, 20, &state);
+        let inside = rect_text(&buffer, 60, area);
+        let outside = outside_rect_text(&buffer, 60, 20, area);
+
+        assert!(inside.contains("MODAL_ONLY_MARKER"));
+        assert!(!inside.contains("BACKGROUND_MARKER"));
+        assert!(!outside.contains("MODAL_ONLY_MARKER"));
+        assert!(outside.contains("BACKGROUND_MARKER"));
+    }
+
+    #[test]
+    fn input_modal_keeps_long_unicode_draft_tail_visible_at_40_by_12() {
+        let draft = format!(
+            "HEAD_MARKER\n{}\nTAIL_MARKER_最终回答",
+            (0..30)
+                .map(|index| format!("第 {index} 行 response 内容"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        let modal = InteractionModalView::Input {
+            input_id: CallId::new(),
+            prompt: format!(
+                "PROMPT_MARKER 请准确输入分支名称。{}",
+                "这是较长的 Unicode 提示。".repeat(12)
+            ),
+            draft,
+        };
+        let area = modal_area(Rect::new(0, 0, 40, 12), &modal);
+        let state = TuiState {
+            modal: Some(modal),
+            ..TuiState::default()
+        };
+        let buffer = draw(40, 12, &state);
+        let rendered = rect_text(&buffer, 40, area);
+
+        assert_eq!((area.width, area.height), (36, 10));
+        assert!(rendered.contains("Input required"));
+        assert!(rendered.contains("Prompt"));
+        assert!(rendered.contains("PROMPT_MARKER"));
+        assert!(rendered.contains("Response"));
+        assert!(rendered.contains("TAIL_MARKER"));
+        assert!(!rendered.contains("HEAD_MARKER"));
+        assert!(rendered.contains("[Enter] Submit response"));
+    }
+
+    #[test]
+    fn modal_layout_is_bounded_and_tiny_viewports_do_not_panic() {
+        let approval = InteractionModalView::Approval {
+            call_id: CallId::new(),
+            name: "fs_write".to_string(),
+            args: serde_json::json!({"path": "out.txt"}),
+            reason: "writes a file".to_string(),
+        };
+        let input = InteractionModalView::Input {
+            input_id: CallId::new(),
+            prompt: "Tiny prompt".to_string(),
+            draft: "HEAD\nmiddle\nTAIL".to_string(),
+        };
+
+        assert_eq!(
+            modal_area(Rect::new(3, 4, 0, 0), &approval),
+            Rect::new(3, 4, 0, 0)
+        );
+        for (width, height) in [(1, 1), (2, 2), (8, 3), (18, 4)] {
+            for modal in [&approval, &input] {
+                let state = TuiState {
+                    modal: Some(modal.clone()),
+                    ..TuiState::default()
+                };
+                let buffer = draw(width, height, &state);
+                assert_eq!(
+                    buffer.content().len(),
+                    usize::from(width) * usize::from(height)
+                );
+                let area = modal_area(Rect::new(0, 0, width, height), modal);
+                assert!(area.x.saturating_add(area.width) <= width);
+                assert!(area.y.saturating_add(area.height) <= height);
+            }
+        }
+
+        let approval_state = TuiState {
+            modal: Some(approval),
+            ..TuiState::default()
+        };
+        let compact_approval = buffer_text(&draw(18, 4, &approval_state));
+        assert!(compact_approval.contains("Approval"));
+        assert!(compact_approval.contains("Reason"));
+        assert!(compact_approval.contains("Args"));
+        assert!(compact_approval.contains("Y ok N/Esc no"));
+
+        let input_state = TuiState {
+            modal: Some(input),
+            ..TuiState::default()
+        };
+        let compact_input = buffer_text(&draw(18, 4, &input_state));
+        assert!(compact_input.contains("Input"));
+        assert!(compact_input.contains("TAIL"));
+        assert!(!compact_input.contains("HEAD"));
+        assert!(compact_input.contains("Enter submit"));
     }
 }
