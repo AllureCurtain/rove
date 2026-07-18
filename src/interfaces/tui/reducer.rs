@@ -1,7 +1,7 @@
 use crate::interfaces::terminal::action::TerminalAction;
 use crate::interfaces::tui::action::TuiAction;
 use crate::interfaces::tui::effect::TuiEffect;
-use crate::interfaces::tui::state::{TuiFocus, TuiState};
+use crate::interfaces::tui::state::{RunLifecycle, TuiFocus, TuiState};
 
 pub fn reduce(state: &mut TuiState, action: TuiAction) -> Vec<TuiEffect> {
     match action {
@@ -9,22 +9,33 @@ pub fn reduce(state: &mut TuiState, action: TuiAction) -> Vec<TuiEffect> {
             state.should_quit = true;
             vec![TuiEffect::Exit]
         }
+        TuiAction::Terminal(TerminalAction::CancelRun) => cancel_or_clear(state),
+        TuiAction::Terminal(TerminalAction::SubmitPrompt(message)) => {
+            dispatch_prompt(state, message)
+        }
         TuiAction::Terminal(action) => vec![TuiEffect::Dispatch(action)],
         TuiAction::InsertChar(ch) => {
-            state.composer.push(ch);
+            if state.focus == TuiFocus::Composer {
+                state.composer.push(ch);
+            }
             Vec::new()
         }
         TuiAction::Backspace => {
-            state.composer.pop();
+            if state.focus == TuiFocus::Composer {
+                state.composer.pop();
+            }
             Vec::new()
         }
         TuiAction::SubmitComposer => {
+            if state.focus != TuiFocus::Composer || !state.run_lifecycle.accepts_prompt() {
+                return Vec::new();
+            }
             let message = state.composer.trim().to_string();
             if message.is_empty() {
                 Vec::new()
             } else {
                 state.composer.clear();
-                vec![TuiEffect::Dispatch(TerminalAction::SubmitPrompt(message))]
+                dispatch_prompt(state, message)
             }
         }
         TuiAction::FocusNext => {
@@ -34,13 +45,52 @@ pub fn reduce(state: &mut TuiState, action: TuiAction) -> Vec<TuiEffect> {
             };
             Vec::new()
         }
+        TuiAction::ScrollUp(amount) => {
+            if state.focus == TuiFocus::Transcript {
+                state.transcript_scroll.scroll_up(amount);
+            }
+            Vec::new()
+        }
+        TuiAction::ScrollDown(amount) => {
+            if state.focus == TuiFocus::Transcript {
+                state.transcript_scroll.scroll_down(amount);
+            }
+            Vec::new()
+        }
+        TuiAction::SetTranscriptScrollMax { max_offset } => {
+            state.transcript_scroll.set_max_offset(max_offset);
+            Vec::new()
+        }
         TuiAction::Resize { width, height } => {
             state.terminal_width = width;
             state.terminal_height = height;
             Vec::new()
         }
-        TuiAction::ScrollUp(_) | TuiAction::ScrollDown(_) | TuiAction::Tick => Vec::new(),
+        TuiAction::Tick => Vec::new(),
     }
+}
+
+fn cancel_or_clear(state: &mut TuiState) -> Vec<TuiEffect> {
+    match state.run_lifecycle {
+        RunLifecycle::Running => {
+            state.run_lifecycle = RunLifecycle::Cancelling;
+            vec![TuiEffect::Dispatch(TerminalAction::CancelRun)]
+        }
+        RunLifecycle::Cancelling => Vec::new(),
+        RunLifecycle::Idle | RunLifecycle::Completed => {
+            state.composer.clear();
+            Vec::new()
+        }
+    }
+}
+
+fn dispatch_prompt(state: &mut TuiState, message: String) -> Vec<TuiEffect> {
+    if !state.run_lifecycle.accepts_prompt() || message.trim().is_empty() {
+        return Vec::new();
+    }
+
+    state.run_lifecycle = RunLifecycle::Running;
+    vec![TuiEffect::Dispatch(TerminalAction::SubmitPrompt(message))]
 }
 
 #[cfg(test)]
@@ -48,7 +98,7 @@ mod tests {
     use crate::interfaces::terminal::action::TerminalAction;
     use crate::interfaces::tui::action::TuiAction;
     use crate::interfaces::tui::effect::TuiEffect;
-    use crate::interfaces::tui::state::TuiState;
+    use crate::interfaces::tui::state::{RunLifecycle, TuiFocus, TuiState};
 
     use super::reduce;
 
@@ -62,11 +112,130 @@ mod tests {
         let effects = reduce(&mut state, TuiAction::SubmitComposer);
 
         assert_eq!(state.composer, "");
+        assert_eq!(state.run_lifecycle, RunLifecycle::Running);
         assert_eq!(
             effects,
             vec![TuiEffect::Dispatch(TerminalAction::SubmitPrompt(
                 "hello".to_string()
             ))]
         );
+    }
+
+    #[test]
+    fn composer_edits_unicode_without_splitting_characters() {
+        let mut state = TuiState::default();
+
+        reduce(&mut state, TuiAction::InsertChar('你'));
+        reduce(&mut state, TuiAction::InsertChar('🙂'));
+        reduce(&mut state, TuiAction::Backspace);
+
+        assert_eq!(state.composer, "你");
+        reduce(&mut state, TuiAction::Backspace);
+        assert!(state.composer.is_empty());
+        reduce(&mut state, TuiAction::Backspace);
+        assert!(state.composer.is_empty());
+    }
+
+    #[test]
+    fn composer_rejects_blank_or_busy_submissions() {
+        let mut state = TuiState {
+            composer: "   \t".to_string(),
+            ..TuiState::default()
+        };
+
+        assert!(reduce(&mut state, TuiAction::SubmitComposer).is_empty());
+        assert_eq!(state.run_lifecycle, RunLifecycle::Idle);
+        assert_eq!(state.composer, "   \t");
+
+        state.composer = "queued without queueing".to_string();
+        state.run_lifecycle = RunLifecycle::Running;
+        assert!(reduce(&mut state, TuiAction::SubmitComposer).is_empty());
+        assert_eq!(state.composer, "queued without queueing");
+    }
+
+    #[test]
+    fn focus_gates_composer_editing_and_transcript_scrolling() {
+        let mut state = TuiState::default();
+        reduce(
+            &mut state,
+            TuiAction::SetTranscriptScrollMax { max_offset: 10 },
+        );
+
+        reduce(&mut state, TuiAction::ScrollUp(3));
+        assert_eq!(state.transcript_scroll.offset, 0);
+
+        reduce(&mut state, TuiAction::FocusNext);
+        assert_eq!(state.focus, TuiFocus::Transcript);
+        reduce(&mut state, TuiAction::InsertChar('x'));
+        reduce(&mut state, TuiAction::Backspace);
+        assert!(state.composer.is_empty());
+        reduce(&mut state, TuiAction::ScrollUp(3));
+        assert_eq!(state.transcript_scroll.offset, 3);
+
+        reduce(&mut state, TuiAction::FocusNext);
+        assert_eq!(state.focus, TuiFocus::Composer);
+    }
+
+    #[test]
+    fn transcript_scrolling_is_bounded_and_clamped_when_content_shrinks() {
+        let mut state = TuiState {
+            focus: TuiFocus::Transcript,
+            ..TuiState::default()
+        };
+        reduce(
+            &mut state,
+            TuiAction::SetTranscriptScrollMax { max_offset: 5 },
+        );
+
+        reduce(&mut state, TuiAction::ScrollUp(u16::MAX));
+        assert_eq!(state.transcript_scroll.offset, 5);
+        reduce(&mut state, TuiAction::ScrollDown(2));
+        assert_eq!(state.transcript_scroll.offset, 3);
+        reduce(&mut state, TuiAction::ScrollDown(20));
+        assert_eq!(state.transcript_scroll.offset, 0);
+
+        reduce(&mut state, TuiAction::ScrollUp(5));
+        reduce(
+            &mut state,
+            TuiAction::SetTranscriptScrollMax { max_offset: 2 },
+        );
+        assert_eq!(state.transcript_scroll.offset, 2);
+        assert_eq!(state.transcript_scroll.max_offset, 2);
+    }
+
+    #[test]
+    fn cancellation_is_active_only_once_and_idle_clears_the_draft() {
+        let mut state = TuiState {
+            composer: "draft".to_string(),
+            ..TuiState::default()
+        };
+
+        assert!(reduce(&mut state, TuiAction::Terminal(TerminalAction::CancelRun)).is_empty());
+        assert!(state.composer.is_empty());
+        assert_eq!(state.run_lifecycle, RunLifecycle::Idle);
+
+        state.run_lifecycle = RunLifecycle::Running;
+        assert_eq!(
+            reduce(&mut state, TuiAction::Terminal(TerminalAction::CancelRun)),
+            vec![TuiEffect::Dispatch(TerminalAction::CancelRun)]
+        );
+        assert_eq!(state.run_lifecycle, RunLifecycle::Cancelling);
+        assert!(reduce(&mut state, TuiAction::Terminal(TerminalAction::CancelRun)).is_empty());
+    }
+
+    #[test]
+    fn resize_records_even_minimal_terminal_dimensions() {
+        let mut state = TuiState::default();
+
+        let effects = reduce(
+            &mut state,
+            TuiAction::Resize {
+                width: 1,
+                height: 0,
+            },
+        );
+
+        assert!(effects.is_empty());
+        assert_eq!((state.terminal_width, state.terminal_height), (1, 0));
     }
 }
