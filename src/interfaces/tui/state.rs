@@ -3,6 +3,7 @@ use crate::interfaces::terminal::view::{RunViewState, RunViewUpdate};
 
 const MAX_TRANSCRIPT_HISTORY_RUNS: usize = 50;
 pub const MAX_COMPOSER_BYTES: usize = 32 * 1024;
+pub const MAX_INTERACTION_INPUT_BYTES: usize = 32 * 1024;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum RunLifecycle {
@@ -101,6 +102,10 @@ impl InteractionModalView {
             Self::Approval { call_id, .. } => *call_id,
             Self::Input { input_id, .. } => *input_id,
         }
+    }
+
+    pub fn matches_request(&self, kind: InteractionModalKind, request_id: CallId) -> bool {
+        self.kind() == kind && self.request_id() == request_id
     }
 }
 
