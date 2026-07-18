@@ -1,8 +1,8 @@
 # Compact REPL UI Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For implementers:** Execute this plan task by task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Implement the compact rove REPL UI described in `docs/superpowers/specs/2026-05-31-compact-repl-ui-design.md`.
+**Goal:** Implement the compact rove REPL UI described in `docs/design/2026-05-31-compact-repl-ui-design.md`.
 
 **Architecture:** Keep the REPL line-oriented and preserve one-shot CLI behavior. Add a focused `src/interfaces/cli/ui.rs` formatting layer, add `/status` in `repl.rs`, and extend `render.rs` with an explicit render mode so REPL output can be richer without making one-shot output noisy.
 
@@ -821,7 +821,7 @@ Expected: pass.
 
 Find the section around "Running `rove` with no task enters the REPL" in `docs/runtime/implementation-guide.md`. Replace the old prompt-only snippet with:
 
-```markdown
+````markdown
 Running `rove` with no task enters the compact line-oriented REPL in the current
 terminal. Startup prints the active workspace, model, provider, state directory,
 session status, and common commands:
@@ -841,8 +841,7 @@ rove>
 The REPL remains a normal terminal prompt, not a full-screen TUI. During runs it
 prints compact `You`, `Plan`, `Tool`, `Error`, and `Done` sections, while the
 Web workbench remains the richer report/history surface.
-```
-```
+````
 
 Be careful with nested code fences in Markdown. If the surrounding section is already inside a fence, close it first.
 
@@ -921,7 +920,8 @@ Run:
 git status --short
 ```
 
-Expected: only intentional files are modified. Do not commit `.superpowers/` browser mockup files.
+Expected: only intentional files are modified. Do not commit local browser
+mockup artifacts.
 
 - [ ] **Step 6: Commit**
 
@@ -939,5 +939,5 @@ Expected: commit succeeds.
 - Keep stdout behavior for assistant/final text as close as possible to current one-shot behavior.
 - Use stderr for REPL status/event metadata so stdout remains useful for content.
 - Do not add `ratatui`, `crossterm`, or full-screen terminal dependencies in this pass.
-- Do not commit `.superpowers/`; it only contains local visual mockup artifacts from the design discussion.
+- Do not commit local visual mockup artifacts from the design discussion.
 - If tests that capture `rustyline` prompts behave differently across platforms, assert stable banner/status text instead of the prompt itself.

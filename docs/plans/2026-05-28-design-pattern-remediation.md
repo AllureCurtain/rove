@@ -1,6 +1,6 @@
 # Design Pattern Remediation Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For implementers:** Execute this plan task by task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Bring the current runtime closer to the RAGENT-inspired model governance patterns by sharing routing health state, using stable provider identities, improving first-packet observability, tightening API resume semantics, and cleaning up tool construction boundaries.
 

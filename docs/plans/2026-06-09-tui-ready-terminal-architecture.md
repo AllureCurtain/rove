@@ -1,6 +1,6 @@
 # TUI-Ready Terminal Architecture Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For implementers:** Execute this plan task by task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Prepare Rove's terminal surface for a future full TUI by extracting event-to-view state, line rendering, and terminal action contracts while preserving the current compact REPL behavior.
 

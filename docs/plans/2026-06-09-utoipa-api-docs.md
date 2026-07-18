@@ -1,6 +1,6 @@
 # Utoipa API Docs Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For implementers:** Execute this plan task by task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add formal OpenAPI JSON and Swagger UI documentation for the existing `rove` HTTP API using `utoipa`, `utoipa_axum`, and `utoipa_swagger_ui`.
 

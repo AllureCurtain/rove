@@ -8,7 +8,7 @@
 
 后续可以使用这个目标启动开发：
 
-> Based on `docs/superpowers/specs/2026-05-24-rove-runtime-hardening-design.md`, harden rove into a local-first but remote-ready runtime: introduce layered configuration, a file-artifact plus SQLite indexed state layer, token-aware context compaction and resumable checkpoints, batch-parallel tool orchestration, a unified provider abstraction, three-layer memory with controlled promotion and recall, split CI for Rust/Web/RAG, and a documentation surface that matches the target architecture.
+> Based on `docs/design/2026-05-24-rove-runtime-hardening-design.md`, harden rove into a local-first but remote-ready runtime: introduce layered configuration, a file-artifact plus SQLite indexed state layer, token-aware context compaction and resumable checkpoints, batch-parallel tool orchestration, a unified provider abstraction, three-layer memory with controlled promotion and recall, split CI for Rust/Web/RAG, and a documentation surface that matches the target architecture.
 
 ## Current State
 
@@ -680,7 +680,7 @@ CI 要分层，不要把所有重依赖都塞进单一主 workflow。
 - `docs/04-架构与路线图.md`：历史路线图，保留参考价值
 - `docs/05-下一步-统一执行内核.md`：早期 deep dive，保留设计思想来源
 - `docs/06-请求生命周期.md`：大而全的生命周期草案，作为参考库
-- `docs/superpowers/specs/2026-05-24-rag-pipeline-hardening-design.md`：RAG 子系统专用 spec
+- `docs/design/2026-05-24-rag-pipeline-hardening-design.md`：RAG 子系统专用 spec
 - **本文件**：跨模块 runtime hardening 总设计
 
 ## 13. Acceptance Criteria

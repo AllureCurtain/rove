@@ -9,7 +9,7 @@ Rove's local-first runtime identity. The new primary CLI surface is a rich,
 scrollback-preserving terminal REPL, not a fullscreen dashboard.
 
 This design supersedes the one-shot compatibility rule in
-`docs/superpowers/specs/2026-05-31-compact-repl-ui-design.md`: a bare positional
+`docs/design/2026-05-31-compact-repl-ui-design.md`: a bare positional
 message no longer means "run once and exit". Bare messages start an interactive
 session with an initial prompt.
 

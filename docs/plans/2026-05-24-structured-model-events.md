@@ -1,6 +1,6 @@
 # Structured Model Events Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For implementers:** Execute this plan task by task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Move rove's model layer from text-only `StreamChunk` semantics to structured `ModelEvent` semantics so native provider tool-use can flow into the existing tool execution pipeline without changing the public job/SSE/Web protocol.
 

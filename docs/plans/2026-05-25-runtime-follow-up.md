@@ -1,6 +1,6 @@
 # Runtime Follow-Up Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For implementers:** Execute this plan task by task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Close the remaining runtime gaps identified after `docs/runtime/` became authoritative: API security middleware, explicit state maintenance, automatic compaction behavior, RAG 3B/3D boundaries, and documentation cleanup.
 

@@ -1,6 +1,6 @@
 # Rich Terminal REPL Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For implementers:** Execute this plan task by task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make `rove` and `rove "prompt"` enter the rich interactive terminal REPL, and move non-interactive one-shot execution to `rove exec "prompt"`.
 
@@ -27,7 +27,7 @@ feature/rich-terminal-repl-design
 Approved design spec:
 
 ```text
-docs/superpowers/specs/2026-06-09-rich-terminal-repl-design.md
+docs/design/2026-06-09-rich-terminal-repl-design.md
 ```
 
 Baseline already verified before writing this plan:

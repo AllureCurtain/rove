@@ -1,6 +1,6 @@
 # MVP Readiness Follow-Through Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For implementers:** Execute this plan task by task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make rove easier to verify and start as a real local MVP by fixing integration port handling, adding a one-command dev launcher, documenting readiness/security boundaries, and running deterministic plus provider smoke gates.
 

@@ -1,6 +1,6 @@
 # MVP Declaration, Provider Smoke, and Web History Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For implementers:** Execute this plan task by task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Mark the current rove runtime as an achieved local-first MVP, document the MVP boundary, add real-provider opt-in smoke coverage, and let the Web workbench inspect historical runs and reports.
 

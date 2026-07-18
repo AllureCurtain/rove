@@ -133,6 +133,7 @@ bearer token server-side and does not expose it to browser JavaScript.
 | Tools | `src/tools/` | Filesystem, shell, memory, request input, MCP proxy, and optional RAG tools. |
 | Memory | `src/memory/` | Session summaries and bounded durable memory recall. |
 | Docs | `docs/runtime/` | Current architecture, subsystem boundaries, and implementation status. |
+| Maintainers | `AGENTS.md`, `docs/ONBOARDING.md` | Repository rules, source-of-truth order, code map, workflows, and verification. |
 
 ## Configuration
 
@@ -251,5 +252,6 @@ Start here:
 - [Benchmark Evidence](docs/runtime/benchmark-evidence.md)
 
 Current runtime source of truth is the `docs/runtime/` directory. Older design
-notes remain in `docs/` and `docs/superpowers/specs/` as historical context
-unless they explicitly point back to the runtime docs.
+notes and implementation plans remain in `docs/`, `docs/design/`, and
+`docs/plans/` as historical context unless they explicitly point back to the
+runtime docs.

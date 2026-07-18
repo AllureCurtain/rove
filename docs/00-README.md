@@ -45,14 +45,20 @@
 | 05 | [下一步:统一执行内核 [历史参考]](./05-下一步-统一执行内核.md) | 第一个 deep dive 的起点 |
 | 06 | [请求生命周期 [历史参考]](./06-请求生命周期.md) | 12 站全流程早期设计 |
 | 07 | [产品定位与 Workspace](./07-产品定位与Workspace.md) | rove 的上层产品定位:`Workspace` runtime |
+| onboarding | [维护者 Onboarding](./ONBOARDING.md) | 当前仓库入口、代码地图、运行方式、验证矩阵和文档事实边界 |
 | runtime | [当前 runtime 文档](./runtime/README.md) | 当前实现的权威架构、子系统边界、实现状态对照 |
+| future | [Agent Execution Lifecycle](./design/2026-07-14-agent-execution-lifecycle-design.md) | Proposed: execution strategy、StepRecord、Replanner、Finalizer |
+| future | [Agent Definition 与程序性知识](./design/2026-07-14-agent-definition-and-procedural-knowledge-design.md) | Proposed: versioned Agent profile、procedure 与 capability binding |
+| future | [MCP Streamable HTTP 与 Tool Artifacts](./design/2026-07-15-mcp-streamable-http-and-tool-artifacts-design.md) | Proposed: transport/session/result/artifact 演进 |
+| future | [OnCall Reference Agent Evaluation](./design/2026-07-15-oncall-reference-agent-evaluation-plan.md) | Proposed: 合成 reference Agent 与 deterministic evaluation |
+| future | [Grok Build 借鉴与 TUI 方向](./design/2026-07-16-grok-build-reference-and-tui-design.md) | Proposed: 保留 REPL/exec，新增复用 shared runtime 的可选 TUI |
 | ref | [ragent 流式与模型设计借鉴](./RAGENT-STREAM-MODEL-NOTES-2026-05-24.md) | 记录 ragent 在 SSE、模型流、取消和路由降级上的可借鉴思想 |
 
 ---
 
 ## 建议阅读顺序
 
-**第一次读**:runtime → 01 → 07 → 02 → 03
+**第一次读**:onboarding → runtime → 01 → 07 → 02 → 03
 
 **回看时**:先看 runtime (当前实现)和 07 (产品定位),再跳到任何感兴趣的历史 deep dive
 
@@ -87,3 +93,4 @@
 - 2026-05-24:新增 [ragent 流式与模型设计借鉴](./RAGENT-STREAM-MODEL-NOTES-2026-05-24.md),沉淀 SSE、模型流、取消和路由降级参考思想。
 - 2026-05-24:新增 [当前 runtime 文档](./runtime/README.md),补齐 root README、总架构、子系统设计、当前实现 vs 目标设计对照。
 - 2026-05-25:将 `docs/runtime/` 标为当前权威入口,04/05/06 改为历史参考;删除前日临时目标文件。
+- 2026-07-15:新增维护者 onboarding、根级 `AGENTS.md` 与四篇 Agent 机制未来设计;`docs/runtime/` 继续作为当前实现事实来源。

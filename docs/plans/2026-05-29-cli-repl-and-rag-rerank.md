@@ -1,8 +1,8 @@
 # CLI REPL And RAG Rerank Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For implementers:** Execute this plan task by task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Implement the CLI REPL and remote RAG rerank design in `docs/superpowers/specs/2026-05-29-cli-repl-and-rag-rerank-design.md`.
+**Goal:** Implement the CLI REPL and remote RAG rerank design in `docs/design/2026-05-29-cli-repl-and-rag-rerank-design.md`.
 
 **Architecture:** Keep `main.rs` as routing only, move shared CLI runtime construction into `src/interfaces/cli/runtime.rs`, and move run stream rendering/artifact recording into `src/interfaces/cli/render.rs`. Add a line-oriented `rustyline` REPL in `src/interfaces/cli/repl.rs`. Add a feature-gated RAG reranker trait/client layer in `src/tools/rag/rerank.rs` and call it explicitly at the end of retrieval.
 

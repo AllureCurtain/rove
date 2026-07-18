@@ -6,13 +6,13 @@
 Milvus、数据库工作流或企业级意图树。
 
 这是一份设计 spec，不是实现计划。后续 `/goal` 应基于本文再生成
-`docs/superpowers/plans/YYYY-MM-DD-rag-pipeline-hardening.md`。
+`docs/plans/YYYY-MM-DD-rag-pipeline-hardening.md`。
 
 ## Suggested /goal Objective
 
 后续可以使用这个目标启动开发：
 
-> Based on `docs/superpowers/specs/2026-05-24-rag-pipeline-hardening-design.md`, implement Phase 3A RAG Pipeline Hardening for rove: split the current RAG indexer into explicit ingestion stages, add chunking strategies, add durable indexing logs/manifests under `.rove`, introduce lightweight retrieval channels and postprocessors, and add a pure retrieval eval/report path, while preserving the existing `rag` feature gate, deterministic tests, LanceDB storage, and manifest fallback.
+> Based on `docs/design/2026-05-24-rag-pipeline-hardening-design.md`, implement Phase 3A RAG Pipeline Hardening for rove: split the current RAG indexer into explicit ingestion stages, add chunking strategies, add durable indexing logs/manifests under `.rove`, introduce lightweight retrieval channels and postprocessors, and add a pure retrieval eval/report path, while preserving the existing `rag` feature gate, deterministic tests, LanceDB storage, and manifest fallback.
 
 ## Current State
 

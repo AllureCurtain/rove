@@ -1,6 +1,6 @@
 # Pico-Inspired Runtime And Provider Upgrades Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For implementers:** Execute this plan task by task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make rove a production-grade pico second-development runtime by adding an OpenAI Responses provider path, explicit ReAct runtime documentation, runtime identity checkpoints, prompt build metadata, tool execution metadata, and evidence-oriented benchmark/report packaging.
 
@@ -2220,7 +2220,7 @@ git commit -m "Document pico-inspired provider and runtime upgrades"
 Use this prompt when opening the implementation conversation:
 
 ```text
-We are in D:\Study\project\agent\rove. Please implement the plan at docs/superpowers/plans/2026-06-09-pico-inspired-runtime-provider-upgrades.md task by task. Use the repo's existing Rust patterns. Keep OpenAI chat completions under provider name openai-compatible, and add OpenAI Responses as a separate provider name openai-responses. Preserve backward compatibility for existing .rove task_state/report artifacts with serde defaults. Run the verification commands in each task and report exact failures before moving on.
+We are in D:\Study\project\agent\rove. Please implement the plan at docs/plans/2026-06-09-pico-inspired-runtime-provider-upgrades.md task by task. Use the repo's existing Rust patterns. Keep OpenAI chat completions under provider name openai-compatible, and add OpenAI Responses as a separate provider name openai-responses. Preserve backward compatibility for existing .rove task_state/report artifacts with serde defaults. Run the verification commands in each task and report exact failures before moving on.
 ```
 
 ## Self-Review

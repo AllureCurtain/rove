@@ -11,7 +11,7 @@
 
 后续可以使用这个目标启动开发：
 
-> Based on `docs/superpowers/specs/2026-06-09-utoipa-api-docs-design.md`, implement formal OpenAPI documentation for rove's HTTP API using `utoipa`, `utoipa_axum`, and `utoipa_swagger_ui`: generate `/api/openapi.json`, expose `/swagger-ui`, document all current API routes and schemas, include bearer-token security metadata, add regression tests for the generated spec and Swagger UI route, and update runtime documentation, all inside `.worktrees/utoipa-api-docs`.
+> Based on `docs/design/2026-06-09-utoipa-api-docs-design.md`, implement formal OpenAPI documentation for rove's HTTP API using `utoipa`, `utoipa_axum`, and `utoipa_swagger_ui`: generate `/api/openapi.json`, expose `/swagger-ui`, document all current API routes and schemas, include bearer-token security metadata, add regression tests for the generated spec and Swagger UI route, and update runtime documentation, all inside `.worktrees/utoipa-api-docs`.
 
 ## Current State
 

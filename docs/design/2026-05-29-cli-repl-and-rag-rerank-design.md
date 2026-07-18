@@ -12,7 +12,7 @@ this spec into a step-by-step plan before editing production code.
 
 Use this objective in a new implementation session:
 
-> Based on `docs/superpowers/specs/2026-05-29-cli-repl-and-rag-rerank-design.md`, implement the rove CLI REPL first, preserving one-shot task behavior for `rove "<task>"`, then implement remote RAG rerank behind the existing `rag` feature gate and config fields. Keep existing API/Web behavior stable, avoid Browser/Desktop scope, and verify with focused CLI, RAG, and regression tests.
+> Based on `docs/design/2026-05-29-cli-repl-and-rag-rerank-design.md`, implement the rove CLI REPL first, preserving one-shot task behavior for `rove "<task>"`, then implement remote RAG rerank behind the existing `rag` feature gate and config fields. Keep existing API/Web behavior stable, avoid Browser/Desktop scope, and verify with focused CLI, RAG, and regression tests.
 
 ## Current State
 
@@ -226,7 +226,7 @@ warnings, not fatal errors.
 Use a simple prompt:
 
 ```text
-rove> 
+rove>
 ```
 
 Avoid a large banner in the first pass. `pico` has a welcome panel, but `rove` is already a runtime
