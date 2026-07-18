@@ -1,6 +1,6 @@
 # TUI Interaction M2 Parallel Plan - 2026-07-18
 
-> Status: **Active / Foundation In Progress**
+> Status: **Active / Foundation Verified, Parallel Lanes Ready**
 >
 > Scope: complete live approval and `request_input` interaction in `rove tui`.
 > This plan does not claim that M2 is implemented until code, tests, and
@@ -18,6 +18,16 @@ provider registers responder
   -> typed action resolves the matching responder once
   -> tool continues, fails closed, or is cancelled
 ```
+
+## Verified Foundation Checkpoint
+
+All worker branches start from foundation commit `5cf976b`.
+
+The checkpoint passed `cargo fmt --all --check`,
+`cargo clippy --all-targets -- -D warnings`, `cargo test`, and
+`git diff --check`. Independent input-contract and I/O-safety reviews found no
+remaining foundation P0-P2. The full test run included 225 library tests, 53
+API tests, and 88 E2E tests in addition to the other integration suites.
 
 ## Foundation Owned By The Coordinator
 
