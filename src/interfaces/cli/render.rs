@@ -285,19 +285,9 @@ fn render_repl_update(
             }
             None
         }
-        RunViewUpdate::InputNeeded { prompt, .. } => {
-            if is_repl(options) {
-                eprintln!(
-                    "\n{}",
-                    repl_update_label(&RunViewUpdate::InputNeeded {
-                        input_id: CallId::new(),
-                        prompt: prompt.clone(),
-                    })?
-                );
-                eprintln!("  {prompt}");
-            }
-            None
-        }
+        // The live stdin provider owns the prompt. Rendering the canonical
+        // event here would print the same question twice in CLI modes.
+        RunViewUpdate::InputNeeded { .. } => None,
         RunViewUpdate::PlanCreated { plan: new_plan } => {
             render_state.plan_step_count = new_plan.steps.len();
             render_state.printed_plan = true;

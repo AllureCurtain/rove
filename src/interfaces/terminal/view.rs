@@ -186,12 +186,22 @@ impl RunViewState {
                 args,
                 reason,
             } => {
-                self.pending_approvals.push(PendingApprovalView {
-                    call_id,
-                    name: name.clone(),
-                    args: args.clone(),
-                    reason,
-                });
+                if let Some(approval) = self
+                    .pending_approvals
+                    .iter_mut()
+                    .find(|approval| approval.call_id == call_id)
+                {
+                    approval.name = name.clone();
+                    approval.args = args.clone();
+                    approval.reason = reason;
+                } else {
+                    self.pending_approvals.push(PendingApprovalView {
+                        call_id,
+                        name: name.clone(),
+                        args: args.clone(),
+                        reason,
+                    });
+                }
                 upsert_tool_status(
                     &mut self.tool_calls,
                     call_id,
@@ -212,6 +222,8 @@ impl RunViewState {
                 }
                 self.pending_approvals
                     .retain(|approval| approval.call_id != call_id);
+                self.pending_inputs
+                    .retain(|input| input.input_id != call_id);
             }
             RunViewUpdate::ToolCallFailed { call_id, error } => {
                 if let Some(tool) = self
@@ -225,10 +237,20 @@ impl RunViewState {
                 }
                 self.pending_approvals
                     .retain(|approval| approval.call_id != call_id);
+                self.pending_inputs
+                    .retain(|input| input.input_id != call_id);
             }
             RunViewUpdate::InputNeeded { input_id, prompt } => {
-                self.pending_inputs
-                    .push(PendingInputView { input_id, prompt });
+                if let Some(input) = self
+                    .pending_inputs
+                    .iter_mut()
+                    .find(|input| input.input_id == input_id)
+                {
+                    input.prompt = prompt;
+                } else {
+                    self.pending_inputs
+                        .push(PendingInputView { input_id, prompt });
+                }
             }
             RunViewUpdate::PlanCreated { plan } => {
                 self.plan = Some(plan);
@@ -656,6 +678,40 @@ mod tests {
         assert!(plan.steps[0].done);
         assert_eq!(plan.current_step, 1);
         assert!(state.current_step.is_none());
+    }
+
+    #[test]
+    fn pending_interactions_are_idempotent_and_input_clears_with_its_tool() {
+        let call_id = CallId::new();
+        let mut state = super::RunViewState::default();
+        let approval = RunViewUpdate::ToolCallApprovalNeeded {
+            call_id,
+            name: "fs_write".to_string(),
+            args: serde_json::json!({"path":"out.txt"}),
+            reason: "writes a file".to_string(),
+        };
+        let input = RunViewUpdate::InputNeeded {
+            input_id: call_id,
+            prompt: "Which branch?".to_string(),
+        };
+
+        state.apply_update(approval.clone());
+        state.apply_update(approval);
+        state.apply_update(input.clone());
+        state.apply_update(input);
+
+        assert_eq!(state.pending_approvals.len(), 1);
+        assert_eq!(state.pending_inputs.len(), 1);
+
+        state.apply_update(RunViewUpdate::ToolCallFailed {
+            call_id,
+            error: ToolError::ExecutionFailed {
+                reason: "cancelled".to_string(),
+            },
+        });
+
+        assert!(state.pending_approvals.is_empty());
+        assert!(state.pending_inputs.is_empty());
     }
 
     #[test]

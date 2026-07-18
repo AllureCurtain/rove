@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use futures::StreamExt;
 use futures::stream::BoxStream;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
@@ -10,9 +11,10 @@ use rove::core::context::{ContextBudget, ContextManager};
 use rove::core::engine::{Engine, EngineConfig};
 use rove::core::events::StreamEvent;
 use rove::core::types::{
-    ApprovalDecision, ApprovalPolicy, CallId, JobId, Message, PlanStep, PromptCheckpoint, RunId,
-    RunRequest, SessionId, TaskPlan, TaskState, TerminationReason, ToolContext, ToolSchema, Usage,
-    UserInputProvider, UserInputRequest,
+    ApprovalDecision, ApprovalPolicy, CallId, JobId, Message, PendingToolApproval,
+    PendingUserInput, PlanStep, PromptCheckpoint, RunId, RunRequest, SessionId, TaskPlan,
+    TaskState, TerminationReason, ToolApprovalProvider, ToolApprovalRequest, ToolContext,
+    ToolSchema, Usage, UserInputProvider, UserInputRequest,
 };
 use rove::core::workspace::{Workspace, WorkspaceKind};
 use rove::errors::{ModelError, ToolError};
@@ -569,14 +571,108 @@ impl PostRunHook for PanickingPostRunHook {
 
 struct RecordingInputProvider {
     answer: String,
-    prompts: Arc<Mutex<Vec<String>>>,
+    requests: Arc<Mutex<Vec<(CallId, UserInputRequest)>>>,
+}
+
+struct PublicProviderInputTool;
+
+#[async_trait]
+impl Tool for PublicProviderInputTool {
+    fn schema(&self) -> ToolSchema {
+        ToolSchema {
+            name: "public_provider_input".to_string(),
+            description: "Exercise the public user input provider API.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "prompt": { "type": "string" }
+                },
+                "required": ["prompt"]
+            }),
+            destructive: false,
+            parallel_safe: false,
+            capability: None,
+        }
+    }
+
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        ctx: &ToolContext<'_>,
+    ) -> Result<ToolOutput, ToolError> {
+        let provider = ctx
+            .input_provider
+            .as_ref()
+            .ok_or_else(|| ToolError::ExecutionFailed {
+                reason: "missing input provider".to_string(),
+            })?;
+        let prompt = args["prompt"]
+            .as_str()
+            .ok_or_else(|| ToolError::InvalidArgs {
+                reason: "missing prompt".to_string(),
+            })?;
+        let answer = provider
+            .request_input(UserInputRequest {
+                prompt: prompt.to_string(),
+            })
+            .await?;
+        Ok(ToolOutput::text(answer))
+    }
+}
+
+struct BlockingInputProvider {
+    registered: Arc<Mutex<Vec<CallId>>>,
+    dropped: Arc<AtomicBool>,
+}
+
+struct FailingApprovalRegistrationProvider;
+
+#[async_trait]
+impl ToolApprovalProvider for FailingApprovalRegistrationProvider {
+    async fn begin_approval(
+        &self,
+        _request: ToolApprovalRequest,
+    ) -> Result<PendingToolApproval, ToolError> {
+        Err(ToolError::ExecutionFailed {
+            reason: "approval registration failed".to_string(),
+        })
+    }
+}
+
+struct InputDropGuard(Arc<AtomicBool>);
+
+impl Drop for InputDropGuard {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
+
+#[async_trait]
+impl UserInputProvider for BlockingInputProvider {
+    async fn begin_input(
+        &self,
+        input_id: CallId,
+        _request: UserInputRequest,
+    ) -> Result<PendingUserInput, ToolError> {
+        self.registered.lock().unwrap().push(input_id);
+        let guard = InputDropGuard(Arc::clone(&self.dropped));
+        Ok(PendingUserInput::new(async move {
+            let _guard = guard;
+            std::future::pending::<Result<String, ToolError>>().await
+        }))
+    }
 }
 
 #[async_trait]
 impl UserInputProvider for RecordingInputProvider {
-    async fn request_input(&self, request: UserInputRequest) -> Result<String, ToolError> {
-        self.prompts.lock().unwrap().push(request.prompt);
-        Ok(self.answer.clone())
+    async fn begin_input(
+        &self,
+        input_id: CallId,
+        request: UserInputRequest,
+    ) -> Result<PendingUserInput, ToolError> {
+        self.requests.lock().unwrap().push((input_id, request));
+        let answer = self.answer.clone();
+        Ok(PendingUserInput::new(async move { Ok(answer) }))
     }
 }
 
@@ -785,6 +881,50 @@ async fn engine_emits_approval_needed_before_blocking_destructive_tool() {
             event,
             StreamEvent::ToolCallApprovalNeeded { name, .. } if name == "danger"
         )
+    }));
+    assert!(events.iter().any(|event| {
+        matches!(
+            event,
+            StreamEvent::ToolCallFailed {
+                error: ToolError::PermissionDenied { .. },
+                ..
+            }
+        )
+    }));
+}
+
+#[tokio::test]
+async fn failed_approval_registration_emits_no_actionable_event_and_runs_no_tool() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let model = Box::new(FakeModelClient::new(vec![
+        r#"{"tool":"danger","args":{}}"#.to_string(),
+        "blocked".to_string(),
+    ]));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(FakeDestructiveTool));
+    let engine = Engine::with_workspace(
+        model,
+        registry,
+        ContextManager::new("You are a test agent.".to_string()),
+        EngineConfig {
+            max_steps: 2,
+            plan_enabled: false,
+        },
+        workspace,
+        ApprovalPolicy::Ask,
+    )
+    .with_approval_provider(Arc::new(FailingApprovalRegistrationProvider));
+
+    let events = collect_events(&engine, "run danger").await;
+
+    assert!(
+        !events
+            .iter()
+            .any(|event| { matches!(event, StreamEvent::ToolCallApprovalNeeded { .. }) })
+    );
+    assert!(!events.iter().any(|event| {
+        matches!(event, StreamEvent::ToolCallCompleted { result, .. } if result.output == "should never run")
     }));
     assert!(events.iter().any(|event| {
         matches!(
@@ -3937,7 +4077,7 @@ async fn engine_executes_native_model_tool_use() {
 async fn engine_routes_request_input_tool_to_input_provider() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
-    let prompts = Arc::new(Mutex::new(Vec::new()));
+    let requests = Arc::new(Mutex::new(Vec::new()));
     let model = Box::new(FakeModelClient::new(vec![
         r#"{"tool": "request_input", "args": {"prompt": "Which branch should I use?"}}"#
             .to_string(),
@@ -3958,19 +4098,59 @@ async fn engine_routes_request_input_tool_to_input_provider() {
     )
     .with_input_provider(Arc::new(RecordingInputProvider {
         answer: "Use main.".to_string(),
-        prompts: prompts.clone(),
+        requests: requests.clone(),
     }));
 
     let events = collect_events(&engine, "ask a clarifying question").await;
 
-    assert_eq!(
-        prompts.lock().unwrap().as_slice(),
-        ["Which branch should I use?"]
-    );
-    assert!(events.iter().any(|event| matches!(
-        event,
-        StreamEvent::ToolCallCompleted { result, .. } if result.output == "Use main."
-    )));
+    let requests = requests.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].1.prompt, "Which branch should I use?");
+    let input_id = requests[0].0;
+    let started_id = events.iter().find_map(|event| match event {
+        StreamEvent::ToolCallStarted { call_id, name, .. } if name == "request_input" => {
+            Some(*call_id)
+        }
+        _ => None,
+    });
+    let input_events: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event {
+            StreamEvent::InputNeeded {
+                input_id, prompt, ..
+            } => Some((*input_id, prompt.as_str())),
+            _ => None,
+        })
+        .collect();
+    let completed_id = events.iter().find_map(|event| match event {
+        StreamEvent::ToolCallCompleted { call_id, result } if result.output == "Use main." => {
+            Some(*call_id)
+        }
+        _ => None,
+    });
+    assert_eq!(started_id, Some(input_id));
+    assert_eq!(input_events, vec![(input_id, "Which branch should I use?")]);
+    assert_eq!(completed_id, Some(input_id));
+    let started_index = events
+        .iter()
+        .position(|event| {
+            matches!(event, StreamEvent::ToolCallStarted { call_id, .. } if *call_id == input_id)
+        })
+        .unwrap();
+    let input_index = events
+        .iter()
+        .position(|event| {
+            matches!(event, StreamEvent::InputNeeded { input_id: event_id, .. } if *event_id == input_id)
+        })
+        .unwrap();
+    let completed_index = events
+        .iter()
+        .position(|event| {
+            matches!(event, StreamEvent::ToolCallCompleted { call_id, .. } if *call_id == input_id)
+        })
+        .unwrap();
+    assert!(started_index < input_index);
+    assert!(input_index < completed_index);
     assert!(matches!(
         events.last(),
         Some(StreamEvent::RunCompleted {
@@ -3978,6 +4158,124 @@ async fn engine_routes_request_input_tool_to_input_provider() {
             output: Some(output),
         }) if output == "I will use main."
     ));
+}
+
+#[tokio::test]
+async fn custom_tool_public_input_provider_call_uses_canonical_lifecycle() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let model = Box::new(FakeModelClient::new(vec![
+        r#"{"tool":"public_provider_input","args":{"prompt":"Which branch should I use?"}}"#
+            .to_string(),
+        "done".to_string(),
+    ]));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(PublicProviderInputTool));
+    let engine = Engine::with_workspace(
+        model,
+        registry,
+        ContextManager::new("You are a test agent.".to_string()),
+        EngineConfig {
+            max_steps: 5,
+            plan_enabled: false,
+        },
+        workspace,
+        ApprovalPolicy::Auto,
+    )
+    .with_input_provider(Arc::new(RecordingInputProvider {
+        answer: "Use main.".to_string(),
+        requests: requests.clone(),
+    }));
+
+    let events = collect_events(&engine, "ask through a custom tool").await;
+    let requests = requests.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    let input_id = requests[0].0;
+    let input_count = events
+        .iter()
+        .filter(|event| {
+            matches!(event, StreamEvent::InputNeeded { input_id: event_id, .. } if *event_id == input_id)
+        })
+        .count();
+    assert_eq!(input_count, 1);
+    assert!(events.iter().any(|event| {
+        matches!(event, StreamEvent::ToolCallStarted { call_id, name, .. } if *call_id == input_id && name == "public_provider_input")
+    }));
+    assert!(events.iter().any(|event| {
+        matches!(event, StreamEvent::ToolCallCompleted { call_id, result } if *call_id == input_id && result.output == "Use main.")
+    }));
+}
+
+#[tokio::test]
+async fn cancelling_after_input_needed_drops_the_pending_responder() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let model = Box::new(FakeModelClient::new(vec![
+        r#"{"tool":"request_input","args":{"prompt":"Which branch?"}}"#.to_string(),
+    ]));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(RequestInputTool));
+    let registered = Arc::new(Mutex::new(Vec::new()));
+    let dropped = Arc::new(AtomicBool::new(false));
+    let engine = Engine::with_workspace(
+        model,
+        registry,
+        ContextManager::new("You are a test agent.".to_string()),
+        EngineConfig {
+            max_steps: 2,
+            plan_enabled: false,
+        },
+        workspace,
+        ApprovalPolicy::Auto,
+    )
+    .with_input_provider(Arc::new(BlockingInputProvider {
+        registered: registered.clone(),
+        dropped: dropped.clone(),
+    }));
+    let req = RunRequest {
+        session_id: SessionId::new(),
+        job_id: JobId::new(),
+        run_id: RunId::new(),
+        user_message: "wait for input".to_string(),
+        resume_state: None,
+    };
+    let cancel = CancellationToken::new();
+    let stream = engine.run_with_cancel(req, None, cancel.clone());
+    futures::pin_mut!(stream);
+
+    let mut saw_input = false;
+    while let Some(event) = tokio::time::timeout(Duration::from_secs(2), stream.next())
+        .await
+        .expect("stream should reach input")
+    {
+        if matches!(event, StreamEvent::InputNeeded { .. }) {
+            saw_input = true;
+            cancel.cancel();
+            break;
+        }
+    }
+    assert!(saw_input);
+
+    let completed = tokio::time::timeout(Duration::from_secs(2), async {
+        while let Some(event) = stream.next().await {
+            if matches!(
+                event,
+                StreamEvent::RunCompleted {
+                    reason: TerminationReason::Cancelled,
+                    ..
+                }
+            ) {
+                return true;
+            }
+        }
+        false
+    })
+    .await
+    .expect("cancelled input run should finish promptly");
+    assert!(completed);
+    assert_eq!(registered.lock().unwrap().len(), 1);
+    assert!(dropped.load(Ordering::SeqCst));
 }
 
 #[tokio::test]

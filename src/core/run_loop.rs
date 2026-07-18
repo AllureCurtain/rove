@@ -284,6 +284,7 @@ pub(crate) fn run_unplanned_loop<'a>(
                             Some(ToolTurnItem::Event(event)) => yield LoopItem::Event(event),
                             Some(ToolTurnItem::Finished(outcome)) => break outcome,
                             Some(ToolTurnItem::Cancelled) => {
+                                drop(tool_stream);
                                 yield LoopItem::Complete {
                                     reason: TerminationReason::Cancelled,
                                     output: None,
@@ -311,6 +312,7 @@ pub(crate) fn run_unplanned_loop<'a>(
                             Some(ToolTurnItem::Event(event)) => yield LoopItem::Event(event),
                             Some(ToolTurnItem::Finished(outcome)) => break outcome,
                             Some(ToolTurnItem::Cancelled) => {
+                                drop(tool_stream);
                                 yield LoopItem::Complete {
                                     reason: TerminationReason::Cancelled,
                                     output: None,

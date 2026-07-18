@@ -1025,18 +1025,28 @@ async fn api_state_includes_input_needed_event_for_snapshot_recovery() {
     let state = wait_for_pending_input(app.clone(), created.job_id.to_string()).await;
     assert_eq!(state.status, RunStatus::Running);
     assert_eq!(state.event_count, state.events.len());
+    assert_eq!(state.pending_inputs.len(), 1);
     assert!(
         state
             .events
             .windows(2)
             .all(|pair| pair[1].seq > pair[0].seq)
     );
-    assert!(state.events.iter().any(|stored| {
-        matches!(
-            &stored.event,
-            StreamEvent::InputNeeded { prompt, .. } if prompt == "Which branch should I use?"
-        )
-    }));
+    let input_events: Vec<_> = state
+        .events
+        .iter()
+        .filter_map(|stored| match &stored.event {
+            StreamEvent::InputNeeded { input_id, prompt } => Some((*input_id, prompt.as_str())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        input_events,
+        vec![(
+            state.pending_inputs[0].input_id,
+            "Which branch should I use?"
+        )]
+    );
 }
 
 #[tokio::test]
@@ -1863,6 +1873,7 @@ async fn api_restart_marks_pending_input_interrupted() {
 async fn api_replays_input_needed_event_after_restart() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
+    let state_store = rove::state::store::StateStore::new(&workspace.state_dir);
     let app = router(ApiState::new(workspace.clone(), test_config()));
     let message = serde_json::json!({
         "tool": "request_input",
@@ -1896,6 +1907,38 @@ async fn api_replays_input_needed_event_after_restart() {
     let pending = wait_for_pending_input(app.clone(), created.job_id.to_string()).await;
     assert_eq!(pending.status, RunStatus::Running);
 
+    let mut indexed_events = None;
+    for _ in 0..80 {
+        let events = state_store.index.event_records(created.run_id).unwrap();
+        if events
+            .iter()
+            .any(|event| event.event_name == "input_needed")
+        {
+            indexed_events = Some(events);
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    let indexed_events = indexed_events.expect("input_needed event should be persisted");
+    assert_eq!(
+        indexed_events
+            .iter()
+            .filter(|event| event.event_name == "input_needed")
+            .count(),
+        1
+    );
+    let trace_path = state_store
+        .run_store
+        .run_dir(&created.run_id)
+        .join("trace.jsonl");
+    let trace = std::fs::read_to_string(trace_path).unwrap();
+    let trace_input_count = trace
+        .lines()
+        .map(|line| serde_json::from_str::<StreamEvent>(line).unwrap())
+        .filter(|event| matches!(event, StreamEvent::InputNeeded { .. }))
+        .count();
+    assert_eq!(trace_input_count, 1);
+
     let restarted = router(ApiState::new(workspace, test_config()));
     let events = restarted
         .oneshot(
@@ -1914,6 +1957,7 @@ async fn api_replays_input_needed_event_after_restart() {
 
     assert!(text.contains("event: input_needed"), "{text}");
     assert!(text.contains("Which branch should I use?"), "{text}");
+    assert_eq!(text.matches("event: input_needed").count(), 1, "{text}");
 }
 
 #[tokio::test]
@@ -2080,9 +2124,12 @@ async fn api_approves_pending_destructive_tool_call() {
         .unwrap();
     let created: CreateJobResponse = serde_json::from_slice(&body).unwrap();
 
-    let pending = wait_for_pending_approval(app.clone(), created.job_id.to_string()).await;
+    let pending = wait_for_approval_event(app.clone(), created.job_id.to_string()).await;
     let approval = pending.pending_approvals.first().unwrap();
     assert_eq!(approval.name, "fs_write");
+    assert!(pending.events.iter().any(|stored| {
+        matches!(&stored.event, StreamEvent::ToolCallApprovalNeeded { call_id, .. } if *call_id == approval.call_id)
+    }));
     assert!(!output_path.exists(), "tool should wait before approval");
 
     let approve = app
@@ -2103,6 +2150,75 @@ async fn api_approves_pending_destructive_tool_call() {
     assert_eq!(approve.status(), StatusCode::OK);
 
     let state = wait_for_done(app.clone(), created.job_id.to_string()).await;
+    assert_eq!(state.status, RunStatus::Done);
+    assert_eq!(std::fs::read_to_string(output_path).unwrap(), "ok");
+}
+
+#[tokio::test]
+async fn api_persists_approval_before_releasing_destructive_tool() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let output_path = workspace.root.join("approval-commit-order.txt");
+    let state_store = rove::state::store::StateStore::new(&workspace.state_dir);
+    let app = router(ApiState::new(workspace, test_config()));
+
+    let create = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/jobs")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"message":"{\"tool\":\"fs_write\",\"args\":{\"path\":\"approval-commit-order.txt\",\"content\":\"ok\"}}","model":"fake-raw","approval":"ask","max_steps":1}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = axum::body::to_bytes(create.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let created: CreateJobResponse = serde_json::from_slice(&body).unwrap();
+    let pending = wait_for_approval_event(app.clone(), created.job_id.to_string()).await;
+    let approval = pending.pending_approvals.first().unwrap().clone();
+
+    let connection = rusqlite::Connection::open(state_store.index.path()).unwrap();
+    connection.execute_batch("BEGIN EXCLUSIVE").unwrap();
+    let approve_app = app.clone();
+    let job_id = created.job_id;
+    let call_id = approval.call_id;
+    let approval_task = tokio::spawn(async move {
+        approve_app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/jobs/{job_id}/approvals/{call_id}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"decision":"approve"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert!(
+        !approval_task.is_finished(),
+        "approval should wait for the durable commit"
+    );
+    assert!(
+        !output_path.exists(),
+        "tool must not run before approval is durable"
+    );
+
+    drop(connection);
+    let response = tokio::time::timeout(std::time::Duration::from_secs(2), approval_task)
+        .await
+        .expect("approval should finish after the lock is released")
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let state = wait_for_done(app, created.job_id.to_string()).await;
     assert_eq!(state.status, RunStatus::Done);
     assert_eq!(std::fs::read_to_string(output_path).unwrap(), "ok");
 }
@@ -2894,9 +3010,12 @@ async fn api_answers_pending_request_input_tool_call() {
         .unwrap();
     let created: CreateJobResponse = serde_json::from_slice(&body).unwrap();
 
-    let pending = wait_for_pending_input(app.clone(), created.job_id.to_string()).await;
+    let pending = wait_for_input_event(app.clone(), created.job_id.to_string()).await;
     let input = pending.pending_inputs.first().unwrap();
     assert_eq!(input.prompt, "Which branch should I use?");
+    assert!(pending.events.iter().any(|stored| {
+        matches!(&stored.event, StreamEvent::InputNeeded { input_id, .. } if *input_id == input.input_id)
+    }));
 
     let submit = app
         .clone()
@@ -2989,6 +3108,68 @@ async fn wait_for_pending_input(app: axum::Router, job_id: String) -> JobStateRe
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     }
     panic!("job did not wait for input; last state: {last_state:?}");
+}
+
+async fn wait_for_input_event(app: axum::Router, job_id: String) -> JobStateResponse {
+    let mut last_state = None;
+    for _ in 0..80 {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/jobs/{job_id}/state"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let state: JobStateResponse = serde_json::from_slice(&body).unwrap();
+        if state
+            .events
+            .iter()
+            .any(|stored| matches!(&stored.event, StreamEvent::InputNeeded { .. }))
+        {
+            return state;
+        }
+        last_state = Some(state);
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    panic!("job did not publish input event; last state: {last_state:?}");
+}
+
+async fn wait_for_approval_event(app: axum::Router, job_id: String) -> JobStateResponse {
+    let mut last_state = None;
+    for _ in 0..80 {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/jobs/{job_id}/state"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let state: JobStateResponse = serde_json::from_slice(&body).unwrap();
+        if state
+            .events
+            .iter()
+            .any(|stored| matches!(&stored.event, StreamEvent::ToolCallApprovalNeeded { .. }))
+        {
+            return state;
+        }
+        last_state = Some(state);
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    panic!("job did not publish approval event; last state: {last_state:?}");
 }
 
 async fn wait_for_pending_approval(app: axum::Router, job_id: String) -> JobStateResponse {

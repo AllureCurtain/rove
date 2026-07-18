@@ -24,9 +24,9 @@ use crate::config::{AppConfig, AppConfigOverrides};
 use crate::core::engine::Engine;
 use crate::core::events::StreamEvent;
 use crate::core::types::{
-    ApprovalDecision, ApprovalPolicy, CallId, JobId, RunId, RunStatus, SessionId, TaskState,
-    TerminationReason, ToolApprovalProvider, ToolApprovalRequest, UserInputProvider,
-    UserInputRequest,
+    ApprovalDecision, ApprovalPolicy, CallId, JobId, PendingToolApproval, PendingUserInput, RunId,
+    RunStatus, SessionId, TaskState, TerminationReason, ToolApprovalProvider, ToolApprovalRequest,
+    UserInputProvider, UserInputRequest,
 };
 use crate::core::workspace::Workspace;
 use crate::errors::ToolError;
@@ -500,6 +500,7 @@ async fn cancel_job(
     responses(
         (status = 200, description = "Job state after resolving approval", body = JobStateResponse, content_type = "application/json"),
         (status = 404, description = "Job or pending approval not found", body = serde_json::Value, content_type = "application/json"),
+        (status = 409, description = "Approval responder is no longer live", body = serde_json::Value, content_type = "application/json"),
         (status = 500, description = "Internal runtime error", body = serde_json::Value, content_type = "application/json")
     )
 )]
@@ -515,14 +516,22 @@ async fn submit_approval(
         .await
         .remove(&call_id)
         .ok_or_else(|| ApiError::not_found("pending approval not found"))?;
-    if let Err(err) = state_store_for_record(&record)
-        .index
+    let index = state_store_for_record(&record).index;
+    index
         .mark_pending_approval_status_async(call_id, approval_status(req.decision).to_string())
         .await
-    {
-        tracing::warn!(job_id = %job_id, call_id = %call_id, "failed to mark pending approval resolved: {err}");
+        .map_err(|err| ApiError::internal(format!("failed to persist approval decision: {err}")))?;
+    if pending.tx.send(req.decision).is_err() {
+        if let Err(err) = index
+            .mark_pending_approval_status_async(call_id, "cancelled".to_string())
+            .await
+        {
+            tracing::warn!(job_id = %job_id, call_id = %call_id, "failed to mark stale approval cancelled: {err}");
+        }
+        return Err(ApiError::conflict(
+            "approval is no longer awaiting a response",
+        ));
     }
-    let _ = pending.tx.send(req.decision);
     Ok(Json(job_state_response(&record).await))
 }
 
@@ -539,6 +548,7 @@ async fn submit_approval(
     responses(
         (status = 200, description = "Job state after answering input request", body = JobStateResponse, content_type = "application/json"),
         (status = 404, description = "Job or pending input not found", body = serde_json::Value, content_type = "application/json"),
+        (status = 409, description = "Input responder is no longer live", body = serde_json::Value, content_type = "application/json"),
         (status = 500, description = "Internal runtime error", body = serde_json::Value, content_type = "application/json")
     )
 )]
@@ -554,14 +564,20 @@ async fn submit_input(
         .await
         .remove(&input_id)
         .ok_or_else(|| ApiError::not_found("pending input not found"))?;
-    if let Err(err) = state_store_for_record(&record)
-        .index
+    let index = state_store_for_record(&record).index;
+    index
         .mark_pending_input_status_async(input_id, "answered".to_string())
         .await
-    {
-        tracing::warn!(job_id = %job_id, input_id = %input_id, "failed to mark pending input answered: {err}");
+        .map_err(|err| ApiError::internal(format!("failed to persist input answer: {err}")))?;
+    if pending.tx.send(req.answer).is_err() {
+        if let Err(err) = index
+            .mark_pending_input_status_async(input_id, "cancelled".to_string())
+            .await
+        {
+            tracing::warn!(job_id = %job_id, input_id = %input_id, "failed to mark stale input cancelled: {err}");
+        }
+        return Err(ApiError::conflict("input is no longer awaiting a response"));
     }
-    let _ = pending.tx.send(req.answer);
     Ok(Json(job_state_response(&record).await))
 }
 
@@ -871,32 +887,63 @@ struct ApiApprovalProvider {
 
 #[async_trait]
 impl ToolApprovalProvider for ApiApprovalProvider {
-    async fn decide(&self, request: ToolApprovalRequest) -> ApprovalDecision {
+    async fn begin_approval(
+        &self,
+        request: ToolApprovalRequest,
+    ) -> Result<PendingToolApproval, ToolError> {
         let (tx, rx) = oneshot::channel();
-        if let Err(err) = self
-            .index
-            .record_pending_approval_async(
-                request.call_id,
-                self.record.job_id,
-                self.record.run_id,
-                request.name.clone(),
-                request.args.to_string(),
-                request.reason.clone(),
-            )
-            .await
-        {
-            tracing::warn!(
-                job_id = %self.record.job_id,
-                call_id = %request.call_id,
-                "failed to persist pending approval: {err}"
-            );
+        let record = Arc::clone(&self.record);
+        let index = self.index.clone();
+        let job_id = record.job_id;
+        let call_id = request.call_id;
+        let registration = tokio::spawn(async move {
+            if let Err(err) = index
+                .record_pending_approval_async(
+                    call_id,
+                    record.job_id,
+                    record.run_id,
+                    request.name.clone(),
+                    request.args.to_string(),
+                    request.reason.clone(),
+                )
+                .await
+            {
+                tracing::warn!(
+                    job_id = %record.job_id,
+                    call_id = %call_id,
+                    "failed to persist pending approval: {err}"
+                );
+                return Err(format!("failed to persist pending approval: {err}"));
+            }
+
+            let mut pending = record.pending_approvals.lock().await;
+            if record.cancel_token.is_cancelled() {
+                drop(pending);
+                if let Err(err) = index
+                    .mark_pending_approval_status_async(call_id, "cancelled".to_string())
+                    .await
+                {
+                    tracing::warn!(job_id = %record.job_id, call_id = %call_id, "failed to mark cancelled approval registration: {err}");
+                }
+                return Err("approval request cancelled during registration".to_string());
+            }
+            pending.insert(call_id, PendingApproval { request, tx });
+            Ok(())
+        });
+
+        match registration.await {
+            Ok(Ok(())) => {}
+            Ok(Err(reason)) => return Err(ToolError::ExecutionFailed { reason }),
+            Err(err) => {
+                tracing::warn!(job_id = %job_id, call_id = %call_id, "approval registration task failed: {err}");
+                return Err(ToolError::ExecutionFailed {
+                    reason: format!("approval registration task failed for job {job_id}: {err}"),
+                });
+            }
         }
-        self.record
-            .pending_approvals
-            .lock()
-            .await
-            .insert(request.call_id, PendingApproval { request, tx });
-        rx.await.unwrap_or(ApprovalDecision::Reject)
+        Ok(PendingToolApproval::new(async move {
+            rx.await.unwrap_or(ApprovalDecision::Reject)
+        }))
     }
 }
 
@@ -907,36 +954,58 @@ struct ApiInputProvider {
 
 #[async_trait]
 impl UserInputProvider for ApiInputProvider {
-    async fn request_input(&self, request: UserInputRequest) -> Result<String, ToolError> {
-        let input_id = CallId::new();
+    async fn begin_input(
+        &self,
+        input_id: CallId,
+        request: UserInputRequest,
+    ) -> Result<PendingUserInput, ToolError> {
         let (tx, rx) = oneshot::channel();
         let prompt = request.prompt.clone();
-        if let Err(err) = self
-            .index
-            .record_pending_input_async(
-                input_id,
-                self.record.job_id,
-                self.record.run_id,
-                prompt.clone(),
-            )
-            .await
-        {
-            tracing::warn!(
-                job_id = %self.record.job_id,
-                input_id = %input_id,
-                "failed to persist pending input: {err}"
-            );
+        let record = Arc::clone(&self.record);
+        let index = self.index.clone();
+        let job_id = record.job_id;
+        let registration = tokio::spawn(async move {
+            if let Err(err) = index
+                .record_pending_input_async(input_id, record.job_id, record.run_id, prompt)
+                .await
+            {
+                tracing::warn!(
+                    job_id = %record.job_id,
+                    input_id = %input_id,
+                    "failed to persist pending input: {err}"
+                );
+                return Err(format!("failed to persist pending input: {err}"));
+            }
+
+            let mut pending = record.pending_inputs.lock().await;
+            if record.cancel_token.is_cancelled() {
+                drop(pending);
+                if let Err(err) = index
+                    .mark_pending_input_status_async(input_id, "cancelled".to_string())
+                    .await
+                {
+                    tracing::warn!(job_id = %record.job_id, input_id = %input_id, "failed to mark cancelled input registration: {err}");
+                }
+                return Err("input request cancelled during registration".to_string());
+            }
+            pending.insert(input_id, PendingInput { request, tx });
+            Ok(())
+        });
+
+        match registration.await {
+            Ok(Ok(())) => {}
+            Ok(Err(reason)) => return Err(ToolError::ExecutionFailed { reason }),
+            Err(err) => {
+                return Err(ToolError::ExecutionFailed {
+                    reason: format!("input registration task failed for job {job_id}: {err}"),
+                });
+            }
         }
-        self.record
-            .pending_inputs
-            .lock()
-            .await
-            .insert(input_id, PendingInput { request, tx });
-        append_persisted_job_event(&self.record, StreamEvent::InputNeeded { input_id, prompt })
-            .await;
-        rx.await.map_err(|_| ToolError::ExecutionFailed {
-            reason: "input request cancelled".to_string(),
-        })
+        Ok(PendingUserInput::new(async move {
+            rx.await.map_err(|_| ToolError::ExecutionFailed {
+                reason: "input request cancelled".to_string(),
+            })
+        }))
     }
 }
 
@@ -1055,26 +1124,6 @@ async fn append_job_event(record: &JobRecord, event: StreamEvent) -> JobStreamEv
     };
     let _ = record.tx.send(stored.clone());
     stored
-}
-
-async fn append_persisted_job_event(record: &JobRecord, event: StreamEvent) -> JobStreamEvent {
-    let stored = append_job_event(record, event).await;
-    if let Err(err) = persist_job_event(record, &stored) {
-        tracing::warn!(
-            job_id = %record.job_id,
-            run_id = %record.run_id,
-            seq = stored.seq,
-            event = stored.event.event_name(),
-            "failed to persist API-side job event: {err}"
-        );
-    }
-    stored
-}
-
-fn persist_job_event(record: &JobRecord, stored: &JobStreamEvent) -> std::io::Result<()> {
-    let state_store = state_store_for_record(record);
-    let trace_writer = state_store.run_store.create_trace(&record.run_id)?;
-    trace_writer.append_with_seq(stored.seq, &stored.event)
 }
 
 async fn pending_approvals_response(record: &JobRecord) -> Vec<PendingApprovalResponse> {
@@ -1300,5 +1349,280 @@ mod tests {
             events.last().map(|event| &event.event),
             Some(StreamEvent::RunCompleted { .. })
         ));
+    }
+
+    async fn test_job_record(
+        temp_dir: &tempfile::TempDir,
+    ) -> (ApiState, Arc<JobRecord>, StateIndex) {
+        let mut workspace = Workspace::detect(temp_dir.path()).unwrap();
+        let mut config = AppConfig::default();
+        config.rebase_to_workspace(&workspace.root);
+        workspace.state_dir = config.state_dir();
+        workspace.ensure_state_dir().unwrap();
+        let state = ApiState::new(workspace.clone(), config.clone());
+        let (tx, _) = broadcast::channel(EVENT_BUFFER);
+        let record = Arc::new(JobRecord {
+            session_id: SessionId::new(),
+            job_id: JobId::new(),
+            run_id: RunId::new(),
+            workspace,
+            config,
+            message: "test interaction".to_string(),
+            resumed_from_run_id: None,
+            resume_state: None,
+            status: Mutex::new(RunStatus::Running),
+            events: Mutex::new(Vec::new()),
+            pending_approvals: Mutex::new(HashMap::new()),
+            pending_inputs: Mutex::new(HashMap::new()),
+            tx,
+            handle: Mutex::new(None),
+            cancel_token: CancellationToken::new(),
+        });
+        let state_store = state_store_for_record(&record);
+        let run_dir = state_store.run_store.run_dir(&record.run_id);
+        state_store
+            .index
+            .record_run_started(
+                record.session_id,
+                record.job_id,
+                record.run_id,
+                &run_dir,
+                &run_dir.join("trace.jsonl"),
+            )
+            .unwrap();
+        state
+            .inner
+            .jobs
+            .write()
+            .await
+            .insert(record.job_id, Arc::clone(&record));
+        (state, record, state_store.index)
+    }
+
+    #[tokio::test]
+    async fn submit_input_conflicts_when_responder_was_dropped() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let (state, record, index) = test_job_record(&temp_dir).await;
+        let input_id = CallId::new();
+        let request = UserInputRequest {
+            prompt: "Which branch?".to_string(),
+        };
+        index
+            .record_pending_input(input_id, record.job_id, record.run_id, &request.prompt)
+            .unwrap();
+        let (tx, rx) = oneshot::channel();
+        drop(rx);
+        record
+            .pending_inputs
+            .lock()
+            .await
+            .insert(input_id, PendingInput { request, tx });
+
+        let error = submit_input(
+            State(state),
+            Path((record.job_id, input_id)),
+            Json(SubmitInputRequest {
+                answer: "main".to_string(),
+            }),
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(error.status, StatusCode::CONFLICT);
+        assert_eq!(
+            index.pending_input_status(input_id).unwrap().as_deref(),
+            Some("cancelled")
+        );
+    }
+
+    #[tokio::test]
+    async fn submit_approval_conflicts_when_responder_was_dropped() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let (state, record, index) = test_job_record(&temp_dir).await;
+        let call_id = CallId::new();
+        let request = ToolApprovalRequest {
+            call_id,
+            name: "fs_write".to_string(),
+            args: serde_json::json!({"path": "result.txt"}),
+            reason: "writes a file".to_string(),
+        };
+        index
+            .record_pending_approval(
+                call_id,
+                record.job_id,
+                record.run_id,
+                &request.name,
+                &request.args.to_string(),
+                &request.reason,
+            )
+            .unwrap();
+        let (tx, rx) = oneshot::channel();
+        drop(rx);
+        record
+            .pending_approvals
+            .lock()
+            .await
+            .insert(call_id, PendingApproval { request, tx });
+
+        let error = submit_approval(
+            State(state),
+            Path((record.job_id, call_id)),
+            Json(SubmitApprovalRequest {
+                decision: ApprovalDecision::Approve,
+            }),
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(error.status, StatusCode::CONFLICT);
+        assert_eq!(
+            index.pending_approval_status(call_id).unwrap().as_deref(),
+            Some("cancelled")
+        );
+    }
+
+    #[tokio::test]
+    async fn api_input_registration_cancellation_marks_late_sqlite_insert_cancelled() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let (state, record, index) = test_job_record(&temp_dir).await;
+        let connection = rusqlite::Connection::open(index.path()).unwrap();
+        connection.execute_batch("BEGIN EXCLUSIVE").unwrap();
+
+        let provider = ApiInputProvider {
+            record: Arc::clone(&record),
+            index: index.clone(),
+        };
+        let input_id = CallId::new();
+        let handle = tokio::spawn(async move {
+            provider
+                .begin_input(
+                    input_id,
+                    UserInputRequest {
+                        prompt: "blocked registration".to_string(),
+                    },
+                )
+                .await
+        });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            !handle.is_finished(),
+            "registration should be waiting on SQLite"
+        );
+
+        record.cancel_token.cancel();
+        handle.abort();
+        drop(connection);
+
+        for _ in 0..100 {
+            if index.pending_input_status(input_id).unwrap().as_deref() == Some("cancelled") {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert_eq!(
+            index.pending_input_status(input_id).unwrap().as_deref(),
+            Some("cancelled")
+        );
+        assert!(record.pending_inputs.lock().await.is_empty());
+        drop(state);
+    }
+
+    #[tokio::test]
+    async fn api_approval_registration_cancellation_marks_late_sqlite_insert_cancelled() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let (state, record, index) = test_job_record(&temp_dir).await;
+        let connection = rusqlite::Connection::open(index.path()).unwrap();
+        connection.execute_batch("BEGIN EXCLUSIVE").unwrap();
+
+        let provider = ApiApprovalProvider {
+            record: Arc::clone(&record),
+            index: index.clone(),
+        };
+        let call_id = CallId::new();
+        let handle = tokio::spawn(async move {
+            provider
+                .begin_approval(ToolApprovalRequest {
+                    call_id,
+                    name: "fs_write".to_string(),
+                    args: serde_json::json!({"path": "blocked.txt"}),
+                    reason: "writes a file".to_string(),
+                })
+                .await
+        });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            !handle.is_finished(),
+            "registration should be waiting on SQLite"
+        );
+
+        record.cancel_token.cancel();
+        handle.abort();
+        drop(connection);
+
+        for _ in 0..100 {
+            if index.pending_approval_status(call_id).unwrap().as_deref() == Some("cancelled") {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert_eq!(
+            index.pending_approval_status(call_id).unwrap().as_deref(),
+            Some("cancelled")
+        );
+        assert!(record.pending_approvals.lock().await.is_empty());
+        drop(state);
+    }
+
+    #[tokio::test]
+    async fn api_interaction_registration_fails_closed_when_initial_sqlite_insert_fails() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let (state, record, index) = test_job_record(&temp_dir).await;
+        let short_timeout_index =
+            StateIndex::with_path(&record.workspace.state_dir, index.path().to_path_buf(), 20);
+
+        let connection = rusqlite::Connection::open(index.path()).unwrap();
+        connection.execute_batch("BEGIN EXCLUSIVE").unwrap();
+        let call_id = CallId::new();
+        let approval = ApiApprovalProvider {
+            record: Arc::clone(&record),
+            index: short_timeout_index.clone(),
+        }
+        .begin_approval(ToolApprovalRequest {
+            call_id,
+            name: "fs_write".to_string(),
+            args: serde_json::json!({"path": "blocked.txt"}),
+            reason: "writes a file".to_string(),
+        })
+        .await;
+        assert!(matches!(
+            approval,
+            Err(ToolError::ExecutionFailed { ref reason }) if reason.contains("persist pending approval")
+        ));
+        assert!(record.pending_approvals.lock().await.is_empty());
+        drop(connection);
+        assert_eq!(index.pending_approval_status(call_id).unwrap(), None);
+
+        let connection = rusqlite::Connection::open(index.path()).unwrap();
+        connection.execute_batch("BEGIN EXCLUSIVE").unwrap();
+        let input_id = CallId::new();
+        let input = ApiInputProvider {
+            record: Arc::clone(&record),
+            index: short_timeout_index,
+        }
+        .begin_input(
+            input_id,
+            UserInputRequest {
+                prompt: "blocked input".to_string(),
+            },
+        )
+        .await;
+        assert!(matches!(
+            input,
+            Err(ToolError::ExecutionFailed { ref reason }) if reason.contains("persist pending input")
+        ));
+        assert!(record.pending_inputs.lock().await.is_empty());
+        drop(connection);
+        assert_eq!(index.pending_input_status(input_id).unwrap(), None);
+        drop(state);
     }
 }

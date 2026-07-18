@@ -3,16 +3,25 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::core::types::{ApprovalDecision, ToolApprovalProvider, ToolApprovalRequest};
+use crate::core::types::{
+    ApprovalDecision, PendingToolApproval, ToolApprovalProvider, ToolApprovalRequest,
+};
+use crate::errors::ToolError;
 
 pub struct StdinApprovalProvider;
 
 #[async_trait]
 impl ToolApprovalProvider for StdinApprovalProvider {
-    async fn decide(&self, request: ToolApprovalRequest) -> ApprovalDecision {
-        let mut stdin = std::io::stdin().lock();
-        let mut stderr = std::io::stderr().lock();
-        prompt_for_approval(&request, &mut stdin, &mut stderr).unwrap_or(ApprovalDecision::Reject)
+    async fn begin_approval(
+        &self,
+        request: ToolApprovalRequest,
+    ) -> Result<PendingToolApproval, ToolError> {
+        Ok(PendingToolApproval::new(async move {
+            let mut stdin = std::io::stdin().lock();
+            let mut stderr = std::io::stderr().lock();
+            prompt_for_approval(&request, &mut stdin, &mut stderr)
+                .unwrap_or(ApprovalDecision::Reject)
+        }))
     }
 }
 

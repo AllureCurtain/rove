@@ -1,3 +1,4 @@
+use crate::core::types::CallId;
 use crate::interfaces::terminal::view::{RunViewState, RunViewUpdate};
 
 const MAX_TRANSCRIPT_HISTORY_RUNS: usize = 50;
@@ -66,6 +67,43 @@ pub enum TuiFocus {
     Composer,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InteractionModalKind {
+    Approval,
+    Input,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InteractionModalView {
+    Approval {
+        call_id: CallId,
+        name: String,
+        args: serde_json::Value,
+        reason: String,
+    },
+    Input {
+        input_id: CallId,
+        prompt: String,
+        draft: String,
+    },
+}
+
+impl InteractionModalView {
+    pub fn kind(&self) -> InteractionModalKind {
+        match self {
+            Self::Approval { .. } => InteractionModalKind::Approval,
+            Self::Input { .. } => InteractionModalKind::Input,
+        }
+    }
+
+    pub fn request_id(&self) -> CallId {
+        match self {
+            Self::Approval { call_id, .. } => *call_id,
+            Self::Input { input_id, .. } => *input_id,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct TuiState {
     pub run_history: Vec<RunViewState>,
@@ -76,6 +114,7 @@ pub struct TuiState {
     pub transcript_scroll: TranscriptScroll,
     pub terminal_width: u16,
     pub terminal_height: u16,
+    pub modal: Option<InteractionModalView>,
     pub quit_confirmation: bool,
     pub should_quit: bool,
 }
@@ -103,6 +142,7 @@ impl TuiState {
 
         if run_completed {
             self.run_lifecycle = RunLifecycle::Completed;
+            self.modal = None;
             self.quit_confirmation = false;
         }
     }
@@ -123,6 +163,7 @@ impl TuiState {
     pub fn clear_run_local_ui(&mut self) {
         self.run = RunViewState::default();
         self.transcript_scroll.reset();
+        self.modal = None;
     }
 }
 
@@ -137,6 +178,7 @@ impl Default for TuiState {
             transcript_scroll: TranscriptScroll::default(),
             terminal_width: 80,
             terminal_height: 24,
+            modal: None,
             quit_confirmation: false,
             should_quit: false,
         }
@@ -147,7 +189,31 @@ impl Default for TuiState {
 mod tests {
     use crate::core::types::{CallId, JobId, RunId, TerminationReason};
     use crate::interfaces::terminal::view::RunViewUpdate;
-    use crate::interfaces::tui::state::{RunLifecycle, TuiFocus, TuiState};
+    use crate::interfaces::tui::state::{
+        InteractionModalKind, InteractionModalView, RunLifecycle, TuiFocus, TuiState,
+    };
+
+    #[test]
+    fn modal_views_expose_stable_kind_and_request_id_without_live_responders() {
+        let approval_id = CallId::new();
+        let input_id = CallId::new();
+        let approval = InteractionModalView::Approval {
+            call_id: approval_id,
+            name: "fs_write".to_string(),
+            args: serde_json::json!({"path":"out.txt"}),
+            reason: "writes a file".to_string(),
+        };
+        let input = InteractionModalView::Input {
+            input_id,
+            prompt: "Which branch?".to_string(),
+            draft: String::new(),
+        };
+
+        assert_eq!(approval.kind(), InteractionModalKind::Approval);
+        assert_eq!(approval.request_id(), approval_id);
+        assert_eq!(input.kind(), InteractionModalKind::Input);
+        assert_eq!(input.request_id(), input_id);
+    }
 
     #[test]
     fn run_updates_track_lifecycle_and_clear_stale_run_local_ui() {

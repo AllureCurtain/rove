@@ -1,7 +1,9 @@
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use rove::core::types::{ApprovalPolicy, ToolContext, UserInputProvider, UserInputRequest};
+use rove::core::types::{
+    ApprovalPolicy, CallId, PendingUserInput, ToolContext, UserInputProvider, UserInputRequest,
+};
 use rove::core::workspace::Workspace;
 use rove::errors::ToolError;
 use rove::memory::paths::MemoryPaths;
@@ -14,11 +16,25 @@ struct StaticInputProvider {
     prompts: Arc<Mutex<Vec<String>>>,
 }
 
+struct LegacyInputProvider;
+
+#[async_trait]
+impl UserInputProvider for LegacyInputProvider {
+    async fn request_input(&self, request: UserInputRequest) -> Result<String, ToolError> {
+        Ok(format!("legacy: {}", request.prompt))
+    }
+}
+
 #[async_trait]
 impl UserInputProvider for StaticInputProvider {
-    async fn request_input(&self, request: UserInputRequest) -> Result<String, ToolError> {
+    async fn begin_input(
+        &self,
+        _input_id: CallId,
+        request: UserInputRequest,
+    ) -> Result<PendingUserInput, ToolError> {
         self.prompts.lock().unwrap().push(request.prompt);
-        Ok(self.answer.to_string())
+        let answer = self.answer.to_string();
+        Ok(PendingUserInput::new(async move { Ok(answer) }))
     }
 }
 
@@ -30,6 +46,18 @@ fn request_input_tool_schema_exposes_prompt_input() {
     assert!(!schema.destructive);
     assert_eq!(schema.parameters["required"][0], "prompt");
     assert_eq!(schema.parameters["properties"]["prompt"]["type"], "string");
+}
+
+#[tokio::test]
+async fn legacy_one_phase_provider_implementations_remain_source_compatible() {
+    let answer = LegacyInputProvider
+        .request_input(UserInputRequest {
+            prompt: "Which branch?".to_string(),
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(answer, "legacy: Which branch?");
 }
 
 #[tokio::test]

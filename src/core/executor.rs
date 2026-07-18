@@ -1,4 +1,5 @@
 use crate::core::boundary::check_tool_allowed;
+use crate::core::tool_input::RegisteredUserInput;
 use crate::core::types::{
     CallId, ToolContext, ToolExecutionMetadata, ToolExecutionStatus, ToolMutation, ToolResult,
     ToolRiskLevel, ToolSchema,
@@ -6,6 +7,7 @@ use crate::core::types::{
 use crate::errors::ToolError;
 use crate::hooks::{HookRegistry, PostToolHookContext};
 use crate::tools::registry::ToolRegistry;
+use tokio::sync::mpsc;
 
 /// The executor runs tools through the pipeline.
 ///
@@ -37,6 +39,18 @@ impl<'a> Executor<'a> {
         args: serde_json::Value,
         call_id: CallId,
     ) -> Result<ToolResult, ToolError> {
+        self.run_with_input_events(ctx, name, args, call_id, None)
+            .await
+    }
+
+    pub(crate) async fn run_with_input_events(
+        &self,
+        ctx: &ToolContext<'_>,
+        name: &str,
+        args: serde_json::Value,
+        call_id: CallId,
+        input_events: Option<mpsc::Sender<RegisteredUserInput>>,
+    ) -> Result<ToolResult, ToolError> {
         // Step 1: schema lookup
         let schema = self.registry.schema(name)?;
 
@@ -50,7 +64,12 @@ impl<'a> Executor<'a> {
         check_tool_allowed(&schema, ctx.approval_policy)?;
 
         // Step 5: execute
-        let output = self.registry.execute(name, args.clone(), ctx).await?;
+        let output = crate::core::tool_input::scope(
+            call_id,
+            input_events,
+            self.registry.execute(name, args.clone(), ctx),
+        )
+        .await?;
         let metadata = success_metadata(&schema, &output.mutations);
 
         // Step 6: result wrapping

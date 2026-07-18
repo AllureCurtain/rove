@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use super::traits::{Tool, ToolOutput};
-use crate::core::types::{ToolContext, ToolSchema, UserInputRequest};
+use crate::core::types::{ToolContext, ToolSchema};
 use crate::errors::ToolError;
 
 /// Ask the user for input mid-task.
@@ -43,11 +43,8 @@ impl Tool for RequestInputTool {
         let prompt = validate_prompt(prompt)?;
 
         if let Some(provider) = &ctx.input_provider {
-            let answer = provider
-                .request_input(UserInputRequest {
-                    prompt: prompt.clone(),
-                })
-                .await?;
+            let answer =
+                crate::core::tool_input::request_input(provider.as_ref(), prompt.clone()).await?;
             return Ok(ToolOutput::text(answer));
         }
 

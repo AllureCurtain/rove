@@ -987,9 +987,17 @@ impl StateIndex {
         let conn = self.connect()?;
         let now = now_rfc3339();
         let sql = format!("UPDATE {table} SET status = ?2, updated_at = ?3 WHERE {id_column} = ?1");
-        conn.execute(&sql, params![id.to_string(), status, now])
+        let updated = conn
+            .execute(&sql, params![id.to_string(), status, now])
             .map_err(io_other)?;
-        Ok(())
+        if updated == 1 {
+            Ok(())
+        } else {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("pending interaction {id} was not found in {table}"),
+            ))
+        }
     }
 
     fn pending_status(

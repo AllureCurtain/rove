@@ -3,21 +3,27 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::core::types::{UserInputProvider, UserInputRequest};
+use crate::core::types::{CallId, PendingUserInput, UserInputProvider, UserInputRequest};
 use crate::errors::ToolError;
 
 pub struct StdinInputProvider;
 
 #[async_trait]
 impl UserInputProvider for StdinInputProvider {
-    async fn request_input(&self, request: UserInputRequest) -> Result<String, ToolError> {
-        let mut stdin = std::io::stdin().lock();
-        let mut stderr = std::io::stderr().lock();
-        prompt_for_input(&request, &mut stdin, &mut stderr).map_err(|err| {
-            ToolError::ExecutionFailed {
-                reason: err.to_string(),
-            }
-        })
+    async fn begin_input(
+        &self,
+        _input_id: CallId,
+        request: UserInputRequest,
+    ) -> Result<PendingUserInput, ToolError> {
+        Ok(PendingUserInput::new(async move {
+            let mut stdin = std::io::stdin().lock();
+            let mut stderr = std::io::stderr().lock();
+            prompt_for_input(&request, &mut stdin, &mut stderr).map_err(|err| {
+                ToolError::ExecutionFailed {
+                    reason: err.to_string(),
+                }
+            })
+        }))
     }
 }
 

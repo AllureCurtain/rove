@@ -1,3 +1,5 @@
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -487,10 +489,61 @@ pub struct ToolApprovalRequest {
     pub reason: String,
 }
 
+/// A registered approval request whose interface decision can be awaited
+/// after Core publishes the canonical approval event.
+pub struct PendingToolApproval {
+    response: Pin<Box<dyn Future<Output = ApprovalDecision> + Send + 'static>>,
+}
+
+impl PendingToolApproval {
+    pub fn new<F>(response: F) -> Self
+    where
+        F: Future<Output = ApprovalDecision> + Send + 'static,
+    {
+        Self {
+            response: Box::pin(response),
+        }
+    }
+
+    pub async fn resolve(self) -> ApprovalDecision {
+        self.response.await
+    }
+}
+
+impl std::fmt::Debug for PendingToolApproval {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PendingToolApproval")
+            .finish_non_exhaustive()
+    }
+}
+
 /// Interface-provided approval channel.
 #[async_trait]
 pub trait ToolApprovalProvider: Send + Sync {
-    async fn decide(&self, request: ToolApprovalRequest) -> ApprovalDecision;
+    /// Legacy one-phase approval API for direct callers.
+    async fn decide(&self, request: ToolApprovalRequest) -> ApprovalDecision {
+        match self.begin_approval(request).await {
+            Ok(pending) => pending.resolve().await,
+            Err(_) => ApprovalDecision::Reject,
+        }
+    }
+
+    /// Registers an approval request without waiting for its decision.
+    ///
+    /// Existing providers that only implement [`Self::decide`] remain
+    /// source-compatible, but must migrate to this method before they can be
+    /// used by the Engine's canonical approval lifecycle. The default rejects
+    /// requests fail-closed.
+    async fn begin_approval(
+        &self,
+        _request: ToolApprovalRequest,
+    ) -> Result<PendingToolApproval, ToolError> {
+        Err(ToolError::ExecutionFailed {
+            reason:
+                "approval provider must implement begin_approval for registered approval events"
+                    .to_string(),
+        })
+    }
 }
 
 /// User input request sent from a tool to an interface.
@@ -499,10 +552,60 @@ pub struct UserInputRequest {
     pub prompt: String,
 }
 
+/// A registered input request whose interface response can be awaited later.
+pub struct PendingUserInput {
+    response: Pin<Box<dyn Future<Output = Result<String, ToolError>> + Send + 'static>>,
+}
+
+impl PendingUserInput {
+    pub fn new<F>(response: F) -> Self
+    where
+        F: Future<Output = Result<String, ToolError>> + Send + 'static,
+    {
+        Self {
+            response: Box::pin(response),
+        }
+    }
+
+    pub async fn resolve(self) -> Result<String, ToolError> {
+        self.response.await
+    }
+}
+
+impl std::fmt::Debug for PendingUserInput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PendingUserInput").finish_non_exhaustive()
+    }
+}
+
 /// Interface-provided channel for tools that need mid-task user input.
 #[async_trait]
 pub trait UserInputProvider: Send + Sync {
-    async fn request_input(&self, request: UserInputRequest) -> Result<String, ToolError>;
+    /// Legacy one-phase input API.
+    ///
+    /// New providers should implement [`Self::begin_input`] so Core can
+    /// publish the canonical waiting event only after the request is
+    /// answerable. This default keeps direct callers working with two-phase
+    /// providers.
+    async fn request_input(&self, request: UserInputRequest) -> Result<String, ToolError> {
+        crate::core::tool_input::request_input(self, request.prompt).await
+    }
+
+    /// Registers an answerable request without waiting for the answer itself.
+    ///
+    /// Legacy providers that only implement [`Self::request_input`] remain
+    /// source-compatible, but must migrate to this method before they can be
+    /// used by the Engine's canonical `InputNeeded` lifecycle.
+    async fn begin_input(
+        &self,
+        _input_id: CallId,
+        _request: UserInputRequest,
+    ) -> Result<PendingUserInput, ToolError> {
+        Err(ToolError::ExecutionFailed {
+            reason: "input provider must implement begin_input for registered input events"
+                .to_string(),
+        })
+    }
 }
 
 /// Context passed through the tool execution boundary.

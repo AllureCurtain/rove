@@ -4,8 +4,8 @@ use async_trait::async_trait;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::core::types::{
-    ApprovalDecision, CallId, ToolApprovalProvider, ToolApprovalRequest, UserInputProvider,
-    UserInputRequest,
+    ApprovalDecision, PendingToolApproval, PendingUserInput, ToolApprovalProvider,
+    ToolApprovalRequest, UserInputProvider, UserInputRequest,
 };
 use crate::errors::ToolError;
 
@@ -20,7 +20,7 @@ pub enum TerminalInteractionRequest {
         respond_to: oneshot::Sender<ApprovalDecision>,
     },
     Input {
-        input_id: CallId,
+        input_id: crate::core::types::CallId,
         request: UserInputRequest,
         respond_to: oneshot::Sender<String>,
     },
@@ -61,7 +61,10 @@ struct ChannelApprovalProvider {
 
 #[async_trait]
 impl ToolApprovalProvider for ChannelApprovalProvider {
-    async fn decide(&self, request: ToolApprovalRequest) -> ApprovalDecision {
+    async fn begin_approval(
+        &self,
+        request: ToolApprovalRequest,
+    ) -> Result<PendingToolApproval, ToolError> {
         let (respond_to, response) = oneshot::channel();
         let message = TerminalInteractionRequest::Approval {
             request,
@@ -69,10 +72,12 @@ impl ToolApprovalProvider for ChannelApprovalProvider {
         };
 
         if self.sender.try_send(message).is_err() {
-            return ApprovalDecision::Reject;
+            return Err(approval_error("request channel is full or closed"));
         }
 
-        response.await.unwrap_or(ApprovalDecision::Reject)
+        Ok(PendingToolApproval::new(async move {
+            response.await.unwrap_or(ApprovalDecision::Reject)
+        }))
     }
 }
 
@@ -82,8 +87,11 @@ struct ChannelInputProvider {
 
 #[async_trait]
 impl UserInputProvider for ChannelInputProvider {
-    async fn request_input(&self, request: UserInputRequest) -> Result<String, ToolError> {
-        let input_id = CallId::new();
+    async fn begin_input(
+        &self,
+        input_id: crate::core::types::CallId,
+        request: UserInputRequest,
+    ) -> Result<PendingUserInput, ToolError> {
         let (respond_to, response) = oneshot::channel();
         let message = TerminalInteractionRequest::Input {
             input_id,
@@ -92,9 +100,11 @@ impl UserInputProvider for ChannelInputProvider {
         };
 
         match self.sender.try_send(message) {
-            Ok(()) => response
-                .await
-                .map_err(|_| input_error("response was dropped")),
+            Ok(()) => Ok(PendingUserInput::new(async move {
+                response
+                    .await
+                    .map_err(|_| input_error("response was dropped"))
+            })),
             Err(mpsc::error::TrySendError::Full(_)) => Err(input_error("request channel is full")),
             Err(mpsc::error::TrySendError::Closed(_)) => {
                 Err(input_error("request channel is closed"))
@@ -106,6 +116,12 @@ impl UserInputProvider for ChannelInputProvider {
 fn input_error(reason: &str) -> ToolError {
     ToolError::ExecutionFailed {
         reason: format!("terminal input unavailable: {reason}"),
+    }
+}
+
+fn approval_error(reason: &str) -> ToolError {
+    ToolError::ExecutionFailed {
+        reason: format!("terminal approval unavailable: {reason}"),
     }
 }
 
@@ -163,10 +179,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn input_provider_carries_generated_id_and_returns_terminal_response() {
+    async fn input_provider_preserves_caller_id_and_returns_terminal_response() {
         let (providers, mut receiver) = bounded_interaction_channel(1);
         let provider = Arc::clone(&providers.input_provider);
-        let answer = tokio::spawn(async move { provider.request_input(input_request()).await });
+        let expected_first_id = CallId::new();
+        let answer = tokio::spawn(async move {
+            provider
+                .begin_input(
+                    expected_first_id,
+                    UserInputRequest {
+                        prompt: "Which branch?".to_string(),
+                    },
+                )
+                .await?
+                .resolve()
+                .await
+        });
 
         let first_id = match receiver.recv().await.unwrap() {
             TerminalInteractionRequest::Input {
@@ -181,21 +209,36 @@ mod tests {
             TerminalInteractionRequest::Approval { .. } => panic!("expected input request"),
         };
         assert_eq!(answer.await.unwrap().unwrap(), "feat/tui");
+        assert_eq!(first_id, expected_first_id);
 
         let provider = Arc::clone(&providers.input_provider);
-        let answer = tokio::spawn(async move { provider.request_input(input_request()).await });
+        let expected_second_id = CallId::new();
+        let answer = tokio::spawn(async move {
+            provider
+                .begin_input(
+                    expected_second_id,
+                    UserInputRequest {
+                        prompt: "Which branch?".to_string(),
+                    },
+                )
+                .await?
+                .resolve()
+                .await
+        });
         let second_id = match receiver.recv().await.unwrap() {
             TerminalInteractionRequest::Input {
                 input_id,
+                request,
                 respond_to,
-                ..
             } => {
                 respond_to.send("main".to_string()).unwrap();
+                assert_eq!(request.prompt, "Which branch?");
                 input_id
             }
             TerminalInteractionRequest::Approval { .. } => panic!("expected input request"),
         };
         assert_eq!(answer.await.unwrap().unwrap(), "main");
+        assert_eq!(second_id, expected_second_id);
         assert_ne!(first_id, second_id);
     }
 
@@ -240,14 +283,20 @@ mod tests {
             })
             .unwrap();
 
-        let full = provider.request_input(input_request()).await.unwrap_err();
+        let full = provider
+            .begin_input(CallId::new(), input_request())
+            .await
+            .unwrap_err();
         assert!(matches!(
             full,
             ToolError::ExecutionFailed { ref reason } if reason.contains("full")
         ));
 
         drop(receiver);
-        let closed = provider.request_input(input_request()).await.unwrap_err();
+        let closed = provider
+            .begin_input(CallId::new(), input_request())
+            .await
+            .unwrap_err();
         assert!(matches!(
             closed,
             ToolError::ExecutionFailed { ref reason } if reason.contains("closed")
@@ -269,7 +318,13 @@ mod tests {
     async fn dropped_input_responder_returns_typed_error() {
         let (providers, mut receiver) = bounded_interaction_channel(1);
         let provider = Arc::clone(&providers.input_provider);
-        let answer = tokio::spawn(async move { provider.request_input(input_request()).await });
+        let answer = tokio::spawn(async move {
+            provider
+                .begin_input(CallId::new(), input_request())
+                .await?
+                .resolve()
+                .await
+        });
 
         drop(receiver.recv().await.unwrap());
 

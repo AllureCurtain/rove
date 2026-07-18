@@ -2,15 +2,17 @@ use std::sync::Arc;
 
 use async_stream::stream;
 use futures::future::join_all;
-use futures::stream::BoxStream;
+use futures::stream::{BoxStream, StreamExt};
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::core::events::StreamEvent;
 use crate::core::executor::Executor;
+use crate::core::tool_input::RegisteredUserInput;
 use crate::core::types::{
-    ApprovalDecision, ApprovalPolicy, CallId, Message, ToolApprovalProvider, ToolApprovalRequest,
-    ToolCallAction, ToolCallRef, ToolContext, ToolExecutionMetadata, ToolExecutionStatus,
-    ToolResult, ToolRiskLevel, UserInputProvider,
+    ApprovalDecision, ApprovalPolicy, CallId, Message, PendingToolApproval, ToolApprovalProvider,
+    ToolApprovalRequest, ToolCallAction, ToolCallRef, ToolContext, ToolExecutionMetadata,
+    ToolExecutionStatus, ToolResult, ToolRiskLevel, UserInputProvider,
 };
 use crate::core::workspace::Workspace;
 use crate::errors::ToolError;
@@ -72,6 +74,13 @@ struct ToolExecution {
     result: Result<ToolResult, ToolError>,
 }
 
+#[derive(Debug)]
+enum ToolExecutionItem {
+    InputNeeded(RegisteredUserInput),
+    Finished(Box<ToolExecution>),
+    Cancelled,
+}
+
 impl<'a> ToolTurnContext<'a> {
     fn tool_requires_approval(&self, tool_name: &str) -> bool {
         self.approval_policy == ApprovalPolicy::Ask
@@ -115,23 +124,23 @@ impl<'a> ToolTurnContext<'a> {
         !schema.destructive && schema.parallel_safe
     }
 
-    async fn resolve_approval(
+    async fn begin_approval(
         &self,
         call_id: CallId,
         name: &str,
         args: &serde_json::Value,
-    ) -> ApprovalDecision {
+    ) -> Result<PendingToolApproval, ToolError> {
+        let request = ToolApprovalRequest {
+            call_id,
+            name: name.to_string(),
+            args: args.clone(),
+            reason: APPROVAL_REASON.to_string(),
+        };
         if let Some(provider) = &self.approval_provider {
-            provider
-                .decide(ToolApprovalRequest {
-                    call_id,
-                    name: name.to_string(),
-                    args: args.clone(),
-                    reason: APPROVAL_REASON.to_string(),
-                })
-                .await
+            provider.begin_approval(request).await
         } else {
-            self.approval_decision
+            let decision = self.approval_decision;
+            Ok(PendingToolApproval::new(async move { decision }))
         }
     }
 
@@ -139,6 +148,7 @@ impl<'a> ToolTurnContext<'a> {
         &self,
         call: ToolCallAction,
         approval_decision: ApprovalDecision,
+        input_events: Option<mpsc::Sender<RegisteredUserInput>>,
     ) -> ToolExecution {
         let executor = Executor::with_hooks(self.registry, self.hooks.clone());
         let tool_context = ToolContext {
@@ -149,16 +159,59 @@ impl<'a> ToolTurnContext<'a> {
             input_provider: self.input_provider.clone(),
         };
         let result = executor
-            .run(&tool_context, &call.name, call.args.clone(), call.call_id)
+            .run_with_input_events(
+                &tool_context,
+                &call.name,
+                call.args.clone(),
+                call.call_id,
+                input_events,
+            )
             .await;
         ToolExecution { call, result }
     }
 
+    fn execute_tool_call_stream<'b>(
+        &'b self,
+        call: ToolCallAction,
+        approval_decision: ApprovalDecision,
+    ) -> BoxStream<'b, ToolExecutionItem> {
+        Box::pin(stream! {
+            let (input_events, mut input_requests) = mpsc::channel(1);
+            let execution = self.execute_tool_call_with_decision(
+                call,
+                approval_decision,
+                Some(input_events),
+            );
+            tokio::pin!(execution);
+            let mut input_requests_open = true;
+
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = self.cancel_token.cancelled() => {
+                        yield ToolExecutionItem::Cancelled;
+                        return;
+                    }
+                    request = input_requests.recv(), if input_requests_open => {
+                        match request {
+                            Some(request) => yield ToolExecutionItem::InputNeeded(request),
+                            None => input_requests_open = false,
+                        }
+                    }
+                    execution = &mut execution => {
+                        yield ToolExecutionItem::Finished(Box::new(execution));
+                        return;
+                    }
+                }
+            }
+        })
+    }
+
     async fn execute_parallel_tool_batch(&self, calls: Vec<ToolCallAction>) -> Vec<ToolExecution> {
         join_all(
-            calls
-                .into_iter()
-                .map(|call| self.execute_tool_call_with_decision(call, self.approval_decision)),
+            calls.into_iter().map(|call| {
+                self.execute_tool_call_with_decision(call, self.approval_decision, None)
+            }),
         )
         .await
     }
@@ -180,37 +233,56 @@ pub(crate) fn run_tool_turn<'a>(
                 });
 
                 let approval_decision = if ctx.tool_requires_approval(&call.name) {
-                    yield ToolTurnItem::Event(StreamEvent::ModelStatus {
-                        status: "waiting_for_approval".to_string(),
-                        message: "Waiting for tool approval".to_string(),
-                    });
-                    yield ToolTurnItem::Event(StreamEvent::ToolCallApprovalNeeded {
-                        call_id: call.call_id,
-                        name: call.name.clone(),
-                        args: call.args.clone(),
-                        reason: APPROVAL_REASON.to_string(),
-                    });
-                    tokio::select! {
+                    let pending_approval = tokio::select! {
                         biased;
                         _ = ctx.cancel_token.cancelled() => {
                             yield ToolTurnItem::Cancelled;
                             return;
                         }
-                        decision = ctx.resolve_approval(call.call_id, &call.name, &call.args) => decision,
+                        pending = ctx.begin_approval(call.call_id, &call.name, &call.args) => pending,
+                    };
+                    if let Ok(pending_approval) = pending_approval {
+                        yield ToolTurnItem::Event(StreamEvent::ToolCallApprovalNeeded {
+                            call_id: call.call_id,
+                            name: call.name.clone(),
+                            args: call.args.clone(),
+                            reason: APPROVAL_REASON.to_string(),
+                        });
+                        tokio::select! {
+                            biased;
+                            _ = ctx.cancel_token.cancelled() => {
+                                yield ToolTurnItem::Cancelled;
+                                return;
+                            }
+                            decision = pending_approval.resolve() => decision,
+                        }
+                    } else {
+                        ApprovalDecision::Reject
                     }
                 } else {
                     ctx.approval_decision
                 };
 
-                let execution = tokio::select! {
-                    biased;
-                    _ = ctx.cancel_token.cancelled() => {
-                        yield ToolTurnItem::Cancelled;
-                        return;
+                let mut execution_stream = ctx.execute_tool_call_stream(call, approval_decision);
+                while let Some(item) = execution_stream.next().await {
+                    match item {
+                        ToolExecutionItem::InputNeeded(input) => {
+                            yield ToolTurnItem::Event(StreamEvent::InputNeeded {
+                                input_id: input.input_id,
+                                prompt: input.request.prompt,
+                            });
+                            let _ = input.acknowledged.send(());
+                        }
+                        ToolExecutionItem::Finished(execution) => {
+                            executions.push(*execution);
+                            break;
+                        }
+                        ToolExecutionItem::Cancelled => {
+                            yield ToolTurnItem::Cancelled;
+                            return;
+                        }
                     }
-                    execution = ctx.execute_tool_call_with_decision(call, approval_decision) => execution,
-                };
-                executions.push(execution);
+                }
             }
             ToolAction::Batch(calls) => {
                 if ctx.can_run_parallel_batch(&calls) {
@@ -239,37 +311,58 @@ pub(crate) fn run_tool_turn<'a>(
                             args: call.args.clone(),
                         });
                         let approval_decision = if ctx.tool_requires_approval(&call.name) {
-                            yield ToolTurnItem::Event(StreamEvent::ModelStatus {
-                                status: "waiting_for_approval".to_string(),
-                                message: "Waiting for tool approval".to_string(),
-                            });
-                            yield ToolTurnItem::Event(StreamEvent::ToolCallApprovalNeeded {
-                                call_id: call.call_id,
-                                name: call.name.clone(),
-                                args: call.args.clone(),
-                                reason: APPROVAL_REASON.to_string(),
-                            });
-                            tokio::select! {
+                            let pending_approval = tokio::select! {
                                 biased;
                                 _ = ctx.cancel_token.cancelled() => {
                                     yield ToolTurnItem::Cancelled;
                                     return;
                                 }
-                                decision = ctx.resolve_approval(call.call_id, &call.name, &call.args) => decision,
+                                pending = ctx.begin_approval(call.call_id, &call.name, &call.args) => pending,
+                            };
+                            if let Ok(pending_approval) = pending_approval {
+                                yield ToolTurnItem::Event(StreamEvent::ToolCallApprovalNeeded {
+                                    call_id: call.call_id,
+                                    name: call.name.clone(),
+                                    args: call.args.clone(),
+                                    reason: APPROVAL_REASON.to_string(),
+                                });
+                                tokio::select! {
+                                    biased;
+                                    _ = ctx.cancel_token.cancelled() => {
+                                        yield ToolTurnItem::Cancelled;
+                                        return;
+                                    }
+                                    decision = pending_approval.resolve() => decision,
+                                }
+                            } else {
+                                ApprovalDecision::Reject
                             }
                         } else {
                             ctx.approval_decision
                         };
-                        let execution = tokio::select! {
-                            biased;
-                            _ = ctx.cancel_token.cancelled() => {
-                                yield ToolTurnItem::Cancelled;
-                                return;
+                        let mut execution_stream =
+                            ctx.execute_tool_call_stream(call, approval_decision);
+                        let mut failed = false;
+                        while let Some(item) = execution_stream.next().await {
+                            match item {
+                                ToolExecutionItem::InputNeeded(input) => {
+                                    yield ToolTurnItem::Event(StreamEvent::InputNeeded {
+                                        input_id: input.input_id,
+                                        prompt: input.request.prompt,
+                                    });
+                                    let _ = input.acknowledged.send(());
+                                }
+                                ToolExecutionItem::Finished(execution) => {
+                                    failed = execution.result.is_err();
+                                    executions.push(*execution);
+                                    break;
+                                }
+                                ToolExecutionItem::Cancelled => {
+                                    yield ToolTurnItem::Cancelled;
+                                    return;
+                                }
                             }
-                            execution = ctx.execute_tool_call_with_decision(call, approval_decision) => execution,
-                        };
-                        let failed = execution.result.is_err();
-                        executions.push(execution);
+                        }
                         if failed {
                             break;
                         }
