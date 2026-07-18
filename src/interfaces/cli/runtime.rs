@@ -1,8 +1,9 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use crate::config::{AppConfig, AppConfigOverrides};
 use crate::core::engine::Engine;
-use crate::core::types::ApprovalPolicy;
+use crate::core::types::{ApprovalPolicy, ToolApprovalProvider, UserInputProvider};
 use crate::core::workspace::Workspace;
 use crate::interfaces::cli::approval::stdin_approval_provider;
 use crate::interfaces::cli::args::CliApprovalPolicy;
@@ -21,6 +22,41 @@ pub struct CliRuntimeOptions {
     pub task_workspace: Option<String>,
     pub task_base: Option<PathBuf>,
     pub initial_fake_response: Option<String>,
+    pub interaction: CliRuntimeInteraction,
+}
+
+#[derive(Default)]
+pub enum CliRuntimeInteraction {
+    #[default]
+    Stdin,
+    Providers {
+        input_provider: Option<Arc<dyn UserInputProvider>>,
+        approval_provider: Option<Arc<dyn ToolApprovalProvider>>,
+    },
+}
+
+pub struct CliRuntimeProviders {
+    pub input_provider: Option<Arc<dyn UserInputProvider>>,
+    pub approval_provider: Option<Arc<dyn ToolApprovalProvider>>,
+}
+
+impl CliRuntimeInteraction {
+    fn into_providers(self, approval_policy: ApprovalPolicy) -> CliRuntimeProviders {
+        match self {
+            Self::Stdin => CliRuntimeProviders {
+                input_provider: Some(stdin_input_provider()),
+                approval_provider: (approval_policy == ApprovalPolicy::Ask)
+                    .then(stdin_approval_provider),
+            },
+            Self::Providers {
+                input_provider,
+                approval_provider,
+            } => CliRuntimeProviders {
+                input_provider,
+                approval_provider,
+            },
+        }
+    }
 }
 
 pub struct CliRuntime {
@@ -85,14 +121,15 @@ pub async fn build_cli_runtime(options: CliRuntimeOptions) -> anyhow::Result<Cli
     };
 
     let approval_policy = cli_approval_policy(options.approval);
+    let providers = options.interaction.into_providers(approval_policy);
     let engine = build_interface_engine(EngineAssemblyOptions {
         model,
         workspace: &workspace,
         config: &config,
         max_steps: config.runtime.max_steps,
         approval_policy,
-        input_provider: Some(stdin_input_provider()),
-        approval_provider: (approval_policy == ApprovalPolicy::Ask).then(stdin_approval_provider),
+        input_provider: providers.input_provider,
+        approval_provider: providers.approval_provider,
     })
     .await?;
 
@@ -122,9 +159,33 @@ fn cli_approval_policy(policy: CliApprovalPolicy) -> ApprovalPolicy {
 mod tests {
     use std::path::PathBuf;
 
+    use crate::core::types::ApprovalPolicy;
     use crate::interfaces::cli::args::CliApprovalPolicy;
 
-    use super::{CliRuntimeOptions, build_cli_runtime};
+    use super::{CliRuntimeInteraction, CliRuntimeOptions, build_cli_runtime};
+
+    #[test]
+    fn custom_interaction_does_not_fall_back_to_stdin() {
+        let providers = CliRuntimeInteraction::Providers {
+            input_provider: None,
+            approval_provider: None,
+        }
+        .into_providers(ApprovalPolicy::Ask);
+
+        assert!(providers.input_provider.is_none());
+        assert!(providers.approval_provider.is_none());
+    }
+
+    #[test]
+    fn stdin_interaction_installs_approval_only_for_ask_policy() {
+        let ask = CliRuntimeInteraction::Stdin.into_providers(ApprovalPolicy::Ask);
+        let never = CliRuntimeInteraction::Stdin.into_providers(ApprovalPolicy::Never);
+
+        assert!(ask.input_provider.is_some());
+        assert!(ask.approval_provider.is_some());
+        assert!(never.input_provider.is_some());
+        assert!(never.approval_provider.is_none());
+    }
 
     #[tokio::test]
     async fn runtime_builder_rebases_configured_state_dir_into_workspace() {
@@ -138,6 +199,7 @@ mod tests {
             task_workspace: None,
             task_base: None,
             initial_fake_response: Some("ready".to_string()),
+            interaction: Default::default(),
         })
         .await
         .unwrap();

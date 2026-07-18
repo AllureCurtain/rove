@@ -2,15 +2,15 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::path::Path;
 
-use futures::{Stream, StreamExt};
+use futures::Stream;
 use serde::Deserialize;
 
 use crate::core::events::StreamEvent;
 use crate::core::runtime_identity::RuntimeIdentity;
 use crate::core::types::{CallId, TaskState, TerminationReason};
 use crate::core::workspace::Workspace;
-use crate::interfaces::terminal::view::{RunViewState, RunViewUpdate};
-use crate::state::artifacts::RunArtifactRecorder;
+use crate::interfaces::terminal::run::{RunEventContext, drive_run_events};
+use crate::interfaces::terminal::view::RunViewUpdate;
 use crate::state::store::{RunHandle, StateStore};
 
 pub struct CliRunRenderContext<'a> {
@@ -54,53 +54,30 @@ pub async fn render_run_events<S>(
 where
     S: Stream<Item = StreamEvent>,
 {
-    futures::pin_mut!(stream);
-    let CliRunRenderContext {
-        message,
-        run,
-        resume_state,
-        state_store,
-        workspace,
-        model_id,
-        runtime_identity,
-    } = context;
-    let resume_state_for_recorder = resume_state.clone();
-    let RunHandle {
-        session_id,
-        job_id,
-        run_id,
-        run_dir,
-        trace_writer: _,
-    } = run;
-    let mut recorder = RunArtifactRecorder::new(
-        session_id,
-        job_id,
-        run_id,
-        message,
-        resume_state_for_recorder.as_ref(),
-        runtime_identity,
-    );
-    let mut terminal_reason = TerminationReason::Error;
-    let mut view_state = RunViewState::default();
-    let mut render_state = ReplLineRenderState::new(relative_report_path(workspace, &run_dir));
-
-    while let Some(event) = stream.next().await {
-        recorder.record_event(&event, state_store).await;
-        let update = view_state.apply_event(&event);
-        if let Some(reason) = render_repl_update(update, options, &mut render_state) {
-            terminal_reason = reason;
-            break;
-        }
-    }
+    let report_path = relative_report_path(context.workspace, &context.run.run_dir);
+    let mut render_state = ReplLineRenderState::new(report_path);
+    let outcome = drive_run_events(
+        stream,
+        RunEventContext {
+            message: context.message,
+            run: context.run,
+            resume_state: context.resume_state,
+            state_store: context.state_store,
+            workspace: context.workspace,
+            model_id: context.model_id,
+            runtime_identity: context.runtime_identity,
+        },
+        |update, _| {
+            let _ = render_repl_update(update, options, &mut render_state);
+        },
+    )
+    .await;
 
     if options.print_trailing_newline {
         println!();
     }
 
-    recorder
-        .finalize(state_store, workspace, model_id, &run_dir)
-        .await;
-    terminal_reason
+    outcome.reason
 }
 
 struct ReplLineRenderState {

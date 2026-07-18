@@ -2,6 +2,7 @@ pub mod api;
 pub mod cli;
 pub(crate) mod runtime;
 pub mod terminal;
+pub mod tui;
 
 #[cfg(test)]
 mod tests {

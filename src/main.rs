@@ -95,6 +95,7 @@ async fn build_runtime(
         task_workspace: args.task_workspace.clone(),
         task_base: args.task_base.clone(),
         initial_fake_response: fake_message.map(|message| format!("fake response: {message}")),
+        interaction: Default::default(),
     })
     .await
 }
