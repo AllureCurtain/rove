@@ -4,4 +4,5 @@ use crate::interfaces::terminal::action::TerminalAction;
 pub enum TuiEffect {
     Dispatch(TerminalAction),
     Exit,
+    ExitAfterRun,
 }

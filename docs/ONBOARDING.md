@@ -580,8 +580,9 @@ All four are proposed until code/tests/current docs say otherwise.
 
 - [Grok Build reference and TUI direction](design/2026-07-16-grok-build-reference-and-tui-design.md)
 
-This design is also proposed. It preserves the existing REPL and `rove exec`
-contracts while defining an optional full-screen TUI.
+This design is partially implemented: the first `rove tui` vertical slice
+preserves the existing REPL and `rove exec` contracts. Approval/input modals,
+session navigation, and PTY hardening remain proposed follow-up work.
 
 ### Historical design
 

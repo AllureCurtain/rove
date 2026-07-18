@@ -4,10 +4,11 @@ This guide is for maintainers who need to understand, debug, or extend the curre
 
 ## 1. Runtime Shape
 
-`rove` is a local-first agent runtime with three user-facing shells:
+`rove` is a local-first agent runtime with three user-facing shells. The CLI
+offers REPL, exec, and optional full-screen TUI modes:
 
 ```text
-CLI / API / Web
+CLI (REPL / exec / TUI) / API / Web
     -> Engine
         -> ContextManager
         -> ModelClient / RoutingModelClient
@@ -20,7 +21,8 @@ StateStore
     -> .rove/state.sqlite
 ```
 
-The interface layers construct the runtime and consume `StreamEvent` values. Core code does not depend on CLI, API, or Web modules.
+The interface layers construct the runtime and consume `StreamEvent` values.
+Core code does not depend on CLI, TUI, API, or Web modules.
 
 Important entry points:
 
@@ -28,6 +30,7 @@ Important entry points:
 |---|---|
 | Library module tree | `src/lib.rs` |
 | CLI binary | `src/main.rs`, `src/interfaces/cli/*` |
+| Full-screen TUI mode | `src/interfaces/tui/*`, `src/interfaces/terminal/*` |
 | API binary | `src/bin/rove-api.rs`, `src/interfaces/api/mod.rs` |
 | Web workbench | `web-ui/` |
 | Engine and runtime types | `src/core/*` |
@@ -186,11 +189,13 @@ High-level flow in `src/main.rs`:
 10. Build `ContextManager`.
 11. Build `Engine`.
 12. Create `StateStore`.
-13. Resolve optional CLI resume state when an exec run starts.
-14. If `exec <message>` is present, run the non-interactive exec backend.
-15. If a bare message argument is present, enter the rich terminal REPL and
+13. Resolve optional CLI resume state when an exec or TUI run starts.
+14. If `tui` is present, build the TUI runtime with non-stdin interaction
+    providers and enter the alternate-screen application loop.
+15. If `exec <message>` is present, run the non-interactive exec backend.
+16. If a bare message argument is present, enter the rich terminal REPL and
     submit that message as the first prompt.
-16. If no message and no subcommand are present, enter the rich terminal REPL
+17. If no message and no subcommand are present, enter the rich terminal REPL
     and wait for input.
 
 Interactive REPL smoke command:
@@ -243,12 +248,51 @@ Web workbench remains the richer report/history surface.
 
 The compact REPL is backed by a terminal view/action layer. `StreamEvent` values
 are first projected into terminal view updates and accumulated into view state;
-the current REPL renders those updates as line-oriented output. This keeps the
-terminal surface ready for a future full TUI without adding full-screen terminal
-dependencies or moving UI concerns into `core`.
+the current REPL renders those updates as line-oriented output. The optional TUI
+uses the same projection and run-artifact path without adding a second engine
+loop or persistence format.
 
-This pass does not add `ratatui`, `crossterm`, alternate-screen rendering,
-mouse interaction, panels, or a full-screen session picker.
+### Full-screen TUI
+
+The first full-screen vertical slice is available with:
+
+```powershell
+cargo run -- tui --model fake
+```
+
+`rove tui` enters raw mode and the alternate screen through the RAII
+`TerminalSession`, then runs a fair asynchronous loop over Crossterm input,
+canonical run updates, cancellation signals, and redraw ticks. A prompt follows
+this path:
+
+```text
+key event -> TuiAction -> reducer -> shared Engine
+Engine StreamEvent -> RunViewState -> bounded update channel -> Ratatui
+```
+
+The run driver uses an awaited bounded sink. It continues polling the Engine
+after `RunCompleted` so post-run hooks execute, finalizes the shared trace/task
+state/report/index artifacts, and only then publishes the completion update to
+the screen. Ctrl+C cancels the existing run token and waits for the canonical
+cancelled completion. Ctrl+Q while a run is active requires a second
+confirmation, then cancels and waits before leaving the terminal.
+
+The TUI currently supports prompt editing (bounded to 32 KiB), focus switching,
+wrapped transcript scrolling with bottom anchoring, archived runs in the current
+session, plan/tool/activity rendering, resize and narrow-terminal layouts, and
+the startup `--resume` option. Existing REPL and `rove exec` behavior is
+unchanged. Tracing is routed to a sink while the alternate screen is active so
+runtime logs cannot corrupt the display.
+
+Interactive stdin providers are deliberately not installed in this first slice:
+destructive `ask` approvals therefore use the engine's existing reject fallback,
+and `request_input` uses its existing no-provider result. There is no modal for
+answering either request yet. Session browsing/resume selection, mouse
+interaction, PTY smoke coverage, and a strict event-timeline transcript remain
+follow-up work. The renderer shows the current projected state rather than
+exposing hidden model reasoning.
+
+### REPL Commands
 
 Supported slash commands are:
 
@@ -277,6 +321,12 @@ Relevant code:
 - `src/interfaces/cli/sessions.rs`
 - `src/interfaces/cli/state.rs`
 - `src/interfaces/cli/index.rs`
+- `src/interfaces/tui/app.rs`
+- `src/interfaces/tui/state.rs`
+- `src/interfaces/tui/reducer.rs`
+- `src/interfaces/tui/render.rs`
+- `src/interfaces/tui/terminal.rs`
+- `src/interfaces/terminal/run.rs`
 - `src/state/resume.rs`
 
 ## 5. API Startup Path
@@ -994,6 +1044,9 @@ pnpm test:e2e
 Useful focused tests:
 
 ```powershell
+cargo test interfaces::tui --lib
+cargo test interfaces::terminal --lib
+cargo test --test cli_repl
 cargo test --test api
 cargo test --test e2e
 cargo test --test mcp

@@ -1,5 +1,8 @@
 use crate::interfaces::terminal::view::{RunViewState, RunViewUpdate};
 
+const MAX_TRANSCRIPT_HISTORY_RUNS: usize = 50;
+pub const MAX_COMPOSER_BYTES: usize = 32 * 1024;
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum RunLifecycle {
     #[default]
@@ -24,12 +27,23 @@ impl RunLifecycle {
 pub struct TranscriptScroll {
     pub offset: u16,
     pub max_offset: u16,
+    pub page_size: u16,
 }
 
 impl TranscriptScroll {
     pub fn set_max_offset(&mut self, max_offset: u16) {
+        if self.offset > 0 && max_offset > self.max_offset {
+            self.offset = self
+                .offset
+                .saturating_add(max_offset.saturating_sub(self.max_offset));
+        }
         self.max_offset = max_offset;
         self.offset = self.offset.min(max_offset);
+    }
+
+    pub fn set_viewport(&mut self, max_offset: u16, page_size: u16) {
+        self.set_max_offset(max_offset);
+        self.page_size = page_size.max(1);
     }
 
     pub fn scroll_up(&mut self, amount: u16) {
@@ -52,8 +66,9 @@ pub enum TuiFocus {
     Composer,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TuiState {
+    pub run_history: Vec<RunViewState>,
     pub run: RunViewState,
     pub run_lifecycle: RunLifecycle,
     pub composer: String,
@@ -61,29 +76,48 @@ pub struct TuiState {
     pub transcript_scroll: TranscriptScroll,
     pub terminal_width: u16,
     pub terminal_height: u16,
+    pub quit_confirmation: bool,
     pub should_quit: bool,
 }
 
 impl TuiState {
     pub fn apply_run_update(&mut self, update: RunViewUpdate) {
-        let run_started = matches!(&update, RunViewUpdate::RunStarted { .. });
+        let starting_run_id = match &update {
+            RunViewUpdate::RunStarted { run_id, .. } => Some(*run_id),
+            _ => None,
+        };
         let run_completed = matches!(&update, RunViewUpdate::RunCompleted { .. });
 
-        if run_started {
+        if let Some(run_id) = starting_run_id {
             let cancellation_requested = self.run_lifecycle == RunLifecycle::Cancelling;
-            self.clear_run_local_ui();
+            self.begin_run(run_id);
             self.run_lifecycle = if cancellation_requested {
                 RunLifecycle::Cancelling
             } else {
                 RunLifecycle::Running
             };
+            self.quit_confirmation = false;
         }
 
         self.run.apply_update(update);
 
         if run_completed {
             self.run_lifecycle = RunLifecycle::Completed;
+            self.quit_confirmation = false;
         }
+    }
+
+    fn begin_run(&mut self, run_id: crate::core::types::RunId) {
+        if self.run.run_id.is_some_and(|current| current != run_id) {
+            let completed_run = std::mem::take(&mut self.run);
+            self.run_history.push(completed_run);
+            if self.run_history.len() > MAX_TRANSCRIPT_HISTORY_RUNS {
+                self.run_history.remove(0);
+            }
+        } else if self.run.run_id.is_none() {
+            self.run = RunViewState::default();
+        }
+        self.transcript_scroll.reset();
     }
 
     pub fn clear_run_local_ui(&mut self) {
@@ -95,6 +129,7 @@ impl TuiState {
 impl Default for TuiState {
     fn default() -> Self {
         Self {
+            run_history: Vec::new(),
             run: RunViewState::default(),
             run_lifecycle: RunLifecycle::Idle,
             composer: String::new(),
@@ -102,6 +137,7 @@ impl Default for TuiState {
             transcript_scroll: TranscriptScroll::default(),
             terminal_width: 80,
             terminal_height: 24,
+            quit_confirmation: false,
             should_quit: false,
         }
     }
@@ -158,6 +194,9 @@ mod tests {
         assert!(state.run.assistant_text.is_empty());
         assert!(state.run.pending_inputs.is_empty());
         assert!(state.run.completed.is_none());
+        assert_eq!(state.run_history.len(), 1);
+        assert_eq!(state.run_history[0].user_message.as_deref(), Some("first"));
+        assert_eq!(state.run_history[0].assistant_text, "stale answer");
         assert_eq!(state.transcript_scroll.offset, 0);
         assert_eq!(state.transcript_scroll.max_offset, 0);
         assert_eq!(state.composer, "next prompt");
@@ -179,5 +218,20 @@ mod tests {
         });
 
         assert_eq!(state.run_lifecycle, RunLifecycle::Cancelling);
+    }
+
+    #[test]
+    fn scrolling_up_keeps_the_same_content_anchored_while_output_grows() {
+        let mut scroll = super::TranscriptScroll::default();
+        scroll.set_max_offset(10);
+        scroll.scroll_up(3);
+
+        scroll.set_max_offset(14);
+
+        assert_eq!(scroll.offset, 7);
+        assert_eq!(scroll.max_offset, 14);
+
+        scroll.set_max_offset(2);
+        assert_eq!(scroll.offset, 2);
     }
 }

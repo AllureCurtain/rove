@@ -1,9 +1,10 @@
 # TUI Parallel Worktree Handoff - 2026-07-18
 
-> Status: **Active Coordination Handoff / TUI Not Implemented**
+> Status: **Completed Historical Handoff / First vertical slice implemented**
 >
-> Lifecycle: temporary. Retire this file after the TUI MVP is integrated and
-> the implemented behavior is recorded under `docs/runtime/`.
+> Lifecycle: historical. The first vertical slice is integrated and described in
+> `docs/runtime/implementation-guide.md`; later TUI milestones may use this file
+> as execution history, not as current runtime truth.
 
 This document is the handoff for a new main conversation that will create Git
 worktrees, dispatch work to separate conversations, integrate their commits,
@@ -14,7 +15,7 @@ It does not replace:
 - [repository rules](../../AGENTS.md);
 - [maintainer onboarding](../ONBOARDING.md);
 - [current runtime documentation](../runtime/README.md);
-- [the proposed TUI design](../design/2026-07-16-grok-build-reference-and-tui-design.md).
+- [the partially implemented TUI target design](../design/2026-07-16-grok-build-reference-and-tui-design.md).
 
 ## 1. Objective
 

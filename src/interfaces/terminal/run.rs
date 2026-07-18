@@ -1,3 +1,5 @@
+use std::future::Future;
+
 use futures::{Stream, StreamExt};
 
 use crate::core::events::StreamEvent;
@@ -24,14 +26,15 @@ pub struct RunEventOutcome {
     pub view_state: RunViewState,
 }
 
-pub async fn drive_run_events<S, F>(
+pub async fn drive_run_events<S, F, Fut>(
     stream: S,
     context: RunEventContext<'_>,
     mut on_update: F,
 ) -> RunEventOutcome
 where
     S: Stream<Item = StreamEvent>,
-    F: FnMut(RunViewUpdate, &RunViewState),
+    F: FnMut(RunViewUpdate) -> Fut,
+    Fut: Future<Output = ()>,
 {
     futures::pin_mut!(stream);
     let RunEventContext {
@@ -60,35 +63,45 @@ where
     );
     let mut reason = TerminationReason::Error;
     let mut view_state = RunViewState::default();
+    let mut completion_update = None;
 
     while let Some(event) = stream.next().await {
         recorder.record_event(&event, state_store).await;
         let update = view_state.apply_event(&event);
-        let completion = match &update {
-            RunViewUpdate::RunCompleted { reason, .. } => Some(reason.clone()),
-            _ => None,
-        };
-        on_update(update, &view_state);
-        if let Some(completion) = completion {
-            reason = completion;
-            break;
+        if let RunViewUpdate::RunCompleted {
+            reason: completion, ..
+        } = &update
+        {
+            reason = completion.clone();
+            completion_update = Some(update);
+        } else {
+            on_update(update).await;
         }
     }
 
     recorder
         .finalize(state_store, workspace, model_id, &run_dir)
         .await;
+    if let Some(update) = completion_update {
+        on_update(update).await;
+    }
 
     RunEventOutcome { reason, view_state }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::future::ready;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use async_stream::stream;
     use futures::stream;
 
     use crate::core::events::StreamEvent;
     use crate::core::types::{JobId, RunId, SessionId, TerminationReason};
     use crate::core::workspace::Workspace;
+    use crate::interfaces::terminal::view::RunViewUpdate;
     use crate::state::store::StateStore;
 
     use super::{RunEventContext, drive_run_events};
@@ -131,7 +144,10 @@ mod tests {
                 model_id: "fake",
                 runtime_identity: None,
             },
-            |_, _| updates += 1,
+            |_| {
+                updates += 1;
+                ready(())
+            },
         )
         .await;
 
@@ -139,5 +155,58 @@ mod tests {
         assert_eq!(outcome.reason, TerminationReason::Final);
         assert_eq!(outcome.view_state.assistant_text, "ready");
         assert!(run_dir.join("report.json").exists());
+    }
+
+    #[tokio::test]
+    async fn driver_drains_the_engine_after_completion_before_publishing_it() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let workspace = Workspace::detect(tmp.path()).unwrap();
+        let state_store = StateStore::new(&workspace.state_dir);
+        let run = state_store
+            .start_run(SessionId::new(), JobId::new(), RunId::new())
+            .unwrap();
+        let run_id = run.run_id;
+        let job_id = run.job_id;
+        let report_path = run.run_dir.join("report.json");
+        let drained = Arc::new(AtomicBool::new(false));
+        let drained_by_stream = Arc::clone(&drained);
+        let events = stream! {
+            yield StreamEvent::RunStarted {
+                run_id,
+                job_id,
+                user_message: "hello".to_string(),
+            };
+            yield StreamEvent::RunCompleted {
+                reason: TerminationReason::Final,
+                output: Some("ready".to_string()),
+            };
+            drained_by_stream.store(true, Ordering::SeqCst);
+        };
+        let mut completion_observed = false;
+
+        let outcome = drive_run_events(
+            events,
+            RunEventContext {
+                message: "hello".to_string(),
+                run,
+                resume_state: None,
+                state_store: &state_store,
+                workspace: &workspace,
+                model_id: "fake",
+                runtime_identity: None,
+            },
+            |update| {
+                if matches!(update, RunViewUpdate::RunCompleted { .. }) {
+                    assert!(drained.load(Ordering::SeqCst));
+                    assert!(report_path.exists());
+                    completion_observed = true;
+                }
+                ready(())
+            },
+        )
+        .await;
+
+        assert_eq!(outcome.reason, TerminationReason::Final);
+        assert!(completion_observed);
     }
 }

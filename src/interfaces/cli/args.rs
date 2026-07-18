@@ -47,6 +47,10 @@ impl Args {
         matches!(self.command, Some(Command::DumpConfig))
     }
 
+    pub fn is_tui(&self) -> bool {
+        matches!(self.command, Some(Command::Tui))
+    }
+
     pub fn message(&self) -> Option<String> {
         let message = self.message.join(" ").trim().to_string();
         if message.is_empty() {
@@ -68,6 +72,8 @@ pub enum CliApprovalPolicy {
 pub enum Command {
     /// Print the effective runtime configuration.
     DumpConfig,
+    /// Start the full-screen terminal interface.
+    Tui,
     /// Run a prompt non-interactively and exit.
     Exec {
         /// The task or question to give the agent.
@@ -149,6 +155,17 @@ mod tests {
         assert!(args.message().is_none());
         assert!(args.command.is_none());
         assert!(!args.is_sync_fast_path());
+    }
+
+    #[test]
+    fn tui_subcommand_accepts_global_runtime_options() {
+        let args = Args::parse_from(["rove", "tui", "--model", "fake", "--approval", "never"]);
+
+        assert!(args.is_tui());
+        assert!(matches!(args.command, Some(Command::Tui)));
+        assert_eq!(args.model.as_deref(), Some("fake"));
+        assert!(matches!(args.approval, CliApprovalPolicy::Never));
+        assert!(args.message().is_none());
     }
 
     #[test]

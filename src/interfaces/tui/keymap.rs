@@ -8,7 +8,8 @@ pub fn map_key_event(event: KeyEvent) -> Option<TuiAction> {
         return None;
     }
 
-    if event.modifiers.contains(KeyModifiers::CONTROL)
+    if event.kind == KeyEventKind::Press
+        && event.modifiers.contains(KeyModifiers::CONTROL)
         && let KeyCode::Char(ch) = event.code
     {
         if ch.eq_ignore_ascii_case(&'q') {
@@ -23,8 +24,8 @@ pub fn map_key_event(event: KeyEvent) -> Option<TuiAction> {
         (KeyCode::Enter, _) => Some(TuiAction::SubmitComposer),
         (KeyCode::Backspace, _) => Some(TuiAction::Backspace),
         (KeyCode::Tab, _) => Some(TuiAction::FocusNext),
-        (KeyCode::PageUp, _) => Some(TuiAction::ScrollUp(1)),
-        (KeyCode::PageDown, _) => Some(TuiAction::ScrollDown(1)),
+        (KeyCode::PageUp, _) => Some(TuiAction::ScrollPageUp),
+        (KeyCode::PageDown, _) => Some(TuiAction::ScrollPageDown),
         (KeyCode::Up, _) => Some(TuiAction::ScrollUp(1)),
         (KeyCode::Down, _) => Some(TuiAction::ScrollDown(1)),
         (KeyCode::Char(ch), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
@@ -68,11 +69,11 @@ mod tests {
             ),
             (
                 KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE),
-                TuiAction::ScrollUp(1),
+                TuiAction::ScrollPageUp,
             ),
             (
                 KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE),
-                TuiAction::ScrollDown(1),
+                TuiAction::ScrollPageDown,
             ),
             (
                 KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
@@ -105,6 +106,13 @@ mod tests {
 
         assert_eq!(map_key_event(released), None);
         assert_eq!(map_key_event(repeated), Some(TuiAction::Backspace));
+
+        let repeated_quit = KeyEvent::new_with_kind(
+            KeyCode::Char('q'),
+            KeyModifiers::CONTROL,
+            KeyEventKind::Repeat,
+        );
+        assert_eq!(map_key_event(repeated_quit), None);
     }
 
     #[test]

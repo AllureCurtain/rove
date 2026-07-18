@@ -31,8 +31,8 @@ impl TerminalSession {
         })
     }
 
-    /// Restores terminal modes immediately. Drop remains a no-op after success
-    /// or failure so every cleanup command is attempted at most once.
+    /// Restores terminal modes immediately. Drop remains a no-op after a
+    /// successful restore and retries only cleanup operations that failed.
     pub fn restore(&mut self) -> io::Result<()> {
         self.lifecycle.restore()
     }
@@ -119,16 +119,25 @@ impl<C: TerminalControl> TerminalLifecycle<C> {
         let mut first_error = None;
 
         if self.cursor_hide_attempted {
-            self.cursor_hide_attempted = false;
-            remember_first_error(&mut first_error, self.control.show_cursor());
+            let result = self.control.show_cursor();
+            if result.is_ok() {
+                self.cursor_hide_attempted = false;
+            }
+            remember_first_error(&mut first_error, result);
         }
         if self.alternate_screen_attempted {
-            self.alternate_screen_attempted = false;
-            remember_first_error(&mut first_error, self.control.leave_alternate_screen());
+            let result = self.control.leave_alternate_screen();
+            if result.is_ok() {
+                self.alternate_screen_attempted = false;
+            }
+            remember_first_error(&mut first_error, result);
         }
         if self.raw_mode_attempted {
-            self.raw_mode_attempted = false;
-            remember_first_error(&mut first_error, self.control.disable_raw_mode());
+            let result = self.control.disable_raw_mode();
+            if result.is_ok() {
+                self.raw_mode_attempted = false;
+            }
+            remember_first_error(&mut first_error, result);
         }
 
         first_error.map_or(Ok(()), Err)
@@ -267,6 +276,36 @@ mod tests {
         assert!(lifecycle.restore().is_err());
         drop(lifecycle);
 
+        assert_eq!(
+            *operations.lock().unwrap(),
+            vec![
+                Operation::EnableRawMode,
+                Operation::EnterAlternateScreen,
+                Operation::HideCursor,
+                Operation::ShowCursor,
+                Operation::LeaveAlternateScreen,
+                Operation::DisableRawMode,
+                Operation::ShowCursor,
+            ]
+        );
+    }
+
+    #[test]
+    fn unwinding_restores_terminal_modes() {
+        let operations = Arc::new(Mutex::new(Vec::new()));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe({
+            let operations = Arc::clone(&operations);
+            move || {
+                let _lifecycle = TerminalLifecycle::enter(FakeTerminalControl {
+                    operations,
+                    fail_on: None,
+                })
+                .unwrap();
+                panic!("injected panic");
+            }
+        }));
+
+        assert!(result.is_err());
         assert_eq!(
             *operations.lock().unwrap(),
             vec![

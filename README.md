@@ -1,11 +1,11 @@
 # rove
 
-`rove` is a local-first, stateful agent runtime written in Rust. It provides a CLI, an HTTP API, a standalone web workbench, tool execution, resumable run state, layered memory, provider routing, and optional RAG indexing.
+`rove` is a local-first, stateful agent runtime written in Rust. It provides a CLI (including an optional full-screen TUI), an HTTP API, a standalone web workbench, tool execution, resumable run state, layered memory, provider routing, and optional RAG indexing.
 
 The runtime is designed around a small core engine:
 
 ```text
-CLI / API / Web
+CLI (REPL / exec / TUI) / API / Web
     -> Engine
         -> Context + checkpoints
         -> Provider routing
@@ -26,6 +26,13 @@ Start the interactive terminal REPL without network credentials:
 
 ```bash
 cargo run -- --model fake
+```
+
+Start the full-screen TUI vertical slice without network credentials. This
+command requires an interactive terminal:
+
+```bash
+cargo run -- tui --model fake
 ```
 
 Start the same REPL with an initial prompt:
@@ -123,7 +130,7 @@ bearer token server-side and does not expose it to browser JavaScript.
 
 | Area | Path | Purpose |
 |---|---|---|
-| CLI | `src/main.rs` | Rich terminal REPL, explicit `exec` runs, config dump, sessions, and RAG indexing command dispatch. |
+| CLI / TUI | `src/main.rs`, `src/interfaces/tui/` | Rich terminal REPL, full-screen TUI vertical slice, explicit `exec` runs, config dump, sessions, and RAG indexing command dispatch. |
 | API | `src/bin/rove-api.rs`, `src/interfaces/api/` | HTTP job lifecycle, SSE event streaming, approvals, inputs, and cancellation. |
 | Benchmarks | `src/bin/rove-bench.rs`, `benchmarks/` | Deterministic no-network benchmark tasks with artifact-path reports. |
 | Web | `web-ui/` | Next.js workbench that consumes the API and SSE job stream. |

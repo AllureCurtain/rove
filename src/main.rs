@@ -10,22 +10,16 @@ use rove::interfaces::cli::config as cli_config;
 use rove::interfaces::cli::exec::run_exec_with_cancel;
 use rove::interfaces::cli::index::{self as cli_index, IndexOptions};
 use rove::interfaces::cli::repl;
-use rove::interfaces::cli::runtime::{CliRuntimeOptions, build_cli_runtime};
+use rove::interfaces::cli::runtime::{CliRuntimeInteraction, CliRuntimeOptions, build_cli_runtime};
 use rove::interfaces::cli::sessions;
 use rove::interfaces::cli::state as cli_state;
+use rove::interfaces::tui::app as tui_app;
 use rove::state::resume::resolve_resume_state;
 use tokio_util::sync::CancellationToken;
 
 fn main() -> anyhow::Result<()> {
-    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn"));
-
-    tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
-        .with_env_filter(env_filter)
-        .init();
-
     let args = Args::parse();
+    init_tracing(args.is_tui());
 
     if args.is_sync_fast_path() {
         return run_sync_fast_path(args);
@@ -33,6 +27,23 @@ fn main() -> anyhow::Result<()> {
 
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(async_main(args))
+}
+
+fn init_tracing(tui_mode: bool) {
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn"));
+
+    if tui_mode {
+        tracing_subscriber::fmt()
+            .with_writer(std::io::sink)
+            .with_env_filter(env_filter)
+            .init();
+    } else {
+        tracing_subscriber::fmt()
+            .with_writer(std::io::stderr)
+            .with_env_filter(env_filter)
+            .init();
+    }
 }
 
 fn run_sync_fast_path(args: Args) -> anyhow::Result<()> {
@@ -68,6 +79,20 @@ async fn async_main(args: Args) -> anyhow::Result<()> {
         }
         Some(Command::Sessions) => return sessions::run(args.cwd.clone()).await,
         Some(Command::State { command }) => return cli_state::run(args.cwd.clone(), command).await,
+        Some(Command::Tui) => {
+            let runtime = build_runtime_with_interaction(
+                &args,
+                None,
+                CliRuntimeInteraction::Providers {
+                    input_provider: None,
+                    approval_provider: None,
+                },
+            )
+            .await?;
+            let resume_state =
+                resolve_resume_state(&runtime.state_store, args.resume.as_deref()).await?;
+            return tui_app::run(runtime, resume_state).await;
+        }
         Some(Command::Exec { message }) => {
             let message = join_message(message);
             let runtime = build_runtime(&args, Some(&message)).await?;
@@ -87,6 +112,14 @@ async fn build_runtime(
     args: &Args,
     fake_message: Option<&String>,
 ) -> anyhow::Result<rove::interfaces::cli::runtime::CliRuntime> {
+    build_runtime_with_interaction(args, fake_message, CliRuntimeInteraction::default()).await
+}
+
+async fn build_runtime_with_interaction(
+    args: &Args,
+    fake_message: Option<&String>,
+    interaction: CliRuntimeInteraction,
+) -> anyhow::Result<rove::interfaces::cli::runtime::CliRuntime> {
     build_cli_runtime(CliRuntimeOptions {
         cwd: args.cwd.clone().map(PathBuf::from),
         model: args.model.clone(),
@@ -95,7 +128,7 @@ async fn build_runtime(
         task_workspace: args.task_workspace.clone(),
         task_base: args.task_base.clone(),
         initial_fake_response: fake_message.map(|message| format!("fake response: {message}")),
-        interaction: Default::default(),
+        interaction,
     })
     .await
 }

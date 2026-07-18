@@ -67,8 +67,9 @@ where
             model_id: context.model_id,
             runtime_identity: context.runtime_identity,
         },
-        |update, _| {
+        |update| {
             let _ = render_repl_update(update, options, &mut render_state);
+            std::future::ready(())
         },
     )
     .await;

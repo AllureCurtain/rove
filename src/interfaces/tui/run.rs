@@ -1,8 +1,10 @@
+use std::future::Future;
+
 use futures::Stream;
 
 use crate::core::events::StreamEvent;
 use crate::interfaces::terminal::run::drive_run_events;
-use crate::interfaces::terminal::view::{RunViewState, RunViewUpdate};
+use crate::interfaces::terminal::view::RunViewUpdate;
 
 pub use crate::interfaces::terminal::run::{
     RunEventContext as TuiRunContext, RunEventOutcome as TuiRunOutcome,
@@ -10,14 +12,15 @@ pub use crate::interfaces::terminal::run::{
 
 /// Projects canonical runtime events for the TUI while retaining the shared
 /// artifact recording and report finalization path.
-pub async fn drive_tui_run_events<S, F>(
+pub async fn drive_tui_run_events<S, F, Fut>(
     stream: S,
     context: TuiRunContext<'_>,
     on_update: F,
 ) -> TuiRunOutcome
 where
     S: Stream<Item = StreamEvent>,
-    F: FnMut(RunViewUpdate, &RunViewState),
+    F: FnMut(RunViewUpdate) -> Fut,
+    Fut: Future<Output = ()>,
 {
     drive_run_events(stream, context, on_update).await
 }
@@ -72,10 +75,11 @@ mod tests {
                 model_id: "fake",
                 runtime_identity: None,
             },
-            |update, _| {
+            |update| {
                 if matches!(update, RunViewUpdate::RunCompleted { .. }) {
                     completions += 1;
                 }
+                std::future::ready(())
             },
         )
         .await;

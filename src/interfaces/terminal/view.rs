@@ -96,6 +96,7 @@ pub enum ToolCallStatus {
     WaitingApproval,
     Completed,
     Failed,
+    Interrupted,
 }
 
 #[derive(Debug, Clone)]
@@ -162,12 +163,14 @@ impl RunViewState {
             }
             RunViewUpdate::LlmMessage { usage, .. } => {
                 self.last_usage = Some(usage);
+                self.model_status = None;
             }
             RunViewUpdate::ToolCallStarted {
                 call_id,
                 name,
                 args,
             } => {
+                self.model_status = None;
                 self.tool_calls.push(ToolCallView {
                     call_id,
                     name,
@@ -231,10 +234,29 @@ impl RunViewState {
                 self.plan = Some(plan);
             }
             RunViewUpdate::PlanStepStarted { step, index } => {
+                if let Some(plan) = &mut self.plan {
+                    plan.current_step = index.min(plan.steps.len());
+                    if let Some(stored_step) = plan.steps.get_mut(index) {
+                        *stored_step = step.clone();
+                    }
+                }
+                self.model_status = None;
                 self.current_step = Some((index, step));
             }
             RunViewUpdate::PlanStepCompleted { step, index } => {
-                self.current_step = Some((index, step));
+                if let Some(plan) = &mut self.plan {
+                    if let Some(stored_step) = plan.steps.get_mut(index) {
+                        stored_step.id = step.id;
+                        stored_step.title = step.title;
+                        stored_step.done = true;
+                    }
+                    plan.current_step = plan
+                        .steps
+                        .iter()
+                        .position(|candidate| !candidate.done)
+                        .unwrap_or(plan.steps.len());
+                }
+                self.current_step = None;
             }
             RunViewUpdate::PlanStepFailed {
                 step,
@@ -242,6 +264,7 @@ impl RunViewState {
                 reason,
             } => {
                 self.failed_steps.push((index, step, reason));
+                self.current_step = None;
             }
             RunViewUpdate::PromptCompacted { summary, state } => {
                 self.prompt_compaction = Some((summary, state));
@@ -249,6 +272,18 @@ impl RunViewState {
             RunViewUpdate::MemoryFlushed { .. } => {}
             RunViewUpdate::PromptBuilt { .. } => {}
             RunViewUpdate::RunCompleted { reason, output } => {
+                self.model_status = None;
+                self.current_step = None;
+                self.pending_approvals.clear();
+                self.pending_inputs.clear();
+                for tool in &mut self.tool_calls {
+                    if matches!(
+                        tool.status,
+                        ToolCallStatus::Started | ToolCallStatus::WaitingApproval
+                    ) {
+                        tool.status = ToolCallStatus::Interrupted;
+                    }
+                }
                 self.completed = Some(RunCompletionView { reason, output });
             }
         }
@@ -584,11 +619,62 @@ mod tests {
         assert_eq!(state.assistant_text, "hi");
         assert_eq!(state.plan.as_ref().unwrap().steps.len(), 1);
         assert_eq!(state.tool_calls.len(), 1);
-        assert_eq!(state.pending_approvals.len(), 1);
-        assert_eq!(state.pending_inputs.len(), 1);
+        assert!(state.pending_approvals.is_empty());
+        assert!(state.pending_inputs.is_empty());
         assert_eq!(
             state.completed.as_ref().unwrap().reason,
             TerminationReason::Final
         );
+    }
+
+    #[test]
+    fn completed_plan_steps_update_the_stored_plan_and_cursor() {
+        let mut state = super::RunViewState::default();
+        let first = step();
+        let second = PlanStep {
+            id: "step-2".to_string(),
+            title: "Write tests".to_string(),
+            done: false,
+        };
+        state.apply_update(RunViewUpdate::PlanCreated {
+            plan: TaskPlan {
+                goal: "finish the TUI".to_string(),
+                steps: vec![first.clone(), second],
+                current_step: 0,
+            },
+        });
+        state.apply_update(RunViewUpdate::PlanStepStarted {
+            step: first.clone(),
+            index: 0,
+        });
+        state.apply_update(RunViewUpdate::PlanStepCompleted {
+            step: first,
+            index: 0,
+        });
+
+        let plan = state.plan.as_ref().unwrap();
+        assert!(plan.steps[0].done);
+        assert_eq!(plan.current_step, 1);
+        assert!(state.current_step.is_none());
+    }
+
+    #[test]
+    fn llm_message_clears_transient_status_without_repeating_streamed_text() {
+        let mut state = super::RunViewState::default();
+        state.apply_update(RunViewUpdate::ModelStatus {
+            status: "thinking".to_string(),
+            message: "working".to_string(),
+        });
+        state.apply_update(RunViewUpdate::AssistantDelta {
+            delta: "answer".to_string(),
+        });
+        state.apply_update(RunViewUpdate::LlmMessage {
+            full: "answer".to_string(),
+            usage: usage(),
+            tool_call_count: 0,
+        });
+
+        assert_eq!(state.assistant_text, "answer");
+        assert!(state.model_status.is_none());
     }
 }

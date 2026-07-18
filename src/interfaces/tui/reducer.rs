@@ -1,13 +1,34 @@
 use crate::interfaces::terminal::action::TerminalAction;
 use crate::interfaces::tui::action::TuiAction;
 use crate::interfaces::tui::effect::TuiEffect;
-use crate::interfaces::tui::state::{RunLifecycle, TuiFocus, TuiState};
+use crate::interfaces::tui::state::{MAX_COMPOSER_BYTES, RunLifecycle, TuiFocus, TuiState};
 
 pub fn reduce(state: &mut TuiState, action: TuiAction) -> Vec<TuiEffect> {
+    if !matches!(
+        &action,
+        TuiAction::Terminal(TerminalAction::Exit) | TuiAction::Tick | TuiAction::Resize { .. }
+    ) {
+        state.quit_confirmation = false;
+    }
+
     match action {
         TuiAction::Terminal(TerminalAction::Exit) => {
-            state.should_quit = true;
-            vec![TuiEffect::Exit]
+            if state.run_lifecycle.is_active() {
+                if state.quit_confirmation {
+                    state.quit_confirmation = false;
+                    state.run_lifecycle = RunLifecycle::Cancelling;
+                    vec![
+                        TuiEffect::Dispatch(TerminalAction::CancelRun),
+                        TuiEffect::ExitAfterRun,
+                    ]
+                } else {
+                    state.quit_confirmation = true;
+                    Vec::new()
+                }
+            } else {
+                state.should_quit = true;
+                vec![TuiEffect::Exit]
+            }
         }
         TuiAction::Terminal(TerminalAction::CancelRun) => cancel_or_clear(state),
         TuiAction::Terminal(TerminalAction::SubmitPrompt(message)) => {
@@ -15,7 +36,9 @@ pub fn reduce(state: &mut TuiState, action: TuiAction) -> Vec<TuiEffect> {
         }
         TuiAction::Terminal(action) => vec![TuiEffect::Dispatch(action)],
         TuiAction::InsertChar(ch) => {
-            if state.focus == TuiFocus::Composer {
+            if state.focus == TuiFocus::Composer
+                && state.composer.len().saturating_add(ch.len_utf8()) <= MAX_COMPOSER_BYTES
+            {
                 state.composer.push(ch);
             }
             Vec::new()
@@ -57,8 +80,25 @@ pub fn reduce(state: &mut TuiState, action: TuiAction) -> Vec<TuiEffect> {
             }
             Vec::new()
         }
-        TuiAction::SetTranscriptScrollMax { max_offset } => {
-            state.transcript_scroll.set_max_offset(max_offset);
+        TuiAction::ScrollPageUp => {
+            if state.focus == TuiFocus::Transcript {
+                let amount = state.transcript_scroll.page_size.max(1);
+                state.transcript_scroll.scroll_up(amount);
+            }
+            Vec::new()
+        }
+        TuiAction::ScrollPageDown => {
+            if state.focus == TuiFocus::Transcript {
+                let amount = state.transcript_scroll.page_size.max(1);
+                state.transcript_scroll.scroll_down(amount);
+            }
+            Vec::new()
+        }
+        TuiAction::SetTranscriptViewport {
+            max_offset,
+            page_size,
+        } => {
+            state.transcript_scroll.set_viewport(max_offset, page_size);
             Vec::new()
         }
         TuiAction::Resize { width, height } => {
@@ -137,6 +177,23 @@ mod tests {
     }
 
     #[test]
+    fn composer_input_is_bounded_without_splitting_utf8() {
+        let mut state = TuiState {
+            composer: "x".repeat(crate::interfaces::tui::state::MAX_COMPOSER_BYTES - 1),
+            ..TuiState::default()
+        };
+
+        reduce(&mut state, TuiAction::InsertChar('x'));
+        reduce(&mut state, TuiAction::InsertChar('界'));
+
+        assert_eq!(
+            state.composer.len(),
+            crate::interfaces::tui::state::MAX_COMPOSER_BYTES
+        );
+        assert!(state.composer.is_char_boundary(state.composer.len()));
+    }
+
+    #[test]
     fn composer_rejects_blank_or_busy_submissions() {
         let mut state = TuiState {
             composer: "   \t".to_string(),
@@ -158,7 +215,10 @@ mod tests {
         let mut state = TuiState::default();
         reduce(
             &mut state,
-            TuiAction::SetTranscriptScrollMax { max_offset: 10 },
+            TuiAction::SetTranscriptViewport {
+                max_offset: 10,
+                page_size: 4,
+            },
         );
 
         reduce(&mut state, TuiAction::ScrollUp(3));
@@ -184,7 +244,10 @@ mod tests {
         };
         reduce(
             &mut state,
-            TuiAction::SetTranscriptScrollMax { max_offset: 5 },
+            TuiAction::SetTranscriptViewport {
+                max_offset: 5,
+                page_size: 4,
+            },
         );
 
         reduce(&mut state, TuiAction::ScrollUp(u16::MAX));
@@ -197,7 +260,10 @@ mod tests {
         reduce(&mut state, TuiAction::ScrollUp(5));
         reduce(
             &mut state,
-            TuiAction::SetTranscriptScrollMax { max_offset: 2 },
+            TuiAction::SetTranscriptViewport {
+                max_offset: 2,
+                page_size: 2,
+            },
         );
         assert_eq!(state.transcript_scroll.offset, 2);
         assert_eq!(state.transcript_scroll.max_offset, 2);
@@ -221,6 +287,48 @@ mod tests {
         );
         assert_eq!(state.run_lifecycle, RunLifecycle::Cancelling);
         assert!(reduce(&mut state, TuiAction::Terminal(TerminalAction::CancelRun)).is_empty());
+    }
+
+    #[test]
+    fn active_exit_requires_confirmation_and_cancels_before_exiting() {
+        let mut state = TuiState {
+            run_lifecycle: RunLifecycle::Running,
+            ..TuiState::default()
+        };
+
+        assert!(reduce(&mut state, TuiAction::Terminal(TerminalAction::Exit)).is_empty());
+        assert!(state.quit_confirmation);
+        assert!(!state.should_quit);
+
+        assert_eq!(
+            reduce(&mut state, TuiAction::Terminal(TerminalAction::Exit)),
+            vec![
+                TuiEffect::Dispatch(TerminalAction::CancelRun),
+                TuiEffect::ExitAfterRun,
+            ]
+        );
+        assert_eq!(state.run_lifecycle, RunLifecycle::Cancelling);
+        assert!(!state.quit_confirmation);
+    }
+
+    #[test]
+    fn page_scrolling_uses_the_rendered_viewport_height() {
+        let mut state = TuiState {
+            focus: TuiFocus::Transcript,
+            ..TuiState::default()
+        };
+        reduce(
+            &mut state,
+            TuiAction::SetTranscriptViewport {
+                max_offset: 20,
+                page_size: 6,
+            },
+        );
+
+        reduce(&mut state, TuiAction::ScrollPageUp);
+        assert_eq!(state.transcript_scroll.offset, 6);
+        reduce(&mut state, TuiAction::ScrollPageDown);
+        assert_eq!(state.transcript_scroll.offset, 0);
     }
 
     #[test]

@@ -2,7 +2,9 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 
 use crate::interfaces::tui::state::TuiState;
-use crate::interfaces::tui::widgets::{activity, composer, minimal_line, status_line, transcript};
+use crate::interfaces::tui::widgets::{
+    activity, composer, minimal_line, status_line, transcript, transcript_viewport,
+};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct RenderLayout {
@@ -23,19 +25,30 @@ pub fn render(frame: &mut Frame<'_>, state: &TuiState) {
 
     if let Some(area) = layout.transcript {
         let bordered = area.width >= 24 && area.height >= 3;
-        frame.render_widget(transcript(&state.run, state.focus, bordered), area);
+        frame.render_widget(transcript(state, area, bordered), area);
     }
     if let Some(area) = layout.activity {
         let bordered = area.width >= 24 && area.height >= 3;
-        frame.render_widget(activity(&state.run, bordered), area);
+        frame.render_widget(activity(state, bordered), area);
     }
     if let Some(area) = layout.composer {
         let bordered = area.width >= 24 && area.height >= 3;
-        frame.render_widget(composer(state, bordered), area);
+        frame.render_widget(composer(state, area, bordered), area);
     }
     if let Some(area) = layout.status {
         frame.render_widget(status_line(state, area.width), area);
     }
+}
+
+pub fn sync_viewport(state: &mut TuiState, area: Rect) {
+    state.terminal_width = area.width;
+    state.terminal_height = area.height;
+    let layout = render_layout(area);
+    let (max_offset, page_size) = layout.transcript.map_or((0, 1), |transcript_area| {
+        let bordered = transcript_area.width >= 24 && transcript_area.height >= 3;
+        transcript_viewport(state, transcript_area, bordered)
+    });
+    state.transcript_scroll.set_viewport(max_offset, page_size);
 }
 
 fn render_layout(area: Rect) -> RenderLayout {
@@ -96,9 +109,10 @@ mod tests {
     use crate::core::types::{CallId, PlanStep, RunId, TaskPlan, TerminationReason};
     use crate::errors::ToolError;
     use crate::interfaces::terminal::view::{
-        PendingApprovalView, PendingInputView, RunCompletionView, ToolCallStatus, ToolCallView,
+        PendingApprovalView, PendingInputView, RunCompletionView, RunViewState, ToolCallStatus,
+        ToolCallView,
     };
-    use crate::interfaces::tui::state::TuiState;
+    use crate::interfaces::tui::state::{RunLifecycle, TuiFocus, TuiState};
 
     fn populated_state() -> TuiState {
         let completed_call = CallId::new();
@@ -179,6 +193,7 @@ mod tests {
             reason: TerminationReason::Final,
             output: Some("Renderer ready".to_string()),
         });
+        state.run_lifecycle = RunLifecycle::Completed;
         state
     }
 
@@ -244,6 +259,7 @@ mod tests {
         };
         state.run.run_id = Some(RunId::new());
         state.run.assistant_text = "overflow ".repeat(500);
+        state.run_lifecycle = RunLifecycle::Running;
         let buffer = draw(60, 20, &state);
         let layout = super::render_layout(Rect::new(0, 0, 60, 20));
         let transcript = layout.transcript.unwrap();
@@ -254,8 +270,7 @@ mod tests {
         assert!(!rect_text(&buffer, 60, layout.composer.unwrap()).contains("overflow"));
         assert!(!row_text(&buffer, 60, layout.status.unwrap().y).contains("overflow"));
         assert!(rect_text(&buffer, 60, layout.composer.unwrap()).contains("Composer [focused]"));
-        assert!(rect_text(&buffer, 60, layout.composer.unwrap()).contains("draft"));
-        assert!(!buffer_text(&buffer).contains("COMPOSER_TAIL"));
+        assert!(rect_text(&buffer, 60, layout.composer.unwrap()).contains("COMPOSER_TAIL"));
         assert!(row_text(&buffer, 60, 19).contains("run:running"));
     }
 
@@ -288,5 +303,115 @@ mod tests {
 
         let tiny = draw(1, 1, &state);
         assert_eq!(tiny.content().len(), 1);
+    }
+
+    #[test]
+    fn transcript_follows_the_wrapped_tail_and_can_scroll_back_to_the_head() {
+        let mut state = TuiState {
+            focus: TuiFocus::Transcript,
+            run_lifecycle: RunLifecycle::Running,
+            ..TuiState::default()
+        };
+        state.run.run_id = Some(RunId::new());
+        state.run.assistant_text = format!(
+            "HEAD_MARKER\n{}\nTAIL_MARKER",
+            (0..40)
+                .map(|index| format!("wrapped line {index}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        super::sync_viewport(&mut state, Rect::new(0, 0, 40, 12));
+
+        assert!(state.transcript_scroll.max_offset > 0);
+        let bottom = buffer_text(&draw(40, 12, &state));
+        assert!(bottom.contains("TAIL_MARKER"));
+        assert!(!bottom.contains("HEAD_MARKER"));
+
+        state
+            .transcript_scroll
+            .scroll_up(state.transcript_scroll.max_offset);
+        let top = buffer_text(&draw(40, 12, &state));
+        assert!(top.contains("HEAD_MARKER"));
+        assert!(!top.contains("TAIL_MARKER"));
+    }
+
+    #[test]
+    fn transcript_renders_archived_runs_and_deduplicates_final_output() {
+        let archived = RunViewState {
+            run_id: Some(RunId::new()),
+            user_message: Some("FIRST_PROMPT".to_string()),
+            assistant_text: "FIRST_ANSWER".to_string(),
+            completed: Some(RunCompletionView {
+                reason: TerminationReason::Final,
+                output: Some("FIRST_ANSWER".to_string()),
+            }),
+            ..RunViewState::default()
+        };
+        let mut state = TuiState {
+            run_history: vec![archived],
+            run_lifecycle: RunLifecycle::Completed,
+            ..TuiState::default()
+        };
+        state.run.run_id = Some(RunId::new());
+        state.run.user_message = Some("SECOND_PROMPT".to_string());
+        state.run.assistant_text = "UNIQUE_FINAL".to_string();
+        state.run.completed = Some(RunCompletionView {
+            reason: TerminationReason::Final,
+            output: Some("UNIQUE_FINAL".to_string()),
+        });
+
+        let rendered = buffer_text(&draw(100, 30, &state));
+        assert!(rendered.contains("FIRST_PROMPT"));
+        assert!(rendered.contains("FIRST_ANSWER"));
+        assert!(rendered.contains("SECOND_PROMPT"));
+        assert_eq!(rendered.matches("UNIQUE_FINAL").count(), 1);
+    }
+
+    #[test]
+    fn lifecycle_drives_pre_start_cancelling_and_limited_statuses() {
+        let mut state = TuiState {
+            run_lifecycle: RunLifecycle::Running,
+            ..TuiState::default()
+        };
+        assert!(row_text(&draw(40, 12, &state), 40, 11).contains("run:running"));
+
+        state.run_lifecycle = RunLifecycle::Cancelling;
+        assert!(row_text(&draw(40, 12, &state), 40, 11).contains("run:cancelling"));
+
+        state.run_lifecycle = RunLifecycle::Completed;
+        state.run.completed = Some(RunCompletionView {
+            reason: TerminationReason::StepLimit,
+            output: None,
+        });
+        assert!(row_text(&draw(40, 12, &state), 40, 11).contains("run:step limit"));
+    }
+
+    #[test]
+    fn active_tool_is_not_hidden_by_plan_or_model_status() {
+        let mut state = populated_state();
+        state.run_lifecycle = RunLifecycle::Running;
+        state.run.completed = None;
+        state.run.pending_approvals.clear();
+        state.run.pending_inputs.clear();
+        state.run.model_status = Some(("thinking".to_string(), "stale".to_string()));
+        state.run.current_step = Some((
+            1,
+            PlanStep {
+                id: "draw".to_string(),
+                title: "Draw widgets".to_string(),
+                done: false,
+            },
+        ));
+        let tool = state.run.tool_calls.last_mut().unwrap();
+        tool.status = ToolCallStatus::Started;
+
+        let buffer = draw(80, 20, &state);
+        let activity = super::render_layout(Rect::new(0, 0, 80, 20))
+            .activity
+            .unwrap();
+        let rendered = rect_text(&buffer, 80, activity);
+        assert!(rendered.contains("Tool"));
+        assert!(rendered.contains("fs_write"));
+        assert!(!rendered.contains("stale"));
     }
 }

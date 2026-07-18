@@ -9,7 +9,9 @@ pub enum TuiAction {
     FocusNext,
     ScrollUp(u16),
     ScrollDown(u16),
-    SetTranscriptScrollMax { max_offset: u16 },
+    ScrollPageUp,
+    ScrollPageDown,
+    SetTranscriptViewport { max_offset: u16, page_size: u16 },
     Resize { width: u16, height: u16 },
     Tick,
 }

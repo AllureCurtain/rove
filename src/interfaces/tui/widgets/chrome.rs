@@ -1,15 +1,16 @@
+use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
 use crate::core::types::TerminationReason;
-use crate::interfaces::terminal::view::{RunViewState, ToolCallStatus};
-use crate::interfaces::tui::state::{TuiFocus, TuiState};
+use crate::interfaces::terminal::view::ToolCallStatus;
+use crate::interfaces::tui::state::{RunLifecycle, TuiFocus, TuiState};
 
 use super::termination_label;
 
-pub(crate) fn activity(run: &RunViewState, bordered: bool) -> Paragraph<'static> {
-    let (label, detail, style) = activity_content(run);
+pub(crate) fn activity(state: &TuiState, bordered: bool) -> Paragraph<'static> {
+    let (label, detail, style) = activity_content(state);
     let line = Line::from(vec![
         Span::styled(format!("{label}  "), style.add_modifier(Modifier::BOLD)),
         Span::styled(detail, Style::default().fg(Color::White)),
@@ -28,7 +29,7 @@ pub(crate) fn activity(run: &RunViewState, bordered: bool) -> Paragraph<'static>
     }
 }
 
-pub(crate) fn composer(state: &TuiState, bordered: bool) -> Paragraph<'static> {
+pub(crate) fn composer(state: &TuiState, area: Rect, bordered: bool) -> Paragraph<'static> {
     let focused = state.focus == TuiFocus::Composer;
     let accent = if focused {
         Style::default()
@@ -47,8 +48,27 @@ pub(crate) fn composer(state: &TuiState, bordered: bool) -> Paragraph<'static> {
     } else {
         Span::raw(state.composer.clone())
     };
-    let paragraph = Paragraph::new(Line::from(vec![Span::styled("> ", accent), content]))
+    let caret = if focused {
+        Span::styled(
+            " ",
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::REVERSED),
+        )
+    } else {
+        Span::raw("")
+    };
+    let paragraph = Paragraph::new(Line::from(vec![Span::styled("> ", accent), content, caret]))
         .wrap(Wrap { trim: false });
+    let border_space = u16::from(bordered) * 2;
+    let inner_width = area.width.saturating_sub(border_space);
+    let inner_height = area.height.saturating_sub(border_space);
+    let scroll = paragraph
+        .line_count(inner_width)
+        .saturating_sub(usize::from(inner_height));
+    let scroll = u16::try_from(scroll).unwrap_or(u16::MAX);
+    let paragraph = paragraph.scroll((scroll, 0));
 
     if bordered {
         let title = if focused {
@@ -94,13 +114,25 @@ pub(crate) fn minimal_line(state: &TuiState) -> Paragraph<'static> {
     Paragraph::new(format!("> {draft} | {run_status}")).style(Style::default().fg(Color::Cyan))
 }
 
-fn activity_content(run: &RunViewState) -> (&'static str, String, Style) {
-    if let Some(completed) = &run.completed {
+fn activity_content(state: &TuiState) -> (&'static str, String, Style) {
+    let run = &state.run;
+    if state.run_lifecycle == RunLifecycle::Cancelling {
+        return (
+            "Run",
+            "cancellation requested".to_string(),
+            Style::default().fg(Color::Yellow),
+        );
+    }
+    if state.run_lifecycle == RunLifecycle::Completed
+        && let Some(completed) = &run.completed
+    {
         let style = match completed.reason {
-            TerminationReason::Error | TerminationReason::Cancelled => {
-                Style::default().fg(Color::Red)
-            }
-            _ => Style::default().fg(Color::Green),
+            TerminationReason::Error => Style::default().fg(Color::Red),
+            TerminationReason::Final => Style::default().fg(Color::Green),
+            TerminationReason::Cancelled
+            | TerminationReason::StepLimit
+            | TerminationReason::TokenLimit
+            | TerminationReason::TimeLimit => Style::default().fg(Color::Yellow),
         };
         return (
             "Done",
@@ -120,6 +152,18 @@ fn activity_content(run: &RunViewState) -> (&'static str, String, Style) {
             "Input",
             input.prompt.clone(),
             Style::default().fg(Color::Yellow),
+        );
+    }
+    if let Some(tool) = run.tool_calls.iter().rev().find(|tool| {
+        matches!(
+            tool.status,
+            ToolCallStatus::Started | ToolCallStatus::WaitingApproval
+        )
+    }) {
+        return (
+            "Tool",
+            format!("{} - {}", tool.name, tool_status(tool.status)),
+            tool_style(tool.status),
         );
     }
     if let Some((status, message)) = &run.model_status {
@@ -149,10 +193,14 @@ fn activity_content(run: &RunViewState) -> (&'static str, String, Style) {
             tool_style(tool.status),
         );
     }
-    if run.run_id.is_some() {
+    if state.run_lifecycle == RunLifecycle::Running {
         return (
             "Run",
-            "waiting for events".to_string(),
+            if run.run_id.is_some() {
+                "waiting for events".to_string()
+            } else {
+                "starting".to_string()
+            },
             Style::default().fg(Color::Cyan),
         );
     }
@@ -164,23 +212,35 @@ fn activity_content(run: &RunViewState) -> (&'static str, String, Style) {
 }
 
 fn run_status(state: &TuiState) -> (&'static str, Style) {
-    if let Some(completed) = &state.run.completed {
-        return match completed.reason {
-            TerminationReason::Error => ("error", Style::default().fg(Color::Red)),
-            TerminationReason::Cancelled => ("cancelled", Style::default().fg(Color::Yellow)),
-            _ => ("done", Style::default().fg(Color::Green)),
-        };
+    if state.quit_confirmation {
+        return ("confirm exit", Style::default().fg(Color::Yellow));
     }
-    if !state.run.pending_approvals.is_empty() {
-        return ("approval", Style::default().fg(Color::Yellow));
+    match state.run_lifecycle {
+        RunLifecycle::Idle => ("idle", Style::default().fg(Color::DarkGray)),
+        RunLifecycle::Cancelling => ("cancelling", Style::default().fg(Color::Yellow)),
+        RunLifecycle::Running if !state.run.pending_approvals.is_empty() => {
+            ("approval", Style::default().fg(Color::Yellow))
+        }
+        RunLifecycle::Running if !state.run.pending_inputs.is_empty() => {
+            ("input", Style::default().fg(Color::Yellow))
+        }
+        RunLifecycle::Running => ("running", Style::default().fg(Color::Cyan)),
+        RunLifecycle::Completed => match state.run.completed.as_ref().map(|view| &view.reason) {
+            Some(TerminationReason::Final) => ("done", Style::default().fg(Color::Green)),
+            Some(TerminationReason::Error) => ("error", Style::default().fg(Color::Red)),
+            Some(TerminationReason::Cancelled) => ("cancelled", Style::default().fg(Color::Yellow)),
+            Some(TerminationReason::StepLimit) => {
+                ("step limit", Style::default().fg(Color::Yellow))
+            }
+            Some(TerminationReason::TokenLimit) => {
+                ("token limit", Style::default().fg(Color::Yellow))
+            }
+            Some(TerminationReason::TimeLimit) => {
+                ("time limit", Style::default().fg(Color::Yellow))
+            }
+            None => ("completed", Style::default().fg(Color::Yellow)),
+        },
     }
-    if !state.run.pending_inputs.is_empty() {
-        return ("input", Style::default().fg(Color::Yellow));
-    }
-    if state.run.run_id.is_some() {
-        return ("running", Style::default().fg(Color::Cyan));
-    }
-    ("idle", Style::default().fg(Color::DarkGray))
 }
 
 fn tool_status(status: ToolCallStatus) -> &'static str {
@@ -189,6 +249,7 @@ fn tool_status(status: ToolCallStatus) -> &'static str {
         ToolCallStatus::WaitingApproval => "approval required",
         ToolCallStatus::Completed => "done",
         ToolCallStatus::Failed => "failed",
+        ToolCallStatus::Interrupted => "interrupted",
     }
 }
 
@@ -198,5 +259,6 @@ fn tool_style(status: ToolCallStatus) -> Style {
         ToolCallStatus::WaitingApproval => Style::default().fg(Color::Yellow),
         ToolCallStatus::Completed => Style::default().fg(Color::Green),
         ToolCallStatus::Failed => Style::default().fg(Color::Red),
+        ToolCallStatus::Interrupted => Style::default().fg(Color::Yellow),
     }
 }

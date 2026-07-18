@@ -1,9 +1,10 @@
 # rove 对 Grok Build 的借鉴与 TUI 方向 - 2026-07-16
 
-> Status: **Proposed / Not Implemented**
+> Status: **Partially Implemented / First vertical slice landed 2026-07-18**
 >
 > 本文记录对 Grok Build 的参考分析，并为可选的全屏 `rove tui`
-> 定义简要方向。它不是当前运行时说明，也不是逐文件实现计划。
+> 定义目标方向。首个纵向切片已经实现；本文仍不是完整当前运行时说明，
+> 未实现的 approval/input modal、session picker 和 PTY hardening 仍属于后续工作。
 > 当前事实仍以 [`docs/runtime/`](../runtime/README.md) 为准。
 
 ## 1. 决策摘要
@@ -14,7 +15,7 @@
 | 运行时 | 复用 `CliRuntime`、`Engine`、`StreamEvent`、状态 artifacts、approval 与 input providers，不创建 TUI 私有 agent loop。 |
 | UI 架构 | 使用 reducer 风格的 `State -> Action -> Effect` 边界；运行时事件继续通过现有 `RunViewState` 投影。 |
 | 终端技术栈 | 第一版使用上游 `ratatui` 与 `crossterm`、alternate screen 和统一的终端清理 guard。 |
-| 第一版范围 | 键盘优先、单会话，包含 transcript、plan/tool 活动、composer、状态、approval/input、cancel 和 resume。 |
+| 第一版目标 | 键盘优先、单会话，目标包含 transcript、plan/tool 活动、composer、状态、approval/input、cancel 和 resume；当前已落地基础 transcript、plan/tool、composer、状态、cancel 和启动时 `--resume`。 |
 | 兼容性 | 默认 REPL、`rove exec`、API、Web、事件名、report、trace 和 resume 行为保持兼容。 |
 | 参考边界 | 学习 Grok Build 的模式，不整体移植其 pager、shell、permission 或 MCP 子系统。 |
 
@@ -22,8 +23,8 @@
 
 rove 已有最重要的 renderer-neutral 基础：
 
-- 当前交互面是 rich、line-oriented REPL，而不是全屏 TUI，事实见
-  [implementation guide](../runtime/implementation-guide.md#4-cli-startup-path)；
+- 当前交互面仍保留 rich、line-oriented REPL；全屏 TUI 的当前行为见
+  [implementation guide](../runtime/implementation-guide.md#full-screen-tui)；
 - [`RunViewState`](../../src/interfaces/terminal/view.rs) 将 canonical
   `StreamEvent` 投影为终端状态；
 - [`TerminalAction`](../../src/interfaces/terminal/action.rs) 已包含 prompt、
@@ -31,8 +32,9 @@ rove 已有最重要的 renderer-neutral 基础：
 - CLI、API 与 Web 复用相同的 engine 和 durable state model；
 - Web workbench 继续作为更丰富的浏览器界面。
 
-当前缺少的是终端应用层：键盘事件、焦点、布局、渲染、modal 交互、
-terminal lifecycle 和 PTY 级验证。本文是现有
+首个切片已补齐键盘事件、焦点、布局、渲染、terminal lifecycle、共享异步
+run driver 和 artifact finalization。当前仍缺少 modal 交互、session picker
+和 PTY 级验证。本文是现有
 [TUI-ready terminal plan](../plans/2026-06-09-tui-ready-terminal-architecture.md#follow-up-plan-after-this-one)
 所预留的后续方向。
 
@@ -140,7 +142,11 @@ ToolApprovalProvider / UserInputProvider
 effect completion、cancellation 和低频 animation tick。异步 Effect 不得在
 `await` 期间持有可变 UI state。
 
-### 5.4 初始交互
+### 5.4 目标交互（部分实现）
+
+以下列表描述完整目标，不代表首个纵向切片已经全部支持。当前已实现
+prompt、cancel、focus、transcript scroll 和确认退出；approval/input modal
+与 session modal 仍未实现。
 
 - `Enter`：idle 时提交 prompt；
 - `Ctrl+C`：取消 active run，idle 时清空 draft；
@@ -190,7 +196,12 @@ TUI 必须保持：
 
 每个切片都必须保持默认 REPL 和 `rove exec` 测试通过。
 
-## 8. 验收条件
+## 8. 完整目标验收条件（部分未实现）
+
+以下条件用于判断完整 TUI MVP，而不是首个纵向切片的当前验收声明。
+当前已满足 shared engine/artifacts、基础 cancel/exit、resize/narrow render
+和默认测试门禁；approval/input、session picker、PTY 及 Windows/Unix
+交互验证仍待后续切片完成。
 
 - `rove tui --model fake` 不依赖 provider credential 即可启动；
 - prompt 进入 shared engine，流式显示并写出原有 trace/task/report artifacts；

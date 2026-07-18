@@ -2,6 +2,7 @@
 
 Status: MVP reached for the local-first single-user runtime.
 Date: 2026-05-30
+Last interface update: 2026-07-18 (first full-screen TUI vertical slice).
 
 ## Definition
 
@@ -11,7 +12,8 @@ This MVP is not a SaaS product, browser automation runtime, desktop automation r
 
 ## Included
 
-- CLI one-shot runs and line-oriented REPL.
+- CLI one-shot runs, line-oriented REPL, and the optional first full-screen TUI
+  vertical slice (`rove tui --model fake`).
 - HTTP API job lifecycle with SSE, cancel, approval, input, resume, and persisted replay.
 - Standalone Web workbench for submitting jobs, streaming events, approving tools, answering input requests, cancelling runs, resuming latest state, and viewing historical run reports.
 - Core engine with planned and unplanned loops sharing model turns, tool turns, context checkpoints, and history writeback.

@@ -4,7 +4,7 @@ mod chrome;
 mod transcript;
 
 pub(crate) use chrome::{activity, composer, minimal_line, status_line};
-pub(crate) use transcript::transcript;
+pub(crate) use transcript::{transcript, transcript_viewport};
 
 use crate::core::types::TerminationReason;
 
