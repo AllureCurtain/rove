@@ -6,6 +6,105 @@ use crate::core::types::{
 };
 use crate::errors::ToolError;
 
+/// Maximum number of renderer-neutral entries retained for one run.
+///
+/// The terminal projection is intentionally an in-memory view, not another
+/// persistence stream. Older entries are evicted from the front once this
+/// bound is reached; canonical events and run artifacts remain unchanged.
+pub const MAX_RUN_TIMELINE_ENTRIES: usize = 512;
+
+/// Maximum length of free-form text copied into the visible timeline.
+pub const MAX_RUN_TIMELINE_TEXT_CHARS: usize = 512;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunTimelineEntry {
+    /// Monotonic delivery sequence within this `RunViewState`.
+    ///
+    /// A sequence is consumed for every canonical update, including an
+    /// idempotent update that does not add a second visible entry. This keeps
+    /// ordering metadata honest while allowing the visible ledger to dedupe
+    /// repeated lifecycle notifications.
+    pub sequence: u64,
+    pub run_id: Option<RunId>,
+    pub job_id: Option<JobId>,
+    pub kind: RunTimelineEntryKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RunTimelineEntryKind {
+    User {
+        message: String,
+    },
+    Assistant {
+        text: String,
+        /// `false` is a streamed visible delta; `true` is the provider's
+        /// completed normalized assistant message.
+        final_message: bool,
+    },
+    /// The engine guarantees that `ModelStatus` is a safe progress note, not
+    /// hidden model reasoning. Text is still bounded and conservatively
+    /// redacted before it enters the projection.
+    ModelStatus {
+        status: String,
+        message: String,
+    },
+    Plan {
+        goal: String,
+        step_count: usize,
+    },
+    PlanStep {
+        index: usize,
+        step_id: String,
+        title: String,
+        status: RunTimelinePlanStepStatus,
+        reason: Option<String>,
+    },
+    Tool {
+        call_id: CallId,
+        name: String,
+        status: RunTimelineToolStatus,
+        /// Error codes are stable, non-secret summaries. Raw error text is
+        /// deliberately not copied into the timeline.
+        error_code: Option<String>,
+    },
+    Approval {
+        call_id: CallId,
+        tool_name: String,
+        reason: String,
+    },
+    Input {
+        input_id: CallId,
+        prompt: String,
+    },
+    Compaction {
+        mode: crate::core::types::PromptCompactionMode,
+        source_message_count: usize,
+        degraded: bool,
+        summary_available: bool,
+    },
+    Memory {
+        note_count: usize,
+    },
+    Completion {
+        reason: TerminationReason,
+        output: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunTimelinePlanStepStatus {
+    Started,
+    Completed,
+    Failed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunTimelineToolStatus {
+    Started,
+    Completed,
+    Failed,
+}
+
 #[derive(Debug, Clone)]
 pub enum RunViewUpdate {
     RunStarted {
@@ -135,6 +234,14 @@ pub struct RunViewState {
     pub pending_approvals: Vec<PendingApprovalView>,
     pub pending_inputs: Vec<PendingInputView>,
     pub completed: Option<RunCompletionView>,
+    /// Bounded, renderer-neutral visible history for this run.
+    pub timeline: Vec<RunTimelineEntry>,
+    /// Highest canonical update delivery sequence observed by this state.
+    ///
+    /// This includes duplicate, internal-only, and post-completion updates.
+    /// A different `RunStarted` identity resets the per-run sequence to zero
+    /// before recording that run's user entry.
+    pub timeline_high_watermark: u64,
 }
 
 impl RunViewState {
@@ -144,7 +251,31 @@ impl RunViewState {
         update
     }
 
+    /// Returns the bounded visible ledger in canonical delivery order.
+    ///
+    /// The slice is renderer-facing state only. It is not persisted and does
+    /// not replace `trace.jsonl`, task state, or reports as runtime facts.
+    pub fn timeline_entries(&self) -> &[RunTimelineEntry] {
+        &self.timeline
+    }
+
+    /// Iterates over the retained visible entries without exposing mutable
+    /// projection state to a renderer.
+    pub fn timeline_iter(&self) -> impl Iterator<Item = &RunTimelineEntry> {
+        self.timeline.iter()
+    }
+
     pub fn apply_update(&mut self, update: RunViewUpdate) {
+        if let RunViewUpdate::RunStarted { run_id, job_id, .. } = &update {
+            if self.run_id.is_some_and(|current| current != *run_id) {
+                self.timeline.clear();
+                self.timeline_high_watermark = 0;
+            }
+            self.run_id = Some(*run_id);
+            self.job_id = Some(*job_id);
+        }
+        self.record_timeline_update(&update);
+
         match update {
             RunViewUpdate::RunStarted {
                 run_id,
@@ -310,6 +441,291 @@ impl RunViewState {
             }
         }
     }
+
+    fn record_timeline_update(&mut self, update: &RunViewUpdate) {
+        self.timeline_high_watermark = self.timeline_high_watermark.saturating_add(1);
+        let sequence = self.timeline_high_watermark;
+
+        if self
+            .timeline
+            .iter()
+            .any(|entry| matches!(entry.kind, RunTimelineEntryKind::Completion { .. }))
+        {
+            return;
+        }
+
+        let kind = match update {
+            RunViewUpdate::RunStarted { user_message, .. } => Some(RunTimelineEntryKind::User {
+                message: bounded_visible_text(user_message),
+            }),
+            RunViewUpdate::AssistantDelta { delta } => {
+                visible_assistant_text(delta).map(|text| RunTimelineEntryKind::Assistant {
+                    text,
+                    final_message: false,
+                })
+            }
+            RunViewUpdate::ModelStatus { status, message } => {
+                Some(RunTimelineEntryKind::ModelStatus {
+                    status: bounded_visible_text(status),
+                    message: bounded_visible_text(message),
+                })
+            }
+            RunViewUpdate::LlmMessage { full, .. } => {
+                visible_assistant_text(full).map(|text| RunTimelineEntryKind::Assistant {
+                    text,
+                    final_message: true,
+                })
+            }
+            RunViewUpdate::ToolCallStarted { call_id, name, .. } => {
+                Some(RunTimelineEntryKind::Tool {
+                    call_id: *call_id,
+                    name: bounded_visible_text(name),
+                    status: RunTimelineToolStatus::Started,
+                    error_code: None,
+                })
+            }
+            RunViewUpdate::ToolCallApprovalNeeded {
+                call_id,
+                name,
+                reason,
+                ..
+            } => Some(RunTimelineEntryKind::Approval {
+                call_id: *call_id,
+                tool_name: bounded_visible_text(name),
+                reason: bounded_visible_text(reason),
+            }),
+            RunViewUpdate::ToolCallCompleted { call_id, .. } => Some(RunTimelineEntryKind::Tool {
+                call_id: *call_id,
+                name: self.timeline_tool_name(*call_id),
+                status: RunTimelineToolStatus::Completed,
+                error_code: None,
+            }),
+            RunViewUpdate::ToolCallFailed { call_id, error } => Some(RunTimelineEntryKind::Tool {
+                call_id: *call_id,
+                name: self.timeline_tool_name(*call_id),
+                status: RunTimelineToolStatus::Failed,
+                error_code: Some(error.error_code().to_string()),
+            }),
+            RunViewUpdate::InputNeeded { input_id, prompt } => Some(RunTimelineEntryKind::Input {
+                input_id: *input_id,
+                prompt: bounded_visible_text(prompt),
+            }),
+            RunViewUpdate::PlanCreated { plan } => Some(RunTimelineEntryKind::Plan {
+                goal: bounded_visible_text(&plan.goal),
+                step_count: plan.steps.len(),
+            }),
+            RunViewUpdate::PlanStepStarted { step, index } => Some(timeline_plan_step(
+                *index,
+                step,
+                RunTimelinePlanStepStatus::Started,
+                None,
+            )),
+            RunViewUpdate::PlanStepCompleted { step, index } => Some(timeline_plan_step(
+                *index,
+                step,
+                RunTimelinePlanStepStatus::Completed,
+                None,
+            )),
+            RunViewUpdate::PlanStepFailed {
+                step,
+                index,
+                reason,
+            } => Some(timeline_plan_step(
+                *index,
+                step,
+                RunTimelinePlanStepStatus::Failed,
+                Some(bounded_visible_text(reason)),
+            )),
+            RunViewUpdate::PromptCompacted { summary, state } => {
+                Some(RunTimelineEntryKind::Compaction {
+                    mode: state.mode.clone(),
+                    source_message_count: state.source_message_count,
+                    degraded: state.degraded,
+                    summary_available: summary.is_some(),
+                })
+            }
+            RunViewUpdate::MemoryFlushed { note_count } => Some(RunTimelineEntryKind::Memory {
+                note_count: *note_count,
+            }),
+            // Prompt construction metadata is internal runtime telemetry, not
+            // visible transcript content.
+            RunViewUpdate::PromptBuilt { .. } => None,
+            RunViewUpdate::RunCompleted { reason, output } => {
+                Some(RunTimelineEntryKind::Completion {
+                    reason: reason.clone(),
+                    output: output.as_deref().and_then(visible_assistant_text),
+                })
+            }
+        };
+
+        if let Some(kind) = kind {
+            self.push_timeline_entry(sequence, kind);
+        }
+    }
+
+    fn timeline_tool_name(&self, call_id: CallId) -> String {
+        self.tool_calls
+            .iter()
+            .rev()
+            .find(|tool| tool.call_id == call_id)
+            .map(|tool| bounded_visible_text(&tool.name))
+            .unwrap_or_else(|| "unknown tool".to_string())
+    }
+
+    fn push_timeline_entry(&mut self, sequence: u64, kind: RunTimelineEntryKind) {
+        if timeline_kind_is_idempotent(&kind)
+            && self.timeline.iter().any(|entry| {
+                entry.run_id == self.run_id && entry.job_id == self.job_id && entry.kind == kind
+            })
+        {
+            return;
+        }
+
+        self.timeline.push(RunTimelineEntry {
+            sequence,
+            run_id: self.run_id,
+            job_id: self.job_id,
+            kind,
+        });
+        let excess = self.timeline.len().saturating_sub(MAX_RUN_TIMELINE_ENTRIES);
+        if excess > 0 {
+            self.timeline.drain(..excess);
+        }
+    }
+}
+
+fn timeline_plan_step(
+    index: usize,
+    step: &PlanStep,
+    status: RunTimelinePlanStepStatus,
+    reason: Option<String>,
+) -> RunTimelineEntryKind {
+    RunTimelineEntryKind::PlanStep {
+        index,
+        step_id: bounded_visible_text(&step.id),
+        title: bounded_visible_text(&step.title),
+        status,
+        reason,
+    }
+}
+
+fn timeline_kind_is_idempotent(kind: &RunTimelineEntryKind) -> bool {
+    // Status notes, memory flushes, and streamed deltas have no stable event
+    // identity and therefore remain append-only even when their payloads
+    // repeat. The remaining variants carry a run/call/step/terminal identity
+    // and can safely coalesce replayed notifications.
+    matches!(
+        kind,
+        RunTimelineEntryKind::User { .. }
+            | RunTimelineEntryKind::Assistant {
+                final_message: true,
+                ..
+            }
+            | RunTimelineEntryKind::Plan { .. }
+            | RunTimelineEntryKind::PlanStep { .. }
+            | RunTimelineEntryKind::Tool { .. }
+            | RunTimelineEntryKind::Approval { .. }
+            | RunTimelineEntryKind::Input { .. }
+            | RunTimelineEntryKind::Compaction { .. }
+            | RunTimelineEntryKind::Completion { .. }
+    )
+}
+
+fn visible_assistant_text(value: &str) -> Option<String> {
+    let visible = strip_hidden_reasoning_blocks(value);
+    let visible = visible.trim();
+    (!visible.is_empty()).then(|| bounded_visible_text(visible))
+}
+
+fn strip_hidden_reasoning_blocks(value: &str) -> String {
+    let mut visible = value.to_string();
+    for (open, close) in [
+        ("<think>", "</think>"),
+        ("<analysis>", "</analysis>"),
+        ("<reasoning>", "</reasoning>"),
+    ] {
+        loop {
+            let lower = visible.to_ascii_lowercase();
+            let Some(start) = lower.find(open) else {
+                break;
+            };
+            let content_start = start + open.len();
+            let end = lower[content_start..]
+                .find(close)
+                .map(|relative| content_start + relative + close.len())
+                .unwrap_or(visible.len());
+            visible.replace_range(start..end, "");
+        }
+    }
+
+    visible
+        .lines()
+        .filter(|line| {
+            let lower = line.trim_start().to_ascii_lowercase();
+            !["thought:", "reasoning:", "analysis:", "chain-of-thought:"]
+                .iter()
+                .any(|marker| lower.starts_with(marker))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn bounded_visible_text(value: &str) -> String {
+    if contains_secret_signal(value) {
+        return "[redacted]".to_string();
+    }
+
+    let mut chars = value.chars();
+    let mut visible: String = chars.by_ref().take(MAX_RUN_TIMELINE_TEXT_CHARS).collect();
+    if chars.next().is_some() {
+        let keep = MAX_RUN_TIMELINE_TEXT_CHARS.saturating_sub(3);
+        visible = visible.chars().take(keep).collect();
+        visible.push_str("...");
+    }
+    visible
+}
+
+fn contains_secret_signal(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    [
+        "api_key=",
+        "api_key:",
+        "api-key=",
+        "api-key:",
+        "apikey=",
+        "access_token=",
+        "refresh_token=",
+        "token=",
+        "password=",
+        "password:",
+        "passwd=",
+        "secret=",
+        "secret:",
+        "api_key\"",
+        "api-key\"",
+        "apikey\"",
+        "access_token\"",
+        "refresh_token\"",
+        "token\"",
+        "password\"",
+        "passwd\"",
+        "secret\"",
+        "authorization:",
+        "bearer ",
+        "-----begin private key-----",
+        "-----begin rsa private key-----",
+    ]
+    .iter()
+    .any(|signal| lower.contains(signal))
+        || lower
+            .split(|character: char| {
+                character.is_whitespace() || matches!(character, '"' | '\'' | ',' | ';')
+            })
+            .any(|token| {
+                (token.starts_with("sk-") && token.len() > 8)
+                    || (token.starts_with("ghp_") && token.len() > 8)
+                    || (token.starts_with("xoxb-") && token.len() > 8)
+            })
 }
 
 fn upsert_tool_status(
@@ -439,7 +855,10 @@ mod tests {
         TerminationReason, ToolResult, Usage,
     };
     use crate::errors::ToolError;
-    use crate::interfaces::terminal::view::RunViewUpdate;
+    use crate::interfaces::terminal::view::{
+        MAX_RUN_TIMELINE_ENTRIES, MAX_RUN_TIMELINE_TEXT_CHARS, RunTimelineEntryKind,
+        RunTimelinePlanStepStatus, RunTimelineToolStatus, RunViewUpdate,
+    };
 
     fn usage() -> Usage {
         Usage {
@@ -702,6 +1121,22 @@ mod tests {
 
         assert_eq!(state.pending_approvals.len(), 1);
         assert_eq!(state.pending_inputs.len(), 1);
+        assert_eq!(
+            state
+                .timeline
+                .iter()
+                .filter(|entry| matches!(entry.kind, RunTimelineEntryKind::Approval { .. }))
+                .count(),
+            1
+        );
+        assert_eq!(
+            state
+                .timeline
+                .iter()
+                .filter(|entry| matches!(entry.kind, RunTimelineEntryKind::Input { .. }))
+                .count(),
+            1
+        );
 
         state.apply_update(RunViewUpdate::ToolCallFailed {
             call_id,
@@ -732,5 +1167,442 @@ mod tests {
 
         assert_eq!(state.assistant_text, "answer");
         assert!(state.model_status.is_none());
+    }
+
+    #[test]
+    fn visible_timeline_follows_canonical_update_order_with_typed_entries() {
+        let run_id = RunId::new();
+        let job_id = JobId::new();
+        let call_id = CallId::new();
+        let input_id = CallId::new();
+        let mut state = super::RunViewState::default();
+        let plan = TaskPlan {
+            goal: "ship timeline".to_string(),
+            steps: vec![step()],
+            current_step: 0,
+        };
+
+        state.apply_update(RunViewUpdate::RunStarted {
+            run_id,
+            job_id,
+            user_message: "inspect the run".to_string(),
+        });
+        state.apply_update(RunViewUpdate::AssistantDelta {
+            delta: "working".to_string(),
+        });
+        state.apply_update(RunViewUpdate::ModelStatus {
+            status: "planning".to_string(),
+            message: "Building a safe plan".to_string(),
+        });
+        state.apply_update(RunViewUpdate::LlmMessage {
+            full: "working".to_string(),
+            usage: usage(),
+            tool_call_count: 1,
+        });
+        state.apply_update(RunViewUpdate::PlanCreated { plan });
+        state.apply_update(RunViewUpdate::PlanStepStarted {
+            step: step(),
+            index: 0,
+        });
+        state.apply_update(RunViewUpdate::ToolCallStarted {
+            call_id,
+            name: "fs_write".to_string(),
+            args: serde_json::json!({"path":"out.txt"}),
+        });
+        state.apply_update(RunViewUpdate::ToolCallApprovalNeeded {
+            call_id,
+            name: "fs_write".to_string(),
+            args: serde_json::json!({"path":"out.txt"}),
+            reason: "writes a file".to_string(),
+        });
+        state.apply_update(RunViewUpdate::InputNeeded {
+            input_id,
+            prompt: "Which branch?".to_string(),
+        });
+        state.apply_update(RunViewUpdate::ToolCallCompleted {
+            call_id,
+            result: ToolResult {
+                call_id,
+                output: "done".to_string(),
+                mutations: Vec::new(),
+                metadata: Default::default(),
+            },
+        });
+        state.apply_update(RunViewUpdate::PromptCompacted {
+            summary: Some("summary".to_string()),
+            state: PromptCompactionState {
+                source_message_count: 7,
+                ..PromptCompactionState::default()
+            },
+        });
+        state.apply_update(RunViewUpdate::MemoryFlushed { note_count: 2 });
+        state.apply_update(RunViewUpdate::PromptBuilt {
+            metadata: PromptBuildMetadata::default(),
+        });
+        state.apply_update(RunViewUpdate::RunCompleted {
+            reason: TerminationReason::Final,
+            output: Some("done".to_string()),
+        });
+
+        assert_eq!(state.timeline.len(), 13);
+        assert_eq!(state.timeline_entries().len(), 13);
+        assert_eq!(state.timeline_iter().count(), 13);
+        assert_eq!(state.timeline_high_watermark, 14);
+        assert_eq!(
+            state
+                .timeline
+                .iter()
+                .map(|entry| entry.sequence)
+                .collect::<Vec<_>>(),
+            (1..=12).chain([14]).collect::<Vec<_>>()
+        );
+        assert!(
+            state
+                .timeline
+                .iter()
+                .all(|entry| entry.run_id == Some(run_id) && entry.job_id == Some(job_id))
+        );
+        assert!(matches!(
+            state.timeline[0].kind,
+            RunTimelineEntryKind::User { ref message } if message == "inspect the run"
+        ));
+        assert!(matches!(
+            state.timeline[1].kind,
+            RunTimelineEntryKind::Assistant {
+                final_message: false,
+                ..
+            }
+        ));
+        assert!(matches!(
+            state.timeline[2].kind,
+            RunTimelineEntryKind::ModelStatus { .. }
+        ));
+        assert!(matches!(
+            state.timeline[3].kind,
+            RunTimelineEntryKind::Assistant {
+                final_message: true,
+                ..
+            }
+        ));
+        assert!(matches!(
+            state.timeline[4].kind,
+            RunTimelineEntryKind::Plan { step_count: 1, .. }
+        ));
+        assert!(matches!(
+            state.timeline[5].kind,
+            RunTimelineEntryKind::PlanStep {
+                status: RunTimelinePlanStepStatus::Started,
+                ..
+            }
+        ));
+        assert!(matches!(
+            state.timeline[6].kind,
+            RunTimelineEntryKind::Tool {
+                call_id: id,
+                status: RunTimelineToolStatus::Started,
+                ..
+            } if id == call_id
+        ));
+        assert!(matches!(
+            state.timeline[7].kind,
+            RunTimelineEntryKind::Approval { call_id: id, .. } if id == call_id
+        ));
+        assert!(matches!(
+            state.timeline[8].kind,
+            RunTimelineEntryKind::Input { input_id: id, .. } if id == input_id
+        ));
+        assert!(matches!(
+            state.timeline[9].kind,
+            RunTimelineEntryKind::Tool {
+                call_id: id,
+                status: RunTimelineToolStatus::Completed,
+                ..
+            } if id == call_id
+        ));
+        assert!(matches!(
+            state.timeline[10].kind,
+            RunTimelineEntryKind::Compaction {
+                source_message_count: 7,
+                summary_available: true,
+                ..
+            }
+        ));
+        assert!(matches!(
+            state.timeline[11].kind,
+            RunTimelineEntryKind::Memory { note_count: 2 }
+        ));
+        assert!(matches!(
+            state.timeline[12].kind,
+            RunTimelineEntryKind::Completion {
+                reason: TerminationReason::Final,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn timeline_dedupes_idempotent_updates_without_hiding_streamed_deltas() {
+        let run_id = RunId::new();
+        let job_id = JobId::new();
+        let mut state = super::RunViewState::default();
+        let started = RunViewUpdate::RunStarted {
+            run_id,
+            job_id,
+            user_message: "hello".to_string(),
+        };
+        let status = RunViewUpdate::ModelStatus {
+            status: "working".to_string(),
+            message: "Still working".to_string(),
+        };
+        let final_message = RunViewUpdate::LlmMessage {
+            full: "same answer".to_string(),
+            usage: usage(),
+            tool_call_count: 0,
+        };
+        let memory = RunViewUpdate::MemoryFlushed { note_count: 1 };
+
+        for update in [started.clone(), started, status.clone(), status] {
+            state.apply_update(update);
+        }
+        state.apply_update(RunViewUpdate::AssistantDelta {
+            delta: "same".to_string(),
+        });
+        state.apply_update(RunViewUpdate::AssistantDelta {
+            delta: "same".to_string(),
+        });
+        for update in [final_message.clone(), final_message, memory.clone(), memory] {
+            state.apply_update(update);
+        }
+
+        assert_eq!(state.timeline_high_watermark, 10);
+        assert_eq!(state.timeline.len(), 8);
+        assert_eq!(
+            state
+                .timeline
+                .iter()
+                .map(|entry| entry.sequence)
+                .collect::<Vec<_>>(),
+            vec![1, 3, 4, 5, 6, 7, 9, 10]
+        );
+        assert_eq!(
+            state
+                .timeline
+                .iter()
+                .filter(|entry| matches!(entry.kind, RunTimelineEntryKind::Assistant { .. }))
+                .count(),
+            3
+        );
+        assert_eq!(
+            state
+                .timeline
+                .iter()
+                .filter(|entry| matches!(entry.kind, RunTimelineEntryKind::ModelStatus { .. }))
+                .count(),
+            2
+        );
+        assert_eq!(
+            state
+                .timeline
+                .iter()
+                .filter(|entry| matches!(entry.kind, RunTimelineEntryKind::Memory { .. }))
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn timeline_bounds_entries_and_text_without_splitting_unicode() {
+        let run_id = RunId::new();
+        let job_id = JobId::new();
+        let mut state = super::RunViewState::default();
+        state.apply_update(RunViewUpdate::RunStarted {
+            run_id,
+            job_id,
+            user_message: "hello".to_string(),
+        });
+
+        for index in 0..(MAX_RUN_TIMELINE_ENTRIES + 20) {
+            state.apply_update(RunViewUpdate::AssistantDelta {
+                delta: format!("chunk-{index}"),
+            });
+        }
+
+        assert_eq!(state.timeline.len(), MAX_RUN_TIMELINE_ENTRIES);
+        assert_eq!(
+            state.timeline.last().unwrap().sequence,
+            state.timeline_high_watermark
+        );
+        assert_eq!(state.timeline.first().unwrap().sequence, 22);
+
+        let mut text_state = super::RunViewState::default();
+        text_state.apply_update(RunViewUpdate::AssistantDelta {
+            delta: "界".repeat(MAX_RUN_TIMELINE_TEXT_CHARS + 20),
+        });
+        let RunTimelineEntryKind::Assistant { text, .. } =
+            &text_state.timeline.first().unwrap().kind
+        else {
+            panic!("expected assistant entry");
+        };
+        assert_eq!(text.chars().count(), MAX_RUN_TIMELINE_TEXT_CHARS);
+        assert!(text.ends_with("..."));
+    }
+
+    #[test]
+    fn a_new_run_gets_a_new_ledger_while_cloned_history_stays_stable() {
+        let first_run = RunId::new();
+        let first_job = JobId::new();
+        let second_run = RunId::new();
+        let second_job = JobId::new();
+        let mut state = super::RunViewState::default();
+        state.apply_update(RunViewUpdate::RunStarted {
+            run_id: first_run,
+            job_id: first_job,
+            user_message: "first".to_string(),
+        });
+        state.apply_update(RunViewUpdate::AssistantDelta {
+            delta: "first answer".to_string(),
+        });
+        let archived = state.clone();
+
+        state.apply_update(RunViewUpdate::RunStarted {
+            run_id: second_run,
+            job_id: second_job,
+            user_message: "second".to_string(),
+        });
+
+        assert_eq!(archived.timeline.len(), 2);
+        assert!(
+            archived
+                .timeline
+                .iter()
+                .all(|entry| entry.run_id == Some(first_run))
+        );
+        assert_eq!(state.timeline_high_watermark, 1);
+        assert_eq!(state.timeline.len(), 1);
+        assert_eq!(state.timeline[0].sequence, 1);
+        assert_eq!(state.timeline[0].run_id, Some(second_run));
+        assert_eq!(state.timeline[0].job_id, Some(second_job));
+    }
+
+    #[test]
+    fn cancellation_closes_the_visible_ledger_and_preserves_completion_order() {
+        let run_id = RunId::new();
+        let job_id = JobId::new();
+        let call_id = CallId::new();
+        let mut state = super::RunViewState::default();
+        state.apply_update(RunViewUpdate::RunStarted {
+            run_id,
+            job_id,
+            user_message: "cancel me".to_string(),
+        });
+        state.apply_update(RunViewUpdate::ToolCallApprovalNeeded {
+            call_id,
+            name: "fs_write".to_string(),
+            args: serde_json::json!({"path":"out.txt"}),
+            reason: "writes a file".to_string(),
+        });
+        state.apply_update(RunViewUpdate::InputNeeded {
+            input_id: call_id,
+            prompt: "Continue?".to_string(),
+        });
+        state.apply_update(RunViewUpdate::RunCompleted {
+            reason: TerminationReason::Cancelled,
+            output: None,
+        });
+        let visible_len = state.timeline.len();
+        state.apply_update(RunViewUpdate::AssistantDelta {
+            delta: "late output".to_string(),
+        });
+
+        assert!(state.pending_approvals.is_empty());
+        assert!(state.pending_inputs.is_empty());
+        assert_eq!(state.timeline.len(), visible_len);
+        assert_eq!(state.timeline_high_watermark, 5);
+        assert!(matches!(
+            state.timeline.last().unwrap().kind,
+            RunTimelineEntryKind::Completion {
+                reason: TerminationReason::Cancelled,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn timeline_omits_raw_reasoning_tool_payloads_memory_notes_and_secrets() {
+        let run_id = RunId::new();
+        let job_id = JobId::new();
+        let call_id = CallId::new();
+        let mut state = super::RunViewState::default();
+        let compaction = PromptCompactionState {
+            model: Some("CANARY_COMPACTION_MODEL".to_string()),
+            prompt_version: Some("CANARY_PROMPT_VERSION".to_string()),
+            last_error: Some("CANARY_COMPACTION_ERROR".to_string()),
+            ..PromptCompactionState::default()
+        };
+
+        let events = [
+            StreamEvent::RunStarted {
+                run_id,
+                job_id,
+                user_message: "token=CANARY_USER_SECRET".to_string(),
+            },
+            StreamEvent::LlmChunk {
+                delta: "<think>CANARY_HIDDEN_REASONING</think>visible answer".to_string(),
+            },
+            StreamEvent::ToolCallStarted {
+                call_id,
+                tool_use_id: None,
+                name: "fs_read".to_string(),
+                args: serde_json::json!({"api_key":"CANARY_TOOL_ARG"}),
+            },
+            StreamEvent::ToolCallApprovalNeeded {
+                call_id,
+                name: "fs_read".to_string(),
+                args: serde_json::json!({"password":"CANARY_APPROVAL_ARG"}),
+                reason: "secret:CANARY_APPROVAL_REASON".to_string(),
+            },
+            StreamEvent::ToolCallFailed {
+                call_id,
+                error: ToolError::ExecutionFailed {
+                    reason: "CANARY_TOOL_ERROR".to_string(),
+                },
+                metadata: Default::default(),
+            },
+            StreamEvent::PromptCompacted {
+                summary: Some("CANARY_COMPACTION_SUMMARY".to_string()),
+                state: compaction,
+            },
+            StreamEvent::MemoryFlushed {
+                notes: vec!["CANARY_MEMORY_NOTE".to_string()],
+            },
+            StreamEvent::RunCompleted {
+                reason: TerminationReason::Final,
+                output: Some("password=CANARY_COMPLETION_SECRET".to_string()),
+            },
+        ];
+        for event in &events {
+            state.apply_event(event);
+        }
+
+        let projected = format!("{:?}", state.timeline);
+        for canary in [
+            "CANARY_USER_SECRET",
+            "CANARY_HIDDEN_REASONING",
+            "CANARY_TOOL_ARG",
+            "CANARY_APPROVAL_ARG",
+            "CANARY_APPROVAL_REASON",
+            "CANARY_TOOL_ERROR",
+            "CANARY_COMPACTION_MODEL",
+            "CANARY_PROMPT_VERSION",
+            "CANARY_COMPACTION_ERROR",
+            "CANARY_COMPACTION_SUMMARY",
+            "CANARY_MEMORY_NOTE",
+            "CANARY_COMPLETION_SECRET",
+        ] {
+            assert!(!projected.contains(canary), "timeline leaked {canary}");
+        }
+        assert!(projected.contains("visible answer"));
+        assert!(projected.contains("execution_failed"));
+        assert!(projected.contains("[redacted]"));
     }
 }
