@@ -540,7 +540,13 @@ mod tests {
 
     #[test]
     fn interaction_key_mode_matches_terminal_event_support() {
-        let mut cases = vec![
+        #[cfg(windows)]
+        let cases = [
+            (
+                KeyboardEventTypeSupport::Native,
+                InteractionKeyMode::ConfirmWithFunctionKey,
+                false,
+            ),
             (
                 KeyboardEventTypeSupport::Enhancement,
                 InteractionKeyMode::Direct,
@@ -552,15 +558,19 @@ mod tests {
                 false,
             ),
         ];
-        #[cfg(windows)]
-        cases.insert(
-            0,
+        #[cfg(not(windows))]
+        let cases = [
             (
-                KeyboardEventTypeSupport::Native,
-                InteractionKeyMode::ConfirmWithFunctionKey,
+                KeyboardEventTypeSupport::Enhancement,
+                InteractionKeyMode::Direct,
+                true,
+            ),
+            (
+                KeyboardEventTypeSupport::Unavailable,
+                InteractionKeyMode::Unavailable,
                 false,
             ),
-        );
+        ];
         for (support, mode, uses_enhancement) in cases {
             let operations = Arc::new(Mutex::new(Vec::new()));
             let lifecycle = TerminalLifecycle::enter(FakeTerminalControl {
