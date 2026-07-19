@@ -2,7 +2,7 @@
 
 > Status: **Current Maintainer Guide**
 >
-> Last reviewed: 2026-07-15. This guide explains the repository as it exists
+> Last reviewed: 2026-07-19. This guide explains the repository as it exists
 > today. For exact subsystem contracts and implementation status, follow
 > [`docs/runtime/`](runtime/README.md). Documents marked
 > `Proposed / Not Implemented` describe future work.
@@ -580,14 +580,18 @@ All four are proposed until code/tests/current docs say otherwise.
 
 - [Grok Build reference and TUI direction](design/2026-07-16-grok-build-reference-and-tui-design.md)
 
-This design is partially implemented: `rove tui` preserves the existing REPL
-and `rove exec` contracts and now supports bounded, fail-closed approval/input
-modals. Non-Windows terminals with keyboard-event enhancement use direct
-`Y`/`Enter` actions; Windows uses `Y` followed by non-text `F8` for approval and
-`F8` for input submission. Other terminals keep the basic TUI but reject
-approval and input requests without opening a modal. Session navigation,
-strict timeline reconstruction, and PTY hardening remain proposed follow-up
-work.
+This design is implemented at the bounded single-session TUI MVP: `rove tui`
+preserves the existing REPL and `rove exec` contracts and supports bounded,
+fail-closed approval/input modals, session navigation/resume selection, bounded
+tool detail, keymap-derived help, a canonical-order visible timeline, and
+terminal setup/restore hardening. Non-Windows terminals with keyboard-event
+enhancement use direct `Y`/`Enter` actions; Windows uses `Y` followed by
+non-text `F8` for approval and `F8` for input submission. Other terminals keep
+the basic TUI but reject approval and input requests without opening a modal.
+The opt-in PTY smoke is implemented for Unix standard-library PTYs. Windows
+returns an explicit exit-code-77 skip because native ConPTY automation is not
+included; that skip is not interoperability evidence. Multi-session tabs,
+background task management, and mouse interaction remain future scope.
 
 ### Historical design
 

@@ -2,7 +2,7 @@
 
 Status: MVP reached for the local-first single-user runtime.
 Date: 2026-05-30
-Last interface update: 2026-07-18 (capability-gated full-screen TUI approval/input interaction slice).
+Last interface update: 2026-07-19 (bounded full-screen TUI navigation, timeline, and terminal hardening).
 
 ## Definition
 
@@ -13,10 +13,13 @@ This MVP is not a SaaS product, browser automation runtime, desktop automation r
 ## Included
 
 - CLI one-shot runs, line-oriented REPL, and the optional full-screen TUI with
-  bounded approval/input interaction (`rove tui --model fake`). Non-Windows
-  terminals with keyboard enhancement use direct `Y`/`Enter` actions; Windows uses the
+  bounded approval/input interaction, session navigation/resume selection,
+  tool-detail/help overlays, chronological visible timeline, resize handling,
+  and terminal restoration (`rove tui --model fake`). Non-Windows terminals
+  with keyboard enhancement use direct `Y`/`Enter` actions; Windows uses the
   non-text `F8` confirmation/submission path. Unsupported terminals retain the
-  basic TUI and fail closed for live interaction.
+  basic TUI and fail closed for live interaction. Unix PTY smoke is opt-in;
+  Windows ConPTY automation is not included and reports a typed skip.
 - HTTP API job lifecycle with SSE, cancel, approval, input, resume, and persisted replay.
 - Standalone Web workbench for submitting jobs, streaming events, approving tools, answering input requests, cancelling runs, resuming latest state, and viewing historical run reports.
 - Core engine with planned and unplanned loops sharing model turns, tool turns, context checkpoints, and history writeback.
@@ -82,3 +85,12 @@ Optional RAG verification remains separate:
 cargo check --features rag --bin rove-index
 cargo test --features rag
 ```
+
+Optional Unix TUI PTY verification also remains separate from the default gate:
+
+```powershell
+python scripts/tui-pty-smoke.py --run
+```
+
+On Windows this command exits `77` with `status: "skipped"`; no native ConPTY
+automation result is currently available.

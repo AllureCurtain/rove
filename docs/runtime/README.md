@@ -13,7 +13,7 @@ New maintainers should start with [`docs/ONBOARDING.md`](../ONBOARDING.md), then
 | [react-loop.md](react-loop.md) | Plan outside, ReAct inside runtime loop explanation and pico relationship. |
 | [subsystems.md](subsystems.md) | Config, state/job, context, provider, memory, tool, API/security, RAG, web, and CI subsystem notes. |
 | [implementation-status.md](implementation-status.md) | Current implementation vs target architecture matrix. |
-| [implementation-guide.md](implementation-guide.md) | Maintainer-focused implementation guide with startup paths, the current capability-gated `rove tui` interaction slice, runtime flow, state artifacts, verification, and known gaps. |
+| [implementation-guide.md](implementation-guide.md) | Maintainer-focused implementation guide with startup paths, the bounded `rove tui` navigation/timeline/interaction contract, terminal verification boundaries, runtime flow, state artifacts, and known gaps. |
 | [acceptance-matrix.md](acceptance-matrix.md) | M0-M6 acceptance criteria mapped to concrete verification commands. |
 | [integration-testing.md](integration-testing.md) | End-to-end integration profiles, required local-full baseline, optional provider/MCP/RAG gates, and runner design. |
 | [full-integration-runbook.md](full-integration-runbook.md) | New-session runbook for full API/Web/provider/MCP/stress integration testing across official APIs, relay/gateway APIs, and local providers. |

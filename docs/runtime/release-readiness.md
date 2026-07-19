@@ -8,7 +8,7 @@ local-first single-user MVP.
 
 Included:
 
-- CLI one-shot and REPL runs.
+- CLI one-shot and REPL runs, plus the optional bounded full-screen TUI.
 - Local HTTP API with jobs, SSE, approvals, inputs, cancel, resume, and history.
 - Standalone Web workbench backed by the local API.
 - Local state under `.rove/`.
@@ -56,6 +56,18 @@ Acceptance:
 - no generated runtime state, logs, screenshots, SQLite files, or secrets appear
   in `git status --short`;
 - any `web-ui/next-env.d.ts` churn from Next.js is inspected before commit.
+
+For release claims that include real-terminal TUI behavior, run the opt-in Unix
+PTY smoke separately:
+
+```powershell
+python scripts/tui-pty-smoke.py --run
+```
+
+It checks a fake-model frame, resize/redraw, clean exit, termios, and restore
+sequences on Unix PTYs. Windows exits `77` with a typed skip because native
+ConPTY automation is not included. A Windows skip must be reported as an
+unverified platform gate, not converted to a pass.
 
 ## Local-Full Integration
 

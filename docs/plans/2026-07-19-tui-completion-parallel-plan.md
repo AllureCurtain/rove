@@ -1,8 +1,11 @@
 # TUI Completion Parallel Plan - 2026-07-19
 
-> Status: **Active / implementation lanes prepared**
+> Status: **Implementation lanes integrated / final verification and main merge pending**
 >
 > Baseline: `7d82df9` (`feat(tui): complete capability-gated interaction`)
+>
+> Integration branch: `feat/tui-completion`; lane commits are integrated and the
+> coordinator records the final verification result before the `main` merge.
 >
 > This plan completes the TUI state-navigation and hardening work that was
 > intentionally outside M2. The shared runtime, canonical `StreamEvent`
@@ -18,7 +21,8 @@ Bring the full-screen TUI to the next complete MVP boundary:
   reasoning;
 - preserve a strict, renderer-neutral event timeline for the transcript;
 - harden terminal setup/restore and add opt-in real-terminal/PTY verification;
-- keep all behavior bounded, deterministic, secret-free, and fail-closed.
+- keep all behavior bounded, deterministic, and fail-closed; treat display
+  sanitization as defense in depth rather than a proof of secret absence.
 
 Mouse interaction and visual polish are welcome only when they fit the existing
 typed action/reducer boundary. They must not introduce a second runtime loop or
@@ -32,9 +36,12 @@ Worktree: `.worktrees/tui-navigation`
 
 Branch: `feat/tui-navigation`
 
+Status: integrated as `2686fb9` from worker commit `0e0f67a`.
+
 Owns the cloneable TUI interaction surface:
 
-- session picker/resume selection backed by `StateStore::list_task_states` and
+- session picker/resume selection backed by the bounded
+  `StateStore::list_resumable_task_states_limited` query and
   `resolve_resume_state`-compatible identities;
 - tool-detail overlay for a selected completed/failed tool call;
 - a complete in-app key/help view that reflects the actual keymap;
@@ -53,8 +60,8 @@ Acceptance:
   handles empty, stale, malformed, and cancelled selections without panics;
 - selecting a run sets the next prompt's resume state and never replays a
   completed side effect;
-- tool detail is bounded to the viewport and cannot leak raw hidden reasoning or
-  secrets;
+- tool detail contains only bounded, sanitized display projections; it does not
+  intentionally copy raw hidden reasoning or unbounded provider payloads;
 - help text is generated from the actual supported actions;
 - focused tests cover wrong IDs, busy/active runs, narrow terminals, and exit.
 
@@ -63,6 +70,8 @@ Acceptance:
 Worktree: `.worktrees/tui-timeline`
 
 Branch: `feat/tui-timeline`
+
+Status: integrated as `37dcb7b` from worker commit `93d1667`.
 
 Owns the renderer-independent terminal projection only:
 
@@ -75,7 +84,7 @@ Owns the renderer-independent terminal projection only:
 - preserve existing aggregate fields used by CLI/API/Web and keep replay/resume
   behavior compatible;
 - add focused unit tests for ordering, duplicate/idempotent updates, bounds,
-  multi-run history, cancellation, and secret-safe rendering data.
+  multi-run history, cancellation, and negative redaction canaries.
 
 Do not modify `src/interfaces/tui/app.rs`, TUI reducer/keymap, terminal setup, or
 API persistence. The coordinator will consume the timeline from the TUI
@@ -85,7 +94,9 @@ Acceptance:
 
 - timeline order follows canonical update delivery order, including events that
   arrive in the same model/tool turn;
-- no raw thinking/reasoning or secrets are copied into timeline entries;
+- no raw thinking/reasoning, tool payload, or memory note is intentionally
+  copied into timeline entries; representative secret-shaped canaries are
+  covered by negative tests;
 - old aggregate projections and all existing terminal/API tests remain green;
 - bounds are explicit and deterministic under long runs.
 
@@ -94,6 +105,8 @@ Acceptance:
 Worktree: `.worktrees/tui-hardening`
 
 Branch: `feat/tui-hardening`
+
+Status: integrated as `5303a16` from worker commit `0e4f679`.
 
 Owns terminal lifecycle and opt-in verification:
 
@@ -123,11 +136,31 @@ Worktree: `.worktrees/tui-release-verification`
 
 Branch: `feat/tui-release-verification`
 
+Status: verification lane prepared; release evidence remains separate from the
+implementation commits and may record explicit platform skips.
+
 This lane may run independently while the code lanes work. It owns only
 verification scripts/docs and evidence hygiene: Web checks, RAG feature checks,
 integration-test classification, and a release checklist for the completed TUI.
 It must not edit runtime code or claim real-service coverage when the gate was
 skipped.
+
+## Integrated Outcome
+
+The three implementation lanes are now represented on `feat/tui-completion`:
+
+- navigation/overlays: bounded session picker, resume revalidation, tool detail,
+  and keymap-derived help;
+- timeline: bounded renderer-neutral visible entries with canonical delivery
+  order, deduplication, and redaction;
+- hardening: terminal setup/restore recovery, capability matrix, and the
+  opt-in Unix PTY smoke harness.
+
+The coordinator still owns the final contract audit and full verification. In
+particular, the live transcript must consume the timeline projection, resume
+selection must exclude in-flight jobs, streamed hidden-reasoning filtering must
+hold across chunk boundaries, and the PTY resize assertion must prove a redraw.
+Those checks are required before declaring the integration branch merge-ready.
 
 ## Integration Rules
 
@@ -145,10 +178,18 @@ skipped.
 
 ## Definition Of Done
 
-- Lane A and B behavior is wired into the live TUI and covered by focused tests.
-- Lane C terminal/PTY gates pass locally or record an explicit, reproducible
-  skip reason for unavailable host capabilities.
-- `cargo fmt --all --check`, `cargo clippy --all-targets -- -D warnings`,
-  `cargo test`, and relevant Web/RAG checks pass.
-- Current runtime/design docs state exactly what is implemented and what remains
-  optional or deferred.
+- [x] Lane A and B behavior is integrated. The live transcript consumes the
+  bounded timeline; navigation overlays use typed actions/effects and focused
+  negative tests.
+- [x] Lane C terminal lifecycle hardening and an opt-in Unix PTY harness are
+  integrated. Windows records an explicit exit-code-77 skip because no native
+  ConPTY runner exists; this is not a pass result.
+- [ ] Final `cargo fmt --all --check`,
+  `cargo clippy --all-targets -- -D warnings`, `cargo test`, and relevant
+  Web/RAG checks must pass on the integration head before merge to `main`.
+- [x] Current runtime/design docs distinguish implemented behavior from optional
+  or deferred platform/product work.
+
+The unchecked final gate is intentionally retained until the coordinator runs
+the post-integration suite. This plan must not be used by itself as release or
+cross-platform interoperability evidence.

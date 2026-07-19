@@ -43,6 +43,19 @@ On an unsupported terminal the rest of the TUI continues to run, but approval
 is rejected and `request_input` returns an unavailable error without opening a
 modal.
 
+While idle, `Ctrl+R` opens the bounded resume picker; `Ctrl+T` opens completed
+or failed tool details; `F1` shows help generated from the active keymap. The
+transcript follows a bounded visible timeline in canonical event-delivery order
+while the existing trace, task state, report, and SQLite artifacts remain the
+durable run facts. The optional real-terminal smoke uses a Unix PTY:
+
+```bash
+python scripts/tui-pty-smoke.py --run
+```
+
+Windows reports an explicit exit-code-77 skip because the repository does not
+yet include native ConPTY automation; that skip is not a passing result.
+
 Start the same REPL with an initial prompt:
 
 ```bash
@@ -138,7 +151,7 @@ bearer token server-side and does not expose it to browser JavaScript.
 
 | Area | Path | Purpose |
 |---|---|---|
-| CLI / TUI | `src/main.rs`, `src/interfaces/tui/` | Rich terminal REPL, full-screen TUI with capability-gated approval/input modals, explicit `exec` runs, config dump, sessions, and RAG indexing command dispatch. |
+| CLI / TUI | `src/main.rs`, `src/interfaces/tui/` | Rich terminal REPL, full-screen TUI with capability-gated approval/input, bounded resume/tool/help overlays and visible timeline, explicit `exec` runs, config dump, sessions, and RAG indexing command dispatch. |
 | API | `src/bin/rove-api.rs`, `src/interfaces/api/` | HTTP job lifecycle, SSE event streaming, approvals, inputs, and cancellation. |
 | Benchmarks | `src/bin/rove-bench.rs`, `benchmarks/` | Deterministic no-network benchmark tasks with artifact-path reports. |
 | Web | `web-ui/` | Next.js workbench that consumes the API and SSE job stream. |

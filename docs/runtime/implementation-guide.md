@@ -304,20 +304,55 @@ confirmation, then cancels and waits before leaving the terminal.
 The TUI currently supports prompt editing (bounded to 32 KiB), focus switching,
 wrapped transcript scrolling with bottom anchoring, archived runs in the current
 session, plan/tool/activity rendering, resize and narrow-terminal layouts, and
-startup `--resume`. On direct-capability terminals it also supports
-destructive-tool approval and `request_input`: approval accepts `Y` only from a
-real key press and rejects on a real `N` or `Esc` press; Enter, repeat, release,
-and paste cannot authorize. On Windows, `Y` only stages approval and a fresh
-`F8` press confirms it; input is submitted with `F8` rather than Enter. Direct
-input accepts typed and bracketed-paste UTF-8 up to 32 KiB and submits the exact
-draft, including an empty or whitespace-only answer. Existing REPL and `rove
-exec` behavior is unchanged. Tracing is routed to a sink while the alternate
-screen is active so runtime logs cannot corrupt the display.
+startup `--resume`. `Ctrl+R` opens a bounded session picker (newest-first,
+non-running task states only); selecting a candidate performs a second identity
+and liveness check before loading resume state. Stale, malformed, wrong-ID, or
+busy candidates fail closed. Submitting the next prompt atomically claims the
+indexed terminal job for the expected run ID; a concurrent or stale claim is
+rejected before the engine starts and the draft remains available. `Ctrl+T`
+opens a bounded tool-detail overlay for
+completed or failed calls, and `F1` opens help generated from the actual keymap.
+Tool detail and session goals are display-sanitized and size-bounded; this is a
+defensive presentation filter, not a formal secret detector or a permission
+boundary.
 
-Session browsing/resume selection, mouse interaction, PTY smoke coverage,
-cross-platform real-terminal automation, and a strict event-timeline transcript
-remain follow-up work. The renderer shows the current projected state rather
-than exposing hidden model reasoning.
+The live transcript consumes `RunViewState::timeline_entries()`, a
+renderer-neutral in-memory ledger capped at 512 entries with bounded text.
+Entries retain canonical delivery order for visible user, assistant, model-status,
+plan, tool, approval/input, compaction, memory, and completion facts. Duplicate
+lifecycle notifications are deduplicated without changing the high-watermark;
+`trace.jsonl`, `task_state.json`, `report.json`, and SQLite remain the durable
+sources of truth. Hidden reasoning is filtered across streamed chunk boundaries,
+and raw tool payloads, memory notes, and provider error text are not copied into
+the visible timeline. An empty legacy `RunViewState` timeline falls back to a
+sanitized aggregate rendering path for compatibility; newly delivered live
+updates use the ordered timeline. The resulting filtering is conservative and
+heuristic; callers must continue to bound and sanitize every display field.
+
+On direct-capability terminals the TUI also supports destructive-tool approval
+and `request_input`: approval accepts `Y` only from a real key press and rejects
+on a real `N` or `Esc` press; Enter, repeat, release, and paste cannot authorize.
+On Windows, `Y` only stages approval and a fresh `F8` press confirms it; input is
+submitted with `F8` rather than Enter. Direct input accepts typed and
+bracketed-paste UTF-8 up to 32 KiB and submits the exact draft, including an
+empty or whitespace-only answer. Existing REPL and `rove exec` behavior is
+unchanged. Tracing is routed to a sink while the alternate screen is active so
+runtime logs cannot corrupt the display.
+
+An opt-in PTY smoke harness covers the Unix standard-library PTY path, including
+nonblank frames, bounded resize/redraw, clean exit, termios restoration, and
+alternate-screen/bracketed-paste/cursor restore sequences:
+
+```powershell
+python scripts/tui-pty-smoke.py --run
+```
+
+The harness emits a typed `skipped` result with exit code `77` on Windows because
+this repository does not yet include a native ConPTY runner. That skip is not
+cross-platform interoperability evidence. Mouse interaction, multi-session
+tabs, background tasks, and a native Windows real-terminal automation gate
+remain future scope. The renderer explicitly excludes known hidden-reasoning
+formats and keeps defense-in-depth sanitization at its display boundary.
 
 ### REPL Commands
 
@@ -348,15 +383,24 @@ Relevant code:
 - `src/interfaces/cli/sessions.rs`
 - `src/interfaces/cli/state.rs`
 - `src/interfaces/cli/index.rs`
+- `src/interfaces/tui/action.rs`
 - `src/interfaces/tui/app.rs`
+- `src/interfaces/tui/effect.rs`
+- `src/interfaces/tui/keymap.rs`
 - `src/interfaces/tui/providers.rs`
 - `src/interfaces/tui/state.rs`
 - `src/interfaces/tui/reducer.rs`
 - `src/interfaces/tui/render.rs`
+- `src/interfaces/tui/sanitize.rs`
 - `src/interfaces/tui/terminal.rs`
+- `src/interfaces/tui/widgets/*`
 - `src/interfaces/terminal/interaction.rs`
 - `src/interfaces/terminal/run.rs`
+- `src/interfaces/terminal/view.rs`
+- `src/state/index.rs`
 - `src/state/resume.rs`
+- `src/state/store.rs`
+- `scripts/tui-pty-smoke.py`
 
 ## 5. API Startup Path
 
@@ -1086,6 +1130,19 @@ cargo test --test mcp
 cargo test --features rag --test rag
 ```
 
+TUI terminal verification is split between deterministic renderer/terminal
+tests and an opt-in real Unix PTY gate:
+
+```powershell
+cargo test interfaces::tui --lib
+cargo test interfaces::terminal --lib
+python scripts/tui-pty-smoke.py --run
+```
+
+The PTY command is intentionally not part of the default Rust gate. On Windows
+it reports `status: "skipped"` and exit code `77` until a native ConPTY runner
+is added; do not convert that result into a pass claim.
+
 Deterministic local benchmark checks:
 
 ```powershell
@@ -1175,6 +1232,17 @@ These are implementation-level issues to keep in mind before extending the syste
 
 1. Agent tool-time RAG retrieval remains deterministic.
    Indexing and eval use configurable embedders and rerankers. The in-agent `retrieve_code` and `retrieve_docs` tools still construct deterministic retrieval directly; passing configured RAG provider services into runtime tool construction remains a follow-up.
+
+2. TUI real-terminal evidence is platform-scoped. The standard-library PTY
+   smoke covers Unix when explicitly enabled, while Windows ConPTY automation is
+   not implemented and therefore skips with a typed result. The deterministic
+   TestBackend and terminal lifecycle tests do not substitute for that missing
+   platform gate.
+
+3. TUI display sanitization is defense in depth. It bounds and redacts common
+   reasoning, token, and secret-shaped text, but it is a heuristic projection,
+   not a proof that arbitrary provider text contains no secrets. New display
+   fields must remain typed, bounded, and covered by negative tests.
 
 
 ## 24. Current Verification Baseline
