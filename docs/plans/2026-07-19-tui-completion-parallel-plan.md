@@ -184,12 +184,13 @@ Those checks are required before declaring the integration branch merge-ready.
 - [x] Lane C terminal lifecycle hardening and an opt-in Unix PTY harness are
   integrated. Windows records an explicit exit-code-77 skip because no native
   ConPTY runner exists; this is not a pass result.
-- [ ] Final `cargo fmt --all --check`,
+- [x] Final `cargo fmt --all --check`,
   `cargo clippy --all-targets -- -D warnings`, `cargo test`, and relevant
   Web/RAG checks must pass on the integration head before merge to `main`.
 - [x] Current runtime/design docs distinguish implemented behavior from optional
   or deferred platform/product work.
 
-The unchecked final gate is intentionally retained until the coordinator runs
-the post-integration suite. This plan must not be used by itself as release or
-cross-platform interoperability evidence.
+The coordinator completed the post-integration Rust, RAG, and Web gates before
+merge. The Windows PTY harness recorded its documented exit-code-77 skip, not a
+pass. This plan must not be used by itself as release or cross-platform
+interoperability evidence.
