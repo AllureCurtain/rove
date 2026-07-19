@@ -3,7 +3,8 @@ use ratatui::layout::Rect;
 
 use crate::interfaces::tui::state::TuiState;
 use crate::interfaces::tui::widgets::{
-    activity, composer, minimal_line, render_modal, status_line, transcript, transcript_viewport,
+    activity, composer, minimal_line, render_modal, render_overlay, status_line, transcript,
+    transcript_viewport,
 };
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -37,6 +38,10 @@ pub fn render(frame: &mut Frame<'_>, state: &TuiState) {
         if let Some(area) = layout.status {
             frame.render_widget(status_line(state, area.width), area);
         }
+    }
+
+    if let Some(overlay) = &state.overlay {
+        render_overlay(frame, overlay, frame_area);
     }
 
     if let Some(modal) = &state.modal {
@@ -116,14 +121,17 @@ mod tests {
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
 
-    use crate::core::types::{CallId, PlanStep, RunId, TaskPlan, TerminationReason};
+    use crate::core::types::{
+        CallId, JobId, PlanStep, RunId, SessionId, TaskPlan, TerminationReason,
+    };
     use crate::errors::ToolError;
     use crate::interfaces::terminal::view::{
         PendingApprovalView, PendingInputView, RunCompletionView, RunViewState, ToolCallStatus,
         ToolCallView,
     };
     use crate::interfaces::tui::state::{
-        InteractionKeyMode, InteractionModalView, RunLifecycle, TuiFocus, TuiState,
+        InteractionKeyMode, InteractionModalView, ResumeCandidate, RunLifecycle,
+        SessionPickerState, TuiFocus, TuiOverlay, TuiState,
     };
     use crate::interfaces::tui::widgets::modal_area;
 
@@ -636,5 +644,56 @@ mod tests {
         assert!(compact_input.contains("TAIL"));
         assert!(!compact_input.contains("HEAD"));
         assert!(compact_input.contains("Enter submit"));
+    }
+
+    #[test]
+    fn navigation_overlays_are_bounded_and_show_safe_help_or_empty_states() {
+        let candidate = ResumeCandidate {
+            session_id: SessionId::new(),
+            job_id: JobId::new(),
+            run_id: RunId::new(),
+            goal: "resume target".to_string(),
+            step: 3,
+        };
+        let picker = TuiState {
+            overlay: Some(TuiOverlay::SessionPicker(SessionPickerState::ready(vec![
+                candidate,
+            ]))),
+            ..TuiState::default()
+        };
+        let rendered = buffer_text(&draw(80, 20, &picker));
+        assert!(rendered.contains("Resume session"));
+        assert!(rendered.contains("resume target"));
+        assert!(rendered.contains("Enter resume"));
+
+        let empty_tools = TuiState {
+            overlay: Some(TuiOverlay::ToolDetail(
+                crate::interfaces::tui::state::ToolDetailState {
+                    entries: Vec::new(),
+                    selected: 0,
+                    scroll: 0,
+                },
+            )),
+            ..TuiState::default()
+        };
+        let rendered = buffer_text(&draw(40, 10, &empty_tools));
+        assert!(rendered.contains("No completed"));
+
+        let help = TuiState {
+            overlay: Some(TuiOverlay::Help(crate::interfaces::tui::state::HelpState {
+                scroll: 0,
+            })),
+            ..TuiState::default()
+        };
+        let rendered = buffer_text(&draw(100, 30, &help));
+        assert!(rendered.contains("Ctrl+R"));
+        assert!(rendered.contains("Open/resume session picker"));
+        assert!(rendered.contains("F8"));
+
+        for (width, height) in [(1, 1), (2, 2), (8, 3), (18, 4)] {
+            let _ = draw(width, height, &picker);
+            let _ = draw(width, height, &empty_tools);
+            let _ = draw(width, height, &help);
+        }
     }
 }

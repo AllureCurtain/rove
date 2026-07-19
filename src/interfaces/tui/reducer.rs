@@ -3,14 +3,20 @@ use crate::interfaces::terminal::action::TerminalAction;
 use crate::interfaces::tui::action::TuiAction;
 use crate::interfaces::tui::effect::TuiEffect;
 use crate::interfaces::tui::state::{
-    InteractionKeyMode, InteractionModalView, MAX_COMPOSER_BYTES, MAX_INTERACTION_INPUT_BYTES,
-    RunLifecycle, TuiFocus, TuiState,
+    HelpState, InteractionKeyMode, InteractionModalView, MAX_COMPOSER_BYTES,
+    MAX_INTERACTION_INPUT_BYTES, RunLifecycle, SessionPickerError, SessionPickerState, TuiFocus,
+    TuiOverlay, TuiState,
 };
 
 pub fn reduce(state: &mut TuiState, action: TuiAction) -> Vec<TuiEffect> {
     if !matches!(
         &action,
-        TuiAction::Terminal(TerminalAction::Exit) | TuiAction::Tick | TuiAction::Resize { .. }
+        TuiAction::Terminal(TerminalAction::Exit)
+            | TuiAction::Tick
+            | TuiAction::Resize { .. }
+            | TuiAction::SessionsLoaded { .. }
+            | TuiAction::SessionsLoadFailed { .. }
+            | TuiAction::ResumeSelectionFailed { .. }
     ) {
         state.quit_confirmation = false;
     }
@@ -18,6 +24,7 @@ pub fn reduce(state: &mut TuiState, action: TuiAction) -> Vec<TuiEffect> {
     match action {
         TuiAction::OpenInteraction(modal) => {
             if state.modal.is_none() {
+                state.overlay = None;
                 state.modal = Some(modal);
                 state.approval_confirmation = None;
             }
@@ -38,6 +45,84 @@ pub fn reduce(state: &mut TuiState, action: TuiAction) -> Vec<TuiEffect> {
         TuiAction::ApproveInteraction { call_id } => resolve_approval(state, call_id, true),
         TuiAction::RejectInteraction { call_id } => resolve_approval(state, call_id, false),
         TuiAction::SubmitInteraction { input_id } => resolve_input(state, input_id),
+        TuiAction::OpenSessionPicker => open_session_picker(state),
+        TuiAction::OpenToolDetail => open_tool_detail(state),
+        TuiAction::OpenHelp => open_help(state),
+        TuiAction::CloseOverlay => {
+            if state.modal.is_none() {
+                state.overlay = None;
+            }
+            Vec::new()
+        }
+        TuiAction::OverlayNext => move_overlay(state, 1),
+        TuiAction::OverlayPrevious => move_overlay(state, -1),
+        TuiAction::OverlayPageUp => page_overlay(state, false),
+        TuiAction::OverlayPageDown => page_overlay(state, true),
+        TuiAction::ConfirmOverlay => confirm_overlay(state),
+        TuiAction::SessionsLoaded { candidates } => {
+            if matches!(state.overlay, Some(TuiOverlay::SessionPicker(_))) {
+                state.overlay = Some(TuiOverlay::SessionPicker(SessionPickerState::ready(
+                    candidates,
+                )));
+            }
+            Vec::new()
+        }
+        TuiAction::SessionsLoadFailed { error } => {
+            if let Some(TuiOverlay::SessionPicker(SessionPickerState::Ready {
+                error: slot,
+                resolving,
+                ..
+            })) = state.overlay.as_mut()
+                && resolving.is_none()
+            {
+                *slot = Some(error);
+            } else if matches!(state.overlay, Some(TuiOverlay::SessionPicker(_))) {
+                state.overlay = Some(TuiOverlay::SessionPicker(SessionPickerState::Ready {
+                    candidates: Vec::new(),
+                    selected: 0,
+                    error: Some(error),
+                    resolving: None,
+                }));
+            }
+            Vec::new()
+        }
+        TuiAction::ResumeSelectionSucceeded { run_id } => {
+            if let Some(TuiOverlay::SessionPicker(SessionPickerState::Ready {
+                candidates,
+                selected,
+                resolving: Some(current),
+                ..
+            })) = state.overlay.as_ref()
+                && *current == run_id
+            {
+                state.active_resume = candidates.get(*selected).cloned();
+                state.overlay = None;
+            }
+            Vec::new()
+        }
+        TuiAction::ResumeSelectionFailed { run_id, error } => {
+            if let Some(TuiOverlay::SessionPicker(SessionPickerState::Ready {
+                candidates,
+                selected,
+                resolving,
+                error: slot,
+            })) = state.overlay.as_mut()
+                && *resolving == Some(run_id)
+            {
+                *resolving = None;
+                *slot = Some(error);
+                if matches!(
+                    error,
+                    SessionPickerError::Stale | SessionPickerError::Malformed
+                ) {
+                    if *selected < candidates.len() {
+                        candidates.remove(*selected);
+                    }
+                    *selected = (*selected).min(candidates.len().saturating_sub(1));
+                }
+            }
+            Vec::new()
+        }
         TuiAction::Terminal(TerminalAction::Exit) => {
             if state.run_lifecycle.is_active() {
                 if state.quit_confirmation {
@@ -56,12 +141,15 @@ pub fn reduce(state: &mut TuiState, action: TuiAction) -> Vec<TuiEffect> {
             } else {
                 state.modal = None;
                 state.approval_confirmation = None;
+                state.overlay = None;
                 state.should_quit = true;
                 vec![TuiEffect::Exit]
             }
         }
         TuiAction::Terminal(TerminalAction::CancelRun) => cancel_or_clear(state),
-        TuiAction::Terminal(TerminalAction::SubmitPrompt(message)) if state.modal.is_none() => {
+        TuiAction::Terminal(TerminalAction::SubmitPrompt(message))
+            if state.modal.is_none() && state.overlay.is_none() =>
+        {
             dispatch_prompt(state, message)
         }
         TuiAction::Terminal(TerminalAction::SubmitPrompt(_)) => Vec::new(),
@@ -77,6 +165,7 @@ pub fn reduce(state: &mut TuiState, action: TuiAction) -> Vec<TuiEffect> {
                     draft.push(ch);
                 }
             } else if state.modal.is_none()
+                && state.overlay.is_none()
                 && state.focus == TuiFocus::Composer
                 && state.composer.len().saturating_add(ch.len_utf8()) <= MAX_COMPOSER_BYTES
             {
@@ -87,13 +176,17 @@ pub fn reduce(state: &mut TuiState, action: TuiAction) -> Vec<TuiEffect> {
         TuiAction::Backspace => {
             if let Some(InteractionModalView::Input { draft, .. }) = state.modal.as_mut() {
                 draft.pop();
-            } else if state.modal.is_none() && state.focus == TuiFocus::Composer {
+            } else if state.modal.is_none()
+                && state.overlay.is_none()
+                && state.focus == TuiFocus::Composer
+            {
                 state.composer.pop();
             }
             Vec::new()
         }
         TuiAction::SubmitComposer => {
             if state.modal.is_some()
+                || state.overlay.is_some()
                 || state.focus != TuiFocus::Composer
                 || !state.run_lifecycle.accepts_prompt()
             {
@@ -108,7 +201,7 @@ pub fn reduce(state: &mut TuiState, action: TuiAction) -> Vec<TuiEffect> {
             }
         }
         TuiAction::FocusNext => {
-            if state.modal.is_some() {
+            if state.modal.is_some() || state.overlay.is_some() {
                 return Vec::new();
             }
             state.focus = match state.focus {
@@ -118,26 +211,38 @@ pub fn reduce(state: &mut TuiState, action: TuiAction) -> Vec<TuiEffect> {
             Vec::new()
         }
         TuiAction::ScrollUp(amount) => {
-            if state.modal.is_none() && state.focus == TuiFocus::Transcript {
+            if state.modal.is_none()
+                && state.overlay.is_none()
+                && state.focus == TuiFocus::Transcript
+            {
                 state.transcript_scroll.scroll_up(amount);
             }
             Vec::new()
         }
         TuiAction::ScrollDown(amount) => {
-            if state.modal.is_none() && state.focus == TuiFocus::Transcript {
+            if state.modal.is_none()
+                && state.overlay.is_none()
+                && state.focus == TuiFocus::Transcript
+            {
                 state.transcript_scroll.scroll_down(amount);
             }
             Vec::new()
         }
         TuiAction::ScrollPageUp => {
-            if state.modal.is_none() && state.focus == TuiFocus::Transcript {
+            if state.modal.is_none()
+                && state.overlay.is_none()
+                && state.focus == TuiFocus::Transcript
+            {
                 let amount = state.transcript_scroll.page_size.max(1);
                 state.transcript_scroll.scroll_up(amount);
             }
             Vec::new()
         }
         TuiAction::ScrollPageDown => {
-            if state.modal.is_none() && state.focus == TuiFocus::Transcript {
+            if state.modal.is_none()
+                && state.overlay.is_none()
+                && state.focus == TuiFocus::Transcript
+            {
                 let amount = state.transcript_scroll.page_size.max(1);
                 state.transcript_scroll.scroll_down(amount);
             }
@@ -160,6 +265,9 @@ pub fn reduce(state: &mut TuiState, action: TuiAction) -> Vec<TuiEffect> {
 }
 
 fn cancel_or_clear(state: &mut TuiState) -> Vec<TuiEffect> {
+    if state.modal.is_none() && state.overlay.take().is_some() {
+        return Vec::new();
+    }
     state.modal = None;
     state.approval_confirmation = None;
     match state.run_lifecycle {
@@ -193,12 +301,128 @@ fn prepare_approval(state: &mut TuiState, call_id: CallId) -> Vec<TuiEffect> {
 }
 
 fn dispatch_prompt(state: &mut TuiState, message: String) -> Vec<TuiEffect> {
-    if state.modal.is_some() || !state.run_lifecycle.accepts_prompt() || message.trim().is_empty() {
+    if state.modal.is_some()
+        || state.overlay.is_some()
+        || !state.run_lifecycle.accepts_prompt()
+        || message.trim().is_empty()
+    {
         return Vec::new();
     }
 
     state.run_lifecycle = RunLifecycle::Running;
     vec![TuiEffect::Dispatch(TerminalAction::SubmitPrompt(message))]
+}
+
+fn open_session_picker(state: &mut TuiState) -> Vec<TuiEffect> {
+    if state.modal.is_some() || state.run_lifecycle.is_active() {
+        return Vec::new();
+    }
+    if matches!(state.overlay, Some(TuiOverlay::SessionPicker(_))) {
+        state.overlay = None;
+        return Vec::new();
+    }
+    state.overlay = Some(TuiOverlay::SessionPicker(SessionPickerState::loading()));
+    vec![TuiEffect::LoadSessions]
+}
+
+fn open_tool_detail(state: &mut TuiState) -> Vec<TuiEffect> {
+    if state.modal.is_some() {
+        return Vec::new();
+    }
+    if matches!(state.overlay, Some(TuiOverlay::ToolDetail(_))) {
+        state.overlay = None;
+    } else {
+        state.open_tool_detail();
+    }
+    Vec::new()
+}
+
+fn open_help(state: &mut TuiState) -> Vec<TuiEffect> {
+    if state.modal.is_some() {
+        return Vec::new();
+    }
+    if matches!(state.overlay, Some(TuiOverlay::Help(_))) {
+        state.overlay = None;
+    } else {
+        state.overlay = Some(TuiOverlay::Help(HelpState { scroll: 0 }));
+    }
+    Vec::new()
+}
+
+fn move_overlay(state: &mut TuiState, delta: isize) -> Vec<TuiEffect> {
+    let Some(overlay) = state.overlay.as_mut() else {
+        return Vec::new();
+    };
+    match overlay {
+        TuiOverlay::SessionPicker(picker) => picker.move_selection(delta),
+        TuiOverlay::ToolDetail(detail) => detail.move_selection(delta),
+        TuiOverlay::Help(help) => {
+            help.scroll = if delta.is_negative() {
+                help.scroll.saturating_sub(delta.unsigned_abs() as u16)
+            } else {
+                help.scroll
+                    .saturating_add(u16::try_from(delta).unwrap_or(u16::MAX))
+                    .min(crate::interfaces::tui::state::MAX_HELP_LINES as u16)
+            };
+        }
+    }
+    Vec::new()
+}
+
+fn page_overlay(state: &mut TuiState, down: bool) -> Vec<TuiEffect> {
+    let Some(overlay) = state.overlay.as_mut() else {
+        return Vec::new();
+    };
+    match overlay {
+        TuiOverlay::SessionPicker(picker) => picker.move_selection(if down { 8 } else { -8 }),
+        TuiOverlay::ToolDetail(detail) => {
+            detail.scroll = if down {
+                detail
+                    .scroll
+                    .saturating_add(8)
+                    .min(crate::interfaces::tui::state::MAX_TOOL_DETAIL_TEXT_BYTES as u16)
+            } else {
+                detail.scroll.saturating_sub(8)
+            };
+        }
+        TuiOverlay::Help(help) => {
+            help.scroll = if down {
+                help.scroll
+                    .saturating_add(8)
+                    .min(crate::interfaces::tui::state::MAX_HELP_LINES as u16)
+            } else {
+                help.scroll.saturating_sub(8)
+            };
+        }
+    }
+    Vec::new()
+}
+
+fn confirm_overlay(state: &mut TuiState) -> Vec<TuiEffect> {
+    if state.run_lifecycle.is_active() {
+        if let Some(TuiOverlay::SessionPicker(SessionPickerState::Ready {
+            error, resolving, ..
+        })) = state.overlay.as_mut()
+        {
+            *resolving = None;
+            *error = Some(SessionPickerError::Busy);
+        }
+        return Vec::new();
+    }
+    let Some(TuiOverlay::SessionPicker(picker)) = state.overlay.as_mut() else {
+        return Vec::new();
+    };
+    let Some(run_id) = picker.selected_run_id() else {
+        return Vec::new();
+    };
+    if let SessionPickerState::Ready {
+        resolving, error, ..
+    } = picker
+    {
+        *resolving = Some(run_id);
+        *error = None;
+    }
+    vec![TuiEffect::ResolveResume { run_id }]
 }
 
 fn resolve_approval(state: &mut TuiState, call_id: CallId, approve: bool) -> Vec<TuiEffect> {
@@ -264,13 +488,14 @@ fn resolve_input(state: &mut TuiState, input_id: CallId) -> Vec<TuiEffect> {
 
 #[cfg(test)]
 mod tests {
-    use crate::core::types::CallId;
+    use crate::core::types::{CallId, JobId, RunId, SessionId};
     use crate::interfaces::terminal::action::TerminalAction;
     use crate::interfaces::tui::action::TuiAction;
     use crate::interfaces::tui::effect::TuiEffect;
     use crate::interfaces::tui::state::{
         InteractionKeyMode, InteractionModalKind, InteractionModalView,
-        MAX_INTERACTION_INPUT_BYTES, RunLifecycle, TuiFocus, TuiState,
+        MAX_INTERACTION_INPUT_BYTES, ResumeCandidate, RunLifecycle, SessionPickerError, TuiFocus,
+        TuiOverlay, TuiState,
     };
 
     use super::reduce;
@@ -758,5 +983,140 @@ mod tests {
             ]
         );
         assert!(exiting.modal.is_none());
+    }
+
+    fn candidate() -> ResumeCandidate {
+        ResumeCandidate {
+            session_id: SessionId::new(),
+            job_id: JobId::new(),
+            run_id: RunId::new(),
+            goal: "resume me".to_string(),
+            step: 2,
+        }
+    }
+
+    #[test]
+    fn session_picker_is_idle_only_and_loads_bounded_candidates() {
+        let mut state = TuiState::default();
+        assert_eq!(
+            reduce(&mut state, TuiAction::OpenSessionPicker),
+            vec![TuiEffect::LoadSessions]
+        );
+        let candidates = (0..(crate::interfaces::tui::state::MAX_SESSION_CANDIDATES + 5))
+            .map(|_| candidate())
+            .collect();
+        reduce(&mut state, TuiAction::SessionsLoaded { candidates });
+        let Some(TuiOverlay::SessionPicker(picker)) = state.overlay.as_ref() else {
+            panic!("expected session picker");
+        };
+        assert_eq!(
+            picker.candidates().len(),
+            crate::interfaces::tui::state::MAX_SESSION_CANDIDATES
+        );
+
+        state.run_lifecycle = RunLifecycle::Running;
+        assert!(reduce(&mut state, TuiAction::OpenSessionPicker).is_empty());
+        assert!(matches!(state.overlay, Some(TuiOverlay::SessionPicker(_))));
+    }
+
+    #[test]
+    fn picker_selection_is_cancelable_and_success_requires_matching_id() {
+        let mut state = TuiState::default();
+        reduce(&mut state, TuiAction::OpenSessionPicker);
+        let selected = candidate();
+        let run_id = selected.run_id;
+        reduce(
+            &mut state,
+            TuiAction::SessionsLoaded {
+                candidates: vec![selected.clone()],
+            },
+        );
+        assert_eq!(
+            reduce(&mut state, TuiAction::ConfirmOverlay),
+            vec![TuiEffect::ResolveResume { run_id }]
+        );
+        reduce(
+            &mut state,
+            TuiAction::ResumeSelectionSucceeded {
+                run_id: RunId::new(),
+            },
+        );
+        assert!(state.overlay.is_some());
+        reduce(&mut state, TuiAction::ResumeSelectionSucceeded { run_id });
+        assert!(state.overlay.is_none());
+        assert_eq!(
+            state.active_resume.as_ref().map(|item| item.run_id),
+            Some(run_id)
+        );
+
+        reduce(&mut state, TuiAction::OpenSessionPicker);
+        assert!(matches!(state.overlay, Some(TuiOverlay::SessionPicker(_))));
+        reduce(&mut state, TuiAction::CloseOverlay);
+        assert!(state.overlay.is_none());
+    }
+
+    #[test]
+    fn stale_and_malformed_resume_failures_remove_only_the_selected_entry() {
+        let mut state = TuiState::default();
+        let first = candidate();
+        let second = candidate();
+        let stale_id = first.run_id;
+        reduce(&mut state, TuiAction::OpenSessionPicker);
+        reduce(
+            &mut state,
+            TuiAction::SessionsLoaded {
+                candidates: vec![first, second],
+            },
+        );
+        reduce(&mut state, TuiAction::ConfirmOverlay);
+        reduce(
+            &mut state,
+            TuiAction::ResumeSelectionFailed {
+                run_id: stale_id,
+                error: SessionPickerError::Stale,
+            },
+        );
+        let Some(TuiOverlay::SessionPicker(picker)) = state.overlay.as_ref() else {
+            panic!("expected picker after stale failure");
+        };
+        assert_eq!(picker.candidates().len(), 1);
+        assert!(
+            picker
+                .candidates()
+                .iter()
+                .all(|item| item.run_id != stale_id)
+        );
+    }
+
+    #[test]
+    fn empty_or_busy_picker_confirmation_fails_closed() {
+        let mut state = TuiState::default();
+        reduce(&mut state, TuiAction::OpenSessionPicker);
+        reduce(
+            &mut state,
+            TuiAction::SessionsLoaded {
+                candidates: Vec::new(),
+            },
+        );
+        assert!(reduce(&mut state, TuiAction::ConfirmOverlay).is_empty());
+
+        let mut busy = TuiState {
+            run_lifecycle: RunLifecycle::Running,
+            overlay: Some(TuiOverlay::SessionPicker(
+                crate::interfaces::tui::state::SessionPickerState::ready(vec![candidate()]),
+            )),
+            ..TuiState::default()
+        };
+        assert!(reduce(&mut busy, TuiAction::ConfirmOverlay).is_empty());
+        let Some(TuiOverlay::SessionPicker(picker)) = busy.overlay else {
+            panic!("expected busy picker");
+        };
+        assert!(matches!(
+            picker,
+            crate::interfaces::tui::state::SessionPickerState::Ready {
+                error: Some(SessionPickerError::Busy),
+                ..
+            }
+        ));
     }
 }

@@ -1,9 +1,18 @@
-use crate::core::types::CallId;
-use crate::interfaces::terminal::view::{RunViewState, RunViewUpdate};
+use crate::core::types::{CallId, RunId, SessionId, TaskState};
+use crate::interfaces::terminal::view::{RunViewState, RunViewUpdate, ToolCallStatus};
+
+use super::sanitize::{
+    sanitize_display_text, sanitize_json_value, sanitize_tool_text, truncate_display_text,
+};
 
 const MAX_TRANSCRIPT_HISTORY_RUNS: usize = 50;
 pub const MAX_COMPOSER_BYTES: usize = 32 * 1024;
 pub const MAX_INTERACTION_INPUT_BYTES: usize = 32 * 1024;
+pub const MAX_SESSION_CANDIDATES: usize = 64;
+pub const MAX_SESSION_GOAL_CHARS: usize = 160;
+pub const MAX_TOOL_DETAIL_ITEMS: usize = 64;
+pub const MAX_TOOL_DETAIL_TEXT_BYTES: usize = 8 * 1024;
+pub const MAX_HELP_LINES: usize = 64;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum RunLifecycle {
@@ -103,6 +112,246 @@ pub enum InteractionModalView {
     },
 }
 
+/// A bounded, renderer-safe summary of a persisted task state.
+///
+/// The full `TaskState` remains owned by the runtime/app. Keeping only the
+/// identity and a short, sanitized goal in TUI state prevents an overlay from
+/// accidentally retaining history, checkpoints, or provider data.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResumeCandidate {
+    pub session_id: SessionId,
+    pub job_id: crate::core::types::JobId,
+    pub run_id: RunId,
+    pub goal: String,
+    pub step: u32,
+}
+
+impl ResumeCandidate {
+    pub fn from_task_state(state: &TaskState) -> Self {
+        Self {
+            session_id: state.session_id,
+            job_id: state.job_id,
+            run_id: state.run_id,
+            goal: {
+                let goal =
+                    sanitize_tool_text(&state.goal, MAX_SESSION_GOAL_CHARS.saturating_mul(4));
+                let goal = sanitize_display_text(&goal, MAX_SESSION_GOAL_CHARS);
+                if goal.trim().is_empty() {
+                    "(untitled)".to_string()
+                } else {
+                    goal
+                }
+            },
+            step: state.step,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionPickerError {
+    LoadFailed,
+    Malformed,
+    Stale,
+    Busy,
+}
+
+impl SessionPickerError {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::LoadFailed => "Unable to load sessions",
+            Self::Malformed => "A session has invalid state data",
+            Self::Stale => "That session is no longer available",
+            Self::Busy => "Cannot resume while a run is active",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SessionPickerState {
+    Loading,
+    Ready {
+        candidates: Vec<ResumeCandidate>,
+        selected: usize,
+        error: Option<SessionPickerError>,
+        resolving: Option<RunId>,
+    },
+}
+
+impl SessionPickerState {
+    pub fn loading() -> Self {
+        Self::Loading
+    }
+
+    pub fn ready(candidates: Vec<ResumeCandidate>) -> Self {
+        let mut candidates = candidates;
+        candidates.truncate(MAX_SESSION_CANDIDATES);
+        Self::Ready {
+            candidates,
+            selected: 0,
+            error: None,
+            resolving: None,
+        }
+    }
+
+    pub fn candidates(&self) -> &[ResumeCandidate] {
+        match self {
+            Self::Loading => &[],
+            Self::Ready { candidates, .. } => candidates,
+        }
+    }
+
+    pub fn selected_candidate(&self) -> Option<&ResumeCandidate> {
+        match self {
+            Self::Ready {
+                candidates,
+                selected,
+                resolving,
+                ..
+            } if resolving.is_none() => candidates.get(*selected),
+            _ => None,
+        }
+    }
+
+    pub fn is_resolving(&self) -> bool {
+        matches!(
+            self,
+            Self::Ready {
+                resolving: Some(_),
+                ..
+            }
+        )
+    }
+
+    pub(crate) fn move_selection(&mut self, delta: isize) {
+        let Self::Ready {
+            candidates,
+            selected,
+            resolving,
+            ..
+        } = self
+        else {
+            return;
+        };
+        if resolving.is_some() || candidates.is_empty() {
+            return;
+        }
+        let last = candidates.len().saturating_sub(1);
+        *selected = if delta.is_negative() {
+            selected.saturating_sub(delta.unsigned_abs()).min(last)
+        } else {
+            selected.saturating_add(delta as usize).min(last)
+        };
+    }
+
+    pub(crate) fn selected_run_id(&self) -> Option<RunId> {
+        self.selected_candidate().map(|candidate| candidate.run_id)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolDetailEntry {
+    pub call_id: CallId,
+    pub name: String,
+    pub status: ToolCallStatus,
+    pub args: String,
+    pub output: Option<String>,
+    pub error: Option<String>,
+}
+
+impl ToolDetailEntry {
+    fn from_tool(tool: &crate::interfaces::terminal::view::ToolCallView) -> Self {
+        let args = serde_json::to_string_pretty(&sanitize_json_value(&tool.args, 0))
+            .unwrap_or_else(|_| "<unavailable>".to_string());
+        Self {
+            call_id: tool.call_id,
+            name: sanitize_display_text(&sanitize_tool_text(&tool.name, 480), 120),
+            status: tool.status,
+            args: truncate_display_text(&args, MAX_TOOL_DETAIL_TEXT_BYTES),
+            output: tool
+                .output
+                .as_deref()
+                .map(|text| sanitize_tool_text(text, MAX_TOOL_DETAIL_TEXT_BYTES)),
+            error: tool
+                .error
+                .as_ref()
+                .map(|error| sanitize_tool_text(&error.to_string(), MAX_TOOL_DETAIL_TEXT_BYTES)),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolDetailState {
+    pub entries: Vec<ToolDetailEntry>,
+    pub selected: usize,
+    pub scroll: u16,
+}
+
+impl ToolDetailState {
+    fn from_state(state: &TuiState) -> Self {
+        let mut entries = Vec::new();
+        'runs: for run in state
+            .run_history
+            .iter()
+            .chain(std::iter::once(&state.run))
+            .rev()
+        {
+            for tool in run.tool_calls.iter().rev() {
+                if matches!(
+                    tool.status,
+                    ToolCallStatus::Completed | ToolCallStatus::Failed
+                ) {
+                    entries.push(ToolDetailEntry::from_tool(tool));
+                    if entries.len() == MAX_TOOL_DETAIL_ITEMS {
+                        break 'runs;
+                    }
+                }
+            }
+        }
+        entries.reverse();
+        let selected = entries.len().saturating_sub(1);
+        Self {
+            entries,
+            selected,
+            scroll: 0,
+        }
+    }
+
+    pub(crate) fn move_selection(&mut self, delta: isize) {
+        if self.entries.is_empty() {
+            return;
+        }
+        let last = self.entries.len() - 1;
+        self.selected = if delta.is_negative() {
+            self.selected.saturating_sub(delta.unsigned_abs()).min(last)
+        } else {
+            self.selected.saturating_add(delta as usize).min(last)
+        };
+        self.scroll = 0;
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HelpState {
+    pub scroll: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TuiOverlay {
+    SessionPicker(SessionPickerState),
+    ToolDetail(ToolDetailState),
+    Help(HelpState),
+}
+
+impl TuiOverlay {
+    pub fn title(&self) -> &'static str {
+        match self {
+            Self::SessionPicker(_) => " Resume session ",
+            Self::ToolDetail(_) => " Tool detail ",
+            Self::Help(_) => " Help ",
+        }
+    }
+}
+
 impl InteractionModalView {
     pub fn kind(&self) -> InteractionModalKind {
         match self {
@@ -138,6 +387,8 @@ pub struct TuiState {
     pub approval_confirmation: Option<CallId>,
     pub quit_confirmation: bool,
     pub should_quit: bool,
+    pub overlay: Option<TuiOverlay>,
+    pub active_resume: Option<ResumeCandidate>,
 }
 
 impl TuiState {
@@ -188,6 +439,20 @@ impl TuiState {
         self.modal = None;
         self.approval_confirmation = None;
     }
+
+    pub fn open_tool_detail(&mut self) {
+        self.overlay = Some(TuiOverlay::ToolDetail(ToolDetailState::from_state(self)));
+    }
+
+    pub fn can_accept_resume(&self, run_id: RunId) -> bool {
+        matches!(
+            &self.overlay,
+            Some(TuiOverlay::SessionPicker(SessionPickerState::Ready {
+                resolving: Some(current),
+                ..
+            })) if *current == run_id
+        )
+    }
 }
 
 impl Default for TuiState {
@@ -206,6 +471,8 @@ impl Default for TuiState {
             approval_confirmation: None,
             quit_confirmation: false,
             should_quit: false,
+            overlay: None,
+            active_resume: None,
         }
     }
 }
@@ -213,9 +480,10 @@ impl Default for TuiState {
 #[cfg(test)]
 mod tests {
     use crate::core::types::{CallId, JobId, RunId, TerminationReason};
-    use crate::interfaces::terminal::view::RunViewUpdate;
+    use crate::errors::ToolError;
+    use crate::interfaces::terminal::view::{RunViewUpdate, ToolCallStatus, ToolCallView};
     use crate::interfaces::tui::state::{
-        InteractionModalKind, InteractionModalView, RunLifecycle, TuiFocus, TuiState,
+        InteractionModalKind, InteractionModalView, RunLifecycle, TuiFocus, TuiOverlay, TuiState,
     };
 
     #[test]
@@ -324,5 +592,49 @@ mod tests {
 
         scroll.set_max_offset(2);
         assert_eq!(scroll.offset, 2);
+    }
+
+    #[test]
+    fn tool_detail_keeps_only_completed_or_failed_bounded_safe_entries() {
+        let mut state = TuiState::default();
+        state.run.tool_calls = vec![
+            ToolCallView {
+                call_id: CallId::new(),
+                name: "running".to_string(),
+                args: serde_json::json!({"password": "do-not-show"}),
+                status: ToolCallStatus::Started,
+                output: Some("Bearer do-not-show".to_string()),
+                error: None,
+            },
+            ToolCallView {
+                call_id: CallId::new(),
+                name: "completed".to_string(),
+                args: serde_json::json!({"nested": {"api_token": "do-not-show"}}),
+                status: ToolCallStatus::Completed,
+                output: Some("password=do-not-show\nvisible output".to_string()),
+                error: None,
+            },
+            ToolCallView {
+                call_id: CallId::new(),
+                name: "failed".to_string(),
+                args: serde_json::json!({"path": "safe.txt"}),
+                status: ToolCallStatus::Failed,
+                output: None,
+                error: Some(ToolError::ExecutionFailed {
+                    reason: "private_key=do-not-show".to_string(),
+                }),
+            },
+        ];
+
+        state.open_tool_detail();
+
+        let Some(TuiOverlay::ToolDetail(detail)) = state.overlay else {
+            panic!("expected tool detail");
+        };
+        assert_eq!(detail.entries.len(), 2);
+        let rendered = format!("{detail:?}");
+        assert!(!rendered.contains("do-not-show"));
+        assert!(rendered.contains("visible output"));
+        assert!(rendered.contains("[redacted]"));
     }
 }

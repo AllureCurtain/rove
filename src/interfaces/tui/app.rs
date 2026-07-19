@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::collections::VecDeque;
 use std::error::Error;
 use std::io;
 use std::time::Duration;
@@ -21,7 +22,7 @@ use crate::interfaces::terminal::action::TerminalAction;
 use crate::interfaces::terminal::view::RunViewUpdate;
 use crate::interfaces::tui::action::TuiAction;
 use crate::interfaces::tui::effect::TuiEffect;
-use crate::interfaces::tui::keymap::map_key_event_with_modal_mode;
+use crate::interfaces::tui::keymap::map_key_event_with_overlay_mode;
 use crate::interfaces::tui::providers::{
     TuiInteractionKind, TuiInteractionReceiver, TuiInteractionRequest,
 };
@@ -29,9 +30,11 @@ use crate::interfaces::tui::reducer::reduce;
 use crate::interfaces::tui::render::{render, sync_viewport};
 use crate::interfaces::tui::run::{TuiRunContext, drive_tui_run_events};
 use crate::interfaces::tui::state::{
-    InteractionKeyMode, InteractionModalKind, InteractionModalView, RunLifecycle, TuiState,
+    InteractionKeyMode, InteractionModalKind, InteractionModalView, ResumeCandidate, RunLifecycle,
+    SessionPickerError, TuiState,
 };
 use crate::interfaces::tui::terminal::TerminalSession;
+use crate::state::resume::resolve_resume_state;
 
 const RUN_UPDATE_CAPACITY: usize = 32;
 const FRAME_INTERVAL: Duration = Duration::from_millis(33);
@@ -51,8 +54,14 @@ impl TuiApp {
             .as_ref()
             .map(|state| state.session_id)
             .unwrap_or_default();
+        let state = TuiState {
+            active_resume: active_resume_state
+                .as_ref()
+                .map(ResumeCandidate::from_task_state),
+            ..TuiState::default()
+        };
         Self {
-            state: TuiState::default(),
+            state,
             session_id,
             active_resume_state,
             pressed_keys: PressedKeys::default(),
@@ -71,6 +80,12 @@ impl TuiApp {
                 .unwrap_or_default(),
             RunId::new(),
         )
+    }
+
+    fn set_active_resume_state(&mut self, active_resume_state: TaskState) {
+        self.session_id = active_resume_state.session_id;
+        self.state.active_resume = Some(ResumeCandidate::from_task_state(&active_resume_state));
+        self.active_resume_state = Some(active_resume_state);
     }
 }
 
@@ -463,16 +478,7 @@ where
                 let event = event?;
                 let fresh_press = app.pressed_keys.observe(&event);
                 let effects = reduce_event(&mut app.state, event, true, fresh_press);
-                let mut prompt = None;
-                for effect in effects {
-                    match effect {
-                        TuiEffect::Dispatch(TerminalAction::SubmitPrompt(message)) => {
-                            prompt = Some(message);
-                        }
-                        TuiEffect::Exit => return Ok(app),
-                        TuiEffect::Dispatch(_) | TuiEffect::ExitAfterRun => {}
-                    }
-                }
+                let prompt = apply_idle_effects(effects, runtime, &mut app).await?;
 
                 if let Some(message) = prompt {
                     let result = run_prompt(
@@ -518,6 +524,86 @@ where
             }
         }
     }
+}
+
+async fn apply_idle_effects(
+    effects: Vec<TuiEffect>,
+    runtime: &CliRuntime,
+    app: &mut TuiApp,
+) -> anyhow::Result<Option<String>> {
+    let mut queue = VecDeque::from(effects);
+    let mut prompt = None;
+    while let Some(effect) = queue.pop_front() {
+        match effect {
+            TuiEffect::Dispatch(TerminalAction::SubmitPrompt(message)) => {
+                prompt = Some(message);
+            }
+            TuiEffect::Dispatch(_) | TuiEffect::ExitAfterRun => {}
+            TuiEffect::Exit => {
+                app.state.should_quit = true;
+            }
+            TuiEffect::LoadSessions => {
+                let action = match runtime.state_store.list_task_states().await {
+                    Ok(states) => TuiAction::SessionsLoaded {
+                        candidates: states
+                            .iter()
+                            .map(ResumeCandidate::from_task_state)
+                            .take(crate::interfaces::tui::state::MAX_SESSION_CANDIDATES)
+                            .collect(),
+                    },
+                    Err(error) => TuiAction::SessionsLoadFailed {
+                        error: classify_io_error(&error),
+                    },
+                };
+                queue.extend(reduce(&mut app.state, action));
+            }
+            TuiEffect::ResolveResume { run_id } => {
+                let value = run_id.to_string();
+                match resolve_resume_state(&runtime.state_store, Some(&value)).await {
+                    Ok(Some(resume_state)) if app.state.can_accept_resume(run_id) => {
+                        app.set_active_resume_state(resume_state);
+                        queue.extend(reduce(
+                            &mut app.state,
+                            TuiAction::ResumeSelectionSucceeded { run_id },
+                        ));
+                    }
+                    Ok(Some(_)) => {}
+                    Ok(None) => queue.extend(reduce(
+                        &mut app.state,
+                        TuiAction::ResumeSelectionFailed {
+                            run_id,
+                            error: SessionPickerError::Stale,
+                        },
+                    )),
+                    Err(error) => queue.extend(reduce(
+                        &mut app.state,
+                        TuiAction::ResumeSelectionFailed {
+                            run_id,
+                            error: classify_anyhow_error(&error),
+                        },
+                    )),
+                }
+            }
+        }
+    }
+    Ok(prompt)
+}
+
+fn classify_io_error(error: &io::Error) -> SessionPickerError {
+    match error.kind() {
+        io::ErrorKind::InvalidData => SessionPickerError::Malformed,
+        io::ErrorKind::NotFound => SessionPickerError::Stale,
+        _ => SessionPickerError::LoadFailed,
+    }
+}
+
+fn classify_anyhow_error(error: &anyhow::Error) -> SessionPickerError {
+    for cause in error.chain() {
+        if let Some(io_error) = cause.downcast_ref::<io::Error>() {
+            return classify_io_error(io_error);
+        }
+    }
+    SessionPickerError::LoadFailed
 }
 
 async fn run_prompt<B, E>(
@@ -582,8 +668,7 @@ where
     if !matches!(outcome.reason, TerminationReason::Cancelled)
         && let Ok(latest) = runtime.state_store.load_task_state(run_id).await
     {
-        app.session_id = latest.session_id;
-        app.active_resume_state = Some(latest);
+        app.set_active_resume_state(latest);
     }
 
     Ok(ActiveRunResult {
@@ -626,7 +711,7 @@ fn apply_active_effects(
                 *exit_requested = true;
                 clear_interactions(interaction, interactions, state);
             }
-            TuiEffect::Dispatch(_) => {}
+            TuiEffect::Dispatch(_) | TuiEffect::LoadSessions | TuiEffect::ResolveResume { .. } => {}
         }
     }
 }
@@ -806,9 +891,10 @@ fn reduce_event(
         Event::Key(key)
             if state.modal.is_none() || interaction_armed || is_global_key_event(key) =>
         {
-            let action = map_key_event_with_modal_mode(
+            let action = map_key_event_with_overlay_mode(
                 key,
                 state.modal.as_ref(),
+                state.overlay.as_ref(),
                 state.interaction_key_mode,
             );
             match action {
@@ -942,7 +1028,7 @@ mod tests {
     use crate::core::events::StreamEvent;
     use crate::core::types::{
         ApprovalDecision, ApprovalPolicy, CallId, JobId, Message, RunId, RunRequest, SessionId,
-        TerminationReason, ToolApprovalRequest, ToolSchema, Usage, UserInputRequest,
+        TaskState, TerminationReason, ToolApprovalRequest, ToolSchema, Usage, UserInputRequest,
     };
     use crate::core::workspace::Workspace;
     use crate::errors::ModelError;
@@ -967,7 +1053,7 @@ mod tests {
 
     use super::{
         ActiveUiControl, InteractionController, PressedKeys, ShutdownInput, ShutdownSignal, TuiApp,
-        active_ui_loop, discard_queued_interactions, run_loop, run_prompt,
+        active_ui_loop, apply_idle_effects, discard_queued_interactions, run_loop, run_prompt,
     };
 
     struct FailingDrawBackend {
@@ -2404,5 +2490,90 @@ mod tests {
             ApprovalDecision::Reject
         );
         assert!(state.modal.is_none());
+    }
+
+    #[tokio::test]
+    async fn idle_session_effects_list_newest_first_and_reject_stale_resume() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let runtime = build_cli_runtime(CliRuntimeOptions {
+            cwd: Some(tmp.path().to_path_buf()),
+            model: Some("fake".to_string()),
+            max_steps: Some(1),
+            approval: CliApprovalPolicy::Never,
+            task_workspace: None,
+            task_base: None,
+            initial_fake_response: Some("ready".to_string()),
+            interaction: CliRuntimeInteraction::Providers {
+                input_provider: None,
+                approval_provider: None,
+            },
+        })
+        .await
+        .unwrap();
+        let older = TaskState {
+            schema_version: 1,
+            session_id: SessionId::new(),
+            job_id: JobId::new(),
+            run_id: RunId::new(),
+            goal: "older session".to_string(),
+            step: 1,
+            history: Vec::new(),
+            summary: None,
+            checkpoint: None,
+            plan: None,
+            runtime_identity: None,
+        };
+        let newer = TaskState {
+            goal: "newer session".to_string(),
+            session_id: SessionId::new(),
+            job_id: JobId::new(),
+            run_id: RunId::new(),
+            ..older.clone()
+        };
+        runtime.state_store.write_task_state(&older).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        runtime.state_store.write_task_state(&newer).await.unwrap();
+
+        let mut app = TuiApp::default();
+        let effects = reduce(&mut app.state, TuiAction::OpenSessionPicker);
+        apply_idle_effects(effects, &runtime, &mut app)
+            .await
+            .unwrap();
+        let Some(crate::interfaces::tui::state::TuiOverlay::SessionPicker(picker)) =
+            app.state.overlay.as_ref()
+        else {
+            panic!("expected session picker");
+        };
+        assert_eq!(picker.candidates()[0].run_id, newer.run_id);
+
+        let effects = reduce(&mut app.state, TuiAction::ConfirmOverlay);
+        apply_idle_effects(effects, &runtime, &mut app)
+            .await
+            .unwrap();
+        assert_eq!(
+            app.active_resume_state.as_ref().map(|state| state.run_id),
+            Some(newer.run_id)
+        );
+
+        let mut stale_app = TuiApp::default();
+        let effects = reduce(&mut stale_app.state, TuiAction::OpenSessionPicker);
+        apply_idle_effects(effects, &runtime, &mut stale_app)
+            .await
+            .unwrap();
+        let stale_path = runtime
+            .state_store
+            .run_store
+            .run_dir(&newer.run_id)
+            .join("task_state.json");
+        tokio::fs::remove_file(stale_path).await.unwrap();
+        let effects = reduce(&mut stale_app.state, TuiAction::ConfirmOverlay);
+        apply_idle_effects(effects, &runtime, &mut stale_app)
+            .await
+            .unwrap();
+        assert!(stale_app.active_resume_state.is_none());
+        assert!(matches!(
+            stale_app.state.overlay,
+            Some(crate::interfaces::tui::state::TuiOverlay::SessionPicker(_))
+        ));
     }
 }

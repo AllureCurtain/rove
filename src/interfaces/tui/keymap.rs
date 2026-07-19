@@ -2,7 +2,98 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use crate::interfaces::terminal::action::TerminalAction;
 use crate::interfaces::tui::action::TuiAction;
-use crate::interfaces::tui::state::{InteractionKeyMode, InteractionModalView};
+use crate::interfaces::tui::state::{InteractionKeyMode, InteractionModalView, TuiOverlay};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeyBinding {
+    pub key: &'static str,
+    pub action: &'static str,
+    pub context: &'static str,
+}
+
+/// The help overlay renders this table directly. Keep entries next to the
+/// keymap so help cannot drift into documenting unsupported commands.
+pub const KEY_BINDINGS: &[KeyBinding] = &[
+    KeyBinding {
+        key: "Ctrl+Q",
+        action: "Exit",
+        context: "global",
+    },
+    KeyBinding {
+        key: "Ctrl+C",
+        action: "Cancel run / close overlay",
+        context: "global",
+    },
+    KeyBinding {
+        key: "Enter",
+        action: "Submit prompt",
+        context: "composer",
+    },
+    KeyBinding {
+        key: "Tab",
+        action: "Focus transcript/composer",
+        context: "idle",
+    },
+    KeyBinding {
+        key: "Up/Down",
+        action: "Scroll transcript",
+        context: "idle",
+    },
+    KeyBinding {
+        key: "PageUp/PageDown",
+        action: "Scroll transcript by page",
+        context: "idle",
+    },
+    KeyBinding {
+        key: "Ctrl+R",
+        action: "Open/resume session picker",
+        context: "idle",
+    },
+    KeyBinding {
+        key: "Ctrl+T",
+        action: "Open tool detail",
+        context: "no interaction",
+    },
+    KeyBinding {
+        key: "F1",
+        action: "Open this help",
+        context: "no interaction",
+    },
+    KeyBinding {
+        key: "Esc",
+        action: "Close overlay / reject approval",
+        context: "overlay/modal",
+    },
+    KeyBinding {
+        key: "Enter",
+        action: "Select highlighted item",
+        context: "overlay",
+    },
+    KeyBinding {
+        key: "Up/Down",
+        action: "Move overlay selection",
+        context: "overlay",
+    },
+    KeyBinding {
+        key: "Y/N",
+        action: "Approve/reject tool",
+        context: "approval",
+    },
+    KeyBinding {
+        key: "F8",
+        action: "Confirm approval / submit input",
+        context: "Windows interaction",
+    },
+    KeyBinding {
+        key: "Enter",
+        action: "Submit input",
+        context: "input",
+    },
+];
+
+pub fn key_bindings() -> &'static [KeyBinding] {
+    KEY_BINDINGS
+}
 
 pub fn map_key_event(event: KeyEvent) -> Option<TuiAction> {
     map_key_event_with_modal(event, None)
@@ -18,6 +109,15 @@ pub fn map_key_event_with_modal(
 pub fn map_key_event_with_modal_mode(
     event: KeyEvent,
     modal: Option<&InteractionModalView>,
+    interaction_key_mode: InteractionKeyMode,
+) -> Option<TuiAction> {
+    map_key_event_with_overlay_mode(event, modal, None, interaction_key_mode)
+}
+
+pub fn map_key_event_with_overlay_mode(
+    event: KeyEvent,
+    modal: Option<&InteractionModalView>,
+    overlay: Option<&TuiOverlay>,
     interaction_key_mode: InteractionKeyMode,
 ) -> Option<TuiAction> {
     if !matches!(event.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
@@ -40,7 +140,16 @@ pub fn map_key_event_with_modal_mode(
         return map_modal_key_event(event, modal, interaction_key_mode);
     }
 
+    if let Some(overlay) = overlay {
+        return map_overlay_key_event(event, overlay);
+    }
+
     match (event.code, event.modifiers) {
+        (KeyCode::Char('r'), KeyModifiers::CONTROL)
+        | (KeyCode::Char('R'), KeyModifiers::CONTROL) => Some(TuiAction::OpenSessionPicker),
+        (KeyCode::Char('t'), KeyModifiers::CONTROL)
+        | (KeyCode::Char('T'), KeyModifiers::CONTROL) => Some(TuiAction::OpenToolDetail),
+        (KeyCode::F(1), KeyModifiers::NONE) => Some(TuiAction::OpenHelp),
         (KeyCode::Enter, _) => Some(TuiAction::SubmitComposer),
         (KeyCode::Backspace, _) => Some(TuiAction::Backspace),
         (KeyCode::Tab, _) => Some(TuiAction::FocusNext),
@@ -51,6 +160,34 @@ pub fn map_key_event_with_modal_mode(
         (KeyCode::Char(ch), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
             Some(TuiAction::InsertChar(ch))
         }
+        _ => None,
+    }
+}
+
+fn map_overlay_key_event(event: KeyEvent, overlay: &TuiOverlay) -> Option<TuiAction> {
+    if event.kind != KeyEventKind::Press {
+        return None;
+    }
+    match (event.code, event.modifiers) {
+        (KeyCode::Esc, KeyModifiers::NONE) => Some(TuiAction::CloseOverlay),
+        (KeyCode::F(1), KeyModifiers::NONE) => Some(TuiAction::OpenHelp),
+        (KeyCode::Char('t'), KeyModifiers::CONTROL)
+        | (KeyCode::Char('T'), KeyModifiers::CONTROL)
+            if matches!(overlay, TuiOverlay::ToolDetail(_)) =>
+        {
+            Some(TuiAction::OpenToolDetail)
+        }
+        (KeyCode::Char('r'), KeyModifiers::CONTROL)
+        | (KeyCode::Char('R'), KeyModifiers::CONTROL)
+            if matches!(overlay, TuiOverlay::SessionPicker(_)) =>
+        {
+            Some(TuiAction::OpenSessionPicker)
+        }
+        (KeyCode::Up, KeyModifiers::NONE) => Some(TuiAction::OverlayPrevious),
+        (KeyCode::Down, KeyModifiers::NONE) => Some(TuiAction::OverlayNext),
+        (KeyCode::PageUp, KeyModifiers::NONE) => Some(TuiAction::OverlayPageUp),
+        (KeyCode::PageDown, KeyModifiers::NONE) => Some(TuiAction::OverlayPageDown),
+        (KeyCode::Enter, _) => Some(TuiAction::ConfirmOverlay),
         _ => None,
     }
 }
@@ -139,9 +276,14 @@ mod tests {
     use crate::core::types::CallId;
     use crate::interfaces::terminal::action::TerminalAction;
     use crate::interfaces::tui::action::TuiAction;
-    use crate::interfaces::tui::state::{InteractionKeyMode, InteractionModalView};
+    use crate::interfaces::tui::state::{
+        HelpState, InteractionKeyMode, InteractionModalView, TuiOverlay,
+    };
 
-    use super::{map_key_event, map_key_event_with_modal, map_key_event_with_modal_mode};
+    use super::{
+        key_bindings, map_key_event, map_key_event_with_modal, map_key_event_with_modal_mode,
+        map_key_event_with_overlay_mode,
+    };
 
     fn approval_modal(call_id: CallId) -> InteractionModalView {
         InteractionModalView::Approval {
@@ -395,6 +537,50 @@ mod tests {
                 ),
                 Some(TuiAction::Terminal(TerminalAction::Exit))
             );
+        }
+    }
+
+    #[test]
+    fn maps_navigation_overlays_and_help_from_the_documented_keymap() {
+        assert_eq!(
+            map_key_event(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL)),
+            Some(TuiAction::OpenSessionPicker)
+        );
+        assert_eq!(
+            map_key_event(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL)),
+            Some(TuiAction::OpenToolDetail)
+        );
+        assert_eq!(
+            map_key_event(KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE)),
+            Some(TuiAction::OpenHelp)
+        );
+
+        let overlay = TuiOverlay::Help(HelpState { scroll: 0 });
+        assert_eq!(
+            map_key_event_with_overlay_mode(
+                KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+                None,
+                Some(&overlay),
+                InteractionKeyMode::Direct,
+            ),
+            Some(TuiAction::CloseOverlay)
+        );
+        assert_eq!(
+            map_key_event_with_overlay_mode(
+                KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE),
+                None,
+                Some(&overlay),
+                InteractionKeyMode::Direct,
+            ),
+            Some(TuiAction::OverlayPageDown)
+        );
+
+        let keys = key_bindings()
+            .iter()
+            .map(|binding| binding.key)
+            .collect::<Vec<_>>();
+        for documented in ["Ctrl+Q", "Ctrl+C", "Ctrl+R", "Ctrl+T", "F1", "Esc", "F8"] {
+            assert!(keys.contains(&documented), "missing {documented} from help");
         }
     }
 }

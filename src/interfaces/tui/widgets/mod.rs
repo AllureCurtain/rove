@@ -2,12 +2,14 @@
 
 mod chrome;
 mod modal;
+mod overlay;
 mod transcript;
 
 pub(crate) use chrome::{activity, composer, minimal_line, status_line};
 #[cfg(test)]
 pub(crate) use modal::modal_area;
 pub(crate) use modal::render_modal;
+pub(crate) use overlay::render_overlay;
 pub(crate) use transcript::{transcript, transcript_viewport};
 
 use crate::core::types::TerminationReason;

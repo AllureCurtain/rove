@@ -204,6 +204,17 @@ fn activity_content(state: &TuiState) -> (&'static str, String, Style) {
             Style::default().fg(Color::Cyan),
         );
     }
+    if let Some(resume) = &state.active_resume {
+        return (
+            "Resume",
+            format!(
+                "{} - step {}",
+                resume.goal.replace(['\n', '\t'], " "),
+                resume.step
+            ),
+            Style::default().fg(Color::Cyan),
+        );
+    }
     (
         "Idle",
         "ready for a prompt".to_string(),

@@ -5,6 +5,7 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
 use crate::core::types::TerminationReason;
 use crate::interfaces::terminal::view::{RunViewState, ToolCallStatus};
+use crate::interfaces::tui::sanitize::sanitize_tool_text;
 use crate::interfaces::tui::state::{TuiFocus, TuiState};
 
 use super::termination_label;
@@ -143,7 +144,10 @@ fn push_run_lines(lines: &mut Vec<Line<'static>>, run: &RunViewState) {
             push_labeled_text(
                 lines,
                 "  Output",
-                output,
+                &sanitize_tool_text(
+                    output,
+                    crate::interfaces::tui::state::MAX_TOOL_DETAIL_TEXT_BYTES,
+                ),
                 Style::default().fg(Color::DarkGray),
             );
         }
@@ -151,7 +155,10 @@ fn push_run_lines(lines: &mut Vec<Line<'static>>, run: &RunViewState) {
             push_labeled_text(
                 lines,
                 "  Failure",
-                &error.to_string(),
+                &sanitize_tool_text(
+                    &error.to_string(),
+                    crate::interfaces::tui::state::MAX_TOOL_DETAIL_TEXT_BYTES,
+                ),
                 Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
             );
         }
