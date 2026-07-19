@@ -250,16 +250,30 @@ def run_unix_smoke(binary, args):
 
         set_window_size(slave_fd, 40, 12)
         os.kill(process.pid, signal.SIGWINCH)
+        resize_start = len(output)
         query_replied = wait_for_output(
             process,
             master_fd,
             output,
-            lambda captured: len(captured) > first_frame_bytes,
+            lambda captured: (
+                len(captured) > first_frame_bytes
+                and "ws:- |" in visible_text(captured[resize_start:])
+                and "Composer" in visible_text(captured[resize_start:])
+            ),
             min(deadline, time.monotonic() + 5.0),
             query_replied,
         )
-        if len(output) <= first_frame_bytes or process.poll() is not None:
-            return emit("failed", "TUI did not redraw after the PTY resize")
+        resized_text = visible_text(output[resize_start:])
+        if (
+            len(output) <= first_frame_bytes
+            or "ws:- |" not in resized_text
+            or "Composer" not in resized_text
+            or process.poll() is not None
+        ):
+            return emit(
+                "failed",
+                "TUI did not redraw the expected narrow layout after the PTY resize",
+            )
 
         os.write(master_fd, b"\x11")
         query_replied = wait_for_output(
