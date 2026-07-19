@@ -11,6 +11,7 @@ use tokio_util::sync::CancellationToken;
 use crate::core::compaction::CompactionRuntime;
 use crate::core::context::{ContextManager, durable_memory_message, session_summary_message};
 use crate::core::events::StreamEvent;
+use crate::core::execution::{ExecutionPolicy, ExecutionStrategy};
 use crate::core::plan_loop::{PlanLoopState, run_planned_loop};
 use crate::core::planner::Planner;
 use crate::core::run_loop::{LoopContext, LoopItem, RunLoopState, run_unplanned_loop};
@@ -93,6 +94,13 @@ impl Drop for RunStream<'_> {
 pub struct EngineConfig {
     pub max_steps: u32,
     pub plan_enabled: bool,
+}
+
+impl EngineConfig {
+    /// Resolve the legacy fields into the typed policy used by the engine.
+    pub fn execution_policy(&self) -> ExecutionPolicy {
+        ExecutionPolicy::from_legacy(self.max_steps, self.plan_enabled)
+    }
 }
 
 impl Default for EngineConfig {
@@ -417,8 +425,9 @@ impl Engine {
                     ),
                 };
 
-                let mut runtime: BoxStream<'_, LoopItem> = if self.config.plan_enabled {
-                    run_planned_loop(
+                let execution_policy = self.config.execution_policy();
+                let mut runtime: BoxStream<'_, LoopItem> = match execution_policy.strategy {
+                    ExecutionStrategy::PlanReact => run_planned_loop(
                         loop_context,
                         &self.planner,
                         PlanLoopState {
@@ -430,9 +439,8 @@ impl Engine {
                             plan,
                         },
                         stream_cancel.clone(),
-                    )
-                } else {
-                    run_unplanned_loop(
+                    ),
+                    ExecutionStrategy::React => run_unplanned_loop(
                         loop_context,
                         RunLoopState {
                             user_message,
@@ -442,7 +450,7 @@ impl Engine {
                             step,
                         },
                         stream_cancel.clone(),
-                    )
+                    ),
                 };
 
                 while let Some(item) = runtime.next().await {

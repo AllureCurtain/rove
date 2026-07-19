@@ -22,6 +22,13 @@ plan step through `run_planned_loop`:
 4. Mark the step complete on success.
 5. Re-plan when a step fails and the failure is recoverable.
 
+The engine now resolves the legacy `plan_enabled` and `max_steps` fields through
+the typed `core::execution::ExecutionPolicy` boundary before selecting a loop.
+This is a compatibility foundation only: `react` maps the old limit to
+`max_model_turns`, while `plan_react` maps it to `max_step_attempts`. The
+bounded StepRunner, append-only ledger, plan revisions, and evaluator remain
+future work and are not implied by these types.
+
 This differs from pico's `pico/agent_loop.py`, where prompt build, model call,
 parse, tool execution, checkpoint, and trace recording live in one readable loop.
 rove keeps those phases split into focused Rust modules so provider streaming,

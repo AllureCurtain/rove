@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use crate::core::execution::ExecutionPolicy;
 use crate::core::prompt_metadata::{stable_hash, tool_signature};
 use crate::core::types::{ApprovalPolicy, ToolSchema};
 use crate::core::workspace::{Workspace, WorkspaceKind};
@@ -17,6 +18,13 @@ pub struct RuntimeIdentity {
     pub planner_prompt_hash: String,
     pub workspace_fingerprint: String,
     pub tool_signature: String,
+}
+
+impl RuntimeIdentity {
+    /// Resolve the persisted legacy fields without changing their wire schema.
+    pub fn execution_policy(&self) -> ExecutionPolicy {
+        ExecutionPolicy::from_legacy(self.max_steps, self.plan_enabled)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -187,6 +195,14 @@ mod tests {
         assert_eq!(identity.approval_policy, ApprovalPolicy::Auto);
         assert_eq!(identity.max_steps, 12);
         assert!(identity.plan_enabled);
+        assert_eq!(
+            identity.execution_policy().strategy,
+            crate::core::execution::ExecutionStrategy::PlanReact
+        );
+        assert_eq!(
+            identity.execution_policy().budgets.max_step_attempts,
+            Some(12)
+        );
         assert!(identity.system_prompt_hash.starts_with("sha256:"));
         assert!(identity.planner_prompt_hash.starts_with("sha256:"));
         assert!(identity.workspace_fingerprint.starts_with("sha256:"));

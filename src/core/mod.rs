@@ -3,6 +3,7 @@ pub(crate) mod compaction;
 pub mod context;
 pub mod engine;
 pub mod events;
+pub mod execution;
 pub mod executor;
 pub(crate) mod model_turn;
 pub mod parser;
