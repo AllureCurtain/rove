@@ -4,7 +4,11 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
+use crate::interfaces::tui::sanitize::{
+    sanitize_display_text, sanitize_json_value, sanitize_tool_text, truncate_display_text,
+};
 use crate::interfaces::tui::state::{InteractionKeyMode, InteractionModalView};
+use crate::interfaces::tui::state::{MAX_COMPOSER_BYTES, MAX_TOOL_DETAIL_TEXT_BYTES};
 
 const MAX_MODAL_WIDTH: u16 = 88;
 const MAX_APPROVAL_HEIGHT: u16 = 16;
@@ -92,6 +96,9 @@ fn render_approval(
     interaction_key_mode: InteractionKeyMode,
     approval_confirmation: bool,
 ) {
+    let safe_name = sanitize_tool_text(name, MAX_TOOL_DETAIL_TEXT_BYTES);
+    let safe_reason = sanitize_tool_text(reason, MAX_TOOL_DETAIL_TEXT_BYTES);
+    let safe_arguments = bounded_arguments(args);
     let accent = Style::default()
         .fg(Color::Yellow)
         .add_modifier(Modifier::BOLD);
@@ -100,13 +107,13 @@ fn render_approval(
     frame.render_widget(block, area);
 
     let (body, actions) = split_actions(inner);
-    let tool_height = wrapped_height(&labeled_text("Tool", name, accent), body.width)
+    let tool_height = wrapped_height(&labeled_text("Tool", &safe_name, accent), body.width)
         .min(2)
         .min(body.height.saturating_sub(2))
         .max(1);
     let tool_area = take_top(body, tool_height);
     let after_tool = trim_top(body, tool_height);
-    let reason_height = wrapped_height(&labeled_text("Reason", reason, accent), body.width)
+    let reason_height = wrapped_height(&labeled_text("Reason", &safe_reason, accent), body.width)
         .min(3)
         .min(after_tool.height.saturating_sub(1))
         .max(1);
@@ -114,17 +121,17 @@ fn render_approval(
     let arguments_area = trim_top(after_tool, reason_height);
 
     frame.render_widget(
-        Paragraph::new(labeled_text("Tool", name, accent)).wrap(Wrap { trim: false }),
+        Paragraph::new(labeled_text("Tool", &safe_name, accent)).wrap(Wrap { trim: false }),
         tool_area,
     );
     frame.render_widget(
-        Paragraph::new(labeled_text("Reason", reason, accent)).wrap(Wrap { trim: false }),
+        Paragraph::new(labeled_text("Reason", &safe_reason, accent)).wrap(Wrap { trim: false }),
         reason_area,
     );
 
-    let arguments = serde_json::to_string_pretty(args).unwrap_or_else(|_| args.to_string());
     frame.render_widget(
-        Paragraph::new(labeled_text("Arguments", &arguments, accent)).wrap(Wrap { trim: false }),
+        Paragraph::new(labeled_text("Arguments", &safe_arguments, accent))
+            .wrap(Wrap { trim: false }),
         arguments_area,
     );
     frame.render_widget(
@@ -140,6 +147,7 @@ fn render_input(
     draft: &str,
     interaction_key_mode: InteractionKeyMode,
 ) {
+    let safe_prompt = sanitize_tool_text(prompt, MAX_TOOL_DETAIL_TEXT_BYTES);
     let accent = Style::default()
         .fg(Color::Cyan)
         .add_modifier(Modifier::BOLD);
@@ -148,7 +156,7 @@ fn render_input(
     frame.render_widget(block, area);
 
     let (body, actions) = split_actions(inner);
-    let prompt_height = wrapped_height(&labeled_text("Prompt", prompt, accent), body.width)
+    let prompt_height = wrapped_height(&labeled_text("Prompt", &safe_prompt, accent), body.width)
         .min(3)
         .min(body.height.saturating_sub(2))
         .max(1);
@@ -158,7 +166,7 @@ fn render_input(
     let draft_area = trim_top(after_prompt, 1);
 
     frame.render_widget(
-        Paragraph::new(labeled_text("Prompt", prompt, accent)).wrap(Wrap { trim: false }),
+        Paragraph::new(labeled_text("Prompt", &safe_prompt, accent)).wrap(Wrap { trim: false }),
         prompt_area,
     );
     frame.render_widget(
@@ -203,27 +211,33 @@ fn render_compact_approval(
     interaction_key_mode: InteractionKeyMode,
     approval_confirmation: bool,
 ) {
+    let safe_name = sanitize_tool_text(name, MAX_TOOL_DETAIL_TEXT_BYTES);
+    let safe_reason = sanitize_tool_text(reason, MAX_TOOL_DETAIL_TEXT_BYTES);
+    let safe_arguments = bounded_arguments(args);
     let (body, actions) = split_actions(area);
     let accent = Style::default()
         .fg(Color::Yellow)
         .add_modifier(Modifier::BOLD);
 
     if body.height >= 3 {
-        frame.render_widget(compact_line("Approval", name, accent), take_top(body, 1));
+        frame.render_widget(
+            compact_line("Approval", &safe_name, accent),
+            take_top(body, 1),
+        );
         let after_tool = trim_top(body, 1);
         frame.render_widget(
-            compact_line("Reason", reason, accent),
+            compact_line("Reason", &safe_reason, accent),
             take_top(after_tool, 1),
         );
         frame.render_widget(
-            Paragraph::new(labeled_text("Args", &args.to_string(), accent))
+            Paragraph::new(labeled_text("Args", &safe_arguments, accent))
                 .wrap(Wrap { trim: false }),
             trim_top(after_tool, 1),
         );
     } else if body.height > 0 {
         frame.render_widget(
             Paragraph::new(format!(
-                "Approval: {name} | Reason: {reason} | Args: {args}"
+                "Approval: {safe_name} | Reason: {safe_reason} | Args: {safe_arguments}"
             ))
             .wrap(Wrap { trim: false }),
             body,
@@ -243,13 +257,17 @@ fn render_compact_input(
     draft: &str,
     interaction_key_mode: InteractionKeyMode,
 ) {
+    let safe_prompt = sanitize_tool_text(prompt, MAX_TOOL_DETAIL_TEXT_BYTES);
     let (body, actions) = split_actions(area);
     let accent = Style::default()
         .fg(Color::Cyan)
         .add_modifier(Modifier::BOLD);
 
     if body.height >= 2 {
-        frame.render_widget(compact_line("Input", prompt, accent), take_top(body, 1));
+        frame.render_widget(
+            compact_line("Input", &safe_prompt, accent),
+            take_top(body, 1),
+        );
         let draft_area = trim_top(body, 1);
         frame.render_widget(draft_paragraph(draft, draft_area), draft_area);
     } else if body.height == 1 {
@@ -282,7 +300,9 @@ fn labeled_text(label: &'static str, value: &str, label_style: Style) -> Text<'s
 }
 
 fn draft_paragraph(draft: &str, area: Rect) -> Paragraph<'static> {
-    let mut lines = draft
+    let safe_draft = sanitize_display_text(draft, MAX_COMPOSER_BYTES);
+    let safe_draft = truncate_display_text(&safe_draft, MAX_COMPOSER_BYTES);
+    let mut lines = safe_draft
         .split('\n')
         .map(|line| Line::raw(line.to_string()))
         .collect::<Vec<_>>();
@@ -301,6 +321,12 @@ fn draft_paragraph(draft: &str, area: Rect) -> Paragraph<'static> {
             .saturating_sub(usize::from(area.height))
     };
     paragraph.scroll((u16::try_from(scroll).unwrap_or(u16::MAX), 0))
+}
+
+fn bounded_arguments(args: &serde_json::Value) -> String {
+    let safe = sanitize_json_value(args, 0);
+    let rendered = serde_json::to_string_pretty(&safe).unwrap_or_else(|_| safe.to_string());
+    truncate_display_text(&rendered, MAX_TOOL_DETAIL_TEXT_BYTES)
 }
 
 fn compact_line(label: &'static str, value: &str, accent: Style) -> Paragraph<'static> {

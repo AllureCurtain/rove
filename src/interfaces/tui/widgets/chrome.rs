@@ -5,6 +5,9 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
 use crate::core::types::TerminationReason;
 use crate::interfaces::terminal::view::ToolCallStatus;
+use crate::interfaces::tui::sanitize::{
+    sanitize_display_text, sanitize_tool_text, truncate_display_text,
+};
 use crate::interfaces::tui::state::{RunLifecycle, TuiFocus, TuiState};
 
 use super::termination_label;
@@ -13,7 +16,10 @@ pub(crate) fn activity(state: &TuiState, bordered: bool) -> Paragraph<'static> {
     let (label, detail, style) = activity_content(state);
     let line = Line::from(vec![
         Span::styled(format!("{label}  "), style.add_modifier(Modifier::BOLD)),
-        Span::styled(detail, Style::default().fg(Color::White)),
+        Span::styled(
+            sanitize_activity_text(&detail),
+            Style::default().fg(Color::White),
+        ),
     ]);
     let paragraph = Paragraph::new(line).wrap(Wrap { trim: false });
 
@@ -46,7 +52,7 @@ pub(crate) fn composer(state: &TuiState, area: Rect, bordered: bool) -> Paragrap
                 .add_modifier(Modifier::ITALIC),
         )
     } else {
-        Span::raw(state.composer.clone())
+        Span::raw(sanitize_composer_text(&state.composer))
     };
     let caret = if focused {
         Span::styled(
@@ -111,7 +117,25 @@ pub(crate) fn minimal_line(state: &TuiState) -> Paragraph<'static> {
     } else {
         state.composer.as_str()
     };
-    Paragraph::new(format!("> {draft} | {run_status}")).style(Style::default().fg(Color::Cyan))
+    Paragraph::new(format!(
+        "> {} | {run_status}",
+        sanitize_composer_text(draft)
+    ))
+    .style(Style::default().fg(Color::Cyan))
+}
+
+fn sanitize_activity_text(value: &str) -> String {
+    sanitize_tool_text(
+        value,
+        crate::interfaces::tui::state::MAX_TOOL_DETAIL_TEXT_BYTES,
+    )
+}
+
+fn sanitize_composer_text(value: &str) -> String {
+    truncate_display_text(
+        &sanitize_display_text(value, crate::interfaces::tui::state::MAX_COMPOSER_BYTES),
+        crate::interfaces::tui::state::MAX_COMPOSER_BYTES,
+    )
 }
 
 fn activity_content(state: &TuiState) -> (&'static str, String, Style) {

@@ -242,6 +242,169 @@ pub struct RunViewState {
     /// A different `RunStarted` identity resets the per-run sequence to zero
     /// before recording that run's user entry.
     pub timeline_high_watermark: u64,
+    /// Incremental, renderer-neutral safety state for streamed assistant text.
+    /// Provider chunks can split tags and line markers at arbitrary boundaries.
+    pub(crate) assistant_visibility: AssistantVisibilityProjection,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct AssistantVisibilityProjection {
+    block_pending: String,
+    hidden_close_tag: Option<&'static str>,
+    line_mode: AssistantLineMode,
+    line_pending: String,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum AssistantLineMode {
+    #[default]
+    Detecting,
+    Visible,
+    Hidden,
+}
+
+const HIDDEN_REASONING_TAGS: [(&str, &str); 3] = [
+    ("<think>", "</think>"),
+    ("<analysis>", "</analysis>"),
+    ("<reasoning>", "</reasoning>"),
+];
+
+const HIDDEN_REASONING_LINE_MARKERS: [&str; 4] =
+    ["thought:", "reasoning:", "analysis:", "chain-of-thought:"];
+
+impl AssistantVisibilityProjection {
+    fn feed(&mut self, chunk: &str) -> String {
+        self.block_pending.push_str(chunk);
+        let visible = self.drain_block_pending(false);
+        self.filter_line_markers(&visible)
+    }
+
+    fn finish(&mut self) -> String {
+        let visible = self.drain_block_pending(true);
+        let mut output = self.filter_line_markers(&visible);
+        match self.line_mode {
+            AssistantLineMode::Detecting => {
+                output.push_str(&self.line_pending);
+            }
+            AssistantLineMode::Visible | AssistantLineMode::Hidden => {}
+        }
+        self.hidden_close_tag = None;
+        self.block_pending.clear();
+        self.line_pending.clear();
+        self.line_mode = AssistantLineMode::Detecting;
+        output
+    }
+
+    fn drain_block_pending(&mut self, finish: bool) -> String {
+        let mut output = String::new();
+        loop {
+            if let Some(close) = self.hidden_close_tag {
+                let lower = self.block_pending.to_ascii_lowercase();
+                if let Some(index) = lower.find(close) {
+                    let end = index + close.len();
+                    self.block_pending.drain(..end);
+                    self.hidden_close_tag = None;
+                    continue;
+                }
+                if finish {
+                    self.block_pending.clear();
+                    break;
+                }
+                let keep = longest_suffix_prefix(&lower, [close]);
+                let discard = self.block_pending.len().saturating_sub(keep);
+                self.block_pending.drain(..discard);
+                break;
+            }
+
+            let lower = self.block_pending.to_ascii_lowercase();
+            let next_open = HIDDEN_REASONING_TAGS
+                .iter()
+                .filter_map(|(open, close)| lower.find(open).map(|index| (index, *close)))
+                .min_by_key(|(index, _)| *index);
+            if let Some((index, close)) = next_open {
+                output.push_str(&self.block_pending[..index]);
+                let open_len = HIDDEN_REASONING_TAGS
+                    .iter()
+                    .find(|(open, _)| lower[index..].starts_with(open))
+                    .map(|(open, _)| open.len())
+                    .unwrap_or_default();
+                self.block_pending.drain(..index + open_len);
+                self.hidden_close_tag = Some(close);
+                continue;
+            }
+
+            if finish {
+                output.push_str(&self.block_pending);
+                self.block_pending.clear();
+                break;
+            }
+            let keep =
+                longest_suffix_prefix(&lower, HIDDEN_REASONING_TAGS.iter().map(|(open, _)| *open));
+            let safe = self.block_pending.len().saturating_sub(keep);
+            output.push_str(&self.block_pending[..safe]);
+            self.block_pending.drain(..safe);
+            break;
+        }
+        output
+    }
+
+    fn filter_line_markers(&mut self, input: &str) -> String {
+        let mut output = String::new();
+        for character in input.chars() {
+            match self.line_mode {
+                AssistantLineMode::Visible => {
+                    output.push(character);
+                    if character == '\n' {
+                        self.line_mode = AssistantLineMode::Detecting;
+                    }
+                }
+                AssistantLineMode::Hidden => {
+                    if character == '\n' {
+                        self.line_pending.clear();
+                        self.line_mode = AssistantLineMode::Detecting;
+                    }
+                }
+                AssistantLineMode::Detecting => {
+                    if character == '\n' {
+                        output.push_str(&self.line_pending);
+                        output.push('\n');
+                        self.line_pending.clear();
+                        continue;
+                    }
+                    self.line_pending.push(character);
+                    let candidate = self.line_pending.trim_start().to_ascii_lowercase();
+                    if HIDDEN_REASONING_LINE_MARKERS
+                        .iter()
+                        .any(|marker| candidate == *marker)
+                    {
+                        self.line_pending.clear();
+                        self.line_mode = AssistantLineMode::Hidden;
+                    } else if !HIDDEN_REASONING_LINE_MARKERS
+                        .iter()
+                        .any(|marker| marker.starts_with(&candidate))
+                    {
+                        output.push_str(&self.line_pending);
+                        self.line_pending.clear();
+                        self.line_mode = AssistantLineMode::Visible;
+                    }
+                }
+            }
+        }
+        output
+    }
+}
+
+fn longest_suffix_prefix<'a>(value: &str, patterns: impl IntoIterator<Item = &'a str>) -> usize {
+    patterns
+        .into_iter()
+        .map(|pattern| {
+            (1..=pattern.len())
+                .rev()
+                .find(|length| value.ends_with(&pattern[..*length]))
+                .unwrap_or(0)
+        })
+        .max()
+        .unwrap_or(0)
 }
 
 impl RunViewState {
@@ -267,9 +430,11 @@ impl RunViewState {
 
     pub fn apply_update(&mut self, update: RunViewUpdate) {
         if let RunViewUpdate::RunStarted { run_id, job_id, .. } = &update {
-            if self.run_id.is_some_and(|current| current != *run_id) {
+            let new_identity = self.run_id != Some(*run_id);
+            if new_identity {
                 self.timeline.clear();
                 self.timeline_high_watermark = 0;
+                self.assistant_visibility = AssistantVisibilityProjection::default();
             }
             self.run_id = Some(*run_id);
             self.job_id = Some(*job_id);
@@ -459,8 +624,9 @@ impl RunViewState {
                 message: bounded_visible_text(user_message),
             }),
             RunViewUpdate::AssistantDelta { delta } => {
-                visible_assistant_text(delta).map(|text| RunTimelineEntryKind::Assistant {
-                    text,
+                let visible = self.assistant_visibility.feed(delta);
+                (!visible.is_empty()).then(|| RunTimelineEntryKind::Assistant {
+                    text: bounded_visible_text(&visible),
                     final_message: false,
                 })
             }
@@ -471,7 +637,10 @@ impl RunViewState {
                 })
             }
             RunViewUpdate::LlmMessage { full, .. } => {
-                visible_assistant_text(full).map(|text| RunTimelineEntryKind::Assistant {
+                let _ = self.assistant_visibility.finish();
+                let visible = visible_assistant_text(full);
+                self.assistant_visibility = AssistantVisibilityProjection::default();
+                visible.map(|text| RunTimelineEntryKind::Assistant {
                     text,
                     final_message: true,
                 })
@@ -551,6 +720,7 @@ impl RunViewState {
             // visible transcript content.
             RunViewUpdate::PromptBuilt { .. } => None,
             RunViewUpdate::RunCompleted { reason, output } => {
+                let _ = self.assistant_visibility.finish();
                 Some(RunTimelineEntryKind::Completion {
                     reason: reason.clone(),
                     output: output.as_deref().and_then(visible_assistant_text),
@@ -638,36 +808,10 @@ fn visible_assistant_text(value: &str) -> Option<String> {
 }
 
 fn strip_hidden_reasoning_blocks(value: &str) -> String {
-    let mut visible = value.to_string();
-    for (open, close) in [
-        ("<think>", "</think>"),
-        ("<analysis>", "</analysis>"),
-        ("<reasoning>", "</reasoning>"),
-    ] {
-        loop {
-            let lower = visible.to_ascii_lowercase();
-            let Some(start) = lower.find(open) else {
-                break;
-            };
-            let content_start = start + open.len();
-            let end = lower[content_start..]
-                .find(close)
-                .map(|relative| content_start + relative + close.len())
-                .unwrap_or(visible.len());
-            visible.replace_range(start..end, "");
-        }
-    }
-
+    let mut projection = AssistantVisibilityProjection::default();
+    let mut visible = projection.feed(value);
+    visible.push_str(&projection.finish());
     visible
-        .lines()
-        .filter(|line| {
-            let lower = line.trim_start().to_ascii_lowercase();
-            !["thought:", "reasoning:", "analysis:", "chain-of-thought:"]
-                .iter()
-                .any(|marker| lower.starts_with(marker))
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 fn bounded_visible_text(value: &str) -> String {
@@ -676,7 +820,14 @@ fn bounded_visible_text(value: &str) -> String {
     }
 
     let mut chars = value.chars();
-    let mut visible: String = chars.by_ref().take(MAX_RUN_TIMELINE_TEXT_CHARS).collect();
+    let mut visible = String::new();
+    for character in chars.by_ref().take(MAX_RUN_TIMELINE_TEXT_CHARS) {
+        if character.is_control() && character != '\n' && character != '\t' {
+            visible.push(' ');
+        } else {
+            visible.push(character);
+        }
+    }
     if chars.next().is_some() {
         let keep = MAX_RUN_TIMELINE_TEXT_CHARS.saturating_sub(3);
         visible = visible.chars().take(keep).collect();
@@ -1167,6 +1318,89 @@ mod tests {
 
         assert_eq!(state.assistant_text, "answer");
         assert!(state.model_status.is_none());
+    }
+
+    #[test]
+    fn streamed_reasoning_is_filtered_across_chunk_boundaries() {
+        let run_id = RunId::new();
+        let job_id = JobId::new();
+        let mut state = super::RunViewState::default();
+        state.apply_update(RunViewUpdate::RunStarted {
+            run_id,
+            job_id,
+            user_message: "show the answer".to_string(),
+        });
+        for delta in ["<thi", "nk>hidden", "</thi", "nk>visible"] {
+            state.apply_update(RunViewUpdate::AssistantDelta {
+                delta: delta.to_string(),
+            });
+        }
+
+        let visible = state
+            .timeline
+            .iter()
+            .filter_map(|entry| match &entry.kind {
+                RunTimelineEntryKind::Assistant { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<String>();
+        assert_eq!(visible, "visible");
+
+        let mut line_state = super::RunViewState::default();
+        line_state.apply_update(RunViewUpdate::AssistantDelta {
+            delta: "prefix\nReas".to_string(),
+        });
+        line_state.apply_update(RunViewUpdate::AssistantDelta {
+            delta: "oning: hidden\nvisible".to_string(),
+        });
+        let line_visible = line_state
+            .timeline
+            .iter()
+            .filter_map(|entry| match &entry.kind {
+                RunTimelineEntryKind::Assistant { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<String>();
+        assert_eq!(line_visible, "prefix\nvisible");
+    }
+
+    #[test]
+    fn reasoning_projection_fails_closed_for_unclosed_blocks_and_preserves_state_on_duplicate_start()
+     {
+        let run_id = RunId::new();
+        let job_id = JobId::new();
+        let mut state = super::RunViewState::default();
+        state.apply_update(RunViewUpdate::RunStarted {
+            run_id,
+            job_id,
+            user_message: "prompt".to_string(),
+        });
+        state.apply_update(RunViewUpdate::AssistantDelta {
+            delta: "<think>hidden".to_string(),
+        });
+        state.apply_update(RunViewUpdate::RunStarted {
+            run_id,
+            job_id,
+            user_message: "prompt".to_string(),
+        });
+        state.apply_update(RunViewUpdate::AssistantDelta {
+            delta: "</think>visible".to_string(),
+        });
+        assert!(state
+            .timeline
+            .iter()
+            .any(|entry| matches!(&entry.kind, RunTimelineEntryKind::Assistant { text, .. } if text == "visible")));
+
+        let mut unclosed = super::RunViewState::default();
+        unclosed.apply_update(RunViewUpdate::AssistantDelta {
+            delta: "<think>DO_NOT_RENDER".to_string(),
+        });
+        unclosed.apply_update(RunViewUpdate::RunCompleted {
+            reason: TerminationReason::Final,
+            output: Some("<think>DO_NOT_RENDER".to_string()),
+        });
+        let projected = format!("{:?}", unclosed.timeline);
+        assert!(!projected.contains("DO_NOT_RENDER"));
     }
 
     #[test]

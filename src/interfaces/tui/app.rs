@@ -31,9 +31,10 @@ use crate::interfaces::tui::render::{render, sync_viewport};
 use crate::interfaces::tui::run::{TuiRunContext, drive_tui_run_events};
 use crate::interfaces::tui::state::{
     InteractionKeyMode, InteractionModalKind, InteractionModalView, ResumeCandidate, RunLifecycle,
-    SessionPickerError, TuiState,
+    SessionPickerError, SessionPickerState, TuiOverlay, TuiState,
 };
 use crate::interfaces::tui::terminal::TerminalSession;
+use crate::state::index::ResumeJobClaim;
 use crate::state::resume::resolve_resume_state;
 
 const RUN_UPDATE_CAPACITY: usize = 32;
@@ -45,6 +46,7 @@ pub struct TuiApp {
     pub state: TuiState,
     session_id: SessionId,
     active_resume_state: Option<TaskState>,
+    resume_claim: Option<ResumeJobClaim>,
     pressed_keys: PressedKeys,
 }
 
@@ -64,6 +66,7 @@ impl TuiApp {
             state,
             session_id,
             active_resume_state,
+            resume_claim: None,
             pressed_keys: PressedKeys::default(),
         }
     }
@@ -86,6 +89,11 @@ impl TuiApp {
         self.session_id = active_resume_state.session_id;
         self.state.active_resume = Some(ResumeCandidate::from_task_state(&active_resume_state));
         self.active_resume_state = Some(active_resume_state);
+    }
+
+    fn clear_active_resume_state(&mut self) {
+        self.state.active_resume = None;
+        self.active_resume_state = None;
     }
 }
 
@@ -420,6 +428,9 @@ pub async fn run(
     active_resume_state: Option<TaskState>,
     mut interactions: TuiInteractionReceiver,
 ) -> anyhow::Result<()> {
+    if let Some(resume_state) = active_resume_state.as_ref() {
+        validate_tui_resume_state(&runtime, resume_state).await?;
+    }
     let mut terminal = TerminalSession::enter().context("failed to enter TUI terminal mode")?;
     let interaction_key_mode = terminal.interaction_key_mode();
     let mut events = EventStream::new();
@@ -448,6 +459,37 @@ pub async fn run(
             Err(error.context(format!("terminal restore also failed: {restore_error}")))
         }
     }
+}
+
+async fn validate_tui_resume_state(
+    runtime: &CliRuntime,
+    resume_state: &TaskState,
+) -> anyhow::Result<()> {
+    let Some(job) = runtime
+        .state_store
+        .index
+        .job_record_async(resume_state.job_id)
+        .await?
+    else {
+        anyhow::bail!("cannot resume: indexed job is missing");
+    };
+    let Some(run) = runtime.state_store.index.run_record(resume_state.run_id)? else {
+        anyhow::bail!("cannot resume: indexed run is missing");
+    };
+    if job.session_id != resume_state.session_id
+        || job.run_id != Some(resume_state.run_id)
+        || run.session_id != resume_state.session_id
+        || run.job_id != resume_state.job_id
+        || run.status != job.status
+        || !is_terminal_index_status(&job.status)
+    {
+        anyhow::bail!("cannot resume: selected task state is stale or still active");
+    }
+    Ok(())
+}
+
+fn is_terminal_index_status(status: &str) -> bool {
+    matches!(status, "done" | "error" | "cancelled" | "interrupted")
 }
 
 async fn run_loop<B, E>(
@@ -536,19 +578,45 @@ async fn apply_idle_effects(
     while let Some(effect) = queue.pop_front() {
         match effect {
             TuiEffect::Dispatch(TerminalAction::SubmitPrompt(message)) => {
-                prompt = Some(message);
+                if let Some(resume_state) = app.active_resume_state.as_ref() {
+                    match runtime
+                        .state_store
+                        .index
+                        .claim_job_for_resume_async(resume_state.job_id, resume_state.run_id)
+                        .await
+                    {
+                        Ok(Some(claim)) => {
+                            app.resume_claim = Some(claim);
+                            prompt = Some(message);
+                        }
+                        Ok(None) => {
+                            reject_busy_resume_submission(app, message);
+                        }
+                        Err(error) => {
+                            tracing::warn!(error = %error, "Failed to claim resume job for TUI");
+                            reject_resume_submission(app, message, SessionPickerError::LoadFailed);
+                        }
+                    }
+                } else {
+                    prompt = Some(message);
+                }
             }
             TuiEffect::Dispatch(_) | TuiEffect::ExitAfterRun => {}
             TuiEffect::Exit => {
                 app.state.should_quit = true;
             }
             TuiEffect::LoadSessions => {
-                let action = match runtime.state_store.list_task_states().await {
+                let action = match runtime
+                    .state_store
+                    .list_resumable_task_states_limited(
+                        crate::interfaces::tui::state::MAX_SESSION_CANDIDATES,
+                    )
+                    .await
+                {
                     Ok(states) => TuiAction::SessionsLoaded {
                         candidates: states
                             .iter()
                             .map(ResumeCandidate::from_task_state)
-                            .take(crate::interfaces::tui::state::MAX_SESSION_CANDIDATES)
                             .collect(),
                     },
                     Err(error) => TuiAction::SessionsLoadFailed {
@@ -559,13 +627,61 @@ async fn apply_idle_effects(
             }
             TuiEffect::ResolveResume { run_id } => {
                 let value = run_id.to_string();
+                let candidate = resolving_resume_candidate(&app.state, run_id);
                 match resolve_resume_state(&runtime.state_store, Some(&value)).await {
                     Ok(Some(resume_state)) if app.state.can_accept_resume(run_id) => {
-                        app.set_active_resume_state(resume_state);
-                        queue.extend(reduce(
-                            &mut app.state,
-                            TuiAction::ResumeSelectionSucceeded { run_id },
-                        ));
+                        let identity_matches = candidate.as_ref().is_some_and(|candidate| {
+                            candidate.run_id == resume_state.run_id
+                                && candidate.job_id == resume_state.job_id
+                                && candidate.session_id == resume_state.session_id
+                                && resume_state.run_id == run_id
+                        });
+                        let job = runtime
+                            .state_store
+                            .index
+                            .job_record_async(resume_state.job_id)
+                            .await;
+                        match job {
+                            Ok(Some(job))
+                                if identity_matches
+                                    && job.run_id == Some(run_id)
+                                    && job.session_id == resume_state.session_id
+                                    && is_terminal_index_status(&job.status) =>
+                            {
+                                app.set_active_resume_state(resume_state);
+                                queue.extend(reduce(
+                                    &mut app.state,
+                                    TuiAction::ResumeSelectionSucceeded { run_id },
+                                ));
+                            }
+                            Ok(Some(job)) if !is_terminal_index_status(&job.status) => {
+                                queue.extend(reduce(
+                                    &mut app.state,
+                                    TuiAction::ResumeSelectionFailed {
+                                        run_id,
+                                        error: SessionPickerError::Busy,
+                                    },
+                                ));
+                            }
+                            Ok(_) => queue.extend(reduce(
+                                &mut app.state,
+                                TuiAction::ResumeSelectionFailed {
+                                    run_id,
+                                    error: if identity_matches {
+                                        SessionPickerError::Stale
+                                    } else {
+                                        SessionPickerError::Malformed
+                                    },
+                                },
+                            )),
+                            Err(error) => queue.extend(reduce(
+                                &mut app.state,
+                                TuiAction::ResumeSelectionFailed {
+                                    run_id,
+                                    error: classify_io_error(&error),
+                                },
+                            )),
+                        }
                     }
                     Ok(Some(_)) => {}
                     Ok(None) => queue.extend(reduce(
@@ -606,6 +722,41 @@ fn classify_anyhow_error(error: &anyhow::Error) -> SessionPickerError {
     SessionPickerError::LoadFailed
 }
 
+fn resolving_resume_candidate(state: &TuiState, run_id: RunId) -> Option<ResumeCandidate> {
+    let Some(TuiOverlay::SessionPicker(SessionPickerState::Ready {
+        candidates,
+        resolving: Some(resolving),
+        ..
+    })) = state.overlay.as_ref()
+    else {
+        return None;
+    };
+    (*resolving == run_id)
+        .then(|| {
+            candidates
+                .iter()
+                .find(|candidate| candidate.run_id == run_id)
+        })
+        .flatten()
+        .cloned()
+}
+
+fn reject_busy_resume_submission(app: &mut TuiApp, message: String) {
+    reject_resume_submission(app, message, SessionPickerError::Busy);
+}
+
+fn reject_resume_submission(app: &mut TuiApp, message: String, error: SessionPickerError) {
+    app.clear_active_resume_state();
+    app.state.run_lifecycle = RunLifecycle::Idle;
+    app.state.composer = message;
+    app.state.overlay = Some(TuiOverlay::SessionPicker(SessionPickerState::Ready {
+        candidates: Vec::new(),
+        selected: 0,
+        error: Some(error),
+        resolving: None,
+    }));
+}
+
 async fn run_prompt<B, E>(
     terminal: &mut Terminal<B>,
     events: &mut E,
@@ -622,7 +773,20 @@ where
 {
     discard_queued_interactions(interactions);
     let (session_id, job_id, run_id) = app.next_run_identity();
-    let run = runtime.state_store.start_run(session_id, job_id, run_id)?;
+    let resume_claim = app.resume_claim.take();
+    let run = match runtime.state_store.start_run(session_id, job_id, run_id) {
+        Ok(run) => run,
+        Err(error) => {
+            if let Some(claim) = resume_claim {
+                let _ = runtime
+                    .state_store
+                    .index
+                    .release_job_resume_claim_async(claim)
+                    .await;
+            }
+            return Err(error.into());
+        }
+    };
     let resume_state = app.active_resume_state.clone();
     let request = run.request(message.clone(), resume_state.clone());
     let trace_writer = run.trace_writer.clone();
@@ -2533,6 +2697,22 @@ mod tests {
         runtime.state_store.write_task_state(&older).await.unwrap();
         tokio::time::sleep(Duration::from_millis(5)).await;
         runtime.state_store.write_task_state(&newer).await.unwrap();
+        for state in [&older, &newer] {
+            runtime
+                .state_store
+                .index
+                .record_report(
+                    state.run_id,
+                    &runtime
+                        .state_store
+                        .run_store
+                        .run_dir(&state.run_id)
+                        .join("report.json"),
+                    "success",
+                    "final",
+                )
+                .unwrap();
+        }
 
         let mut app = TuiApp::default();
         let effects = reduce(&mut app.state, TuiAction::OpenSessionPicker);

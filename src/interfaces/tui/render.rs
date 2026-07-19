@@ -409,6 +409,98 @@ mod tests {
     }
 
     #[test]
+    fn timeline_status_between_stream_and_final_does_not_duplicate_the_answer() {
+        let mut state = TuiState {
+            run_lifecycle: RunLifecycle::Completed,
+            ..TuiState::default()
+        };
+        state.run.apply_update(
+            crate::interfaces::terminal::view::RunViewUpdate::AssistantDelta {
+                delta: "UNIQUE_TIMELINE_ANSWER".to_string(),
+            },
+        );
+        state.run.apply_update(
+            crate::interfaces::terminal::view::RunViewUpdate::ModelStatus {
+                status: "working".to_string(),
+                message: "checking".to_string(),
+            },
+        );
+        state.run.apply_update(
+            crate::interfaces::terminal::view::RunViewUpdate::LlmMessage {
+                full: "UNIQUE_TIMELINE_ANSWER".to_string(),
+                usage: Default::default(),
+                tool_call_count: 0,
+            },
+        );
+        state.run.apply_update(
+            crate::interfaces::terminal::view::RunViewUpdate::RunCompleted {
+                reason: TerminationReason::Final,
+                output: Some("UNIQUE_TIMELINE_ANSWER".to_string()),
+            },
+        );
+
+        let rendered = buffer_text(&draw(100, 24, &state));
+        assert_eq!(rendered.matches("UNIQUE_TIMELINE_ANSWER").count(), 1);
+    }
+
+    #[test]
+    fn render_boundaries_redact_split_secrets_and_modal_context() {
+        let mut transcript_state = TuiState {
+            composer: "Discuss password and secret handling".to_string(),
+            run_lifecycle: RunLifecycle::Running,
+            ..TuiState::default()
+        };
+        transcript_state.run.apply_update(
+            crate::interfaces::terminal::view::RunViewUpdate::AssistantDelta {
+                delta: "api_".to_string(),
+            },
+        );
+        transcript_state.run.apply_update(
+            crate::interfaces::terminal::view::RunViewUpdate::AssistantDelta {
+                delta: "key=CANARY_SPLIT_SECRET".to_string(),
+            },
+        );
+        let transcript = buffer_text(&draw(120, 30, &transcript_state));
+        assert!(!transcript.contains("CANARY_SPLIT_SECRET"));
+        assert!(transcript.contains("redacted sensitive output"));
+        assert!(transcript.contains("Discuss password and secret handling"));
+
+        let approval_state = TuiState {
+            modal: Some(InteractionModalView::Approval {
+                call_id: CallId::new(),
+                name: "fs_write".to_string(),
+                args: serde_json::json!({
+                    "authorization": "CANARY_AUTH_VALUE",
+                    "nested": {"api_token": "CANARY_TOKEN_VALUE"}
+                }),
+                reason: "password=CANARY_REASON_VALUE".to_string(),
+            }),
+            ..TuiState::default()
+        };
+        let approval = buffer_text(&draw(120, 40, &approval_state));
+        for canary in [
+            "CANARY_AUTH_VALUE",
+            "CANARY_TOKEN_VALUE",
+            "CANARY_REASON_VALUE",
+        ] {
+            assert!(!approval.contains(canary));
+        }
+        assert!(approval.contains("redacted"));
+
+        let input_state = TuiState {
+            modal: Some(InteractionModalView::Input {
+                input_id: CallId::new(),
+                prompt: "access_token: CANARY_PROMPT_VALUE".to_string(),
+                draft: "ordinary secret discussion".to_string(),
+            }),
+            ..TuiState::default()
+        };
+        let input = buffer_text(&draw(120, 40, &input_state));
+        assert!(!input.contains("CANARY_PROMPT_VALUE"));
+        assert!(input.contains("ordinary secret discussion"));
+    }
+
+    #[test]
     fn lifecycle_drives_pre_start_cancelling_and_limited_statuses() {
         let mut state = TuiState {
             run_lifecycle: RunLifecycle::Running,

@@ -4,8 +4,13 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
 use crate::core::types::TerminationReason;
-use crate::interfaces::terminal::view::{RunViewState, ToolCallStatus};
-use crate::interfaces::tui::sanitize::sanitize_tool_text;
+use crate::interfaces::terminal::view::{
+    RunTimelineEntryKind, RunTimelinePlanStepStatus, RunTimelineToolStatus, RunViewState,
+    ToolCallStatus,
+};
+use crate::interfaces::tui::sanitize::{
+    sanitize_display_text, sanitize_tool_text, truncate_display_text,
+};
 use crate::interfaces::tui::state::{TuiFocus, TuiState};
 
 use super::termination_label;
@@ -75,11 +80,262 @@ fn transcript_text(state: &TuiState) -> Text<'static> {
 }
 
 fn push_run_lines(lines: &mut Vec<Line<'static>>, run: &RunViewState) {
+    if run.timeline_entries().is_empty() {
+        push_legacy_run_lines(lines, run);
+    } else {
+        push_timeline_run_lines(lines, run);
+    }
+}
+
+fn push_timeline_run_lines(lines: &mut Vec<Line<'static>>, run: &RunViewState) {
+    let mut pending_assistant = String::new();
+    let mut streamed_turn = String::new();
+    let mut last_assistant = String::new();
+
+    for entry in run.timeline_entries() {
+        match &entry.kind {
+            RunTimelineEntryKind::Assistant {
+                text,
+                final_message: false,
+            } => {
+                pending_assistant.push_str(text);
+                streamed_turn.push_str(text);
+            }
+            RunTimelineEntryKind::Assistant {
+                text,
+                final_message: true,
+            } => {
+                flush_assistant(lines, &mut pending_assistant);
+                if !assistant_text_equivalent(&streamed_turn, text) {
+                    push_assistant(lines, text);
+                    last_assistant = text.clone();
+                } else {
+                    last_assistant = streamed_turn.clone();
+                }
+                streamed_turn.clear();
+            }
+            kind => {
+                flush_assistant(lines, &mut pending_assistant);
+                push_timeline_kind(lines, kind, &streamed_turn, &last_assistant);
+                if matches!(kind, RunTimelineEntryKind::Completion { .. }) {
+                    streamed_turn.clear();
+                } else if timeline_turn_boundary(kind) && !streamed_turn.is_empty() {
+                    last_assistant = std::mem::take(&mut streamed_turn);
+                }
+            }
+        }
+    }
+    flush_assistant(lines, &mut pending_assistant);
+}
+
+fn timeline_turn_boundary(kind: &RunTimelineEntryKind) -> bool {
+    matches!(
+        kind,
+        RunTimelineEntryKind::Plan { .. }
+            | RunTimelineEntryKind::PlanStep { .. }
+            | RunTimelineEntryKind::Tool { .. }
+            | RunTimelineEntryKind::Approval { .. }
+            | RunTimelineEntryKind::Input { .. }
+            | RunTimelineEntryKind::Compaction { .. }
+            | RunTimelineEntryKind::Memory { .. }
+    )
+}
+
+fn flush_assistant(lines: &mut Vec<Line<'static>>, pending: &mut String) {
+    if pending.is_empty() {
+        return;
+    }
+    push_assistant(lines, pending);
+    pending.clear();
+}
+
+fn push_assistant(lines: &mut Vec<Line<'static>>, text: &str) {
+    push_labeled_text(
+        lines,
+        "Assistant",
+        &sanitize_legacy_text(text),
+        Style::default()
+            .fg(Color::Green)
+            .add_modifier(Modifier::BOLD),
+    );
+}
+
+fn assistant_text_equivalent(left: &str, right: &str) -> bool {
+    let left = left.trim();
+    let right = right.trim();
+    !left.is_empty() && left == right
+}
+
+fn push_timeline_kind(
+    lines: &mut Vec<Line<'static>>,
+    kind: &RunTimelineEntryKind,
+    streamed_turn: &str,
+    last_assistant: &str,
+) {
+    match kind {
+        RunTimelineEntryKind::User { message } => push_labeled_text(
+            lines,
+            "You",
+            &sanitize_user_text(message),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        RunTimelineEntryKind::Assistant { .. } => {}
+        RunTimelineEntryKind::ModelStatus { status, message } => push_labeled_text(
+            lines,
+            "Status",
+            &sanitize_legacy_text(&format!("{status}: {message}")),
+            Style::default().fg(Color::DarkGray),
+        ),
+        RunTimelineEntryKind::Plan { goal, step_count } => push_labeled_text(
+            lines,
+            "Plan",
+            &sanitize_legacy_text(&format!("{goal} ({step_count} steps)")),
+            Style::default()
+                .fg(Color::Magenta)
+                .add_modifier(Modifier::BOLD),
+        ),
+        RunTimelineEntryKind::PlanStep {
+            index,
+            title,
+            status,
+            reason,
+            ..
+        } => {
+            let (label, style) = timeline_plan_status(*status);
+            let detail = reason
+                .as_ref()
+                .map(|reason| format!("{title} [{label}] - {reason}"))
+                .unwrap_or_else(|| format!("{title} [{label}]"));
+            push_labeled_text(
+                lines,
+                &format!("Step {}", index + 1),
+                &sanitize_legacy_text(&detail),
+                style,
+            );
+        }
+        RunTimelineEntryKind::Tool {
+            name,
+            status,
+            error_code,
+            ..
+        } => {
+            let (label, style) = timeline_tool_status(*status);
+            let detail = error_code
+                .as_ref()
+                .map(|code| format!("{name} [{label}: {code}]"))
+                .unwrap_or_else(|| format!("{name} [{label}]"));
+            push_labeled_text(
+                lines,
+                "Tool",
+                &sanitize_legacy_text(&detail),
+                Style::default()
+                    .fg(Color::Blue)
+                    .add_modifier(Modifier::BOLD),
+            );
+            if matches!(status, RunTimelineToolStatus::Failed) {
+                lines.push(Line::styled("  tool failed", style));
+            }
+        }
+        RunTimelineEntryKind::Approval {
+            tool_name, reason, ..
+        } => push_labeled_text(
+            lines,
+            "Approval required",
+            &sanitize_legacy_text(&format!("{tool_name} - {reason}")),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
+        RunTimelineEntryKind::Input { prompt, .. } => push_labeled_text(
+            lines,
+            "Input required",
+            &sanitize_legacy_text(prompt),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
+        RunTimelineEntryKind::Compaction {
+            mode,
+            source_message_count,
+            degraded,
+            summary_available,
+        } => push_labeled_text(
+            lines,
+            "Context",
+            &format!(
+                "{mode:?} compaction of {source_message_count} messages (summary: {summary_available}, degraded: {degraded})"
+            ),
+            Style::default().fg(Color::DarkGray),
+        ),
+        RunTimelineEntryKind::Memory { note_count } => push_labeled_text(
+            lines,
+            "Memory",
+            &format!("flushed {note_count} notes"),
+            Style::default().fg(Color::DarkGray),
+        ),
+        RunTimelineEntryKind::Completion { reason, output } => {
+            let style = completion_style(reason);
+            lines.push(Line::from(vec![
+                Span::styled("Completed  ", style),
+                Span::raw(termination_label(reason)),
+            ]));
+            if let Some(output) = output {
+                let shown = if streamed_turn.trim().is_empty() {
+                    last_assistant
+                } else {
+                    streamed_turn
+                };
+                if !assistant_text_equivalent(shown, output)
+                    && !shown.trim().ends_with(output.trim())
+                {
+                    push_labeled_text(
+                        lines,
+                        "  Output",
+                        &sanitize_legacy_text(output),
+                        Style::default().fg(Color::White),
+                    );
+                }
+            }
+        }
+    }
+}
+
+fn timeline_plan_status(status: RunTimelinePlanStepStatus) -> (&'static str, Style) {
+    match status {
+        RunTimelinePlanStepStatus::Started => ("running", Style::default().fg(Color::Magenta)),
+        RunTimelinePlanStepStatus::Completed => ("done", Style::default().fg(Color::Green)),
+        RunTimelinePlanStepStatus::Failed => ("failed", Style::default().fg(Color::Red)),
+    }
+}
+
+fn timeline_tool_status(status: RunTimelineToolStatus) -> (&'static str, Style) {
+    match status {
+        RunTimelineToolStatus::Started => ("running", Style::default().fg(Color::Cyan)),
+        RunTimelineToolStatus::Completed => ("done", Style::default().fg(Color::Green)),
+        RunTimelineToolStatus::Failed => ("failed", Style::default().fg(Color::Red)),
+    }
+}
+
+fn completion_style(reason: &TerminationReason) -> Style {
+    match reason {
+        TerminationReason::Error => Style::default().fg(Color::Red),
+        TerminationReason::Final => Style::default().fg(Color::Green),
+        TerminationReason::Cancelled
+        | TerminationReason::StepLimit
+        | TerminationReason::TokenLimit
+        | TerminationReason::TimeLimit => Style::default().fg(Color::Yellow),
+    }
+    .add_modifier(Modifier::BOLD)
+}
+
+fn push_legacy_run_lines(lines: &mut Vec<Line<'static>>, run: &RunViewState) {
     if let Some(message) = &run.user_message {
         push_labeled_text(
             lines,
             "You",
-            message,
+            &sanitize_user_text(message),
             Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
@@ -89,7 +345,7 @@ fn push_run_lines(lines: &mut Vec<Line<'static>>, run: &RunViewState) {
         push_labeled_text(
             lines,
             "Assistant",
-            &run.assistant_text,
+            &sanitize_legacy_text(&run.assistant_text),
             Style::default()
                 .fg(Color::Green)
                 .add_modifier(Modifier::BOLD),
@@ -104,7 +360,7 @@ fn push_run_lines(lines: &mut Vec<Line<'static>>, run: &RunViewState) {
                     .fg(Color::Magenta)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::raw(plan.goal.clone()),
+            Span::raw(sanitize_legacy_text(&plan.goal)),
         ]));
         for (index, step) in plan.steps.iter().enumerate() {
             let marker = if step.done {
@@ -123,7 +379,7 @@ fn push_run_lines(lines: &mut Vec<Line<'static>>, run: &RunViewState) {
             };
             lines.push(Line::from(vec![
                 Span::styled(format!("  {marker} "), style),
-                Span::raw(step.title.clone()),
+                Span::raw(sanitize_legacy_text(&step.title)),
             ]));
         }
     }
@@ -137,7 +393,7 @@ fn push_run_lines(lines: &mut Vec<Line<'static>>, run: &RunViewState) {
                     .fg(Color::Blue)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::raw(tool.name.clone()),
+            Span::raw(sanitize_legacy_text(&tool.name)),
             Span::styled(format!(" [{status}]"), style),
         ]));
         if let Some(output) = &tool.output {
@@ -168,7 +424,7 @@ fn push_run_lines(lines: &mut Vec<Line<'static>>, run: &RunViewState) {
         push_labeled_text(
             lines,
             "Failure",
-            &format!("step {} - {}: {reason}", index + 1, step.title),
+            &sanitize_legacy_text(&format!("step {} - {}: {reason}", index + 1, step.title)),
             Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
         );
     }
@@ -176,7 +432,7 @@ fn push_run_lines(lines: &mut Vec<Line<'static>>, run: &RunViewState) {
         push_labeled_text(
             lines,
             "Approval required",
-            &format!("{} - {}", approval.name, approval.reason),
+            &sanitize_legacy_text(&format!("{} - {}", approval.name, approval.reason)),
             Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
@@ -186,7 +442,7 @@ fn push_run_lines(lines: &mut Vec<Line<'static>>, run: &RunViewState) {
         push_labeled_text(
             lines,
             "Input required",
-            &input.prompt,
+            &sanitize_legacy_text(&input.prompt),
             Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
@@ -208,11 +464,34 @@ fn push_run_lines(lines: &mut Vec<Line<'static>>, run: &RunViewState) {
         ]));
         if let Some(output) = &completed.output
             && (!matches!(completed.reason, TerminationReason::Final)
-                || !run.assistant_text.ends_with(output))
+                || !sanitize_legacy_text(&run.assistant_text)
+                    .ends_with(&sanitize_legacy_text(output)))
         {
-            push_labeled_text(lines, "  Output", output, Style::default().fg(Color::White));
+            push_labeled_text(
+                lines,
+                "  Output",
+                &sanitize_legacy_text(output),
+                Style::default().fg(Color::White),
+            );
         }
     }
+}
+
+fn sanitize_legacy_text(value: &str) -> String {
+    sanitize_tool_text(
+        value,
+        crate::interfaces::tui::state::MAX_TOOL_DETAIL_TEXT_BYTES,
+    )
+}
+
+fn sanitize_user_text(value: &str) -> String {
+    truncate_display_text(
+        &sanitize_display_text(
+            value,
+            crate::interfaces::tui::state::MAX_TOOL_DETAIL_TEXT_BYTES,
+        ),
+        crate::interfaces::tui::state::MAX_TOOL_DETAIL_TEXT_BYTES,
+    )
 }
 
 fn push_labeled_text(lines: &mut Vec<Line<'static>>, label: &str, text: &str, label_style: Style) {

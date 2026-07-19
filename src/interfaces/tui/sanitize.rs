@@ -52,15 +52,76 @@ pub(crate) fn sanitize_display_text(value: &str, max_chars: usize) -> String {
 
 pub(crate) fn sanitize_tool_text(value: &str, max_bytes: usize) -> String {
     let mut lines = Vec::new();
-    for line in value.lines() {
+    let visible = strip_reasoning_blocks(value);
+    for line in visible.lines() {
         let lower = line.to_ascii_lowercase();
-        if contains_sensitive_marker(&lower) {
+        if contains_sensitive_marker(&lower) || contains_token_shape(&lower) {
             lines.push("[redacted sensitive output]".to_string());
         } else {
             lines.push(sanitize_display_text(line, MAX_TOOL_DETAIL_TEXT_BYTES));
         }
     }
     truncate_display_text(&lines.join("\n"), max_bytes)
+}
+
+fn strip_reasoning_blocks(value: &str) -> String {
+    let mut visible = value.to_string();
+    for (open, close) in [
+        ("<think>", "</think>"),
+        ("<analysis>", "</analysis>"),
+        ("<reasoning>", "</reasoning>"),
+    ] {
+        loop {
+            let lower = visible.to_ascii_lowercase();
+            let Some(start) = lower.find(open) else {
+                break;
+            };
+            let content_start = start + open.len();
+            let end = lower[content_start..]
+                .find(close)
+                .map(|relative| content_start + relative + close.len())
+                .unwrap_or(visible.len());
+            visible.replace_range(start..end, "");
+        }
+    }
+    visible
+        .lines()
+        .filter(|line| {
+            let lower = line.trim_start().to_ascii_lowercase();
+            !["thought:", "reasoning:", "analysis:", "chain-of-thought:"]
+                .iter()
+                .any(|marker| lower.starts_with(marker))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn contains_token_shape(lower: &str) -> bool {
+    lower
+        .split(|character: char| {
+            character.is_whitespace()
+                || matches!(
+                    character,
+                    '"' | '\'' | ',' | ';' | ':' | '(' | ')' | '[' | ']' | '{' | '}'
+                )
+        })
+        .map(|token| token.trim_matches(|character: char| matches!(character, '.' | '=')))
+        .any(|token| {
+            ((token.starts_with("sk-") || token.starts_with("ghp_") || token.starts_with("xoxb-"))
+                && token.len() > 8)
+                || looks_like_jwt(token)
+        })
+}
+
+fn looks_like_jwt(token: &str) -> bool {
+    let segments = token.split('.').collect::<Vec<_>>();
+    segments.len() == 3
+        && segments.iter().all(|segment| {
+            segment.len() >= 8
+                && segment.chars().all(|character| {
+                    character.is_ascii_alphanumeric() || matches!(character, '-' | '_')
+                })
+        })
 }
 
 pub(crate) fn sanitize_json_value(value: &Value, depth: usize) -> Value {
@@ -98,6 +159,7 @@ fn contains_sensitive_key(lower: &str) -> bool {
         "password",
         "passwd",
         "secret",
+        "credential",
         "token",
         "api_key",
         "apikey",
@@ -111,21 +173,47 @@ fn contains_sensitive_key(lower: &str) -> bool {
 
 fn contains_sensitive_marker(lower: &str) -> bool {
     [
-        "password",
-        "passwd",
-        "api_key",
-        "apikey",
+        "password=",
+        "password:",
+        "passwd=",
+        "passwd:",
+        "api_key=",
+        "api_key:",
+        "api-key=",
+        "api-key:",
+        "apikey=",
+        "apikey:",
         "authorization",
-        "bearer ",
-        "access_token",
-        "refresh_token",
+        "token=",
+        "token:",
+        "access_token=",
+        "access_token:",
+        "refresh_token=",
+        "refresh_token:",
         "private_key",
-        "secret",
+        "secret=",
+        "secret:",
         "chain of thought",
         "hidden reasoning",
     ]
     .iter()
     .any(|marker| lower.contains(marker))
+        || contains_bearer_token(lower)
+}
+
+fn contains_bearer_token(lower: &str) -> bool {
+    let Some((_, suffix)) = lower.split_once("bearer ") else {
+        return false;
+    };
+    let token = suffix
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .trim_matches(|character: char| matches!(character, '"' | '\'' | ',' | ';'));
+    token.len() >= 16
+        && token.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.')
+        })
 }
 
 #[cfg(test)]

@@ -94,6 +94,80 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn resolve_resume_state_rejects_a_mismatched_artifact_identity() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = StateStore::new(tmp.path());
+        let requested = RunId::new();
+        let artifact = task_state(RunId::new(), "wrong identity");
+        let path = store.run_store.run_dir(&requested).join("task_state.json");
+        tokio::fs::create_dir_all(path.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&path, serde_json::to_vec(&artifact).unwrap())
+            .await
+            .unwrap();
+
+        let error = resolve_resume_state(&store, Some(&requested.to_string()))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error
+                .chain()
+                .find_map(|cause| cause.downcast_ref::<std::io::Error>())
+                .map(std::io::Error::kind),
+            Some(std::io::ErrorKind::InvalidData)
+        );
+    }
+
+    #[tokio::test]
+    async fn resume_claim_is_atomic_and_requires_a_terminal_run() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = StateStore::new(tmp.path());
+        let state = task_state(RunId::new(), "claim me");
+        store.write_task_state(&state).await.unwrap();
+
+        assert!(
+            store
+                .index
+                .claim_job_for_resume_async(state.job_id, state.run_id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        store
+            .index
+            .record_report(
+                state.run_id,
+                &store.run_store.run_dir(&state.run_id).join("report.json"),
+                "success",
+                "final",
+            )
+            .unwrap();
+        let claim = store
+            .index
+            .claim_job_for_resume_async(state.job_id, state.run_id)
+            .await
+            .unwrap()
+            .expect("terminal job should be claimable");
+        assert!(
+            store
+                .index
+                .claim_job_for_resume_async(state.job_id, state.run_id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            store
+                .index
+                .release_job_resume_claim_async(claim)
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
     async fn resolve_resume_state_rejects_invalid_value() {
         let tmp = tempfile::TempDir::new().unwrap();
         let store = StateStore::new(tmp.path());

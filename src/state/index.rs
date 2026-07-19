@@ -144,6 +144,17 @@ pub struct TaskStateIndexRecord {
     pub path: PathBuf,
 }
 
+/// A short-lived, atomic reservation made immediately before a TUI resume.
+///
+/// The previous status is retained so a failed run start can release the
+/// reservation without overwriting a newer run that may have claimed the job.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResumeJobClaim {
+    pub job_id: JobId,
+    pub previous_status: String,
+    pub previous_run_id: Option<RunId>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JobIndexRecord {
     pub job_id: JobId,
@@ -433,6 +444,186 @@ impl StateIndex {
             }
         }
         Ok(records)
+    }
+
+    /// Return only snapshots whose owning job is no longer active.
+    ///
+    /// This query is intentionally bounded at the index layer. Callers that
+    /// present a picker must not deserialize every historical artifact before
+    /// applying a UI-level limit.
+    pub async fn list_resumable_task_state_records_async(
+        &self,
+        limit: usize,
+    ) -> std::io::Result<Vec<TaskStateIndexRecord>> {
+        let index = self.clone();
+        tokio::task::spawn_blocking(move || index.list_resumable_task_state_records(limit))
+            .await
+            .map_err(std::io::Error::other)?
+    }
+
+    pub fn list_resumable_task_state_records(
+        &self,
+        limit: usize,
+    ) -> std::io::Result<Vec<TaskStateIndexRecord>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let conn = self.connect()?;
+        let limit = limit.min(200) as i64;
+        let mut stmt = conn
+            .prepare(
+                r#"
+                SELECT task_states.run_id, task_states.path
+                FROM task_states
+                INNER JOIN jobs
+                    ON jobs.job_id = task_states.job_id
+                   AND jobs.session_id = task_states.session_id
+                INNER JOIN runs
+                    ON runs.run_id = task_states.run_id
+                   AND runs.job_id = task_states.job_id
+                   AND runs.session_id = task_states.session_id
+                WHERE jobs.status IN ('done', 'error', 'cancelled', 'interrupted')
+                  AND runs.status IN ('done', 'error', 'cancelled', 'interrupted')
+                  AND jobs.run_id = task_states.run_id
+                ORDER BY task_states.modified_at DESC, task_states.path DESC
+                LIMIT ?1
+                "#,
+            )
+            .map_err(io_other)?;
+        let rows = stmt
+            .query_map(params![limit], task_state_record_from_row)
+            .map_err(io_other)?;
+        rows.map(|row| row.map_err(io_other)).collect()
+    }
+
+    /// Atomically reserve a terminal job for a resume attempt.
+    pub async fn claim_job_for_resume_async(
+        &self,
+        job_id: JobId,
+        expected_run_id: RunId,
+    ) -> std::io::Result<Option<ResumeJobClaim>> {
+        let index = self.clone();
+        tokio::task::spawn_blocking(move || index.claim_job_for_resume(job_id, expected_run_id))
+            .await
+            .map_err(std::io::Error::other)?
+    }
+
+    pub fn claim_job_for_resume(
+        &self,
+        job_id: JobId,
+        expected_run_id: RunId,
+    ) -> std::io::Result<Option<ResumeJobClaim>> {
+        let mut conn = self.connect()?;
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(io_other)?;
+        let current = tx
+            .query_row(
+                r#"
+                SELECT jobs.status, jobs.run_id, runs.status
+                FROM jobs
+                LEFT JOIN runs
+                  ON runs.run_id = jobs.run_id
+                 AND runs.job_id = jobs.job_id
+                WHERE jobs.job_id = ?1
+                "#,
+                params![job_id.to_string()],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?
+                            .map(|value| parse_run_id_at(1, value))
+                            .transpose()?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(io_other)?;
+        let Some((previous_status, previous_run_id, run_status)) = current else {
+            tx.commit().map_err(io_other)?;
+            return Ok(None);
+        };
+        if !matches!(
+            previous_status.as_str(),
+            "done" | "error" | "cancelled" | "interrupted"
+        ) || !run_status.is_some_and(|status| {
+            matches!(
+                status.as_str(),
+                "done" | "error" | "cancelled" | "interrupted"
+            )
+        }) || previous_run_id != Some(expected_run_id)
+        {
+            tx.commit().map_err(io_other)?;
+            return Ok(None);
+        }
+        let updated = tx
+            .execute(
+                r#"
+                UPDATE jobs
+                SET status = 'running', updated_at = ?2
+                WHERE job_id = ?1
+                  AND status = ?3
+                  AND run_id = ?4
+                  AND EXISTS (
+                      SELECT 1
+                      FROM runs
+                      WHERE runs.run_id = ?4
+                        AND runs.job_id = ?1
+                        AND runs.status IN ('done', 'error', 'cancelled', 'interrupted')
+                  )
+                "#,
+                params![
+                    job_id.to_string(),
+                    now_rfc3339(),
+                    previous_status,
+                    expected_run_id.to_string(),
+                ],
+            )
+            .map_err(io_other)?;
+        if updated != 1 {
+            tx.commit().map_err(io_other)?;
+            return Ok(None);
+        }
+        tx.commit().map_err(io_other)?;
+        Ok(Some(ResumeJobClaim {
+            job_id,
+            previous_status,
+            previous_run_id,
+        }))
+    }
+
+    /// Release a claim only if no newer run has taken ownership of the job.
+    pub async fn release_job_resume_claim_async(
+        &self,
+        claim: ResumeJobClaim,
+    ) -> std::io::Result<bool> {
+        let index = self.clone();
+        tokio::task::spawn_blocking(move || index.release_job_resume_claim(&claim))
+            .await
+            .map_err(std::io::Error::other)?
+    }
+
+    pub fn release_job_resume_claim(&self, claim: &ResumeJobClaim) -> std::io::Result<bool> {
+        let conn = self.connect()?;
+        let updated = conn
+            .execute(
+                r#"
+                UPDATE jobs
+                SET status = ?2, updated_at = ?3
+                WHERE job_id = ?1
+                  AND status = 'running'
+                  AND (run_id IS ?4 OR run_id = ?4)
+                "#,
+                params![
+                    claim.job_id.to_string(),
+                    claim.previous_status,
+                    now_rfc3339(),
+                    claim.previous_run_id.map(|id| id.to_string()),
+                ],
+            )
+            .map_err(io_other)?;
+        Ok(updated == 1)
     }
 
     pub async fn list_run_records_async(

@@ -108,7 +108,11 @@ impl StateStore {
             return Ok(None);
         };
 
-        self.load_task_state_path(&record.path).await.map(Some)
+        let state = self.load_task_state_path(&record.path).await?;
+        if state.run_id != record.run_id {
+            return Err(task_state_identity_error(record.run_id, state.run_id));
+        }
+        Ok(Some(state))
     }
 
     pub async fn load_task_state(&self, run_id: RunId) -> std::io::Result<TaskState> {
@@ -123,7 +127,11 @@ impl StateStore {
                 format!("task_state not found for run {run_id}"),
             ));
         }
-        self.load_task_state_path(&path).await
+        let state = self.load_task_state_path(&path).await?;
+        if state.run_id != run_id {
+            return Err(task_state_identity_error(run_id, state.run_id));
+        }
+        Ok(state)
     }
 
     pub async fn list_resumable_task_states(
@@ -143,6 +151,55 @@ impl StateStore {
         self.lazy_import_task_states().await?;
         self.load_task_state_records(self.index.list_task_state_records_async(None).await?)
             .await
+    }
+
+    /// Load a bounded set of snapshots that still point at their owning job's
+    /// latest terminal run. Malformed or concurrently removed artifacts are
+    /// skipped so one bad historical file cannot freeze the TUI picker.
+    pub async fn list_resumable_task_states_limited(
+        &self,
+        limit: usize,
+    ) -> std::io::Result<Vec<TaskState>> {
+        let mut records = self
+            .index
+            .list_resumable_task_state_records_async(limit)
+            .await?;
+        if records.is_empty() {
+            // A fresh index may still need one legacy artifact import. This
+            // path is deliberately cold; normal picker opens stay bounded by
+            // the SQL LIMIT above.
+            self.import_task_states().await?;
+            records = self
+                .index
+                .list_resumable_task_state_records_async(limit)
+                .await?;
+        }
+        let mut states = Vec::with_capacity(records.len());
+        for record in records {
+            match self.load_task_state_path(&record.path).await {
+                Ok(state) if state.run_id == record.run_id => states.push(state),
+                Ok(state) => tracing::warn!(
+                    path = %record.path.display(),
+                    indexed_run_id = %record.run_id,
+                    task_state_run_id = %state.run_id,
+                    "Skipping task state with mismatched run identity in resumable picker"
+                ),
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::InvalidData | std::io::ErrorKind::NotFound
+                    ) =>
+                {
+                    tracing::warn!(
+                        path = %record.path.display(),
+                        error = %error,
+                        "Skipping malformed or missing task state in resumable picker"
+                    );
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(states)
     }
 
     pub async fn record_report(
@@ -189,7 +246,11 @@ impl StateStore {
     ) -> std::io::Result<Vec<TaskState>> {
         let mut states = Vec::new();
         for record in records {
-            states.push(self.load_task_state_path(&record.path).await?);
+            let state = self.load_task_state_path(&record.path).await?;
+            if state.run_id != record.run_id {
+                return Err(task_state_identity_error(record.run_id, state.run_id));
+            }
+            states.push(state);
         }
         Ok(states)
     }
@@ -199,10 +260,31 @@ impl StateStore {
     }
 
     async fn import_task_states(&self) -> std::io::Result<usize> {
-        let entries = self.task_state_entries().await?;
+        let mut entries = self.task_state_entries().await?;
+        entries.sort_by(|left, right| {
+            left.modified
+                .cmp(&right.modified)
+                .then_with(|| left.path.cmp(&right.path))
+        });
         let mut imported = 0;
         for entry in entries {
-            let state = self.load_task_state_path(&entry.path).await?;
+            let state = match self.load_task_state_path(&entry.path).await {
+                Ok(state) => state,
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::InvalidData | std::io::ErrorKind::NotFound
+                    ) =>
+                {
+                    tracing::warn!(
+                        path = %entry.path.display(),
+                        error = %error,
+                        "Skipping malformed or missing task state during index import"
+                    );
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
             if Some(state.run_id) != run_id_from_artifact_path(&entry.path) {
                 tracing::warn!(
                     path = %entry.path.display(),
@@ -211,9 +293,36 @@ impl StateStore {
                 );
                 continue;
             }
+            let run_id = state.run_id;
+            let job_id = state.job_id;
+            let state_path = entry.path.clone();
             self.index
-                .record_task_state_async(state, entry.path, entry.modified)
+                .record_task_state_async(state, state_path, entry.modified)
                 .await?;
+            let report_path = entry.path.parent().map(|parent| parent.join("report.json"));
+            if let Some(report_path) = report_path
+                && tokio::fs::try_exists(&report_path).await?
+            {
+                match self.load_report_path(&report_path).await {
+                    Ok(report) if report.run_id == run_id && report.job_id == job_id => {
+                        self.index.record_report(
+                            run_id,
+                            &report_path,
+                            &report.status,
+                            termination_reason_label(&report.termination_reason),
+                        )?;
+                    }
+                    Ok(_) => tracing::warn!(
+                        path = %report_path.display(),
+                        "Skipping report with mismatched identity during task-state import"
+                    ),
+                    Err(error) => tracing::warn!(
+                        path = %report_path.display(),
+                        error = %error,
+                        "Skipping malformed report during task-state import"
+                    ),
+                }
+            }
             imported += 1;
         }
         Ok(imported)
@@ -338,7 +447,8 @@ impl StateStore {
 
     async fn load_task_state_path(&self, path: &Path) -> std::io::Result<TaskState> {
         let bytes = tokio::fs::read(path).await?;
-        let state: TaskState = serde_json::from_slice(&bytes).map_err(std::io::Error::other)?;
+        let state: TaskState = serde_json::from_slice(&bytes)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
         validate_task_state_schema(&state)?;
         Ok(state)
     }
@@ -347,6 +457,15 @@ impl StateStore {
         let bytes = tokio::fs::read(path).await?;
         serde_json::from_slice(&bytes).map_err(std::io::Error::other)
     }
+}
+
+fn task_state_identity_error(expected: RunId, actual: RunId) -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        format!(
+            "task_state run identity mismatch: requested {expected}, artifact contains {actual}"
+        ),
+    )
 }
 
 impl RunHandle {
