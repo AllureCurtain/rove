@@ -102,6 +102,7 @@ trait TerminalControl {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 enum KeyboardEventTypeSupport {
+    #[cfg(windows)]
     Native,
     Enhancement,
     #[default]
@@ -228,6 +229,7 @@ impl<C: TerminalControl> TerminalLifecycle<C> {
             self.control.push_keyboard_enhancement()?;
         }
         self.interaction_key_mode = match keyboard_support {
+            #[cfg(windows)]
             KeyboardEventTypeSupport::Native => InteractionKeyMode::ConfirmWithFunctionKey,
             KeyboardEventTypeSupport::Enhancement => InteractionKeyMode::Direct,
             KeyboardEventTypeSupport::Unavailable => InteractionKeyMode::Unavailable,
@@ -538,12 +540,7 @@ mod tests {
 
     #[test]
     fn interaction_key_mode_matches_terminal_event_support() {
-        for (support, mode, uses_enhancement) in [
-            (
-                KeyboardEventTypeSupport::Native,
-                InteractionKeyMode::ConfirmWithFunctionKey,
-                false,
-            ),
+        let mut cases = vec![
             (
                 KeyboardEventTypeSupport::Enhancement,
                 InteractionKeyMode::Direct,
@@ -554,7 +551,17 @@ mod tests {
                 InteractionKeyMode::Unavailable,
                 false,
             ),
-        ] {
+        ];
+        #[cfg(windows)]
+        cases.insert(
+            0,
+            (
+                KeyboardEventTypeSupport::Native,
+                InteractionKeyMode::ConfirmWithFunctionKey,
+                false,
+            ),
+        );
+        for (support, mode, uses_enhancement) in cases {
             let operations = Arc::new(Mutex::new(Vec::new()));
             let lifecycle = TerminalLifecycle::enter(FakeTerminalControl {
                 operations: Arc::clone(&operations),
