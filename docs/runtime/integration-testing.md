@@ -341,6 +341,30 @@ The real-API suite does not start the Rust API itself. The runner owns API/Web p
 
 ## Optional Gates
 
+### Full-screen TUI PTY Smoke
+
+The TUI PTY gate is opt-in and uses only the local fake model; it never needs
+provider credentials or a production endpoint. It builds `rove` when a binary
+is not supplied, launches `rove tui --model fake` inside an isolated temporary
+workspace, and checks a nonblank frame, a bounded resize/redraw, clean
+`Ctrl+Q` exit, PTY termios restoration, and the alternate-screen,
+bracketed-paste, and cursor restore sequences.
+
+Run it explicitly from the repository root:
+
+```powershell
+python scripts/tui-pty-smoke.py --run
+```
+
+The harness is currently implemented for Unix PTYs where Python exposes
+`pty`, `fcntl`, and `termios`. On Windows it emits a JSON `status: "skipped"`
+with the reason that a native ConPTY runner is not yet included and exits with
+code `77`; that skip is not interoperability evidence. Missing Unix PTY
+modules produce the same typed skip. The gate has bounded build, runtime, and
+output limits and strips provider-key-shaped variables from the child
+environment. A prebuilt binary can be supplied with `--binary`; use
+`--skip-build` to make a missing binary an explicit failure.
+
 ### Provider Smoke
 
 Use `docs/runtime/provider-smoke.md` as the source of truth. With no gate enabled, `cargo test --test provider_smoke` should pass by skipping real calls. Enable one provider at a time:

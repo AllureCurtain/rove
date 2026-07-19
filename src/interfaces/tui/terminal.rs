@@ -28,8 +28,9 @@ pub struct TerminalSession {
 
 impl TerminalSession {
     pub fn enter() -> io::Result<Self> {
-        let lifecycle = TerminalLifecycle::enter(CrosstermTerminalControl)?;
-        let terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
+        let (terminal, lifecycle) = initialize_terminal(CrosstermTerminalControl, || {
+            Terminal::new(CrosstermBackend::new(io::stdout()))
+        })?;
 
         Ok(Self {
             terminal,
@@ -45,6 +46,29 @@ impl TerminalSession {
 
     pub fn interaction_key_mode(&self) -> InteractionKeyMode {
         self.lifecycle.interaction_key_mode
+    }
+}
+
+fn initialize_terminal<C, T, F>(control: C, initialize: F) -> io::Result<(T, TerminalLifecycle<C>)>
+where
+    C: TerminalControl,
+    F: FnOnce() -> io::Result<T>,
+{
+    let mut lifecycle = TerminalLifecycle::enter(control)?;
+    match initialize() {
+        Ok(terminal) => Ok((terminal, lifecycle)),
+        Err(error) => {
+            let restore_error = lifecycle.restore().err();
+            Err(match restore_error {
+                Some(restore_error) => io::Error::new(
+                    error.kind(),
+                    format!(
+                        "failed to initialize TUI terminal: {error}; terminal restore also failed: {restore_error}"
+                    ),
+                ),
+                None => error,
+            })
+        }
     }
 }
 
@@ -175,26 +199,42 @@ impl<C: TerminalControl> TerminalLifecycle<C> {
             cursor_hide_attempted: false,
         };
 
-        lifecycle.raw_mode_attempted = true;
-        lifecycle.control.enable_raw_mode()?;
-        lifecycle.alternate_screen_attempted = true;
-        lifecycle.control.enter_alternate_screen()?;
-        lifecycle.bracketed_paste_attempted = true;
-        lifecycle.control.enable_bracketed_paste()?;
-        let keyboard_support = lifecycle.control.keyboard_event_type_support()?;
-        if keyboard_support == KeyboardEventTypeSupport::Enhancement {
-            lifecycle.keyboard_enhancement_attempted = true;
-            lifecycle.control.push_keyboard_enhancement()?;
+        if let Err(setup_error) = lifecycle.setup() {
+            let restore_error = lifecycle.restore().err();
+            return Err(match restore_error {
+                Some(restore_error) => io::Error::new(
+                    setup_error.kind(),
+                    format!(
+                        "terminal setup failed: {setup_error}; terminal restore also failed: {restore_error}"
+                    ),
+                ),
+                None => setup_error,
+            });
         }
-        lifecycle.interaction_key_mode = match keyboard_support {
+
+        Ok(lifecycle)
+    }
+
+    fn setup(&mut self) -> io::Result<()> {
+        self.raw_mode_attempted = true;
+        self.control.enable_raw_mode()?;
+        self.alternate_screen_attempted = true;
+        self.control.enter_alternate_screen()?;
+        self.bracketed_paste_attempted = true;
+        self.control.enable_bracketed_paste()?;
+        let keyboard_support = self.control.keyboard_event_type_support()?;
+        if keyboard_support == KeyboardEventTypeSupport::Enhancement {
+            self.keyboard_enhancement_attempted = true;
+            self.control.push_keyboard_enhancement()?;
+        }
+        self.interaction_key_mode = match keyboard_support {
             KeyboardEventTypeSupport::Native => InteractionKeyMode::ConfirmWithFunctionKey,
             KeyboardEventTypeSupport::Enhancement => InteractionKeyMode::Direct,
             KeyboardEventTypeSupport::Unavailable => InteractionKeyMode::Unavailable,
         };
-        lifecycle.cursor_hide_attempted = true;
-        lifecycle.control.hide_cursor()?;
-
-        Ok(lifecycle)
+        self.cursor_hide_attempted = true;
+        self.control.hide_cursor()?;
+        Ok(())
     }
 
     fn restore(&mut self) -> io::Result<()> {
@@ -266,13 +306,16 @@ mod tests {
 
     use crate::interfaces::tui::state::InteractionKeyMode;
 
-    use super::{KeyboardEventTypeSupport, TerminalControl, TerminalLifecycle};
+    use super::{
+        KeyboardEventTypeSupport, TerminalControl, TerminalLifecycle, initialize_terminal,
+    };
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum Operation {
         EnableRawMode,
         EnterAlternateScreen,
         EnableBracketedPaste,
+        ProbeKeyboardEventTypeSupport,
         PushKeyboardEnhancement,
         HideCursor,
         ShowCursor,
@@ -313,6 +356,7 @@ mod tests {
         }
 
         fn keyboard_event_type_support(&mut self) -> io::Result<KeyboardEventTypeSupport> {
+            self.record(Operation::ProbeKeyboardEventTypeSupport)?;
             Ok(self.keyboard_support)
         }
 
@@ -363,6 +407,7 @@ mod tests {
                 Operation::EnableRawMode,
                 Operation::EnterAlternateScreen,
                 Operation::EnableBracketedPaste,
+                Operation::ProbeKeyboardEventTypeSupport,
                 Operation::PushKeyboardEnhancement,
                 Operation::HideCursor,
                 Operation::ShowCursor,
@@ -375,13 +420,16 @@ mod tests {
     }
 
     #[test]
-    fn partial_setup_failure_restores_every_attempted_mode() {
+    fn backend_initializer_failure_restores_already_entered_modes() {
         let operations = Arc::new(Mutex::new(Vec::new()));
-        let result = TerminalLifecycle::enter(FakeTerminalControl {
-            operations: Arc::clone(&operations),
-            fail_on: Some(Operation::HideCursor),
-            keyboard_support: KeyboardEventTypeSupport::Enhancement,
-        });
+        let result = initialize_terminal(
+            FakeTerminalControl {
+                operations: Arc::clone(&operations),
+                fail_on: None,
+                keyboard_support: KeyboardEventTypeSupport::Unavailable,
+            },
+            || Err::<(), _>(io::Error::other("injected backend failure")),
+        );
 
         assert!(result.is_err());
         assert_eq!(
@@ -390,15 +438,102 @@ mod tests {
                 Operation::EnableRawMode,
                 Operation::EnterAlternateScreen,
                 Operation::EnableBracketedPaste,
-                Operation::PushKeyboardEnhancement,
+                Operation::ProbeKeyboardEventTypeSupport,
                 Operation::HideCursor,
                 Operation::ShowCursor,
-                Operation::PopKeyboardEnhancement,
                 Operation::DisableBracketedPaste,
                 Operation::LeaveAlternateScreen,
                 Operation::DisableRawMode,
             ]
         );
+    }
+
+    #[test]
+    fn partial_setup_failures_restore_every_attempted_mode() {
+        let cases = [
+            (
+                Operation::EnableRawMode,
+                vec![Operation::EnableRawMode, Operation::DisableRawMode],
+            ),
+            (
+                Operation::EnterAlternateScreen,
+                vec![
+                    Operation::EnableRawMode,
+                    Operation::EnterAlternateScreen,
+                    Operation::LeaveAlternateScreen,
+                    Operation::DisableRawMode,
+                ],
+            ),
+            (
+                Operation::EnableBracketedPaste,
+                vec![
+                    Operation::EnableRawMode,
+                    Operation::EnterAlternateScreen,
+                    Operation::EnableBracketedPaste,
+                    Operation::DisableBracketedPaste,
+                    Operation::LeaveAlternateScreen,
+                    Operation::DisableRawMode,
+                ],
+            ),
+            (
+                Operation::ProbeKeyboardEventTypeSupport,
+                vec![
+                    Operation::EnableRawMode,
+                    Operation::EnterAlternateScreen,
+                    Operation::EnableBracketedPaste,
+                    Operation::ProbeKeyboardEventTypeSupport,
+                    Operation::DisableBracketedPaste,
+                    Operation::LeaveAlternateScreen,
+                    Operation::DisableRawMode,
+                ],
+            ),
+            (
+                Operation::PushKeyboardEnhancement,
+                vec![
+                    Operation::EnableRawMode,
+                    Operation::EnterAlternateScreen,
+                    Operation::EnableBracketedPaste,
+                    Operation::ProbeKeyboardEventTypeSupport,
+                    Operation::PushKeyboardEnhancement,
+                    Operation::PopKeyboardEnhancement,
+                    Operation::DisableBracketedPaste,
+                    Operation::LeaveAlternateScreen,
+                    Operation::DisableRawMode,
+                ],
+            ),
+            (
+                Operation::HideCursor,
+                vec![
+                    Operation::EnableRawMode,
+                    Operation::EnterAlternateScreen,
+                    Operation::EnableBracketedPaste,
+                    Operation::ProbeKeyboardEventTypeSupport,
+                    Operation::PushKeyboardEnhancement,
+                    Operation::HideCursor,
+                    Operation::ShowCursor,
+                    Operation::PopKeyboardEnhancement,
+                    Operation::DisableBracketedPaste,
+                    Operation::LeaveAlternateScreen,
+                    Operation::DisableRawMode,
+                ],
+            ),
+        ];
+
+        for (fail_on, expected) in cases {
+            let operations = Arc::new(Mutex::new(Vec::new()));
+            let result = TerminalLifecycle::enter(FakeTerminalControl {
+                operations: Arc::clone(&operations),
+                fail_on: Some(fail_on),
+                keyboard_support: KeyboardEventTypeSupport::Enhancement,
+            });
+
+            assert!(result.is_err(), "setup should fail at {fail_on:?}");
+            assert_eq!(
+                *operations.lock().unwrap(),
+                expected,
+                "setup failure at {fail_on:?}"
+            );
+        }
     }
 
     #[test]
@@ -434,6 +569,7 @@ mod tests {
                 Operation::EnableRawMode,
                 Operation::EnterAlternateScreen,
                 Operation::EnableBracketedPaste,
+                Operation::ProbeKeyboardEventTypeSupport,
             ];
             if uses_enhancement {
                 expected.push(Operation::PushKeyboardEnhancement);
@@ -471,6 +607,7 @@ mod tests {
                 Operation::EnableRawMode,
                 Operation::EnterAlternateScreen,
                 Operation::EnableBracketedPaste,
+                Operation::ProbeKeyboardEventTypeSupport,
                 Operation::PushKeyboardEnhancement,
                 Operation::HideCursor,
                 Operation::ShowCursor,
@@ -481,6 +618,68 @@ mod tests {
                 Operation::ShowCursor,
             ]
         );
+    }
+
+    #[test]
+    fn every_restore_stage_is_attempted_even_when_one_fails() {
+        let restore_operations = [
+            Operation::ShowCursor,
+            Operation::PopKeyboardEnhancement,
+            Operation::DisableBracketedPaste,
+            Operation::LeaveAlternateScreen,
+            Operation::DisableRawMode,
+        ];
+
+        for fail_on in restore_operations {
+            let operations = Arc::new(Mutex::new(Vec::new()));
+            let mut lifecycle = TerminalLifecycle::enter(FakeTerminalControl {
+                operations: Arc::clone(&operations),
+                fail_on: None,
+                keyboard_support: KeyboardEventTypeSupport::Enhancement,
+            })
+            .unwrap();
+            lifecycle.control.fail_on = Some(fail_on);
+
+            assert!(
+                lifecycle.restore().is_err(),
+                "restore should fail at {fail_on:?}"
+            );
+
+            let recorded = operations.lock().unwrap().clone();
+            let expected_prefix = [
+                Operation::EnableRawMode,
+                Operation::EnterAlternateScreen,
+                Operation::EnableBracketedPaste,
+                Operation::ProbeKeyboardEventTypeSupport,
+                Operation::PushKeyboardEnhancement,
+                Operation::HideCursor,
+            ];
+            assert_eq!(&recorded[..expected_prefix.len()], expected_prefix);
+            let cleanup = &recorded[expected_prefix.len()..];
+            assert!(cleanup.contains(&Operation::ShowCursor));
+            assert!(cleanup.contains(&Operation::PopKeyboardEnhancement));
+            assert!(cleanup.contains(&Operation::DisableBracketedPaste));
+            assert!(cleanup.contains(&Operation::LeaveAlternateScreen));
+            assert!(cleanup.contains(&Operation::DisableRawMode));
+
+            let first_restore_len = recorded.len();
+            lifecycle.control.fail_on = None;
+            lifecycle.restore().unwrap();
+            assert_eq!(
+                &operations.lock().unwrap()[first_restore_len..],
+                &[fail_on],
+                "only the failed restore stage should be retried"
+            );
+            assert_eq!(
+                lifecycle.interaction_key_mode,
+                InteractionKeyMode::Unavailable
+            );
+
+            let completed_len = operations.lock().unwrap().len();
+            lifecycle.restore().unwrap();
+            drop(lifecycle);
+            assert_eq!(operations.lock().unwrap().len(), completed_len);
+        }
     }
 
     #[test]
@@ -506,6 +705,7 @@ mod tests {
                 Operation::EnableRawMode,
                 Operation::EnterAlternateScreen,
                 Operation::EnableBracketedPaste,
+                Operation::ProbeKeyboardEventTypeSupport,
                 Operation::PushKeyboardEnhancement,
                 Operation::HideCursor,
                 Operation::ShowCursor,
