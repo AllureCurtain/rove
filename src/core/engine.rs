@@ -11,7 +11,9 @@ use tokio_util::sync::CancellationToken;
 use crate::core::compaction::CompactionRuntime;
 use crate::core::context::{ContextManager, durable_memory_message, session_summary_message};
 use crate::core::events::StreamEvent;
-use crate::core::execution::{ExecutionPolicy, ExecutionStrategy};
+use crate::core::execution::{
+    DEFAULT_MAX_MODEL_TURNS_PER_STEP, ExecutionPolicy, ExecutionStrategy,
+};
 use crate::core::plan_loop::{PlanLoopState, run_planned_loop};
 use crate::core::planner::Planner;
 use crate::core::run_loop::{LoopContext, LoopItem, RunLoopState, run_unplanned_loop};
@@ -406,6 +408,11 @@ impl Engine {
                     .and_then(|checkpoint| checkpoint.plan.clone())
                     .or_else(|| resume_state.as_ref().and_then(|state| state.plan.clone()));
 
+                let execution_policy = self.config.execution_policy();
+                let max_model_turns_per_step = execution_policy
+                    .budgets
+                    .max_model_turns_per_step
+                    .unwrap_or(DEFAULT_MAX_MODEL_TURNS_PER_STEP);
                 let loop_context = LoopContext {
                     model: self.model.as_ref(),
                     registry: &self.registry,
@@ -414,6 +421,7 @@ impl Engine {
                     memory_paths: &self.memory_paths,
                     session_id,
                     max_steps: self.config.max_steps,
+                    max_model_turns_per_step,
                     approval_policy: self.approval_policy,
                     approval_decision: self.approval_decision,
                     approval_provider: self.approval_provider.clone(),
@@ -425,7 +433,6 @@ impl Engine {
                     ),
                 };
 
-                let execution_policy = self.config.execution_policy();
                 let mut runtime: BoxStream<'_, LoopItem> = match execution_policy.strategy {
                     ExecutionStrategy::PlanReact => run_planned_loop(
                         loop_context,

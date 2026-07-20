@@ -109,6 +109,8 @@ impl ModelClient for FakeModelClient {
                 ]
             })
             .to_string()
+        } else if let Some(tool_result) = latest_unconcluded_tool_result(messages) {
+            tool_result.to_string()
         } else if self.response == "fake response" {
             format!(
                 "fake response: {}",
@@ -139,6 +141,21 @@ impl ModelClient for FakeModelClient {
     }
 }
 
+fn latest_unconcluded_tool_result(messages: &[Message]) -> Option<&str> {
+    let tool_index = messages
+        .iter()
+        .rposition(|message| message.role == Role::Tool)?;
+    let tool_message = &messages[tool_index];
+    if tool_message.content.trim_start().starts_with("Error:")
+        || messages[tool_index + 1..]
+            .iter()
+            .any(|message| message.role == Role::Assistant)
+    {
+        return None;
+    }
+    Some(tool_message.content.as_str())
+}
+
 fn current_user_goal(messages: &[Message]) -> Option<&str> {
     let content = messages
         .iter()
@@ -152,4 +169,52 @@ fn current_user_goal(messages: &[Message]) -> Option<&str> {
         .map(str::trim)
         .filter(|goal| !goal.is_empty())
         .or_else(|| (!content.is_empty()).then_some(content))
+}
+
+#[cfg(test)]
+mod tests {
+    use futures::StreamExt;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn static_fake_response_concludes_an_unanswered_successful_tool_result() {
+        let model =
+            FakeModelClient::new(r#"{"tool":"echo","args":{"message":"ping"}}"#.to_string());
+        let messages = vec![
+            Message::assistant(r#"{"tool":"echo","args":{"message":"ping"}}"#),
+            Message::tool("ping", None),
+            Message::user("continue the current step"),
+        ];
+
+        let events = model.stream(&messages, &[]).collect::<Vec<_>>().await;
+
+        assert!(matches!(
+            &events[0],
+            Ok(ModelEvent::TextDelta { text }) if text == "ping"
+        ));
+    }
+
+    #[tokio::test]
+    async fn static_fake_response_does_not_treat_failed_or_concluded_tools_as_new_results() {
+        let raw = r#"{"tool":"echo","args":{"message":"ping"}}"#;
+        let model = FakeModelClient::new(raw.to_string());
+        let failed = vec![Message::tool("Error: invalid arguments", None)];
+        let concluded = vec![
+            Message::tool("ping", None),
+            Message::assistant("already concluded"),
+        ];
+
+        let failed_events = model.stream(&failed, &[]).collect::<Vec<_>>().await;
+        let concluded_events = model.stream(&concluded, &[]).collect::<Vec<_>>().await;
+
+        assert!(matches!(
+            &failed_events[0],
+            Ok(ModelEvent::TextDelta { text }) if text == raw
+        ));
+        assert!(matches!(
+            &concluded_events[0],
+            Ok(ModelEvent::TextDelta { text }) if text == raw
+        ));
+    }
 }

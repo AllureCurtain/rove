@@ -576,10 +576,14 @@ The high-level run flow:
    - draft a new `TaskPlan` with the configured planner prompt, or resume a saved plan;
    - emit `PlanCreated` for initial plans and replacement plans;
    - loop over plan steps;
-   - build step-specific context;
-   - call the model;
-   - execute tool calls or mark final output;
-   - replan on malformed output or tool failure.
+   - run each step through `step_runner.rs` with a four-model-turn compatibility
+     ceiling;
+   - build step-specific context while preserving current-step tool history;
+   - call the model and execute tools through the shared turn helpers;
+   - append tool results and return to the model in the same step;
+   - complete the step only on a model step conclusion;
+   - repair malformed/recoverable tool output within the step, and replan only
+     after a terminal recoverable step failure.
 5. If planning is disabled:
    - run the simpler ReAct loop over the original user message.
 6. Emit `RunCompleted`.
@@ -588,18 +592,19 @@ The high-level run flow:
 Termination can happen because of:
 
 - final answer;
-- step limit;
+- step-attempt limit or planned step model-turn limit;
 - token hard limit;
 - model error;
 - planner error;
 - cancellation.
 
-The planned and unplanned paths share model-turn and tool-turn helpers. If you are changing model streaming, native tool-use conversion, approval, batch execution, or history mutation, start in `model_turn.rs` or `tool_turn.rs`; plan-specific code should only wrap those helpers with plan-step lifecycle events.
+The planned and unplanned paths share model-turn and tool-turn helpers. If you are changing model streaming, native tool-use conversion, approval, batch execution, or history mutation, start in `model_turn.rs` or `tool_turn.rs`. `step_runner.rs` owns bounded within-step iteration and scoped history; `plan_loop.rs` owns plan cursor, replacement-plan compatibility, and plan-step lifecycle events.
 
 Plan mutation semantics:
 
 - Step IDs are stable within one `TaskPlan`.
-- Replanning replaces the active plan with a new revision emitted as `PlanCreated`.
+- Replanning currently replaces the active `TaskPlan` and emits another
+  `PlanCreated`; an immutable typed revision chain is not persisted yet.
 - Completed work is preserved as event history and task-state history evidence instead of being blindly copied into the replacement plan.
 - Resume prefers the checkpoint plan when present, then the task-state plan. It resumes at `current_step` and does not repeat completed steps unless the saved plan explicitly marks them pending.
 
@@ -609,6 +614,7 @@ Relevant code:
 - `src/core/model_turn.rs`
 - `src/core/tool_turn.rs`
 - `src/core/run_loop.rs`
+- `src/core/step_runner.rs`
 - `src/core/plan_loop.rs`
 - `src/core/planner.rs`
 - `src/core/context.rs`
@@ -649,6 +655,10 @@ When automatic compaction is needed and old history has been dropped from the ac
 - compaction metadata, including mode, degraded state, model, prompt version, source message count, and last error when present.
 
 Resume prefers checkpoint tail/summary over replaying the full saved history.
+During a planned step, current-step assistant/tool messages are injected as a
+bounded prefix so the next model turn cannot lose the just-produced tool result
+to global history trimming. They are merged back into ordinary history when the
+step reaches a terminal outcome.
 
 Relevant code:
 

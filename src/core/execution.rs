@@ -7,6 +7,14 @@ use crate::core::types::{CallId, PlanStep, ToolMutation, Usage};
 /// foundation. It is an in-memory policy version until persistence is added.
 pub const EXECUTION_POLICY_VERSION: u32 = 1;
 
+/// Compatibility ceiling for the first bounded planned-step runner.
+///
+/// The legacy runtime exposes only `max_steps`, which maps to the number of
+/// planned step attempts. A separate, named ceiling keeps a single step from
+/// consuming that entire run budget while the public multidimensional config
+/// is still being introduced.
+pub const DEFAULT_MAX_MODEL_TURNS_PER_STEP: u32 = 4;
+
 /// Explicit runtime execution strategies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -64,7 +72,10 @@ impl ExecutionBudgetLimits {
         let mut limits = Self::default();
         match strategy {
             ExecutionStrategy::React => limits.max_model_turns = Some(max_steps),
-            ExecutionStrategy::PlanReact => limits.max_step_attempts = Some(max_steps),
+            ExecutionStrategy::PlanReact => {
+                limits.max_step_attempts = Some(max_steps);
+                limits.max_model_turns_per_step = Some(DEFAULT_MAX_MODEL_TURNS_PER_STEP);
+            }
         }
         limits
     }
@@ -409,6 +420,10 @@ mod tests {
         assert_eq!(planned.strategy, ExecutionStrategy::PlanReact);
         assert_eq!(planned.budgets.max_step_attempts, Some(5));
         assert_eq!(planned.budgets.max_model_turns, None);
+        assert_eq!(
+            planned.budgets.max_model_turns_per_step,
+            Some(DEFAULT_MAX_MODEL_TURNS_PER_STEP)
+        );
     }
 
     #[test]

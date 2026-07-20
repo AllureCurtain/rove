@@ -35,6 +35,7 @@ pub(crate) struct LoopContext<'a> {
     pub memory_paths: &'a MemoryPaths,
     pub session_id: SessionId,
     pub max_steps: u32,
+    pub max_model_turns_per_step: u32,
     pub approval_policy: ApprovalPolicy,
     pub approval_decision: ApprovalDecision,
     pub approval_provider: Option<Arc<dyn ToolApprovalProvider>>,

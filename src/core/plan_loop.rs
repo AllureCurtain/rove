@@ -3,17 +3,12 @@ use futures::StreamExt;
 use futures::stream::BoxStream;
 use tokio_util::sync::CancellationToken;
 
-use crate::core::compaction::maybe_compact_history;
 use crate::core::engine::planned_step_failure_message;
 use crate::core::events::StreamEvent;
-use crate::core::model_turn::{ModelTurnItem, run_model_turn};
 use crate::core::planner::Planner;
-use crate::core::run_loop::{
-    LoopContext, LoopItem, enrich_prompt_metadata, extract_session_memory_notes,
-};
-use crate::core::tool_turn::{ToolAction, ToolTurnItem, append_tool_history, run_tool_turn};
-use crate::core::types::{Action, Message, TaskPlan, TerminationReason, ToolCallAction};
-use crate::memory::session::append_session_notes_to_dir_sync;
+use crate::core::run_loop::{LoopContext, LoopItem};
+use crate::core::step_runner::{StepRunnerInput, StepRunnerItem, StepRunnerOutcome, run_step};
+use crate::core::types::{Message, TaskPlan, TerminationReason};
 
 pub(crate) struct PlanLoopState {
     pub user_message: String,
@@ -32,35 +27,6 @@ pub(crate) fn run_planned_loop<'a>(
 ) -> BoxStream<'a, LoopItem> {
     Box::pin(stream! {
         let mut compaction = ctx.compaction.clone();
-        macro_rules! drive_tool_turn {
-            ($action:expr) => {{
-                let mut tool_stream = run_tool_turn(
-                    ctx.tool_turn_context(cancel_token.clone()),
-                    $action,
-                );
-                loop {
-                    match tool_stream.next().await {
-                        Some(ToolTurnItem::Event(event)) => yield LoopItem::Event(event),
-                        Some(ToolTurnItem::Finished(outcome)) => break outcome,
-                        Some(ToolTurnItem::Cancelled) => {
-                            drop(tool_stream);
-                            yield LoopItem::Complete {
-                                reason: TerminationReason::Cancelled,
-                                output: None,
-                            };
-                            return;
-                        }
-                        None => {
-                            yield LoopItem::Complete {
-                                reason: TerminationReason::Error,
-                                output: Some("tool turn ended without a result".to_string()),
-                            };
-                            return;
-                        }
-                    }
-                }
-            }};
-        }
 
         if state.plan.is_none() {
             let draft_result = tokio::select! {
@@ -123,230 +89,57 @@ pub(crate) fn run_planned_loop<'a>(
             });
 
             state.step += 1;
-            let step_prompt = format!(
-                "Goal: {}\nCurrent step {}: {}\nComplete this step and report the result.",
-                active_plan.goal, current_step.id, current_step.title
-            );
-            let context = ctx.context_manager.build_with_checkpoint(
-                &step_prompt,
-                &state.working_memory,
-                state.compact_summary.as_deref(),
-                &state.history,
-            );
-            let tool_schemas = ctx.registry.schemas();
-            yield LoopItem::Event(StreamEvent::PromptBuilt {
-                metadata: enrich_prompt_metadata(&ctx, context.metadata.clone(), &tool_schemas),
-            });
-            if context.over_hard_limit {
-                yield LoopItem::Complete {
-                    reason: TerminationReason::TokenLimit,
-                    output: Some("context exceeds configured hard token budget".to_string()),
-                };
-                return;
-            }
-            if context.auto_compaction_needed && context.dropped_history_messages > 0 {
-                let compacted_count = context.dropped_history_messages.min(state.history.len());
-
-                // Pre-compaction flush: extract durable-worthy notes from the
-                // messages about to be compacted and persist them to session
-                // memory before the detail is summarized away.
-                let mut flush_notes = Vec::new();
-                if compacted_count > 0 {
-                    let candidate_notes = extract_session_memory_notes(&state.history[..compacted_count]);
-                    if !candidate_notes.is_empty()
-                        && append_session_notes_to_dir_sync(
-                            &ctx.memory_paths.session_dir,
-                            ctx.session_id,
-                            &candidate_notes,
-                        )
-                        .is_ok()
-                    {
-                        flush_notes = candidate_notes;
-                        yield LoopItem::Event(StreamEvent::MemoryFlushed {
-                            notes: flush_notes.clone(),
-                        });
-                    }
-                }
-
-                if let Some(update) = maybe_compact_history(
-                    &mut compaction,
-                    ctx.model,
-                    &state.history[..compacted_count],
-                    flush_notes,
-                    cancel_token.clone(),
-                )
-                .await
-                {
-                    let summary_for_event = update.summary.clone();
-                    if let Some(summary) = update.summary {
-                        state.compact_summary = Some(summary);
-                    }
-                    yield LoopItem::Event(StreamEvent::PromptCompacted {
-                        summary: summary_for_event,
-                        state: update.state,
-                    });
-                }
-            }
-
-            let mut turn_stream = run_model_turn(
-                ctx.model,
-                context.messages,
-                tool_schemas,
-                cancel_token.clone(),
-            );
-            let model_turn = loop {
-                match turn_stream.next().await {
-                    Some(ModelTurnItem::Event(event)) => yield LoopItem::Event(event),
-                    Some(ModelTurnItem::Finished(turn)) => break turn,
-                    Some(ModelTurnItem::Cancelled) => {
-                        yield LoopItem::Complete {
-                            reason: TerminationReason::Cancelled,
-                            output: None,
-                        };
-                        return;
-                    }
-                    Some(ModelTurnItem::Failed(err)) => {
-                        yield LoopItem::Complete {
-                            reason: TerminationReason::Error,
-                            output: Some(format!("Model error: {err}")),
-                        };
-                        return;
-                    }
-                    None => {
-                        yield LoopItem::Complete {
-                            reason: TerminationReason::Error,
-                            output: Some("model turn ended without a response".to_string()),
-                        };
-                        return;
-                    }
+            let runner_input = StepRunnerInput {
+                goal: active_plan.goal.clone(),
+                step: current_step.clone(),
+                working_memory: state.working_memory.clone(),
+                compact_summary: state.compact_summary.take(),
+                history: std::mem::take(&mut state.history),
+                compaction: compaction.clone(),
+            };
+            let mut runner = run_step(ctx.clone(), runner_input, cancel_token.clone());
+            let runner_result = loop {
+                match runner.next().await {
+                    Some(StepRunnerItem::Event(event)) => yield LoopItem::Event(event),
+                    Some(StepRunnerItem::Finished(result)) => break Some(result),
+                    None => break None,
                 }
             };
+            let Some(runner_result) = runner_result else {
+                yield LoopItem::Complete {
+                    reason: TerminationReason::Error,
+                    output: Some("step runner ended without a result".to_string()),
+                };
+                return;
+            };
 
-            match model_turn.action {
-                Action::ToolCall {
-                    call_id,
-                    tool_use_id,
-                    name,
-                    args,
-                } => {
-                    let outcome = drive_tool_turn!(
-                        ToolAction::Call(ToolCallAction {
-                            call_id,
-                            tool_use_id,
-                            name,
-                            args,
-                        })
-                    );
-                    append_tool_history(&mut state.history, &model_turn.full_response, &outcome);
-                    if let Some(reason) = outcome.first_error_reason() {
-                        yield LoopItem::Event(StreamEvent::PlanStepFailed {
-                            step: current_step.clone(),
-                            index: current_index,
-                            reason: reason.clone(),
-                        });
-                        if is_permission_denied_tool_failure(&reason) {
-                            yield LoopItem::Complete {
-                                reason: TerminationReason::Final,
-                                output: Some(reason),
-                            };
-                            return;
-                        }
-                        let replacement = match replan_after_step_failure(
-                            planner,
-                            ctx.model,
-                            &active_plan.goal,
-                            &current_step.title,
-                            &reason,
-                            &mut state.history,
-                            cancel_token.clone(),
-                        ).await {
-                            Ok(plan) => plan,
-                            Err(item) => {
-                                yield item;
-                                return;
-                            }
-                        };
-                        yield LoopItem::Event(StreamEvent::PlanCreated {
-                            plan: replacement.clone(),
-                        });
-                        *active_plan = replacement;
-                    } else {
-                        if let Some(record) = outcome.records.last() {
-                            final_output = Some(record.history_output.clone());
-                        }
-                        active_plan.mark_current_done();
-                        yield LoopItem::Event(StreamEvent::PlanStepCompleted {
-                            step: current_step,
-                            index: current_index,
-                        });
-                    }
-                }
-                Action::ToolBatch { calls } => {
-                    let outcome = drive_tool_turn!(ToolAction::Batch(calls));
-                    append_tool_history(&mut state.history, &model_turn.full_response, &outcome);
-                    if let Some(reason) = outcome.first_error_reason() {
-                        yield LoopItem::Event(StreamEvent::PlanStepFailed {
-                            step: current_step.clone(),
-                            index: current_index,
-                            reason: reason.clone(),
-                        });
-                        if is_permission_denied_tool_failure(&reason) {
-                            yield LoopItem::Complete {
-                                reason: TerminationReason::Final,
-                                output: Some(reason),
-                            };
-                            return;
-                        }
-                        let replacement = match replan_after_step_failure(
-                            planner,
-                            ctx.model,
-                            &active_plan.goal,
-                            &current_step.title,
-                            &reason,
-                            &mut state.history,
-                            cancel_token.clone(),
-                        ).await {
-                            Ok(plan) => plan,
-                            Err(item) => {
-                                yield item;
-                                return;
-                            }
-                        };
-                        yield LoopItem::Event(StreamEvent::PlanCreated {
-                            plan: replacement.clone(),
-                        });
-                        *active_plan = replacement;
-                    } else {
-                        if let Some(record) = outcome.records.last() {
-                            final_output = Some(record.history_output.clone());
-                        }
-                        active_plan.mark_current_done();
-                        yield LoopItem::Event(StreamEvent::PlanStepCompleted {
-                            step: current_step,
-                            index: current_index,
-                        });
-                    }
-                }
-                Action::Final { text } => {
-                    state.history.push(Message::assistant(text.clone()));
-                    final_output = Some(text);
+            state.history = runner_result.history;
+            state.compact_summary = runner_result.compact_summary;
+            compaction = runner_result.compaction;
+
+            match runner_result.outcome {
+                StepRunnerOutcome::Succeeded { output } => {
+                    final_output = Some(output);
                     active_plan.mark_current_done();
                     yield LoopItem::Event(StreamEvent::PlanStepCompleted {
                         step: current_step,
                         index: current_index,
                     });
                 }
-                Action::Malformed { reason } => {
-                    state.history.push(Message::assistant(model_turn.full_response));
-                    state.history.push(Message::user(format!(
-                        "Your previous output could not be parsed: {}. Please try again.",
-                        reason
-                    )));
+                StepRunnerOutcome::Failed { reason, replan } => {
                     yield LoopItem::Event(StreamEvent::PlanStepFailed {
                         step: current_step.clone(),
                         index: current_index,
                         reason: reason.clone(),
                     });
+                    if !replan {
+                        yield LoopItem::Complete {
+                            reason: TerminationReason::Final,
+                            output: Some(reason),
+                        };
+                        return;
+                    }
+
                     let replacement = match replan_after_step_failure(
                         planner,
                         ctx.model,
@@ -367,6 +160,32 @@ pub(crate) fn run_planned_loop<'a>(
                     });
                     *active_plan = replacement;
                 }
+                StepRunnerOutcome::BudgetExhausted { reason } => {
+                    yield LoopItem::Event(StreamEvent::PlanStepFailed {
+                        step: current_step,
+                        index: current_index,
+                        reason: reason.clone(),
+                    });
+                    yield LoopItem::Complete {
+                        reason: TerminationReason::StepLimit,
+                        output: Some(reason),
+                    };
+                    return;
+                }
+                StepRunnerOutcome::TokenLimit { reason } => {
+                    yield LoopItem::Complete {
+                        reason: TerminationReason::TokenLimit,
+                        output: Some(reason),
+                    };
+                    return;
+                }
+                StepRunnerOutcome::Cancelled => {
+                    yield LoopItem::Complete {
+                        reason: TerminationReason::Cancelled,
+                        output: None,
+                    };
+                    return;
+                }
             }
         }
 
@@ -375,10 +194,6 @@ pub(crate) fn run_planned_loop<'a>(
             output: final_output,
         };
     })
-}
-
-fn is_permission_denied_tool_failure(reason: &str) -> bool {
-    reason.starts_with("Permission denied:")
 }
 
 async fn replan_after_step_failure(

@@ -6,6 +6,12 @@
 >
 > Design source: [`../design/2026-07-14-agent-execution-lifecycle-design.md`](../design/2026-07-14-agent-execution-lifecycle-design.md)
 
+> Follow-up: the bounded StepRunner was implemented in the next phase. The
+> statement below that other budget dimensions were unset describes this
+> Phase 1 baseline; planned execution now also resolves an independent
+> `max_model_turns_per_step = 4` compatibility default. See
+> [`2026-07-20-agent-execution-lifecycle-step-runner.md`](2026-07-20-agent-execution-lifecycle-step-runner.md).
+
 ## Objective
 
 Establish the typed execution-lifecycle vocabulary that later StepRunner,

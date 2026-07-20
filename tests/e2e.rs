@@ -12,7 +12,7 @@ use rove::core::engine::{Engine, EngineConfig};
 use rove::core::events::StreamEvent;
 use rove::core::types::{
     ApprovalDecision, ApprovalPolicy, CallId, JobId, Message, PendingToolApproval,
-    PendingUserInput, PlanStep, PromptCheckpoint, RunId, RunRequest, SessionId, TaskPlan,
+    PendingUserInput, PlanStep, PromptCheckpoint, Role, RunId, RunRequest, SessionId, TaskPlan,
     TaskState, TerminationReason, ToolApprovalProvider, ToolApprovalRequest, ToolContext,
     ToolSchema, Usage, UserInputProvider, UserInputRequest,
 };
@@ -84,6 +84,51 @@ impl ModelClient for FakeModelClient {
 
     fn model_id(&self) -> &str {
         "fake-model"
+    }
+}
+
+struct StepFailureModelClient {
+    call_count: std::sync::atomic::AtomicUsize,
+}
+
+impl StepFailureModelClient {
+    fn new() -> Self {
+        Self {
+            call_count: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+}
+
+#[async_trait]
+impl ModelClient for StepFailureModelClient {
+    fn stream(
+        &self,
+        _messages: &[Message],
+        _tools: &[ToolSchema],
+    ) -> BoxStream<'_, Result<ModelEvent, ModelError>> {
+        let call = self
+            .call_count
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        match call {
+            0 => Box::pin(futures::stream::iter([Ok(ModelEvent::TextDelta {
+                text: r#"{"goal":"fix docs","steps":[{"id":"1","title":"inspect docs"}]}"#
+                    .to_string(),
+            })])),
+            1 => Box::pin(futures::stream::iter([Err(ModelError::RequestFailed(
+                "planned step model failed".to_string(),
+            ))])),
+            2 => Box::pin(futures::stream::iter([Ok(ModelEvent::TextDelta {
+                text: r#"{"goal":"fix docs","steps":[{"id":"2","title":"inspect docs without a tool"}]}"#
+                    .to_string(),
+            })])),
+            _ => Box::pin(futures::stream::iter([Ok(ModelEvent::TextDelta {
+                text: "replanned step done".to_string(),
+            })])),
+        }
+    }
+
+    fn model_id(&self) -> &str {
+        "step-failure-model"
     }
 }
 
@@ -698,6 +743,21 @@ fn build_planner_test_engine(responses: Vec<String>) -> Engine {
         plan_enabled: true,
     };
     Engine::new(model, registry, context_manager, config)
+}
+
+fn build_replanning_test_engine() -> Engine {
+    let model = Box::new(StepFailureModelClient::new());
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(EchoTool));
+    Engine::new(
+        model,
+        registry,
+        ContextManager::new("You are a test agent.".to_string()),
+        EngineConfig {
+            max_steps: 5,
+            plan_enabled: true,
+        },
+    )
 }
 
 fn build_test_engine_with_workspace(responses: Vec<String>, workspace: Workspace) -> Engine {
@@ -2767,11 +2827,105 @@ async fn planner_resume_checkpoint_does_not_repeat_completed_steps() {
 }
 
 #[tokio::test]
-async fn planner_emits_step_failed_for_malformed_step_output() {
+async fn planned_step_returns_tool_result_to_model_before_completion() {
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let model = Box::new(CapturingFakeModelClient::new(
+        vec![
+            r#"{"goal":"echo ping","steps":[{"id":"1","title":"echo ping"}]}"#.to_string(),
+            r#"{"tool":"echo","args":{"message":"ping"}}"#.to_string(),
+            "The echo returned: ping".to_string(),
+        ],
+        captured.clone(),
+    ));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(EchoTool));
+    let engine = Engine::new(
+        model,
+        registry,
+        ContextManager::with_max_history("You are a test agent.".to_string(), 0),
+        EngineConfig {
+            max_steps: 5,
+            plan_enabled: true,
+        },
+    );
+
+    let events = collect_events(&engine, "echo ping").await;
+
+    let prompts = captured.lock().unwrap();
+    assert_eq!(prompts.len(), 3, "planner plus two step model turns");
+    assert!(
+        prompts[2]
+            .iter()
+            .any(|message| { message.role == Role::Tool && message.content == "ping" }),
+        "the second step turn must receive the tool result even with a zero history window"
+    );
+
+    let tool_completed = events
+        .iter()
+        .position(|event| matches!(event, StreamEvent::ToolCallCompleted { .. }))
+        .unwrap();
+    let post_tool_prompt = events
+        .iter()
+        .enumerate()
+        .skip(tool_completed + 1)
+        .find_map(|(index, event)| {
+            matches!(event, StreamEvent::PromptBuilt { .. }).then_some(index)
+        })
+        .expect("step runner should build another prompt after the tool result");
+    let step_completed = events
+        .iter()
+        .position(|event| matches!(event, StreamEvent::PlanStepCompleted { .. }))
+        .unwrap();
+    assert!(tool_completed < post_tool_prompt);
+    assert!(post_tool_prompt < step_completed);
+}
+
+#[tokio::test]
+async fn planned_step_model_turn_budget_exhaustion_is_explicit() {
+    let repeated_tool_call = r#"{"tool":"echo","args":{"message":"keep going"}}"#.to_string();
+    let engine = build_planner_test_engine(vec![
+        r#"{"goal":"bounded step","steps":[{"id":"1","title":"keep calling"}]}"#.to_string(),
+        repeated_tool_call.clone(),
+        repeated_tool_call.clone(),
+        repeated_tool_call.clone(),
+        repeated_tool_call,
+    ]);
+
+    let events = collect_events(&engine, "run a bounded step").await;
+
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, StreamEvent::ToolCallStarted { .. }))
+            .count(),
+        4
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, StreamEvent::PlanStepCompleted { .. }))
+    );
+    assert!(events.iter().any(|event| {
+        matches!(
+            event,
+            StreamEvent::PlanStepFailed { reason, .. }
+                if reason == "step model-turn budget exhausted (max_model_turns_per_step=4)"
+        )
+    }));
+    assert!(matches!(
+        events.last(),
+        Some(StreamEvent::RunCompleted {
+            reason: TerminationReason::StepLimit,
+            output: Some(output),
+        }) if output.contains("max_model_turns_per_step=4")
+    ));
+}
+
+#[tokio::test]
+async fn planner_repairs_recoverable_tool_error_within_the_same_step() {
     let engine = build_planner_test_engine(vec![
         r#"{"goal":"fix docs","steps":[{"id":"1","title":"inspect docs"}]}"#.to_string(),
         r#"{"tool":"echo","args":"wrong"}"#.to_string(),
-        r#"{"goal":"fix docs","steps":[{"id":"1","title":"inspect docs"}]}"#.to_string(),
         "step 1 done".to_string(),
     ]);
 
@@ -2780,10 +2934,23 @@ async fn planner_emits_step_failed_for_malformed_step_output() {
     assert!(events.iter().any(|event| {
         matches!(
             event,
-            StreamEvent::PlanStepFailed { step, reason, .. }
-                if step.id == "1" && reason.contains("tool arguments must be")
+            StreamEvent::ToolCallFailed { error, .. }
+                if error.to_string().contains("tool arguments must be")
         )
     }));
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, StreamEvent::PlanCreated { .. }))
+            .count(),
+        1,
+        "a recoverable tool error should not replace the plan before the model sees it"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, StreamEvent::PlanStepFailed { .. }))
+    );
     assert!(events.iter().any(|event| {
         matches!(
             event,
@@ -2794,13 +2961,7 @@ async fn planner_emits_step_failed_for_malformed_step_output() {
 
 #[tokio::test]
 async fn planner_replans_after_step_failure() {
-    let engine = build_planner_test_engine(vec![
-        r#"{"goal":"fix docs","steps":[{"id":"1","title":"inspect docs"}]}"#.to_string(),
-        r#"{"tool":"echo","args":"wrong"}"#.to_string(),
-        r#"{"goal":"fix docs","steps":[{"id":"2","title":"inspect docs without a tool"}]}"#
-            .to_string(),
-        "replanned step done".to_string(),
-    ]);
+    let engine = build_replanning_test_engine();
 
     let events = collect_events(&engine, "fix the docs").await;
 
@@ -2834,13 +2995,7 @@ async fn oneshot_persists_replanned_task_state() {
     let run = state_store
         .start_run(SessionId::new(), JobId::new(), run_id)
         .unwrap();
-    let engine = build_planner_test_engine(vec![
-        r#"{"goal":"fix docs","steps":[{"id":"1","title":"inspect docs"}]}"#.to_string(),
-        r#"{"tool":"echo","args":"wrong"}"#.to_string(),
-        r#"{"goal":"fix docs","steps":[{"id":"2","title":"inspect docs without a tool"}]}"#
-            .to_string(),
-        "replanned step done".to_string(),
-    ]);
+    let engine = build_replanning_test_engine();
 
     run_oneshot(&engine, "fix the docs".to_string(), run, None, &state_store).await;
 
