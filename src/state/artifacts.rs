@@ -4,6 +4,7 @@ use std::path::Path;
 use crate::core::context::estimate_messages_tokens;
 use crate::core::engine::planned_step_failure_message;
 use crate::core::events::StreamEvent;
+use crate::core::execution::{StepLedgerState, StepRecordStatus};
 use crate::core::prompt_metadata::PromptBuildMetadata;
 use crate::core::runtime_identity::RuntimeIdentity;
 use crate::core::types::{
@@ -35,6 +36,7 @@ pub struct RunArtifactRecorder {
     tool_execution_metadata: Vec<ToolExecutionMetadata>,
     prompt_builds: Vec<PromptBuildMetadata>,
     runtime_identity: Option<RuntimeIdentity>,
+    step_ledger: StepLedgerState,
     total_usage: Usage,
     final_reason: TerminationReason,
     final_output: Option<String>,
@@ -79,6 +81,9 @@ impl RunArtifactRecorder {
             prompt_builds: Vec::new(),
             runtime_identity: runtime_identity
                 .or_else(|| resume_state.and_then(|state| state.runtime_identity.clone())),
+            step_ledger: resume_state
+                .map(|state| state.step_ledger.clone())
+                .unwrap_or_default(),
             total_usage: Usage::default(),
             final_reason: TerminationReason::Error,
             final_output: None,
@@ -148,8 +153,61 @@ impl RunArtifactRecorder {
                 self.tool_execution_metadata.push(metadata.clone());
                 self.write_snapshot(state_store).await;
             }
-            StreamEvent::PlanCreated { plan } => {
+            StreamEvent::PlanCreated { plan, identity } => {
                 self.plan = Some(plan.clone());
+                self.step_ledger.set_plan_identity(identity);
+                self.write_snapshot(state_store).await;
+            }
+            StreamEvent::PlanStepStarted { attempt, .. } => {
+                if attempt.is_complete() {
+                    self.step_ledger.active_step_attempt = Some(attempt.clone());
+                    self.step_ledger
+                        .set_plan_identity(&crate::core::execution::PlanIdentity {
+                            plan_id: attempt.plan_id.clone(),
+                            plan_revision_id: attempt.plan_revision_id.clone(),
+                            revision: self.step_ledger.active_plan_revision,
+                        });
+                }
+                self.write_snapshot(state_store).await;
+            }
+            StreamEvent::StepResult { record } => {
+                if !self
+                    .step_ledger
+                    .step_records
+                    .iter()
+                    .any(|saved| saved.record_id == record.record_id)
+                {
+                    self.step_ledger.step_records.push(record.as_ref().clone());
+                }
+                if self
+                    .step_ledger
+                    .active_step_attempt
+                    .as_ref()
+                    .is_some_and(|attempt| {
+                        attempt.plan_id == record.plan_id
+                            && attempt.plan_revision_id == record.plan_revision_id
+                            && attempt.step_id == record.step_id
+                            && attempt.attempt == record.attempt
+                    })
+                {
+                    self.step_ledger.active_step_attempt = None;
+                }
+                if matches!(
+                    record.status,
+                    StepRecordStatus::Succeeded | StepRecordStatus::Skipped
+                ) && let Some(active_plan) = self.plan.as_mut()
+                    && let Some(saved_step) = active_plan
+                        .steps
+                        .iter_mut()
+                        .find(|saved_step| saved_step.id == record.step_id)
+                {
+                    saved_step.done = true;
+                    active_plan.current_step = active_plan
+                        .steps
+                        .iter()
+                        .position(|saved_step| !saved_step.done)
+                        .unwrap_or(active_plan.steps.len());
+                }
                 self.write_snapshot(state_store).await;
             }
             StreamEvent::PlanStepCompleted { step, .. } => {
@@ -229,6 +287,7 @@ impl RunArtifactRecorder {
             checkpoint: Some(self.prompt_checkpoint()),
             plan: self.plan.clone(),
             runtime_identity: self.runtime_identity.clone(),
+            step_ledger: self.step_ledger.clone(),
         };
         if let Err(err) = state_store.write_task_state(&state).await {
             tracing::warn!("Failed to write task_state.json: {}", err);
@@ -271,6 +330,7 @@ impl RunArtifactRecorder {
         report.tool_execution_metadata = self.tool_execution_metadata.clone();
         report.prompt_builds = self.prompt_builds.clone();
         report.runtime_identity = self.runtime_identity.clone();
+        report.step_records = self.step_ledger.step_records.clone();
         report.output = self.final_output.clone();
 
         match write_report(run_dir, &report) {
@@ -328,6 +388,7 @@ impl RunArtifactRecorder {
             compacted_history_messages,
             compaction: self.checkpoint_compaction_state(compacted_history_messages),
             runtime_identity: self.runtime_identity.clone(),
+            step_ledger: self.step_ledger.checkpoint(),
         }
     }
 

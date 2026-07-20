@@ -39,9 +39,12 @@ tool stubs for those kinds.
 
 Files:
 
-- `trace.jsonl` records append-only runtime events.
-- `task_state.json` stores resumable task state and prompt checkpoint.
-- `report.json` stores final status, output, and identity metadata.
+- `trace.jsonl` records append-only runtime events, including canonical
+  `step_result` facts for terminal planned-step attempts.
+- `task_state.json` stores resumable task state, the materialized step ledger,
+  any active step attempt, and the prompt checkpoint.
+- `report.json` stores final status, output, identity metadata, and the run's
+  terminal step records.
 
 SQLite:
 
@@ -50,7 +53,11 @@ SQLite:
 - exposes async helpers through `spawn_blocking` where API handlers need indexed reads;
 - supports explicit `rove state repair` and `rove state cleanup` maintenance commands.
 
-Repair treats trace files as the append-only event source and SQLite as a rebuildable index. `rove state repair` imports task state snapshots, report artifacts, trace events, and event offsets; corrupted trace lines are reported and skipped.
+Repair treats trace files as the append-only event source and SQLite as a
+rebuildable index. `rove state repair` imports task state snapshots, report
+artifacts, trace events (including `step_result`), and event offsets; corrupted
+trace lines are reported and skipped. There is no separate mutable step table
+or fourth ledger artifact.
 
 ## Context And Compaction
 
@@ -60,7 +67,12 @@ Repair treats trace files as the append-only event source and SQLite as a rebuil
 system -> durable memory -> session memory -> compact summary -> recent history tail -> current user message
 ```
 
-`TaskState` can include a `PromptCheckpoint` with summary, preserved tail, plan pointer, memory pointers, last step, last event seq, token estimate, and compacted message count. The event sequence matches the SQLite high-water mark for the run. Resume prefers this checkpoint over replaying full audit history.
+`TaskState` can include a `PromptCheckpoint` with summary, preserved tail, plan
+pointer, memory pointers, last step, last event seq, token estimate, compacted
+message count, and bounded step-ledger metadata. Full step records remain in
+the enclosing task-state projection and canonical trace. The event sequence
+matches the SQLite high-water mark for the run. Resume prefers this checkpoint
+over replaying full audit history.
 
 Default compaction is deterministic and artifact-based. Optional model-generated compaction can be enabled through `runtime.model_compaction_enabled`; when old history is dropped from the active prompt, the runtime first flushes durable-worthy notes from the compacted segment into session memory, then asks the current model to produce a structured resume summary using prompt version `rove.compaction.v2`. Failures do not block the run: rove writes a deterministic structured fallback summary, records degraded metadata and the last error, and opens a circuit after `runtime.compaction_failure_threshold` consecutive failures.
 
@@ -102,7 +114,13 @@ dependencies between arbitrary tool arguments.
 
 Approval policy is `ask`, `auto`, or `never`. The CLI uses stdin for approvals; the API exposes pending approvals through `/jobs/{job_id}/approvals/{call_id}`.
 
-API approval/input restart behavior uses Policy A. Pending records are persisted while live, but the in-memory answer channels are not reconstructed after restart. Startup marks stale running jobs and pending approval/input rows `interrupted`, and resume creates a new run from the last task snapshot.
+API approval/input restart behavior uses Policy A. Pending records are
+persisted while live, but the in-memory answer channels are not reconstructed
+after restart. Startup marks stale running jobs and pending approval/input rows
+`interrupted`. An explicit resume still creates a new run from the last task
+snapshot, but a planned step that was in flight is not replayed: the new run
+emits an `interrupted` `StepRecord` and terminates with an error so an unknown
+external side effect cannot be repeated automatically.
 
 ## Memory
 
@@ -189,6 +207,11 @@ pnpm test
 pnpm typecheck
 pnpm build
 ```
+
+The Web event contract includes plan/revision/attempt identity and
+`step_result`. The reducer retains records in a deduplicated structured
+projection while the compatibility plan-step event remains the owner of the
+visible trace row, avoiding duplicate timeline entries.
 
 Browser-level checks are available separately:
 

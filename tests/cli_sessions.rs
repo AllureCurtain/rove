@@ -20,6 +20,7 @@ fn task_state(
         checkpoint: None,
         plan: None,
         runtime_identity: None,
+        step_ledger: Default::default(),
     }
 }
 

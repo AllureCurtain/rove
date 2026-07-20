@@ -1,4 +1,5 @@
 use crate::core::events::StreamEvent;
+use crate::core::execution::StepRecord;
 use crate::core::prompt_metadata::PromptBuildMetadata;
 use crate::core::types::{
     CallId, JobId, PlanStep, PromptCompactionState, RunId, TaskPlan, TerminationReason, ToolResult,
@@ -163,6 +164,9 @@ pub enum RunViewUpdate {
         index: usize,
         reason: String,
     },
+    StepResult {
+        record: StepRecord,
+    },
     PromptCompacted {
         summary: Option<String>,
         state: PromptCompactionState,
@@ -229,6 +233,7 @@ pub struct RunViewState {
     pub plan: Option<TaskPlan>,
     pub current_step: Option<(usize, PlanStep)>,
     pub failed_steps: Vec<(usize, PlanStep, String)>,
+    pub step_records: Vec<StepRecord>,
     pub prompt_compaction: Option<(Option<String>, PromptCompactionState)>,
     pub tool_calls: Vec<ToolCallView>,
     pub pending_approvals: Vec<PendingApprovalView>,
@@ -584,6 +589,15 @@ impl RunViewState {
                 self.failed_steps.push((index, step, reason));
                 self.current_step = None;
             }
+            RunViewUpdate::StepResult { record } => {
+                if !self
+                    .step_records
+                    .iter()
+                    .any(|saved| saved.record_id == record.record_id)
+                {
+                    self.step_records.push(record);
+                }
+            }
             RunViewUpdate::PromptCompacted { summary, state } => {
                 self.prompt_compaction = Some((summary, state));
             }
@@ -705,6 +719,10 @@ impl RunViewState {
                 RunTimelinePlanStepStatus::Failed,
                 Some(bounded_visible_text(reason)),
             )),
+            // The compatibility completed/failed event owns the visible
+            // timeline entry. Keep the canonical record as structured state
+            // without rendering a duplicate row.
+            RunViewUpdate::StepResult { .. } => None,
             RunViewUpdate::PromptCompacted { summary, state } => {
                 Some(RunTimelineEntryKind::Compaction {
                     mode: state.mode.clone(),
@@ -961,8 +979,8 @@ impl From<&StreamEvent> for RunViewUpdate {
                 input_id: *input_id,
                 prompt: prompt.clone(),
             },
-            StreamEvent::PlanCreated { plan } => Self::PlanCreated { plan: plan.clone() },
-            StreamEvent::PlanStepStarted { step, index } => Self::PlanStepStarted {
+            StreamEvent::PlanCreated { plan, .. } => Self::PlanCreated { plan: plan.clone() },
+            StreamEvent::PlanStepStarted { step, index, .. } => Self::PlanStepStarted {
                 step: step.clone(),
                 index: *index,
             },
@@ -978,6 +996,9 @@ impl From<&StreamEvent> for RunViewUpdate {
                 step: step.clone(),
                 index: *index,
                 reason: reason.clone(),
+            },
+            StreamEvent::StepResult { record } => Self::StepResult {
+                record: record.as_ref().clone(),
             },
             StreamEvent::PromptCompacted { summary, state } => Self::PromptCompacted {
                 summary: summary.clone(),
@@ -1000,6 +1021,7 @@ impl From<&StreamEvent> for RunViewUpdate {
 #[cfg(test)]
 mod tests {
     use crate::core::events::StreamEvent;
+    use crate::core::execution::{StepCompletionBasis, StepRecord, StepRecordStatus};
     use crate::core::prompt_metadata::PromptBuildMetadata;
     use crate::core::types::{
         CallId, JobId, PlanStep, PromptCompactionMode, PromptCompactionState, RunId, TaskPlan,
@@ -1025,6 +1047,31 @@ mod tests {
             id: "step-1".to_string(),
             title: "Read files".to_string(),
             done: false,
+        }
+    }
+
+    fn step_record() -> StepRecord {
+        StepRecord {
+            record_id: "record-1".to_string(),
+            plan_id: "plan-1".to_string(),
+            plan_revision_id: "revision-1".to_string(),
+            step_id: "step-1".to_string(),
+            attempt: 1,
+            status: StepRecordStatus::Succeeded,
+            started_at: "2026-07-20T00:00:00Z".to_string(),
+            finished_at: "2026-07-20T00:00:01Z".to_string(),
+            summary: "done".to_string(),
+            completion_basis: StepCompletionBasis::ModelConclusion,
+            evidence_refs: Vec::new(),
+            tool_call_ids: Vec::new(),
+            artifact_refs: Vec::new(),
+            mutations: Vec::new(),
+            model_turns_used: 1,
+            tool_calls_used: 0,
+            token_usage: Usage::default(),
+            error_code: None,
+            safe_error_summary: None,
+            supersedes_record_id: None,
         }
     }
 
@@ -1100,10 +1147,14 @@ mod tests {
                 input_id,
                 prompt: "Which branch?".to_string(),
             },
-            StreamEvent::PlanCreated { plan: plan.clone() },
+            StreamEvent::PlanCreated {
+                plan: plan.clone(),
+                identity: Default::default(),
+            },
             StreamEvent::PlanStepStarted {
                 step: step(),
                 index: 0,
+                attempt: Default::default(),
             },
             StreamEvent::PlanStepCompleted {
                 step: step(),
@@ -1113,6 +1164,9 @@ mod tests {
                 step: step(),
                 index: 0,
                 reason: "failed".to_string(),
+            },
+            StreamEvent::StepResult {
+                record: Box::new(step_record()),
             },
             StreamEvent::PromptCompacted {
                 summary: Some("summary".to_string()),
@@ -1132,7 +1186,7 @@ mod tests {
 
         let updates: Vec<RunViewUpdate> = events.iter().map(RunViewUpdate::from).collect();
 
-        assert_eq!(updates.len(), 17);
+        assert_eq!(updates.len(), 18);
         assert!(matches!(
             updates[0],
             RunViewUpdate::RunStarted {
@@ -1149,12 +1203,13 @@ mod tests {
             RunViewUpdate::InputNeeded { ref prompt, .. } if prompt == "Which branch?"
         ));
         assert!(matches!(
-            updates[14],
+            updates[15],
             RunViewUpdate::MemoryFlushed { note_count: 1 }
         ));
-        assert!(matches!(updates[15], RunViewUpdate::PromptBuilt { .. }));
+        assert!(matches!(updates[13], RunViewUpdate::StepResult { .. }));
+        assert!(matches!(updates[16], RunViewUpdate::PromptBuilt { .. }));
         assert!(matches!(
-            updates[16],
+            updates[17],
             RunViewUpdate::RunCompleted {
                 reason: TerminationReason::Final,
                 ..
@@ -1248,6 +1303,21 @@ mod tests {
         assert!(plan.steps[0].done);
         assert_eq!(plan.current_step, 1);
         assert!(state.current_step.is_none());
+    }
+
+    #[test]
+    fn step_result_is_structured_state_without_a_duplicate_timeline_entry() {
+        let mut state = super::RunViewState::default();
+        let record = step_record();
+
+        state.apply_update(RunViewUpdate::StepResult {
+            record: record.clone(),
+        });
+        state.apply_update(RunViewUpdate::StepResult { record });
+
+        assert_eq!(state.step_records.len(), 1);
+        assert!(state.timeline.is_empty());
+        assert_eq!(state.timeline_high_watermark, 2);
     }
 
     #[test]

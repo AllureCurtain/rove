@@ -6,6 +6,11 @@
 >
 > Design source: [`../design/2026-07-14-agent-execution-lifecycle-design.md`](../design/2026-07-14-agent-execution-lifecycle-design.md)
 
+> Follow-up: the append-only step ledger and canonical `step_result` event were
+> implemented in the next phase. The ledger items below remain accurate as
+> non-goals of this StepRunner-only phase. See
+> [`2026-07-20-agent-execution-lifecycle-step-record-ledger.md`](2026-07-20-agent-execution-lifecycle-step-record-ledger.md).
+
 ## Objective
 
 Implement the second dependency-ordered lifecycle phase: a bounded ReAct loop

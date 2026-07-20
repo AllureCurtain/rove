@@ -35,8 +35,14 @@ cannot supply trustworthy interaction events fail closed.
 2. `AppConfig::load` merges defaults, `.rove/config.toml`, environment variables, and explicit CLI/API overrides.
 3. The interface builds a `ModelClient`, `ToolRegistry`, `ContextManager`, and `StateStore`.
 4. `StateStore::start_run` creates a run directory and indexes session/job/run identity in SQLite.
-5. `Engine::run` emits `StreamEvent` values while model events, tool calls, approvals, inputs, planner state, and cancellation are processed.
-6. `TraceWriter` writes append-only trace events, and `RunArtifactRecorder` writes task state, prompt checkpoint, and report artifacts.
+5. `Engine::run` emits `StreamEvent` values while model events, tool calls,
+   approvals, inputs, planner state, and cancellation are processed. Planned
+   attempts carry stable plan/revision/attempt identity and end with canonical
+   `step_result` before compatibility plan-step completion/failure events.
+6. `TraceWriter` writes append-only trace events. `RunArtifactRecorder`
+   materializes the step ledger and active attempt into task state, stores
+   bounded ledger metadata in the prompt checkpoint, and includes terminal
+   step records in the report.
 7. The API adds a live job registry for active handles and reads SQLite for persisted job state and SSE replay after restart.
 
 ## Boundary Rules
@@ -45,6 +51,9 @@ cannot supply trustworthy interaction events fail closed.
 - Provider adapters normalize provider-specific streams into `ModelEvent`.
 - Tool execution happens through `Executor` and `ToolRegistry`; approval policy is passed through `ToolContext`.
 - Files remain the readable source artifacts; SQLite is the query/replay index.
+- A `step_result` trace event is the append-only terminal fact. The task-state
+  ledger and report records are projections and must not overwrite prior
+  attempts during replanning.
 - RAG is feature-gated behind `--features rag`; default builds keep stub schemas and clear disabled-feature errors.
 
 ## State Artifacts
@@ -53,8 +62,8 @@ cannot supply trustworthy interaction events fail closed.
 .rove/
   state.sqlite
   runs/<run_id>/trace.jsonl
-  runs/<run_id>/task_state.json
-  runs/<run_id>/report.json
+  runs/<run_id>/task_state.json  # plan cursor + materialized step ledger
+  runs/<run_id>/report.json      # aggregate + terminal step records
   memory/MEMORY.md
   memory/topics/*.md
   memory/sessions/<session_id>.md
@@ -67,6 +76,15 @@ The RAG files are only produced when the `rag` feature is enabled and indexing/e
 
 ## Restart Semantics
 
-On API startup, SQLite is initialized and any jobs/runs still marked `init` or `running` are marked `interrupted`. Historical jobs remain queryable through `/jobs/{job_id}/state`, and historical SSE events are replayed from SQLite through `/jobs/{job_id}/events`.
+On API startup, SQLite is initialized and any jobs/runs still marked `init` or
+`running` are marked `interrupted`. Historical jobs remain queryable through
+`/jobs/{job_id}/state`, and historical SSE events are replayed from SQLite
+through `/jobs/{job_id}/events`.
 
-Active handles such as cancellation tokens, task handles, broadcast senders, approvals, and input channels live only in memory and are not reconstructed after restart.
+Active handles such as cancellation tokens, task handles, broadcast senders,
+approvals, and input channels live only in memory and are not reconstructed
+after restart. When an explicit resume finds a persisted planned-step attempt
+without a terminal record, it appends an `interrupted` record and stops with an
+error instead of repeating model/tool work. A persisted successful terminal
+record advances the materialized plan without replaying that step. Resume does
+not yet reconcile trace events written after the latest task-state snapshot.

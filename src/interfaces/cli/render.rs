@@ -573,6 +573,7 @@ mod tests {
                     }],
                     current_step: 0,
                 },
+                identity: Default::default(),
             },
             StreamEvent::ToolCallStarted {
                 call_id,

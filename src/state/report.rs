@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::core::execution::StepRecord;
 use crate::core::prompt_metadata::PromptBuildMetadata;
 use crate::core::runtime_identity::RuntimeIdentity;
 use crate::core::types::{
@@ -34,6 +35,8 @@ pub struct RunReport {
     pub prompt_builds: Vec<PromptBuildMetadata>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_identity: Option<RuntimeIdentity>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub step_records: Vec<StepRecord>,
     pub output: Option<String>,
     pub timestamp: String,
 }
@@ -70,6 +73,7 @@ impl RunReport {
             tool_execution_metadata: Vec::new(),
             prompt_builds: Vec::new(),
             runtime_identity: None,
+            step_records: Vec::new(),
             output: None,
             timestamp: chrono::Utc::now().to_rfc3339(),
         }
@@ -89,4 +93,30 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let tmp_path = path.with_extension("json.tmp");
     fs::write(&tmp_path, bytes)?;
     fs::rename(tmp_path, path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RunReport;
+    use crate::core::types::{JobId, RunId, SessionId, TerminationReason};
+    use crate::core::workspace::WorkspaceKind;
+
+    #[test]
+    fn legacy_report_without_step_records_deserializes() {
+        let report = RunReport::new(
+            SessionId::new(),
+            JobId::new(),
+            RunId::new(),
+            std::path::PathBuf::from("."),
+            WorkspaceKind::Folder,
+            "fake".to_string(),
+            TerminationReason::Final,
+        );
+        let mut value = serde_json::to_value(report).unwrap();
+        value.as_object_mut().unwrap().remove("step_records");
+
+        let report: RunReport = serde_json::from_value(value).unwrap();
+
+        assert!(report.step_records.is_empty());
+    }
 }

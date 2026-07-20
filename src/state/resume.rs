@@ -53,6 +53,7 @@ mod tests {
             checkpoint: None,
             plan: None,
             runtime_identity: None,
+            step_ledger: Default::default(),
         }
     }
 
@@ -180,13 +181,15 @@ mod tests {
     }
 
     #[test]
-    fn old_task_state_without_runtime_identity_deserializes() {
+    fn old_task_state_without_runtime_identity_or_step_ledger_deserializes() {
         let state = task_state(RunId::new(), "old");
         let mut value = serde_json::to_value(state).unwrap();
         value.as_object_mut().unwrap().remove("runtime_identity");
+        value.as_object_mut().unwrap().remove("step_ledger");
 
         let state: TaskState = serde_json::from_value(value).unwrap();
 
         assert!(state.runtime_identity.is_none());
+        assert!(state.step_ledger.is_empty());
     }
 }

@@ -2686,6 +2686,7 @@ mod tests {
             checkpoint: None,
             plan: None,
             runtime_identity: None,
+            step_ledger: Default::default(),
         };
         let newer = TaskState {
             goal: "newer session".to_string(),

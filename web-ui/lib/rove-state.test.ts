@@ -202,6 +202,44 @@ describe("workbenchReducer", () => {
     expect(replanned.plan?.current_step).toBe(0);
   });
 
+  it("projects step_result records without duplicating the visible trace", () => {
+    const event: StreamEvent = {
+      type: "step_result",
+      record: {
+        record_id: "record-1",
+        plan_id: "plan-1",
+        plan_revision_id: "revision-1",
+        step_id: "1",
+        attempt: 1,
+        status: "succeeded",
+        started_at: "2026-07-20T00:00:00Z",
+        finished_at: "2026-07-20T00:00:01Z",
+        summary: "inspection complete",
+        completion_basis: "model_conclusion",
+        model_turns_used: 1,
+        tool_calls_used: 0,
+        token_usage: {
+          prompt_tokens: 1,
+          completion_tokens: 1,
+          total_tokens: 2,
+        },
+      },
+    };
+    const recorded = workbenchReducer(createWorkbenchState(), {
+      type: "stream_event",
+      seq: 1,
+      event,
+    });
+    const replayedWithNewSequence = workbenchReducer(recorded, {
+      type: "stream_event",
+      seq: 2,
+      event,
+    });
+
+    expect(replayedWithNewSequence.stepRecords).toEqual([event.record]);
+    expect(replayedWithNewSequence.trace).toHaveLength(0);
+  });
+
   it("hydrates recoverable UI state from sequenced job state events", () => {
     const state = workbenchReducer(createWorkbenchState(), {
       type: "job_state_synced",

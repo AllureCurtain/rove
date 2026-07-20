@@ -444,6 +444,10 @@ impl Engine {
                             history,
                             step,
                             plan,
+                            step_ledger: resume_state
+                                .as_ref()
+                                .map(|state| state.step_ledger.clone())
+                                .unwrap_or_default(),
                         },
                         stream_cancel.clone(),
                     ),

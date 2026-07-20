@@ -101,6 +101,30 @@ const streamEventFixtures: StreamEvent[] = [
     reason: "tool failed",
   },
   {
+    type: "step_result",
+    record: {
+      record_id: "record-1",
+      plan_id: "plan-1",
+      plan_revision_id: "revision-1",
+      step_id: "1",
+      attempt: 1,
+      status: "failed",
+      started_at: "2026-07-20T00:00:00Z",
+      finished_at: "2026-07-20T00:00:01Z",
+      summary: "Step failed and may be replanned.",
+      completion_basis: "runtime_failure",
+      model_turns_used: 1,
+      tool_calls_used: 1,
+      token_usage: {
+        prompt_tokens: 1,
+        completion_tokens: 2,
+        total_tokens: 3,
+      },
+      error_code: "step_runtime_failure",
+      safe_error_summary: "The planned step ended with a runtime failure.",
+    },
+  },
+  {
     type: "prompt_compacted",
     summary: "Earlier context summarized",
     state: {

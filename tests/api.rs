@@ -5,6 +5,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use rove::config::AppConfig;
 use rove::core::events::StreamEvent;
+use rove::core::execution::StepRecordStatus;
 use rove::core::types::{Role, RunStatus, TaskState};
 use rove::core::workspace::Workspace;
 use rove::interfaces::api::{
@@ -947,7 +948,7 @@ async fn api_sse_events_have_ids_and_support_after_resume() {
         .await
         .unwrap();
     let text = String::from_utf8(body.to_vec()).unwrap();
-    assert!(text.contains("id: 1"));
+    assert!(text.lines().any(|line| line == "id: 1"));
     assert!(text.contains("event: run_started"));
 
     let after_first = app
@@ -965,9 +966,9 @@ async fn api_sse_events_have_ids_and_support_after_resume() {
         .await
         .unwrap();
     let text = String::from_utf8(body.to_vec()).unwrap();
-    assert!(!text.contains("id: 1"));
+    assert!(!text.lines().any(|line| line == "id: 1"));
     assert!(!text.contains("event: run_started"));
-    assert!(text.contains("id: 2"));
+    assert!(text.lines().any(|line| line == "id: 2"));
 
     let header_resume = app
         .oneshot(
@@ -984,8 +985,8 @@ async fn api_sse_events_have_ids_and_support_after_resume() {
         .await
         .unwrap();
     let text = String::from_utf8(body.to_vec()).unwrap();
-    assert!(!text.contains("id: 1"));
-    assert!(text.contains("id: 2"));
+    assert!(!text.lines().any(|line| line == "id: 1"));
+    assert!(text.lines().any(|line| line == "id: 2"));
 }
 
 #[tokio::test]
@@ -1659,7 +1660,7 @@ async fn api_reads_completed_job_state_and_events_after_restart() {
         .await
         .unwrap();
     let text = String::from_utf8(body.to_vec()).unwrap();
-    assert!(!text.contains("id: 1"));
+    assert!(!text.lines().any(|line| line == "id: 1"));
     assert!(!text.contains("event: run_started"));
     assert!(text.contains("event: run_completed"));
 }
@@ -1702,7 +1703,7 @@ async fn api_startup_marks_stale_running_jobs_interrupted() {
 }
 
 #[tokio::test]
-async fn api_restart_marks_pending_approval_interrupted_and_allows_resume_latest() {
+async fn api_restart_marks_pending_approval_interrupted_without_replaying_unknown_step() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
     let state_store = rove::state::store::StateStore::new(&workspace.state_dir);
@@ -1791,8 +1792,29 @@ async fn api_restart_marks_pending_approval_interrupted_and_allows_resume_latest
     let resumed: CreateJobResponse = serde_json::from_slice(&body).unwrap();
     assert_ne!(resumed.run_id, created.run_id);
     assert_eq!(resumed.job_id, created.job_id);
-    let resumed_state = wait_for_done(restarted, resumed.job_id.to_string()).await;
-    assert_eq!(resumed_state.status, RunStatus::Done);
+    let resumed_state =
+        wait_for_status(restarted, resumed.job_id.to_string(), RunStatus::Error).await;
+    assert!(resumed_state.events.iter().any(|event| {
+        matches!(
+            &event.event,
+            StreamEvent::StepResult { record }
+                if record.status == StepRecordStatus::Interrupted
+                    && record.error_code.as_deref() == Some("interrupted")
+        )
+    }));
+    assert!(
+        !resumed_state
+            .events
+            .iter()
+            .any(|event| matches!(event.event, StreamEvent::PlanStepStarted { .. }))
+    );
+    assert!(
+        !resumed_state
+            .events
+            .iter()
+            .any(|event| matches!(event.event, StreamEvent::ToolCallStarted { .. }))
+    );
+    assert!(!tmp.path().join("pending.txt").exists());
 }
 
 #[tokio::test]
@@ -2080,13 +2102,46 @@ async fn api_planned_tool_step_completes_after_successful_tool_call() {
         .unwrap();
     let created: CreateJobResponse = serde_json::from_slice(&body).unwrap();
 
-    let state = wait_for_done(app, created.job_id.to_string()).await;
+    let state = wait_for_done(app.clone(), created.job_id.to_string()).await;
     let tool_starts = state
         .events
         .iter()
         .filter(|event| matches!(&event.event, StreamEvent::ToolCallStarted { name, .. } if name == "echo"))
         .count();
     assert_eq!(tool_starts, 1);
+    let result_index = state
+        .events
+        .iter()
+        .position(|event| {
+            matches!(
+                &event.event,
+                StreamEvent::StepResult { record }
+                    if record.status == StepRecordStatus::Succeeded
+                        && record.tool_calls_used == 1
+            )
+        })
+        .expect("API job state should retain the canonical step_result event");
+    let completed_index = state
+        .events
+        .iter()
+        .position(|event| matches!(event.event, StreamEvent::PlanStepCompleted { .. }))
+        .unwrap();
+    assert!(result_index < completed_index);
+
+    let events = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/jobs/{}/events", created.job_id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = axum::body::to_bytes(events.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let sse = String::from_utf8(body.to_vec()).unwrap();
+    assert!(sse.contains("event: step_result"));
 
     let report_path = run_store.run_dir(&created.run_id).join("report.json");
     let report: serde_json::Value =
@@ -2095,6 +2150,8 @@ async fn api_planned_tool_step_completes_after_successful_tool_call() {
     assert_eq!(report["termination_reason"], "final");
     assert_eq!(report["tool_calls"], 1);
     assert_eq!(report["output"], "planned tool done");
+    assert_eq!(report["step_records"].as_array().unwrap().len(), 1);
+    assert_eq!(report["step_records"][0]["status"], "succeeded");
 }
 
 #[tokio::test]

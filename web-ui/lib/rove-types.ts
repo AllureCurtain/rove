@@ -4,6 +4,7 @@ export interface Usage {
   prompt_tokens: number;
   completion_tokens: number;
   total_tokens: number;
+  cached_tokens?: number;
 }
 
 export interface PlanStep {
@@ -16,6 +17,45 @@ export interface TaskPlan {
   goal: string;
   steps: PlanStep[];
   current_step: number;
+}
+
+export type StepRecordStatus =
+  | "succeeded"
+  | "partial"
+  | "failed"
+  | "blocked"
+  | "skipped"
+  | "budget_exhausted"
+  | "cancelled"
+  | "interrupted";
+
+export type StepCompletionBasis =
+  | "model_conclusion"
+  | "deterministic_rule"
+  | "user_decision"
+  | "runtime_failure";
+
+export interface StepRecord {
+  record_id: string;
+  plan_id: string;
+  plan_revision_id: string;
+  step_id: string;
+  attempt: number;
+  status: StepRecordStatus;
+  started_at: string;
+  finished_at: string;
+  summary: string;
+  completion_basis: StepCompletionBasis;
+  evidence_refs?: string[];
+  tool_call_ids?: string[];
+  artifact_refs?: string[];
+  mutations?: ToolMutation[];
+  model_turns_used: number;
+  tool_calls_used: number;
+  token_usage: Usage;
+  error_code?: string;
+  safe_error_summary?: string;
+  supersedes_record_id?: string;
 }
 
 export type PromptCompactionMode =
@@ -131,11 +171,19 @@ export type StreamEvent =
   | {
       type: "plan_created";
       plan: TaskPlan;
+      plan_id?: string;
+      plan_revision_id?: string;
+      revision?: number;
     }
   | {
       type: "plan_step_started";
       step: PlanStep;
       index: number;
+      plan_id?: string;
+      plan_revision_id?: string;
+      step_id?: string;
+      attempt?: number;
+      started_at?: string;
     }
   | {
       type: "plan_step_completed";
@@ -147,6 +195,10 @@ export type StreamEvent =
       step: PlanStep;
       index: number;
       reason: string;
+    }
+  | {
+      type: "step_result";
+      record: StepRecord;
     }
   | {
       type: "prompt_compacted";
@@ -248,6 +300,7 @@ export interface RunReport {
   tool_calls: number;
   tool_failures: number;
   tool_mutations: ToolMutation[];
+  step_records?: StepRecord[];
   output?: string | null;
   timestamp: string;
 }
@@ -284,6 +337,7 @@ export const STREAM_EVENT_NAMES = [
   "plan_step_started",
   "plan_step_completed",
   "plan_step_failed",
+  "step_result",
   "prompt_compacted",
   "memory_flushed",
   "prompt_built",

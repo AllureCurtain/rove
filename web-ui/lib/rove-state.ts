@@ -3,6 +3,7 @@ import type {
   PendingInput,
   PlanStep,
   PendingApproval,
+  StepRecord,
   StreamEvent,
   TaskPlan,
   ToolError,
@@ -43,6 +44,7 @@ export interface WorkbenchState {
   error: string | null;
   messages: ChatMessage[];
   plan: TaskPlan | null;
+  stepRecords: StepRecord[];
   tools: ToolCallView[];
   trace: TraceEntry[];
   pendingInputs: PendingInput[];
@@ -78,6 +80,7 @@ export function createWorkbenchState(): WorkbenchState {
     error: null,
     messages: [],
     plan: null,
+    stepRecords: [],
     tools: [],
     trace: [],
     pendingInputs: [],
@@ -435,6 +438,11 @@ function applyStreamEvent(
           `${event.step.title}: ${event.reason}`,
         ),
       };
+    case "step_result":
+      return {
+        ...next,
+        stepRecords: appendStepRecord(state.stepRecords, event.record),
+      };
     case "prompt_compacted":
       return {
         ...next,
@@ -472,6 +480,12 @@ function applyStreamEvent(
     default:
       return next;
   }
+}
+
+function appendStepRecord(records: StepRecord[], record: StepRecord): StepRecord[] {
+  return records.some((saved) => saved.record_id === record.record_id)
+    ? records
+    : [...records, record];
 }
 
 function ensureUserMessage(messages: ChatMessage[], content: string): ChatMessage[] {

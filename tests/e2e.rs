@@ -10,6 +10,9 @@ use rove::config::{AppConfig, AppConfigOverrides};
 use rove::core::context::{ContextBudget, ContextManager};
 use rove::core::engine::{Engine, EngineConfig};
 use rove::core::events::StreamEvent;
+use rove::core::execution::{
+    PlanIdentity, StepAttempt, StepCompletionBasis, StepLedgerState, StepRecord, StepRecordStatus,
+};
 use rove::core::types::{
     ApprovalDecision, ApprovalPolicy, CallId, JobId, Message, PendingToolApproval,
     PendingUserInput, PlanStep, PromptCheckpoint, Role, RunId, RunRequest, SessionId, TaskPlan,
@@ -36,6 +39,37 @@ use rove::tools::traits::{Tool, ToolOutput};
 
 fn user_message(content: &str) -> Message {
     Message::user(content)
+}
+
+fn sample_step_record(
+    plan_id: &str,
+    plan_revision_id: &str,
+    step_id: &str,
+    attempt: u32,
+    status: StepRecordStatus,
+) -> StepRecord {
+    StepRecord {
+        record_id: ulid::Ulid::new().to_string(),
+        plan_id: plan_id.to_string(),
+        plan_revision_id: plan_revision_id.to_string(),
+        step_id: step_id.to_string(),
+        attempt,
+        status,
+        started_at: "2026-07-20T00:00:00Z".to_string(),
+        finished_at: "2026-07-20T00:00:01Z".to_string(),
+        summary: "recorded step result".to_string(),
+        completion_basis: StepCompletionBasis::DeterministicRule,
+        evidence_refs: Vec::new(),
+        tool_call_ids: Vec::new(),
+        artifact_refs: Vec::new(),
+        mutations: Vec::new(),
+        model_turns_used: 1,
+        tool_calls_used: 0,
+        token_usage: Usage::default(),
+        error_code: None,
+        safe_error_summary: None,
+        supersedes_record_id: None,
+    }
 }
 
 /// A fake model client that returns predetermined responses.
@@ -1448,6 +1482,7 @@ async fn latest_task_state_is_loaded_for_resume() {
         checkpoint: None,
         plan: None,
         runtime_identity: None,
+        step_ledger: Default::default(),
     };
 
     store.write_task_state(&state).await.unwrap();
@@ -1473,6 +1508,7 @@ async fn latest_task_state_rejects_unsupported_schema_version() {
         checkpoint: None,
         plan: None,
         runtime_identity: None,
+        step_ledger: Default::default(),
     };
 
     store.write_task_state(&state).await.unwrap();
@@ -1504,6 +1540,7 @@ async fn list_resumable_task_states_filters_by_session_and_newest_first() {
         checkpoint: None,
         plan: None,
         runtime_identity: None,
+        step_ledger: Default::default(),
     };
     let unrelated = TaskState {
         schema_version: 1,
@@ -1517,6 +1554,7 @@ async fn list_resumable_task_states_filters_by_session_and_newest_first() {
         checkpoint: None,
         plan: None,
         runtime_identity: None,
+        step_ledger: Default::default(),
     };
     let newer = TaskState {
         schema_version: 1,
@@ -1530,6 +1568,7 @@ async fn list_resumable_task_states_filters_by_session_and_newest_first() {
         checkpoint: None,
         plan: None,
         runtime_identity: None,
+        step_ledger: Default::default(),
     };
 
     store.write_task_state(&older).await.unwrap();
@@ -1570,6 +1609,7 @@ async fn list_task_states_returns_all_snapshots_newest_first() {
         checkpoint: None,
         plan: None,
         runtime_identity: None,
+        step_ledger: Default::default(),
     };
     let newer = TaskState {
         schema_version: 1,
@@ -1583,6 +1623,7 @@ async fn list_task_states_returns_all_snapshots_newest_first() {
         checkpoint: None,
         plan: None,
         runtime_identity: None,
+        step_ledger: Default::default(),
     };
 
     store.write_task_state(&older).await.unwrap();
@@ -1616,6 +1657,7 @@ async fn load_task_state_reads_exact_run_id() {
         checkpoint: None,
         plan: None,
         runtime_identity: None,
+        step_ledger: Default::default(),
     };
     let other = TaskState {
         schema_version: 1,
@@ -1629,6 +1671,7 @@ async fn load_task_state_reads_exact_run_id() {
         checkpoint: None,
         plan: None,
         runtime_identity: None,
+        step_ledger: Default::default(),
     };
 
     store.write_task_state(&target).await.unwrap();
@@ -1710,6 +1753,7 @@ async fn lazy_import_indexes_existing_task_state_artifacts() {
         checkpoint: None,
         plan: None,
         runtime_identity: None,
+        step_ledger: Default::default(),
     };
     let run_dir = tmp.path().join("runs").join(state.run_id.to_string());
     std::fs::create_dir_all(&run_dir).unwrap();
@@ -1753,6 +1797,7 @@ async fn repair_index_explicitly_imports_legacy_task_state_artifacts() {
         checkpoint: None,
         plan: None,
         runtime_identity: None,
+        step_ledger: Default::default(),
     };
     let run_dir = tmp.path().join("runs").join(state.run_id.to_string());
     std::fs::create_dir_all(&run_dir).unwrap();
@@ -1785,8 +1830,27 @@ async fn repair_index_rebuilds_events_and_report_from_artifacts() {
         reason: TerminationReason::Final,
         output: Some("done".to_string()),
     };
+    let record = sample_step_record(
+        "repair-plan",
+        "repair-revision",
+        "repair-step",
+        1,
+        StepRecordStatus::Succeeded,
+    );
     run.trace_writer.append(&started).unwrap();
+    run.trace_writer
+        .append(&StreamEvent::StepResult {
+            record: Box::new(record.clone()),
+        })
+        .unwrap();
     run.trace_writer.append(&completed).unwrap();
+    let step_ledger = StepLedgerState {
+        active_plan_id: Some(record.plan_id.clone()),
+        active_plan_revision_id: Some(record.plan_revision_id.clone()),
+        active_plan_revision: 0,
+        step_records: vec![record.clone()],
+        active_step_attempt: None,
+    };
     let state = TaskState {
         schema_version: 1,
         session_id,
@@ -1799,9 +1863,10 @@ async fn repair_index_rebuilds_events_and_report_from_artifacts() {
         checkpoint: None,
         plan: None,
         runtime_identity: None,
+        step_ledger,
     };
     store.write_task_state(&state).await.unwrap();
-    let report = RunReport::new(
+    let mut report = RunReport::new(
         session_id,
         job_id,
         run_id,
@@ -1810,22 +1875,24 @@ async fn repair_index_rebuilds_events_and_report_from_artifacts() {
         "fake".to_string(),
         TerminationReason::Final,
     );
+    report.step_records.push(record);
     rove::state::report::write_report(&run.run_dir, &report).unwrap();
     std::fs::remove_file(store.index.path()).unwrap();
 
     let repaired = store.repair_index().await.unwrap();
 
     assert_eq!(repaired.task_state_count, 1);
-    assert_eq!(repaired.event_count, 2);
+    assert_eq!(repaired.event_count, 3);
     assert_eq!(repaired.report_count, 1);
     let indexed_events = store.index.event_records(run_id).unwrap();
-    assert_eq!(indexed_events.len(), 2);
+    assert_eq!(indexed_events.len(), 3);
     assert_eq!(indexed_events[0].event_name, "run_started");
-    assert_eq!(indexed_events[1].event_name, "run_completed");
-    assert_eq!(store.index.last_event_seq(run_id).unwrap(), 2);
+    assert_eq!(indexed_events[1].event_name, "step_result");
+    assert_eq!(indexed_events[2].event_name, "run_completed");
+    assert_eq!(store.index.last_event_seq(run_id).unwrap(), 3);
     let indexed_run = store.index.run_record(run_id).unwrap().unwrap();
     assert_eq!(indexed_run.status, "done");
-    assert_eq!(indexed_run.last_event_seq, 2);
+    assert_eq!(indexed_run.last_event_seq, 3);
     assert!(store.index.report_record(run_id).unwrap().is_some());
     assert!(store.index.job_record(job_id).unwrap().is_some());
 }
@@ -1851,6 +1918,7 @@ async fn repair_index_reports_corrupted_trace_lines_without_aborting() {
         checkpoint: None,
         plan: None,
         runtime_identity: None,
+        step_ledger: Default::default(),
     };
     std::fs::write(
         run_dir.join("task_state.json"),
@@ -1933,6 +2001,7 @@ async fn cleanup_expired_state_rows_removes_only_expired_entries() {
         checkpoint: None,
         plan: None,
         runtime_identity: None,
+        step_ledger: Default::default(),
     };
     store.write_task_state(&expired_state).await.unwrap();
     let run_dir = tmp.path().join("runs").join(active_run.to_string());
@@ -2154,6 +2223,7 @@ async fn resumed_run_includes_session_summary_in_prompt() {
             checkpoint: None,
             plan: None,
             runtime_identity: None,
+            step_ledger: Default::default(),
         }),
     };
 
@@ -2734,6 +2804,7 @@ async fn planner_resumes_at_current_step() {
             checkpoint: None,
             plan: Some(plan),
             runtime_identity: None,
+            step_ledger: Default::default(),
         }),
     };
     let engine = build_planner_test_engine(vec!["step 2 done".to_string()]);
@@ -2797,9 +2868,11 @@ async fn planner_resume_checkpoint_does_not_repeat_completed_steps() {
                 compacted_history_messages: 0,
                 compaction: Default::default(),
                 runtime_identity: None,
+                step_ledger: Default::default(),
             }),
             plan: None,
             runtime_identity: None,
+            step_ledger: Default::default(),
         }),
     };
     let engine = build_planner_test_engine(vec!["step 2 done".to_string()]);
@@ -2824,6 +2897,150 @@ async fn planner_resume_checkpoint_does_not_repeat_completed_steps() {
             StreamEvent::PlanStepStarted { step, .. } if step.id == "2"
         )
     }));
+}
+
+#[tokio::test]
+async fn planner_resume_closes_unknown_in_flight_attempt_without_replay() {
+    let identity = PlanIdentity::fresh();
+    let attempt = StepAttempt {
+        plan_id: identity.plan_id.clone(),
+        plan_revision_id: identity.plan_revision_id.clone(),
+        step_id: "1".to_string(),
+        attempt: 1,
+        started_at: "2026-07-20T00:00:00Z".to_string(),
+    };
+    let plan = TaskPlan {
+        goal: "do not replay".to_string(),
+        steps: vec![PlanStep {
+            id: "1".to_string(),
+            title: "unknown external mutation".to_string(),
+            done: false,
+        }],
+        current_step: 0,
+    };
+    let mut step_ledger = StepLedgerState::default();
+    step_ledger.set_plan_identity(&identity);
+    step_ledger.active_step_attempt = Some(attempt.clone());
+    let req = RunRequest {
+        session_id: SessionId::new(),
+        job_id: JobId::new(),
+        run_id: RunId::new(),
+        user_message: "do not replay".to_string(),
+        resume_state: Some(TaskState {
+            schema_version: 1,
+            session_id: SessionId::new(),
+            job_id: JobId::new(),
+            run_id: RunId::new(),
+            goal: "do not replay".to_string(),
+            step: 1,
+            history: Vec::new(),
+            summary: None,
+            checkpoint: None,
+            plan: Some(plan),
+            runtime_identity: None,
+            step_ledger,
+        }),
+    };
+    let engine = build_planner_test_engine(vec!["must not be called".to_string()]);
+
+    let events = collect_events_with_request(&engine, req).await;
+
+    assert!(!events.iter().any(|event| {
+        matches!(
+            event,
+            StreamEvent::PlanStepStarted { .. }
+                | StreamEvent::ToolCallStarted { .. }
+                | StreamEvent::LlmMessage { .. }
+        )
+    }));
+    assert!(events.iter().any(|event| {
+        matches!(
+            event,
+            StreamEvent::StepResult { record }
+                if record.status == StepRecordStatus::Interrupted
+                    && record.plan_id == attempt.plan_id
+                    && record.plan_revision_id == attempt.plan_revision_id
+                    && record.step_id == attempt.step_id
+                    && record.attempt == attempt.attempt
+                    && record.error_code.as_deref() == Some("interrupted")
+        )
+    }));
+    assert!(matches!(
+        events.last(),
+        Some(StreamEvent::RunCompleted {
+            reason: TerminationReason::Error,
+            ..
+        })
+    ));
+}
+
+#[tokio::test]
+async fn planner_resume_applies_terminal_success_without_replaying_the_step() {
+    let identity = PlanIdentity::fresh();
+    let record = sample_step_record(
+        &identity.plan_id,
+        &identity.plan_revision_id,
+        "1",
+        1,
+        StepRecordStatus::Succeeded,
+    );
+    let plan = TaskPlan {
+        goal: "resume terminal result".to_string(),
+        steps: vec![PlanStep {
+            id: "1".to_string(),
+            title: "already completed".to_string(),
+            done: false,
+        }],
+        current_step: 0,
+    };
+    let mut step_ledger = StepLedgerState::default();
+    step_ledger.set_plan_identity(&identity);
+    step_ledger.step_records.push(record);
+    let req = RunRequest {
+        session_id: SessionId::new(),
+        job_id: JobId::new(),
+        run_id: RunId::new(),
+        user_message: "resume terminal result".to_string(),
+        resume_state: Some(TaskState {
+            schema_version: 1,
+            session_id: SessionId::new(),
+            job_id: JobId::new(),
+            run_id: RunId::new(),
+            goal: "resume terminal result".to_string(),
+            step: 1,
+            history: Vec::new(),
+            summary: None,
+            checkpoint: None,
+            plan: Some(plan),
+            runtime_identity: None,
+            step_ledger,
+        }),
+    };
+    let engine = build_planner_test_engine(vec!["must not be called".to_string()]);
+
+    let events = collect_events_with_request(&engine, req).await;
+
+    assert!(!events.iter().any(|event| {
+        matches!(
+            event,
+            StreamEvent::PlanStepStarted { .. }
+                | StreamEvent::StepResult { .. }
+                | StreamEvent::LlmMessage { .. }
+        )
+    }));
+    assert!(events.iter().any(|event| {
+        matches!(
+            event,
+            StreamEvent::PlanStepCompleted { step, .. } if step.id == "1"
+        )
+    }));
+    assert!(matches!(
+        events.last(),
+        Some(StreamEvent::RunCompleted {
+            reason: TerminationReason::Final,
+            ..
+        })
+    ));
 }
 
 #[tokio::test]
@@ -2881,6 +3098,90 @@ async fn planned_step_returns_tool_result_to_model_before_completion() {
 }
 
 #[tokio::test]
+async fn planned_step_emits_complete_step_record_before_compatibility_completion() {
+    let engine = build_planner_test_engine(vec![
+        r#"{"goal":"echo ping","steps":[{"id":"1","title":"echo ping"}]}"#.to_string(),
+        r#"{"tool":"echo","args":{"message":"ping"}}"#.to_string(),
+        "The echo returned: ping".to_string(),
+    ]);
+
+    let events = collect_events(&engine, "echo ping").await;
+    let started = events
+        .iter()
+        .find_map(|event| match event {
+            StreamEvent::PlanStepStarted { attempt, .. } => Some(attempt),
+            _ => None,
+        })
+        .expect("planned step should publish its stable attempt identity");
+    let (record_index, record) = events
+        .iter()
+        .enumerate()
+        .find_map(|(index, event)| match event {
+            StreamEvent::StepResult { record } => Some((index, record)),
+            _ => None,
+        })
+        .expect("planned step should emit a terminal step_result");
+    let completed_index = events
+        .iter()
+        .position(|event| matches!(event, StreamEvent::PlanStepCompleted { .. }))
+        .unwrap();
+
+    assert!(record_index < completed_index);
+    assert!(started.is_complete());
+    assert_eq!(record.plan_id, started.plan_id);
+    assert_eq!(record.plan_revision_id, started.plan_revision_id);
+    assert_eq!(record.step_id, "1");
+    assert_eq!(record.attempt, 1);
+    assert_eq!(record.status, StepRecordStatus::Succeeded);
+    assert_eq!(record.summary, "The echo returned: ping");
+    assert_eq!(
+        record.completion_basis,
+        StepCompletionBasis::ModelConclusion
+    );
+    assert_eq!(record.model_turns_used, 2);
+    assert_eq!(record.tool_calls_used, 1);
+    assert_eq!(record.tool_call_ids.len(), 1);
+    assert_eq!(record.evidence_refs.len(), 1);
+    assert_eq!(record.token_usage.total_tokens, 30);
+    record.validate().unwrap();
+}
+
+#[tokio::test]
+async fn replanning_retains_failed_record_and_advances_revision_identity() {
+    let engine = build_replanning_test_engine();
+
+    let events = collect_events(&engine, "fix the docs").await;
+    let identities: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event {
+            StreamEvent::PlanCreated { identity, .. } => Some(identity),
+            _ => None,
+        })
+        .collect();
+    let records: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event {
+            StreamEvent::StepResult { record } => Some(record),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(identities.len(), 2);
+    assert_eq!(identities[0].plan_id, identities[1].plan_id);
+    assert_ne!(
+        identities[0].plan_revision_id,
+        identities[1].plan_revision_id
+    );
+    assert_eq!(identities[0].revision, 0);
+    assert_eq!(identities[1].revision, 1);
+    assert_eq!(records.len(), 2);
+    assert_eq!(records[0].status, StepRecordStatus::Failed);
+    assert_eq!(records[1].status, StepRecordStatus::Succeeded);
+    assert_eq!(records[0].plan_id, records[1].plan_id);
+    assert_ne!(records[0].plan_revision_id, records[1].plan_revision_id);
+}
+
+#[tokio::test]
 async fn planned_step_model_turn_budget_exhaustion_is_explicit() {
     let repeated_tool_call = r#"{"tool":"echo","args":{"message":"keep going"}}"#.to_string();
     let engine = build_planner_test_engine(vec![
@@ -2912,12 +3213,114 @@ async fn planned_step_model_turn_budget_exhaustion_is_explicit() {
                 if reason == "step model-turn budget exhausted (max_model_turns_per_step=4)"
         )
     }));
+    assert!(events.iter().any(|event| {
+        matches!(
+            event,
+            StreamEvent::StepResult { record }
+                if record.status == StepRecordStatus::BudgetExhausted
+                    && record.error_code.as_deref()
+                        == Some("step_model_turn_budget_exhausted")
+        )
+    }));
     assert!(matches!(
         events.last(),
         Some(StreamEvent::RunCompleted {
             reason: TerminationReason::StepLimit,
             output: Some(output),
         }) if output.contains("max_model_turns_per_step=4")
+    ));
+}
+
+#[tokio::test]
+async fn planned_permission_denial_emits_blocked_step_record() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let model = Box::new(FakeModelClient::new(vec![
+        r#"{"goal":"run danger","steps":[{"id":"1","title":"run danger"}]}"#.to_string(),
+        r#"{"tool":"danger","args":{}}"#.to_string(),
+    ]));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(FakeDestructiveTool));
+    let engine = Engine::with_workspace_and_approval_decision(
+        model,
+        registry,
+        ContextManager::new("You are a test agent.".to_string()),
+        EngineConfig {
+            max_steps: 3,
+            plan_enabled: true,
+        },
+        workspace,
+        ApprovalPolicy::Ask,
+        ApprovalDecision::Reject,
+    );
+
+    let events = collect_events(&engine, "run danger").await;
+    let result_index = events
+        .iter()
+        .position(|event| {
+            matches!(
+                event,
+                StreamEvent::StepResult { record }
+                    if record.status == StepRecordStatus::Blocked
+                        && record.error_code.as_deref() == Some("permission_denied")
+            )
+        })
+        .expect("permission denial should produce a blocked terminal record");
+    let failed_index = events
+        .iter()
+        .position(|event| matches!(event, StreamEvent::PlanStepFailed { .. }))
+        .unwrap();
+
+    assert!(result_index < failed_index);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, StreamEvent::PlanCreated { .. }))
+            .count(),
+        1,
+        "a denied mutation must not be retried through compatibility replanning"
+    );
+}
+
+#[tokio::test]
+async fn planned_context_limit_emits_budget_exhausted_step_record() {
+    let model = Box::new(FakeModelClient::new(vec![
+        r#"{"goal":"bounded context","steps":[{"id":"1","title":"inspect"}]}"#.to_string(),
+    ]));
+    let engine = Engine::new(
+        model,
+        ToolRegistry::new(),
+        ContextManager::with_token_budget(
+            "system".to_string(),
+            ContextBudget {
+                soft_limit_tokens: 1,
+                hard_limit_tokens: 1,
+                reserved_tokens: 0,
+            },
+        ),
+        EngineConfig {
+            max_steps: 3,
+            plan_enabled: true,
+        },
+    );
+
+    let events = collect_events(&engine, "bounded context").await;
+
+    assert!(events.iter().any(|event| {
+        matches!(
+            event,
+            StreamEvent::StepResult { record }
+                if record.status == StepRecordStatus::BudgetExhausted
+                    && record.error_code.as_deref() == Some("context_token_limit")
+                    && record.model_turns_used == 0
+        )
+    }));
+    assert!(matches!(
+        events.last(),
+        Some(StreamEvent::RunCompleted {
+            reason: TerminationReason::TokenLimit,
+            ..
+        })
     ));
 }
 
@@ -3010,6 +3413,18 @@ async fn oneshot_persists_replanned_task_state() {
         .unwrap(),
     )
     .unwrap();
+    let persisted_records = task_state.step_ledger.step_records.clone();
+    assert_eq!(persisted_records.len(), 2);
+    assert_eq!(persisted_records[0].status, StepRecordStatus::Failed);
+    assert_eq!(persisted_records[1].status, StepRecordStatus::Succeeded);
+    assert!(task_state.step_ledger.active_step_attempt.is_none());
+    assert_eq!(
+        task_state
+            .checkpoint
+            .as_ref()
+            .map(|checkpoint| checkpoint.step_ledger.step_record_count),
+        Some(2)
+    );
     let plan = task_state
         .plan
         .expect("re-planned task state should persist a plan");
@@ -3026,6 +3441,20 @@ async fn oneshot_persists_replanned_task_state() {
         }),
         "task_state should preserve why the original plan was replaced"
     );
+
+    let report = state_store.load_report(run_id).await.unwrap();
+    assert_eq!(report.step_records, persisted_records);
+    let trace = std::fs::read_to_string(state_store.run_store.run_dir(&run_id).join("trace.jsonl"))
+        .unwrap();
+    let traced_records: Vec<_> = trace
+        .lines()
+        .map(|line| serde_json::from_str::<StreamEvent>(line).unwrap())
+        .filter_map(|event| match event {
+            StreamEvent::StepResult { record } => Some(*record),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(traced_records, persisted_records);
 }
 
 #[tokio::test]
@@ -3058,6 +3487,7 @@ async fn resumed_run_uses_persisted_replanned_task_state() {
             checkpoint: None,
             plan: Some(plan),
             runtime_identity: None,
+            step_ledger: Default::default(),
         }),
     };
     let engine = build_planner_test_engine(vec!["resumed replanned step done".to_string()]);
@@ -3279,6 +3709,85 @@ async fn run_with_cancel_completes_cancelled_while_tool_is_waiting() {
             reason: rove::core::types::TerminationReason::Cancelled,
             output: None,
         }
+    ));
+}
+
+#[tokio::test]
+async fn planned_cancellation_closes_the_in_flight_step_record() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let model = Box::new(FakeModelClient::new(vec![
+        r#"{"goal":"wait","steps":[{"id":"1","title":"wait for tool"}]}"#.to_string(),
+        r#"{"tool":"wait_forever","args":{}}"#.to_string(),
+    ]));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(NeverCompletesTool));
+    let engine = Engine::with_workspace(
+        model,
+        registry,
+        ContextManager::new("You are a test agent.".to_string()),
+        EngineConfig {
+            max_steps: 3,
+            plan_enabled: true,
+        },
+        workspace,
+        ApprovalPolicy::Auto,
+    );
+    let req = RunRequest {
+        session_id: SessionId::new(),
+        job_id: JobId::new(),
+        run_id: RunId::new(),
+        user_message: "wait".to_string(),
+        resume_state: None,
+    };
+    let cancel = CancellationToken::new();
+    let stream = engine.run_with_cancel(req, None, cancel.clone());
+    futures::pin_mut!(stream);
+    let mut events = Vec::new();
+
+    while let Some(event) = tokio::time::timeout(Duration::from_secs(2), stream.next())
+        .await
+        .expect("planned run should reach the tool call")
+    {
+        let should_cancel = matches!(
+            &event,
+            StreamEvent::ToolCallStarted { name, .. } if name == "wait_forever"
+        );
+        events.push(event);
+        if should_cancel {
+            cancel.cancel();
+            break;
+        }
+    }
+    while let Some(event) = tokio::time::timeout(Duration::from_secs(2), stream.next())
+        .await
+        .expect("cancelled planned run should finish promptly")
+    {
+        events.push(event);
+    }
+
+    let result_index = events
+        .iter()
+        .position(|event| {
+            matches!(
+                event,
+                StreamEvent::StepResult { record }
+                    if record.status == StepRecordStatus::Cancelled
+                        && record.error_code.as_deref() == Some("cancelled")
+            )
+        })
+        .expect("cancelled attempt should have a terminal record");
+    let completed_index = events
+        .iter()
+        .position(|event| matches!(event, StreamEvent::RunCompleted { .. }))
+        .unwrap();
+    assert!(result_index < completed_index);
+    assert!(matches!(
+        events.last(),
+        Some(StreamEvent::RunCompleted {
+            reason: TerminationReason::Cancelled,
+            ..
+        })
     ));
 }
 
@@ -3851,9 +4360,11 @@ async fn resumed_run_prefers_prompt_checkpoint_tail_and_summary() {
             compacted_history_messages: 1,
             compaction: Default::default(),
             runtime_identity: None,
+            step_ledger: Default::default(),
         }),
         plan: None,
         runtime_identity: None,
+        step_ledger: Default::default(),
     };
     let req = RunRequest {
         session_id: SessionId::new(),

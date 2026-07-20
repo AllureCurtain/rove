@@ -450,6 +450,7 @@ mod tests {
             checkpoint: None,
             plan: None,
             runtime_identity: None,
+            step_ledger: Default::default(),
         }
     }
 }

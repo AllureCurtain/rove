@@ -440,7 +440,16 @@ today is `{"kind":"task","name":"...","base":"..."}`; Folder/Repo jobs use
 the API server workspace.
 `resume` follows the CLI semantics: omit it for a fresh session/job, use `"latest"` for the newest task snapshot, or pass a run id to load that exact snapshot. A resumed API job keeps the loaded `session_id` and `job_id`, creates a new `run_id`, and passes the loaded `TaskState` into `RunRequest` and artifact recording.
 
-After restart, historical job state and SSE events can be read from SQLite. Pending approvals and pending inputs follow Policy A: requests are persisted for audit while live, but their channels are not reconstructed after process restart. API startup marks stale running jobs and pending approval/input rows as `interrupted`; `/jobs/{job_id}/state` then shows no answerable pending approval/input lists for that historical job. Resuming latest from the interrupted task snapshot starts a new run with a new `run_id`.
+After restart, historical job state and SSE events can be read from SQLite.
+Pending approvals and pending inputs follow Policy A: requests are persisted
+for audit while live, but their channels are not reconstructed after process
+restart. API startup marks stale running jobs and pending approval/input rows as
+`interrupted`; `/jobs/{job_id}/state` then shows no answerable pending lists for
+that historical job. Resuming latest starts a new run with a new `run_id`. If
+the snapshot contains a planned-step attempt with no terminal record, the new
+run emits an `interrupted` `StepRecord`, produces no new model/tool start for
+that attempt, and terminates with `RunStatus::Error` rather than risking a
+duplicate external side effect.
 
 Historical run discovery is read-only. `/runs` returns recent run identity, status, last indexed event sequence, and report availability from SQLite. `/runs/{run_id}/report` uses the indexed report row to load `report.json`; it does not expose arbitrary filesystem paths.
 
@@ -474,6 +483,11 @@ The main component:
 5. Fetches job state on stream errors to resync.
 6. Loads recent runs from `GET /api/runs` on page load and after terminal run states.
 7. Fetches a selected report with `GET /api/runs/{run_id}/report` and displays model, workspace, status, termination reason, steps, tool counts, token count, and final output.
+
+The reducer also retains `step_result` records in a deduplicated `stepRecords`
+projection. Compatibility `plan_step_completed` / `plan_step_failed` events
+continue to own the visible trace entry, so one terminal attempt does not render
+twice.
 
 Relevant code:
 
@@ -513,6 +527,10 @@ The core type model is centered on explicit IDs and serializable runtime state:
 | `TaskState` | Serializable resume snapshot |
 | `PromptCheckpoint` | Compact reconstruction point for resume |
 | `TaskPlan` | Planner output and current step pointer |
+| `PlanIdentity` | Stable logical plan and compatibility revision identity |
+| `StepAttempt` | Persisted identity for one in-flight planned attempt |
+| `StepRecord` | Append-only terminal fact for one planned attempt |
+| `StepLedgerState` | Materialized ledger and active-attempt projection |
 | `Message` | Provider-facing conversation message |
 | `ToolSchema` | Tool contract exposed to the model |
 | `RunStatus` | API/job status |
@@ -541,10 +559,17 @@ Current event variants:
 - `plan_step_started`
 - `plan_step_completed`
 - `plan_step_failed`
+- `step_result`
 - `prompt_compacted`
+- `memory_flushed`
+- `prompt_built`
 - `run_completed`
 
-The API serializes these events as SSE using `StreamEvent::event_name()`. The trace writer serializes the same events to `trace.jsonl` and indexes them in SQLite with sequence numbers.
+The API serializes these events as SSE using `StreamEvent::event_name()`. The
+trace writer serializes the same events to `trace.jsonl` and indexes them in
+SQLite with sequence numbers. `PlanCreated` and `PlanStepStarted` carry stable
+plan/revision/attempt identity. `step_result` is the canonical terminal fact;
+the older completed/failed events remain compatibility notifications.
 
 `model_status` is the safe progress surface for model-side work. It can say
 that the model is thinking, has selected a tool, or that the run is waiting for
@@ -582,6 +607,10 @@ The high-level run flow:
    - call the model and execute tools through the shared turn helpers;
    - append tool results and return to the model in the same step;
    - complete the step only on a model step conclusion;
+   - collect model-turn, tool-call, mutation, and token metrics from emitted
+     events;
+   - emit a terminal `step_result` before the compatibility
+     `PlanStepCompleted` / `PlanStepFailed` event;
    - repair malformed/recoverable tool output within the step, and replan only
      after a terminal recoverable step failure.
 5. If planning is disabled:
@@ -598,15 +627,22 @@ Termination can happen because of:
 - planner error;
 - cancellation.
 
-The planned and unplanned paths share model-turn and tool-turn helpers. If you are changing model streaming, native tool-use conversion, approval, batch execution, or history mutation, start in `model_turn.rs` or `tool_turn.rs`. `step_runner.rs` owns bounded within-step iteration and scoped history; `plan_loop.rs` owns plan cursor, replacement-plan compatibility, and plan-step lifecycle events.
+The planned and unplanned paths share model-turn and tool-turn helpers. If you are changing model streaming, native tool-use conversion, approval, batch execution, or history mutation, start in `model_turn.rs` or `tool_turn.rs`. `step_runner.rs` owns bounded within-step iteration, scoped history, and event-derived attempt metrics; `plan_loop.rs` owns plan identity, attempt closure, the append-only terminal record, plan cursor, replacement-plan compatibility, and plan-step lifecycle events.
 
 Plan mutation semantics:
 
 - Step IDs are stable within one `TaskPlan`.
 - Replanning currently replaces the active `TaskPlan` and emits another
-  `PlanCreated`; an immutable typed revision chain is not persisted yet.
-- Completed work is preserved as event history and task-state history evidence instead of being blindly copied into the replacement plan.
-- Resume prefers the checkpoint plan when present, then the task-state plan. It resumes at `current_step` and does not repeat completed steps unless the saved plan explicitly marks them pending.
+  `PlanCreated` with the same logical `plan_id`, a new `plan_revision_id`, and
+  an incremented compatibility revision. An immutable typed parent revision
+  chain and `plan_revised` event are not persisted yet.
+- Completed and failed attempt records remain append-only across replacement
+  plans; replanning does not overwrite their evidence, tool IDs, or mutations.
+- Resume prefers the checkpoint plan when present, then the task-state plan. A
+  terminal successful record advances a stale materialized cursor without
+  replay. A complete active attempt without a terminal record becomes
+  `interrupted` and the resumed run stops with an error. Resume does not yet
+  scan trace events newer than the task-state projection.
 
 Relevant code:
 
@@ -652,7 +688,11 @@ When automatic compaction is needed and old history has been dropped from the ac
 - last event sequence matching the SQLite event high-water mark;
 - token estimate;
 - compacted message count;
-- compaction metadata, including mode, degraded state, model, prompt version, source message count, and last error when present.
+- compaction metadata, including mode, degraded state, model, prompt version,
+  source message count, and last error when present;
+- bounded ledger metadata: active plan/revision identity, terminal record count,
+  and an optional active attempt. Full `StepRecord` values remain in
+  `TaskState` and `trace.jsonl`.
 
 Resume prefers checkpoint tail/summary over replaying the full saved history.
 During a planned step, current-step assistant/tool messages are injected as a
@@ -832,7 +872,9 @@ Each run writes readable files under:
   report.json
 ```
 
-`trace.jsonl` is append-only event history and the source used to rebuild event rows during repair. Every line is one serialized `StreamEvent`.
+`trace.jsonl` is append-only event history and the source used to rebuild event
+rows during repair. Every line is one serialized `StreamEvent`; terminal
+planned attempts use `step_result` as their canonical ledger transition.
 
 `task_state.json` is the resume snapshot. It includes:
 
@@ -842,7 +884,8 @@ Each run writes readable files under:
 - conversation history;
 - summary;
 - prompt checkpoint;
-- plan state.
+- plan state;
+- materialized terminal step records and any active step attempt.
 
 `report.json` is the final aggregate report. It includes:
 
@@ -854,6 +897,8 @@ Each run writes readable files under:
 - step count;
 - total usage;
 - tool counts;
+- terminal step records with per-attempt usage, evidence/tool references, and
+  mutations;
 - final output.
 
 Relevant code:
@@ -883,7 +928,9 @@ Startup and maintenance behavior:
 - `StateIndex::initialize` creates/migrates the database.
 - API startup marks stale running jobs as `interrupted`.
 - task states can be lazily imported from artifacts.
-- `rove state repair` imports task state artifacts, report artifacts, and trace events; corrupted trace lines are counted and skipped.
+- `rove state repair` imports task state artifacts, report artifacts, and trace
+  events, including `step_result`; corrupted trace lines are counted and
+  skipped. SQLite has no separate mutable ledger table in this phase.
 - `rove state cleanup` removes expired rows and safe run artifacts.
 
 Useful commands:
@@ -1240,16 +1287,23 @@ When changing provider tool-use:
 
 These are implementation-level issues to keep in mind before extending the system.
 
-1. Agent tool-time RAG retrieval remains deterministic.
+1. The planned-step ledger does not complete the future lifecycle design.
+   Replacement plans still use `PlanCreated` rather than an immutable parent
+   `PlanRevision` chain; Evaluator, Finalizer, global multidimensional budgets,
+   and structured budget/decision/finalization events remain unimplemented.
+   Resume uses the materialized `TaskState` ledger and does not yet reconcile a
+   canonical trace tail written after the latest snapshot.
+
+2. Agent tool-time RAG retrieval remains deterministic.
    Indexing and eval use configurable embedders and rerankers. The in-agent `retrieve_code` and `retrieve_docs` tools still construct deterministic retrieval directly; passing configured RAG provider services into runtime tool construction remains a follow-up.
 
-2. TUI real-terminal evidence is platform-scoped. The standard-library PTY
+3. TUI real-terminal evidence is platform-scoped. The standard-library PTY
    smoke covers Unix when explicitly enabled, while Windows ConPTY automation is
    not implemented and therefore skips with a typed result. The deterministic
    TestBackend and terminal lifecycle tests do not substitute for that missing
    platform gate.
 
-3. TUI display sanitization is defense in depth. It bounds and redacts common
+4. TUI display sanitization is defense in depth. It bounds and redacts common
    reasoning, token, and secret-shaped text, but it is a heuristic projection,
    not a proof that arbitrary provider text contains no secrets. New display
    fields must remain typed, bounded, and covered by negative tests.
@@ -1257,17 +1311,15 @@ These are implementation-level issues to keep in mind before extending the syste
 
 ## 24. Current Verification Baseline
 
-As of 2026-05-28, the following checks were run locally and passed:
+As of 2026-07-20, the following checks were run locally and passed:
 
 ```powershell
 cargo fmt --all --check
 cargo clippy --all-targets -- -D warnings
 cargo test
 cargo check --features rag --bin rove-index
-cargo test --features rag
 cd web-ui; pnpm test
 cd web-ui; pnpm typecheck
 cd web-ui; pnpm build
+git diff --check
 ```
-
-`cargo test --features rag` took longer because it waited on Cargo artifact locks during the local run, then completed successfully when rerun by itself.

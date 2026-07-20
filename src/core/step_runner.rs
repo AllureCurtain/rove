@@ -8,7 +8,7 @@ use crate::core::events::StreamEvent;
 use crate::core::model_turn::{ModelTurnItem, run_model_turn};
 use crate::core::run_loop::{LoopContext, enrich_prompt_metadata, extract_session_memory_notes};
 use crate::core::tool_turn::{ToolAction, ToolTurnItem, append_tool_history, run_tool_turn};
-use crate::core::types::{Action, Message, PlanStep};
+use crate::core::types::{Action, CallId, Message, PlanStep, ToolMutation, Usage};
 use crate::memory::session::append_session_notes_to_dir_sync;
 
 /// Inputs owned by one bounded planned-step attempt.
@@ -35,12 +35,24 @@ pub(crate) enum StepRunnerOutcome {
     Cancelled,
 }
 
+/// Metrics collected from the canonical model/tool events emitted while one
+/// planned step is running.  These are deliberately event-derived so the
+/// ledger cannot drift from the trace.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct StepRunMetrics {
+    pub model_turns_used: u32,
+    pub tool_call_ids: Vec<CallId>,
+    pub mutations: Vec<ToolMutation>,
+    pub token_usage: Usage,
+}
+
 #[derive(Debug)]
 pub(crate) struct StepRunnerResult {
     pub outcome: StepRunnerOutcome,
     pub history: Vec<Message>,
     pub compact_summary: Option<String>,
     pub compaction: crate::core::compaction::CompactionRuntime,
+    pub metrics: StepRunMetrics,
 }
 
 #[derive(Debug)]
@@ -67,11 +79,20 @@ pub(crate) fn run_step<'a>(
         let mut compact_summary = initial_compact_summary;
         let mut step_history = Vec::new();
         let mut model_turns = 0u32;
+        let mut metrics = StepRunMetrics::default();
         let max_model_turns = ctx.max_model_turns_per_step;
         let step_prompt = format!(
             "Goal: {goal}\nCurrent step {}: {}\nComplete this step and report the result. A tool result is evidence, not step completion; continue this step until you can state its conclusion.",
             step.id, step.title
         );
+
+        macro_rules! emit_step_event {
+            ($event:expr) => {{
+                let event = $event;
+                record_step_event(&mut metrics, &event);
+                yield StepRunnerItem::Event(event);
+            }};
+        }
 
         macro_rules! drive_tool_turn {
             ($action:expr) => {{
@@ -82,7 +103,7 @@ pub(crate) fn run_step<'a>(
                 loop {
                     match tool_stream.next().await {
                         Some(ToolTurnItem::Event(event)) => {
-                            yield StepRunnerItem::Event(event);
+                            emit_step_event!(event);
                         }
                         Some(ToolTurnItem::Finished(outcome)) => break Ok(outcome),
                         Some(ToolTurnItem::Cancelled) => break Err(StepRunnerOutcome::Cancelled),
@@ -103,6 +124,7 @@ pub(crate) fn run_step<'a>(
                     step_history,
                     compact_summary,
                     compaction,
+                    metrics,
                 ));
                 return;
             }
@@ -118,6 +140,7 @@ pub(crate) fn run_step<'a>(
                     step_history,
                     compact_summary,
                     compaction,
+                    metrics,
                 ));
                 return;
             }
@@ -143,6 +166,7 @@ pub(crate) fn run_step<'a>(
                     step_history,
                     compact_summary,
                     compaction,
+                    metrics,
                 ));
                 return;
             }
@@ -164,7 +188,7 @@ pub(crate) fn run_step<'a>(
                         .is_ok()
                     {
                         flush_notes = candidate_notes;
-                        yield StepRunnerItem::Event(StreamEvent::MemoryFlushed {
+                        emit_step_event!(StreamEvent::MemoryFlushed {
                             notes: flush_notes.clone(),
                         });
                     }
@@ -183,7 +207,7 @@ pub(crate) fn run_step<'a>(
                     if let Some(summary) = update.summary {
                         compact_summary = Some(summary);
                     }
-                    yield StepRunnerItem::Event(StreamEvent::PromptCompacted {
+                    emit_step_event!(StreamEvent::PromptCompacted {
                         summary: summary_for_event,
                         state: update.state,
                     });
@@ -208,17 +232,19 @@ pub(crate) fn run_step<'a>(
                         step_history,
                         compact_summary,
                         compaction,
+                        metrics,
                     ));
                     return;
                 }
             }
 
             let tool_schemas = ctx.registry.schemas();
-            yield StepRunnerItem::Event(StreamEvent::PromptBuilt {
+            emit_step_event!(StreamEvent::PromptBuilt {
                 metadata: enrich_prompt_metadata(&ctx, context.metadata.clone(), &tool_schemas),
             });
 
             model_turns += 1;
+            metrics.model_turns_used = model_turns;
             let mut turn_stream = run_model_turn(
                 ctx.model,
                 context.messages,
@@ -227,7 +253,7 @@ pub(crate) fn run_step<'a>(
             );
             let model_turn = loop {
                 match turn_stream.next().await {
-                    Some(ModelTurnItem::Event(event)) => yield StepRunnerItem::Event(event),
+                    Some(ModelTurnItem::Event(event)) => emit_step_event!(event),
                     Some(ModelTurnItem::Finished(turn)) => break Ok(turn),
                     Some(ModelTurnItem::Cancelled) => break Err(StepRunnerOutcome::Cancelled),
                     Some(ModelTurnItem::Failed(err)) => break Err(StepRunnerOutcome::Failed {
@@ -250,6 +276,7 @@ pub(crate) fn run_step<'a>(
                         step_history,
                         compact_summary,
                         compaction,
+                        metrics,
                     ));
                     return;
                 }
@@ -264,6 +291,7 @@ pub(crate) fn run_step<'a>(
                         step_history,
                         compact_summary,
                         compaction,
+                        metrics,
                     ));
                     return;
                 }
@@ -295,6 +323,7 @@ pub(crate) fn run_step<'a>(
                                 step_history,
                                 compact_summary,
                                 compaction,
+                                metrics,
                             ));
                             return;
                         }
@@ -312,6 +341,7 @@ pub(crate) fn run_step<'a>(
                             step_history,
                             compact_summary,
                             compaction,
+                            metrics,
                         ));
                         return;
                     }
@@ -326,6 +356,7 @@ pub(crate) fn run_step<'a>(
                                 step_history,
                                 compact_summary,
                                 compaction,
+                                metrics,
                             ));
                             return;
                         }
@@ -343,6 +374,7 @@ pub(crate) fn run_step<'a>(
                             step_history,
                             compact_summary,
                             compaction,
+                            metrics,
                         ));
                         return;
                     }
@@ -358,6 +390,7 @@ fn finish_result(
     mut step_history: Vec<Message>,
     compact_summary: Option<String>,
     compaction: crate::core::compaction::CompactionRuntime,
+    metrics: StepRunMetrics,
 ) -> StepRunnerResult {
     history.append(&mut step_history);
     StepRunnerResult {
@@ -365,6 +398,39 @@ fn finish_result(
         history,
         compact_summary,
         compaction,
+        metrics,
+    }
+}
+
+fn record_step_event(metrics: &mut StepRunMetrics, event: &StreamEvent) {
+    match event {
+        StreamEvent::LlmMessage { usage, .. } => {
+            metrics.token_usage.prompt_tokens = metrics
+                .token_usage
+                .prompt_tokens
+                .saturating_add(usage.prompt_tokens);
+            metrics.token_usage.completion_tokens = metrics
+                .token_usage
+                .completion_tokens
+                .saturating_add(usage.completion_tokens);
+            metrics.token_usage.total_tokens = metrics
+                .token_usage
+                .total_tokens
+                .saturating_add(usage.total_tokens);
+            metrics.token_usage.cached_tokens = metrics
+                .token_usage
+                .cached_tokens
+                .saturating_add(usage.cached_tokens);
+        }
+        StreamEvent::ToolCallStarted { call_id, .. }
+            if !metrics.tool_call_ids.contains(call_id) =>
+        {
+            metrics.tool_call_ids.push(*call_id);
+        }
+        StreamEvent::ToolCallCompleted { result, .. } => {
+            metrics.mutations.extend(result.mutations.clone());
+        }
+        _ => {}
     }
 }
 

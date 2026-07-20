@@ -233,6 +233,125 @@ impl StepRecord {
     }
 }
 
+/// Stable identity for one logical plan and one immutable-compatible
+/// revision.  The current runtime uses the identity to correlate the
+/// append-only step ledger while retaining the legacy `TaskPlan` wire shape.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PlanIdentity {
+    pub plan_id: String,
+    pub plan_revision_id: String,
+    pub revision: u32,
+}
+
+impl PlanIdentity {
+    pub fn fresh() -> Self {
+        Self {
+            plan_id: ulid::Ulid::new().to_string(),
+            plan_revision_id: ulid::Ulid::new().to_string(),
+            revision: 0,
+        }
+    }
+
+    pub fn next_revision(&self) -> Self {
+        Self {
+            plan_id: self.plan_id.clone(),
+            plan_revision_id: ulid::Ulid::new().to_string(),
+            revision: self.revision.saturating_add(1),
+        }
+    }
+
+    pub fn is_complete(&self) -> bool {
+        !self.plan_id.trim().is_empty() && !self.plan_revision_id.trim().is_empty()
+    }
+}
+
+/// Identity persisted while a planned step attempt is in flight.
+///
+/// It deliberately contains no model/tool output.  If a process disappears
+/// after this projection is written, resume can close the attempt as
+/// `interrupted` without replaying an unknown side effect.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StepAttempt {
+    pub plan_id: String,
+    pub plan_revision_id: String,
+    pub step_id: String,
+    pub attempt: u32,
+    pub started_at: String,
+}
+
+impl StepAttempt {
+    pub fn is_complete(&self) -> bool {
+        !self.plan_id.trim().is_empty()
+            && !self.plan_revision_id.trim().is_empty()
+            && !self.step_id.trim().is_empty()
+            && self.attempt > 0
+            && !self.started_at.trim().is_empty()
+    }
+}
+
+/// Materialized projection of the append-only step ledger.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StepLedgerState {
+    pub active_plan_id: Option<String>,
+    pub active_plan_revision_id: Option<String>,
+    pub active_plan_revision: u32,
+    pub step_records: Vec<StepRecord>,
+    pub active_step_attempt: Option<StepAttempt>,
+}
+
+impl StepLedgerState {
+    pub fn set_plan_identity(&mut self, identity: &PlanIdentity) {
+        if !identity.is_complete() {
+            return;
+        }
+        self.active_plan_id = Some(identity.plan_id.clone());
+        self.active_plan_revision_id = Some(identity.plan_revision_id.clone());
+        self.active_plan_revision = identity.revision;
+    }
+
+    pub fn plan_identity(&self) -> Option<PlanIdentity> {
+        let identity = PlanIdentity {
+            plan_id: self.active_plan_id.clone().unwrap_or_default(),
+            plan_revision_id: self.active_plan_revision_id.clone().unwrap_or_default(),
+            revision: self.active_plan_revision,
+        };
+        identity.is_complete().then_some(identity)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.active_plan_id.is_none()
+            && self.active_plan_revision_id.is_none()
+            && self.active_plan_revision == 0
+            && self.step_records.is_empty()
+            && self.active_step_attempt.is_none()
+    }
+
+    pub fn checkpoint(&self) -> StepLedgerCheckpoint {
+        StepLedgerCheckpoint {
+            active_plan_id: self.active_plan_id.clone(),
+            active_plan_revision_id: self.active_plan_revision_id.clone(),
+            active_plan_revision: self.active_plan_revision,
+            step_record_count: self.step_records.len(),
+            active_step_attempt: self.active_step_attempt.clone(),
+        }
+    }
+}
+
+/// Bounded ledger metadata copied into a prompt checkpoint.  Full records
+/// remain in `TaskState` and the canonical trace.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StepLedgerCheckpoint {
+    pub active_plan_id: Option<String>,
+    pub active_plan_revision_id: Option<String>,
+    pub active_plan_revision: u32,
+    pub step_record_count: usize,
+    pub active_step_attempt: Option<StepAttempt>,
+}
+
 /// An immutable revision of the remaining plan.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlanRevision {

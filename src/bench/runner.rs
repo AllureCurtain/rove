@@ -235,6 +235,7 @@ fn build_resume_state(
         checkpoint: None,
         plan: None,
         runtime_identity: None,
+        step_ledger: Default::default(),
     }
 }
 
