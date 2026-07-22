@@ -11,18 +11,18 @@ depends only on `rove-models`. The first verified `rove-runtime` slice depends
 only on those two packages and owns runtime identity, task/execution contracts,
 Workspace/path safety, prompt metadata, and approval/input provider contracts.
 The same crate now also owns canonical `StreamEvent` and StateStore, trace,
-task/report artifacts, SQLite indexing, repair, cleanup, and resume. Persistent
-coordination, context/compaction, memory, official tools, MCP/RAG, durable-event
-translation, and first-party apps still remain at the transitional root paths
-documented below.
+task/report artifacts, SQLite indexing, repair, cleanup, resume,
+context/compaction, and session/durable memory services. Persistent
+coordination, the session-summary post-run hook, official tools, MCP/RAG,
+durable-event translation, and first-party apps still remain at the
+transitional root paths documented below.
 
 ## Shape
 
 ```text
 CLI / TUI / API / Web
     -> root Engine compatibility facade
-        -> ContextManager
-        -> rove-runtime identity / execution / workspace / state / StreamEvent
+        -> rove-runtime context / memory / identity / execution / state / events
         -> rove-core model turn / ToolRegistry contracts
             -> rove-models ModelClient / RoutingModelClient
         -> runtime Executor / approval and input adapters
@@ -85,8 +85,9 @@ cannot supply trustworthy interaction events fail closed.
   prompt checkpoints, execution-policy and plan-ledger data, Workspace/path
   enforcement, prompt metadata/runtime identity, approval/input provider
   contracts, the task-local input registration context, canonical
-  `StreamEvent`, and state/trace/artifact/SQLite/repair/resume services. Its
-  only local dependencies are `rove-models` and `rove-core`.
+  `StreamEvent`, context/compaction, session/durable memory, and
+  state/trace/artifact/SQLite/repair/resume services. Its only local
+  dependencies are `rove-models` and `rove-core`.
 - Model-visible `rove_models::ToolSchema` is separate from operational
   `rove_core::ToolDescriptor`; provider payloads receive only the model schema.
 - Persistent tool execution still passes through the root `Executor` and

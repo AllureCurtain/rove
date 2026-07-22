@@ -13,13 +13,15 @@ The current extracted slice contains:
 - prompt metadata and runtime identity evaluation;
 - approval and request-input provider contracts;
 - canonical durable `StreamEvent`;
+- token-aware context construction and deterministic/model compaction;
+- session/durable memory paths, storage, recall, and prompt assembly;
 - StateStore, trace, task/report artifacts, SQLite index, repair, cleanup, and
   resume.
 
-Persistent coordination, context/compaction, memory, built-in tools, MCP/RAG,
-and `AgentEvent -> StreamEvent` translation still live in the root package
-until their later Phase 5 slices are moved. This crate must not depend on CLI,
-API, benchmark, or Web packages.
+Persistent coordination, the session-summary post-run hook, built-in tools,
+MCP/RAG, and `AgentEvent -> StreamEvent` translation still live in the root
+package until their later Phase 5 slices are moved. This crate must not depend
+on CLI, API, benchmark, or Web packages.
 
 Local project dependencies:
 
@@ -44,6 +46,6 @@ Focused verification:
 cargo test -p rove-runtime
 ```
 
-Compatibility status: pre-1.0 and transitional. The root `rove::core::*` and
-`rove::state::*` module paths re-export these contracts until application
-crates and tests have migrated to the new package.
+Compatibility status: pre-1.0 and transitional. The root `rove::core::*`,
+`rove::state::*`, and `rove::memory::*` module paths re-export these contracts
+until application crates and tests have migrated to the new package.

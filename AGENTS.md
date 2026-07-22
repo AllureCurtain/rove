@@ -43,7 +43,7 @@ Additional routing:
 | State/resume/artifacts | `docs/runtime/subsystems.md`, `runtime/src/state/`, compatibility `src/state/` |
 | Providers/routing | `docs/runtime/provider-smoke.md`, `models/src/`, transitional `src/models/factory.rs` |
 | Tools/safety/MCP | `docs/runtime/subsystems.md`, `src/tools/`, `tests/tool_safety.rs`, `tests/mcp.rs` |
-| Memory/context | `MEMORY_DOCTRINE.md`, `src/memory/`, `src/core/context.rs` |
+| Memory/context | `MEMORY_DOCTRINE.md`, `runtime/src/memory/`, `runtime/src/context.rs`, `runtime/src/compaction.rs`, compatibility `src/memory/` and `src/core/context.rs` |
 | RAG | `docs/runtime/integration-testing.md`, `src/tools/rag/`, RAG feature tests |
 | API | `docs/runtime/implementation-guide.md`, `src/interfaces/api/`, `tests/api.rs` |
 | Web | `web-ui/` tests and package scripts |
@@ -55,12 +55,12 @@ Additional routing:
 |---|---|
 | `models/` | `rove-models`: normalized model protocol, providers, routing, fake provider |
 | `core/` | `rove-core`: in-memory Agent loop, core events/control, tool contracts and registry |
-| `runtime/` | `rove-runtime`: runtime contracts, canonical events, workspace boundary, state/artifacts/SQLite/repair/resume |
-| `src/core/` | Transitional persistent Engine, context/compaction, planning coordination, durable events and tool turns |
+| `runtime/` | `rove-runtime`: contracts/events, workspace, context/compaction, memory, state/artifacts/SQLite/repair/resume |
+| `src/core/` | Transitional persistent Engine, planning/run coordination, durable event translation and tool turns |
 | `src/models/factory.rs` | Transitional AppConfig-driven provider assembly for the root facade |
 | `src/tools/` | Local tools, safety metadata, MCP proxy, optional RAG |
 | `src/state/` | Transitional compatibility re-exports for `rove-runtime` state modules |
-| `src/memory/` | Session and durable memory |
+| `src/memory/` | Transitional compatibility re-exports for `rove-runtime` memory modules |
 | `src/interfaces/api/` | HTTP job lifecycle and SSE |
 | `src/bin/` | API, benchmark, and indexing binaries |
 | `tests/` | Cross-module and integration contracts |
@@ -115,11 +115,12 @@ As of 2026-07-22:
   state. The first `rove-runtime` slice depends only on those two packages and
   owns IDs, task/checkpoint and execution-policy contracts, Workspace/path
   safety, prompt metadata/runtime identity, approval/input provider contracts,
-  canonical `StreamEvent`, and state/trace/artifact/SQLite/repair/resume
-  services. Persistent Engine coordination, context/compaction, memory,
-  official tools, MCP/RAG, and `AgentEvent -> StreamEvent` translation remain
-  in the root facade while later Phase 5 slices are extracted. AppConfig-driven
-  provider selection also remains there until `apps/bootstrap` is extracted.
+  canonical `StreamEvent`, context/compaction services, session/durable memory,
+  and state/trace/artifact/SQLite/repair/resume services. Persistent Engine
+  coordination, the session-summary post-run hook, official tools, MCP/RAG,
+  and `AgentEvent -> StreamEvent` translation remain in the root facade while
+  later Phase 5 slices are extracted. AppConfig-driven provider selection also
+  remains there until `apps/bootstrap` is extracted.
 - `docs/runtime/` describes the implemented MVP.
 - MCP currently supports stdio and the existing legacy SSE path. Streamable
   HTTP, negotiated sessions, rich MCP result envelopes, and Tool Artifacts are

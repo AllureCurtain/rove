@@ -43,13 +43,14 @@ Important entry points:
 | API binary | `src/bin/rove-api.rs`, `src/interfaces/api/mod.rs` |
 | Web workbench | `web-ui/` |
 | In-memory Agent and tool contracts | `core/src/*` |
-| Runtime foundation contracts | `runtime/src/*` |
+| Persistent runtime services | `runtime/src/*` |
 | Persistent Engine and coordination | transitional `src/core/*` |
-| State artifacts and SQLite index | `src/state/*` |
+| State artifacts and SQLite index | `runtime/src/state/*` |
 | Model protocol and providers | `models/src/*` |
 | Product provider assembly | transitional `src/models/factory.rs` |
 | Tools and MCP/RAG adapters | `src/tools/*` |
-| Memory hooks and stores | `src/memory/*`, `src/hooks/*` |
+| Memory/context/compaction services | `runtime/src/memory/*`, `runtime/src/context.rs`, `runtime/src/compaction.rs` |
+| Transitional memory hook | `src/hooks/session_memory.rs` |
 
 ## 2. Workspaces
 
@@ -411,9 +412,9 @@ Relevant code:
 - `src/interfaces/terminal/interaction.rs`
 - `src/interfaces/terminal/run.rs`
 - `src/interfaces/terminal/view.rs`
-- `src/state/index.rs`
-- `src/state/resume.rs`
-- `src/state/store.rs`
+- `runtime/src/state/index.rs`
+- `runtime/src/state/resume.rs`
+- `runtime/src/state/store.rs`
 - `scripts/tui-pty-smoke.py`
 
 ## 5. API Startup Path
@@ -605,18 +606,18 @@ text.
 Adding a new event requires checking:
 
 - CLI rendering in `src/interfaces/cli/oneshot.rs`
-- API SSE/event persistence in `src/interfaces/api/mod.rs` and `src/state/index.rs`
+- API SSE/event persistence in `src/interfaces/api/mod.rs` and `runtime/src/state/index.rs`
 - Web types and reducer in `web-ui/lib/rove-types.ts` and `web-ui/lib/rove-state.ts`
-- artifact recording in `src/state/artifacts.rs` if it affects resume/report state
+- artifact recording in `runtime/src/state/artifacts.rs` if it affects resume/report state
 
 Relevant code:
 
-- `src/core/events.rs`
-- `src/state/trace.rs`
+- `runtime/src/events.rs`
+- `runtime/src/state/trace.rs`
 
 ## 9. Engine Execution Flow
 
-`Engine` owns the model client, tool registry, context manager, workspace, approval policy, hooks, resolved memory paths, planner prompt, and optional interface providers for approval/input. `Engine` is the transitional persistent orchestration shell. IDs, task/execution data, Workspace/path safety, runtime identity, and approval/input contracts live in `rove-runtime`; the normalized model turn and action parser live in `rove-core`. Runtime-specific tool turns and planned/unplanned coordination remain in focused root modules until later runtime slices are extracted.
+`Engine` owns the model client, tool registry, runtime-owned context manager, workspace, approval policy, hooks, resolved memory paths, planner prompt, and optional interface providers for approval/input. `Engine` is the transitional persistent orchestration shell. IDs, task/execution data, Workspace/path safety, runtime identity, approval/input contracts, context/compaction, memory, events, and state services live in `rove-runtime`; the normalized model turn and action parser live in `rove-core`. Runtime-specific tool turns, planning/run coordination, the session-summary post-run hook, and durable event translation remain in focused root modules until later runtime slices are extracted.
 
 The high-level run flow:
 
@@ -692,7 +693,8 @@ Relevant code:
 - `src/core/plan_loop.rs`
 - `src/core/plan_evaluator.rs`
 - `src/core/planner.rs`
-- `src/core/context.rs`
+- `runtime/src/context.rs`
+- `runtime/src/compaction.rs`
 
 ## 10. Context And Compaction
 
@@ -740,8 +742,9 @@ step reaches a terminal outcome.
 
 Relevant code:
 
-- `src/core/context.rs`
-- `src/state/artifacts.rs`
+- `runtime/src/context.rs`
+- `runtime/src/compaction.rs`
+- `runtime/src/state/artifacts.rs`
 
 ## 11. Model Layer
 
@@ -950,10 +953,10 @@ planned attempts use `step_result` as their canonical ledger transition.
 
 Relevant code:
 
-- `src/state/store.rs`
-- `src/state/trace.rs`
-- `src/state/artifacts.rs`
-- `src/state/report.rs`
+- `runtime/src/state/store.rs`
+- `runtime/src/state/trace.rs`
+- `runtime/src/state/artifacts.rs`
+- `runtime/src/state/report.rs`
 
 ## 15. SQLite State Index
 
@@ -990,8 +993,8 @@ cargo run --bin rove -- state cleanup
 
 Relevant code:
 
-- `src/state/index.rs`
-- `src/state/store.rs`
+- `runtime/src/state/index.rs`
+- `runtime/src/state/store.rs`
 - `src/interfaces/cli/state.rs`
 
 ## 16. Memory
@@ -1020,10 +1023,10 @@ CLI and API engine assembly pass `AppConfig::memory_paths()` into the runtime, s
 
 Relevant code:
 
-- `src/memory/layered.rs`
-- `src/memory/paths.rs`
-- `src/memory/session.rs`
-- `src/memory/durable.rs`
+- `runtime/src/memory/layered.rs`
+- `runtime/src/memory/paths.rs`
+- `runtime/src/memory/session.rs`
+- `runtime/src/memory/durable.rs`
 - `src/hooks/session_memory.rs`
 - `src/tools/memory.rs`
 

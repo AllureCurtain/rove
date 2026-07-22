@@ -16,11 +16,11 @@ Workspace contains the existing root `rove` package plus the independent
 the default member. `rove-core` is the implemented in-memory embedding layer.
 `rove-runtime` currently owns the verified foundation slice for identity,
 resumable task/execution contracts, Workspace/path safety, prompt/runtime
-identity, approval/input contracts, canonical events, and durable
-state/trace/artifact/SQLite/repair/resume services. Persistent coordination,
-context/compaction, memory, official tools, MCP/RAG, and app packages remain in
-the compatibility root until their later migration slices move code, tests,
-and docs together.
+identity, approval/input contracts, canonical events, context/compaction,
+session/durable memory, and durable state/trace/artifact/SQLite/repair/resume
+services. Persistent coordination, the session-summary post-run hook, official
+tools, MCP/RAG, and app packages remain in the compatibility root until their
+later migration slices move code, tests, and docs together.
 
 ## 1. What rove is
 
@@ -197,13 +197,13 @@ OnCall reference Agent.
 | RAG index | indexing binary under `src/bin/` | `src/tools/rag/` |
 | Web | `web-ui/` | API proxy, state hooks, components, tests |
 | Agent core | `core/` | in-memory Agent/model/tool loop, control, core events, contracts |
-| Persistent runtime | `runtime/` | runtime contracts/events, workspace boundary, StateStore, trace/artifacts/SQLite, repair and resume |
-| Persistent coordinator | `src/core/` | transitional Engine, context, planning coordination, tool turns, durable event translation |
+| Persistent runtime | `runtime/` | contracts/events, workspace, context/compaction, memory, StateStore, artifacts/SQLite, repair and resume |
+| Persistent coordinator | `src/core/` | transitional Engine, planning/run coordination, tool turns, memory-flush ordering, durable event translation |
 | State compatibility | `src/state/` | temporary re-exports of `runtime/src/state/` |
 | Models | `models/` | independent protocol, provider adapters, routing, fake provider |
 | Provider assembly | `src/models/factory.rs` | transitional AppConfig-driven construction |
 | Tools | `src/tools/` | local tools, shell, memory, MCP, RAG |
-| Memory | `src/memory/` | session and durable memory |
+| Memory compatibility | `src/memory/` | temporary re-exports of `runtime/src/memory/` |
 
 ## 7. Request lifecycle
 

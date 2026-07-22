@@ -1,6 +1,6 @@
 # Rove Modular Workspace Migration Plan - 2026-07-22
 
-> Status: **In Progress / Phase 5 State Verified**
+> Status: **In Progress / Phase 5 Memory Verified**
 >
 > Design source:
 > [`../design/2026-07-22-modular-workspace-architecture.md`](../design/2026-07-22-modular-workspace-architecture.md)
@@ -431,15 +431,22 @@ Current verified progress:
 - Order item 2 is implemented: canonical `StreamEvent`, StateStore, trace,
   task/report artifacts, SQLite index, repair, cleanup, and resume now live in
   `rove-runtime`.
-- The root `rove::core::*` and `rove::state::*` paths remain compatibility
-  re-exports. Event translation producers remain in the root coordinator until
-  order items 5-6 move.
+- Order item 3 is implemented: token-aware context construction, structured
+  model/deterministic compaction, memory paths, session storage, durable recall,
+  and layered prompt memory now live in `rove-runtime`.
+- The root `rove::core::*`, `rove::state::*`, and `rove::memory::*` paths remain
+  compatibility re-exports. Engine coordination, the session-summary post-run
+  hook, and event translation producers remain in the root package until later
+  order items move.
 - Full first-party `AppConfig` remains in the root package because API/Web and
   provider assembly fields must be separated through `apps/bootstrap`; it was
   not pulled into `rove-runtime` merely to complete a directory move.
 - Default and RAG Workspace tests, strict Clippy, old-artifact compatibility,
   path/tool safety, state/repair/resume E2E, API restart/SSE, event-name, and
   canonical custom-tool input lifecycle tests pass for the verified slices.
+  Runtime-owned context order, token metadata, structured compaction,
+  deterministic fallback/circuit behavior, session memory, durable recall, and
+  memory-tool safety are covered by package and root compatibility tests.
 
 At each sub-step, preserve serde defaults and run focused state/resume/safety
 tests. Do not change artifact schema merely to simplify module movement.

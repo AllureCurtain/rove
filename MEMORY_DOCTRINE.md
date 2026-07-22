@@ -122,6 +122,11 @@ compaction circuit according to `runtime.compaction_failure_threshold`.
 
 ## Boundaries
 
+Context/compaction and the session/durable memory implementation live under
+`runtime/src/`; the root `rove::core::context` and `rove::memory` paths are
+temporary compatibility re-exports. Engine coordination, the final session
+summary hook, and built-in memory tools have not moved yet.
+
 Durable memory is helpful context, not an authoritative database. Session memory
 is a resumability aid, not a full transcript. RAG is a separate retrieval layer
 and should not be mixed into durable memory unless the fact is stable enough to

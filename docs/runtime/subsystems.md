@@ -73,6 +73,11 @@ artifact.
 
 ## Context And Compaction
 
+The context builder and both compaction implementations live in
+`runtime/src/context.rs` and `runtime/src/compaction.rs`. The root
+`rove::core::context` path is a compatibility re-export; the root run and step
+loops still coordinate when compaction and its durable events occur.
+
 `ContextManager` supports token-aware prompt construction with soft, hard, and reserved budgets. Prompt order is:
 
 ```text
@@ -158,6 +163,11 @@ emits an `interrupted` `StepRecord` and terminates with an error so an unknown
 external side effect cannot be repeated automatically.
 
 ## Memory
+
+Memory paths, session storage, durable topic parsing/recall, and layered prompt
+loading live in `runtime/src/memory/`. Transitional `src/memory/` modules
+re-export those APIs. The session-summary post-run hook and built-in memory
+tools remain in the root package until their later runtime slice.
 
 The memory model has three layers:
 

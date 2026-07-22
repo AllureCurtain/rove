@@ -156,12 +156,12 @@ bearer token server-side and does not expose it to browser JavaScript.
 | Benchmarks | `src/bin/rove-bench.rs`, `benchmarks/` | Deterministic no-network benchmark tasks with artifact-path reports. |
 | Web | `web-ui/` | Next.js workbench that consumes the API and SSE job stream. |
 | Agent core | `core/` | Independent `rove-core` crate: in-memory Agent/model/tool loop, typed core events, cancellation/control, policy hooks, tool contracts, and registry. |
-| Persistent runtime | `runtime/` | Independent `rove-runtime` crate: run/task and execution contracts, Workspace/path safety, canonical events, StateStore, trace/task/report artifacts, SQLite, repair, and resume. |
-| Persistent coordinator (transitional) | `src/core/` | Existing Engine facade, context/compaction, planning coordination, runtime tool turns, and durable event translation pending later `rove-runtime` extraction slices. |
+| Persistent runtime | `runtime/` | Independent `rove-runtime` crate: execution contracts, Workspace/path safety, context/compaction, session/durable memory, canonical events, StateStore, artifacts, SQLite, repair, and resume. |
+| Persistent coordinator (transitional) | `src/core/` | Existing Engine facade, planning/run coordination, runtime tool turns, memory-flush ordering, and durable event translation pending later `rove-runtime` extraction slices. |
 | State compatibility | `src/state/` | Temporary re-exports of the state implementation now owned by `runtime/src/state/`. |
 | Models | `models/` | Independent `rove-models` crate: normalized protocol, OpenAI-compatible chat completions, OpenAI Responses, Anthropic, Ollama, fake provider, routing, and health. Product config assembly remains temporarily in `src/models/factory.rs`. |
 | Tools | `src/tools/` | Filesystem, shell, memory, request input, MCP proxy, and optional RAG tools. |
-| Memory | `src/memory/` | Session summaries and bounded durable memory recall. |
+| Memory compatibility | `src/memory/` | Temporary re-exports of the memory implementation now owned by `runtime/src/memory/`. |
 | Docs | `docs/runtime/` | Current architecture, subsystem boundaries, and implementation status. |
 | Maintainers | `AGENTS.md`, `docs/ONBOARDING.md` | Repository rules, source-of-truth order, code map, workflows, and verification. |
 

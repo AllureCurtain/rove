@@ -5234,6 +5234,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
+ "futures",
  "rove-core",
  "rove-models",
  "rusqlite",
@@ -5243,6 +5244,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+ "tokio-util",
  "tracing",
  "ulid",
 ]

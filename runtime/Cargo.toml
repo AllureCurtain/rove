@@ -8,6 +8,7 @@ description = "Persistent execution contracts and runtime services for Rove"
 anyhow.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
+futures.workspace = true
 rove-core.workspace = true
 rove-models.workspace = true
 rusqlite.workspace = true
@@ -16,6 +17,7 @@ serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+tokio-util.workspace = true
 tracing.workspace = true
 ulid.workspace = true
 
