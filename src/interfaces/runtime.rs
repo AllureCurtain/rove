@@ -8,6 +8,7 @@ use crate::tools::runtime_tool_registry;
 use rove_app_bootstrap::assembly::{ProductEngineOptions, build_product_engine_with_registry};
 use rove_runtime::engine::Engine;
 
+#[allow(dead_code)]
 pub(crate) struct EngineAssemblyOptions<'a> {
     pub model: Box<dyn ModelClient>,
     pub workspace: &'a Workspace,
@@ -18,6 +19,7 @@ pub(crate) struct EngineAssemblyOptions<'a> {
     pub approval_provider: Option<Arc<dyn ToolApprovalProvider>>,
 }
 
+#[allow(dead_code)]
 pub(crate) async fn build_interface_engine(
     options: EngineAssemblyOptions<'_>,
 ) -> anyhow::Result<Engine> {

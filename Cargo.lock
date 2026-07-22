@@ -5172,6 +5172,7 @@ dependencies = [
  "rove-api",
  "rove-app-bootstrap",
  "rove-bench",
+ "rove-cli",
  "rove-core",
  "rove-models",
  "rove-runtime",
@@ -5212,6 +5213,7 @@ dependencies = [
  "rove-core",
  "rove-models",
  "rove-runtime",
+ "rusqlite",
  "serde",
  "serde_json",
  "tempfile",
@@ -5260,6 +5262,39 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+]
+
+[[package]]
+name = "rove-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arrow-array",
+ "arrow-schema",
+ "async-stream",
+ "async-trait",
+ "chrono",
+ "clap",
+ "crossterm",
+ "futures",
+ "lancedb",
+ "ratatui",
+ "reqwest 0.13.3",
+ "rove-app-bootstrap",
+ "rove-core",
+ "rove-models",
+ "rove-runtime",
+ "rustyline",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+ "walkdir",
 ]
 
 [[package]]

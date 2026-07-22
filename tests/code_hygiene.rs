@@ -69,15 +69,14 @@ fn config_tests_clear_every_env_key_loaded_by_env_layer() {
 fn cli_and_api_share_interface_engine_assembly() {
     let shared = std::fs::read_to_string("src/interfaces/runtime.rs")
         .expect("shared interface runtime assembly should exist");
-    let cli = std::fs::read_to_string("src/interfaces/cli/runtime.rs")
+    let cli = std::fs::read_to_string("apps/cli/src/cli/runtime.rs")
         .expect("CLI runtime builder should exist");
-    let api =
-        std::fs::read_to_string("src/interfaces/api/mod.rs").expect("API module should exist");
+    let api = std::fs::read_to_string("apps/api/src/lib.rs").expect("API module should exist");
 
     assert!(shared.contains("pub(crate) struct EngineAssemblyOptions"));
     assert!(shared.contains("pub(crate) async fn build_interface_engine"));
-    assert!(cli.contains("build_interface_engine"));
-    assert!(api.contains("build_interface_engine"));
+    assert!(cli.contains("build_interface_engine") || cli.contains("build_product_engine"));
+    assert!(api.contains("build_interface_engine") || api.contains("build_product_engine"));
     assert!(!cli.contains("ContextManager::with_token_budget"));
     assert!(!api.contains("ContextManager::with_token_budget"));
 }

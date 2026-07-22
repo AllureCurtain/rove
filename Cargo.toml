@@ -6,7 +6,7 @@ description = "A local-first, stateful, observable general-purpose agent runtime
 default-run = "rove"
 
 [workspace]
-members = [".", "models", "core", "runtime", "apps/bootstrap", "apps/bench", "apps/api"]
+members = [".", "models", "core", "runtime", "apps/bootstrap", "apps/bench", "apps/api", "apps/cli"]
 default-members = ["."]
 resolver = "3"
 
@@ -39,6 +39,7 @@ rove-runtime = { path = "runtime" }
 rove-app-bootstrap = { path = "apps/bootstrap" }
 rove-bench = { path = "apps/bench" }
 rove-api = { path = "apps/api" }
+rove-cli = { path = "apps/cli" }
 rusqlite = { version = "0.32", features = ["bundled"] }
 rustyline = "18.0.0"
 serde = { version = "1.0.228", features = ["derive"] }
@@ -63,10 +64,6 @@ walkdir = "2.5.0"
 name = "rove"
 path = "src/main.rs"
 
-[[bin]]
-name = "rove-index"
-path = "src/bin/rove-index.rs"
-required-features = ["rag"]
 
 
 
@@ -76,7 +73,7 @@ path = "src/lib.rs"
 
 [features]
 default = []
-rag = ["dep:arrow-array", "dep:arrow-schema", "dep:lancedb", "dep:walkdir"]
+rag = ["dep:arrow-array", "dep:arrow-schema", "dep:lancedb", "dep:walkdir", "rove-cli/rag"]
 
 [dependencies]
 # Async runtime
@@ -95,6 +92,7 @@ rove-runtime.workspace = true
 rove-app-bootstrap.workspace = true
 rove-bench.workspace = true
 rove-api.workspace = true
+rove-cli.workspace = true
 eventsource-stream.workspace = true
 axum.workspace = true
 tower.workspace = true

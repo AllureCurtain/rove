@@ -36,6 +36,7 @@ pub fn default_tool_registry_with_shell_policy(
     workspace: &Workspace,
     shell_policy: ShellPolicy,
 ) -> ToolRegistry {
+    #[allow(unused_mut)]
     let mut registry = bootstrap_default_tool_registry_with_shell_policy(workspace, shell_policy);
     #[cfg(feature = "rag")]
     replace_with_real_rag_tools(&mut registry, workspace);
@@ -47,6 +48,7 @@ pub async fn runtime_tool_registry(
     shell_policy: ShellPolicy,
     mcp_config_path: impl Into<std::path::PathBuf>,
 ) -> anyhow::Result<ToolRegistry> {
+    #[allow(unused_mut)]
     let mut registry =
         bootstrap_runtime_tool_registry(workspace, shell_policy, mcp_config_path).await?;
     #[cfg(feature = "rag")]
@@ -56,7 +58,7 @@ pub async fn runtime_tool_registry(
 
 #[cfg(feature = "rag")]
 fn replace_with_real_rag_tools(registry: &mut ToolRegistry, workspace: &Workspace) {
-    use crate::tools::rag::RagRetrieveTool;
+    use rove_cli::rag::RagRetrieveTool;
     // ToolRegistry keeps last registration for a name only if re-register is supported.
     // Prefer explicit re-register helpers if available; otherwise register again.
     registry.register(Box::new(RagRetrieveTool::code(workspace.root.clone())));

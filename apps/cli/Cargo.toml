@@ -1,44 +1,55 @@
 [package]
-name = "rove-api"
+name = "rove-cli"
 version.workspace = true
 edition.workspace = true
-description = "HTTP/SSE/OpenAPI application surface for Rove"
-default-run = "rove-api"
+description = "CLI, REPL, and full-screen TUI surfaces for Rove"
+default-run = "rove"
 
 [[bin]]
-name = "rove-api"
+name = "rove"
 path = "src/main.rs"
 
+[[bin]]
+name = "rove-index"
+path = "src/bin/rove-index.rs"
+required-features = ["rag"]
+
 [lib]
-name = "rove_api"
+name = "rove_cli"
 path = "src/lib.rs"
+
+[features]
+default = []
+rag = ["dep:arrow-array", "dep:arrow-schema", "dep:lancedb", "dep:walkdir"]
 
 [dependencies]
 anyhow.workspace = true
+async-stream.workspace = true
 async-trait.workspace = true
-axum.workspace = true
 chrono.workspace = true
 clap.workspace = true
+crossterm.workspace = true
 futures.workspace = true
+ratatui.workspace = true
 reqwest.workspace = true
 rove-app-bootstrap.workspace = true
-rove-bench.workspace = true
 rove-core.workspace = true
 rove-models.workspace = true
 rove-runtime.workspace = true
+rustyline.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 tokio.workspace = true
 tokio-stream.workspace = true
 tokio-util.workspace = true
-tower.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-utoipa.workspace = true
-utoipa-axum.workspace = true
-utoipa-swagger-ui.workspace = true
+arrow-array = { workspace = true, optional = true }
+arrow-schema = { workspace = true, optional = true }
+lancedb = { workspace = true, optional = true }
+walkdir = { workspace = true, optional = true }
 
 [dev-dependencies]
-rusqlite.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }

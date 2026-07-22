@@ -55,6 +55,10 @@ Additional routing:
 |---|---|
 | `models/` | `rove-models`: normalized model protocol, providers, routing, fake provider |
 | `core/` | `rove-core`: in-memory Agent loop, core events/control, tool contracts and registry |
+| `apps/cli/` | `rove-cli`: CLI/REPL/TUI and feature-gated index/RAG |
+| `apps/api/` | `rove-api`: HTTP/SSE/OpenAPI surface |
+| `apps/bench/` | `rove-bench`: deterministic benchmark runner |
+| `apps/bootstrap/` | `rove-app-bootstrap`: product config and assembly |
 | `runtime/` | `rove-runtime`: contracts/events, workspace, context/compaction, memory, local built-in tools, MCP proxy, Executor/hooks, planning, Engine, state/artifacts/SQLite/repair/resume |
 | `src/core/` | Compatibility re-exports for the persistent Engine and related runtime public surface |
 | `src/hooks/` | Transitional compatibility re-exports for `rove-runtime` hooks |
