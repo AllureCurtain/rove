@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use rove::bench::{available_suites, resolve_suite, run_benchmark_suite};
+use rove_bench::{available_suites, resolve_suite, run_benchmark_suite};
 
 #[derive(Debug, Parser)]
 #[command(about = "Run deterministic local rove benchmark tasks")]

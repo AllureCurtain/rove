@@ -1,6 +1,6 @@
 # Rove Modular Workspace Migration Plan - 2026-07-22
 
-> Status: **In Progress / Phase 6 Bootstrap Extracted**
+> Status: **In Progress / Phase 6 Bootstrap + Bench Extracted**
 >
 > Design source:
 > [`../design/2026-07-22-modular-workspace-architecture.md`](../design/2026-07-22-modular-workspace-architecture.md)
@@ -482,6 +482,10 @@ Current verified progress:
   `src/models/factory.rs`, and interface assembly remain compatibility wrappers.
   Optional RAG tool registration still happens in the root product registry so
   bootstrap does not depend on the deferred RAG modules.
+- Order item 2 (`rove-bench`) is implemented: deterministic suite schema,
+  checks, evidence, runner, and the `rove-bench` binary live in `apps/bench`.
+  Root `src/bench` remains a compatibility re-export for API/tests during the
+  remaining Phase 6 window.
 
 
 Goal: make each user-facing Rust surface a thin consumer of runtime.

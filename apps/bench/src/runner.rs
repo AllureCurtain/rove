@@ -3,17 +3,18 @@ use std::path::Path;
 use futures::StreamExt;
 use tokio_util::sync::CancellationToken;
 
-use crate::core::context::ContextManager;
-use crate::core::engine::{Engine, EngineConfig};
-use crate::core::events::StreamEvent;
-use crate::core::types::{
+use rove_app_bootstrap::default_tool_registry_with_shell_policy;
+use rove_models::fake::{FakeModelClient, FakeTurn};
+use rove_runtime::context::ContextManager;
+use rove_runtime::engine::{Engine, EngineConfig};
+use rove_runtime::events::StreamEvent;
+use rove_runtime::state::artifacts::RunArtifactRecorder;
+use rove_runtime::state::store::{RunHandle, StateStore};
+use rove_runtime::tools::shell::ShellPolicy;
+use rove_runtime::types::{
     ApprovalPolicy, JobId, RunId, RunRequest, SessionId, TaskState, TerminationReason,
 };
-use crate::core::workspace::{Workspace, WorkspaceKind};
-use crate::models::fake::{FakeModelClient, FakeTurn};
-use crate::state::artifacts::RunArtifactRecorder;
-use crate::state::store::{RunHandle, StateStore};
-use crate::tools::{default_tool_registry_with_shell_policy, shell::ShellPolicy};
+use rove_runtime::workspace::{Workspace, WorkspaceKind};
 
 use super::checks::run_check;
 use super::evidence::{render_summary_md, sanitize_path_component};

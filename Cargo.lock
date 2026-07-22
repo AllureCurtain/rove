@@ -5170,6 +5170,7 @@ dependencies = [
  "ratatui",
  "reqwest 0.13.3",
  "rove-app-bootstrap",
+ "rove-bench",
  "rove-core",
  "rove-models",
  "rove-runtime",
@@ -5208,6 +5209,25 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+]
+
+[[package]]
+name = "rove-bench"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "futures",
+ "rove-app-bootstrap",
+ "rove-models",
+ "rove-runtime",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tracing",
 ]
 
 [[package]]

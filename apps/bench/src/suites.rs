@@ -1,4 +1,4 @@
-use crate::bench::schema::{
+use crate::schema::{
     BenchmarkCheck, BenchmarkFile, BenchmarkSuite, BenchmarkTask, BenchmarkTurn, ProfileParams,
     shell_echo,
 };
