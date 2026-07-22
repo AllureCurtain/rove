@@ -1,6 +1,6 @@
 # Rove Modular Workspace Migration Plan - 2026-07-22
 
-> Status: **In Progress / Phase 5 MCP Verified**
+> Status: **In Progress / Phase 5 Hooks And Executor Verified**
 >
 > Design source:
 > [`../design/2026-07-22-modular-workspace-architecture.md`](../design/2026-07-22-modular-workspace-architecture.md)
@@ -435,15 +435,16 @@ Current verified progress:
   model/deterministic compaction, memory paths, session storage, durable recall,
   and layered prompt memory now live in `rove-runtime`.
 - Order item 4 is partially implemented: local echo, filesystem, shell, memory,
-  and request-input tools, runtime invocation adapters, and the existing
-  stdio/legacy-SSE MCP proxy now live in `rove-runtime`. Product registry
-  assembly remains root-owned. Optional RAG is explicitly frozen for a later
-  user-led refactor; its full feature test suite is not part of this migration
-  gate.
-- The root `rove::core::*`, `rove::state::*`, and `rove::memory::*` paths remain
-  compatibility re-exports. The corresponding local `rove::tools::*` paths are
-  also compatibility re-exports. Engine coordination, the session-summary
-  post-run hook, product registry assembly, optional RAG, and event translation
+  and request-input tools, runtime invocation adapters, the existing
+  stdio/legacy-SSE MCP proxy, the tool `Executor` pipeline, and pre/post-tool
+  plus post-run hooks (including the session-summary hook) now live in
+  `rove-runtime`. Product registry assembly remains root-owned. Optional RAG is
+  explicitly frozen for a later user-led refactor; its full feature test suite is
+  not part of this migration gate.
+- The root `rove::core::*`, `rove::state::*`, `rove::memory::*`, and
+  `rove::hooks::*` paths remain compatibility re-exports. The corresponding
+  local `rove::tools::*` paths are also compatibility re-exports. Engine
+  coordination, product registry assembly, optional RAG, and event translation
   producers remain in the root package until later order items move.
 - Full first-party `AppConfig` remains in the root package because API/Web and
   provider assembly fields must be separated through `apps/bootstrap`; it was

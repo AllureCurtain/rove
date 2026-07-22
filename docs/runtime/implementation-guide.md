@@ -52,7 +52,8 @@ Important entry points:
 | Product registry assembly and optional RAG adapter | transitional `src/tools/*` |
 | MCP transport/proxy | `runtime/src/tools/mcp_proxy.rs` |
 | Memory/context/compaction services | `runtime/src/memory/*`, `runtime/src/context.rs`, `runtime/src/compaction.rs` |
-| Transitional memory hook | `src/hooks/session_memory.rs` |
+| Tool executor and hooks | `runtime/src/executor.rs`, `runtime/src/hooks/` |
+| Transitional hook re-exports | `src/hooks/` |
 
 ## 2. Workspaces
 
@@ -619,7 +620,7 @@ Relevant code:
 
 ## 9. Engine Execution Flow
 
-`Engine` owns the model client, tool registry, runtime-owned context manager, workspace, approval policy, hooks, resolved memory paths, planner prompt, and optional interface providers for approval/input. `Engine` is the transitional persistent orchestration shell. IDs, task/execution data, Workspace/path safety, runtime identity, approval/input contracts, context/compaction, memory, events, and state services live in `rove-runtime`; the normalized model turn and action parser live in `rove-core`. Runtime-specific tool turns, planning/run coordination, the session-summary post-run hook, and durable event translation remain in focused root modules until later runtime slices are extracted.
+`Engine` owns the model client, tool registry, runtime-owned context manager, workspace, approval policy, hooks, resolved memory paths, planner prompt, and optional interface providers for approval/input. `Engine` is the transitional persistent orchestration shell. IDs, task/execution data, Workspace/path safety, runtime identity, approval/input contracts, context/compaction, memory, events, state services, the tool `Executor` pipeline, and pre/post-tool plus post-run hooks live in `rove-runtime`; the normalized model turn and action parser live in `rove-core`. Runtime-specific tool turns, planning/run coordination, and durable event translation remain in focused root modules until later runtime slices are extracted.
 
 The high-level run flow:
 
@@ -876,9 +877,11 @@ Relevant code:
 - `src/tools/traits.rs` and `src/tools/registry.rs` (compatibility re-exports)
 - `src/tools/{echo,fs,memory,request_input,runtime_context,shell}.rs`
   (compatibility re-exports)
-- `src/core/executor.rs`
+- `runtime/src/executor.rs`
+- `src/core/executor.rs` (compatibility re-export)
 - `runtime/src/boundary.rs`
-- `src/hooks/mod.rs`
+- `runtime/src/hooks/`
+- `src/hooks/` (compatibility re-exports)
 
 ## 13. Approval And Input
 
@@ -1032,7 +1035,8 @@ Relevant code:
 - `runtime/src/memory/paths.rs`
 - `runtime/src/memory/session.rs`
 - `runtime/src/memory/durable.rs`
-- `src/hooks/session_memory.rs`
+- `runtime/src/hooks/session_memory.rs`
+- `src/hooks/` (compatibility re-exports)
 - `runtime/src/tools/memory.rs`
 
 ## 17. MCP

@@ -13,10 +13,10 @@ Workspace/path safety, prompt metadata, and approval/input provider contracts.
 The same crate now also owns canonical `StreamEvent` and StateStore, trace,
 task/report artifacts, SQLite indexing, repair, cleanup, resume,
 context/compaction, session/durable memory services, local built-in tools,
-their invocation adapters, and the existing MCP proxy. Persistent coordination,
-the session-summary post-run hook, product tool-registry assembly, optional RAG,
-durable-event translation, and first-party apps still remain at the transitional
-root paths documented below.
+their invocation adapters, the existing MCP proxy, the tool Executor pipeline,
+and pre/post-tool plus post-run hooks. Persistent coordination, product
+tool-registry assembly, optional RAG, durable-event translation, and first-party
+apps still remain at the transitional root paths documented below.
 
 ## Shape
 
@@ -26,8 +26,8 @@ CLI / TUI / API / Web
         -> rove-runtime context / memory / identity / execution / state / events
         -> rove-core model turn / ToolRegistry contracts
             -> rove-models ModelClient / RoutingModelClient
-        -> runtime Executor / approval and input adapters
-        -> Memory loaders and hooks
+        -> runtime Executor / hooks / approval and input adapters
+        -> Memory loaders
         -> StateStore
 
 External embedding
@@ -88,14 +88,15 @@ cannot supply trustworthy interaction events fail closed.
   contracts, the task-local input registration context, canonical
   `StreamEvent`, context/compaction, session/durable memory, local built-in
   filesystem/shell/memory/input tools, invocation adapters, the existing
-  stdio/legacy-SSE MCP proxy, and state/trace/artifact/SQLite/repair/resume
-  services. Its only local dependencies are `rove-models` and `rove-core`.
+  stdio/legacy-SSE MCP proxy, the tool `Executor` pipeline, pre/post-tool and
+  post-run hooks, and state/trace/artifact/SQLite/repair/resume services. Its
+  only local dependencies are `rove-models` and `rove-core`.
 - Model-visible `rove_models::ToolSchema` is separate from operational
   `rove_core::ToolDescriptor`; provider payloads receive only the model schema.
 - Local built-in tool implementations, runtime-specific Workspace, Memory,
-  policy and input invocation services, and the existing MCP proxy live in
-  `rove-runtime`. Persistent execution still passes through the root `Executor`
-  and tool-turn coordinator; product registry assembly and optional RAG remain
+  policy and input invocation services, MCP proxy, `Executor`, and hooks live in
+  `rove-runtime`. The root tool-turn coordinator still composes those services
+  during later Phase 5 slices; product registry assembly and optional RAG remain
   transitional root services.
 - The event chain is `ModelEvent -> AgentEvent -> StreamEvent`.
   `rove-runtime` owns the canonical `StreamEvent` type; the root compatibility

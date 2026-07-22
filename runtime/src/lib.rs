@@ -3,6 +3,8 @@ pub mod compaction;
 pub mod context;
 pub mod events;
 pub mod execution;
+pub mod executor;
+pub mod hooks;
 pub mod memory;
 pub mod prompt_metadata;
 pub mod runtime_identity;

@@ -2,8 +2,12 @@ use std::future::Future;
 use std::pin::Pin;
 
 use async_trait::async_trait;
-use rove_core::{CallId, ToolError};
-use rove_models::Message;
+pub use rove_core::{
+    Action, CallId, ToolCallAction, ToolCapability, ToolContext, ToolDescriptor as ToolSchema,
+    ToolError, ToolExecutionMetadata, ToolExecutionStatus, ToolMutation, ToolMutationOperation,
+    ToolResult, ToolRiskLevel,
+};
+pub use rove_models::{Message, Role, ToolCallRef, ToolSchema as ModelToolSchema, Usage};
 use serde::{Deserialize, Serialize};
 use ulid::Ulid;
 

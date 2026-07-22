@@ -127,9 +127,11 @@ Native provider tool-use and JSON text action parsing are both supported. Native
 `destructive`, `parallel_safe`, and capability fields while its model-schema
 projection omits them. Local built-in tool implementations and their typed
 invocation adapters live in `runtime/src/tools/`; compatibility modules under
-`src/tools/` re-export them. The persistent root runtime executes registered
-tools through `Executor`, approval/input handling, hooks, and durable event
-mapping. The existing stdio/legacy-SSE MCP proxy is implemented in
+`src/tools/` re-export them. The tool `Executor` pipeline and pre/post-tool plus
+post-run hooks (including session-summary) live in `runtime/src/executor.rs` and
+`runtime/src/hooks/`; root modules re-export them. The root tool-turn coordinator
+still composes those services while durable event mapping remains transitional.
+The existing stdio/legacy-SSE MCP proxy is implemented in
 `runtime/src/tools/mcp_proxy.rs`. CLI and API assemble tools through the same
 transitional product registry builder, which registers runtime built-ins and
 then loads configured MCP tools; optional RAG remains in the root feature-gated
