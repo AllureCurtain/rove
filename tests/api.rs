@@ -2328,8 +2328,8 @@ async fn api_rejects_pending_destructive_tool_call() {
         .unwrap();
     assert_eq!(reject.status(), StatusCode::OK);
 
-    let state = wait_for_done(app.clone(), created.job_id.to_string()).await;
-    assert_eq!(state.status, RunStatus::Done);
+    let state = wait_for_status(app.clone(), created.job_id.to_string(), RunStatus::Error).await;
+    assert_eq!(state.status, RunStatus::Error);
     assert!(!output_path.exists(), "rejected tool should not run");
 
     let events = app
@@ -2396,7 +2396,8 @@ async fn api_planned_rejected_destructive_tool_does_not_replan_same_approval() {
         .unwrap();
     assert_eq!(rejected.status(), StatusCode::OK);
 
-    let state = wait_for_done(app, created.job_id.to_string()).await;
+    let state = wait_for_status(app, created.job_id.to_string(), RunStatus::Error).await;
+    assert_eq!(state.status, RunStatus::Error);
     assert!(state.pending_approvals.is_empty());
     let approval_requests = state
         .events

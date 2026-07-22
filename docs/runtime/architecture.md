@@ -38,11 +38,13 @@ cannot supply trustworthy interaction events fail closed.
 5. `Engine::run` emits `StreamEvent` values while model events, tool calls,
    approvals, inputs, planner state, and cancellation are processed. Planned
    attempts carry stable plan/revision/attempt identity and end with canonical
-   `step_result` before compatibility plan-step completion/failure events.
+   `step_result` and `plan_decision` events before compatibility plan-step
+   completion/failure events. Replacement work emits a linked
+   `plan_revised` event rather than another initial-plan event.
 6. `TraceWriter` writes append-only trace events. `RunArtifactRecorder`
-   materializes the step ledger and active attempt into task state, stores
-   bounded ledger metadata in the prompt checkpoint, and includes terminal
-   step records in the report.
+   materializes step records, plan decisions, immutable revisions, and the
+   active attempt into task state, stores bounded lifecycle metadata in the
+   prompt checkpoint, and includes the lifecycle projections in the report.
 7. The API adds a live job registry for active handles and reads SQLite for persisted job state and SSE replay after restart.
 
 ## Boundary Rules
@@ -54,6 +56,10 @@ cannot supply trustworthy interaction events fail closed.
 - A `step_result` trace event is the append-only terminal fact. The task-state
   ledger and report records are projections and must not overwrite prior
   attempts during replanning.
+- Every newly handled terminal `step_result` has exactly one correlated
+  rule-first `plan_decision`; replacement work is represented by an immutable
+  parent-linked `plan_revised` event. These are canonical stream events shared
+  by persistence, API/SSE, terminal views, and Web.
 - RAG is feature-gated behind `--features rag`; default builds keep stub schemas and clear disabled-feature errors.
 
 ## State Artifacts
@@ -62,8 +68,8 @@ cannot supply trustworthy interaction events fail closed.
 .rove/
   state.sqlite
   runs/<run_id>/trace.jsonl
-  runs/<run_id>/task_state.json  # plan cursor + materialized step ledger
-  runs/<run_id>/report.json      # aggregate + terminal step records
+  runs/<run_id>/task_state.json  # plan cursor + lifecycle projections
+  runs/<run_id>/report.json      # aggregate + records/decisions/revisions
   memory/MEMORY.md
   memory/topics/*.md
   memory/sessions/<session_id>.md
@@ -88,3 +94,5 @@ without a terminal record, it appends an `interrupted` record and stops with an
 error instead of repeating model/tool work. A persisted successful terminal
 record advances the materialized plan without replaying that step. Resume does
 not yet reconcile trace events written after the latest task-state snapshot.
+Legacy snapshots with a mutable plan but no lifecycle chain are wrapped once as
+an immutable revision-zero plan before new transitions are evaluated.

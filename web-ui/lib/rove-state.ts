@@ -1,6 +1,8 @@
 import type {
   ApprovalDecision,
   PendingInput,
+  PlanDecisionRecord,
+  PlanRevision,
   PlanStep,
   PendingApproval,
   StepRecord,
@@ -44,6 +46,8 @@ export interface WorkbenchState {
   error: string | null;
   messages: ChatMessage[];
   plan: TaskPlan | null;
+  planDecisions: PlanDecisionRecord[];
+  planRevisions: PlanRevision[];
   stepRecords: StepRecord[];
   tools: ToolCallView[];
   trace: TraceEntry[];
@@ -80,6 +84,8 @@ export function createWorkbenchState(): WorkbenchState {
     error: null,
     messages: [],
     plan: null,
+    planDecisions: [],
+    planRevisions: [],
     stepRecords: [],
     tools: [],
     trace: [],
@@ -414,8 +420,45 @@ function applyStreamEvent(
       return {
         ...next,
         plan: event.plan,
+        planRevisions: event.plan_revision
+          ? appendPlanRevision(state.planRevisions, event.plan_revision)
+          : state.planRevisions,
         trace: prependTrace(state.trace, event.type, `${event.plan.steps.length} steps`),
       };
+    case "plan_decision": {
+      const planDecisions = appendPlanDecision(state.planDecisions, event.record);
+      return {
+        ...next,
+        planDecisions,
+        trace:
+          planDecisions === state.planDecisions
+            ? state.trace
+            : prependTrace(
+                state.trace,
+                event.type,
+                `${event.record.decision.kind.replaceAll("_", " ")}: ${truncate(
+                  event.record.decision.safe_summary,
+                  220,
+                )}`,
+              ),
+      };
+    }
+    case "plan_revised": {
+      const planRevisions = appendPlanRevision(state.planRevisions, event.revision);
+      return {
+        ...next,
+        plan: event.plan,
+        planRevisions,
+        trace:
+          planRevisions === state.planRevisions
+            ? state.trace
+            : prependTrace(
+                state.trace,
+                event.type,
+                `revision ${event.revision.revision}; ${event.plan.steps.length} remaining step(s)`,
+              ),
+      };
+    }
     case "plan_step_started":
       return {
         ...next,
@@ -486,6 +529,25 @@ function appendStepRecord(records: StepRecord[], record: StepRecord): StepRecord
   return records.some((saved) => saved.record_id === record.record_id)
     ? records
     : [...records, record];
+}
+
+function appendPlanDecision(
+  records: PlanDecisionRecord[],
+  record: PlanDecisionRecord,
+): PlanDecisionRecord[] {
+  return records.some(
+    (saved) =>
+      saved.decision.decision_id === record.decision.decision_id ||
+      saved.trigger_step_record_id === record.trigger_step_record_id,
+  )
+    ? records
+    : [...records, record];
+}
+
+function appendPlanRevision(revisions: PlanRevision[], revision: PlanRevision): PlanRevision[] {
+  return revisions.some((saved) => saved.revision_id === revision.revision_id)
+    ? revisions
+    : [...revisions, revision];
 }
 
 function ensureUserMessage(messages: ChatMessage[], content: string): ChatMessage[] {

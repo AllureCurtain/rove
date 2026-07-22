@@ -132,6 +132,8 @@ fn timeline_turn_boundary(kind: &RunTimelineEntryKind) -> bool {
     matches!(
         kind,
         RunTimelineEntryKind::Plan { .. }
+            | RunTimelineEntryKind::PlanDecision { .. }
+            | RunTimelineEntryKind::PlanRevision { .. }
             | RunTimelineEntryKind::PlanStep { .. }
             | RunTimelineEntryKind::Tool { .. }
             | RunTimelineEntryKind::Approval { .. }
@@ -192,6 +194,26 @@ fn push_timeline_kind(
             lines,
             "Plan",
             &sanitize_legacy_text(&format!("{goal} ({step_count} steps)")),
+            Style::default()
+                .fg(Color::Magenta)
+                .add_modifier(Modifier::BOLD),
+        ),
+        RunTimelineEntryKind::PlanDecision { kind, summary } => push_labeled_text(
+            lines,
+            "Plan decision",
+            &sanitize_legacy_text(&format!("{} - {summary}", plan_decision_label(*kind))),
+            Style::default().fg(Color::Magenta),
+        ),
+        RunTimelineEntryKind::PlanRevision {
+            revision,
+            step_count,
+            superseded_step_count,
+        } => push_labeled_text(
+            lines,
+            "Plan revised",
+            &format!(
+                "revision {revision}: {step_count} remaining steps, {superseded_step_count} superseded"
+            ),
             Style::default()
                 .fg(Color::Magenta)
                 .add_modifier(Modifier::BOLD),
@@ -299,6 +321,14 @@ fn push_timeline_kind(
                 }
             }
         }
+    }
+}
+
+fn plan_decision_label(kind: crate::core::execution::PlanDecisionKind) -> &'static str {
+    match kind {
+        crate::core::execution::PlanDecisionKind::Continue => "continue",
+        crate::core::execution::PlanDecisionKind::ReplaceRemaining => "replace remaining",
+        crate::core::execution::PlanDecisionKind::Finish => "finish",
     }
 }
 

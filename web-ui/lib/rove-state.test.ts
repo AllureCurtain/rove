@@ -1,7 +1,31 @@
 import { describe, expect, it } from "vitest";
 
 import { createWorkbenchState, workbenchReducer } from "./rove-state";
-import type { StreamEvent } from "./rove-types";
+import type { PlanRevision, StreamEvent } from "./rove-types";
+
+const emptyBudgetSnapshot = {
+  plan_steps: 0,
+  step_attempts: 0,
+  model_turns: 0,
+  tool_calls: 0,
+  plan_revisions: 0,
+  wall_time_ms: 0,
+  total_tokens: 0,
+  cost_microunits: 0,
+};
+
+function planRevision(overrides: Partial<PlanRevision> = {}): PlanRevision {
+  return {
+    plan_id: "plan-1",
+    revision_id: "revision-0",
+    revision: 0,
+    created_at: "2026-07-20T00:00:00Z",
+    decision_id: "initial-decision",
+    remaining_steps: [{ id: "1", title: "Inspect docs", done: false }],
+    budget_snapshot: emptyBudgetSnapshot,
+    ...overrides,
+  };
+}
 
 describe("workbenchReducer", () => {
   it("hydrates user messages from run_started events and ignores duplicate seq values", () => {
@@ -169,7 +193,7 @@ describe("workbenchReducer", () => {
     expect(duplicateInput.trace).toHaveLength(3);
   });
 
-  it("replaces the visible plan when replanning emits a new plan_created event", () => {
+  it("projects and deduplicates plan decisions and immutable revisions", () => {
     const firstPlan = workbenchReducer(createWorkbenchState(), {
       type: "stream_event",
       seq: 1,
@@ -180,26 +204,83 @@ describe("workbenchReducer", () => {
           current_step: 0,
           steps: [{ id: "1", title: "Inspect docs", done: false }],
         },
+        plan_id: "plan-1",
+        plan_revision_id: "revision-0",
+        revision: 0,
+        plan_revision: planRevision(),
       },
     });
 
-    const replanned = workbenchReducer(firstPlan, {
+    const decided = workbenchReducer(firstPlan, {
       type: "stream_event",
       seq: 2,
       event: {
-        type: "plan_created",
+        type: "plan_decision",
+        record: {
+          trigger_step_record_id: "record-1",
+          decided_at: "2026-07-20T00:00:01Z",
+          decision: {
+            decision_id: "decision-1",
+            kind: "replace_remaining",
+            safe_reason_codes: ["recoverable_step_failure"],
+            safe_summary: "Replace the failed remaining work.",
+            remaining_work_requirements: ["Use a safe alternative."],
+          },
+        },
+      },
+    });
+    const replayedDecision = workbenchReducer(decided, {
+      type: "stream_event",
+      seq: 3,
+      event: {
+        type: "plan_decision",
+        record: decided.planDecisions[0],
+      },
+    });
+    const childRevision = planRevision({
+      revision_id: "revision-1",
+      parent_revision_id: "revision-0",
+      revision: 1,
+      created_at: "2026-07-20T00:00:02Z",
+      trigger_step_record_id: "record-1",
+      decision_id: "decision-1",
+      remaining_steps: [{ id: "2", title: "Inspect docs without a tool", done: false }],
+    });
+    const replanned = workbenchReducer(replayedDecision, {
+      type: "stream_event",
+      seq: 4,
+      event: {
+        type: "plan_revised",
         plan: {
           goal: "fix docs",
           current_step: 0,
           steps: [{ id: "2", title: "Inspect docs without a tool", done: false }],
         },
+        revision: childRevision,
+      },
+    });
+    const replayedRevision = workbenchReducer(replanned, {
+      type: "stream_event",
+      seq: 5,
+      event: {
+        type: "plan_revised",
+        plan: replanned.plan!,
+        revision: childRevision,
       },
     });
 
-    expect(replanned.plan?.steps).toEqual([
+    expect(replayedRevision.plan?.steps).toEqual([
       { id: "2", title: "Inspect docs without a tool", done: false },
     ]);
-    expect(replanned.plan?.current_step).toBe(0);
+    expect(replayedRevision.plan?.current_step).toBe(0);
+    expect(replayedRevision.planDecisions).toHaveLength(1);
+    expect(replayedRevision.planRevisions.map((revision) => revision.revision)).toEqual([0, 1]);
+    expect(
+      replayedRevision.trace.filter((entry) => entry.label === "plan_decision"),
+    ).toHaveLength(1);
+    expect(
+      replayedRevision.trace.filter((entry) => entry.label === "plan_revised"),
+    ).toHaveLength(1);
   });
 
   it("projects step_result records without duplicating the visible trace", () => {

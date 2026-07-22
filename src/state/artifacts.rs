@@ -153,9 +153,32 @@ impl RunArtifactRecorder {
                 self.tool_execution_metadata.push(metadata.clone());
                 self.write_snapshot(state_store).await;
             }
-            StreamEvent::PlanCreated { plan, identity } => {
+            StreamEvent::PlanCreated {
+                plan,
+                identity,
+                plan_revision,
+            } => {
                 self.plan = Some(plan.clone());
                 self.step_ledger.set_plan_identity(identity);
+                if let Some(revision) = plan_revision {
+                    self.step_ledger
+                        .plan_lifecycle
+                        .push_revision(revision.as_ref().clone());
+                }
+                self.write_snapshot(state_store).await;
+            }
+            StreamEvent::PlanDecision { record } => {
+                self.step_ledger
+                    .plan_lifecycle
+                    .push_decision(record.as_ref().clone());
+                self.write_snapshot(state_store).await;
+            }
+            StreamEvent::PlanRevised { plan, revision } => {
+                self.plan = Some(plan.clone());
+                self.step_ledger.set_plan_identity(&revision.identity());
+                self.step_ledger
+                    .plan_lifecycle
+                    .push_revision(revision.as_ref().clone());
                 self.write_snapshot(state_store).await;
             }
             StreamEvent::PlanStepStarted { attempt, .. } => {
@@ -331,6 +354,8 @@ impl RunArtifactRecorder {
         report.prompt_builds = self.prompt_builds.clone();
         report.runtime_identity = self.runtime_identity.clone();
         report.step_records = self.step_ledger.step_records.clone();
+        report.plan_decisions = self.step_ledger.plan_lifecycle.decisions.clone();
+        report.plan_revisions = self.step_ledger.plan_lifecycle.revisions.clone();
         report.output = self.final_output.clone();
 
         match write_report(run_dir, &report) {

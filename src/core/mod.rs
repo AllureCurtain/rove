@@ -7,6 +7,7 @@ pub mod execution;
 pub mod executor;
 pub(crate) mod model_turn;
 pub mod parser;
+pub(crate) mod plan_evaluator;
 pub(crate) mod plan_loop;
 pub mod planner;
 pub mod prompt_metadata;

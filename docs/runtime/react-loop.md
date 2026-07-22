@@ -30,8 +30,9 @@ delegates each current plan step to the bounded runner in
    fail closed and does not enter the replacement-plan path.
 8. Mark the step complete only after `Action::Final` supplies the step
    conclusion. A successful tool call does not complete the step by itself.
-9. Re-plan after a terminal recoverable step failure, using the existing
-   replacement-`TaskPlan` compatibility behavior.
+9. Evaluate every terminal `StepRecord` with the deterministic rule-first
+   evaluator. Continue, finish with a typed reason, or replace only the
+   remaining work after an explicitly recoverable failure.
 
 Step-local messages are included as prompt prefix material rather than ordinary
 trimmable global history. This guarantees that the next model turn receives the
@@ -52,33 +53,42 @@ ceiling emits the current `PlanStepFailed` event and completes the run with
 Planned execution also maintains an append-only terminal-attempt ledger:
 
 1. `PlanCreated` includes a stable logical `plan_id`, a
-   `plan_revision_id`, and a monotonic compatibility revision number.
+   `plan_revision_id`, a monotonic compatibility revision number, and the full
+   immutable initial `PlanRevision`.
 2. `PlanStepStarted` includes the matching plan/revision identity, stable step
    ID, attempt number, and start time.
 3. The bounded runner derives model-turn, tool-call, mutation, and token usage
    from the canonical model/tool events emitted during that attempt.
-4. Every terminal attempt emits `step_result` with a `StepRecord` before the
-   compatibility `PlanStepCompleted` or `PlanStepFailed` event. The runtime
-   currently produces `succeeded`, `failed`, `blocked`, `budget_exhausted`,
-   `cancelled`, and `interrupted` records.
-5. `trace.jsonl` stores the canonical append-only event, `task_state.json`
-   stores the materialized ledger, `PromptCheckpoint` stores bounded ledger
-   metadata, and `report.json` includes the terminal records. SQLite indexes
-   the same event stream and remains rebuildable through `rove state repair`.
+4. Every terminal attempt emits `step_result` with a `StepRecord`, followed by
+   exactly one `plan_decision`, before the compatibility
+   `PlanStepCompleted` or `PlanStepFailed` event. The runtime currently
+   produces `succeeded`, `failed`, `blocked`, `budget_exhausted`, `cancelled`,
+   and `interrupted` records.
+5. A recoverable failure emits `plan_revised` with an immutable child revision
+   linked to its parent revision, triggering step record, and decision. It does
+   not masquerade as another initial `plan_created` event.
+6. `trace.jsonl` stores the canonical append-only events, `task_state.json`
+   stores the materialized records/decisions/revisions, `PromptCheckpoint`
+   stores bounded lifecycle metadata, and `report.json` includes the full
+   lifecycle projections. SQLite indexes the same event stream and remains
+   rebuildable through `rove state repair`.
 
-Resume consumes the materialized ledger conservatively. A persisted successful
-terminal record advances the saved plan without replaying the step. A complete
-in-flight attempt with no terminal record is closed as `interrupted`, followed
-by an error completion; model and tool execution are not restarted
-automatically because an external side effect may already have occurred.
+Resume consumes the materialized ledger conservatively. A persisted terminal
+record missing its decision is evaluated exactly once before execution
+continues. A persisted successful terminal record advances the saved plan
+without replaying the step. A complete in-flight attempt with no terminal
+record is closed as `interrupted`, followed by a typed finish decision and an
+error completion; model and tool execution are not restarted automatically
+because an external side effect may already have occurred. Older snapshots
+that contain only a mutable plan are wrapped once as revision zero with the
+`legacy_plan_migrated` reason code.
 
-The public multidimensional budget configuration, global model/tool/token
-accounting, structured budget events, immutable `PlanRevision`/`plan_revised`
-chain, Evaluator/Replanner policy, and independent Finalizer remain future
-work. Replacement plans still use `PlanCreated` with compatibility revision
-identity, and `TaskPlan.steps[*].done` remains the active-plan cursor alongside
-the ledger. Resume currently trusts the `TaskState` ledger projection; aligning
-canonical trace events newer than that snapshot is also future work.
+The current evaluator is deterministic and provider-free: it maps terminal
+status plus explicit recoverability to `continue`, `replace_remaining`, or
+`finish`. Model-on-ambiguity evaluation, an independent Finalizer, public
+multidimensional budget configuration, global model/tool/token accounting,
+structured budget events, and reconciliation of canonical trace events newer
+than the latest `TaskState` snapshot remain future work.
 
 This differs from pico's `pico/agent_loop.py`, where prompt build, model call,
 parse, tool execution, checkpoint, and trace recording live in one readable loop.
@@ -105,7 +115,9 @@ StepRunner =
   bounded ReactTurn*
   -> Action::Final as step conclusion
   -> StepResult
-  -> PlanStepCompleted
+  -> PlanDecision
+  -> compatibility PlanStepCompleted / PlanStepFailed
+  -> Continue / PlanRevised / Finish
 ```
 
 `Engine` is the orchestration shell. It loads resume state and memory, chooses

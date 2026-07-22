@@ -300,6 +300,7 @@ pub struct StepLedgerState {
     pub active_plan_revision: u32,
     pub step_records: Vec<StepRecord>,
     pub active_step_attempt: Option<StepAttempt>,
+    pub plan_lifecycle: PlanLifecycleState,
 }
 
 impl StepLedgerState {
@@ -327,6 +328,7 @@ impl StepLedgerState {
             && self.active_plan_revision == 0
             && self.step_records.is_empty()
             && self.active_step_attempt.is_none()
+            && self.plan_lifecycle.is_empty()
     }
 
     pub fn checkpoint(&self) -> StepLedgerCheckpoint {
@@ -336,6 +338,7 @@ impl StepLedgerState {
             active_plan_revision: self.active_plan_revision,
             step_record_count: self.step_records.len(),
             active_step_attempt: self.active_step_attempt.clone(),
+            plan_lifecycle: self.plan_lifecycle.checkpoint(),
         }
     }
 }
@@ -350,6 +353,7 @@ pub struct StepLedgerCheckpoint {
     pub active_plan_revision: u32,
     pub step_record_count: usize,
     pub active_step_attempt: Option<StepAttempt>,
+    pub plan_lifecycle: PlanLifecycleCheckpoint,
 }
 
 /// An immutable revision of the remaining plan.
@@ -421,6 +425,14 @@ impl PlanRevision {
         }
         Ok(())
     }
+
+    pub fn identity(&self) -> PlanIdentity {
+        PlanIdentity {
+            plan_id: self.plan_id.clone(),
+            plan_revision_id: self.revision_id.clone(),
+            revision: self.revision,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -491,6 +503,102 @@ impl PlanDecision {
     }
 }
 
+/// Persisted correlation between one terminal step fact and its rule-first
+/// plan decision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlanDecisionRecord {
+    pub trigger_step_record_id: String,
+    pub decided_at: String,
+    pub decision: PlanDecision,
+}
+
+impl PlanDecisionRecord {
+    pub fn validate(&self) -> Result<(), ExecutionValidationError> {
+        for (field, value) in [
+            (
+                "trigger_step_record_id",
+                self.trigger_step_record_id.as_str(),
+            ),
+            ("decided_at", self.decided_at.as_str()),
+        ] {
+            if value.trim().is_empty() {
+                return Err(ExecutionValidationError::MissingPlanDecisionRecordField { field });
+            }
+        }
+        self.decision.validate()
+    }
+}
+
+/// Materialized projection of immutable plan revisions and the decisions that
+/// connect terminal step records to lifecycle transitions.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PlanLifecycleState {
+    pub revisions: Vec<PlanRevision>,
+    pub decisions: Vec<PlanDecisionRecord>,
+}
+
+impl PlanLifecycleState {
+    pub fn is_empty(&self) -> bool {
+        self.revisions.is_empty() && self.decisions.is_empty()
+    }
+
+    pub fn decision_for_record(&self, record_id: &str) -> Option<&PlanDecisionRecord> {
+        self.decisions
+            .iter()
+            .rev()
+            .find(|record| record.trigger_step_record_id == record_id)
+    }
+
+    pub fn revision_for_trigger(&self, record_id: &str) -> Option<&PlanRevision> {
+        self.revisions
+            .iter()
+            .rev()
+            .find(|revision| revision.trigger_step_record_id.as_deref() == Some(record_id))
+    }
+
+    pub fn push_decision(&mut self, record: PlanDecisionRecord) {
+        if self.decisions.iter().all(|saved| {
+            saved.decision.decision_id != record.decision.decision_id
+                && saved.trigger_step_record_id != record.trigger_step_record_id
+        }) {
+            debug_assert!(record.validate().is_ok());
+            self.decisions.push(record);
+        }
+    }
+
+    pub fn push_revision(&mut self, revision: PlanRevision) {
+        if self
+            .revisions
+            .iter()
+            .all(|saved| saved.revision_id != revision.revision_id)
+        {
+            debug_assert!(revision.validate().is_ok());
+            self.revisions.push(revision);
+        }
+    }
+
+    pub fn checkpoint(&self) -> PlanLifecycleCheckpoint {
+        PlanLifecycleCheckpoint {
+            active_revision_id: self
+                .revisions
+                .last()
+                .map(|revision| revision.revision_id.clone()),
+            revision_count: self.revisions.len(),
+            decision_count: self.decisions.len(),
+        }
+    }
+}
+
+/// Bounded plan lifecycle metadata copied into prompt checkpoints.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PlanLifecycleCheckpoint {
+    pub active_revision_id: Option<String>,
+    pub revision_count: usize,
+    pub decision_count: usize,
+}
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ExecutionValidationError {
     #[error("{field} must be greater than zero")]
@@ -520,6 +628,8 @@ pub enum ExecutionValidationError {
     MissingDecisionId,
     #[error("plan decision summary must not be empty")]
     MissingDecisionSummary,
+    #[error("plan decision record field {field} must not be empty")]
+    MissingPlanDecisionRecordField { field: &'static str },
     #[error("invalid {kind} plan decision shape")]
     InvalidDecisionShape { kind: &'static str },
 }

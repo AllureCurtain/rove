@@ -528,6 +528,9 @@ The core type model is centered on explicit IDs and serializable runtime state:
 | `PromptCheckpoint` | Compact reconstruction point for resume |
 | `TaskPlan` | Planner output and current step pointer |
 | `PlanIdentity` | Stable logical plan and compatibility revision identity |
+| `PlanRevision` | Immutable initial or replacement snapshot of remaining work |
+| `PlanDecisionRecord` | Correlation from one terminal step fact to its rule-first decision |
+| `PlanLifecycleState` | Materialized revision and decision projections |
 | `StepAttempt` | Persisted identity for one in-flight planned attempt |
 | `StepRecord` | Append-only terminal fact for one planned attempt |
 | `StepLedgerState` | Materialized ledger and active-attempt projection |
@@ -560,6 +563,8 @@ Current event variants:
 - `plan_step_completed`
 - `plan_step_failed`
 - `step_result`
+- `plan_decision`
+- `plan_revised`
 - `prompt_compacted`
 - `memory_flushed`
 - `prompt_built`
@@ -568,8 +573,10 @@ Current event variants:
 The API serializes these events as SSE using `StreamEvent::event_name()`. The
 trace writer serializes the same events to `trace.jsonl` and indexes them in
 SQLite with sequence numbers. `PlanCreated` and `PlanStepStarted` carry stable
-plan/revision/attempt identity. `step_result` is the canonical terminal fact;
-the older completed/failed events remain compatibility notifications.
+plan/revision/attempt identity. `step_result` is the canonical terminal fact,
+`plan_decision` records the deterministic transition selected for it, and
+`plan_revised` carries an immutable child revision when remaining work is
+replaced. The older completed/failed events remain compatibility notifications.
 
 `model_status` is the safe progress surface for model-side work. It can say
 that the model is thinking, has selected a tool, or that the run is waiting for
@@ -599,7 +606,8 @@ The high-level run flow:
 3. Load durable/session memory into working prompt memory.
 4. If planning is enabled:
    - draft a new `TaskPlan` with the configured planner prompt, or resume a saved plan;
-   - emit `PlanCreated` for initial plans and replacement plans;
+   - emit `PlanCreated` with an immutable revision for an initial plan, or wrap
+     a legacy persisted mutable plan once as revision zero;
    - loop over plan steps;
    - run each step through `step_runner.rs` with a four-model-turn compatibility
      ceiling;
@@ -609,10 +617,13 @@ The high-level run flow:
    - complete the step only on a model step conclusion;
    - collect model-turn, tool-call, mutation, and token metrics from emitted
      events;
-   - emit a terminal `step_result` before the compatibility
+   - emit a terminal `step_result`, evaluate it deterministically, and emit one
+     correlated `plan_decision` before the compatibility
      `PlanStepCompleted` / `PlanStepFailed` event;
-   - repair malformed/recoverable tool output within the step, and replan only
-     after a terminal recoverable step failure.
+   - continue, finish with a typed reason, or emit `plan_revised` after an
+     explicitly recoverable terminal failure;
+   - repair malformed/recoverable tool output within the step before creating
+     a terminal failure.
 5. If planning is disabled:
    - run the simpler ReAct loop over the original user message.
 6. Emit `RunCompleted`.
@@ -627,22 +638,27 @@ Termination can happen because of:
 - planner error;
 - cancellation.
 
-The planned and unplanned paths share model-turn and tool-turn helpers. If you are changing model streaming, native tool-use conversion, approval, batch execution, or history mutation, start in `model_turn.rs` or `tool_turn.rs`. `step_runner.rs` owns bounded within-step iteration, scoped history, and event-derived attempt metrics; `plan_loop.rs` owns plan identity, attempt closure, the append-only terminal record, plan cursor, replacement-plan compatibility, and plan-step lifecycle events.
+The planned and unplanned paths share model-turn and tool-turn helpers. If you are changing model streaming, native tool-use conversion, approval, batch execution, or history mutation, start in `model_turn.rs` or `tool_turn.rs`. `step_runner.rs` owns bounded within-step iteration, scoped history, and event-derived attempt metrics; `plan_evaluator.rs` owns replay-safe rule-first decisions; `plan_loop.rs` owns plan/revision identity, attempt closure, the append-only terminal record, decision ordering, plan cursor, replacement revisions, and compatibility plan-step events.
 
 Plan mutation semantics:
 
 - Step IDs are stable within one `TaskPlan`.
-- Replanning currently replaces the active `TaskPlan` and emits another
-  `PlanCreated` with the same logical `plan_id`, a new `plan_revision_id`, and
-  an incremented compatibility revision. An immutable typed parent revision
-  chain and `plan_revised` event are not persisted yet.
+- Initial planning emits `PlanCreated` with revision zero. Replanning replaces
+  only the active remaining `TaskPlan` and emits `PlanRevised` with the same
+  logical `plan_id`, a new `revision_id`, an incremented revision, parent and
+  trigger correlations, retained/superseded step IDs, and a budget snapshot.
+- Each terminal `StepRecord` is followed by one rule-first decision. Only an
+  explicitly recoverable failure can select `replace_remaining`; approval
+  denial and other blocked outcomes finish without asking the planner to find
+  a way around the boundary.
 - Completed and failed attempt records remain append-only across replacement
   plans; replanning does not overwrite their evidence, tool IDs, or mutations.
 - Resume prefers the checkpoint plan when present, then the task-state plan. A
   terminal successful record advances a stale materialized cursor without
-  replay. A complete active attempt without a terminal record becomes
-  `interrupted` and the resumed run stops with an error. Resume does not yet
-  scan trace events newer than the task-state projection.
+  replay, and a terminal record missing its decision is evaluated exactly once.
+  A complete active attempt without a terminal record becomes `interrupted`
+  and the resumed run stops with an error. Resume does not yet scan trace
+  events newer than the task-state projection.
 
 Relevant code:
 
@@ -652,6 +668,7 @@ Relevant code:
 - `src/core/run_loop.rs`
 - `src/core/step_runner.rs`
 - `src/core/plan_loop.rs`
+- `src/core/plan_evaluator.rs`
 - `src/core/planner.rs`
 - `src/core/context.rs`
 - `src/core/parser.rs`
@@ -690,9 +707,9 @@ When automatic compaction is needed and old history has been dropped from the ac
 - compacted message count;
 - compaction metadata, including mode, degraded state, model, prompt version,
   source message count, and last error when present;
-- bounded ledger metadata: active plan/revision identity, terminal record count,
-  and an optional active attempt. Full `StepRecord` values remain in
-  `TaskState` and `trace.jsonl`.
+- bounded lifecycle metadata: active plan/revision identity, terminal record,
+  revision, and decision counts, plus an optional active attempt. Full records,
+  decisions, and revisions remain in `TaskState` and `trace.jsonl`.
 
 Resume prefers checkpoint tail/summary over replaying the full saved history.
 During a planned step, current-step assistant/tool messages are injected as a
@@ -1287,12 +1304,12 @@ When changing provider tool-use:
 
 These are implementation-level issues to keep in mind before extending the system.
 
-1. The planned-step ledger does not complete the future lifecycle design.
-   Replacement plans still use `PlanCreated` rather than an immutable parent
-   `PlanRevision` chain; Evaluator, Finalizer, global multidimensional budgets,
-   and structured budget/decision/finalization events remain unimplemented.
-   Resume uses the materialized `TaskState` ledger and does not yet reconcile a
-   canonical trace tail written after the latest snapshot.
+1. The implemented lifecycle evaluator is deterministic and rule-first; it
+   does not call a model for ambiguous evidence. An independent Finalizer,
+   public and globally enforced multidimensional budgets, structured budget and
+   finalization events, and model-on-ambiguity evaluation remain unimplemented.
+   Resume uses the materialized `TaskState` lifecycle projection and does not
+   yet reconcile a canonical trace tail written after the latest snapshot.
 
 2. Agent tool-time RAG retrieval remains deterministic.
    Indexing and eval use configurable embedders and rerankers. The in-agent `retrieve_code` and `retrieve_docs` tools still construct deterministic retrieval directly; passing configured RAG provider services into runtime tool construction remains a follow-up.

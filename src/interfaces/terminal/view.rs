@@ -1,5 +1,5 @@
 use crate::core::events::StreamEvent;
-use crate::core::execution::StepRecord;
+use crate::core::execution::{PlanDecisionKind, PlanDecisionRecord, PlanRevision, StepRecord};
 use crate::core::prompt_metadata::PromptBuildMetadata;
 use crate::core::types::{
     CallId, JobId, PlanStep, PromptCompactionState, RunId, TaskPlan, TerminationReason, ToolResult,
@@ -52,6 +52,15 @@ pub enum RunTimelineEntryKind {
     Plan {
         goal: String,
         step_count: usize,
+    },
+    PlanDecision {
+        kind: PlanDecisionKind,
+        summary: String,
+    },
+    PlanRevision {
+        revision: u32,
+        step_count: usize,
+        superseded_step_count: usize,
     },
     PlanStep {
         index: usize,
@@ -150,6 +159,14 @@ pub enum RunViewUpdate {
     },
     PlanCreated {
         plan: TaskPlan,
+        revision: Option<PlanRevision>,
+    },
+    PlanDecision {
+        record: PlanDecisionRecord,
+    },
+    PlanRevised {
+        plan: TaskPlan,
+        revision: PlanRevision,
     },
     PlanStepStarted {
         step: PlanStep,
@@ -231,6 +248,8 @@ pub struct RunViewState {
     pub model_status: Option<(String, String)>,
     pub last_usage: Option<Usage>,
     pub plan: Option<TaskPlan>,
+    pub plan_decisions: Vec<PlanDecisionRecord>,
+    pub plan_revisions: Vec<PlanRevision>,
     pub current_step: Option<(usize, PlanStep)>,
     pub failed_steps: Vec<(usize, PlanStep, String)>,
     pub step_records: Vec<StepRecord>,
@@ -553,8 +572,34 @@ impl RunViewState {
                         .push(PendingInputView { input_id, prompt });
                 }
             }
-            RunViewUpdate::PlanCreated { plan } => {
+            RunViewUpdate::PlanCreated { plan, revision } => {
                 self.plan = Some(plan);
+                if let Some(revision) = revision
+                    && self
+                        .plan_revisions
+                        .iter()
+                        .all(|saved| saved.revision_id != revision.revision_id)
+                {
+                    self.plan_revisions.push(revision);
+                }
+            }
+            RunViewUpdate::PlanDecision { record } => {
+                if self.plan_decisions.iter().all(|saved| {
+                    saved.decision.decision_id != record.decision.decision_id
+                        && saved.trigger_step_record_id != record.trigger_step_record_id
+                }) {
+                    self.plan_decisions.push(record);
+                }
+            }
+            RunViewUpdate::PlanRevised { plan, revision } => {
+                self.plan = Some(plan);
+                if self
+                    .plan_revisions
+                    .iter()
+                    .all(|saved| saved.revision_id != revision.revision_id)
+                {
+                    self.plan_revisions.push(revision);
+                }
             }
             RunViewUpdate::PlanStepStarted { step, index } => {
                 if let Some(plan) = &mut self.plan {
@@ -693,10 +738,21 @@ impl RunViewState {
                 input_id: *input_id,
                 prompt: bounded_visible_text(prompt),
             }),
-            RunViewUpdate::PlanCreated { plan } => Some(RunTimelineEntryKind::Plan {
+            RunViewUpdate::PlanCreated { plan, .. } => Some(RunTimelineEntryKind::Plan {
                 goal: bounded_visible_text(&plan.goal),
                 step_count: plan.steps.len(),
             }),
+            RunViewUpdate::PlanDecision { record } => Some(RunTimelineEntryKind::PlanDecision {
+                kind: record.decision.kind,
+                summary: bounded_visible_text(&record.decision.safe_summary),
+            }),
+            RunViewUpdate::PlanRevised { revision, .. } => {
+                Some(RunTimelineEntryKind::PlanRevision {
+                    revision: revision.revision,
+                    step_count: revision.remaining_steps.len(),
+                    superseded_step_count: revision.superseded_remaining_step_ids.len(),
+                })
+            }
             RunViewUpdate::PlanStepStarted { step, index } => Some(timeline_plan_step(
                 *index,
                 step,
@@ -810,6 +866,8 @@ fn timeline_kind_is_idempotent(kind: &RunTimelineEntryKind) -> bool {
                 ..
             }
             | RunTimelineEntryKind::Plan { .. }
+            | RunTimelineEntryKind::PlanDecision { .. }
+            | RunTimelineEntryKind::PlanRevision { .. }
             | RunTimelineEntryKind::PlanStep { .. }
             | RunTimelineEntryKind::Tool { .. }
             | RunTimelineEntryKind::Approval { .. }
@@ -979,7 +1037,21 @@ impl From<&StreamEvent> for RunViewUpdate {
                 input_id: *input_id,
                 prompt: prompt.clone(),
             },
-            StreamEvent::PlanCreated { plan, .. } => Self::PlanCreated { plan: plan.clone() },
+            StreamEvent::PlanCreated {
+                plan,
+                plan_revision,
+                ..
+            } => Self::PlanCreated {
+                plan: plan.clone(),
+                revision: plan_revision.as_deref().cloned(),
+            },
+            StreamEvent::PlanDecision { record } => Self::PlanDecision {
+                record: record.as_ref().clone(),
+            },
+            StreamEvent::PlanRevised { plan, revision } => Self::PlanRevised {
+                plan: plan.clone(),
+                revision: revision.as_ref().clone(),
+            },
             StreamEvent::PlanStepStarted { step, index, .. } => Self::PlanStepStarted {
                 step: step.clone(),
                 index: *index,
@@ -1150,6 +1222,7 @@ mod tests {
             StreamEvent::PlanCreated {
                 plan: plan.clone(),
                 identity: Default::default(),
+                plan_revision: None,
             },
             StreamEvent::PlanStepStarted {
                 step: step(),
@@ -1239,6 +1312,7 @@ mod tests {
                 steps: vec![step()],
                 current_step: 0,
             },
+            revision: None,
         });
         state.apply_update(RunViewUpdate::ToolCallStarted {
             call_id,
@@ -1289,6 +1363,7 @@ mod tests {
                 steps: vec![first.clone(), second],
                 current_step: 0,
             },
+            revision: None,
         });
         state.apply_update(RunViewUpdate::PlanStepStarted {
             step: first.clone(),
@@ -1503,7 +1578,10 @@ mod tests {
             usage: usage(),
             tool_call_count: 1,
         });
-        state.apply_update(RunViewUpdate::PlanCreated { plan });
+        state.apply_update(RunViewUpdate::PlanCreated {
+            plan,
+            revision: None,
+        });
         state.apply_update(RunViewUpdate::PlanStepStarted {
             step: step(),
             index: 0,

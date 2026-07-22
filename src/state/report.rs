@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::core::execution::StepRecord;
+use crate::core::execution::{PlanDecisionRecord, PlanRevision, StepRecord};
 use crate::core::prompt_metadata::PromptBuildMetadata;
 use crate::core::runtime_identity::RuntimeIdentity;
 use crate::core::types::{
@@ -37,6 +37,10 @@ pub struct RunReport {
     pub runtime_identity: Option<RuntimeIdentity>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub step_records: Vec<StepRecord>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub plan_decisions: Vec<PlanDecisionRecord>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub plan_revisions: Vec<PlanRevision>,
     pub output: Option<String>,
     pub timestamp: String,
 }
@@ -74,6 +78,8 @@ impl RunReport {
             prompt_builds: Vec::new(),
             runtime_identity: None,
             step_records: Vec::new(),
+            plan_decisions: Vec::new(),
+            plan_revisions: Vec::new(),
             output: None,
             timestamp: chrono::Utc::now().to_rfc3339(),
         }

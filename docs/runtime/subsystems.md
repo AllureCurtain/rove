@@ -40,11 +40,13 @@ tool stubs for those kinds.
 Files:
 
 - `trace.jsonl` records append-only runtime events, including canonical
-  `step_result` facts for terminal planned-step attempts.
-- `task_state.json` stores resumable task state, the materialized step ledger,
-  any active step attempt, and the prompt checkpoint.
+  `step_result`, `plan_decision`, and `plan_revised` facts for planned
+  execution.
+- `task_state.json` stores resumable task state, materialized step records,
+  plan decisions and revisions, any active step attempt, and the prompt
+  checkpoint.
 - `report.json` stores final status, output, identity metadata, and the run's
-  terminal step records.
+  terminal step records, decisions, and immutable revisions.
 
 SQLite:
 
@@ -55,9 +57,10 @@ SQLite:
 
 Repair treats trace files as the append-only event source and SQLite as a
 rebuildable index. `rove state repair` imports task state snapshots, report
-artifacts, trace events (including `step_result`), and event offsets; corrupted
-trace lines are reported and skipped. There is no separate mutable step table
-or fourth ledger artifact.
+artifacts, trace events (including `step_result`, `plan_decision`, and
+`plan_revised`), and event offsets; corrupted trace lines are reported and
+skipped. There is no separate mutable lifecycle table or fourth ledger
+artifact.
 
 ## Context And Compaction
 
@@ -208,10 +211,10 @@ pnpm typecheck
 pnpm build
 ```
 
-The Web event contract includes plan/revision/attempt identity and
-`step_result`. The reducer retains records in a deduplicated structured
-projection while the compatibility plan-step event remains the owner of the
-visible trace row, avoiding duplicate timeline entries.
+The Web event contract includes plan/revision/attempt identity, `step_result`,
+`plan_decision`, and `plan_revised`. The reducer retains records, decisions,
+and revisions in deduplicated structured projections while preserving the
+compatibility plan-step timeline behavior.
 
 Browser-level checks are available separately:
 

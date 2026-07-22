@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use super::execution::{PlanIdentity, StepAttempt, StepRecord};
+use super::execution::{PlanDecisionRecord, PlanIdentity, PlanRevision, StepAttempt, StepRecord};
 use super::types::{
     CallId, JobId, PlanStep, PromptCompactionState, RunId, TaskPlan, TerminationReason,
     ToolCallRef, ToolExecutionMetadata, ToolResult, Usage,
@@ -75,6 +75,9 @@ pub enum StreamEvent {
         /// default metadata.
         #[serde(flatten)]
         identity: PlanIdentity,
+        /// Full immutable initial revision. Older events omit this field.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        plan_revision: Option<Box<PlanRevision>>,
     },
 
     /// A persisted plan step is about to run.
@@ -101,6 +104,15 @@ pub enum StreamEvent {
     /// This is the append-only lifecycle fact.  The legacy plan-step
     /// completed/failed events remain derived compatibility notifications.
     StepResult { record: Box<StepRecord> },
+
+    /// Rule-first lifecycle decision for one terminal step record.
+    PlanDecision { record: Box<PlanDecisionRecord> },
+
+    /// Immutable replacement of only the remaining plan work.
+    PlanRevised {
+        plan: TaskPlan,
+        revision: Box<PlanRevision>,
+    },
 
     /// Prompt history was compacted for future resume.
     PromptCompacted {
@@ -140,6 +152,8 @@ impl StreamEvent {
             Self::PlanStepCompleted { .. } => "plan_step_completed",
             Self::PlanStepFailed { .. } => "plan_step_failed",
             Self::StepResult { .. } => "step_result",
+            Self::PlanDecision { .. } => "plan_decision",
+            Self::PlanRevised { .. } => "plan_revised",
             Self::PromptCompacted { .. } => "prompt_compacted",
             Self::MemoryFlushed { .. } => "memory_flushed",
             Self::PromptBuilt { .. } => "prompt_built",

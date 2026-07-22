@@ -11,7 +11,8 @@ use rove::core::context::{ContextBudget, ContextManager};
 use rove::core::engine::{Engine, EngineConfig};
 use rove::core::events::StreamEvent;
 use rove::core::execution::{
-    PlanIdentity, StepAttempt, StepCompletionBasis, StepLedgerState, StepRecord, StepRecordStatus,
+    PlanDecisionKind, PlanFinishReason, PlanIdentity, StepAttempt, StepCompletionBasis,
+    StepLedgerState, StepRecord, StepRecordStatus,
 };
 use rove::core::types::{
     ApprovalDecision, ApprovalPolicy, CallId, JobId, Message, PendingToolApproval,
@@ -1850,6 +1851,7 @@ async fn repair_index_rebuilds_events_and_report_from_artifacts() {
         active_plan_revision: 0,
         step_records: vec![record.clone()],
         active_step_attempt: None,
+        plan_lifecycle: Default::default(),
     };
     let state = TaskState {
         schema_version: 1,
@@ -2811,11 +2813,15 @@ async fn planner_resumes_at_current_step() {
 
     let events = collect_events_with_request(&engine, req).await;
 
-    assert!(
-        !events
-            .iter()
-            .any(|event| matches!(event, StreamEvent::PlanCreated { .. }))
-    );
+    assert!(events.iter().any(|event| {
+        matches!(
+            event,
+            StreamEvent::PlanCreated {
+                plan_revision: Some(revision),
+                ..
+            } if revision.safe_reason_codes == ["legacy_plan_migrated"]
+        )
+    }));
     assert!(events.iter().any(|event| {
         matches!(
             event,
@@ -2880,10 +2886,16 @@ async fn planner_resume_checkpoint_does_not_repeat_completed_steps() {
     let events = collect_events_with_request(&engine, req).await;
 
     assert!(
-        !events
-            .iter()
-            .any(|event| matches!(event, StreamEvent::PlanCreated { .. })),
-        "resume should use checkpoint plan without drafting a new one"
+        events.iter().any(|event| {
+            matches!(
+                event,
+                StreamEvent::PlanCreated {
+                    plan_revision: Some(revision),
+                    ..
+                } if revision.safe_reason_codes == ["legacy_plan_migrated"]
+            )
+        }),
+        "resume should wrap the checkpoint plan without asking the model to draft a new one"
     );
     assert!(!events.iter().any(|event| {
         matches!(
@@ -2989,13 +3001,13 @@ async fn planner_resume_applies_terminal_success_without_replaying_the_step() {
         steps: vec![PlanStep {
             id: "1".to_string(),
             title: "already completed".to_string(),
-            done: false,
+            done: true,
         }],
-        current_step: 0,
+        current_step: 1,
     };
     let mut step_ledger = StepLedgerState::default();
     step_ledger.set_plan_identity(&identity);
-    step_ledger.step_records.push(record);
+    step_ledger.step_records.push(record.clone());
     let req = RunRequest {
         session_id: SessionId::new(),
         job_id: JobId::new(),
@@ -3034,6 +3046,18 @@ async fn planner_resume_applies_terminal_success_without_replaying_the_step() {
             StreamEvent::PlanStepCompleted { step, .. } if step.id == "1"
         )
     }));
+    assert_eq!(
+        events
+            .iter()
+            .filter_map(|event| match event {
+                StreamEvent::PlanDecision { record } => Some(record.as_ref()),
+                _ => None,
+            })
+            .filter(|decision| decision.trigger_step_record_id == record.record_id)
+            .count(),
+        1,
+        "resume must fill the missing decision exactly once"
+    );
     assert!(matches!(
         events.last(),
         Some(StreamEvent::RunCompleted {
@@ -3125,8 +3149,23 @@ async fn planned_step_emits_complete_step_record_before_compatibility_completion
         .iter()
         .position(|event| matches!(event, StreamEvent::PlanStepCompleted { .. }))
         .unwrap();
+    let (decision_index, decision) = events
+        .iter()
+        .enumerate()
+        .find_map(|(index, event)| match event {
+            StreamEvent::PlanDecision { record } => Some((index, record.as_ref())),
+            _ => None,
+        })
+        .expect("terminal step should emit a plan decision");
 
-    assert!(record_index < completed_index);
+    assert!(record_index < decision_index);
+    assert!(decision_index < completed_index);
+    assert_eq!(decision.trigger_step_record_id, record.record_id);
+    assert_eq!(decision.decision.kind, PlanDecisionKind::Finish);
+    assert_eq!(
+        decision.decision.finish_reason,
+        Some(PlanFinishReason::Completed)
+    );
     assert!(started.is_complete());
     assert_eq!(record.plan_id, started.plan_id);
     assert_eq!(record.plan_revision_id, started.plan_revision_id);
@@ -3151,13 +3190,23 @@ async fn replanning_retains_failed_record_and_advances_revision_identity() {
     let engine = build_replanning_test_engine();
 
     let events = collect_events(&engine, "fix the docs").await;
-    let identities: Vec<_> = events
+    let initial_revision = events
         .iter()
-        .filter_map(|event| match event {
-            StreamEvent::PlanCreated { identity, .. } => Some(identity),
+        .find_map(|event| match event {
+            StreamEvent::PlanCreated {
+                plan_revision: Some(revision),
+                ..
+            } => Some(revision.as_ref()),
             _ => None,
         })
-        .collect();
+        .expect("initial plan should carry revision zero");
+    let revised = events
+        .iter()
+        .find_map(|event| match event {
+            StreamEvent::PlanRevised { revision, .. } => Some(revision.as_ref()),
+            _ => None,
+        })
+        .expect("recoverable failure should create a child revision");
     let records: Vec<_> = events
         .iter()
         .filter_map(|event| match event {
@@ -3165,20 +3214,72 @@ async fn replanning_retains_failed_record_and_advances_revision_identity() {
             _ => None,
         })
         .collect();
+    let replace_decision = events
+        .iter()
+        .find_map(|event| match event {
+            StreamEvent::PlanDecision { record }
+                if record.decision.kind == PlanDecisionKind::ReplaceRemaining =>
+            {
+                Some(record.as_ref())
+            }
+            _ => None,
+        })
+        .expect("recoverable failure should emit a replace decision");
 
-    assert_eq!(identities.len(), 2);
-    assert_eq!(identities[0].plan_id, identities[1].plan_id);
-    assert_ne!(
-        identities[0].plan_revision_id,
-        identities[1].plan_revision_id
+    assert_eq!(initial_revision.plan_id, revised.plan_id);
+    assert_ne!(initial_revision.revision_id, revised.revision_id);
+    assert_eq!(initial_revision.revision, 0);
+    assert_eq!(revised.revision, 1);
+    assert_eq!(
+        revised.parent_revision_id.as_deref(),
+        Some(initial_revision.revision_id.as_str())
     );
-    assert_eq!(identities[0].revision, 0);
-    assert_eq!(identities[1].revision, 1);
+    assert_eq!(
+        revised.trigger_step_record_id.as_deref(),
+        Some(records[0].record_id.as_str())
+    );
+    assert_eq!(revised.decision_id, replace_decision.decision.decision_id);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, StreamEvent::PlanCreated { .. }))
+            .count(),
+        1,
+        "replanning must not masquerade as a second initial plan"
+    );
     assert_eq!(records.len(), 2);
     assert_eq!(records[0].status, StepRecordStatus::Failed);
+    assert_eq!(
+        records[0].error_code.as_deref(),
+        Some("step_recoverable_failure")
+    );
     assert_eq!(records[1].status, StepRecordStatus::Succeeded);
     assert_eq!(records[0].plan_id, records[1].plan_id);
     assert_ne!(records[0].plan_revision_id, records[1].plan_revision_id);
+
+    let failed_record_index = events
+        .iter()
+        .position(|event| {
+            matches!(event, StreamEvent::StepResult { record } if record.record_id == records[0].record_id)
+        })
+        .unwrap();
+    let replace_decision_index = events
+        .iter()
+        .position(|event| {
+            matches!(event, StreamEvent::PlanDecision { record } if record.decision.kind == PlanDecisionKind::ReplaceRemaining)
+        })
+        .unwrap();
+    let compatibility_failure_index = events
+        .iter()
+        .position(|event| matches!(event, StreamEvent::PlanStepFailed { .. }))
+        .unwrap();
+    let revised_index = events
+        .iter()
+        .position(|event| matches!(event, StreamEvent::PlanRevised { .. }))
+        .unwrap();
+    assert!(failed_record_index < replace_decision_index);
+    assert!(replace_decision_index < compatibility_failure_index);
+    assert!(compatibility_failure_index < revised_index);
 }
 
 #[tokio::test]
@@ -3373,7 +3474,14 @@ async fn planner_replans_after_step_failure() {
             .iter()
             .filter(|event| matches!(event, StreamEvent::PlanCreated { .. }))
             .count(),
-        2
+        1
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, StreamEvent::PlanRevised { .. }))
+            .count(),
+        1
     );
     assert!(events.iter().any(|event| {
         matches!(
@@ -3414,7 +3522,11 @@ async fn oneshot_persists_replanned_task_state() {
     )
     .unwrap();
     let persisted_records = task_state.step_ledger.step_records.clone();
+    let persisted_decisions = task_state.step_ledger.plan_lifecycle.decisions.clone();
+    let persisted_revisions = task_state.step_ledger.plan_lifecycle.revisions.clone();
     assert_eq!(persisted_records.len(), 2);
+    assert_eq!(persisted_decisions.len(), 2);
+    assert_eq!(persisted_revisions.len(), 2);
     assert_eq!(persisted_records[0].status, StepRecordStatus::Failed);
     assert_eq!(persisted_records[1].status, StepRecordStatus::Succeeded);
     assert!(task_state.step_ledger.active_step_attempt.is_none());
@@ -3423,6 +3535,20 @@ async fn oneshot_persists_replanned_task_state() {
             .checkpoint
             .as_ref()
             .map(|checkpoint| checkpoint.step_ledger.step_record_count),
+        Some(2)
+    );
+    assert_eq!(
+        task_state
+            .checkpoint
+            .as_ref()
+            .map(|checkpoint| checkpoint.step_ledger.plan_lifecycle.decision_count),
+        Some(2)
+    );
+    assert_eq!(
+        task_state
+            .checkpoint
+            .as_ref()
+            .map(|checkpoint| checkpoint.step_ledger.plan_lifecycle.revision_count),
         Some(2)
     );
     let plan = task_state
@@ -3444,6 +3570,8 @@ async fn oneshot_persists_replanned_task_state() {
 
     let report = state_store.load_report(run_id).await.unwrap();
     assert_eq!(report.step_records, persisted_records);
+    assert_eq!(report.plan_decisions, persisted_decisions);
+    assert_eq!(report.plan_revisions, persisted_revisions);
     let trace = std::fs::read_to_string(state_store.run_store.run_dir(&run_id).join("trace.jsonl"))
         .unwrap();
     let traced_records: Vec<_> = trace
@@ -3455,6 +3583,28 @@ async fn oneshot_persists_replanned_task_state() {
         })
         .collect();
     assert_eq!(traced_records, persisted_records);
+    let traced_decisions: Vec<_> = trace
+        .lines()
+        .map(|line| serde_json::from_str::<StreamEvent>(line).unwrap())
+        .filter_map(|event| match event {
+            StreamEvent::PlanDecision { record } => Some(*record),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(traced_decisions, persisted_decisions);
+    let traced_revisions: Vec<_> = trace
+        .lines()
+        .map(|line| serde_json::from_str::<StreamEvent>(line).unwrap())
+        .filter_map(|event| match event {
+            StreamEvent::PlanCreated {
+                plan_revision: Some(revision),
+                ..
+            }
+            | StreamEvent::PlanRevised { revision, .. } => Some(*revision),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(traced_revisions, persisted_revisions);
 }
 
 #[tokio::test]
@@ -3495,10 +3645,16 @@ async fn resumed_run_uses_persisted_replanned_task_state() {
     let events = collect_events_with_request(&engine, req).await;
 
     assert!(
-        !events
-            .iter()
-            .any(|event| matches!(event, StreamEvent::PlanCreated { .. })),
-        "resume should use the persisted re-planned plan without drafting a new one"
+        events.iter().any(|event| {
+            matches!(
+                event,
+                StreamEvent::PlanCreated {
+                    plan_revision: Some(revision),
+                    ..
+                } if revision.safe_reason_codes == ["legacy_plan_migrated"]
+            )
+        }),
+        "resume should wrap the persisted re-planned plan without asking the model to draft a new one"
     );
     assert!(events.iter().any(|event| {
         matches!(

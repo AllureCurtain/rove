@@ -6,8 +6,10 @@ use tokio_util::sync::CancellationToken;
 use crate::core::engine::planned_step_failure_message;
 use crate::core::events::StreamEvent;
 use crate::core::execution::{
-    PlanIdentity, StepAttempt, StepCompletionBasis, StepLedgerState, StepRecord, StepRecordStatus,
+    ExecutionBudgetUsage, PlanDecisionKind, PlanDecisionRecord, PlanFinishReason, PlanIdentity,
+    PlanRevision, StepAttempt, StepCompletionBasis, StepLedgerState, StepRecord, StepRecordStatus,
 };
+use crate::core::plan_evaluator::{RECOVERABLE_STEP_FAILURE_CODE, evaluate_step_record};
 use crate::core::planner::Planner;
 use crate::core::run_loop::{LoopContext, LoopItem};
 use crate::core::step_runner::{
@@ -38,50 +40,6 @@ pub(crate) fn run_planned_loop<'a>(
         let mut ledger = std::mem::take(&mut state.step_ledger);
         let mut plan_identity = ledger.plan_identity().unwrap_or_else(PlanIdentity::fresh);
 
-        // An in-flight attempt from a previous process may have performed an
-        // external side effect whose result was never persisted. Close that
-        // attempt conservatively instead of replaying the step automatically.
-        if let Some(active_attempt) = ledger.active_step_attempt.take()
-            && active_attempt.is_complete()
-            && !has_terminal_record(&ledger, &active_attempt)
-        {
-            let interrupted_step = state
-                .plan
-                .as_ref()
-                .and_then(|plan| {
-                    plan.steps
-                        .iter()
-                        .find(|step| step.id == active_attempt.step_id)
-                })
-                .cloned()
-                .unwrap_or_else(|| PlanStep {
-                    id: active_attempt.step_id.clone(),
-                    title: format!("interrupted step {}", active_attempt.step_id),
-                    done: false,
-                });
-            let record = interrupted_step_record(&active_attempt);
-            ledger.step_records.push(record.clone());
-            yield LoopItem::Event(StreamEvent::StepResult {
-                record: Box::new(record),
-            });
-            let reason = "step attempt was interrupted before a terminal result was persisted"
-                .to_string();
-            yield LoopItem::Event(StreamEvent::PlanStepFailed {
-                step: interrupted_step,
-                index: state
-                    .plan
-                    .as_ref()
-                    .map(|plan| plan.current_step)
-                    .unwrap_or_default(),
-                reason: reason.clone(),
-            });
-            yield LoopItem::Complete {
-                reason: TerminationReason::Error,
-                output: Some(reason),
-            };
-            return;
-        }
-
         if state.plan.is_none() {
             let draft_result = tokio::select! {
                 biased;
@@ -98,9 +56,25 @@ pub(crate) fn run_planned_loop<'a>(
                 Ok(drafted) => {
                     plan_identity = PlanIdentity::fresh();
                     ledger.set_plan_identity(&plan_identity);
+                    let revision = match initial_plan_revision(
+                        &drafted,
+                        &plan_identity,
+                        "planner_draft",
+                    ) {
+                        Ok(revision) => revision,
+                        Err(reason) => {
+                            yield LoopItem::Complete {
+                                reason: TerminationReason::Error,
+                                output: Some(reason),
+                            };
+                            return;
+                        }
+                    };
+                    ledger.plan_lifecycle.push_revision(revision.clone());
                     yield LoopItem::Event(StreamEvent::PlanCreated {
                         plan: drafted.clone(),
                         identity: plan_identity.clone(),
+                        plan_revision: Some(Box::new(revision)),
                     });
                     state.plan = Some(drafted);
                 }
@@ -112,12 +86,218 @@ pub(crate) fn run_planned_loop<'a>(
                     return;
                 }
             }
+        } else if ledger.plan_lifecycle.revisions.is_empty() {
+            // Older task snapshots persisted a mutable plan and optional
+            // identity but no immutable revision chain. Wrap the active plan
+            // once as revision zero so all new transitions have a stable
+            // parent without inventing historical revisions.
+            plan_identity.revision = 0;
+            ledger.set_plan_identity(&plan_identity);
+            let active_plan = match state.plan.as_ref() {
+                Some(plan) => plan,
+                None => unreachable!("legacy plan migration requires an active plan"),
+            };
+            let revision = match initial_plan_revision(
+                active_plan,
+                &plan_identity,
+                "legacy_plan_migrated",
+            ) {
+                Ok(revision) => revision,
+                Err(reason) => {
+                    yield LoopItem::Complete {
+                        reason: TerminationReason::Error,
+                        output: Some(reason),
+                    };
+                    return;
+                }
+            };
+            ledger.plan_lifecycle.push_revision(revision.clone());
+            yield LoopItem::Event(StreamEvent::PlanCreated {
+                plan: active_plan.clone(),
+                identity: plan_identity.clone(),
+                plan_revision: Some(Box::new(revision)),
+            });
         } else {
+            if let Some(active_revision) = ledger.plan_lifecycle.revisions.last() {
+                plan_identity = active_revision.identity();
+            }
             ledger.set_plan_identity(&plan_identity);
         }
 
-        let mut final_output: Option<String> = None;
-        while let Some(ref mut active_plan) = state.plan {
+        // An in-flight attempt from a previous process may have performed an
+        // external side effect whose result was never persisted. Close that
+        // attempt conservatively. The normal evaluator path below will record
+        // the corresponding finish decision without replaying the step.
+        if let Some(active_attempt) = ledger.active_step_attempt.take()
+            && active_attempt.is_complete()
+            && !has_terminal_record(&ledger, &active_attempt)
+        {
+            let record = interrupted_step_record(&active_attempt);
+            ledger.step_records.push(record.clone());
+            yield LoopItem::Event(StreamEvent::StepResult {
+                record: Box::new(record),
+            });
+        }
+
+        if let Some(active_plan) = state.plan.as_mut() {
+            apply_persisted_continue_decisions(active_plan, &ledger, &plan_identity);
+        }
+
+        let mut final_output = ledger
+            .step_records
+            .iter()
+            .rev()
+            .find(|record| {
+                record.plan_id == plan_identity.plan_id
+                    && matches!(
+                        record.status,
+                        StepRecordStatus::Succeeded | StepRecordStatus::Skipped
+                    )
+            })
+            .map(|record| record.summary.clone());
+
+        while let Some(active_plan) = state.plan.as_mut() {
+
+            // Resume may observe `step_result` after the task-state projection
+            // already advanced the compatibility plan cursor. Select the
+            // undecided fact from the ledger rather than only from
+            // `TaskPlan::current_step`, then complete the transition exactly
+            // once without replaying model or tool work.
+            if let Some(record) = pending_undecided_record(&ledger, &plan_identity).cloned() {
+                let has_remaining = has_remaining_steps_after_record(active_plan, &record.step_id);
+                let decision = evaluate_step_record(&record, has_remaining);
+                ledger.plan_lifecycle.push_decision(decision.clone());
+                yield LoopItem::Event(StreamEvent::PlanDecision {
+                    record: Box::new(decision.clone()),
+                });
+
+                let (compatibility_step, compatibility_index) =
+                    compatibility_step(active_plan, &record);
+                let compatibility_reason = record_reason(&record);
+                match decision.decision.kind {
+                    PlanDecisionKind::Continue => {
+                        mark_step_done(active_plan, &record.step_id);
+                        yield LoopItem::Event(StreamEvent::PlanStepCompleted {
+                            step: compatibility_step,
+                            index: compatibility_index,
+                        });
+                        continue;
+                    }
+                    PlanDecisionKind::ReplaceRemaining => {
+                        yield LoopItem::Event(StreamEvent::PlanStepFailed {
+                            step: compatibility_step.clone(),
+                            index: compatibility_index,
+                            reason: compatibility_reason.clone(),
+                        });
+                        let (replacement, revision) = match replan_and_build_revision(
+                            planner,
+                            ctx.model,
+                            active_plan,
+                            compatibility_index,
+                            &compatibility_step.title,
+                            &compatibility_reason,
+                            &record,
+                            &decision,
+                            &plan_identity,
+                            &mut state.history,
+                            cancel_token.clone(),
+                        ).await {
+                            Ok(transition) => transition,
+                            Err(item) => {
+                                yield item;
+                                return;
+                            }
+                        };
+                        plan_identity = revision.identity();
+                        ledger.set_plan_identity(&plan_identity);
+                        ledger.plan_lifecycle.push_revision(revision.clone());
+                        yield LoopItem::Event(StreamEvent::PlanRevised {
+                            plan: replacement.clone(),
+                            revision: Box::new(revision),
+                        });
+                        *active_plan = replacement;
+                        continue;
+                    }
+                    PlanDecisionKind::Finish => {
+                        if matches!(
+                            record.status,
+                            StepRecordStatus::Succeeded | StepRecordStatus::Skipped
+                        ) {
+                            mark_step_done(active_plan, &record.step_id);
+                            yield LoopItem::Event(StreamEvent::PlanStepCompleted {
+                                step: compatibility_step,
+                                index: compatibility_index,
+                            });
+                        } else {
+                            yield LoopItem::Event(StreamEvent::PlanStepFailed {
+                                step: compatibility_step,
+                                index: compatibility_index,
+                                reason: compatibility_reason,
+                            });
+                        }
+                        let (reason, output) = finish_transition(
+                            &decision,
+                            &record,
+                            final_output.clone(),
+                        );
+                        yield LoopItem::Complete { reason, output };
+                        return;
+                    }
+                }
+            }
+
+            // A crash after persisting a finish decision must not run another
+            // step. Compatibility notifications are derived; the canonical
+            // decision is sufficient to complete this resumed run.
+            if let Some((record, decision)) = pending_finish_transition(&ledger, &plan_identity) {
+                let (reason, output) = finish_transition(
+                    decision,
+                    record,
+                    final_output.clone(),
+                );
+                yield LoopItem::Complete { reason, output };
+                return;
+            }
+
+            // Replanner work starts only after the replace decision is durable.
+            // If the process stopped at that stable boundary, resume the
+            // missing child revision without re-running the failed step.
+            if let Some((record, decision)) =
+                pending_replace_transition(&ledger, &plan_identity)
+                    .map(|(record, decision)| (record.clone(), decision.clone()))
+            {
+                let (step, index) = compatibility_step(active_plan, &record);
+                let reason = record_reason(&record);
+                let (replacement, revision) = match replan_and_build_revision(
+                    planner,
+                    ctx.model,
+                    active_plan,
+                    index,
+                    &step.title,
+                    &reason,
+                    &record,
+                    &decision,
+                    &plan_identity,
+                    &mut state.history,
+                    cancel_token.clone(),
+                ).await {
+                    Ok(transition) => transition,
+                    Err(item) => {
+                        yield item;
+                        return;
+                    }
+                };
+                plan_identity = revision.identity();
+                ledger.set_plan_identity(&plan_identity);
+                ledger.plan_lifecycle.push_revision(revision.clone());
+                yield LoopItem::Event(StreamEvent::PlanRevised {
+                    plan: replacement.clone(),
+                    revision: Box::new(revision),
+                });
+                *active_plan = replacement;
+                continue;
+            }
+
             if cancel_token.is_cancelled() {
                 yield LoopItem::Complete {
                     reason: TerminationReason::Cancelled,
@@ -143,110 +323,23 @@ pub(crate) fn run_planned_loop<'a>(
             };
             let current_index = active_plan.current_step;
 
-            // `step_result` is canonical and is persisted before the legacy
-            // completion/failure notification. Resume must finish that
-            // deterministic transition instead of replaying the attempt.
             if let Some(record) = latest_terminal_record(
                 &ledger,
                 &plan_identity,
                 &current_step.id,
-            ).cloned()
-            {
-                let reason = record
-                    .safe_error_summary
-                    .clone()
-                    .unwrap_or_else(|| record.summary.clone());
-                match record.status {
-                    StepRecordStatus::Succeeded | StepRecordStatus::Skipped => {
-                        active_plan.mark_current_done();
-                        yield LoopItem::Event(StreamEvent::PlanStepCompleted {
-                            step: current_step,
-                            index: current_index,
-                        });
-                        continue;
-                    }
-                    StepRecordStatus::Failed => {
-                        yield LoopItem::Event(StreamEvent::PlanStepFailed {
-                            step: current_step.clone(),
-                            index: current_index,
-                            reason: reason.clone(),
-                        });
-                        let replacement = match replan_after_step_failure(
-                            planner,
-                            ctx.model,
-                            &active_plan.goal,
-                            &current_step.title,
-                            &reason,
-                            &mut state.history,
-                            cancel_token.clone(),
-                        ).await {
-                            Ok(plan) => plan,
-                            Err(item) => {
-                                yield item;
-                                return;
-                            }
-                        };
-                        plan_identity = plan_identity.next_revision();
-                        ledger.set_plan_identity(&plan_identity);
-                        yield LoopItem::Event(StreamEvent::PlanCreated {
-                            plan: replacement.clone(),
-                            identity: plan_identity.clone(),
-                        });
-                        *active_plan = replacement;
-                        continue;
-                    }
-                    StepRecordStatus::Blocked => {
-                        yield LoopItem::Event(StreamEvent::PlanStepFailed {
-                            step: current_step,
-                            index: current_index,
-                            reason: reason.clone(),
-                        });
-                        yield LoopItem::Complete {
-                            reason: TerminationReason::Final,
-                            output: Some(reason),
-                        };
-                        return;
-                    }
-                    StepRecordStatus::BudgetExhausted => {
-                        yield LoopItem::Event(StreamEvent::PlanStepFailed {
-                            step: current_step,
-                            index: current_index,
-                            reason: reason.clone(),
-                        });
-                        yield LoopItem::Complete {
-                            reason: if record.error_code.as_deref() == Some("context_token_limit") {
-                                TerminationReason::TokenLimit
-                            } else {
-                                TerminationReason::StepLimit
-                            },
-                            output: Some(reason),
-                        };
-                        return;
-                    }
-                    StepRecordStatus::Cancelled => {
-                        yield LoopItem::Event(StreamEvent::PlanStepFailed {
-                            step: current_step,
-                            index: current_index,
-                            reason: reason.clone(),
-                        });
-                        yield LoopItem::Complete {
-                            reason: TerminationReason::Cancelled,
-                            output: None,
-                        };
-                        return;
-                    }
-                    StepRecordStatus::Partial | StepRecordStatus::Interrupted => {
-                        yield LoopItem::Event(StreamEvent::PlanStepFailed {
-                            step: current_step,
-                            index: current_index,
-                            reason: reason.clone(),
-                        });
-                        yield LoopItem::Complete {
-                            reason: TerminationReason::Error,
-                            output: Some(reason),
-                        };
-                        return;
-                    }
+            ) {
+                // Existing decisions are reconciled above. Reaching the same
+                // terminal fact here means the compatibility cursor was stale;
+                // advance it rather than replaying the attempt.
+                if ledger
+                    .plan_lifecycle
+                    .decision_for_record(&record.record_id)
+                    .is_some_and(|decision| {
+                        decision.decision.kind == PlanDecisionKind::Continue
+                    })
+                {
+                    mark_step_done(active_plan, &current_step.id);
+                    continue;
                 }
             }
 
@@ -292,16 +385,7 @@ pub(crate) fn run_planned_loop<'a>(
                 yield LoopItem::Event(StreamEvent::StepResult {
                     record: Box::new(record),
                 });
-                yield LoopItem::Event(StreamEvent::PlanStepFailed {
-                    step: current_step,
-                    index: current_index,
-                    reason: "step runner ended without a result".to_string(),
-                });
-                yield LoopItem::Complete {
-                    reason: TerminationReason::Error,
-                    output: Some("step runner ended without a result".to_string()),
-                };
-                return;
+                continue;
             };
 
             state.history = runner_result.history;
@@ -312,95 +396,14 @@ pub(crate) fn run_planned_loop<'a>(
                 &runner_result.outcome,
                 &runner_result.metrics,
             );
+            if let StepRunnerOutcome::Succeeded { output } = &runner_result.outcome {
+                final_output = Some(output.clone());
+            }
             ledger.active_step_attempt = None;
             ledger.step_records.push(record.clone());
             yield LoopItem::Event(StreamEvent::StepResult {
                 record: Box::new(record),
             });
-
-            match runner_result.outcome {
-                StepRunnerOutcome::Succeeded { output } => {
-                    final_output = Some(output);
-                    active_plan.mark_current_done();
-                    yield LoopItem::Event(StreamEvent::PlanStepCompleted {
-                        step: current_step,
-                        index: current_index,
-                    });
-                }
-                StepRunnerOutcome::Failed { reason, replan } => {
-                    yield LoopItem::Event(StreamEvent::PlanStepFailed {
-                        step: current_step.clone(),
-                        index: current_index,
-                        reason: reason.clone(),
-                    });
-                    if !replan {
-                        yield LoopItem::Complete {
-                            reason: TerminationReason::Final,
-                            output: Some(reason),
-                        };
-                        return;
-                    }
-
-                    let replacement = match replan_after_step_failure(
-                        planner,
-                        ctx.model,
-                        &active_plan.goal,
-                        &current_step.title,
-                        &reason,
-                        &mut state.history,
-                        cancel_token.clone(),
-                    ).await {
-                        Ok(plan) => plan,
-                        Err(item) => {
-                            yield item;
-                            return;
-                        }
-                    };
-                    plan_identity = plan_identity.next_revision();
-                    ledger.set_plan_identity(&plan_identity);
-                    yield LoopItem::Event(StreamEvent::PlanCreated {
-                        plan: replacement.clone(),
-                        identity: plan_identity.clone(),
-                    });
-                    *active_plan = replacement;
-                }
-                StepRunnerOutcome::BudgetExhausted { reason } => {
-                    yield LoopItem::Event(StreamEvent::PlanStepFailed {
-                        step: current_step,
-                        index: current_index,
-                        reason: reason.clone(),
-                    });
-                    yield LoopItem::Complete {
-                        reason: TerminationReason::StepLimit,
-                        output: Some(reason),
-                    };
-                    return;
-                }
-                StepRunnerOutcome::TokenLimit { reason } => {
-                    yield LoopItem::Event(StreamEvent::PlanStepFailed {
-                        step: current_step,
-                        index: current_index,
-                        reason: reason.clone(),
-                    });
-                    yield LoopItem::Complete {
-                        reason: TerminationReason::TokenLimit,
-                        output: Some(reason),
-                    };
-                    return;
-                }
-                StepRunnerOutcome::Cancelled => {
-                    yield LoopItem::Event(StreamEvent::PlanStepFailed {
-                        step: current_step,
-                        index: current_index,
-                        reason: "step cancelled".to_string(),
-                    });
-                    yield LoopItem::Complete {
-                        reason: TerminationReason::Cancelled,
-                        output: None,
-                    };
-                    return;
-                }
-            }
         }
 
         yield LoopItem::Complete {
@@ -408,6 +411,277 @@ pub(crate) fn run_planned_loop<'a>(
             output: final_output,
         };
     })
+}
+
+fn initial_plan_revision(
+    plan: &TaskPlan,
+    identity: &PlanIdentity,
+    reason_code: &str,
+) -> Result<PlanRevision, String> {
+    let revision = PlanRevision {
+        plan_id: identity.plan_id.clone(),
+        revision_id: identity.plan_revision_id.clone(),
+        parent_revision_id: None,
+        revision: 0,
+        created_at: chrono::Utc::now().to_rfc3339(),
+        trigger_step_record_id: None,
+        decision_id: ulid::Ulid::new().to_string(),
+        safe_reason_codes: vec![reason_code.to_string()],
+        retained_step_ids: Vec::new(),
+        superseded_remaining_step_ids: Vec::new(),
+        remaining_steps: plan
+            .steps
+            .iter()
+            .filter(|step| !step.done)
+            .cloned()
+            .collect(),
+        capability_snapshot_id: None,
+        budget_snapshot: ExecutionBudgetUsage::default(),
+    };
+    revision
+        .validate()
+        .map_err(|err| format!("invalid initial plan revision: {err}"))?;
+    Ok(revision)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn replan_and_build_revision(
+    planner: &Planner,
+    model: &dyn crate::models::traits::ModelClient,
+    active_plan: &TaskPlan,
+    trigger_step_index: usize,
+    trigger_step_title: &str,
+    reason: &str,
+    record: &StepRecord,
+    decision: &PlanDecisionRecord,
+    parent_identity: &PlanIdentity,
+    history: &mut Vec<Message>,
+    cancel_token: CancellationToken,
+) -> Result<(TaskPlan, PlanRevision), LoopItem> {
+    let replacement = replan_after_step_failure(
+        planner,
+        model,
+        &active_plan.goal,
+        trigger_step_title,
+        reason,
+        history,
+        cancel_token,
+    )
+    .await?;
+    let parent_remaining_ids: Vec<_> = active_plan
+        .steps
+        .iter()
+        .skip(trigger_step_index.saturating_add(1))
+        .filter(|step| !step.done)
+        .map(|step| step.id.clone())
+        .collect();
+    let replacement_ids: std::collections::HashSet<_> = replacement
+        .steps
+        .iter()
+        .filter(|step| !step.done)
+        .map(|step| step.id.as_str())
+        .collect();
+    let retained_step_ids = parent_remaining_ids
+        .iter()
+        .filter(|step_id| replacement_ids.contains(step_id.as_str()))
+        .cloned()
+        .collect();
+    let superseded_remaining_step_ids = parent_remaining_ids
+        .into_iter()
+        .filter(|step_id| !replacement_ids.contains(step_id.as_str()))
+        .collect();
+    let child_identity = parent_identity.next_revision();
+    let revision = PlanRevision {
+        plan_id: child_identity.plan_id.clone(),
+        revision_id: child_identity.plan_revision_id.clone(),
+        parent_revision_id: Some(parent_identity.plan_revision_id.clone()),
+        revision: child_identity.revision,
+        created_at: chrono::Utc::now().to_rfc3339(),
+        trigger_step_record_id: Some(record.record_id.clone()),
+        decision_id: decision.decision.decision_id.clone(),
+        safe_reason_codes: decision.decision.safe_reason_codes.clone(),
+        retained_step_ids,
+        superseded_remaining_step_ids,
+        remaining_steps: replacement
+            .steps
+            .iter()
+            .filter(|step| !step.done)
+            .cloned()
+            .collect(),
+        capability_snapshot_id: None,
+        budget_snapshot: ExecutionBudgetUsage::default(),
+    };
+    revision.validate().map_err(|err| LoopItem::Complete {
+        reason: TerminationReason::Error,
+        output: Some(format!("invalid replacement plan revision: {err}")),
+    })?;
+    Ok((replacement, revision))
+}
+
+fn pending_undecided_record<'a>(
+    ledger: &'a StepLedgerState,
+    identity: &PlanIdentity,
+) -> Option<&'a StepRecord> {
+    ledger.step_records.iter().find(|record| {
+        record.plan_id == identity.plan_id
+            && record.plan_revision_id == identity.plan_revision_id
+            && ledger
+                .plan_lifecycle
+                .decision_for_record(&record.record_id)
+                .is_none()
+    })
+}
+
+fn pending_finish_transition<'a>(
+    ledger: &'a StepLedgerState,
+    identity: &PlanIdentity,
+) -> Option<(&'a StepRecord, &'a PlanDecisionRecord)> {
+    ledger
+        .plan_lifecycle
+        .decisions
+        .iter()
+        .rev()
+        .find_map(|decision| {
+            (decision.decision.kind == PlanDecisionKind::Finish)
+                .then(|| {
+                    ledger.step_records.iter().find(|record| {
+                        record.record_id == decision.trigger_step_record_id
+                            && record.plan_id == identity.plan_id
+                            && record.plan_revision_id == identity.plan_revision_id
+                    })
+                })
+                .flatten()
+                .map(|record| (record, decision))
+        })
+}
+
+fn pending_replace_transition<'a>(
+    ledger: &'a StepLedgerState,
+    identity: &PlanIdentity,
+) -> Option<(&'a StepRecord, &'a PlanDecisionRecord)> {
+    ledger
+        .plan_lifecycle
+        .decisions
+        .iter()
+        .rev()
+        .find_map(|decision| {
+            (decision.decision.kind == PlanDecisionKind::ReplaceRemaining
+                && ledger
+                    .plan_lifecycle
+                    .revision_for_trigger(&decision.trigger_step_record_id)
+                    .is_none())
+            .then(|| {
+                ledger.step_records.iter().find(|record| {
+                    record.record_id == decision.trigger_step_record_id
+                        && record.plan_id == identity.plan_id
+                        && record.plan_revision_id == identity.plan_revision_id
+                })
+            })
+            .flatten()
+            .map(|record| (record, decision))
+        })
+}
+
+fn apply_persisted_continue_decisions(
+    plan: &mut TaskPlan,
+    ledger: &StepLedgerState,
+    identity: &PlanIdentity,
+) {
+    let completed_step_ids: Vec<_> = ledger
+        .plan_lifecycle
+        .decisions
+        .iter()
+        .filter(|decision| decision.decision.kind == PlanDecisionKind::Continue)
+        .filter_map(|decision| {
+            ledger.step_records.iter().find(|record| {
+                record.record_id == decision.trigger_step_record_id
+                    && record.plan_id == identity.plan_id
+                    && record.plan_revision_id == identity.plan_revision_id
+                    && matches!(
+                        record.status,
+                        StepRecordStatus::Succeeded | StepRecordStatus::Skipped
+                    )
+            })
+        })
+        .map(|record| record.step_id.clone())
+        .collect();
+    for step_id in completed_step_ids {
+        mark_step_done(plan, &step_id);
+    }
+}
+
+fn has_remaining_steps_after_record(plan: &TaskPlan, step_id: &str) -> bool {
+    plan.steps
+        .iter()
+        .position(|step| step.id == step_id)
+        .is_some_and(|index| index.saturating_add(1) < plan.steps.len())
+}
+
+fn mark_step_done(plan: &mut TaskPlan, step_id: &str) {
+    if let Some(step) = plan.steps.iter_mut().find(|step| step.id == step_id) {
+        step.done = true;
+    }
+    plan.current_step = plan
+        .steps
+        .iter()
+        .position(|step| !step.done)
+        .unwrap_or(plan.steps.len());
+}
+
+fn compatibility_step(plan: &TaskPlan, record: &StepRecord) -> (PlanStep, usize) {
+    plan.steps
+        .iter()
+        .enumerate()
+        .find(|(_, step)| step.id == record.step_id)
+        .map(|(index, step)| (step.clone(), index))
+        .unwrap_or_else(|| {
+            (
+                PlanStep {
+                    id: record.step_id.clone(),
+                    title: format!("planned step {}", record.step_id),
+                    done: false,
+                },
+                plan.current_step,
+            )
+        })
+}
+
+fn record_reason(record: &StepRecord) -> String {
+    record
+        .safe_error_summary
+        .clone()
+        .unwrap_or_else(|| record.summary.clone())
+}
+
+fn finish_transition(
+    decision: &PlanDecisionRecord,
+    record: &StepRecord,
+    final_output: Option<String>,
+) -> (TerminationReason, Option<String>) {
+    let finish_reason = decision
+        .decision
+        .finish_reason
+        .unwrap_or(PlanFinishReason::Failed);
+    let safe_output = || Some(record_reason(record));
+    match finish_reason {
+        PlanFinishReason::Completed => (
+            TerminationReason::Final,
+            final_output.or_else(|| Some(record.summary.clone())),
+        ),
+        PlanFinishReason::BudgetExhausted => (
+            if record.error_code.as_deref() == Some("context_token_limit") {
+                TerminationReason::TokenLimit
+            } else {
+                TerminationReason::StepLimit
+            },
+            safe_output(),
+        ),
+        PlanFinishReason::Cancelled => (TerminationReason::Cancelled, None),
+        PlanFinishReason::Partial
+        | PlanFinishReason::Blocked
+        | PlanFinishReason::Failed
+        | PlanFinishReason::Interrupted => (TerminationReason::Error, safe_output()),
+    }
 }
 
 fn next_attempt(ledger: &StepLedgerState, identity: &PlanIdentity, step_id: &str) -> u32 {
@@ -468,7 +742,7 @@ fn terminal_step_record(
                 Some("Required tool permission was denied.".to_string()),
             )
         }
-        StepRunnerOutcome::Failed { replan, .. } => (
+        StepRunnerOutcome::Failed { reason, replan } => (
             StepRecordStatus::Failed,
             if *replan {
                 "Step failed; the runtime may replace the remaining plan.".to_string()
@@ -476,22 +750,38 @@ fn terminal_step_record(
                 "Step failed and cannot continue safely.".to_string()
             },
             StepCompletionBasis::RuntimeFailure,
-            Some("step_runtime_failure".to_string()),
-            Some("The planned step ended with a runtime or model failure.".to_string()),
+            Some(
+                if *replan {
+                    RECOVERABLE_STEP_FAILURE_CODE
+                } else {
+                    "step_runtime_failure"
+                }
+                .to_string(),
+            ),
+            Some(bounded_step_summary(
+                reason,
+                "The planned step ended with a runtime or model failure.",
+            )),
         ),
-        StepRunnerOutcome::BudgetExhausted { .. } => (
+        StepRunnerOutcome::BudgetExhausted { reason } => (
             StepRecordStatus::BudgetExhausted,
             "Step stopped after exhausting its model-turn budget.".to_string(),
             StepCompletionBasis::RuntimeFailure,
             Some("step_model_turn_budget_exhausted".to_string()),
-            Some("The configured per-step model-turn budget was exhausted.".to_string()),
+            Some(bounded_step_summary(
+                reason,
+                "The configured per-step model-turn budget was exhausted.",
+            )),
         ),
-        StepRunnerOutcome::TokenLimit { .. } => (
+        StepRunnerOutcome::TokenLimit { reason } => (
             StepRecordStatus::BudgetExhausted,
             "Step stopped because the context token limit was exceeded.".to_string(),
             StepCompletionBasis::RuntimeFailure,
             Some("context_token_limit".to_string()),
-            Some("The configured context token limit was exceeded.".to_string()),
+            Some(bounded_step_summary(
+                reason,
+                "The configured context token limit was exceeded.",
+            )),
         ),
         StepRunnerOutcome::Cancelled => (
             StepRecordStatus::Cancelled,

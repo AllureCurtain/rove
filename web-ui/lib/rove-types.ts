@@ -58,6 +58,59 @@ export interface StepRecord {
   supersedes_record_id?: string;
 }
 
+export interface ExecutionBudgetUsage {
+  plan_steps: number;
+  step_attempts: number;
+  model_turns: number;
+  tool_calls: number;
+  plan_revisions: number;
+  wall_time_ms: number;
+  total_tokens: number;
+  cost_microunits: number;
+}
+
+export type PlanDecisionKind = "continue" | "replace_remaining" | "finish";
+
+export type PlanFinishReason =
+  | "completed"
+  | "partial"
+  | "blocked"
+  | "budget_exhausted"
+  | "failed"
+  | "cancelled"
+  | "interrupted";
+
+export interface PlanDecision {
+  decision_id: string;
+  kind: PlanDecisionKind;
+  safe_reason_codes?: string[];
+  safe_summary: string;
+  remaining_work_requirements?: string[];
+  finish_reason?: PlanFinishReason;
+}
+
+export interface PlanDecisionRecord {
+  trigger_step_record_id: string;
+  decided_at: string;
+  decision: PlanDecision;
+}
+
+export interface PlanRevision {
+  plan_id: string;
+  revision_id: string;
+  parent_revision_id?: string;
+  revision: number;
+  created_at: string;
+  trigger_step_record_id?: string;
+  decision_id: string;
+  safe_reason_codes?: string[];
+  retained_step_ids?: string[];
+  superseded_remaining_step_ids?: string[];
+  remaining_steps?: PlanStep[];
+  capability_snapshot_id?: string;
+  budget_snapshot: ExecutionBudgetUsage;
+}
+
 export type PromptCompactionMode =
   | "none"
   | "deterministic"
@@ -174,6 +227,7 @@ export type StreamEvent =
       plan_id?: string;
       plan_revision_id?: string;
       revision?: number;
+      plan_revision?: PlanRevision;
     }
   | {
       type: "plan_step_started";
@@ -199,6 +253,15 @@ export type StreamEvent =
   | {
       type: "step_result";
       record: StepRecord;
+    }
+  | {
+      type: "plan_decision";
+      record: PlanDecisionRecord;
+    }
+  | {
+      type: "plan_revised";
+      plan: TaskPlan;
+      revision: PlanRevision;
     }
   | {
       type: "prompt_compacted";
@@ -338,6 +401,8 @@ export const STREAM_EVENT_NAMES = [
   "plan_step_completed",
   "plan_step_failed",
   "step_result",
+  "plan_decision",
+  "plan_revised",
   "prompt_compacted",
   "memory_flushed",
   "prompt_built",

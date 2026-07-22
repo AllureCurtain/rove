@@ -288,7 +288,7 @@ fn render_repl_update(
         // The live stdin provider owns the prompt. Rendering the canonical
         // event here would print the same question twice in CLI modes.
         RunViewUpdate::InputNeeded { .. } => None,
-        RunViewUpdate::PlanCreated { plan: new_plan } => {
+        RunViewUpdate::PlanCreated { plan: new_plan, .. } => {
             render_state.plan_step_count = new_plan.steps.len();
             render_state.printed_plan = true;
             if is_repl(options) {
@@ -298,6 +298,38 @@ fn render_repl_update(
                 }
             } else {
                 eprintln!("\n  [plan] {} steps", new_plan.steps.len());
+            }
+            None
+        }
+        RunViewUpdate::PlanDecision { record } => {
+            eprintln!(
+                "  [plan decision] {} · {}",
+                plan_decision_kind_label(record.decision.kind),
+                truncate(&record.decision.safe_summary, 200)
+            );
+            None
+        }
+        RunViewUpdate::PlanRevised {
+            plan: new_plan,
+            revision,
+        } => {
+            render_state.plan_step_count = new_plan.steps.len();
+            render_state.printed_plan = true;
+            if is_repl(options) {
+                eprintln!(
+                    "\nPlan revision {} · {}",
+                    revision.revision,
+                    count_label(new_plan.steps.len(), "step")
+                );
+                for (index, step) in new_plan.steps.iter().enumerate() {
+                    eprintln!("  {}. {}", index + 1, step.title);
+                }
+            } else {
+                eprintln!(
+                    "\n  [plan revision {}] {} steps",
+                    revision.revision,
+                    new_plan.steps.len()
+                );
             }
             None
         }
@@ -377,6 +409,14 @@ fn repl_update_label(update: &RunViewUpdate) -> Option<String> {
             Some(format!("Context · flushed {note_count} memory note(s)"))
         }
         _ => None,
+    }
+}
+
+fn plan_decision_kind_label(kind: crate::core::execution::PlanDecisionKind) -> &'static str {
+    match kind {
+        crate::core::execution::PlanDecisionKind::Continue => "continue",
+        crate::core::execution::PlanDecisionKind::ReplaceRemaining => "replace remaining",
+        crate::core::execution::PlanDecisionKind::Finish => "finish",
     }
 }
 
@@ -574,6 +614,7 @@ mod tests {
                     current_step: 0,
                 },
                 identity: Default::default(),
+                plan_revision: None,
             },
             StreamEvent::ToolCallStarted {
                 call_id,
