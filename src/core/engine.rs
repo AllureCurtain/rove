@@ -485,10 +485,6 @@ impl Engine {
     }
 }
 
-pub(crate) fn planned_step_failure_message(step_title: &str, reason: &str) -> String {
-    format!("Planned step failed: {step_title}. Reason: {reason}. Re-plan the remaining work.")
-}
-
 struct CompletedRunContext {
     session_id: SessionId,
     job_id: JobId,

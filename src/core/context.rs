@@ -1,8 +1,7 @@
 use crate::core::prompt_metadata::{PromptBuildMetadata, prompt_hash, stable_hash};
 use crate::core::types::Message;
 
-const MESSAGE_OVERHEAD_TOKENS: usize = 4;
-const CHARS_PER_TOKEN: usize = 4;
+pub use crate::core::prompt_metadata::{estimate_message_tokens, estimate_messages_tokens};
 
 /// Manages prompt construction and context budget.
 ///
@@ -333,36 +332,6 @@ pub fn compact_summary_message(summary: &str) -> Message {
 
 pub fn durable_memory_message(index: &str) -> Message {
     Message::system(format!("Durable memory:\n{}", index.trim_end()))
-}
-
-pub fn estimate_messages_tokens(messages: &[Message]) -> usize {
-    messages.iter().map(estimate_message_tokens).sum()
-}
-
-pub fn estimate_message_tokens(message: &Message) -> usize {
-    let tool_call_tokens: usize = message
-        .tool_calls
-        .iter()
-        .map(|tool_call| {
-            estimate_text_tokens(&tool_call.id)
-                + estimate_text_tokens(&tool_call.name)
-                + estimate_text_tokens(&tool_call.args.to_string())
-        })
-        .sum();
-    let tool_call_id_tokens = message
-        .tool_call_id
-        .as_deref()
-        .map(estimate_text_tokens)
-        .unwrap_or(0);
-
-    MESSAGE_OVERHEAD_TOKENS
-        + estimate_text_tokens(&message.content)
-        + tool_call_tokens
-        + tool_call_id_tokens
-}
-
-fn estimate_text_tokens(text: &str) -> usize {
-    text.chars().count().div_ceil(CHARS_PER_TOKEN).max(1)
 }
 
 fn prompt_target_limit(budget: ContextBudget, required_tokens: usize) -> usize {

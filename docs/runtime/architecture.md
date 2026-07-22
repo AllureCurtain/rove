@@ -10,9 +10,11 @@ defined at Workspace scope. `rove-core` is the in-memory embedding layer and
 depends only on `rove-models`. The first verified `rove-runtime` slice depends
 only on those two packages and owns runtime identity, task/execution contracts,
 Workspace/path safety, prompt metadata, and approval/input provider contracts.
-Persistent coordination, state, memory, official tools, MCP/RAG, durable events,
-and first-party apps still remain at the transitional root paths documented
-below.
+The same crate now also owns canonical `StreamEvent` and StateStore, trace,
+task/report artifacts, SQLite indexing, repair, cleanup, and resume. Persistent
+coordination, context/compaction, memory, official tools, MCP/RAG, durable-event
+translation, and first-party apps still remain at the transitional root paths
+documented below.
 
 ## Shape
 
@@ -20,7 +22,7 @@ below.
 CLI / TUI / API / Web
     -> root Engine compatibility facade
         -> ContextManager
-        -> rove-runtime identity / task / execution / workspace contracts
+        -> rove-runtime identity / execution / workspace / state / StreamEvent
         -> rove-core model turn / ToolRegistry contracts
             -> rove-models ModelClient / RoutingModelClient
         -> runtime Executor / approval and input adapters
@@ -82,17 +84,19 @@ cannot supply trustworthy interaction events fail closed.
 - `rove-runtime` owns `SessionId`/`JobId`/`RunId`, `RunRequest`, `TaskState`,
   prompt checkpoints, execution-policy and plan-ledger data, Workspace/path
   enforcement, prompt metadata/runtime identity, approval/input provider
-  contracts, and the task-local input registration context. Its only local
-  dependencies are `rove-models` and `rove-core`.
+  contracts, the task-local input registration context, canonical
+  `StreamEvent`, and state/trace/artifact/SQLite/repair/resume services. Its
+  only local dependencies are `rove-models` and `rove-core`.
 - Model-visible `rove_models::ToolSchema` is separate from operational
   `rove_core::ToolDescriptor`; provider payloads receive only the model schema.
 - Persistent tool execution still passes through the root `Executor` and
   tool-turn coordinator. Runtime-specific Workspace, Memory, policy, and
   input services are attached as a typed invocation extension rather than
   fields on the minimal core `ToolContext`.
-- The event chain is `ModelEvent -> AgentEvent -> StreamEvent`. The root
-  compatibility model-turn adapter performs the synchronous durable event
-  translation today; only `StreamEvent` is persisted or exposed by apps.
+- The event chain is `ModelEvent -> AgentEvent -> StreamEvent`.
+  `rove-runtime` owns the canonical `StreamEvent` type; the root compatibility
+  model-turn adapter still performs the synchronous translation today. Only
+  `StreamEvent` is persisted or exposed by apps.
 - Files remain the readable source artifacts; SQLite is the query/replay index.
 - A `step_result` trace event is the append-only terminal fact. The task-state
   ledger and report records are projections and must not overwrite prior

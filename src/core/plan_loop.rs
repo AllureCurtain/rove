@@ -3,11 +3,11 @@ use futures::StreamExt;
 use futures::stream::BoxStream;
 use tokio_util::sync::CancellationToken;
 
-use crate::core::engine::planned_step_failure_message;
 use crate::core::events::StreamEvent;
 use crate::core::execution::{
     ExecutionBudgetUsage, PlanDecisionKind, PlanDecisionRecord, PlanFinishReason, PlanIdentity,
     PlanRevision, StepAttempt, StepCompletionBasis, StepLedgerState, StepRecord, StepRecordStatus,
+    planned_step_failure_message,
 };
 use crate::core::plan_evaluator::{RECOVERABLE_STEP_FAILURE_CODE, evaluate_step_record};
 use crate::core::planner::Planner;

@@ -156,9 +156,9 @@ bearer token server-side and does not expose it to browser JavaScript.
 | Benchmarks | `src/bin/rove-bench.rs`, `benchmarks/` | Deterministic no-network benchmark tasks with artifact-path reports. |
 | Web | `web-ui/` | Next.js workbench that consumes the API and SSE job stream. |
 | Agent core | `core/` | Independent `rove-core` crate: in-memory Agent/model/tool loop, typed core events, cancellation/control, policy hooks, tool contracts, and registry. |
-| Runtime contracts | `runtime/` | Independent `rove-runtime` crate: run/task identity, execution and ledger contracts, Workspace/path safety, prompt/runtime identity, and approval/input provider contracts. |
-| Persistent runtime (transitional) | `src/core/` | Existing Engine facade, context/compaction, planning coordination, runtime tool turns, and durable events pending later `rove-runtime` extraction slices. |
-| State | `src/state/` | File artifacts under `.rove/runs/` plus SQLite indexing in `.rove/state.sqlite`. |
+| Persistent runtime | `runtime/` | Independent `rove-runtime` crate: run/task and execution contracts, Workspace/path safety, canonical events, StateStore, trace/task/report artifacts, SQLite, repair, and resume. |
+| Persistent coordinator (transitional) | `src/core/` | Existing Engine facade, context/compaction, planning coordination, runtime tool turns, and durable event translation pending later `rove-runtime` extraction slices. |
+| State compatibility | `src/state/` | Temporary re-exports of the state implementation now owned by `runtime/src/state/`. |
 | Models | `models/` | Independent `rove-models` crate: normalized protocol, OpenAI-compatible chat completions, OpenAI Responses, Anthropic, Ollama, fake provider, routing, and health. Product config assembly remains temporarily in `src/models/factory.rs`. |
 | Tools | `src/tools/` | Filesystem, shell, memory, request input, MCP proxy, and optional RAG tools. |
 | Memory | `src/memory/` | Session summaries and bounded durable memory recall. |

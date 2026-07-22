@@ -17,6 +17,10 @@ pub const EXECUTION_POLICY_VERSION: u32 = 1;
 /// is still being introduced.
 pub const DEFAULT_MAX_MODEL_TURNS_PER_STEP: u32 = 4;
 
+pub fn planned_step_failure_message(step_title: &str, reason: &str) -> String {
+    format!("Planned step failed: {step_title}. Reason: {reason}. Re-plan the remaining work.")
+}
+
 /// Explicit runtime execution strategies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

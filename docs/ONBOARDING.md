@@ -16,9 +16,11 @@ Workspace contains the existing root `rove` package plus the independent
 the default member. `rove-core` is the implemented in-memory embedding layer.
 `rove-runtime` currently owns the verified foundation slice for identity,
 resumable task/execution contracts, Workspace/path safety, prompt/runtime
-identity, and approval/input contracts. Persistent coordination, state,
-memory, official tools, MCP/RAG, and app packages remain in the compatibility
-root until their later migration slices move code, tests, and docs together.
+identity, approval/input contracts, canonical events, and durable
+state/trace/artifact/SQLite/repair/resume services. Persistent coordination,
+context/compaction, memory, official tools, MCP/RAG, and app packages remain in
+the compatibility root until their later migration slices move code, tests,
+and docs together.
 
 ## 1. What rove is
 
@@ -195,9 +197,9 @@ OnCall reference Agent.
 | RAG index | indexing binary under `src/bin/` | `src/tools/rag/` |
 | Web | `web-ui/` | API proxy, state hooks, components, tests |
 | Agent core | `core/` | in-memory Agent/model/tool loop, control, core events, contracts |
-| Runtime contracts | `runtime/` | IDs, task/execution data, workspace boundary, runtime identity, approval/input contracts |
-| Persistent coordinator | `src/core/` | transitional Engine, context, planning coordination, tool turns, durable events |
-| State | `src/state/` | store, trace, task state, report/artifacts |
+| Persistent runtime | `runtime/` | runtime contracts/events, workspace boundary, StateStore, trace/artifacts/SQLite, repair and resume |
+| Persistent coordinator | `src/core/` | transitional Engine, context, planning coordination, tool turns, durable event translation |
+| State compatibility | `src/state/` | temporary re-exports of `runtime/src/state/` |
 | Models | `models/` | independent protocol, provider adapters, routing, fake provider |
 | Provider assembly | `src/models/factory.rs` | transitional AppConfig-driven construction |
 | Tools | `src/tools/` | local tools, shell, memory, MCP, RAG |
@@ -226,7 +228,7 @@ CLI/API/benchmark request
 When tracing a bug, follow both:
 
 1. model/tool mechanics in `core/src/`, runtime contracts in `runtime/src/`, and persistent control flow in `src/core/`;
-2. emitted events and persisted state implementation in `src/state/`.
+2. canonical events and persisted state implementation in `runtime/src/`.
 
 Do not debug only from the final assistant text. It is a projection, not the
 whole execution history.
@@ -293,7 +295,7 @@ layout centered on:
       ...
 ```
 
-Exact filenames can evolve; use `src/state/` and current runtime docs as truth.
+Exact filenames can evolve; use `runtime/src/state/` and current runtime docs as truth.
 
 Semantics:
 

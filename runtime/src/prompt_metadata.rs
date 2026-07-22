@@ -4,6 +4,9 @@ use crate::workspace::Workspace;
 use rove_core::ToolDescriptor as ToolSchema;
 use rove_models::Message;
 
+const MESSAGE_OVERHEAD_TOKENS: usize = 4;
+const CHARS_PER_TOKEN: usize = 4;
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PromptBuildMetadata {
     pub prompt_hash: String,
@@ -25,6 +28,36 @@ pub fn stable_hash(value: &str) -> String {
 
 pub fn prompt_hash(messages: &[Message]) -> String {
     stable_hash(&serde_json::to_string(messages).unwrap_or_default())
+}
+
+pub fn estimate_messages_tokens(messages: &[Message]) -> usize {
+    messages.iter().map(estimate_message_tokens).sum()
+}
+
+pub fn estimate_message_tokens(message: &Message) -> usize {
+    let tool_call_tokens: usize = message
+        .tool_calls
+        .iter()
+        .map(|tool_call| {
+            estimate_text_tokens(&tool_call.id)
+                + estimate_text_tokens(&tool_call.name)
+                + estimate_text_tokens(&tool_call.args.to_string())
+        })
+        .sum();
+    let tool_call_id_tokens = message
+        .tool_call_id
+        .as_deref()
+        .map(estimate_text_tokens)
+        .unwrap_or(0);
+
+    MESSAGE_OVERHEAD_TOKENS
+        + estimate_text_tokens(&message.content)
+        + tool_call_tokens
+        + tool_call_id_tokens
+}
+
+fn estimate_text_tokens(text: &str) -> usize {
+    text.chars().count().div_ceil(CHARS_PER_TOKEN).max(1)
 }
 
 pub fn tool_signature(tools: &[ToolSchema]) -> String {

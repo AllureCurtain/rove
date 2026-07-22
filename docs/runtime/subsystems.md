@@ -39,10 +39,12 @@ tool stubs for those kinds.
 
 ## State, Job, And Run
 
-`StateStore` coordinates file artifacts and the SQLite `StateIndex`.
-`TaskState`, `PromptCheckpoint`, IDs, and lifecycle ledger data are owned by
-`rove-runtime`; the store/SQLite/artifact implementations remain in
-transitional `src/state/` during the next extraction slice.
+`StateStore`, file artifacts, SQLite `StateIndex`, trace/report writers,
+repair, cleanup, and resume are implemented in `runtime/src/state/`.
+`TaskState`, `PromptCheckpoint`, IDs, lifecycle ledger data, and canonical
+`StreamEvent` are owned by the same crate. Transitional `src/state/` and
+`src/core/events.rs` modules only re-export these contracts for existing root
+callers.
 
 Files:
 

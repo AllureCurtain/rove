@@ -11,12 +11,15 @@ The current extracted slice contains:
 - execution policy and plan-ledger data contracts;
 - workspace detection and path-boundary enforcement;
 - prompt metadata and runtime identity evaluation;
-- approval and request-input provider contracts.
+- approval and request-input provider contracts;
+- canonical durable `StreamEvent`;
+- StateStore, trace, task/report artifacts, SQLite index, repair, cleanup, and
+  resume.
 
-Persistent coordination, state storage, memory, built-in tools, MCP/RAG, and
-the durable event loop still live in the root package until their later Phase 5
-slices are moved. This crate must not depend on CLI, API, benchmark, or Web
-packages.
+Persistent coordination, context/compaction, memory, built-in tools, MCP/RAG,
+and `AgentEvent -> StreamEvent` translation still live in the root package
+until their later Phase 5 slices are moved. This crate must not depend on CLI,
+API, benchmark, or Web packages.
 
 Local project dependencies:
 
@@ -41,6 +44,6 @@ Focused verification:
 cargo test -p rove-runtime
 ```
 
-Compatibility status: pre-1.0 and transitional. The root `rove::core::*`
-module paths re-export these contracts until application crates and tests have
-migrated to the new package.
+Compatibility status: pre-1.0 and transitional. The root `rove::core::*` and
+`rove::state::*` module paths re-export these contracts until application
+crates and tests have migrated to the new package.
