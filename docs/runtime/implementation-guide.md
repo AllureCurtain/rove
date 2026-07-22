@@ -82,7 +82,7 @@ the task root so defaults resolve to:
 CLI runs create or reuse a task workspace with:
 
 ```powershell
-cargo run -- --task-workspace invoice-check --task-base .rove/tasks --model fake "review the files in this task"
+cargo run -p rove-cli -- --task-workspace invoice-check --task-base .rove/tasks --model fake "review the files in this task"
 ```
 
 If `--task-base` is omitted, the CLI uses `<configured state_dir>/tasks` from
@@ -174,7 +174,7 @@ Remote API binding is rejected unless token auth is configured or `api.unsafe_re
 Useful commands:
 
 ```powershell
-cargo run -- dump-config
+cargo run -p rove-cli -- dump-config
 ```
 
 Relevant code:
@@ -221,30 +221,30 @@ High-level flow in `src/main.rs`:
 Interactive REPL smoke command:
 
 ```powershell
-cargo run -- --model fake
+cargo run -p rove-cli -- --model fake
 ```
 
 Interactive REPL with an initial prompt:
 
 ```powershell
-cargo run -- --model fake "echo hello from rove"
+cargo run -p rove-cli -- --model fake "echo hello from rove"
 ```
 
 Non-interactive exec smoke command:
 
 ```powershell
-cargo run -- exec --model fake "echo hello from rove"
+cargo run -p rove-cli -- exec --model fake "echo hello from rove"
 ```
 
 The CLI accepts unquoted multi-word initial prompts and exec prompts by joining
 the trailing message words:
 
 ```powershell
-cargo run -- --model fake inspect this workspace
-cargo run -- exec --model fake inspect this workspace
+cargo run -p rove-cli -- --model fake inspect this workspace
+cargo run -p rove-cli -- exec --model fake inspect this workspace
 ```
 
-`Cargo.toml` sets `default-run = "rove"`, so plain `cargo run -- ...` uses the CLI binary.
+`Cargo.toml` sets `default-run = "rove"`, so plain `cargo run -p rove-cli -- ...` uses the CLI binary.
 
 Running `rove` with no task enters the rich scrollback terminal REPL in the
 current terminal. Startup prints the active workspace, model, provider, state
@@ -277,7 +277,7 @@ loop or persistence format.
 The current full-screen TUI is available with:
 
 ```powershell
-cargo run -- tui --model fake
+cargo run -p rove-cli -- tui --model fake
 ```
 
 `rove tui` enters raw mode and the alternate screen through the RAII
@@ -1006,9 +1006,9 @@ Startup and maintenance behavior:
 Useful commands:
 
 ```powershell
-cargo run --bin rove -- sessions
-cargo run --bin rove -- state repair
-cargo run --bin rove -- state cleanup
+cargo run -p rove-cli -- sessions
+cargo run -p rove-cli -- state repair
+cargo run -p rove-cli -- state cleanup
 ```
 
 Relevant code:
@@ -1162,7 +1162,7 @@ Main artifact paths are resolved under the configured `state.state_dir`; the def
 Useful commands:
 
 ```powershell
-cargo run --features rag --bin rove-index -- --deterministic -C .
+cargo run -p rove-cli --features rag --bin rove-index -- --deterministic -C .
 cargo test --features rag --test cli_index deterministic_index_run_writes_manifest -- --exact
 ```
 
@@ -1275,7 +1275,7 @@ Deterministic local benchmark checks:
 
 ```powershell
 cargo test --test bench
-cargo run --bin rove-bench -- --suite benchmarks/agent-smoke.json --output-dir .rove/bench
+cargo run -p rove-bench -- --suite benchmarks/agent-smoke.json --output-dir .rove/bench
 ```
 
 `rove-bench` reads JSON benchmark task definitions, creates isolated local

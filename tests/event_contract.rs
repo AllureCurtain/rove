@@ -11,16 +11,24 @@
 //! matching Web type. These tests fail when the Rust and Web event surfaces diverge,
 //! turning a silent contract drift into a red build.
 
+use std::path::{Path, PathBuf};
+
+fn workspace_root() -> PathBuf {
+    let mut root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    root.pop();
+    root
+}
+
+fn workspace_path(rel: impl AsRef<Path>) -> PathBuf {
+    workspace_root().join(rel)
+}
+
 const EVENTS_RS: &str = "runtime/src/events.rs";
-const COMPAT_EVENTS_RS: &str = "src/core/events.rs";
 const WEB_TYPES_TS: &str = "web-ui/lib/rove-types.ts";
 
 /// Event names returned by `StreamEvent::event_name` in source order.
-///
-/// Scans the `event_name` function body for `=> "..."` match arms. Because the
-/// match is exhaustive (enforced by the compiler), this is the complete set.
 fn rust_event_names() -> Vec<String> {
-    let source = std::fs::read_to_string(EVENTS_RS)
+    let source = std::fs::read_to_string(workspace_path(EVENTS_RS))
         .unwrap_or_else(|err| panic!("failed to read {EVENTS_RS}: {err}"));
     let fn_start = source
         .find("fn event_name")
@@ -49,7 +57,6 @@ fn web_union_names() -> Vec<String> {
         .find("export type StreamEvent =")
         .expect("rove-types.ts should declare export type StreamEvent");
     let block = &source[start..];
-    // The union ends where the next top-level declaration begins.
     let end = block.find("\n\nexport ").unwrap_or(block.len());
     block[..end]
         .lines()
@@ -62,11 +69,10 @@ fn web_union_names() -> Vec<String> {
 }
 
 fn read_web_types() -> String {
-    std::fs::read_to_string(WEB_TYPES_TS)
+    std::fs::read_to_string(workspace_path(WEB_TYPES_TS))
         .unwrap_or_else(|err| panic!("failed to read {WEB_TYPES_TS}: {err}"))
 }
 
-/// Extracts string literals from a TS array literal that follows `marker`.
 fn extract_ts_string_array(source: &str, marker: &str) -> Vec<String> {
     let start = source
         .find(marker)
@@ -82,6 +88,13 @@ fn extract_ts_string_array(source: &str, marker: &str) -> Vec<String> {
         .map(|item| item.trim().trim_matches(|c| c == '"' || c == '\''))
         .filter(|item| !item.is_empty())
         .map(str::to_string)
+        .collect()
+}
+
+fn difference(left: &[String], right: &[String]) -> Vec<String> {
+    left.iter()
+        .filter(|item| !right.contains(item))
+        .cloned()
         .collect()
 }
 
@@ -107,17 +120,6 @@ fn rust_and_web_stream_event_names_match() {
 }
 
 #[test]
-fn root_event_module_reexports_the_runtime_contract() {
-    let source = std::fs::read_to_string(COMPAT_EVENTS_RS)
-        .unwrap_or_else(|err| panic!("failed to read {COMPAT_EVENTS_RS}: {err}"));
-
-    assert!(
-        source.contains("pub use rove_runtime::events::*;"),
-        "the root compatibility facade must re-export rove-runtime StreamEvent"
-    );
-}
-
-#[test]
 fn web_stream_event_union_matches_name_list() {
     let names = web_const_names();
     let union = web_union_names();
@@ -130,9 +132,4 @@ fn web_stream_event_union_matches_name_list() {
         difference(&names, &union),
         difference(&union, &names),
     );
-}
-
-/// Names present in `a` but not in `b`, preserving order.
-fn difference(a: &[String], b: &[String]) -> Vec<String> {
-    a.iter().filter(|name| !b.contains(name)).cloned().collect()
 }

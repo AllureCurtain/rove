@@ -1,0 +1,104 @@
+[package]
+name = "rove-integration-tests"
+version.workspace = true
+edition.workspace = true
+description = "Cross-package integration and compatibility contracts for Rove"
+publish = false
+
+[features]
+default = []
+rag = ["rove-cli/rag"]
+
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+axum.workspace = true
+chrono.workspace = true
+futures.workspace = true
+reqwest.workspace = true
+rove-api.workspace = true
+rove-app-bootstrap.workspace = true
+rove-bench.workspace = true
+rove-cli.workspace = true
+rove-core.workspace = true
+rove-models.workspace = true
+rove-runtime.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["full", "test-util"] }
+tokio-stream.workspace = true
+tokio-util.workspace = true
+tower = { workspace = true, features = ["util"] }
+tracing.workspace = true
+ulid.workspace = true
+
+[[test]]
+name = "api"
+path = "api.rs"
+[[test]]
+name = "artifact_compatibility"
+path = "artifact_compatibility.rs"
+[[test]]
+name = "bench"
+path = "bench.rs"
+[[test]]
+name = "cli_config"
+path = "cli_config.rs"
+[[test]]
+name = "cli_index"
+path = "cli_index.rs"
+[[test]]
+name = "cli_repl"
+path = "cli_repl.rs"
+[[test]]
+name = "cli_sessions"
+path = "cli_sessions.rs"
+[[test]]
+name = "code_hygiene"
+path = "code_hygiene.rs"
+[[test]]
+name = "e2e"
+path = "e2e.rs"
+[[test]]
+name = "embedding_contract"
+path = "embedding_contract.rs"
+[[test]]
+name = "event_contract"
+path = "event_contract.rs"
+[[test]]
+name = "mcp"
+path = "mcp.rs"
+[[test]]
+name = "memory_layered"
+path = "memory_layered.rs"
+[[test]]
+name = "memory_tool"
+path = "memory_tool.rs"
+[[test]]
+name = "model_factory"
+path = "model_factory.rs"
+[[test]]
+name = "provider_smoke"
+path = "provider_smoke.rs"
+[[test]]
+name = "rag"
+path = "rag.rs"
+[[test]]
+name = "rag_default"
+path = "rag_default.rs"
+[[test]]
+name = "request_input_tool"
+path = "request_input_tool.rs"
+[[test]]
+name = "tool_safety"
+path = "tool_safety.rs"
+[[test]]
+name = "workspace_architecture"
+path = "workspace_architecture.rs"
+[[test]]
+name = "workspace_product"
+path = "workspace_product.rs"
+

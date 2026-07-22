@@ -1,6 +1,6 @@
 #![cfg(feature = "rag")]
 
-use rove::tools::rag::{
+use rove_cli::rag::{
     ChunkingManifest, DeterministicEmbedder, EmbeddingManifest, IndexManifest, IndexedFile,
     ManifestChunk, RagIndex, RagPromptService, RetrieveKind, RetrievedChunk,
 };
@@ -73,8 +73,8 @@ fn rag_prompt_service_formats_evidence_boundary() {
 
 #[test]
 fn code_aware_chunker_keeps_rust_functions_and_tests_coherent() {
-    use rove::tools::rag::ParsedDocument;
-    use rove::tools::rag::ingest::chunking::{ChunkingStrategy, CodeAwareChunker};
+    use rove_cli::rag::ParsedDocument;
+    use rove_cli::rag::ingest::chunking::{ChunkingStrategy, CodeAwareChunker};
 
     let document = ParsedDocument {
         path: "src/lib.rs".to_string(),
@@ -340,12 +340,12 @@ async fn path_scoped_channel_prefers_matching_path_hint() {
 
 #[tokio::test]
 async fn rag_tool_output_contains_query_metadata_and_results() {
-    use rove::core::types::ApprovalPolicy;
-    use rove::core::workspace::Workspace;
-    use rove::memory::paths::MemoryPaths;
-    use rove::tools::rag::RagRetrieveTool;
-    use rove::tools::runtime_context::runtime_tool_context;
-    use rove::tools::traits::Tool;
+    use rove_cli::rag::RagRetrieveTool;
+    use rove_core::Tool;
+    use rove_runtime::memory::paths::MemoryPaths;
+    use rove_runtime::tools::runtime_context::runtime_tool_context;
+    use rove_runtime::types::ApprovalPolicy;
+    use rove_runtime::workspace::Workspace;
     use tokio_util::sync::CancellationToken;
 
     let tmp = tempfile::TempDir::new().unwrap();
@@ -361,7 +361,7 @@ async fn rag_tool_output_contains_query_metadata_and_results() {
 
     let workspace = Workspace::detect(tmp.path()).unwrap();
     let ctx = runtime_tool_context(
-        rove::core::types::CallId::new(),
+        rove_runtime::types::CallId::new(),
         &workspace,
         MemoryPaths::from_workspace(&workspace, 8),
         ApprovalPolicy::Auto,
@@ -399,12 +399,12 @@ async fn rag_tool_output_contains_query_metadata_and_results() {
 
 #[tokio::test]
 async fn rag_retrieval_reads_from_configured_state_dir() {
-    use rove::core::types::ApprovalPolicy;
-    use rove::core::workspace::{Workspace, WorkspaceKind};
-    use rove::memory::paths::MemoryPaths;
-    use rove::tools::rag::RagRetrieveTool;
-    use rove::tools::runtime_context::runtime_tool_context;
-    use rove::tools::traits::Tool;
+    use rove_cli::rag::RagRetrieveTool;
+    use rove_core::Tool;
+    use rove_runtime::memory::paths::MemoryPaths;
+    use rove_runtime::tools::runtime_context::runtime_tool_context;
+    use rove_runtime::types::ApprovalPolicy;
+    use rove_runtime::workspace::{Workspace, WorkspaceKind};
     use tokio_util::sync::CancellationToken;
 
     let tmp = tempfile::TempDir::new().unwrap();
@@ -427,7 +427,7 @@ async fn rag_retrieval_reads_from_configured_state_dir() {
         .unwrap();
 
     let ctx = runtime_tool_context(
-        rove::core::types::CallId::new(),
+        rove_runtime::types::CallId::new(),
         &workspace,
         MemoryPaths::from_workspace(&workspace, 8),
         ApprovalPolicy::Auto,

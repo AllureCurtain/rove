@@ -1,6 +1,6 @@
 # Rove Modular Workspace Migration Plan - 2026-07-22
 
-> Status: **In Progress / Phase 6 App Packages Extracted**
+> Status: **In Progress / Phase 7 Virtual Workspace Complete**
 >
 > Design source:
 > [`../design/2026-07-22-modular-workspace-architecture.md`](../design/2026-07-22-modular-workspace-architecture.md)
@@ -515,6 +515,15 @@ Requirements:
 - app shutdown or client disconnection does not redefine durable runtime state.
 
 ### Phase 7: Rehome Tests And Remove The Root Package
+
+Current verified progress:
+
+- Root package removed; root `Cargo.toml` is a virtual Workspace with
+  `default-members = ["apps/cli"]`.
+- Cross-package tests live in `tests/` as `rove-integration-tests` and import
+  package crates directly (`rove-runtime`, `rove-app-bootstrap`, apps).
+- CLI binary compatibility for integration tests resolves `rove` from the
+  workspace target directory when `CARGO_BIN_EXE_rove` is absent.
 
 Goal: make package ownership enforce the architecture.
 

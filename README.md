@@ -25,14 +25,14 @@ Browser/Desktop workspaces, hosted multi-user identity, distributed rate limitin
 Start the interactive terminal REPL without network credentials:
 
 ```bash
-cargo run -- --model fake
+cargo run -p rove-cli -- --model fake
 ```
 
 Start the full-screen TUI without network credentials. This command requires
 an interactive terminal:
 
 ```bash
-cargo run -- tui --model fake
+cargo run -p rove-cli -- tui --model fake
 ```
 
 Approval and input modals additionally require reliable key events. Non-Windows
@@ -59,13 +59,13 @@ yet include native ConPTY automation; that skip is not a passing result.
 Start the same REPL with an initial prompt:
 
 ```bash
-cargo run -- --model fake "echo hello from rove"
+cargo run -p rove-cli -- --model fake "echo hello from rove"
 ```
 
 Run a non-interactive exec prompt and exit:
 
 ```bash
-cargo run -- exec --model fake "echo hello from rove"
+cargo run -p rove-cli -- exec --model fake "echo hello from rove"
 ```
 
 Start the local API and Web workbench together in fake-provider mode:
@@ -101,7 +101,7 @@ profiles without sending raw provider keys from the browser.
 Run in an isolated standalone Task workspace:
 
 ```bash
-cargo run -- --task-workspace invoice-check --task-base .rove/tasks --model fake "review this task"
+cargo run -p rove-cli -- --task-workspace invoice-check --task-base .rove/tasks --model fake "review this task"
 ```
 
 Task workspaces keep their files, `.rove` state, and default memory under the
@@ -111,25 +111,25 @@ needed.
 Inspect effective configuration:
 
 ```bash
-cargo run -- dump-config
+cargo run -p rove-cli -- dump-config
 ```
 
 List resumable local task states:
 
 ```bash
-cargo run -- sessions
+cargo run -p rove-cli -- sessions
 ```
 
 Run deterministic local benchmark tasks:
 
 ```bash
-cargo run --bin rove-bench -- --suite benchmarks/agent-smoke.json --output-dir .rove/bench
+cargo run -p rove-bench -- --suite benchmarks/agent-smoke.json --output-dir .rove/bench
 ```
 
 Manual API/Web startup remains available. Start the local API server:
 
 ```bash
-cargo run --bin rove-api
+cargo run -p rove-api
 ```
 
 Start the web workbench in another shell:
@@ -151,17 +151,15 @@ bearer token server-side and does not expose it to browser JavaScript.
 
 | Area | Path | Purpose |
 |---|---|---|
-| CLI / TUI | `src/main.rs`, `src/interfaces/tui/` | Rich terminal REPL, full-screen TUI with capability-gated approval/input, bounded resume/tool/help overlays and visible timeline, explicit `exec` runs, config dump, sessions, and RAG indexing command dispatch. |
-| API | `src/bin/rove-api.rs`, `src/interfaces/api/` | HTTP job lifecycle, SSE event streaming, approvals, inputs, and cancellation. |
-| Benchmarks | `src/bin/rove-bench.rs`, `benchmarks/` | Deterministic no-network benchmark tasks with artifact-path reports. |
+| CLI / TUI | `apps/cli/` | Rich terminal REPL, full-screen TUI, exec, config dump, sessions, and feature-gated RAG indexing. |
+| API | `apps/api/` | HTTP job lifecycle, SSE event streaming, approvals, inputs, and cancellation. |
+| Benchmarks | `apps/bench/`, `benchmarks/` | Deterministic no-network benchmark tasks with artifact-path reports. |
+| Bootstrap | `apps/bootstrap/` | First-party AppConfig, provider factory, product registry, shared Engine assembly. |
 | Web | `web-ui/` | Next.js workbench that consumes the API and SSE job stream. |
-| Agent core | `core/` | Independent `rove-core` crate: in-memory Agent/model/tool loop, typed core events, cancellation/control, policy hooks, tool contracts, and registry. |
-| Persistent runtime | `runtime/` | Independent `rove-runtime` crate: execution contracts, Workspace/path safety, context/compaction, session/durable memory, canonical events, StateStore, artifacts, SQLite, repair, and resume. |
-| Persistent coordinator (transitional) | `src/core/` | Existing Engine facade, planning/run coordination, runtime tool turns, memory-flush ordering, and durable event translation pending later `rove-runtime` extraction slices. |
-| State compatibility | `src/state/` | Temporary re-exports of the state implementation now owned by `runtime/src/state/`. |
-| Models | `models/` | Independent `rove-models` crate: normalized protocol, OpenAI-compatible chat completions, OpenAI Responses, Anthropic, Ollama, fake provider, routing, and health. Product config assembly remains temporarily in `src/models/factory.rs`. |
-| Tools | `src/tools/` | Filesystem, shell, memory, request input, MCP proxy, and optional RAG tools. |
-| Memory compatibility | `src/memory/` | Temporary re-exports of the memory implementation now owned by `runtime/src/memory/`. |
+| Agent core | `core/` | Independent `rove-core` crate: in-memory Agent/model/tool loop and tool contracts. |
+| Persistent runtime | `runtime/` | Independent `rove-runtime` crate: durable execution, tools/MCP, planning, Engine, state/memory. |
+| Models | `models/` | Independent `rove-models` crate: normalized protocol and provider adapters. |
+| Integration tests | `tests/` | Cross-package contracts package `rove-integration-tests`. |
 | Docs | `docs/runtime/` | Current architecture, subsystem boundaries, and implementation status. |
 | Maintainers | `AGENTS.md`, `docs/ONBOARDING.md` | Repository rules, source-of-truth order, code map, workflows, and verification. |
 
@@ -235,7 +233,7 @@ cargo test --features rag --test cli_index deterministic_index_run_writes_manife
 Index a workspace with deterministic local embeddings:
 
 ```bash
-cargo run --features rag --bin rove-index -- --deterministic -C .
+cargo run -p rove-cli --features rag --bin rove-index -- --deterministic -C .
 ```
 
 RAG artifacts use the configured `state.state_dir` and default to `.rove/rag.lancedb`, `.rove/rag_manifest.json`, `.rove/rag_index_log.jsonl`, and `.rove/rag_eval/`. Provider embeddings are configured under `[rag]`; if provider mode lacks an API key and deterministic fallback is enabled, indexing falls back to local deterministic embeddings.
@@ -267,7 +265,7 @@ Deterministic benchmark checks:
 
 ```bash
 cargo test --test bench
-cargo run --bin rove-bench -- --suite benchmarks/agent-smoke.json --output-dir .rove/bench
+cargo run -p rove-bench -- --suite benchmarks/agent-smoke.json --output-dir .rove/bench
 ```
 
 ## Runtime Docs

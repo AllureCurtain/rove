@@ -24,6 +24,19 @@ pub use suites::generate_dataprep_suite;
 
 use std::path::PathBuf;
 
+fn workspace_root() -> PathBuf {
+    // package lives at <workspace>/apps/bench
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|p| p.parent())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+fn workspace_benchmarks_path(name: &str) -> PathBuf {
+    workspace_root().join("benchmarks").join(name)
+}
+
 /// Suites exposed to CLI / HTTP / web-ui.
 pub fn available_suites() -> Vec<SuiteInfo> {
     vec![
@@ -52,12 +65,12 @@ pub fn resolve_suite(name: &str, profile: &str) -> std::io::Result<BenchmarkSuit
             Ok(generate_dataprep_suite(&params))
         }
         "agent-smoke" => {
-            let path = PathBuf::from("benchmarks/agent-smoke.json");
+            let path = workspace_benchmarks_path("agent-smoke.json");
             let bytes = std::fs::read(&path)?;
             serde_json::from_slice(&bytes).map_err(std::io::Error::other)
         }
         other => {
-            let path = PathBuf::from(format!("benchmarks/{other}.json"));
+            let path = workspace_benchmarks_path(&format!("{other}.json"));
             if path.exists() {
                 let bytes = std::fs::read(&path)?;
                 serde_json::from_slice(&bytes).map_err(std::io::Error::other)

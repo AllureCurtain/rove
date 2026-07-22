@@ -1,5 +1,5 @@
-use rove::config::{AppConfig, FallbackProviderConfig, ProviderOptions};
-use rove::interfaces::cli::config::format_effective_config;
+use rove_app_bootstrap::{AppConfig, FallbackProviderConfig, ProviderOptions};
+use rove_cli::cli::config::format_effective_config;
 
 #[test]
 fn format_effective_config_prints_json_without_secret_value() {

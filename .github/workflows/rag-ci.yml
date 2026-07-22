@@ -7,28 +7,28 @@ on:
     paths:
       - "Cargo.toml"
       - "Cargo.lock"
-      - "src/main.rs"
-      - "src/lib.rs"
-      - "src/interfaces/cli/index.rs"
-      - "src/tools/mod.rs"
-      - "src/tools/rag/**"
-      - "src/bin/rove-index.rs"
+      - "apps/cli/**"
+      - "apps/bootstrap/**"
+      - "runtime/**"
+      - "core/**"
+      - "models/**"
       - "tests/cli_index.rs"
       - "tests/rag.rs"
+      - "tests/rag_default.rs"
       - ".github/workflows/rag-ci.yml"
   pull_request:
     branches: [main]
     paths:
       - "Cargo.toml"
       - "Cargo.lock"
-      - "src/main.rs"
-      - "src/lib.rs"
-      - "src/interfaces/cli/index.rs"
-      - "src/tools/mod.rs"
-      - "src/tools/rag/**"
-      - "src/bin/rove-index.rs"
+      - "apps/cli/**"
+      - "apps/bootstrap/**"
+      - "runtime/**"
+      - "core/**"
+      - "models/**"
       - "tests/cli_index.rs"
       - "tests/rag.rs"
+      - "tests/rag_default.rs"
       - ".github/workflows/rag-ci.yml"
 
 env:
@@ -63,7 +63,7 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-rag-
 
       - name: cargo clippy --features rag
-        run: cargo clippy --all-targets --features rag -- -D warnings
+        run: cargo clippy --workspace --all-targets --features rag -- -D warnings
 
   rag-test:
     name: rag feature tests
@@ -87,7 +87,7 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-rag-
 
       - name: cargo test --features rag
-        run: cargo test --features rag
+        run: cargo test --workspace --features rag
 
   rag-index-smoke:
     name: rag index smoke
@@ -114,4 +114,4 @@ jobs:
         run: cargo check --features rag --bin rove-index
 
       - name: deterministic index smoke
-        run: cargo test --features rag --test cli_index deterministic_index_run_writes_manifest -- --exact
+        run: cargo test --workspace --features rag --test cli_index deterministic_index_run_writes_manifest -- --exact

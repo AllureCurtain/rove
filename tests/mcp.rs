@@ -1,12 +1,28 @@
-use rove::core::types::{ApprovalPolicy, ToolContext};
-use rove::core::workspace::Workspace;
-use rove::errors::ToolError;
-use rove::memory::paths::MemoryPaths;
-use rove::tools::mcp_proxy::{
+use std::path::{Path, PathBuf};
+
+fn workspace_root() -> PathBuf {
+    let mut root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    root.pop();
+    root
+}
+
+fn workspace_path(rel: impl AsRef<Path>) -> PathBuf {
+    workspace_root().join(rel)
+}
+
+fn workspace_path_string(rel: impl AsRef<Path>) -> String {
+    workspace_path(rel).to_string_lossy().into_owned()
+}
+
+use rove_core::ToolError;
+use rove_core::ToolRegistry;
+use rove_runtime::memory::paths::MemoryPaths;
+use rove_runtime::tools::mcp_proxy::{
     McpServerConfig, McpTransport, McpTransportPolicy, register_mcp_tools,
 };
-use rove::tools::registry::ToolRegistry;
-use rove::tools::runtime_context::runtime_tool_context;
+use rove_runtime::tools::runtime_context::runtime_tool_context;
+use rove_runtime::types::{ApprovalPolicy, ToolContext};
+use rove_runtime::workspace::Workspace;
 use std::collections::HashMap;
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -25,7 +41,7 @@ fn python_command() -> String {
 
 fn mcp_context<'a>(workspace: &'a Workspace) -> ToolContext<'a> {
     runtime_tool_context(
-        rove::core::types::CallId::new(),
+        rove_runtime::types::CallId::new(),
         workspace,
         MemoryPaths::from_workspace(workspace, 8),
         ApprovalPolicy::Auto,
@@ -60,7 +76,7 @@ async fn mcp_proxy_registers_and_calls_stdio_tools() {
             name: "mock-server".to_string(),
             transport: McpTransport::Stdio,
             command: python_command(),
-            args: vec!["tests/fixtures/mcp_mock_server.py".to_string()],
+            args: vec![workspace_path_string("tests/fixtures/mcp_mock_server.py").to_string()],
             env: Default::default(),
             url: String::new(),
             policy: McpTransportPolicy::default(),
@@ -101,7 +117,7 @@ async fn mcp_stdio_requests_time_out_when_server_does_not_respond() {
             name: "hanging-server".to_string(),
             transport: McpTransport::Stdio,
             command: python_command(),
-            args: vec!["tests/fixtures/mcp_hanging_server.py".to_string()],
+            args: vec![workspace_path_string("tests/fixtures/mcp_hanging_server.py").to_string()],
             env: Default::default(),
             url: String::new(),
             policy: short_mcp_policy(),
@@ -126,7 +142,7 @@ async fn mcp_tool_call_error_maps_to_structured_tool_error() {
             name: "error-server".to_string(),
             transport: McpTransport::Stdio,
             command: python_command(),
-            args: vec!["tests/fixtures/mcp_error_server.py".to_string()],
+            args: vec![workspace_path_string("tests/fixtures/mcp_error_server.py").to_string()],
             env: Default::default(),
             url: String::new(),
             policy: responsive_mcp_policy(),
@@ -171,7 +187,9 @@ async fn dropping_stdio_mcp_registry_cleans_up_child_process() {
                 name: "lifecycle-server".to_string(),
                 transport: McpTransport::Stdio,
                 command: python_command(),
-                args: vec!["tests/fixtures/mcp_lifecycle_server.py".to_string()],
+                args: vec![
+                    workspace_path_string("tests/fixtures/mcp_lifecycle_server.py").to_string(),
+                ],
                 env,
                 url: String::new(),
                 policy: responsive_mcp_policy(),

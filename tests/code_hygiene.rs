@@ -1,15 +1,41 @@
-#[test]
-fn lib_rs_does_not_hide_dead_code_globally() {
-    let lib = std::fs::read_to_string("src/lib.rs").unwrap();
+use std::path::{Path, PathBuf};
 
-    assert!(!lib.contains("#![allow(dead_code)]"));
+fn workspace_root() -> PathBuf {
+    let mut root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    // tests package lives at <workspace>/tests
+    root.pop();
+    root
+}
+
+fn workspace_path(rel: impl AsRef<Path>) -> PathBuf {
+    workspace_root().join(rel)
+}
+
+#[test]
+fn package_libs_do_not_hide_dead_code_globally() {
+    for rel in [
+        "apps/cli/src/lib.rs",
+        "apps/api/src/lib.rs",
+        "apps/bootstrap/src/lib.rs",
+        "runtime/src/lib.rs",
+        "core/src/lib.rs",
+        "models/src/lib.rs",
+    ] {
+        let lib = std::fs::read_to_string(workspace_path(rel)).unwrap();
+        assert!(
+            !lib.contains("#![allow(dead_code)]"),
+            "{rel} must not hide dead code globally"
+        );
+    }
 }
 
 #[test]
 fn runtime_docs_record_phase_12_hygiene_and_source_of_truth_status() {
-    let status = std::fs::read_to_string("docs/runtime/implementation-status.md").unwrap();
-    let guide = std::fs::read_to_string("docs/runtime/implementation-guide.md").unwrap();
-    let readme = std::fs::read_to_string("README.md").unwrap();
+    let status =
+        std::fs::read_to_string(workspace_path("docs/runtime/implementation-status.md")).unwrap();
+    let guide =
+        std::fs::read_to_string(workspace_path("docs/runtime/implementation-guide.md")).unwrap();
+    let readme = std::fs::read_to_string(workspace_path("README.md")).unwrap();
 
     assert!(status.contains("Dead code warnings are enforced"));
     assert!(status.contains("Runtime docs are the source of truth"));
@@ -19,7 +45,8 @@ fn runtime_docs_record_phase_12_hygiene_and_source_of_truth_status() {
 
 #[test]
 fn dev_launcher_documents_process_lifecycle_and_modes() {
-    let script = std::fs::read_to_string("scripts/dev.ps1").expect("scripts/dev.ps1 should exist");
+    let script = std::fs::read_to_string(workspace_path("scripts/dev.ps1"))
+        .expect("scripts/dev.ps1 should exist");
 
     assert!(script.contains("[switch]$Provider"));
     assert!(script.contains("[switch]$InstallWebDeps"));
@@ -36,7 +63,7 @@ fn dev_launcher_documents_process_lifecycle_and_modes() {
 
 #[test]
 fn config_tests_clear_every_env_key_loaded_by_env_layer() {
-    let source = std::fs::read_to_string("apps/bootstrap/src/config.rs")
+    let source = std::fs::read_to_string(workspace_path("apps/bootstrap/src/config.rs"))
         .expect("apps/bootstrap/src/config.rs should exist")
         .replace("\r\n", "\n");
     let loaded = extract_env_string_keys(&source);
@@ -55,26 +82,19 @@ fn config_tests_clear_every_env_key_loaded_by_env_layer() {
         missing.is_empty(),
         "clear_config_env must remove every env var read by env_layer; missing: {missing:?}"
     );
-
-    let root_facade = std::fs::read_to_string("src/config.rs")
-        .expect("root config re-export should exist")
-        .replace("\r\n", "\n");
-    assert!(
-        root_facade.contains("rove_app_bootstrap::config"),
-        "root config path should re-export bootstrap config during migration"
-    );
 }
 
 #[test]
 fn cli_and_api_share_interface_engine_assembly() {
-    let shared = std::fs::read_to_string("src/interfaces/runtime.rs")
-        .expect("shared interface runtime assembly should exist");
-    let cli = std::fs::read_to_string("apps/cli/src/cli/runtime.rs")
+    let shared = std::fs::read_to_string(workspace_path("apps/bootstrap/src/assembly.rs"))
+        .expect("shared product engine assembly should exist");
+    let cli = std::fs::read_to_string(workspace_path("apps/cli/src/cli/runtime.rs"))
         .expect("CLI runtime builder should exist");
-    let api = std::fs::read_to_string("apps/api/src/lib.rs").expect("API module should exist");
+    let api = std::fs::read_to_string(workspace_path("apps/api/src/lib.rs"))
+        .expect("API module should exist");
 
-    assert!(shared.contains("pub(crate) struct EngineAssemblyOptions"));
-    assert!(shared.contains("pub(crate) async fn build_interface_engine"));
+    assert!(shared.contains("ProductEngineOptions") || shared.contains("EngineAssemblyOptions"));
+    assert!(shared.contains("build_product_engine") || shared.contains("build_interface_engine"));
     assert!(cli.contains("build_interface_engine") || cli.contains("build_product_engine"));
     assert!(api.contains("build_interface_engine") || api.contains("build_product_engine"));
     assert!(!cli.contains("ContextManager::with_token_budget"));
@@ -83,8 +103,9 @@ fn cli_and_api_share_interface_engine_assembly() {
 
 #[test]
 fn runtime_docs_and_ignore_rules_match_release_artifact_policy() {
-    let status = std::fs::read_to_string("docs/runtime/implementation-status.md").unwrap();
-    let ignore = std::fs::read_to_string(".gitignore").unwrap();
+    let status =
+        std::fs::read_to_string(workspace_path("docs/runtime/implementation-status.md")).unwrap();
+    let ignore = std::fs::read_to_string(workspace_path(".gitignore")).unwrap();
 
     assert!(
         status.contains("scheduled/manual release-gate workflow"),
@@ -101,7 +122,7 @@ fn runtime_docs_and_ignore_rules_match_release_artifact_policy() {
 
 #[test]
 fn runtime_docs_declare_current_mvp_boundary() {
-    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let root = workspace_root();
     let runtime_readme = std::fs::read_to_string(root.join("docs/runtime/README.md")).unwrap();
     let mvp_definition =
         std::fs::read_to_string(root.join("docs/runtime/mvp-definition.md")).unwrap();
@@ -137,8 +158,8 @@ fn runtime_docs_declare_current_mvp_boundary() {
 
 #[test]
 fn runtime_docs_index_release_readiness_checklist() {
-    let runtime_readme = std::fs::read_to_string("docs/runtime/README.md").unwrap();
-    let checklist = std::fs::read_to_string("docs/runtime/release-readiness.md")
+    let runtime_readme = std::fs::read_to_string(workspace_path("docs/runtime/README.md")).unwrap();
+    let checklist = std::fs::read_to_string(workspace_path("docs/runtime/release-readiness.md"))
         .expect("release readiness checklist should exist");
 
     assert!(runtime_readme.contains("release-readiness.md"));
@@ -151,11 +172,13 @@ fn runtime_docs_index_release_readiness_checklist() {
 
 #[test]
 fn provider_integration_runner_is_generic_and_documented() {
-    let script = std::fs::read_to_string("scripts/provider-integration.ps1")
+    let script = std::fs::read_to_string(workspace_path("scripts/provider-integration.ps1"))
         .expect("scripts/provider-integration.ps1 should exist");
-    let env_example = std::fs::read_to_string(".env.integration.example").unwrap();
-    let provider_docs = std::fs::read_to_string("docs/runtime/provider-smoke.md").unwrap();
-    let integration_docs = std::fs::read_to_string("docs/runtime/integration-testing.md").unwrap();
+    let env_example = std::fs::read_to_string(workspace_path(".env.integration.example")).unwrap();
+    let provider_docs =
+        std::fs::read_to_string(workspace_path("docs/runtime/provider-smoke.md")).unwrap();
+    let integration_docs =
+        std::fs::read_to_string(workspace_path("docs/runtime/integration-testing.md")).unwrap();
 
     assert!(script.contains("[string]$Provider"));
     assert!(script.contains("[string]$Model"));
@@ -218,11 +241,13 @@ fn provider_integration_runner_is_generic_and_documented() {
 
 #[test]
 fn provider_integration_runner_supports_native_provider_protocols() {
-    let script = std::fs::read_to_string("scripts/provider-integration.ps1")
+    let script = std::fs::read_to_string(workspace_path("scripts/provider-integration.ps1"))
         .expect("scripts/provider-integration.ps1 should exist");
-    let env_example = std::fs::read_to_string(".env.integration.example").unwrap();
-    let provider_docs = std::fs::read_to_string("docs/runtime/provider-smoke.md").unwrap();
-    let readiness = std::fs::read_to_string("docs/runtime/release-readiness.md").unwrap();
+    let env_example = std::fs::read_to_string(workspace_path(".env.integration.example")).unwrap();
+    let provider_docs =
+        std::fs::read_to_string(workspace_path("docs/runtime/provider-smoke.md")).unwrap();
+    let readiness =
+        std::fs::read_to_string(workspace_path("docs/runtime/release-readiness.md")).unwrap();
 
     assert!(script.contains("function Normalize-ProviderName"));
     assert!(script.contains("function Invoke-AnthropicModelInventory"));
@@ -257,7 +282,7 @@ fn provider_integration_runner_supports_native_provider_protocols() {
 
 #[test]
 fn provider_integration_runner_records_requested_gate_failures() {
-    let script = std::fs::read_to_string("scripts/provider-integration.ps1")
+    let script = std::fs::read_to_string(workspace_path("scripts/provider-integration.ps1"))
         .expect("scripts/provider-integration.ps1 should exist");
 
     assert!(script.contains("function New-RequestedGateStatusMap"));
@@ -280,10 +305,11 @@ fn provider_integration_runner_records_requested_gate_failures() {
 
 #[test]
 fn integration_runners_allow_web_origins_before_api_start() {
-    let local_script = std::fs::read_to_string("scripts/integration-smoke.ps1")
+    let local_script = std::fs::read_to_string(workspace_path("scripts/integration-smoke.ps1"))
         .expect("scripts/integration-smoke.ps1 should exist");
-    let provider_script = std::fs::read_to_string("scripts/provider-integration.ps1")
-        .expect("scripts/provider-integration.ps1 should exist");
+    let provider_script =
+        std::fs::read_to_string(workspace_path("scripts/provider-integration.ps1"))
+            .expect("scripts/provider-integration.ps1 should exist");
 
     assert!(local_script.contains("function Add-CorsOrigins"));
     assert!(local_script.contains("ROVE_API_CORS_ORIGINS"));
@@ -319,7 +345,7 @@ fn integration_runners_allow_web_origins_before_api_start() {
 
 #[test]
 fn local_full_runner_builds_rove_api_before_starting_service() {
-    let script = std::fs::read_to_string("scripts/integration-smoke.ps1")
+    let script = std::fs::read_to_string(workspace_path("scripts/integration-smoke.ps1"))
         .expect("scripts/integration-smoke.ps1 should exist");
 
     let build_args_index = script
@@ -374,7 +400,7 @@ fn local_full_runner_builds_rove_api_before_starting_service() {
 
 #[test]
 fn release_gate_keeps_local_full_workspace_outside_checked_out_repo() {
-    let workflow = std::fs::read_to_string(".github/workflows/release-gate.yml")
+    let workflow = std::fs::read_to_string(workspace_path(".github/workflows/release-gate.yml"))
         .expect("release-gate workflow should exist");
 
     assert!(
@@ -395,7 +421,7 @@ fn release_gate_keeps_local_full_workspace_outside_checked_out_repo() {
 
 #[test]
 fn provider_integration_runner_keeps_ollama_keyless_after_env_import() {
-    let script = std::fs::read_to_string("scripts/provider-integration.ps1")
+    let script = std::fs::read_to_string(workspace_path("scripts/provider-integration.ps1"))
         .expect("scripts/provider-integration.ps1 should exist");
 
     assert!(script.contains("if ($Provider -eq \"ollama\")"));
@@ -405,7 +431,7 @@ fn provider_integration_runner_keeps_ollama_keyless_after_env_import() {
 
 #[test]
 fn provider_integration_runner_reuses_gate_classification_artifacts() {
-    let script = std::fs::read_to_string("scripts/provider-integration.ps1")
+    let script = std::fs::read_to_string(workspace_path("scripts/provider-integration.ps1"))
         .expect("scripts/provider-integration.ps1 should exist");
 
     assert!(script.contains("function Read-GateClassification"));
@@ -417,7 +443,7 @@ fn provider_integration_runner_reuses_gate_classification_artifacts() {
 
 #[test]
 fn provider_integration_runner_classifies_transport_failures_before_tool_fields() {
-    let script = std::fs::read_to_string("scripts/provider-integration.ps1")
+    let script = std::fs::read_to_string(workspace_path("scripts/provider-integration.ps1"))
         .expect("scripts/provider-integration.ps1 should exist");
 
     assert!(script.contains("error sending request"));
@@ -435,7 +461,7 @@ fn provider_integration_runner_classifies_transport_failures_before_tool_fields(
 
 #[test]
 fn provider_integration_runner_does_not_match_status_codes_inside_paths() {
-    let script = std::fs::read_to_string("scripts/provider-integration.ps1")
+    let script = std::fs::read_to_string(workspace_path("scripts/provider-integration.ps1"))
         .expect("scripts/provider-integration.ps1 should exist");
 
     assert!(
@@ -448,7 +474,7 @@ fn provider_integration_runner_does_not_match_status_codes_inside_paths() {
 
 #[test]
 fn provider_integration_runner_classifies_tool_assertions_before_panic_text() {
-    let script = std::fs::read_to_string("scripts/provider-integration.ps1")
+    let script = std::fs::read_to_string(workspace_path("scripts/provider-integration.ps1"))
         .expect("scripts/provider-integration.ps1 should exist");
 
     let tool_index = script.find("did not emit an echo tool call").unwrap();
@@ -461,7 +487,7 @@ fn provider_integration_runner_classifies_tool_assertions_before_panic_text() {
 
 #[test]
 fn provider_integration_runner_writes_stress_summary_on_long_soak_failure() {
-    let script = std::fs::read_to_string("scripts/provider-integration.ps1")
+    let script = std::fs::read_to_string(workspace_path("scripts/provider-integration.ps1"))
         .expect("scripts/provider-integration.ps1 should exist");
 
     assert!(script.contains("function Write-StressSummary"));
@@ -473,9 +499,9 @@ fn provider_integration_runner_writes_stress_summary_on_long_soak_failure() {
 
 #[test]
 fn runtime_docs_explain_plan_react_core() {
-    let doc = std::fs::read_to_string("docs/runtime/react-loop.md").unwrap();
-    let runtime_readme = std::fs::read_to_string("docs/runtime/README.md").unwrap();
-    let root_readme = std::fs::read_to_string("README.md").unwrap();
+    let doc = std::fs::read_to_string(workspace_path("docs/runtime/react-loop.md")).unwrap();
+    let runtime_readme = std::fs::read_to_string(workspace_path("docs/runtime/README.md")).unwrap();
+    let root_readme = std::fs::read_to_string(workspace_path("README.md")).unwrap();
 
     assert!(doc.contains("Plan Outside, ReAct Inside"));
     assert!(doc.contains("run_unplanned_loop"));
@@ -489,8 +515,9 @@ fn runtime_docs_explain_plan_react_core() {
 
 #[test]
 fn benchmark_evidence_format_is_documented() {
-    let results = std::fs::read_to_string("benchmarks/results/README.md").unwrap();
-    let docs = std::fs::read_to_string("docs/runtime/benchmark-evidence.md").unwrap();
+    let results = std::fs::read_to_string(workspace_path("benchmarks/results/README.md")).unwrap();
+    let docs =
+        std::fs::read_to_string(workspace_path("docs/runtime/benchmark-evidence.md")).unwrap();
 
     assert!(results.contains("DATA_PROVENANCE.md"));
     assert!(results.contains("rove-benchmark-core-report.md"));

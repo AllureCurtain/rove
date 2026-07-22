@@ -1,13 +1,15 @@
-[package]
-name = "rove"
-version.workspace = true
-edition.workspace = true
-description = "A local-first, stateful, observable general-purpose agent runtime"
-default-run = "rove"
-
 [workspace]
-members = [".", "models", "core", "runtime", "apps/bootstrap", "apps/bench", "apps/api", "apps/cli"]
-default-members = ["."]
+members = [
+    "models",
+    "core",
+    "runtime",
+    "apps/bootstrap",
+    "apps/bench",
+    "apps/api",
+    "apps/cli",
+    "tests",
+]
+default-members = ["apps/cli"]
 resolver = "3"
 
 [workspace.package]
@@ -60,83 +62,3 @@ utoipa-axum = "0.2.0"
 utoipa-swagger-ui = { version = "9.0.2", features = ["axum"] }
 walkdir = "2.5.0"
 
-[[bin]]
-name = "rove"
-path = "src/main.rs"
-
-
-
-
-[lib]
-name = "rove"
-path = "src/lib.rs"
-
-[features]
-default = []
-rag = ["dep:arrow-array", "dep:arrow-schema", "dep:lancedb", "dep:walkdir", "rove-cli/rag"]
-
-[dependencies]
-# Async runtime
-tokio.workspace = true
-tokio-stream.workspace = true
-tokio-util.workspace = true
-async-stream.workspace = true
-async-trait.workspace = true
-futures.workspace = true
-
-# HTTP + LLM
-reqwest.workspace = true
-rove-core.workspace = true
-rove-models.workspace = true
-rove-runtime.workspace = true
-rove-app-bootstrap.workspace = true
-rove-bench.workspace = true
-rove-api.workspace = true
-rove-cli.workspace = true
-eventsource-stream.workspace = true
-axum.workspace = true
-tower.workspace = true
-
-# Serialization
-serde.workspace = true
-serde_json.workspace = true
-rusqlite.workspace = true
-
-# CLI
-clap.workspace = true
-crossterm.workspace = true
-ratatui.workspace = true
-
-# Logging / Tracing
-tracing.workspace = true
-tracing-subscriber.workspace = true
-
-# Errors
-thiserror.workspace = true
-anyhow.workspace = true
-
-# IDs / Time
-ulid.workspace = true
-chrono.workspace = true
-
-# Config
-dotenvy.workspace = true
-figment.workspace = true
-arrow-array = { workspace = true, optional = true }
-arrow-schema = { workspace = true, optional = true }
-lancedb = { workspace = true, optional = true }
-walkdir = { workspace = true, optional = true }
-sha2.workspace = true
-rustyline.workspace = true
-utoipa.workspace = true
-utoipa-axum.workspace = true
-utoipa-swagger-ui.workspace = true
-
-[dev-dependencies]
-tokio-test.workspace = true
-pretty_assertions.workspace = true
-insta.workspace = true
-tempfile.workspace = true
-
-[profile.test]
-debug = 0

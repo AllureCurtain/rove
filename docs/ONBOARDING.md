@@ -131,22 +131,22 @@ and untracked files may be user work.
 Interactive:
 
 ```powershell
-cargo run -- --model fake
+cargo run -p rove-cli -- --model fake
 ```
 
 One initial prompt:
 
 ```powershell
-cargo run -- --model fake "echo hello from rove"
+cargo run -p rove-cli -- --model fake "echo hello from rove"
 ```
 
 Non-interactive:
 
 ```powershell
-cargo run -- exec --model fake "echo hello from rove"
+cargo run -p rove-cli -- exec --model fake "echo hello from rove"
 ```
 
-`Cargo.toml` sets `default-run = "rove"`, so plain `cargo run -- ...` selects
+`Cargo.toml` sets `default-run = "rove"`, so plain `cargo run -p rove-cli -- ...` selects
 the CLI binary.
 
 ### 5.2 API and Web
@@ -172,7 +172,7 @@ powershell -ExecutionPolicy Bypass -File scripts/dev.ps1 -ApiAddr 127.0.0.1:1878
 Manual startup remains possible:
 
 ```powershell
-cargo run --bin rove-api
+cargo run -p rove-api
 cd web-ui
 pnpm install --frozen-lockfile
 pnpm dev
@@ -184,7 +184,7 @@ The API exposes generated OpenAPI at `/api/openapi.json` and Swagger UI at
 ### 5.3 Benchmark smoke
 
 ```powershell
-cargo run --bin rove-bench -- --suite benchmarks/agent-smoke.json --output-dir .rove/bench
+cargo run -p rove-bench -- --suite benchmarks/agent-smoke.json --output-dir .rove/bench
 ```
 
 This is a deterministic, no-network smoke. It does not evaluate the proposed
@@ -202,12 +202,10 @@ OnCall reference Agent.
 | Agent core | `core/` | in-memory Agent/model/tool loop, control, core events, contracts |
 | Persistent runtime | `runtime/` | contracts/events, workspace, context/compaction, memory, local built-in tools, MCP proxy, StateStore, artifacts/SQLite, repair and resume |
 | Persistent coordinator | `src/core/` | transitional Engine, planning/run coordination, tool turns, memory-flush ordering, durable event translation |
-| State compatibility | `src/state/` | temporary re-exports of `runtime/src/state/` |
 | Models | `models/` | independent protocol, provider adapters, routing, fake provider |
 | Provider assembly | `src/models/factory.rs` | transitional AppConfig-driven construction |
 | Runtime tools | `runtime/src/tools/` | echo, filesystem, shell, memory, request-input, and invocation adapters |
 | Tool assembly | `src/tools/` | compatibility re-exports, product registry assembly, and optional RAG |
-| Memory compatibility | `src/memory/` | temporary re-exports of `runtime/src/memory/` |
 
 ## 7. Request lifecycle
 
@@ -250,7 +248,7 @@ Common modes:
 Example Task workspace:
 
 ```powershell
-cargo run -- --task-workspace invoice-check --task-base .rove/tasks --model fake "review this task"
+cargo run -p rove-cli -- --task-workspace invoice-check --task-base .rove/tasks --model fake "review this task"
 ```
 
 Task workspaces isolate files, state, and default memory beneath the task
@@ -268,7 +266,7 @@ defaults < .rove/config.toml < environment < CLI overrides
 Inspect the resolved, redacted configuration:
 
 ```powershell
-cargo run -- dump-config
+cargo run -p rove-cli -- dump-config
 ```
 
 Important rules:
@@ -311,9 +309,9 @@ Semantics:
 Useful commands:
 
 ```powershell
-cargo run -- sessions
-cargo run -- state repair
-cargo run -- state cleanup
+cargo run -p rove-cli -- sessions
+cargo run -p rove-cli -- state repair
+cargo run -p rove-cli -- state cleanup
 ```
 
 When changing persistence:
@@ -465,7 +463,7 @@ Fast checks:
 
 ```powershell
 cargo test --test bench
-cargo run --bin rove-bench -- --suite benchmarks/agent-smoke.json --output-dir .rove/bench
+cargo run -p rove-bench -- --suite benchmarks/agent-smoke.json --output-dir .rove/bench
 ```
 
 Published evidence and provenance rules are described in

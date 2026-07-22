@@ -3,9 +3,9 @@
 `rove` is a local-first runtime with remote-ready seams. The default mode is local: CLI runs in the current workspace, API binds to `127.0.0.1:8787`, and state is written under `.rove/`.
 
 The repository manifest is currently a transitional Cargo Workspace containing
-the existing root `rove` compatibility package and the independent
-`rove-models`, `rove-core`, `rove-runtime`, and `rove-app-bootstrap` packages; the root package
-remains the default member. Shared package metadata and dependency versions are
+a virtual Cargo Workspace of `rove-models`, `rove-core`, `rove-runtime`,
+`rove-app-bootstrap`, `rove-cli`, `rove-api`, `rove-bench`, and
+`rove-integration-tests`; the default member is `apps/cli`. Shared package metadata and dependency versions are
 defined at Workspace scope. `rove-core` is the in-memory embedding layer and
 depends only on `rove-models`. The first verified `rove-runtime` slice depends
 only on those two packages and owns runtime identity, task/execution contracts,

@@ -39,15 +39,15 @@ Additional routing:
 | Change area | Read first |
 |---|---|
 | Embedded Agent/tool loop | `core/src/`, `tests/embedding_contract.rs` |
-| Persistent Engine/planning/events | `docs/runtime/react-loop.md`, `runtime/src/`, compatibility `src/core/`, `tests/e2e.rs` |
-| State/resume/artifacts | `docs/runtime/subsystems.md`, `runtime/src/state/`, compatibility `src/state/` |
-| Providers/routing | `docs/runtime/provider-smoke.md`, `models/src/`, transitional `src/models/factory.rs` |
-| Tools/safety/MCP | `docs/runtime/subsystems.md`, `runtime/src/tools/`, transitional `src/tools/`, `tests/tool_safety.rs`, `tests/mcp.rs` |
-| Memory/context | `MEMORY_DOCTRINE.md`, `runtime/src/memory/`, `runtime/src/context.rs`, `runtime/src/compaction.rs`, compatibility `src/memory/` and `src/core/context.rs` |
-| RAG | `docs/runtime/integration-testing.md`, `src/tools/rag/`, RAG feature tests |
-| API | `docs/runtime/implementation-guide.md`, `src/interfaces/api/`, `tests/api.rs` |
+| Persistent Engine/planning/events | `docs/runtime/react-loop.md`, `runtime/src/`, `tests/e2e.rs` |
+| State/resume/artifacts | `docs/runtime/subsystems.md`, `runtime/src/state/`, `tests/` |
+| Providers/routing | `docs/runtime/provider-smoke.md`, `models/src/`, `apps/bootstrap/src/factory.rs` |
+| Tools/safety/MCP | `docs/runtime/subsystems.md`, `runtime/src/tools/`, `apps/bootstrap/src/registry.rs`, `tests/tool_safety.rs`, `tests/mcp.rs` |
+| Memory/context | `MEMORY_DOCTRINE.md`, `runtime/src/memory/`, `runtime/src/context.rs`, `runtime/src/compaction.rs` |
+| RAG | `docs/runtime/integration-testing.md`, `apps/cli/src/rag/`, `tests/rag*.rs` |
+| API | `docs/runtime/implementation-guide.md`, `apps/api/`, `tests/api.rs` |
 | Web | `web-ui/` tests and package scripts |
-| Benchmarks | `docs/runtime/benchmark-evidence.md`, `src/bench/`, `tests/bench.rs` |
+| Benchmarks | `docs/runtime/benchmark-evidence.md`, `apps/bench/`, `tests/bench.rs` |
 
 ## 3. Repository map
 
@@ -60,15 +60,7 @@ Additional routing:
 | `apps/bench/` | `rove-bench`: deterministic benchmark runner |
 | `apps/bootstrap/` | `rove-app-bootstrap`: product config and assembly |
 | `runtime/` | `rove-runtime`: contracts/events, workspace, context/compaction, memory, local built-in tools, MCP proxy, Executor/hooks, planning, Engine, state/artifacts/SQLite/repair/resume |
-| `src/core/` | Compatibility re-exports for the persistent Engine and related runtime public surface |
-| `src/hooks/` | Transitional compatibility re-exports for `rove-runtime` hooks |
-| `src/models/factory.rs` | Transitional AppConfig-driven provider assembly for the root facade |
-| `src/tools/` | Transitional tool re-exports and product registry assembly, optional RAG |
-| `src/state/` | Transitional compatibility re-exports for `rove-runtime` state modules |
-| `src/memory/` | Transitional compatibility re-exports for `rove-runtime` memory modules |
-| `src/interfaces/api/` | HTTP job lifecycle and SSE |
-| `src/bin/` | API, benchmark, and indexing binaries |
-| `tests/` | Cross-module and integration contracts |
+| `tests/` | `rove-integration-tests`: cross-package contracts |
 | `benchmarks/` | Deterministic benchmark definitions and published evidence |
 | `web-ui/` | Standalone Next.js workbench |
 | `scripts/` | Local development and integration runners |
@@ -113,21 +105,16 @@ As of 2026-07-22:
 - rove is a local-first Rust runtime with CLI, API, Web, persisted run state,
   resume, provider routing, tools, layered memory, optional RAG, and
   deterministic benchmarks.
-- The transitional Cargo Workspace contains the root compatibility package and
-  independent `rove-models`, `rove-core`, and `rove-runtime` packages.
-  `rove-models` has no local project dependency; `rove-core` depends only on
-  `rove-models` and embeds with Fake Model plus a custom Tool without runtime
-  state. The first `rove-runtime` slice depends only on those two packages and
-  owns IDs, task/checkpoint and execution-policy contracts, Workspace/path
-  safety, prompt metadata/runtime identity, approval/input provider contracts,
-  canonical `StreamEvent`, context/compaction services, session/durable memory,
-  local filesystem/shell/memory/input tools, invocation adapters, the existing
-  stdio/legacy-SSE MCP proxy, the tool Executor pipeline, pre/post-tool and
-  post-run hooks, planning/step coordination, durable event translation, the
-  persistent Engine facade, plus state/trace/artifact/SQLite/repair/resume
-  services. Product tool-registry assembly, optional RAG, and AppConfig-driven
-  provider selection remain in the root facade until Phase 6 extracts
-  `apps/bootstrap` and the product packages.
+- The repository is a virtual Cargo Workspace with default member `apps/cli`.
+  Package layout is `rove-models <- rove-core <- rove-runtime <-
+  rove-app-bootstrap <- {rove-cli, rove-api, rove-bench}` plus
+  `rove-integration-tests`. `rove-models` has no local project dependency;
+  `rove-core` depends only on `rove-models`. `rove-runtime` owns durable
+  execution, state, memory, tools/MCP, planning, and the Engine facade.
+  `rove-app-bootstrap` owns first-party AppConfig, provider factory, product
+  registry assembly, and shared Engine assembly. Optional heavy RAG
+  implementation lives in `rove-cli` behind `--features rag`; default builds use
+  bootstrap-owned disabled stubs.
 - `docs/runtime/` describes the implemented MVP.
 - MCP currently supports stdio and the existing legacy SSE path. Streamable
   HTTP, negotiated sessions, rich MCP result envelopes, and Tool Artifacts are

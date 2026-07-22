@@ -1,6 +1,6 @@
-use rove::core::events::StreamEvent;
-use rove::core::types::TaskState;
-use rove::state::report::RunReport;
+use rove_runtime::events::StreamEvent;
+use rove_runtime::state::report::RunReport;
+use rove_runtime::types::TaskState;
 
 #[test]
 fn pre_lifecycle_task_state_fixture_keeps_additive_defaults() {

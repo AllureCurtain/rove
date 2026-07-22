@@ -2,7 +2,7 @@
 use std::path::Path;
 use std::path::PathBuf;
 
-use rove::interfaces::cli::index::{IndexOptions, format_index_result, run};
+use rove_cli::cli::index::{IndexOptions, format_index_result, run};
 
 #[test]
 fn format_index_result_reports_chunk_count_and_db_path() {
