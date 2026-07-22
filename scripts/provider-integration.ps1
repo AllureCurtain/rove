@@ -510,8 +510,8 @@ function Invoke-WebSmoke {
         $env:ROVE_API_BASE = $ApiBaseLocal
         $env:ROVE_WEB_PORT = $WebPort
         $env:PLAYWRIGHT_BASE_URL = $WebBase
-        $webProcess = Start-BackgroundCommand -Command "pnpm" -Arguments @("exec", "next", "dev", "--port", $WebPort) -WorkingDirectory (Join-Path $RepoRoot "web-ui") -StdoutLog (Join-Path $ArtifactsDir "web-provider-web.out.log") -StderrLog (Join-Path $ArtifactsDir "web-provider-web.err.log")
-        Wait-HttpOk -Uri $WebBase -TimeoutSeconds 120 -Name "web-ui"
+        $webProcess = Start-BackgroundCommand -Command "pnpm" -Arguments @("exec", "next", "dev", "--port", $WebPort) -WorkingDirectory (Join-Path $RepoRoot "apps/web") -StdoutLog (Join-Path $ArtifactsDir "web-provider-web.out.log") -StderrLog (Join-Path $ArtifactsDir "web-provider-web.err.log")
+        Wait-HttpOk -Uri $WebBase -TimeoutSeconds 120 -Name "web"
 
         $resultPath = Join-Path $ArtifactsDir "web-provider-result.json"
         $screenshotPath = Join-Path $ArtifactsDir "web-provider.png"
@@ -568,7 +568,7 @@ const prompt = 'Use the echo tool exactly once with message "rove provider web o
   process.exit(1);
 });
 '@
-        Push-Location (Join-Path $RepoRoot "web-ui")
+        Push-Location (Join-Path $RepoRoot "apps/web")
         try {
             $nodeScript | pnpm exec node -
             if ($LASTEXITCODE -ne 0) {

@@ -41,7 +41,7 @@ Important entry points:
 | CLI binary | `src/main.rs`, `src/interfaces/cli/*` |
 | Full-screen TUI mode | `src/interfaces/tui/*`, `src/interfaces/terminal/*` |
 | API binary | `src/bin/rove-api.rs`, `src/interfaces/api/mod.rs` |
-| Web workbench | `web-ui/` |
+| Web workbench | `apps/web/` |
 | In-memory Agent and tool contracts | `core/src/*` |
 | Persistent runtime services | `runtime/src/*` |
 | Persistent Engine and coordination | `runtime/src/engine.rs`, `runtime/src/{planner,plan_loop,step_runner,run_loop,tool_turn,model_turn,plan_evaluator}.rs` |
@@ -480,7 +480,7 @@ Relevant code:
 
 ## 6. Web Workbench Path
 
-`web-ui/` is a standalone Next.js app. Browser code talks to relative `/api/*`
+`apps/web/` is a standalone Next.js app. Browser code talks to relative `/api/*`
 URLs. A Next.js app route proxies those requests to the Rust API:
 
 ```text
@@ -510,23 +510,23 @@ twice.
 
 Relevant code:
 
-- `web-ui/components/rove-workbench.tsx`
-- `web-ui/app/api/[...path]/route.ts`
-- `web-ui/lib/rove-api-proxy.ts`
-- `web-ui/lib/rove-client.ts`
-- `web-ui/lib/rove-state.ts`
-- `web-ui/lib/rove-types.ts`
+- `apps/web/components/rove-workbench.tsx`
+- `apps/web/app/api/[...path]/route.ts`
+- `apps/web/lib/rove-api-proxy.ts`
+- `apps/web/lib/rove-client.ts`
+- `apps/web/lib/rove-state.ts`
+- `apps/web/lib/rove-types.ts`
 
 Current Web checks:
 
 ```powershell
-cd web-ui
+cd apps/web
 pnpm test
 pnpm typecheck
 pnpm build
 ```
 
-Browser-level Playwright tests live under `web-ui/tests/e2e` and run through
+Browser-level Playwright tests live under `apps/web/tests/e2e` and run through
 `pnpm test:e2e`. They are separate from the default fast Web checks so the
 unit/type/build loop stays lightweight.
 
@@ -611,7 +611,7 @@ Adding a new event requires checking:
 
 - CLI rendering in `src/interfaces/cli/oneshot.rs`
 - API SSE/event persistence in `src/interfaces/api/mod.rs` and `runtime/src/state/index.rs`
-- Web types and reducer in `web-ui/lib/rove-types.ts` and `web-ui/lib/rove-state.ts`
+- Web types and reducer in `apps/web/lib/rove-types.ts` and `apps/web/lib/rove-state.ts`
 - artifact recording in `runtime/src/state/artifacts.rs` if it affects resume/report state
 
 Relevant code:
@@ -1233,7 +1233,7 @@ cargo test --features rag
 Web checks:
 
 ```powershell
-cd web-ui
+cd apps/web
 pnpm test
 pnpm typecheck
 pnpm build
@@ -1242,7 +1242,7 @@ pnpm build
 Optional browser E2E checks:
 
 ```powershell
-cd web-ui
+cd apps/web
 pnpm test:e2e
 ```
 
@@ -1336,7 +1336,7 @@ When adding a new event:
 3. Update CLI rendering.
 4. Update API persistence/SSE assumptions if needed.
 5. Update `RunArtifactRecorder` if artifacts should change.
-6. Update `web-ui/lib/rove-types.ts` and reducer handling.
+6. Update `apps/web/lib/rove-types.ts` and reducer handling.
 7. Add at least one integration test.
 
 When changing run identity or resume:
@@ -1390,8 +1390,8 @@ cargo fmt --all --check
 cargo clippy --all-targets -- -D warnings
 cargo test
 cargo check --features rag --bin rove-index
-cd web-ui; pnpm test
-cd web-ui; pnpm typecheck
-cd web-ui; pnpm build
+cd apps/web; pnpm test
+cd apps/web; pnpm typecheck
+cd apps/web; pnpm build
 git diff --check
 ```

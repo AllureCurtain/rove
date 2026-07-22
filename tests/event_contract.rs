@@ -4,7 +4,7 @@
 //! three consumers depend on: the CLI, the API/SSE layer, and the Web UI. The Rust
 //! compiler already forces `StreamEvent::event_name` to cover every variant
 //! (exhaustive match), so it is the authoritative list of wire event names. The Web
-//! UI re-declares the same surface by hand in `web-ui/lib/rove-types.ts`
+//! UI re-declares the same surface by hand in `apps/web/lib/rove-types.ts`
 //! (`STREAM_EVENT_NAMES` plus the `StreamEvent` union discriminants).
 //!
 //! Those hand-written copies drift: a new Rust variant once shipped without the
@@ -24,7 +24,7 @@ fn workspace_path(rel: impl AsRef<Path>) -> PathBuf {
 }
 
 const EVENTS_RS: &str = "runtime/src/events.rs";
-const WEB_TYPES_TS: &str = "web-ui/lib/rove-types.ts";
+const WEB_TYPES_TS: &str = "apps/web/lib/rove-types.ts";
 
 /// Event names returned by `StreamEvent::event_name` in source order.
 fn rust_event_names() -> Vec<String> {
@@ -113,7 +113,7 @@ fn rust_and_web_stream_event_names_match() {
         web,
         "Rust StreamEvent::event_name and Web STREAM_EVENT_NAMES drifted.\n  \
          only in Rust: {:?}\n  only in Web: {:?}\n\
-         Update web-ui/lib/rove-types.ts to match runtime/src/events.rs.",
+         Update apps/web/lib/rove-types.ts to match runtime/src/events.rs.",
         difference(&rust, &web),
         difference(&web, &rust),
     );

@@ -49,7 +49,7 @@ This MVP is not a SaaS product, browser automation runtime, desktop automation r
 
    ```powershell
    cargo run --bin rove-api
-   cd web-ui
+   cd apps/web
    pnpm dev
    ```
 
@@ -73,7 +73,7 @@ This MVP is not a SaaS product, browser automation runtime, desktop automation r
 cargo fmt --all --check
 cargo clippy --all-targets -- -D warnings
 cargo test
-cd web-ui
+cd apps/web
 pnpm test
 pnpm typecheck
 pnpm build

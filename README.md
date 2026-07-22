@@ -135,7 +135,7 @@ cargo run -p rove-api
 Start the web workbench in another shell:
 
 ```bash
-cd web-ui
+cd apps/web
 pnpm install --frozen-lockfile
 pnpm dev
 ```
@@ -155,7 +155,7 @@ bearer token server-side and does not expose it to browser JavaScript.
 | API | `apps/api/` | HTTP job lifecycle, SSE event streaming, approvals, inputs, and cancellation. |
 | Benchmarks | `apps/bench/`, `benchmarks/` | Deterministic no-network benchmark tasks with artifact-path reports. |
 | Bootstrap | `apps/bootstrap/` | First-party AppConfig, provider factory, product registry, shared Engine assembly. |
-| Web | `web-ui/` | Next.js workbench that consumes the API and SSE job stream. |
+| Web | `apps/web/` | Next.js workbench that consumes the API and SSE job stream. |
 | Agent core | `core/` | Independent `rove-core` crate: in-memory Agent/model/tool loop and tool contracts. |
 | Persistent runtime | `runtime/` | Independent `rove-runtime` crate: durable execution, tools/MCP, planning, Engine, state/memory. |
 | Models | `models/` | Independent `rove-models` crate: normalized protocol and provider adapters. |
@@ -247,7 +247,7 @@ cargo fmt --all --check
 cargo clippy --all-targets -- -D warnings
 cargo test
 
-cd web-ui
+cd apps/web
 pnpm install --frozen-lockfile
 pnpm test
 pnpm typecheck

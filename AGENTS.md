@@ -46,7 +46,7 @@ Additional routing:
 | Memory/context | `MEMORY_DOCTRINE.md`, `runtime/src/memory/`, `runtime/src/context.rs`, `runtime/src/compaction.rs` |
 | RAG | `docs/runtime/integration-testing.md`, `apps/cli/src/rag/`, `tests/rag*.rs` |
 | API | `docs/runtime/implementation-guide.md`, `apps/api/`, `tests/api.rs` |
-| Web | `web-ui/` tests and package scripts |
+| Web | `apps/web/` tests and package scripts |
 | Benchmarks | `docs/runtime/benchmark-evidence.md`, `apps/bench/`, `tests/bench.rs` |
 
 ## 3. Repository map
@@ -62,7 +62,7 @@ Additional routing:
 | `runtime/` | `rove-runtime`: contracts/events, workspace, context/compaction, memory, local built-in tools, MCP proxy, Executor/hooks, planning, Engine, state/artifacts/SQLite/repair/resume |
 | `tests/` | `rove-integration-tests`: cross-package contracts |
 | `benchmarks/` | Deterministic benchmark definitions and published evidence |
-| `web-ui/` | Standalone Next.js workbench |
+| `apps/web/` | Standalone Next.js workbench |
 | `scripts/` | Local development and integration runners |
 | `docs/runtime/` | Current implementation source of truth |
 | `docs/design/` | Proposed/target design documents |
@@ -149,8 +149,8 @@ The optional terminal-interface direction is documented separately in
   `git checkout --` without explicit authorization.
 - Keep changes scoped. If an existing edit overlaps the requested change,
   preserve it and report any ambiguity.
-- Generated state such as `.rove/`, `target/`, `web-ui/.next/`,
-  `web-ui/node_modules/`, test results, and temporary integration output must
+- Generated state such as `.rove/`, `target/`, `apps/web/.next/`,
+  `apps/web/node_modules/`, test results, and temporary integration output must
   not be committed.
 
 ## 7. Editing rules
@@ -204,7 +204,7 @@ cargo test --features rag
 
 ### Web
 
-From `web-ui/`:
+From `apps/web/`:
 
 ```powershell
 pnpm test

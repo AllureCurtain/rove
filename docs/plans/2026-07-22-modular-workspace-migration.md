@@ -1,6 +1,6 @@
 # Rove Modular Workspace Migration Plan - 2026-07-22
 
-> Status: **In Progress / Phase 7 Virtual Workspace Complete**
+> Status: **In Progress / Phase 8 Web Moved**
 >
 > Design source:
 > [`../design/2026-07-22-modular-workspace-architecture.md`](../design/2026-07-22-modular-workspace-architecture.md)
@@ -545,7 +545,7 @@ Goal: finish the product directory layout after Rust contracts are stable.
 
 Tasks:
 
-1. Move `web-ui/` to `apps/web/` without changing package behavior.
+1. Move `apps/web/` to `apps/web/` without changing package behavior.
 2. Update CI working directories and lockfile cache keys.
 3. Update `scripts/dev.ps1`, `scripts/integration-smoke.ps1`, provider scripts,
    Playwright paths, and environment documentation.

@@ -91,7 +91,7 @@ Required for the Rust runtime:
 Required for the Web workbench:
 
 - a current Node.js version compatible with the lockfile;
-- pnpm 10, as declared by `web-ui/package.json`.
+- pnpm 10, as declared by `apps/web/package.json`.
 
 Useful for repository scripts and optional checks:
 
@@ -173,7 +173,7 @@ Manual startup remains possible:
 
 ```powershell
 cargo run -p rove-api
-cd web-ui
+cd apps/web
 pnpm install --frozen-lockfile
 pnpm dev
 ```
@@ -198,7 +198,7 @@ OnCall reference Agent.
 | API | `src/bin/rove-api.rs` | `src/interfaces/api/` |
 | Benchmark | `src/bin/rove-bench.rs` | `src/bench/` |
 | RAG index | indexing binary under `src/bin/` | `src/tools/rag/` |
-| Web | `web-ui/` | API proxy, state hooks, components, tests |
+| Web | `apps/web/` | API proxy, state hooks, components, tests |
 | Agent core | `core/` | in-memory Agent/model/tool loop, control, core events, contracts |
 | Persistent runtime | `runtime/` | contracts/events, workspace, context/compaction, memory, local built-in tools, MCP proxy, StateStore, artifacts/SQLite, repair and resume |
 | Persistent coordinator | `src/core/` | transitional Engine, planning/run coordination, tool turns, memory-flush ordering, durable event translation |
@@ -422,10 +422,10 @@ catalogs and selection are proposed future work.
 
 ## 15. Web workbench
 
-`web-ui/` is a standalone Next.js application. It consumes the API and SSE
+`apps/web/` is a standalone Next.js application. It consumes the API and SSE
 rather than embedding a second runtime.
 
-From `web-ui/`:
+From `apps/web/`:
 
 ```powershell
 pnpm install --frozen-lockfile
@@ -495,7 +495,7 @@ cargo test --test bench
 ### 17.2 Web
 
 ```powershell
-cd web-ui
+cd apps/web
 pnpm test
 pnpm typecheck
 pnpm build
