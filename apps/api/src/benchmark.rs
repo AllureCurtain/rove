@@ -12,13 +12,13 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::bench::{
-    BenchmarkOutcome, BenchmarkReport, available_suites, resolve_suite, run_benchmark_suite,
-};
 use axum::Json;
 use axum::extract::{Path as AxumPath, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
+use rove_bench::{
+    BenchmarkOutcome, BenchmarkReport, available_suites, resolve_suite, run_benchmark_suite,
+};
 use tokio::sync::RwLock;
 
 use super::types::{
@@ -332,7 +332,7 @@ pub(crate) async fn get_bench_evidence(
     ))
 }
 
-fn task_to_response(task: &crate::bench::BenchmarkTaskReport) -> BenchTaskResultResponse {
+fn task_to_response(task: &rove_bench::BenchmarkTaskReport) -> BenchTaskResultResponse {
     BenchTaskResultResponse {
         name: task.name.clone(),
         outcome: match task.outcome {

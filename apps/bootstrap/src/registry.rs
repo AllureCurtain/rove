@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use crate::rag_stub::RagRetrieveStub;
 use rove_core::{Tool, ToolRegistry};
 use rove_runtime::tools::echo::EchoTool;
 use rove_runtime::tools::fs::{FsReadTool, FsWriteTool};
@@ -26,6 +27,8 @@ pub fn product_tool_registry_with_shell_policy(
     registry.register(Box::new(ReadMemoryTopicTool::new()));
     registry.register(Box::new(SaveMemoryTool::new()));
     registry.register(Box::new(UpdateMemoryIndexTool::new()));
+    registry.register(Box::new(RagRetrieveStub::code(workspace.root.clone())));
+    registry.register(Box::new(RagRetrieveStub::docs(workspace.root.clone())));
     registry.register(Box::new(RequestInputTool));
     registry.register(Box::new(ShellTool::with_policy(
         workspace.root.clone(),

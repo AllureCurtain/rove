@@ -5169,6 +5169,7 @@ dependencies = [
  "pretty_assertions",
  "ratatui",
  "reqwest 0.13.3",
+ "rove-api",
  "rove-app-bootstrap",
  "rove-bench",
  "rove-core",
@@ -5196,10 +5197,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "rove-api"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "chrono",
+ "clap",
+ "futures",
+ "reqwest 0.13.3",
+ "rove-app-bootstrap",
+ "rove-bench",
+ "rove-core",
+ "rove-models",
+ "rove-runtime",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+ "utoipa",
+ "utoipa-axum",
+ "utoipa-swagger-ui",
+]
+
+[[package]]
 name = "rove-app-bootstrap"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "dotenvy",
  "figment",
  "rove-core",

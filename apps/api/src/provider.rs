@@ -6,7 +6,7 @@
 //! the request handlers in [`super`] because it is the network-facing,
 //! provider-specific surface of the API.
 
-use crate::config::AppConfig;
+use rove_app_bootstrap::AppConfig;
 
 use super::{ApiError, ProviderProfileRequest};
 

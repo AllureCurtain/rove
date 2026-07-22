@@ -3,6 +3,7 @@
 pub mod assembly;
 pub mod config;
 pub mod factory;
+pub mod rag_stub;
 pub mod registry;
 
 pub use assembly::{

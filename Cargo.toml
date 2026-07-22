@@ -6,7 +6,7 @@ description = "A local-first, stateful, observable general-purpose agent runtime
 default-run = "rove"
 
 [workspace]
-members = [".", "models", "core", "runtime", "apps/bootstrap", "apps/bench"]
+members = [".", "models", "core", "runtime", "apps/bootstrap", "apps/bench", "apps/api"]
 default-members = ["."]
 resolver = "3"
 
@@ -38,6 +38,7 @@ rove-models = { path = "models" }
 rove-runtime = { path = "runtime" }
 rove-app-bootstrap = { path = "apps/bootstrap" }
 rove-bench = { path = "apps/bench" }
+rove-api = { path = "apps/api" }
 rusqlite = { version = "0.32", features = ["bundled"] }
 rustyline = "18.0.0"
 serde = { version = "1.0.228", features = ["derive"] }
@@ -67,9 +68,6 @@ name = "rove-index"
 path = "src/bin/rove-index.rs"
 required-features = ["rag"]
 
-[[bin]]
-name = "rove-api"
-path = "src/bin/rove-api.rs"
 
 
 [lib]
@@ -96,6 +94,7 @@ rove-models.workspace = true
 rove-runtime.workspace = true
 rove-app-bootstrap.workspace = true
 rove-bench.workspace = true
+rove-api.workspace = true
 eventsource-stream.workspace = true
 axum.workspace = true
 tower.workspace = true

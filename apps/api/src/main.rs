@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use clap::Parser;
-use rove::interfaces::api::serve;
+use rove_api::serve;
 
 #[derive(Debug, Parser)]
 #[command(name = "rove-api", about = "Serve the rove HTTP API")]
@@ -21,7 +21,7 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("rove=info".parse().unwrap()),
+                .add_directive("rove_api=info".parse().unwrap()),
         )
         .init();
 

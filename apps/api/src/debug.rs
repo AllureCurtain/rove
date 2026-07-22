@@ -5,7 +5,7 @@ use utoipa::ToSchema;
 
 use super::docs::DEBUG_TAG;
 use super::{ApiError, ApiState};
-use crate::memory::durable::{
+use rove_runtime::memory::durable::{
     MemoryTopicInfo, MemoryType, RecallHit, RecallOptions, list_memory_topics_from_dir_sync,
     read_topic_file_sync, recall_with_scores_from_dir_sync,
 };

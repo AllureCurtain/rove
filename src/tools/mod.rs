@@ -14,7 +14,6 @@ pub mod shell;
 pub mod traits;
 
 use crate::core::workspace::Workspace;
-use crate::tools::rag::RagRetrieveTool;
 use crate::tools::registry::ToolRegistry;
 use crate::tools::shell::ShellPolicy;
 
@@ -24,7 +23,11 @@ pub use rove_app_bootstrap::registry::{
     runtime_tool_registry as bootstrap_runtime_tool_registry,
 };
 
-/// Product registry used by first-party surfaces, including optional RAG tools.
+/// Product registry used by first-party surfaces.
+///
+/// Without the `rag` feature this re-exports the bootstrap registry, which already
+/// includes disabled RAG stub tools. With `rag` enabled, real RAG tools replace the
+/// stubs for root product assembly.
 pub fn default_tool_registry(workspace: &Workspace) -> ToolRegistry {
     default_tool_registry_with_shell_policy(workspace, ShellPolicy::default())
 }
@@ -34,7 +37,8 @@ pub fn default_tool_registry_with_shell_policy(
     shell_policy: ShellPolicy,
 ) -> ToolRegistry {
     let mut registry = bootstrap_default_tool_registry_with_shell_policy(workspace, shell_policy);
-    register_optional_rag_tools(&mut registry, workspace);
+    #[cfg(feature = "rag")]
+    replace_with_real_rag_tools(&mut registry, workspace);
     registry
 }
 
@@ -45,11 +49,16 @@ pub async fn runtime_tool_registry(
 ) -> anyhow::Result<ToolRegistry> {
     let mut registry =
         bootstrap_runtime_tool_registry(workspace, shell_policy, mcp_config_path).await?;
-    register_optional_rag_tools(&mut registry, workspace);
+    #[cfg(feature = "rag")]
+    replace_with_real_rag_tools(&mut registry, workspace);
     Ok(registry)
 }
 
-fn register_optional_rag_tools(registry: &mut ToolRegistry, workspace: &Workspace) {
+#[cfg(feature = "rag")]
+fn replace_with_real_rag_tools(registry: &mut ToolRegistry, workspace: &Workspace) {
+    use crate::tools::rag::RagRetrieveTool;
+    // ToolRegistry keeps last registration for a name only if re-register is supported.
+    // Prefer explicit re-register helpers if available; otherwise register again.
     registry.register(Box::new(RagRetrieveTool::code(workspace.root.clone())));
     registry.register(Box::new(RagRetrieveTool::docs(workspace.root.clone())));
 }

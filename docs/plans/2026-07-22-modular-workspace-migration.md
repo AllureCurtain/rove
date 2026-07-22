@@ -1,6 +1,6 @@
 # Rove Modular Workspace Migration Plan - 2026-07-22
 
-> Status: **In Progress / Phase 6 Bootstrap + Bench Extracted**
+> Status: **In Progress / Phase 6 Bootstrap + Bench + API Extracted**
 >
 > Design source:
 > [`../design/2026-07-22-modular-workspace-architecture.md`](../design/2026-07-22-modular-workspace-architecture.md)
@@ -486,6 +486,10 @@ Current verified progress:
   checks, evidence, runner, and the `rove-bench` binary live in `apps/bench`.
   Root `src/bench` remains a compatibility re-export for API/tests during the
   remaining Phase 6 window.
+- Order item 3 (`rove-api`) is implemented: HTTP/SSE/OpenAPI handlers and the
+  `rove-api` binary live in `apps/api`. Root `src/interfaces/api` remains a
+  compatibility re-export. Disabled RAG stubs are owned by bootstrap so API jobs
+  keep the default feature contract without depending on root RAG modules.
 
 
 Goal: make each user-facing Rust surface a thin consumer of runtime.

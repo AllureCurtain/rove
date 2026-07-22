@@ -6,6 +6,7 @@ description = "First-party config loading and product assembly for Rove"
 
 [dependencies]
 anyhow.workspace = true
+async-trait.workspace = true
 dotenvy.workspace = true
 figment.workspace = true
 rove-core.workspace = true
