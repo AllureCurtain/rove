@@ -1,0 +1,21 @@
+{
+  "session_id": "01J00000000000000000000001",
+  "job_id": "01J00000000000000000000002",
+  "run_id": "01J00000000000000000000003",
+  "workspace_root": ".",
+  "workspace_kind": "folder",
+  "model_id": "fake",
+  "status": "success",
+  "termination_reason": "final",
+  "steps": 1,
+  "total_usage": {
+    "prompt_tokens": 0,
+    "completion_tokens": 0,
+    "total_tokens": 0
+  },
+  "tool_calls": 0,
+  "tool_failures": 0,
+  "tool_mutations": [],
+  "output": "legacy output",
+  "timestamp": "2026-07-01T00:00:00Z"
+}

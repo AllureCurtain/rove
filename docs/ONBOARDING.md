@@ -10,6 +10,11 @@
 This guide is the shortest path from a fresh checkout to making a safe,
 evidence-backed change in rove.
 
+The repository is currently in a compatibility migration window: the root
+manifest is a Cargo Workspace, but its only member is still the existing root
+`rove` package. The target `models/core/runtime/apps` packages are proposed
+until their code, tests, and current runtime documentation are moved together.
+
 ## 1. What rove is
 
 rove is a local-first, stateful Agent runtime written in Rust. The same runtime
@@ -456,8 +461,8 @@ The proposed V2 Agent evaluation and OnCall reference suite are documented in
 
 ```powershell
 cargo fmt --all --check
-cargo clippy --all-targets -- -D warnings
-cargo test
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
 ```
 
 Start focused when iterating:

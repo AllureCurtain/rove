@@ -2,6 +2,11 @@
 
 This guide is for maintainers who need to understand, debug, or extend the current implementation. It describes what exists in the codebase today. Product intent and historical design rationale live in the top-level docs; the current runtime source of truth remains this `docs/runtime/` directory.
 
+The root manifest is currently a transitional resolver-3 Cargo Workspace with
+the existing root `rove` package as its only member and default member. Use
+Workspace-wide commands for full gates, while all implementation paths in this
+guide still refer to the root package until modular crates are extracted.
+
 ## 1. Runtime Shape
 
 `rove` is a local-first agent runtime with three user-facing shells. The CLI

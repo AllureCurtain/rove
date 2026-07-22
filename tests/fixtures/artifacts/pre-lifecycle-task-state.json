@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "session_id": "01J00000000000000000000001",
+  "job_id": "01J00000000000000000000002",
+  "run_id": "01J00000000000000000000003",
+  "goal": "resume a legacy task",
+  "step": 0,
+  "history": [],
+  "summary": null,
+  "plan": {
+    "goal": "resume a legacy task",
+    "steps": [
+      {
+        "id": "1",
+        "title": "inspect the workspace",
+        "done": false
+      }
+    ],
+    "current_step": 0
+  }
+}

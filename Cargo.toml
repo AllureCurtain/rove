@@ -1,9 +1,57 @@
 [package]
 name = "rove"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
 description = "A local-first, stateful, observable general-purpose agent runtime"
 default-run = "rove"
+
+[workspace]
+members = ["."]
+default-members = ["."]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+
+[workspace.dependencies]
+anyhow = "1.0.102"
+arrow-array = "58.3.0"
+arrow-schema = "58.3.0"
+async-stream = "0.3.6"
+async-trait = "0.1.89"
+axum = "0.8"
+chrono = { version = "0.4.44", features = ["serde"] }
+clap = { version = "4.6.1", features = ["derive"] }
+crossterm = { version = "0.29.0", features = ["event-stream"] }
+dotenvy = "0.15.7"
+eventsource-stream = "0.2.3"
+figment = { version = "0.10", features = ["toml", "env"] }
+futures = "0.3.32"
+insta = "1"
+lancedb = "0.29.0"
+pretty_assertions = "1"
+ratatui = { version = "0.30.2", default-features = false, features = ["crossterm_0_29", "unstable-rendered-line-info"] }
+reqwest = { version = "0.13.3", features = ["json", "stream"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+rustyline = "18.0.0"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+sha2 = "0.10"
+tempfile = "3"
+thiserror = "2.0.18"
+tokio = { version = "1.52", features = ["full"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+tokio-test = "0.4"
+tokio-util = "0.7"
+tower = { version = "0.5", features = ["util"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
+ulid = { version = "1.2.1", features = ["serde"] }
+utoipa = { version = "5.5.0", features = ["chrono"] }
+utoipa-axum = "0.2.0"
+utoipa-swagger-ui = { version = "9.0.2", features = ["axum"] }
+walkdir = "2.5.0"
 
 [[bin]]
 name = "rove"
@@ -32,59 +80,59 @@ rag = ["dep:arrow-array", "dep:arrow-schema", "dep:lancedb", "dep:walkdir"]
 
 [dependencies]
 # Async runtime
-tokio = { version = "1.52", features = ["full"] }
-tokio-stream = { version = "0.1", features = ["sync"] }
-tokio-util = "0.7"
-async-stream = "0.3.6"
-async-trait = "0.1.89"
-futures = "0.3.32"
+tokio.workspace = true
+tokio-stream.workspace = true
+tokio-util.workspace = true
+async-stream.workspace = true
+async-trait.workspace = true
+futures.workspace = true
 
 # HTTP + LLM
-reqwest = { version = "0.13.3", features = ["json", "stream"] }
-eventsource-stream = "0.2.3"
-axum = "0.8"
-tower = { version = "0.5", features = ["util"] }
+reqwest.workspace = true
+eventsource-stream.workspace = true
+axum.workspace = true
+tower.workspace = true
 
 # Serialization
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.149"
-rusqlite = { version = "0.32", features = ["bundled"] }
+serde.workspace = true
+serde_json.workspace = true
+rusqlite.workspace = true
 
 # CLI
-clap = { version = "4.6.1", features = ["derive"] }
-crossterm = { version = "0.29.0", features = ["event-stream"] }
-ratatui = { version = "0.30.2", default-features = false, features = ["crossterm_0_29", "unstable-rendered-line-info"] }
+clap.workspace = true
+crossterm.workspace = true
+ratatui.workspace = true
 
 # Logging / Tracing
-tracing = "0.1.44"
-tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
 
 # Errors
-thiserror = "2.0.18"
-anyhow = "1.0.102"
+thiserror.workspace = true
+anyhow.workspace = true
 
 # IDs / Time
-ulid = { version = "1.2.1", features = ["serde"] }
-chrono = { version = "0.4.44", features = ["serde"] }
+ulid.workspace = true
+chrono.workspace = true
 
 # Config
-dotenvy = "0.15.7"
-figment = { version = "0.10", features = ["toml", "env"] }
-arrow-array = { version = "58.3.0", optional = true }
-arrow-schema = { version = "58.3.0", optional = true }
-lancedb = { version = "0.29.0", optional = true }
-walkdir = { version = "2.5.0", optional = true }
-sha2 = "0.10"
-rustyline = "18.0.0"
-utoipa = { version = "5.5.0", features = ["chrono"] }
-utoipa-axum = "0.2.0"
-utoipa-swagger-ui = { version = "9.0.2", features = ["axum"] }
+dotenvy.workspace = true
+figment.workspace = true
+arrow-array = { workspace = true, optional = true }
+arrow-schema = { workspace = true, optional = true }
+lancedb = { workspace = true, optional = true }
+walkdir = { workspace = true, optional = true }
+sha2.workspace = true
+rustyline.workspace = true
+utoipa.workspace = true
+utoipa-axum.workspace = true
+utoipa-swagger-ui.workspace = true
 
 [dev-dependencies]
-tokio-test = "0.4"
-pretty_assertions = "1"
-insta = "1"
-tempfile = "3"
+tokio-test.workspace = true
+pretty_assertions.workspace = true
+insta.workspace = true
+tempfile.workspace = true
 
 [profile.test]
 debug = 0
