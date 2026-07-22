@@ -1,6 +1,6 @@
 # Rove Modular Workspace Migration Plan - 2026-07-22
 
-> Status: **In Progress / Phase 5 Hooks And Executor Verified**
+> Status: **Phase 5 Complete (RAG deferred / product registry root-owned)**
 >
 > Design source:
 > [`../design/2026-07-22-modular-workspace-architecture.md`](../design/2026-07-22-modular-workspace-architecture.md)
@@ -441,11 +441,17 @@ Current verified progress:
   `rove-runtime`. Product registry assembly remains root-owned. Optional RAG is
   explicitly frozen for a later user-led refactor; its full feature test suite is
   not part of this migration gate.
+- Order items 5–7 are implemented for the remaining durable coordination surface:
+  planner, plan evaluator, plan loop, step runner, unplanned run loop, tool turn,
+  durable `AgentEvent -> StreamEvent` translation, session helper, and the
+  persistent `Engine`/`RunStream` facade now live in `rove-runtime`. Root
+  `rove::core::{engine,planner,session,executor}` and related paths remain
+  compatibility re-exports. Product registry assembly, optional RAG, and
+  first-party `AppConfig` remain root-owned until Phase 6.
 - The root `rove::core::*`, `rove::state::*`, `rove::memory::*`, and
   `rove::hooks::*` paths remain compatibility re-exports. The corresponding
-  local `rove::tools::*` paths are also compatibility re-exports. Engine
-  coordination, product registry assembly, optional RAG, and event translation
-  producers remain in the root package until later order items move.
+  local `rove::tools::*` paths are also compatibility re-exports for product
+  registry assembly and optional RAG.
 - Full first-party `AppConfig` remains in the root package because API/Web and
   provider assembly fields must be separated through `apps/bootstrap`; it was
   not pulled into `rove-runtime` merely to complete a directory move.

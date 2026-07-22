@@ -19,8 +19,9 @@ resumable task/execution contracts, Workspace/path safety, prompt/runtime
 identity, approval/input contracts, canonical events, context/compaction,
 session/durable memory, local built-in tools, invocation adapters, and the
 existing MCP proxy, the tool Executor pipeline, pre/post-tool and post-run
-hooks, plus durable state/trace/artifact/SQLite/repair/resume services.
-Persistent coordination, product tool-registry assembly, optional RAG, and app
+hooks, planning/step coordination, durable event translation, the persistent
+Engine facade, plus durable state/trace/artifact/SQLite/repair/resume services.
+Product tool-registry assembly, optional RAG, first-party AppConfig, and app
 packages remain in the compatibility root until their later migration slices
 move code, tests, and docs together.
 

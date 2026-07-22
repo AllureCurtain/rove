@@ -1,4 +1,4 @@
-use crate::core::execution::{
+use crate::execution::{
     PlanDecision, PlanDecisionKind, PlanDecisionRecord, PlanFinishReason, StepRecord,
     StepRecordStatus,
 };
@@ -115,10 +115,10 @@ fn decision(
 #[cfg(test)]
 mod tests {
     use super::{RECOVERABLE_STEP_FAILURE_CODE, evaluate_step_record};
-    use crate::core::execution::{
+    use crate::execution::{
         PlanDecisionKind, PlanFinishReason, StepCompletionBasis, StepRecord, StepRecordStatus,
     };
-    use crate::core::types::Usage;
+    use crate::types::Usage;
 
     fn step_record(status: StepRecordStatus, error_code: Option<&str>) -> StepRecord {
         StepRecord {

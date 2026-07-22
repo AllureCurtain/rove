@@ -3,13 +3,13 @@ use futures::StreamExt;
 use futures::stream::BoxStream;
 use tokio_util::sync::CancellationToken;
 
-use crate::core::compaction::maybe_compact_history;
-use crate::core::events::StreamEvent;
-use crate::core::model_turn::{ModelTurnItem, run_model_turn};
-use crate::core::run_loop::{LoopContext, enrich_prompt_metadata, extract_session_memory_notes};
-use crate::core::tool_turn::{ToolAction, ToolTurnItem, append_tool_history, run_tool_turn};
-use crate::core::types::{Action, CallId, Message, PlanStep, ToolMutation, Usage};
+use crate::compaction::maybe_compact_history;
+use crate::events::StreamEvent;
 use crate::memory::session::append_session_notes_to_dir_sync;
+use crate::model_turn::{ModelTurnItem, run_model_turn};
+use crate::run_loop::{LoopContext, enrich_prompt_metadata, extract_session_memory_notes};
+use crate::tool_turn::{ToolAction, ToolTurnItem, append_tool_history, run_tool_turn};
+use crate::types::{Action, CallId, Message, PlanStep, ToolMutation, Usage};
 
 /// Inputs owned by one bounded planned-step attempt.
 ///
@@ -23,7 +23,7 @@ pub(crate) struct StepRunnerInput {
     pub working_memory: Vec<Message>,
     pub compact_summary: Option<String>,
     pub history: Vec<Message>,
-    pub compaction: crate::core::compaction::CompactionRuntime,
+    pub compaction: crate::compaction::CompactionRuntime,
 }
 
 #[derive(Debug)]
@@ -51,7 +51,7 @@ pub(crate) struct StepRunnerResult {
     pub outcome: StepRunnerOutcome,
     pub history: Vec<Message>,
     pub compact_summary: Option<String>,
-    pub compaction: crate::core::compaction::CompactionRuntime,
+    pub compaction: crate::compaction::CompactionRuntime,
     pub metrics: StepRunMetrics,
 }
 
@@ -308,7 +308,7 @@ pub(crate) fn run_step<'a>(
                     args,
                 } => {
                     let outcome = match drive_tool_turn!(ToolAction::Call(
-                        crate::core::types::ToolCallAction {
+                        crate::types::ToolCallAction {
                             call_id,
                             tool_use_id,
                             name,
@@ -389,7 +389,7 @@ fn finish_result(
     mut history: Vec<Message>,
     mut step_history: Vec<Message>,
     compact_summary: Option<String>,
-    compaction: crate::core::compaction::CompactionRuntime,
+    compaction: crate::compaction::CompactionRuntime,
     metrics: StepRunMetrics,
 ) -> StepRunnerResult {
     history.append(&mut step_history);

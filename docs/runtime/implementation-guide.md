@@ -44,7 +44,8 @@ Important entry points:
 | Web workbench | `web-ui/` |
 | In-memory Agent and tool contracts | `core/src/*` |
 | Persistent runtime services | `runtime/src/*` |
-| Persistent Engine and coordination | transitional `src/core/*` |
+| Persistent Engine and coordination | `runtime/src/engine.rs`, `runtime/src/{planner,plan_loop,step_runner,run_loop,tool_turn,model_turn,plan_evaluator}.rs` |
+| Compatibility Engine re-exports | `src/core/*` |
 | State artifacts and SQLite index | `runtime/src/state/*` |
 | Model protocol and providers | `models/src/*` |
 | Product provider assembly | transitional `src/models/factory.rs` |
@@ -620,7 +621,17 @@ Relevant code:
 
 ## 9. Engine Execution Flow
 
-`Engine` owns the model client, tool registry, runtime-owned context manager, workspace, approval policy, hooks, resolved memory paths, planner prompt, and optional interface providers for approval/input. `Engine` is the transitional persistent orchestration shell. IDs, task/execution data, Workspace/path safety, runtime identity, approval/input contracts, context/compaction, memory, events, state services, the tool `Executor` pipeline, and pre/post-tool plus post-run hooks live in `rove-runtime`; the normalized model turn and action parser live in `rove-core`. Runtime-specific tool turns, planning/run coordination, and durable event translation remain in focused root modules until later runtime slices are extracted.
+`Engine` is the persistent orchestration facade and now lives in
+`rove-runtime`. It owns the model client, tool registry, context manager,
+workspace, approval policy, hooks, resolved memory paths, planner prompt, and
+optional interface providers for approval/input. IDs, task/execution data,
+Workspace/path safety, runtime identity, approval/input contracts,
+context/compaction, memory, events, state services, the tool `Executor`
+pipeline, hooks, runtime-specific tool turns, planning/run coordination, and
+durable event translation live in `rove-runtime`; the normalized model turn and
+action parser live in `rove-core`. Root `src/core/*` paths remain compatibility
+re-exports. Product registry assembly, optional RAG, and first-party
+`AppConfig` remain transitional root concerns until later phases.
 
 The high-level run flow:
 
@@ -685,17 +696,18 @@ Plan mutation semantics:
 
 Relevant code:
 
-- `src/core/engine.rs`
+- `runtime/src/engine.rs`
+- `src/core/engine.rs` (compatibility re-export)
 - `core/src/agent.rs`
 - `core/src/model_turn.rs`
 - `core/src/parser.rs`
-- `src/core/model_turn.rs` (durable event translation)
-- `src/core/tool_turn.rs`
-- `src/core/run_loop.rs`
-- `src/core/step_runner.rs`
-- `src/core/plan_loop.rs`
-- `src/core/plan_evaluator.rs`
-- `src/core/planner.rs`
+- `runtime/src/model_turn.rs` (durable event translation)
+- `runtime/src/tool_turn.rs`
+- `runtime/src/run_loop.rs`
+- `runtime/src/step_runner.rs`
+- `runtime/src/plan_loop.rs`
+- `runtime/src/plan_evaluator.rs`
+- `runtime/src/planner.rs`
 - `runtime/src/context.rs`
 - `runtime/src/compaction.rs`
 
@@ -911,7 +923,7 @@ Relevant code:
 
 - `runtime/src/types.rs`
 - `runtime/src/tool_input.rs`
-- `src/core/tool_turn.rs`
+- `runtime/src/tool_turn.rs`
 - `src/interfaces/cli/approval.rs`
 - `src/interfaces/cli/input.rs`
 - `src/interfaces/api/mod.rs`
@@ -1339,7 +1351,7 @@ When changing provider tool-use:
 1. Update provider parser tests.
 2. Update `ModelEvent` normalization.
 3. Check native tool-use normalization in `core/src/model_turn.rs` and durable
-   translation in `src/core/model_turn.rs`.
+   translation in `runtime/src/model_turn.rs`.
 4. Check structured history round-trip tests.
 5. Preserve the native-before-text action conversion in `build_action_from_model_output`.
 

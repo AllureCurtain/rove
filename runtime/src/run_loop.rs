@@ -5,26 +5,26 @@ use futures::StreamExt;
 use futures::stream::BoxStream;
 use tokio_util::sync::CancellationToken;
 
-use crate::core::compaction::{CompactionRuntime, maybe_compact_history};
-use crate::core::context::ContextManager;
-use crate::core::events::StreamEvent;
-use crate::core::model_turn::{ModelTurnItem, run_model_turn};
-use crate::core::prompt_metadata::{
-    PromptBuildMetadata, prompt_cache_key, tool_signature, workspace_fingerprint,
-};
-use crate::core::tool_turn::{
-    ToolAction, ToolTurnContext, ToolTurnItem, append_tool_history, run_tool_turn,
-};
-use crate::core::types::{
-    Action, ApprovalDecision, ApprovalPolicy, Message, SessionId, TerminationReason,
-    ToolApprovalProvider, ToolSchema, UserInputProvider,
-};
-use crate::core::workspace::Workspace;
+use crate::compaction::{CompactionRuntime, maybe_compact_history};
+use crate::context::ContextManager;
+use crate::events::StreamEvent;
 use crate::hooks::HookRegistry;
 use crate::memory::paths::MemoryPaths;
 use crate::memory::session::append_session_notes_to_dir_sync;
-use crate::models::traits::ModelClient;
-use crate::tools::registry::ToolRegistry;
+use crate::model_turn::{ModelTurnItem, run_model_turn};
+use crate::prompt_metadata::{
+    PromptBuildMetadata, prompt_cache_key, tool_signature, workspace_fingerprint,
+};
+use crate::tool_turn::{
+    ToolAction, ToolTurnContext, ToolTurnItem, append_tool_history, run_tool_turn,
+};
+use crate::types::{
+    Action, ApprovalDecision, ApprovalPolicy, Message, SessionId, TerminationReason,
+    ToolApprovalProvider, ToolSchema, UserInputProvider,
+};
+use crate::workspace::Workspace;
+use rove_core::ToolRegistry;
+use rove_models::ModelClient;
 
 #[derive(Clone)]
 pub(crate) struct LoopContext<'a> {
@@ -88,7 +88,7 @@ pub(crate) fn extract_session_memory_notes(messages: &[Message]) -> Vec<String> 
             continue;
         }
         // Tool results that mention file modifications.
-        if msg.role == crate::core::types::Role::Tool {
+        if msg.role == crate::types::Role::Tool {
             let lower = content.to_ascii_lowercase();
             if lower.contains("created")
                 || lower.contains("wrote")
@@ -100,7 +100,7 @@ pub(crate) fn extract_session_memory_notes(messages: &[Message]) -> Vec<String> 
             }
         }
         // Assistant messages that state decisions or intent.
-        if msg.role == crate::core::types::Role::Assistant {
+        if msg.role == crate::types::Role::Assistant {
             let lower = content.to_ascii_lowercase();
             if lower.contains("i decided")
                 || lower.contains("i will")
@@ -270,7 +270,7 @@ pub(crate) fn run_unplanned_loop<'a>(
                     name,
                     args,
                 } => {
-                    let action = ToolAction::Call(crate::core::types::ToolCallAction {
+                    let action = ToolAction::Call(crate::types::ToolCallAction {
                         call_id,
                         tool_use_id,
                         name,

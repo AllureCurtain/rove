@@ -5,10 +5,10 @@ use tokio_util::sync::CancellationToken;
 
 use rove_core::AgentEvent;
 
-use crate::core::events::StreamEvent;
-use crate::core::types::{Message, ModelToolSchema};
-use crate::errors::ModelError;
-use crate::models::traits::ModelClient;
+use crate::events::StreamEvent;
+use crate::types::{Message, ModelToolSchema};
+use rove_models::ModelClient;
+use rove_models::ModelError;
 
 pub(crate) type ModelTurn = rove_core::model_turn::ModelTurn;
 

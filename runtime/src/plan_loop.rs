@@ -3,19 +3,19 @@ use futures::StreamExt;
 use futures::stream::BoxStream;
 use tokio_util::sync::CancellationToken;
 
-use crate::core::events::StreamEvent;
-use crate::core::execution::{
+use crate::events::StreamEvent;
+use crate::execution::{
     ExecutionBudgetUsage, PlanDecisionKind, PlanDecisionRecord, PlanFinishReason, PlanIdentity,
     PlanRevision, StepAttempt, StepCompletionBasis, StepLedgerState, StepRecord, StepRecordStatus,
     planned_step_failure_message,
 };
-use crate::core::plan_evaluator::{RECOVERABLE_STEP_FAILURE_CODE, evaluate_step_record};
-use crate::core::planner::Planner;
-use crate::core::run_loop::{LoopContext, LoopItem};
-use crate::core::step_runner::{
+use crate::plan_evaluator::{RECOVERABLE_STEP_FAILURE_CODE, evaluate_step_record};
+use crate::planner::Planner;
+use crate::run_loop::{LoopContext, LoopItem};
+use crate::step_runner::{
     StepRunMetrics, StepRunnerInput, StepRunnerItem, StepRunnerOutcome, run_step,
 };
-use crate::core::types::{Message, PlanStep, TaskPlan, TerminationReason};
+use crate::types::{Message, PlanStep, TaskPlan, TerminationReason};
 
 const MAX_STEP_RECORD_SUMMARY_CHARS: usize = 1_000;
 
@@ -447,7 +447,7 @@ fn initial_plan_revision(
 #[allow(clippy::too_many_arguments)]
 async fn replan_and_build_revision(
     planner: &Planner,
-    model: &dyn crate::models::traits::ModelClient,
+    model: &dyn rove_models::ModelClient,
     active_plan: &TaskPlan,
     trigger_step_index: usize,
     trigger_step_title: &str,
@@ -871,7 +871,7 @@ fn is_permission_denied(reason: &str) -> bool {
 
 async fn replan_after_step_failure(
     planner: &Planner,
-    model: &dyn crate::models::traits::ModelClient,
+    model: &dyn rove_models::ModelClient,
     goal: &str,
     step_title: &str,
     reason: &str,

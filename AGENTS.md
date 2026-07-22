@@ -39,7 +39,7 @@ Additional routing:
 | Change area | Read first |
 |---|---|
 | Embedded Agent/tool loop | `core/src/`, `tests/embedding_contract.rs` |
-| Persistent Engine/planning/events | `docs/runtime/react-loop.md`, `runtime/src/`, transitional `src/core/`, `tests/e2e.rs` |
+| Persistent Engine/planning/events | `docs/runtime/react-loop.md`, `runtime/src/`, compatibility `src/core/`, `tests/e2e.rs` |
 | State/resume/artifacts | `docs/runtime/subsystems.md`, `runtime/src/state/`, compatibility `src/state/` |
 | Providers/routing | `docs/runtime/provider-smoke.md`, `models/src/`, transitional `src/models/factory.rs` |
 | Tools/safety/MCP | `docs/runtime/subsystems.md`, `runtime/src/tools/`, transitional `src/tools/`, `tests/tool_safety.rs`, `tests/mcp.rs` |
@@ -55,8 +55,8 @@ Additional routing:
 |---|---|
 | `models/` | `rove-models`: normalized model protocol, providers, routing, fake provider |
 | `core/` | `rove-core`: in-memory Agent loop, core events/control, tool contracts and registry |
-| `runtime/` | `rove-runtime`: contracts/events, workspace, context/compaction, memory, local built-in tools, MCP proxy, Executor/hooks, state/artifacts/SQLite/repair/resume |
-| `src/core/` | Transitional persistent Engine, planning/run coordination, durable event translation and tool turns |
+| `runtime/` | `rove-runtime`: contracts/events, workspace, context/compaction, memory, local built-in tools, MCP proxy, Executor/hooks, planning, Engine, state/artifacts/SQLite/repair/resume |
+| `src/core/` | Compatibility re-exports for the persistent Engine and related runtime public surface |
 | `src/hooks/` | Transitional compatibility re-exports for `rove-runtime` hooks |
 | `src/models/factory.rs` | Transitional AppConfig-driven provider assembly for the root facade |
 | `src/tools/` | Transitional tool re-exports and product registry assembly, optional RAG |
@@ -119,11 +119,11 @@ As of 2026-07-22:
   canonical `StreamEvent`, context/compaction services, session/durable memory,
   local filesystem/shell/memory/input tools, invocation adapters, the existing
   stdio/legacy-SSE MCP proxy, the tool Executor pipeline, pre/post-tool and
-  post-run hooks, plus state/trace/artifact/SQLite/repair/resume services.
-  Persistent Engine coordination, product tool-registry assembly, optional RAG,
-  and `AgentEvent -> StreamEvent` translation remain in the root facade while
-  later Phase 5 slices are extracted. AppConfig-driven provider selection also
-  remains there until `apps/bootstrap` is extracted.
+  post-run hooks, planning/step coordination, durable event translation, the
+  persistent Engine facade, plus state/trace/artifact/SQLite/repair/resume
+  services. Product tool-registry assembly, optional RAG, and AppConfig-driven
+  provider selection remain in the root facade until Phase 6 extracts
+  `apps/bootstrap` and the product packages.
 - `docs/runtime/` describes the implemented MVP.
 - MCP currently supports stdio and the existing legacy SSE path. Streamable
   HTTP, negotiated sessions, rich MCP result envelopes, and Tool Artifacts are

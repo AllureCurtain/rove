@@ -2,26 +2,28 @@
 
 rove uses a Plan + ReAct runtime shape.
 
-The reusable in-memory mechanics now begin in `rove-core`: `core/src/agent.rs`
+The reusable in-memory mechanics begin in `rove-core`: `core/src/agent.rs`
 owns the embeddable Agent loop, `core/src/model_turn.rs` converts normalized
 `ModelEvent` values into `AgentEvent` plus `Action`, and
-`core/src/parser.rs` owns the compatibility JSON action parser. The root
-`src/core/model_turn.rs` is a synchronous compatibility translator from those
-in-memory model events into canonical durable `StreamEvent` values.
+`core/src/parser.rs` owns the compatibility JSON action parser.
 
-The extracted `rove-runtime` slices own IDs, resumable task/checkpoint and
-execution-policy data, Workspace/path safety, prompt/runtime identity,
-approval/input provider contracts, canonical `StreamEvent`, and all current
-state/trace/artifact/SQLite/repair/resume, context/compaction, and
-session/durable memory services. The persistent root Engine still coordinates
-when context, compaction, and pre-compaction memory flushes run, along with
-planning and durable event translation, while later runtime slices are
-extracted. Its runtime-specific tool turn remains in `src/core/tool_turn.rs`;
-it consumes the `rove-core` Tool contract and registry without placing
+`rove-runtime` owns the durable execution surface: IDs, resumable
+task/checkpoint and execution-policy data, Workspace/path safety,
+prompt/runtime identity, approval/input contracts, canonical `StreamEvent`,
+state/trace/artifact/SQLite/repair/resume, context/compaction,
+session/durable memory, local tools/MCP, the tool `Executor` and hooks,
+runtime-specific tool turns, planning/step coordination, durable event
+translation, and the persistent `Engine` facade.
+`runtime/src/model_turn.rs` is the synchronous translator from in-memory
+`AgentEvent` values into durable `StreamEvent` values. Root `src/core/*`
+modules re-export the public surface during the compatibility window.
+Product tool-registry assembly, optional RAG, and first-party `AppConfig`
+remain transitional root concerns until later phases. Runtime tool turns
+consume the `rove-core` Tool contract and registry without placing
 Workspace, Memory, approval, or input fields on the minimal core `ToolContext`.
 
-The unplanned loop in `src/core/run_loop.rs` is the pure ReAct loop implemented by
-`run_unplanned_loop`:
+The unplanned loop in `runtime/src/run_loop.rs` is the pure ReAct loop
+implemented by `run_unplanned_loop`:
 
 1. Build context with `ContextManager::build_with_checkpoint`.
 2. Compact old history when the token budget requires it.
@@ -31,9 +33,9 @@ The unplanned loop in `src/core/run_loop.rs` is the pure ReAct loop implemented 
 6. Append assistant tool calls and tool results back into history.
 7. Repeat until final answer, cancellation, token limit, step limit, or error.
 
-The planned coordinator, `run_planned_loop` in `src/core/plan_loop.rs`,
+The planned coordinator, `run_planned_loop` in `runtime/src/plan_loop.rs`,
 delegates each current plan step to the bounded runner in
-`src/core/step_runner.rs`:
+`runtime/src/step_runner.rs`:
 
 1. Draft or resume a `TaskPlan`.
 2. Convert the current plan step into a focused user prompt.

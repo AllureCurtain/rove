@@ -1,10 +1,10 @@
 # rove-runtime
 
 `rove-runtime` owns Rove's persistent and product-level execution contracts.
-During the modular Workspace migration it is being extracted in verified
-slices from the temporary root `rove` compatibility package.
+During the modular Workspace migration it is extracted in verified slices from
+the temporary root `rove` compatibility package.
 
-The current extracted slice contains:
+The current crate owns:
 
 - run, job, and session IDs;
 - resumable task and prompt-checkpoint types;
@@ -15,13 +15,18 @@ The current extracted slice contains:
 - canonical durable `StreamEvent`;
 - token-aware context construction and deterministic/model compaction;
 - session/durable memory paths, storage, recall, and prompt assembly;
+- local built-in tools, invocation adapters, and the existing MCP proxy;
+- the tool `Executor` pipeline and pre/post-tool plus post-run hooks;
+- planner, plan evaluator, plan loop, step runner, unplanned run loop, and
+  tool-turn coordination;
+- durable `AgentEvent -> StreamEvent` translation and the persistent `Engine`
+  facade;
 - StateStore, trace, task/report artifacts, SQLite index, repair, cleanup, and
   resume.
 
-Persistent coordination, the session-summary post-run hook, built-in tools,
-MCP/RAG, and `AgentEvent -> StreamEvent` translation still live in the root
-package until their later Phase 5 slices are moved. This crate must not depend
-on CLI, API, benchmark, or Web packages.
+Product tool-registry assembly, optional RAG, and first-party `AppConfig`
+remain in the root compatibility package until Phase 6 extracts apps and
+bootstrap. This crate must not depend on CLI, API, benchmark, or Web packages.
 
 Local project dependencies:
 
@@ -47,5 +52,6 @@ cargo test -p rove-runtime
 ```
 
 Compatibility status: pre-1.0 and transitional. The root `rove::core::*`,
-`rove::state::*`, and `rove::memory::*` module paths re-export these contracts
-until application crates and tests have migrated to the new package.
+`rove::state::*`, `rove::memory::*`, and `rove::hooks::*` module paths re-export
+these contracts until application crates and tests have migrated to the new
+package.

@@ -6,20 +6,20 @@ use futures::stream::{BoxStream, StreamExt};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::core::events::StreamEvent;
-use crate::core::executor::Executor;
-use crate::core::tool_input::RegisteredUserInput;
-use crate::core::types::{
+use crate::events::StreamEvent;
+use crate::executor::Executor;
+use crate::hooks::HookRegistry;
+use crate::memory::paths::MemoryPaths;
+use crate::tool_input::RegisteredUserInput;
+use crate::tools::runtime_context::runtime_tool_context;
+use crate::types::{
     ApprovalDecision, ApprovalPolicy, CallId, Message, PendingToolApproval, ToolApprovalProvider,
     ToolApprovalRequest, ToolCallAction, ToolCallRef, ToolExecutionMetadata, ToolExecutionStatus,
     ToolResult, ToolRiskLevel, UserInputProvider,
 };
-use crate::core::workspace::Workspace;
-use crate::errors::ToolError;
-use crate::hooks::HookRegistry;
-use crate::memory::paths::MemoryPaths;
-use crate::tools::registry::ToolRegistry;
-use crate::tools::runtime_context::runtime_tool_context;
+use crate::workspace::Workspace;
+use rove_core::ToolError;
+use rove_core::ToolRegistry;
 
 const APPROVAL_REASON: &str = "destructive tool requires explicit approval";
 
@@ -483,16 +483,16 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     use super::{ToolAction, ToolTurnContext, ToolTurnItem, run_tool_turn};
-    use crate::core::types::{
-        ApprovalDecision, ApprovalPolicy, CallId, PendingUserInput, ToolCallAction,
-        ToolExecutionStatus, UserInputProvider, UserInputRequest,
-    };
-    use crate::core::workspace::Workspace;
-    use crate::errors::ToolError;
     use crate::hooks::HookRegistry;
     use crate::memory::paths::MemoryPaths;
     use crate::tools::echo::EchoTool;
-    use crate::tools::registry::ToolRegistry;
+    use crate::types::{
+        ApprovalDecision, ApprovalPolicy, CallId, PendingUserInput, ToolCallAction,
+        ToolExecutionStatus, UserInputProvider, UserInputRequest,
+    };
+    use crate::workspace::Workspace;
+    use rove_core::ToolError;
+    use rove_core::ToolRegistry;
 
     struct ImmediateInputProvider;
 
@@ -579,7 +579,7 @@ mod tests {
         assert!(events.iter().any(|item| {
             matches!(
                 item,
-                ToolTurnItem::Event(crate::core::events::StreamEvent::ToolCallFailed {
+                ToolTurnItem::Event(crate::events::StreamEvent::ToolCallFailed {
                     metadata,
                     ..
                 }) if metadata.status == ToolExecutionStatus::Error

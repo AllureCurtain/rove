@@ -116,7 +116,7 @@ Fallback can be configured as:
 - `provider.fallback_models`: model names using the primary provider;
 - `provider.fallback_providers`: explicit provider/model/base/key records.
 
-Native provider tool-use and JSON text action parsing are both supported. Native tool-use is preferred for real providers because it preserves provider IDs through `Message.tool_calls` and `tool_call_id` history. The JSON text path remains for fake and compatibility scenarios and is used only when a model turn emitted no native tool calls. Planned, unplanned, and embedded execution share the conversion in `core/src/model_turn.rs`; `src/core/model_turn.rs` translates its `AgentEvent` values to durable `StreamEvent` values.
+Native provider tool-use and JSON text action parsing are both supported. Native tool-use is preferred for real providers because it preserves provider IDs through `Message.tool_calls` and `tool_call_id` history. The JSON text path remains for fake and compatibility scenarios and is used only when a model turn emitted no native tool calls. Planned, unplanned, and embedded execution share the conversion in `core/src/model_turn.rs`; `runtime/src/model_turn.rs` translates its `AgentEvent` values to durable `StreamEvent` values.
 
 `RoutingModelClient` can fall back before user-visible content or committed tool-use begins. It tracks provider health with a failure threshold and cooldown. For each routed candidate, `routing.retry_max_attempts`, `routing.retry_backoff_base_ms`, and `routing.retry_backoff_max_ms` control retry behavior for retryable pre-commit failures; rate-limit `retry-after` values are honored directly. Auth and context-length errors are not retried, and once text or native tool-use has committed, no retry or fallback is attempted.
 
@@ -127,11 +127,11 @@ Native provider tool-use and JSON text action parsing are both supported. Native
 `destructive`, `parallel_safe`, and capability fields while its model-schema
 projection omits them. Local built-in tool implementations and their typed
 invocation adapters live in `runtime/src/tools/`; compatibility modules under
-`src/tools/` re-export them. The tool `Executor` pipeline and pre/post-tool plus
-post-run hooks (including session-summary) live in `runtime/src/executor.rs` and
-`runtime/src/hooks/`; root modules re-export them. The root tool-turn coordinator
-still composes those services while durable event mapping remains transitional.
-The existing stdio/legacy-SSE MCP proxy is implemented in
+`src/tools/` re-export them. The tool `Executor` pipeline, pre/post-tool plus
+post-run hooks (including session-summary), and the durable tool-turn
+coordinator live in `runtime/src/executor.rs`, `runtime/src/hooks/`, and
+`runtime/src/tool_turn.rs`; root modules re-export the public surface. The
+existing stdio/legacy-SSE MCP proxy is implemented in
 `runtime/src/tools/mcp_proxy.rs`. CLI and API assemble tools through the same
 transitional product registry builder, which registers runtime built-ins and
 then loads configured MCP tools; optional RAG remains in the root feature-gated
