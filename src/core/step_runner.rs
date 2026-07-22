@@ -248,7 +248,7 @@ pub(crate) fn run_step<'a>(
             let mut turn_stream = run_model_turn(
                 ctx.model,
                 context.messages,
-                tool_schemas,
+                ctx.registry.model_schemas(),
                 cancel_token.clone(),
             );
             let model_turn = loop {

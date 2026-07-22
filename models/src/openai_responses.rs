@@ -563,9 +563,6 @@ mod tests {
                     "properties": { "path": { "type": "string" } },
                     "required": ["path"]
                 }),
-                destructive: false,
-                parallel_safe: true,
-                capability: None,
             }],
         );
 

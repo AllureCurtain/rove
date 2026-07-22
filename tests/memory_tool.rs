@@ -5,16 +5,18 @@ use rove::errors::ToolError;
 use rove::memory::paths::MemoryPaths;
 use rove::tools::memory::{ReadMemoryTopicTool, SaveMemoryTool, UpdateMemoryIndexTool};
 use rove::tools::registry::ToolRegistry;
+use rove::tools::runtime_context::runtime_tool_context;
 use tokio_util::sync::CancellationToken;
 
 fn tool_context(workspace: &Workspace) -> ToolContext<'_> {
-    ToolContext {
+    runtime_tool_context(
+        CallId::new(),
         workspace,
-        memory_paths: MemoryPaths::from_workspace(workspace, 8),
-        approval_policy: ApprovalPolicy::Never,
-        cancel_token: CancellationToken::new(),
-        input_provider: None,
-    }
+        MemoryPaths::from_workspace(workspace, 8),
+        ApprovalPolicy::Never,
+        None,
+        CancellationToken::new(),
+    )
 }
 
 #[tokio::test]
@@ -118,13 +120,14 @@ async fn save_memory_writes_to_configured_durable_memory_dir() {
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(SaveMemoryTool::new()));
     let executor = Executor::new(&registry);
-    let ctx = ToolContext {
-        workspace: &workspace,
+    let ctx = runtime_tool_context(
+        CallId::new(),
+        &workspace,
         memory_paths,
-        approval_policy: ApprovalPolicy::Never,
-        cancel_token: CancellationToken::new(),
-        input_provider: None,
-    };
+        ApprovalPolicy::Never,
+        None,
+        CancellationToken::new(),
+    );
 
     let result = executor
         .run(

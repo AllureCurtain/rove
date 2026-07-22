@@ -15,7 +15,7 @@ use rove::core::execution::{
     StepLedgerState, StepRecord, StepRecordStatus,
 };
 use rove::core::types::{
-    ApprovalDecision, ApprovalPolicy, CallId, JobId, Message, PendingToolApproval,
+    ApprovalDecision, ApprovalPolicy, CallId, JobId, Message, ModelToolSchema, PendingToolApproval,
     PendingUserInput, PlanStep, PromptCheckpoint, Role, RunId, RunRequest, SessionId, TaskPlan,
     TaskState, TerminationReason, ToolApprovalProvider, ToolApprovalRequest, ToolContext,
     ToolSchema, Usage, UserInputProvider, UserInputRequest,
@@ -35,6 +35,7 @@ use rove::tools::echo::EchoTool;
 use rove::tools::fs::{FsReadTool, FsWriteTool};
 use rove::tools::registry::ToolRegistry;
 use rove::tools::request_input::RequestInputTool;
+use rove::tools::runtime_context::{runtime_tool_context, runtime_tool_services};
 use rove::tools::shell::ShellTool;
 use rove::tools::traits::{Tool, ToolOutput};
 
@@ -93,7 +94,7 @@ impl ModelClient for FakeModelClient {
     fn stream(
         &self,
         _messages: &[Message],
-        _tools: &[ToolSchema],
+        _tools: &[ModelToolSchema],
     ) -> BoxStream<'_, Result<ModelEvent, ModelError>> {
         let idx = self
             .call_count
@@ -139,7 +140,7 @@ impl ModelClient for StepFailureModelClient {
     fn stream(
         &self,
         _messages: &[Message],
-        _tools: &[ToolSchema],
+        _tools: &[ModelToolSchema],
     ) -> BoxStream<'_, Result<ModelEvent, ModelError>> {
         let call = self
             .call_count
@@ -186,7 +187,7 @@ impl ModelClient for FailingAfterFirstCallModelClient {
     fn stream(
         &self,
         _messages: &[Message],
-        _tools: &[ToolSchema],
+        _tools: &[ModelToolSchema],
     ) -> BoxStream<'_, Result<ModelEvent, ModelError>> {
         let idx = self
             .call_count
@@ -227,7 +228,7 @@ impl ModelClient for CapturingFakeModelClient {
     fn stream(
         &self,
         messages: &[Message],
-        _tools: &[ToolSchema],
+        _tools: &[ModelToolSchema],
     ) -> BoxStream<'_, Result<ModelEvent, ModelError>> {
         self.captured_messages
             .lock()
@@ -267,7 +268,7 @@ impl ModelClient for RecordingModelClient {
     fn stream(
         &self,
         messages: &[Message],
-        _tools: &[ToolSchema],
+        _tools: &[ModelToolSchema],
     ) -> BoxStream<'_, Result<ModelEvent, ModelError>> {
         *self.captured_messages.lock().unwrap() = Some(messages.to_vec());
         Box::pin(futures::stream::iter([
@@ -307,7 +308,7 @@ impl ModelClient for NativeToolUseModelClient {
     fn stream(
         &self,
         _messages: &[Message],
-        _tools: &[ToolSchema],
+        _tools: &[ModelToolSchema],
     ) -> BoxStream<'_, Result<ModelEvent, ModelError>> {
         let idx = self
             .call_count
@@ -348,7 +349,7 @@ impl ModelClient for ThinkingStatusModelClient {
     fn stream(
         &self,
         _messages: &[Message],
-        _tools: &[ToolSchema],
+        _tools: &[ModelToolSchema],
     ) -> BoxStream<'_, Result<ModelEvent, ModelError>> {
         Box::pin(futures::stream::iter([
             Ok(ModelEvent::ThinkingDelta {
@@ -680,7 +681,7 @@ impl Tool for PublicProviderInputTool {
         args: serde_json::Value,
         ctx: &ToolContext<'_>,
     ) -> Result<ToolOutput, ToolError> {
-        let provider = ctx
+        let provider = runtime_tool_services(ctx)?
             .input_provider
             .as_ref()
             .ok_or_else(|| ToolError::ExecutionFailed {
@@ -815,13 +816,14 @@ fn build_test_engine_with_workspace(responses: Vec<String>, workspace: Workspace
 }
 
 fn tool_context(workspace: &Workspace, approval_policy: ApprovalPolicy) -> ToolContext<'_> {
-    ToolContext {
+    runtime_tool_context(
+        CallId::new(),
         workspace,
-        memory_paths: MemoryPaths::from_workspace(workspace, 8),
+        MemoryPaths::from_workspace(workspace, 8),
         approval_policy,
-        cancel_token: CancellationToken::new(),
-        input_provider: None,
-    }
+        None,
+        CancellationToken::new(),
+    )
 }
 
 fn build_engine_with_destructive_tool(
@@ -1221,13 +1223,14 @@ async fn pre_tool_hook_receives_cancellation_token_in_context() {
     }));
     let executor = rove::core::executor::Executor::with_hooks(&registry, hooks);
     let cancel = CancellationToken::new();
-    let ctx = ToolContext {
-        workspace: &workspace,
-        memory_paths: MemoryPaths::from_workspace(&workspace, 8),
-        approval_policy: ApprovalPolicy::Auto,
-        cancel_token: cancel.clone(),
-        input_provider: None,
-    };
+    let ctx = runtime_tool_context(
+        CallId::new(),
+        &workspace,
+        MemoryPaths::from_workspace(&workspace, 8),
+        ApprovalPolicy::Auto,
+        None,
+        cancel.clone(),
+    );
     cancel.cancel();
 
     executor
@@ -5196,7 +5199,7 @@ impl ModelClient for RoundTripRecordingModel {
     fn stream(
         &self,
         messages: &[Message],
-        _tools: &[ToolSchema],
+        _tools: &[ModelToolSchema],
     ) -> BoxStream<'_, Result<ModelEvent, ModelError>> {
         let idx = self
             .call_count
@@ -5319,7 +5322,7 @@ impl ModelClient for NativeBatchModel {
     fn stream(
         &self,
         messages: &[Message],
-        _tools: &[ToolSchema],
+        _tools: &[ModelToolSchema],
     ) -> BoxStream<'_, Result<ModelEvent, ModelError>> {
         let idx = self
             .call_count

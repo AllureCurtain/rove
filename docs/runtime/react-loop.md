@@ -2,12 +2,25 @@
 
 rove uses a Plan + ReAct runtime shape.
 
+The reusable in-memory mechanics now begin in `rove-core`: `core/src/agent.rs`
+owns the embeddable Agent loop, `core/src/model_turn.rs` converts normalized
+`ModelEvent` values into `AgentEvent` plus `Action`, and
+`core/src/parser.rs` owns the compatibility JSON action parser. The root
+`src/core/model_turn.rs` is a synchronous compatibility translator from those
+in-memory model events into canonical durable `StreamEvent` values.
+
+The persistent root Engine still owns context/compaction, planning, approval,
+input, memory flush, state, and resume while `rove-runtime` is being extracted.
+Its runtime-specific tool turn remains in `src/core/tool_turn.rs`; it consumes
+the `rove-core` Tool contract and registry without placing Workspace, Memory,
+approval, or input fields on the minimal core `ToolContext`.
+
 The unplanned loop in `src/core/run_loop.rs` is the pure ReAct loop implemented by
 `run_unplanned_loop`:
 
 1. Build context with `ContextManager::build_with_checkpoint`.
 2. Compact old history when the token budget requires it.
-3. Run one model turn through `run_model_turn`.
+3. Run one model turn through the `rove-core` `run_model_turn` adapter.
 4. Normalize native OpenAI, Anthropic, Ollama, and Responses tool-use into `Action`.
 5. Run one tool turn through `run_tool_turn`.
 6. Append assistant tool calls and tool results back into history.

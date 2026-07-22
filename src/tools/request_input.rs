@@ -4,6 +4,7 @@ use serde_json::Value;
 use super::traits::{Tool, ToolOutput};
 use crate::core::types::{ToolContext, ToolSchema};
 use crate::errors::ToolError;
+use crate::tools::runtime_context::runtime_tool_services;
 
 /// Ask the user for input mid-task.
 ///
@@ -42,7 +43,7 @@ impl Tool for RequestInputTool {
             })?;
         let prompt = validate_prompt(prompt)?;
 
-        if let Some(provider) = &ctx.input_provider {
+        if let Some(provider) = &runtime_tool_services(ctx)?.input_provider {
             let answer =
                 crate::core::tool_input::request_input(provider.as_ref(), prompt.clone()).await?;
             return Ok(ToolOutput::text(answer));

@@ -6,6 +6,7 @@ use rove::tools::mcp_proxy::{
     McpServerConfig, McpTransport, McpTransportPolicy, register_mcp_tools,
 };
 use rove::tools::registry::ToolRegistry;
+use rove::tools::runtime_context::runtime_tool_context;
 use std::collections::HashMap;
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -23,13 +24,14 @@ fn python_command() -> String {
 }
 
 fn mcp_context<'a>(workspace: &'a Workspace) -> ToolContext<'a> {
-    ToolContext {
+    runtime_tool_context(
+        rove::core::types::CallId::new(),
         workspace,
-        memory_paths: MemoryPaths::from_workspace(workspace, 8),
-        approval_policy: ApprovalPolicy::Auto,
-        cancel_token: CancellationToken::new(),
-        input_provider: None,
-    }
+        MemoryPaths::from_workspace(workspace, 8),
+        ApprovalPolicy::Auto,
+        None,
+        CancellationToken::new(),
+    )
 }
 
 fn short_mcp_policy() -> McpTransportPolicy {

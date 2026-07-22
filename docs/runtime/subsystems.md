@@ -86,6 +86,9 @@ The independent `rove-models` package owns provider-neutral `Message`,
 plus provider adapters, Fake Model, routing, and health. It has no local project
 dependency. The root compatibility package re-exports those types; only
 AppConfig-driven construction remains in transitional `src/models/factory.rs`.
+Its `ToolSchema` contains only the model-visible name, description, and input
+schema. Operational fields live in `rove_core::ToolDescriptor` and are not
+included in provider payloads.
 
 The model boundary is `ModelClient`, which streams normalized `ModelEvent` values. Raw provider thinking deltas are not exposed to interfaces; the engine converts model-side progress into safe `model_status` stream events. Native providers are peers:
 
@@ -99,14 +102,24 @@ Fallback can be configured as:
 - `provider.fallback_models`: model names using the primary provider;
 - `provider.fallback_providers`: explicit provider/model/base/key records.
 
-Native provider tool-use and JSON text action parsing are both supported. Native tool-use is preferred for real providers because it preserves provider IDs through `Message.tool_calls` and `tool_call_id` history. The JSON text path remains for fake and compatibility scenarios and is used only when a model turn emitted no native tool calls. Planned and unplanned execution share this conversion in `src/core/model_turn.rs`.
+Native provider tool-use and JSON text action parsing are both supported. Native tool-use is preferred for real providers because it preserves provider IDs through `Message.tool_calls` and `tool_call_id` history. The JSON text path remains for fake and compatibility scenarios and is used only when a model turn emitted no native tool calls. Planned, unplanned, and embedded execution share the conversion in `core/src/model_turn.rs`; `src/core/model_turn.rs` translates its `AgentEvent` values to durable `StreamEvent` values.
 
 `RoutingModelClient` can fall back before user-visible content or committed tool-use begins. It tracks provider health with a failure threshold and cooldown. For each routed candidate, `routing.retry_max_attempts`, `routing.retry_backoff_base_ms`, and `routing.retry_backoff_max_ms` control retry behavior for retryable pre-commit failures; rate-limit `retry-after` values are honored directly. Auth and context-length errors are not retried, and once text or native tool-use has committed, no retry or fallback is attempted.
 
 ## Tool Orchestration
 
-Tools are registered in `ToolRegistry` and executed through `Executor`. Tool schemas include `destructive` and `parallel_safe` flags.
+`rove-core` owns `Tool`, `ToolOutput`, `ToolRegistry`, invocation-scoped
+`ToolContext`, argument validation, and `ToolDescriptor`. The descriptor holds
+`destructive`, `parallel_safe`, and capability fields while its model-schema
+projection omits them. The persistent root runtime executes registered tools
+through `Executor`, approval/input handling, hooks, and durable event mapping.
 CLI and API assemble tools through the same runtime registry builder, which registers built-ins and then loads configured MCP tools.
+
+Workspace, resolved Memory paths, approval policy, and input providers are
+runtime-owned services attached to a tool invocation through a typed extension.
+They are not fields on the minimal `rove-core` context, so an embedded custom
+Tool needs only call identity and cancellation unless it explicitly opts into
+runtime services.
 
 MCP stdio transport is bounded by per-server policy. Initialize, list, and call requests time out; stderr is captured up to the configured diagnostic limit; JSON-RPC errors are mapped to structured tool execution failures; and child processes are killed when their client is dropped. `cargo test --test mcp` covers mock stdio registration, timeout/error/cleanup behavior, and includes an opt-in real filesystem MCP smoke test gated by `ROVE_MCP_FILESYSTEM_SMOKE=1`.
 

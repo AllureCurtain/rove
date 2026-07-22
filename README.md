@@ -155,7 +155,8 @@ bearer token server-side and does not expose it to browser JavaScript.
 | API | `src/bin/rove-api.rs`, `src/interfaces/api/` | HTTP job lifecycle, SSE event streaming, approvals, inputs, and cancellation. |
 | Benchmarks | `src/bin/rove-bench.rs`, `benchmarks/` | Deterministic no-network benchmark tasks with artifact-path reports. |
 | Web | `web-ui/` | Next.js workbench that consumes the API and SSE job stream. |
-| Core runtime | `src/core/` | Engine loop, context building, planner, parser, executor, IDs, and workspace detection. |
+| Agent core | `core/` | Independent `rove-core` crate: in-memory Agent/model/tool loop, typed core events, cancellation/control, policy hooks, tool contracts, and registry. |
+| Persistent runtime (transitional) | `src/core/` | Existing Engine facade, context/compaction, planning, approval/input, durable events, runtime IDs, and workspace coordination pending `rove-runtime` extraction. |
 | State | `src/state/` | File artifacts under `.rove/runs/` plus SQLite indexing in `.rove/state.sqlite`. |
 | Models | `models/` | Independent `rove-models` crate: normalized protocol, OpenAI-compatible chat completions, OpenAI Responses, Anthropic, Ollama, fake provider, routing, and health. Product config assembly remains temporarily in `src/models/factory.rs`. |
 | Tools | `src/tools/` | Filesystem, shell, memory, request input, MCP proxy, and optional RAG tools. |

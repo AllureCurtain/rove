@@ -4,6 +4,10 @@
 schema, usage/error normalization, model client contract, provider adapters,
 deterministic fake provider, routing, and provider health primitives.
 
+The model-visible `ToolSchema` contains only name, description, and JSON input
+schema. Destructive, parallel, and capability metadata belongs to
+`rove_core::ToolDescriptor` and is projected away before provider calls.
+
 It does not own Agent execution, workspace policy, tools, persistence,
 configuration loading, CLI/API types, or product assembly. First-party
 provider selection from `AppConfig` remains above this crate.

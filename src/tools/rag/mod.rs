@@ -7,6 +7,7 @@ use super::traits::{Tool, ToolOutput};
 use crate::core::types::{ToolCapability, ToolContext, ToolSchema};
 use crate::errors::ToolError;
 use crate::tools::rag::rewrite::{DeterministicQueryRewriteService, QueryRewriteService};
+use crate::tools::runtime_context::runtime_tool_services;
 
 mod embed;
 pub mod eval;
@@ -90,8 +91,10 @@ impl Tool for RagRetrieveTool {
             .get("limit")
             .and_then(|value| value.as_u64())
             .unwrap_or(5) as usize;
-        let index =
-            RagIndex::new_with_state_dir(self.root.clone(), _ctx.workspace.state_dir.clone());
+        let index = RagIndex::new_with_state_dir(
+            self.root.clone(),
+            runtime_tool_services(_ctx)?.workspace.state_dir.clone(),
+        );
         let embedder = DeterministicEmbedder;
         let hits = index
             .retrieve(&embedder, self.kind, query, limit)

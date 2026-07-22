@@ -12,8 +12,9 @@ evidence-backed change in rove.
 
 The repository is currently in a compatibility migration window. The Cargo
 Workspace contains the existing root `rove` package plus the independent
-`rove-models` crate; the root package remains the default member. The target
-`core/runtime/apps` packages remain proposed until their code, tests, and
+`rove-models` and `rove-core` crates; the root package remains the default
+member. `rove-core` is the implemented in-memory embedding layer. The target
+`rove-runtime` and app packages remain proposed until their code, tests, and
 current runtime documentation are moved together.
 
 ## 1. What rove is
@@ -190,7 +191,8 @@ OnCall reference Agent.
 | Benchmark | `src/bin/rove-bench.rs` | `src/bench/` |
 | RAG index | indexing binary under `src/bin/` | `src/tools/rag/` |
 | Web | `web-ui/` | API proxy, state hooks, components, tests |
-| Core | `src/core/` | engine, context, planner, parser, executor, events |
+| Agent core | `core/` | in-memory Agent/model/tool loop, control, core events, contracts |
+| Persistent runtime | `src/core/` | transitional Engine, context, planning, approval, durable events |
 | State | `src/state/` | store, trace, task state, report/artifacts |
 | Models | `models/` | independent protocol, provider adapters, routing, fake provider |
 | Provider assembly | `src/models/factory.rs` | transitional AppConfig-driven construction |
@@ -219,7 +221,7 @@ CLI/API/benchmark request
 
 When tracing a bug, follow both:
 
-1. control flow in `src/core/`;
+1. model/tool mechanics in `core/src/` and persistent control flow in `src/core/`;
 2. emitted events and persisted state in `src/state/`.
 
 Do not debug only from the final assistant text. It is a projection, not the

@@ -6,7 +6,7 @@ description = "A local-first, stateful, observable general-purpose agent runtime
 default-run = "rove"
 
 [workspace]
-members = [".", "models"]
+members = [".", "models", "core"]
 default-members = ["."]
 resolver = "3"
 
@@ -33,6 +33,7 @@ lancedb = "0.29.0"
 pretty_assertions = "1"
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm_0_29", "unstable-rendered-line-info"] }
 reqwest = { version = "0.13.3", features = ["json", "stream"] }
+rove-core = { path = "core" }
 rove-models = { path = "models" }
 rusqlite = { version = "0.32", features = ["bundled"] }
 rustyline = "18.0.0"
@@ -90,6 +91,7 @@ futures.workspace = true
 
 # HTTP + LLM
 reqwest.workspace = true
+rove-core.workspace = true
 rove-models.workspace = true
 eventsource-stream.workspace = true
 axum.workspace = true

@@ -9,6 +9,7 @@ pub mod rag;
 pub mod rag;
 pub mod registry;
 pub mod request_input;
+pub mod runtime_context;
 pub mod shell;
 pub mod traits;
 

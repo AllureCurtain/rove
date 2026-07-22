@@ -4,9 +4,10 @@ This guide is for maintainers who need to understand, debug, or extend the curre
 
 The root manifest is currently a transitional resolver-3 Cargo Workspace with
 the root `rove` compatibility package as default member and the independent
-`rove-models` package as its first extracted layer. Use Workspace-wide commands
-for full gates. Core/runtime/app implementation paths still refer to the root
-package until those packages are extracted.
+`rove-models` and `rove-core` packages as extracted lower layers. Use
+Workspace-wide commands for full gates. Persistent runtime and app
+implementation paths still refer to the root package until those packages are
+extracted.
 
 ## 1. Runtime Shape
 
@@ -15,10 +16,11 @@ offers REPL, exec, and optional full-screen TUI modes:
 
 ```text
 CLI (REPL / exec / TUI) / API / Web
-    -> Engine
+    -> root Engine compatibility facade
         -> ContextManager
-        -> ModelClient / RoutingModelClient
-        -> Executor / ToolRegistry
+        -> rove-core model turn / ToolRegistry
+            -> rove-models ModelClient / RoutingModelClient
+        -> runtime Executor / approval / input
         -> Memory loaders and hooks
         -> StateStore
 
@@ -39,7 +41,8 @@ Important entry points:
 | Full-screen TUI mode | `src/interfaces/tui/*`, `src/interfaces/terminal/*` |
 | API binary | `src/bin/rove-api.rs`, `src/interfaces/api/mod.rs` |
 | Web workbench | `web-ui/` |
-| Engine and runtime types | `src/core/*` |
+| In-memory Agent and tool contracts | `core/src/*` |
+| Persistent Engine and runtime types | transitional `src/core/*` |
 | State artifacts and SQLite index | `src/state/*` |
 | Model protocol and providers | `models/src/*` |
 | Product provider assembly | transitional `src/models/factory.rs` |
@@ -529,7 +532,7 @@ The core type model is centered on explicit IDs and serializable runtime state:
 | `SessionId` | User-level continuity across jobs |
 | `JobId` | One submitted task |
 | `RunId` | One engine execution |
-| `CallId` | One tool call |
+| `CallId` | One tool call; owned by `rove-core` |
 | `RunRequest` | Identity + user message + optional resume state |
 | `TaskState` | Serializable resume snapshot |
 | `PromptCheckpoint` | Compact reconstruction point for resume |
@@ -541,14 +544,17 @@ The core type model is centered on explicit IDs and serializable runtime state:
 | `StepAttempt` | Persisted identity for one in-flight planned attempt |
 | `StepRecord` | Append-only terminal fact for one planned attempt |
 | `StepLedgerState` | Materialized ledger and active-attempt projection |
-| `Message` | Provider-facing conversation message |
-| `ToolSchema` | Tool contract exposed to the model |
+| `Message` | Provider-facing conversation message; owned by `rove-models` |
+| `rove_models::ToolSchema` | Model-visible name, description, and input schema |
+| `rove_core::ToolDescriptor` | Operational schema plus destructive/parallel/capability metadata |
 | `RunStatus` | API/job status |
 | `TerminationReason` | Engine completion reason |
 
 Relevant code:
 
-- `src/core/types.rs`
+- `models/src/protocol.rs`
+- `core/src/types.rs`
+- transitional runtime types in `src/core/types.rs`
 
 ## 8. Stream Events
 
@@ -604,7 +610,7 @@ Relevant code:
 
 ## 9. Engine Execution Flow
 
-`Engine` owns the model client, tool registry, context manager, workspace, approval policy, hooks, resolved memory paths, planner prompt, and optional interface providers for approval/input. `Engine` is the public orchestration shell; model turns, tool turns, and planned/unplanned run loops live in focused modules.
+`Engine` owns the model client, tool registry, context manager, workspace, approval policy, hooks, resolved memory paths, planner prompt, and optional interface providers for approval/input. `Engine` is the transitional persistent orchestration shell. The normalized model turn and action parser live in `rove-core`; runtime-specific tool turns and planned/unplanned coordination remain in focused root modules until `rove-runtime` is extracted.
 
 The high-level run flow:
 
@@ -670,7 +676,10 @@ Plan mutation semantics:
 Relevant code:
 
 - `src/core/engine.rs`
-- `src/core/model_turn.rs`
+- `core/src/agent.rs`
+- `core/src/model_turn.rs`
+- `core/src/parser.rs`
+- `src/core/model_turn.rs` (durable event translation)
 - `src/core/tool_turn.rs`
 - `src/core/run_loop.rs`
 - `src/core/step_runner.rs`
@@ -678,7 +687,6 @@ Relevant code:
 - `src/core/plan_evaluator.rs`
 - `src/core/planner.rs`
 - `src/core/context.rs`
-- `src/core/parser.rs`
 
 ## 10. Context And Compaction
 
@@ -735,7 +743,7 @@ All providers implement:
 
 ```rust
 trait ModelClient {
-    fn stream(&self, messages: &[Message], tools: &[ToolSchema])
+    fn stream(&self, messages: &[Message], tools: &[rove_models::ToolSchema])
         -> BoxStream<'_, Result<ModelEvent, ModelError>>;
 
     fn model_id(&self) -> &str;
@@ -768,7 +776,7 @@ Native providers:
 | Ollama | `models/src/ollama.rs` |
 | Fake | `models/src/fake.rs` |
 
-Provider-native tool use is the preferred path for real providers. Provider adapters emit `ToolUseStart` and `ToolUseDone`, `src/core/model_turn.rs` converts those into `ToolCallAction` values, and `LlmMessage.tool_calls` plus `tool_call_id` preserve structured history for provider replay. OpenAI-compatible, Anthropic, and Ollama formatters replay that history in their native request shapes.
+Provider-native tool use is the preferred path for real providers. Provider adapters emit `ToolUseStart` and `ToolUseDone`, `core/src/model_turn.rs` converts those into `ToolCallAction` and `AgentEvent` values, and the root adapter maps the latter to durable `StreamEvent` values. `LlmMessage.tool_calls` plus `tool_call_id` preserve structured history for provider replay. OpenAI-compatible, Anthropic, and Ollama formatters replay that history in their native request shapes.
 
 The JSON text action path remains for compatibility and fake-model tests. It is used only when no native tool calls were emitted, flows through `parse_action`, and produces no provider-native `tool_use_id`. Planned and unplanned loops both call the same `run_model_turn` helper, whose `build_action_from_model_output` boundary chooses native tool calls before text fallback.
 
@@ -790,7 +798,10 @@ Relevant code:
 
 ## 12. Tool System
 
-Tools implement `Tool` and are registered in `ToolRegistry`. The registry exposes schemas to the model and dispatches execution by name.
+Tools implement the `rove-core` `Tool` contract and are registered in its
+`ToolRegistry`. The registry projects operational `ToolDescriptor` values into
+model-visible schemas and dispatches validated execution by name. The root
+compatibility modules re-export these contracts.
 
 Current built-in tools:
 
@@ -812,10 +823,11 @@ CLI and API construct runtime tools through the shared async
 `runtime_tool_registry(&Workspace, ShellPolicy, mcp_config_path)` builder. That
 builder registers built-ins through `default_tool_registry_with_shell_policy`
 and then loads configured MCP tools. Root-bound tools receive the workspace root
-at construction. Memory tools are context-bound and derive their paths from
-`ToolContext.memory_paths`.
+at construction. Runtime-specific Workspace, Memory paths, approval policy, and
+input provider are attached to the invocation through `RuntimeToolServices`;
+they are not fields on the minimal `rove_core::ToolContext`.
 
-Tool schemas include:
+Operational Tool descriptors include:
 
 - `destructive`: requires approval unless policy allows it;
 - `parallel_safe`: allows concurrent batch execution if every call is non-destructive and safe.
@@ -845,8 +857,11 @@ calls.
 
 Relevant code:
 
-- `src/tools/traits.rs`
-- `src/tools/registry.rs`
+- `core/src/tools.rs`
+- `core/src/policy.rs`
+- `core/src/validation.rs`
+- `src/tools/traits.rs` and `src/tools/registry.rs` (compatibility re-exports)
+- `src/tools/runtime_context.rs`
 - `src/core/executor.rs`
 - `src/core/boundary.rs`
 - `src/hooks/mod.rs`
@@ -1305,7 +1320,8 @@ When changing provider tool-use:
 
 1. Update provider parser tests.
 2. Update `ModelEvent` normalization.
-3. Check shared engine native tool-use handling in `src/core/model_turn.rs`.
+3. Check native tool-use normalization in `core/src/model_turn.rs` and durable
+   translation in `src/core/model_turn.rs`.
 4. Check structured history round-trip tests.
 5. Preserve the native-before-text action conversion in `build_action_from_model_output`.
 

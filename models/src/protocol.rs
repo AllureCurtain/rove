@@ -89,24 +89,10 @@ pub struct Usage {
     pub cached_tokens: u32,
 }
 
-/// Tool schema sent to a model. Operational fields remain for wire
-/// compatibility during extraction and will be split at the core boundary.
+/// Provider-neutral tool schema sent to a model.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolSchema {
     pub name: String,
     pub description: String,
     pub parameters: serde_json::Value,
-    pub destructive: bool,
-    pub parallel_safe: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub capability: Option<ToolCapability>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ToolCapability {
-    pub status: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub feature: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub message: Option<String>,
 }

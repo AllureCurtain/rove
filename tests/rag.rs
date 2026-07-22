@@ -340,10 +340,11 @@ async fn path_scoped_channel_prefers_matching_path_hint() {
 
 #[tokio::test]
 async fn rag_tool_output_contains_query_metadata_and_results() {
-    use rove::core::types::{ApprovalPolicy, ToolContext};
+    use rove::core::types::ApprovalPolicy;
     use rove::core::workspace::Workspace;
     use rove::memory::paths::MemoryPaths;
     use rove::tools::rag::RagRetrieveTool;
+    use rove::tools::runtime_context::runtime_tool_context;
     use rove::tools::traits::Tool;
     use tokio_util::sync::CancellationToken;
 
@@ -359,13 +360,14 @@ async fn rag_tool_output_contains_query_metadata_and_results() {
     index.ingest_workspace(&embedder).await.unwrap();
 
     let workspace = Workspace::detect(tmp.path()).unwrap();
-    let ctx = ToolContext {
-        workspace: &workspace,
-        memory_paths: MemoryPaths::from_workspace(&workspace, 8),
-        approval_policy: ApprovalPolicy::Auto,
-        cancel_token: CancellationToken::new(),
-        input_provider: None,
-    };
+    let ctx = runtime_tool_context(
+        rove::core::types::CallId::new(),
+        &workspace,
+        MemoryPaths::from_workspace(&workspace, 8),
+        ApprovalPolicy::Auto,
+        None,
+        CancellationToken::new(),
+    );
     let tool = RagRetrieveTool::docs(workspace.root.clone());
     let schema = tool.schema();
     assert_eq!(schema.capability.as_ref().unwrap().status, "enabled");
@@ -397,10 +399,11 @@ async fn rag_tool_output_contains_query_metadata_and_results() {
 
 #[tokio::test]
 async fn rag_retrieval_reads_from_configured_state_dir() {
-    use rove::core::types::{ApprovalPolicy, ToolContext};
+    use rove::core::types::ApprovalPolicy;
     use rove::core::workspace::{Workspace, WorkspaceKind};
     use rove::memory::paths::MemoryPaths;
     use rove::tools::rag::RagRetrieveTool;
+    use rove::tools::runtime_context::runtime_tool_context;
     use rove::tools::traits::Tool;
     use tokio_util::sync::CancellationToken;
 
@@ -423,13 +426,14 @@ async fn rag_retrieval_reads_from_configured_state_dir() {
         .await
         .unwrap();
 
-    let ctx = ToolContext {
-        workspace: &workspace,
-        memory_paths: MemoryPaths::from_workspace(&workspace, 8),
-        approval_policy: ApprovalPolicy::Auto,
-        cancel_token: CancellationToken::new(),
-        input_provider: None,
-    };
+    let ctx = runtime_tool_context(
+        rove::core::types::CallId::new(),
+        &workspace,
+        MemoryPaths::from_workspace(&workspace, 8),
+        ApprovalPolicy::Auto,
+        None,
+        CancellationToken::new(),
+    );
     let tool = RagRetrieveTool::docs(workspace.root.clone());
 
     let output = tool

@@ -4,16 +4,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use async_trait::async_trait;
 use futures::StreamExt;
 
-use rove::core::context::ContextManager;
-use rove::core::engine::{Engine, EngineConfig};
-use rove::core::events::StreamEvent;
-use rove::core::types::{ApprovalPolicy, TerminationReason, ToolContext, ToolSchema};
-use rove::core::workspace::Workspace;
-use rove::errors::ToolError;
-use rove::hooks::HookRegistry;
-use rove::models::fake::{FakeModelClient, FakeTurn};
-use rove::tools::registry::ToolRegistry;
-use rove::tools::traits::{Tool, ToolOutput};
+use rove_core::{
+    Agent, AgentConfig, AgentEvent, AgentStopReason, Tool, ToolContext, ToolDescriptor, ToolError,
+    ToolOutput, ToolRegistry,
+};
+use rove_models::{FakeModelClient, FakeTurn};
 
 struct UppercaseTool {
     calls: Arc<AtomicUsize>,
@@ -21,8 +16,8 @@ struct UppercaseTool {
 
 #[async_trait]
 impl Tool for UppercaseTool {
-    fn schema(&self) -> ToolSchema {
-        ToolSchema {
+    fn schema(&self) -> ToolDescriptor {
+        ToolDescriptor {
             name: "uppercase".to_string(),
             description: "Convert text to uppercase.".to_string(),
             parameters: serde_json::json!({
@@ -58,7 +53,6 @@ impl Tool for UppercaseTool {
 #[tokio::test]
 async fn fake_model_and_custom_tool_embed_without_creating_runtime_state() {
     let temp = tempfile::tempdir().unwrap();
-    let workspace = Workspace::detect(temp.path()).unwrap();
     let calls = Arc::new(AtomicUsize::new(0));
     let model = FakeModelClient::with_turns(
         "unused fallback".to_string(),
@@ -75,37 +69,30 @@ async fn fake_model_and_custom_tool_embed_without_creating_runtime_state() {
     tools.register(Box::new(UppercaseTool {
         calls: calls.clone(),
     }));
-    let engine = Engine::with_workspace(
+    let agent = Agent::new(
         Box::new(model),
         tools,
-        ContextManager::new("You are an embedded test agent.".to_string()),
-        EngineConfig {
-            max_steps: 4,
-            plan_enabled: false,
+        AgentConfig {
+            system_prompt: Some("You are an embedded test agent.".to_string()),
+            max_model_turns: 4,
+            max_tool_calls: 4,
         },
-        workspace,
-        ApprovalPolicy::Auto,
-    )
-    .with_hooks(HookRegistry::default());
+    );
 
-    let events = engine
-        .ask("uppercase rove".to_string(), None)
-        .collect::<Vec<_>>()
-        .await;
+    let events = agent.ask("uppercase rove").collect::<Vec<_>>().await;
 
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     assert!(events.iter().any(|event| {
         matches!(
             event,
-            StreamEvent::ToolCallCompleted { result, .. } if result.output == "ROVE"
+            AgentEvent::ToolCallCompleted { output, .. } if output.content == "ROVE"
         )
     }));
     assert!(matches!(
         events.last(),
-        Some(StreamEvent::RunCompleted {
-            reason: TerminationReason::Final,
-            output: Some(output),
-        }) if output == "ROVE"
+        Some(AgentEvent::Completed { outcome })
+            if outcome.reason == AgentStopReason::Final
+                && outcome.output.as_deref() == Some("ROVE")
     ));
     assert!(
         !temp.path().join(".rove").exists(),

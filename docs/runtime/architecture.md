@@ -4,22 +4,30 @@
 
 The repository manifest is currently a transitional Cargo Workspace containing
 the existing root `rove` compatibility package and the independent
-`rove-models` package; the root package remains the default member. Shared
-package metadata and dependency versions are defined at Workspace scope.
-`rove-core`, `rove-runtime`, and first-party app packages have not yet been
-physically extracted, so their ownership remains at the root paths documented
-below until each migration phase is implemented and verified.
+`rove-models` and `rove-core` packages; the root package remains the default
+member. Shared package metadata and dependency versions are defined at
+Workspace scope. `rove-core` is the in-memory embedding layer and depends only
+on `rove-models`. `rove-runtime` and first-party app packages have not yet been
+physically extracted, so persistent/product ownership remains at the root paths
+documented below.
 
 ## Shape
 
 ```text
 CLI / TUI / API / Web
-    -> Engine
+    -> root Engine compatibility facade
         -> ContextManager
-        -> ModelClient / RoutingModelClient
-        -> Executor / ToolRegistry
+        -> rove-core model turn / ToolRegistry contracts
+            -> rove-models ModelClient / RoutingModelClient
+        -> runtime Executor / approval and input adapters
         -> Memory loaders and hooks
         -> StateStore
+
+External embedding
+    -> rove-core::Agent
+        -> rove-models::ModelClient
+        -> custom ToolRegistry / ToolPolicy
+        -> in-memory AgentEvent
 
 StateStore
     -> .rove/runs/<run_id>/*
@@ -63,7 +71,19 @@ cannot supply trustworthy interaction events fail closed.
   adapters, routing, health, and Fake Model without depending on another local
   project package. The root facade re-exports these contracts while
   AppConfig-driven construction remains transitional product assembly.
-- Tool execution happens through `Executor` and `ToolRegistry`; approval policy is passed through `ToolContext`.
+- `rove-core` owns the in-memory `Agent`, `AgentEvent`, action/parser and model
+  turn, cancellation/control, `Tool`/`ToolRegistry`, `ToolDescriptor`, and
+  runtime-neutral policy hook. It depends only on `rove-models` and creates no
+  workspace or state directory.
+- Model-visible `rove_models::ToolSchema` is separate from operational
+  `rove_core::ToolDescriptor`; provider payloads receive only the model schema.
+- Persistent tool execution still passes through the root `Executor` and
+  approval/input boundary. Runtime-specific Workspace, Memory, policy, and
+  input services are attached as a typed invocation extension rather than
+  fields on the minimal core `ToolContext`.
+- The event chain is `ModelEvent -> AgentEvent -> StreamEvent`. The root
+  compatibility model-turn adapter performs the synchronous durable event
+  translation today; only `StreamEvent` is persisted or exposed by apps.
 - Files remain the readable source artifacts; SQLite is the query/replay index.
 - A `step_result` trace event is the append-only terminal fact. The task-state
   ledger and report records are projections and must not overwrite prior

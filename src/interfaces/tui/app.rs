@@ -1191,8 +1191,9 @@ mod tests {
     use crate::core::engine::{Engine, EngineConfig};
     use crate::core::events::StreamEvent;
     use crate::core::types::{
-        ApprovalDecision, ApprovalPolicy, CallId, JobId, Message, RunId, RunRequest, SessionId,
-        TaskState, TerminationReason, ToolApprovalRequest, ToolSchema, Usage, UserInputRequest,
+        ApprovalDecision, ApprovalPolicy, CallId, JobId, Message, ModelToolSchema, RunId,
+        RunRequest, SessionId, TaskState, TerminationReason, ToolApprovalRequest, Usage,
+        UserInputRequest,
     };
     use crate::core::workspace::Workspace;
     use crate::errors::ModelError;
@@ -1233,7 +1234,7 @@ mod tests {
         fn stream(
             &self,
             _messages: &[Message],
-            _tools: &[ToolSchema],
+            _tools: &[ModelToolSchema],
         ) -> BoxStream<'_, Result<ModelEvent, ModelError>> {
             let entered = Arc::clone(&self.entered);
             let release = Arc::clone(&self.release);

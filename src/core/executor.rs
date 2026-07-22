@@ -7,6 +7,7 @@ use crate::core::types::{
 use crate::errors::ToolError;
 use crate::hooks::{HookRegistry, PostToolHookContext};
 use crate::tools::registry::ToolRegistry;
+use crate::tools::runtime_context::runtime_tool_services;
 use tokio::sync::mpsc;
 
 /// The executor runs tools through the pipeline.
@@ -61,7 +62,7 @@ impl<'a> Executor<'a> {
         self.hooks.run_pre_tool(ctx, name, &args).await?;
 
         // Step 4: permission boundary
-        check_tool_allowed(&schema, ctx.approval_policy)?;
+        check_tool_allowed(&schema, runtime_tool_services(ctx)?.approval_policy)?;
 
         // Step 5: execute
         let output = crate::core::tool_input::scope(
@@ -379,6 +380,7 @@ mod tests {
     use crate::core::workspace::Workspace;
     use crate::memory::paths::MemoryPaths;
     use crate::tools::registry::ToolRegistry;
+    use crate::tools::runtime_context::runtime_tool_context;
     use crate::tools::traits::{Tool, ToolOutput};
 
     struct MutatingTool;
@@ -418,13 +420,14 @@ mod tests {
         let workspace = Workspace::detect(tmp.path()).unwrap();
         let mut registry = ToolRegistry::new();
         registry.register(Box::new(MutatingTool));
-        let ctx = ToolContext {
-            workspace: &workspace,
-            memory_paths: MemoryPaths::from_workspace(&workspace, 8),
-            approval_policy: ApprovalPolicy::Auto,
-            cancel_token: CancellationToken::new(),
-            input_provider: None,
-        };
+        let ctx = runtime_tool_context(
+            CallId::new(),
+            &workspace,
+            MemoryPaths::from_workspace(&workspace, 8),
+            ApprovalPolicy::Auto,
+            None,
+            CancellationToken::new(),
+        );
 
         let result = Executor::new(&registry)
             .run(&ctx, "write_note", serde_json::json!({}), CallId::new())

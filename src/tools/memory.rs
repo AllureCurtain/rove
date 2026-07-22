@@ -9,6 +9,7 @@ use super::traits::{Tool, ToolOutput};
 use crate::core::types::{ToolContext, ToolSchema};
 use crate::errors::ToolError;
 use crate::memory::durable::{MemoryScope, MemoryType, parse_frontmatter};
+use crate::tools::runtime_context::runtime_tool_services;
 
 const MAX_MEMORY_INDEX_LINES: usize = 200;
 const MAX_MEMORY_INDEX_BYTES: usize = 25_000;
@@ -96,7 +97,7 @@ impl Tool for SaveMemoryTool {
             .unwrap_or(0.7)
             .clamp(0.0, 1.0);
 
-        let memory_dir = memory_dir(ctx);
+        let memory_dir = memory_dir(ctx)?;
         let topics_dir = memory_dir.join("topics");
         tokio::fs::create_dir_all(&topics_dir)
             .await
@@ -161,7 +162,7 @@ impl Tool for UpdateMemoryIndexTool {
     }
 
     async fn execute(&self, _args: Value, ctx: &ToolContext<'_>) -> Result<ToolOutput, ToolError> {
-        let memory_dir = memory_dir(ctx);
+        let memory_dir = memory_dir(ctx)?;
         tokio::fs::create_dir_all(&memory_dir)
             .await
             .map_err(execution_failed)?;
@@ -212,7 +213,7 @@ impl Tool for ReadMemoryTopicTool {
     async fn execute(&self, args: Value, ctx: &ToolContext<'_>) -> Result<ToolOutput, ToolError> {
         let raw_name = required_string(&args, "name")?;
         let slug = normalize_topic(raw_name)?;
-        let topic_path = memory_dir(ctx).join("topics").join(format!("{slug}.md"));
+        let topic_path = memory_dir(ctx)?.join("topics").join(format!("{slug}.md"));
 
         let content = tokio::fs::read_to_string(topic_path).await.map_err(|err| {
             if err.kind() == ErrorKind::NotFound {
@@ -235,8 +236,8 @@ struct IndexEntry {
     scope: String,
 }
 
-fn memory_dir(ctx: &ToolContext<'_>) -> PathBuf {
-    ctx.memory_paths.durable_dir.clone()
+fn memory_dir(ctx: &ToolContext<'_>) -> Result<PathBuf, ToolError> {
+    Ok(runtime_tool_services(ctx)?.memory_paths.durable_dir.clone())
 }
 
 async fn update_memory_index(memory_dir: &Path) -> Result<(), ToolError> {

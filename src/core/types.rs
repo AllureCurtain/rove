@@ -1,17 +1,18 @@
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use tokio_util::sync::CancellationToken;
 use ulid::Ulid;
 
-use crate::core::workspace::Workspace;
 use crate::errors::ToolError;
-use crate::memory::paths::MemoryPaths;
 
-pub use rove_models::{Message, Role, ToolCallRef, ToolCapability, ToolSchema, Usage};
+pub use rove_core::{
+    Action, CallId, ToolCallAction, ToolCapability, ToolContext, ToolDescriptor as ToolSchema,
+    ToolExecutionMetadata, ToolExecutionStatus, ToolMutation, ToolMutationOperation, ToolResult,
+    ToolRiskLevel,
+};
+pub use rove_models::{Message, Role, ToolCallRef, ToolSchema as ModelToolSchema, Usage};
 
 /// Unique identifier for a session (user-level, spans multiple jobs).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -24,10 +25,6 @@ pub struct JobId(pub Ulid);
 /// Unique identifier for a single engine run (one main-loop execution).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct RunId(pub Ulid);
-
-/// Unique identifier for a tool call within a run.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct CallId(pub Ulid);
 
 /// Request to run a single engine loop.
 #[derive(Debug, Clone)]
@@ -198,18 +195,6 @@ impl Default for RunId {
     }
 }
 
-impl CallId {
-    pub fn new() -> Self {
-        Self(Ulid::new())
-    }
-}
-
-impl Default for CallId {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl std::fmt::Display for SessionId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
@@ -226,105 +211,6 @@ impl std::fmt::Display for RunId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
     }
-}
-
-impl std::fmt::Display for CallId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-/// The action parsed from LLM output.
-#[derive(Debug, Clone)]
-pub enum Action {
-    /// LLM produced a final answer — stop the loop.
-    Final { text: String },
-
-    /// LLM wants to call a tool.
-    ToolCall {
-        call_id: CallId,
-        tool_use_id: Option<String>,
-        name: String,
-        args: serde_json::Value,
-    },
-
-    /// LLM wants to call multiple tools in one batch.
-    ToolBatch { calls: Vec<ToolCallAction> },
-
-    /// LLM output could not be parsed into a valid action.
-    Malformed { reason: String },
-}
-
-#[derive(Debug, Clone)]
-pub struct ToolCallAction {
-    pub call_id: CallId,
-    /// The model-assigned tool-use ID (e.g. "call_abc123" for OpenAI, "toolu_xyz" for Anthropic).
-    /// Used to correlate tool results back to the model on the next turn.
-    pub tool_use_id: Option<String>,
-    pub name: String,
-    pub args: serde_json::Value,
-}
-
-/// Result of a successful tool execution.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolResult {
-    pub call_id: CallId,
-    pub output: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub mutations: Vec<ToolMutation>,
-    #[serde(default)]
-    pub metadata: ToolExecutionMetadata,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ToolMutation {
-    pub path: String,
-    pub operation: ToolMutationOperation,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub diff: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ToolMutationOperation {
-    Create,
-    Update,
-    Delete,
-    Unknown,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ToolExecutionStatus {
-    #[default]
-    Ok,
-    Error,
-    Rejected,
-    PartialSuccess,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ToolRiskLevel {
-    #[default]
-    Low,
-    High,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ToolExecutionMetadata {
-    pub status: ToolExecutionStatus,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub error_code: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub security_event_type: Option<String>,
-    pub risk_level: ToolRiskLevel,
-    pub read_only: bool,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub affected_paths: Vec<String>,
-    pub workspace_changed: bool,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub diff_summary: Vec<String>,
 }
 
 /// Why a run terminated.
@@ -499,27 +385,5 @@ pub trait UserInputProvider: Send + Sync {
             reason: "input provider must implement begin_input for registered input events"
                 .to_string(),
         })
-    }
-}
-
-/// Context passed through the tool execution boundary.
-#[derive(Clone)]
-pub struct ToolContext<'a> {
-    pub workspace: &'a Workspace,
-    pub memory_paths: MemoryPaths,
-    pub approval_policy: ApprovalPolicy,
-    pub cancel_token: CancellationToken,
-    pub input_provider: Option<Arc<dyn UserInputProvider>>,
-}
-
-impl std::fmt::Debug for ToolContext<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ToolContext")
-            .field("workspace", &self.workspace)
-            .field("memory_paths", &self.memory_paths)
-            .field("approval_policy", &self.approval_policy)
-            .field("cancel_token", &self.cancel_token)
-            .field("input_provider", &self.input_provider.is_some())
-            .finish()
     }
 }

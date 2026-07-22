@@ -8,6 +8,7 @@ use rove::core::workspace::Workspace;
 use rove::errors::ToolError;
 use rove::memory::paths::MemoryPaths;
 use rove::tools::request_input::RequestInputTool;
+use rove::tools::runtime_context::runtime_tool_context;
 use rove::tools::traits::Tool;
 use tokio_util::sync::CancellationToken;
 
@@ -17,6 +18,20 @@ struct StaticInputProvider {
 }
 
 struct LegacyInputProvider;
+
+fn tool_context<'a>(
+    workspace: &Workspace,
+    input_provider: Option<Arc<dyn UserInputProvider>>,
+) -> ToolContext<'a> {
+    runtime_tool_context(
+        CallId::new(),
+        workspace,
+        MemoryPaths::from_workspace(workspace, 8),
+        ApprovalPolicy::Auto,
+        input_provider,
+        CancellationToken::new(),
+    )
+}
 
 #[async_trait]
 impl UserInputProvider for LegacyInputProvider {
@@ -64,13 +79,7 @@ async fn legacy_one_phase_provider_implementations_remain_source_compatible() {
 async fn request_input_tool_requires_prompt_argument() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
-    let ctx = ToolContext {
-        workspace: &workspace,
-        memory_paths: MemoryPaths::from_workspace(&workspace, 8),
-        approval_policy: ApprovalPolicy::Auto,
-        cancel_token: CancellationToken::new(),
-        input_provider: None,
-    };
+    let ctx = tool_context(&workspace, None);
     let err = RequestInputTool
         .execute(serde_json::json!({}), &ctx)
         .await
@@ -86,13 +95,7 @@ async fn request_input_tool_requires_prompt_argument() {
 async fn request_input_tool_explains_interactive_provider_requirement() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
-    let ctx = ToolContext {
-        workspace: &workspace,
-        memory_paths: MemoryPaths::from_workspace(&workspace, 8),
-        approval_policy: ApprovalPolicy::Auto,
-        cancel_token: CancellationToken::new(),
-        input_provider: None,
-    };
+    let ctx = tool_context(&workspace, None);
     let output = RequestInputTool
         .execute(
             serde_json::json!({"prompt": "Which branch should I use?"}),
@@ -118,13 +121,7 @@ async fn request_input_tool_returns_interactive_provider_answer() {
         answer: "Use main.",
         prompts: prompts.clone(),
     });
-    let ctx = ToolContext {
-        workspace: &workspace,
-        memory_paths: MemoryPaths::from_workspace(&workspace, 8),
-        approval_policy: ApprovalPolicy::Auto,
-        cancel_token: CancellationToken::new(),
-        input_provider: Some(provider),
-    };
+    let ctx = tool_context(&workspace, Some(provider));
 
     let output = RequestInputTool
         .execute(

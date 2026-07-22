@@ -11,14 +11,15 @@ use crate::core::executor::Executor;
 use crate::core::tool_input::RegisteredUserInput;
 use crate::core::types::{
     ApprovalDecision, ApprovalPolicy, CallId, Message, PendingToolApproval, ToolApprovalProvider,
-    ToolApprovalRequest, ToolCallAction, ToolCallRef, ToolContext, ToolExecutionMetadata,
-    ToolExecutionStatus, ToolResult, ToolRiskLevel, UserInputProvider,
+    ToolApprovalRequest, ToolCallAction, ToolCallRef, ToolExecutionMetadata, ToolExecutionStatus,
+    ToolResult, ToolRiskLevel, UserInputProvider,
 };
 use crate::core::workspace::Workspace;
 use crate::errors::ToolError;
 use crate::hooks::HookRegistry;
 use crate::memory::paths::MemoryPaths;
 use crate::tools::registry::ToolRegistry;
+use crate::tools::runtime_context::runtime_tool_context;
 
 const APPROVAL_REASON: &str = "destructive tool requires explicit approval";
 
@@ -154,13 +155,14 @@ impl<'a> ToolTurnContext<'a> {
         input_events: Option<mpsc::Sender<RegisteredUserInput>>,
     ) -> ToolExecution {
         let executor = Executor::with_hooks(self.registry, self.hooks.clone());
-        let tool_context = ToolContext {
-            workspace: self.workspace,
-            memory_paths: self.memory_paths.clone(),
-            approval_policy: self.effective_approval_policy(&call.name, approval_decision),
-            cancel_token: self.cancel_token.clone(),
-            input_provider: self.input_provider.clone(),
-        };
+        let tool_context = runtime_tool_context(
+            call.call_id,
+            self.workspace,
+            self.memory_paths.clone(),
+            self.effective_approval_policy(&call.name, approval_decision),
+            self.input_provider.clone(),
+            self.cancel_token.clone(),
+        );
         let result = executor
             .run_with_input_events(
                 &tool_context,
