@@ -39,7 +39,7 @@ Additional routing:
 | Change area | Read first |
 |---|---|
 | Embedded Agent/tool loop | `core/src/`, `tests/embedding_contract.rs` |
-| Persistent Engine/planning/events | `docs/runtime/react-loop.md`, transitional `src/core/`, `tests/e2e.rs` |
+| Persistent Engine/planning/events | `docs/runtime/react-loop.md`, `runtime/src/`, transitional `src/core/`, `tests/e2e.rs` |
 | State/resume/artifacts | `docs/runtime/subsystems.md`, `src/state/` |
 | Providers/routing | `docs/runtime/provider-smoke.md`, `models/src/`, transitional `src/models/factory.rs` |
 | Tools/safety/MCP | `docs/runtime/subsystems.md`, `src/tools/`, `tests/tool_safety.rs`, `tests/mcp.rs` |
@@ -55,7 +55,8 @@ Additional routing:
 |---|---|
 | `models/` | `rove-models`: normalized model protocol, providers, routing, fake provider |
 | `core/` | `rove-core`: in-memory Agent loop, core events/control, tool contracts and registry |
-| `src/core/` | Transitional persistent Engine, context, planning, durable events, workspace |
+| `runtime/` | `rove-runtime`: IDs, task/execution contracts, workspace boundary, runtime identity, approval/input contracts |
+| `src/core/` | Transitional persistent Engine, context/compaction, planning coordination, durable events and tool turns |
 | `src/models/factory.rs` | Transitional AppConfig-driven provider assembly for the root facade |
 | `src/tools/` | Local tools, safety metadata, MCP proxy, optional RAG |
 | `src/state/` | Run artifacts, SQLite index, trace/state/report persistence |
@@ -107,12 +108,16 @@ As of 2026-07-22:
 - rove is a local-first Rust runtime with CLI, API, Web, persisted run state,
   resume, provider routing, tools, layered memory, optional RAG, and
   deterministic benchmarks.
-- The transitional Cargo Workspace contains the root compatibility package,
-  independent `rove-models`, and `rove-core`. `rove-models` has no local
-  project dependency; `rove-core` depends only on `rove-models` and embeds with
-  Fake Model plus a custom Tool without runtime state. Persistent Engine,
-  planning, approval, workspace, memory, and state remain in the root facade
-  until `rove-runtime` is extracted. AppConfig-driven provider selection also
+- The transitional Cargo Workspace contains the root compatibility package and
+  independent `rove-models`, `rove-core`, and `rove-runtime` packages.
+  `rove-models` has no local project dependency; `rove-core` depends only on
+  `rove-models` and embeds with Fake Model plus a custom Tool without runtime
+  state. The first `rove-runtime` slice depends only on those two packages and
+  owns IDs, task/checkpoint and execution-policy contracts, Workspace/path
+  safety, prompt metadata/runtime identity, and approval/input provider
+  contracts. Persistent Engine coordination, state storage, memory, official
+  tools, MCP/RAG, and durable events remain in the root facade while later
+  Phase 5 slices are extracted. AppConfig-driven provider selection also
   remains there until `apps/bootstrap` is extracted.
 - `docs/runtime/` describes the implemented MVP.
 - MCP currently supports stdio and the existing legacy SSE path. Streamable

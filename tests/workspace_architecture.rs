@@ -63,6 +63,14 @@ fn local_package_dependencies_follow_the_modular_workspace_direction() {
         BTreeSet::from(["rove-models".to_string()]),
         "rove-core must depend only on rove-models among local packages"
     );
+    assert_eq!(
+        local_dependencies
+            .get("rove-runtime")
+            .cloned()
+            .unwrap_or_default(),
+        BTreeSet::from(["rove-core".to_string(), "rove-models".to_string()]),
+        "rove-runtime must depend only on rove-models and rove-core among local packages"
+    );
 
     let tree = Command::new(env!("CARGO"))
         .args(["tree", "-p", "rove-core", "--prefix", "none"])

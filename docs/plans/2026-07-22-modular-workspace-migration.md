@@ -1,6 +1,6 @@
 # Rove Modular Workspace Migration Plan - 2026-07-22
 
-> Status: **In Progress / Phase 4 Verified**
+> Status: **In Progress / Phase 5 Foundation Verified**
 >
 > Design source:
 > [`../design/2026-07-22-modular-workspace-architecture.md`](../design/2026-07-22-modular-workspace-architecture.md)
@@ -422,6 +422,19 @@ Recommended internal order:
 5. Planning, StepRunner, evaluator, execution policy, and coordinator.
 6. Durable `StreamEvent` translation and runtime facade.
 7. Existing `Engine` compatibility re-exports.
+
+Current verified progress:
+
+- Order item 1 is implemented for IDs, resumable task/checkpoint and execution
+  contracts, Workspace/path safety, prompt metadata/runtime identity, and the
+  approval/input provider contracts needed by those boundaries.
+- The root `rove::core::*` paths remain compatibility re-exports.
+- Full first-party `AppConfig` remains in the root package because API/Web and
+  provider assembly fields must be separated through `apps/bootstrap`; it was
+  not pulled into `rove-runtime` merely to complete a directory move.
+- Default and RAG Workspace tests, strict Clippy, old-artifact compatibility,
+  path/tool safety, and canonical custom-tool input lifecycle tests pass for
+  this slice.
 
 At each sub-step, preserve serde defaults and run focused state/resume/safety
 tests. Do not change artifact schema merely to simplify module movement.

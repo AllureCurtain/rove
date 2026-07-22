@@ -14,6 +14,10 @@ Validation currently covers provider names, model values, fallback providers, ro
 
 ## Workspace
 
+Workspace detection and path-boundary enforcement are implemented in
+`runtime/src/workspace.rs` and `runtime/src/boundary.rs`; the root
+`rove::core::{workspace,boundary}` paths are compatibility re-exports.
+
 The runtime currently supports three workspace kinds:
 
 - `Folder`: the canonical starting directory when no `.git` ancestor exists.
@@ -36,6 +40,9 @@ tool stubs for those kinds.
 ## State, Job, And Run
 
 `StateStore` coordinates file artifacts and the SQLite `StateIndex`.
+`TaskState`, `PromptCheckpoint`, IDs, and lifecycle ledger data are owned by
+`rove-runtime`; the store/SQLite/artifact implementations remain in
+transitional `src/state/` during the next extraction slice.
 
 Files:
 
@@ -134,7 +141,11 @@ the output of a previous call, the model issues it in a later turn and the
 runtime runs that sequence serially. The current runtime does not infer hidden
 dependencies between arbitrary tool arguments.
 
-Approval policy is `ask`, `auto`, or `never`. The CLI uses stdin for approvals; the API exposes pending approvals through `/jobs/{job_id}/approvals/{call_id}`.
+Approval policy is `ask`, `auto`, or `never`. The provider contracts and the
+task-local request-input registration context are owned by `rove-runtime`; the
+root Engine/tool-turn and interface implementations consume them through
+compatibility re-exports. The CLI uses stdin for approvals; the API exposes
+pending approvals through `/jobs/{job_id}/approvals/{call_id}`.
 
 API approval/input restart behavior uses Policy A. Pending records are
 persisted while live, but the in-memory answer channels are not reconstructed

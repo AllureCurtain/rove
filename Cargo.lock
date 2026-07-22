@@ -5171,6 +5171,7 @@ dependencies = [
  "reqwest 0.13.3",
  "rove-core",
  "rove-models",
+ "rove-runtime",
  "rusqlite",
  "rustyline",
  "serde",
@@ -5224,6 +5225,23 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "rove-runtime"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "rove-core",
+ "rove-models",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "ulid",
 ]
 
 [[package]]

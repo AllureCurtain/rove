@@ -9,10 +9,13 @@ owns the embeddable Agent loop, `core/src/model_turn.rs` converts normalized
 `src/core/model_turn.rs` is a synchronous compatibility translator from those
 in-memory model events into canonical durable `StreamEvent` values.
 
-The persistent root Engine still owns context/compaction, planning, approval,
-input, memory flush, state, and resume while `rove-runtime` is being extracted.
-Its runtime-specific tool turn remains in `src/core/tool_turn.rs`; it consumes
-the `rove-core` Tool contract and registry without placing Workspace, Memory,
+The extracted `rove-runtime` foundation owns IDs, resumable task/checkpoint and
+execution-policy data, Workspace/path safety, prompt/runtime identity, and
+approval/input provider contracts. The persistent root Engine still owns
+context/compaction, planning coordination, memory flush, state, resume, and
+durable event translation while later runtime slices are extracted. Its
+runtime-specific tool turn remains in `src/core/tool_turn.rs`; it consumes the
+`rove-core` Tool contract and registry without placing Workspace, Memory,
 approval, or input fields on the minimal core `ToolContext`.
 
 The unplanned loop in `src/core/run_loop.rs` is the pure ReAct loop implemented by

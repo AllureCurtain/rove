@@ -4,12 +4,15 @@
 
 The repository manifest is currently a transitional Cargo Workspace containing
 the existing root `rove` compatibility package and the independent
-`rove-models` and `rove-core` packages; the root package remains the default
-member. Shared package metadata and dependency versions are defined at
-Workspace scope. `rove-core` is the in-memory embedding layer and depends only
-on `rove-models`. `rove-runtime` and first-party app packages have not yet been
-physically extracted, so persistent/product ownership remains at the root paths
-documented below.
+`rove-models`, `rove-core`, and `rove-runtime` packages; the root package
+remains the default member. Shared package metadata and dependency versions are
+defined at Workspace scope. `rove-core` is the in-memory embedding layer and
+depends only on `rove-models`. The first verified `rove-runtime` slice depends
+only on those two packages and owns runtime identity, task/execution contracts,
+Workspace/path safety, prompt metadata, and approval/input provider contracts.
+Persistent coordination, state, memory, official tools, MCP/RAG, durable events,
+and first-party apps still remain at the transitional root paths documented
+below.
 
 ## Shape
 
@@ -17,6 +20,7 @@ documented below.
 CLI / TUI / API / Web
     -> root Engine compatibility facade
         -> ContextManager
+        -> rove-runtime identity / task / execution / workspace contracts
         -> rove-core model turn / ToolRegistry contracts
             -> rove-models ModelClient / RoutingModelClient
         -> runtime Executor / approval and input adapters
@@ -75,10 +79,15 @@ cannot supply trustworthy interaction events fail closed.
   turn, cancellation/control, `Tool`/`ToolRegistry`, `ToolDescriptor`, and
   runtime-neutral policy hook. It depends only on `rove-models` and creates no
   workspace or state directory.
+- `rove-runtime` owns `SessionId`/`JobId`/`RunId`, `RunRequest`, `TaskState`,
+  prompt checkpoints, execution-policy and plan-ledger data, Workspace/path
+  enforcement, prompt metadata/runtime identity, approval/input provider
+  contracts, and the task-local input registration context. Its only local
+  dependencies are `rove-models` and `rove-core`.
 - Model-visible `rove_models::ToolSchema` is separate from operational
   `rove_core::ToolDescriptor`; provider payloads receive only the model schema.
 - Persistent tool execution still passes through the root `Executor` and
-  approval/input boundary. Runtime-specific Workspace, Memory, policy, and
+  tool-turn coordinator. Runtime-specific Workspace, Memory, policy, and
   input services are attached as a typed invocation extension rather than
   fields on the minimal core `ToolContext`.
 - The event chain is `ModelEvent -> AgentEvent -> StreamEvent`. The root

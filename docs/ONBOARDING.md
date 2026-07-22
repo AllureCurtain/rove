@@ -2,7 +2,7 @@
 
 > Status: **Current Maintainer Guide**
 >
-> Last reviewed: 2026-07-19. This guide explains the repository as it exists
+> Last reviewed: 2026-07-22. This guide explains the repository as it exists
 > today. For exact subsystem contracts and implementation status, follow
 > [`docs/runtime/`](runtime/README.md). Documents marked
 > `Proposed / Not Implemented` describe future work.
@@ -12,10 +12,13 @@ evidence-backed change in rove.
 
 The repository is currently in a compatibility migration window. The Cargo
 Workspace contains the existing root `rove` package plus the independent
-`rove-models` and `rove-core` crates; the root package remains the default
-member. `rove-core` is the implemented in-memory embedding layer. The target
-`rove-runtime` and app packages remain proposed until their code, tests, and
-current runtime documentation are moved together.
+`rove-models`, `rove-core`, and `rove-runtime` crates; the root package remains
+the default member. `rove-core` is the implemented in-memory embedding layer.
+`rove-runtime` currently owns the verified foundation slice for identity,
+resumable task/execution contracts, Workspace/path safety, prompt/runtime
+identity, and approval/input contracts. Persistent coordination, state,
+memory, official tools, MCP/RAG, and app packages remain in the compatibility
+root until their later migration slices move code, tests, and docs together.
 
 ## 1. What rove is
 
@@ -192,7 +195,8 @@ OnCall reference Agent.
 | RAG index | indexing binary under `src/bin/` | `src/tools/rag/` |
 | Web | `web-ui/` | API proxy, state hooks, components, tests |
 | Agent core | `core/` | in-memory Agent/model/tool loop, control, core events, contracts |
-| Persistent runtime | `src/core/` | transitional Engine, context, planning, approval, durable events |
+| Runtime contracts | `runtime/` | IDs, task/execution data, workspace boundary, runtime identity, approval/input contracts |
+| Persistent coordinator | `src/core/` | transitional Engine, context, planning coordination, tool turns, durable events |
 | State | `src/state/` | store, trace, task state, report/artifacts |
 | Models | `models/` | independent protocol, provider adapters, routing, fake provider |
 | Provider assembly | `src/models/factory.rs` | transitional AppConfig-driven construction |
@@ -221,8 +225,8 @@ CLI/API/benchmark request
 
 When tracing a bug, follow both:
 
-1. model/tool mechanics in `core/src/` and persistent control flow in `src/core/`;
-2. emitted events and persisted state in `src/state/`.
+1. model/tool mechanics in `core/src/`, runtime contracts in `runtime/src/`, and persistent control flow in `src/core/`;
+2. emitted events and persisted state implementation in `src/state/`.
 
 Do not debug only from the final assistant text. It is a projection, not the
 whole execution history.

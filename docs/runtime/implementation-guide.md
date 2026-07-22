@@ -4,10 +4,10 @@ This guide is for maintainers who need to understand, debug, or extend the curre
 
 The root manifest is currently a transitional resolver-3 Cargo Workspace with
 the root `rove` compatibility package as default member and the independent
-`rove-models` and `rove-core` packages as extracted lower layers. Use
-Workspace-wide commands for full gates. Persistent runtime and app
-implementation paths still refer to the root package until those packages are
-extracted.
+`rove-models`, `rove-core`, and foundational `rove-runtime` packages as
+extracted lower layers. Use Workspace-wide commands for full gates. Persistent
+coordination/state services and app implementation paths still refer to the
+root package until their later extraction slices are complete.
 
 ## 1. Runtime Shape
 
@@ -18,6 +18,7 @@ offers REPL, exec, and optional full-screen TUI modes:
 CLI (REPL / exec / TUI) / API / Web
     -> root Engine compatibility facade
         -> ContextManager
+        -> rove-runtime identity / task / execution / workspace contracts
         -> rove-core model turn / ToolRegistry
             -> rove-models ModelClient / RoutingModelClient
         -> runtime Executor / approval / input
@@ -42,7 +43,8 @@ Important entry points:
 | API binary | `src/bin/rove-api.rs`, `src/interfaces/api/mod.rs` |
 | Web workbench | `web-ui/` |
 | In-memory Agent and tool contracts | `core/src/*` |
-| Persistent Engine and runtime types | transitional `src/core/*` |
+| Runtime foundation contracts | `runtime/src/*` |
+| Persistent Engine and coordination | transitional `src/core/*` |
 | State artifacts and SQLite index | `src/state/*` |
 | Model protocol and providers | `models/src/*` |
 | Product provider assembly | transitional `src/models/factory.rs` |
@@ -117,7 +119,9 @@ Browser and Desktop workspaces are documented future designs only:
 
 Relevant code:
 
-- `src/core/workspace.rs`
+- `runtime/src/workspace.rs`
+- `runtime/src/boundary.rs`
+- compatibility re-exports in `src/core/workspace.rs` and `src/core/boundary.rs`
 - `src/config.rs`
 
 ## 3. Configuration
@@ -554,7 +558,9 @@ Relevant code:
 
 - `models/src/protocol.rs`
 - `core/src/types.rs`
-- transitional runtime types in `src/core/types.rs`
+- `runtime/src/types.rs`
+- `runtime/src/execution.rs`
+- compatibility re-exports in `src/core/types.rs` and `src/core/execution.rs`
 
 ## 8. Stream Events
 
@@ -610,7 +616,7 @@ Relevant code:
 
 ## 9. Engine Execution Flow
 
-`Engine` owns the model client, tool registry, context manager, workspace, approval policy, hooks, resolved memory paths, planner prompt, and optional interface providers for approval/input. `Engine` is the transitional persistent orchestration shell. The normalized model turn and action parser live in `rove-core`; runtime-specific tool turns and planned/unplanned coordination remain in focused root modules until `rove-runtime` is extracted.
+`Engine` owns the model client, tool registry, context manager, workspace, approval policy, hooks, resolved memory paths, planner prompt, and optional interface providers for approval/input. `Engine` is the transitional persistent orchestration shell. IDs, task/execution data, Workspace/path safety, runtime identity, and approval/input contracts live in `rove-runtime`; the normalized model turn and action parser live in `rove-core`. Runtime-specific tool turns and planned/unplanned coordination remain in focused root modules until later runtime slices are extracted.
 
 The high-level run flow:
 
@@ -841,7 +847,7 @@ schema lookup -> argument validation -> pre-tool hooks -> permission -> execute 
 
 Argument validation supports the JSON Schema subset used by built-in tools: object, array, string, number, integer, boolean, and null type checks; required fields; enum values; nested properties; array `items`, `minItems`, and `maxItems`; numeric `minimum` and `maximum`; string `minLength` and `maxLength`; and `additionalProperties: false`. Validation failures preserve `ToolError::InvalidArgs` and happen before tool execution.
 
-Filesystem tools resolve paths through `src/core/boundary.rs`. Reads canonicalize the final target; writes canonicalize existing targets or the nearest existing ancestor for new files. Both paths reject absolute paths, lexical workspace escapes, and symlink/reparse-point escapes that resolve outside the workspace.
+Filesystem tools resolve paths through `runtime/src/boundary.rs` (re-exported by `src/core/boundary.rs`). Reads canonicalize the final target; writes canonicalize existing targets or the nearest existing ancestor for new files. Both paths reject absolute paths, lexical workspace escapes, and symlink/reparse-point escapes that resolve outside the workspace.
 
 `fs_write` returns structured mutation metadata for deterministic file writes. The metadata includes path, operation type, and a textual diff; it is exposed on `ToolCallCompleted.result.mutations` and persisted to `report.json` as `tool_mutations`. Shell commands are bounded by policy and return structured stdout/stderr/exit metadata, but shell write-sets are intentionally not inferred or snapshotted.
 
@@ -863,7 +869,7 @@ Relevant code:
 - `src/tools/traits.rs` and `src/tools/registry.rs` (compatibility re-exports)
 - `src/tools/runtime_context.rs`
 - `src/core/executor.rs`
-- `src/core/boundary.rs`
+- `runtime/src/boundary.rs`
 - `src/hooks/mod.rs`
 
 ## 13. Approval And Input
@@ -892,9 +898,9 @@ Pending approval/input answer channels are live-only. API rows are persisted whi
 
 Relevant code:
 
-- `src/core/tool_input.rs`
+- `runtime/src/types.rs`
+- `runtime/src/tool_input.rs`
 - `src/core/tool_turn.rs`
-- `src/core/types.rs`
 - `src/interfaces/cli/approval.rs`
 - `src/interfaces/cli/input.rs`
 - `src/interfaces/api/mod.rs`
