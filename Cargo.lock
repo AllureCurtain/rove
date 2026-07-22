@@ -5178,6 +5178,7 @@ dependencies = [
  "arrow-schema",
  "async-stream",
  "async-trait",
+ "axum",
  "chrono",
  "clap",
  "crossterm",
@@ -5199,6 +5200,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-subscriber",
+ "ulid",
  "walkdir",
 ]
 

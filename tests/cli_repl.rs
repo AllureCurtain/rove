@@ -1,23 +1,36 @@
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
+fn workspace_root() -> PathBuf {
+    let mut root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    root.pop();
+    root
+}
+
 fn rove_bin() -> PathBuf {
     if let Ok(path) = std::env::var("CARGO_BIN_EXE_rove") {
         return PathBuf::from(path);
     }
-    let mut root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    // tests/ package is one level under the workspace root.
-    root.pop();
+    let root = workspace_root();
     let exe = if cfg!(windows) { "rove.exe" } else { "rove" };
-    for candidate in [
-        root.join("target/debug").join(exe),
-        root.join("target/debug/deps").join(exe),
-    ] {
-        if candidate.exists() {
-            return candidate;
-        }
+    let candidate = root.join("target/debug").join(exe);
+    if !candidate.exists() {
+        let status = Command::new(env!("CARGO"))
+            .args(["build", "-p", "rove-cli", "--bin", "rove"])
+            .current_dir(&root)
+            .status()
+            .expect("failed to spawn cargo build for rove-cli");
+        assert!(
+            status.success(),
+            "cargo build -p rove-cli --bin rove failed"
+        );
     }
-    root.join("target/debug").join(exe)
+    assert!(
+        candidate.exists(),
+        "expected built CLI binary at {}",
+        candidate.display()
+    );
+    candidate
 }
 
 #[test]

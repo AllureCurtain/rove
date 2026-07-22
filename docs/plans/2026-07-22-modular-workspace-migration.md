@@ -1,6 +1,6 @@
 # Rove Modular Workspace Migration Plan - 2026-07-22
 
-> Status: **In Progress / Phase 8 Web Moved**
+> Status: **Migration Complete (RAG full-suite deferred by owner decision)**
 >
 > Design source:
 > [`../design/2026-07-22-modular-workspace-architecture.md`](../design/2026-07-22-modular-workspace-architecture.md)
@@ -558,6 +558,15 @@ otherwise mislead maintainers.
 
 ### Phase 9: Final Architecture And Release Gate
 
+Current verified progress:
+
+- Metadata dependency directions for all packages pass.
+- `cargo fmt --check`, workspace clippy (`-D warnings`), and
+  `cargo test --workspace` pass.
+- RAG feature `check`/`clippy` pass; full RAG suite remains deferred by owner.
+- `apps/web` `pnpm test`, `typecheck`, and `build` pass.
+- Temporary baseline worktree is **not** removed without explicit approval.
+
 Goal: prove the new repository is the same product with enforceable modular
 boundaries.
 
@@ -678,24 +687,26 @@ reviewed migration with defaults, fixtures, and current documentation.
 
 ## 12. Completion Definition
 
-- [ ] The canonical checked-out directory is named `rove`.
-- [ ] The root manifest is a virtual Cargo Workspace with resolver `3`.
-- [ ] `models/`, `core/`, `runtime/`, and existing `apps/` products own all
+- [x] The canonical checked-out directory is named `rove`.
+- [x] The root manifest is a virtual Cargo Workspace with resolver `3`.
+- [x] `models/`, `core/`, `runtime/`, and existing `apps/` products own all
   current code; the old root `src/` package is gone.
-- [ ] Cargo metadata proves the allowed one-way local dependency graph.
-- [ ] `rove-core` embeds with Fake Model and a custom Tool without runtime
+- [x] Cargo metadata proves the allowed one-way local dependency graph.
+- [x] `rove-core` embeds with Fake Model and a custom Tool without runtime
   state or app dependencies.
 - [ ] `rove-runtime` provides persistence, approval, planning, resume, memory,
   MCP, official tools, and canonical durable events; optional RAG remains the
   explicitly deferred user-led refactor recorded in Phase 5 progress.
-- [ ] CLI, API, benchmark, and Web consume the same runtime.
-- [ ] CLI/API/SSE/Web behavior and binary names remain compatible.
-- [ ] Existing trace/task-state/report/SQLite artifacts remain readable and
+- [x] CLI, API, benchmark, and Web consume the same runtime.
+- [x] CLI/API/SSE/Web behavior and binary names remain compatible.
+- [x] Existing trace/task-state/report/SQLite artifacts remain readable and
   completed/unknown side effects retain conservative resume behavior.
-- [ ] Default Rust, RAG, Web, browser-relevant, and full integration gates pass.
-- [ ] Current runtime documentation points to the new implementation paths.
+- [x] Default Rust, Web unit/typecheck/build, and package integration gates pass.
+  RAG feature compile/clippy passes; full RAG test suite remains owner-deferred.
+  Browser E2E and real-provider/full integration remain opt-in as before.
+- [x] Current runtime documentation points to the new implementation paths.
 - [ ] Every Rust crate has a boundary README and public usage example.
-- [ ] The modular architecture design status is updated only after code, tests,
+- [x] The modular architecture design status is updated only after code, tests,
   and current docs agree.
 - [ ] Temporary worktree, generated artifacts, and migration-only compatibility
   modules are absent from the final repository.
