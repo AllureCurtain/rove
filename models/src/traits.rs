@@ -1,8 +1,7 @@
 use async_trait::async_trait;
 use futures::stream::BoxStream;
 
-use crate::core::types::{Message, ToolSchema, Usage};
-use crate::errors::ModelError;
+use crate::{Message, ModelError, ToolSchema, Usage};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ModelClientId(String);

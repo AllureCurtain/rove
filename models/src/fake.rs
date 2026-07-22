@@ -3,9 +3,8 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 use futures::stream::BoxStream;
 
-use crate::core::types::{Message, Role, ToolSchema, Usage};
-use crate::errors::ModelError;
-use crate::models::traits::{ModelClient, ModelClientId, ModelEvent};
+use crate::traits::{ModelClient, ModelClientId, ModelEvent};
+use crate::{Message, ModelError, Role, ToolSchema, Usage};
 
 /// Scripted turn for a `FakeModelClient` — one entry per LLM call.
 #[derive(Debug, Clone)]

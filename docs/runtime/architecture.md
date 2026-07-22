@@ -2,12 +2,13 @@
 
 `rove` is a local-first runtime with remote-ready seams. The default mode is local: CLI runs in the current workspace, API binds to `127.0.0.1:8787`, and state is written under `.rove/`.
 
-The repository manifest is currently a transitional Cargo Workspace whose only
-member and default member is the existing root `rove` package. Shared package
-metadata and dependency versions are defined at Workspace scope, but
-`rove-models`, `rove-core`, `rove-runtime`, and first-party app packages have
-not yet been physically extracted. Runtime ownership therefore remains at the
-paths documented below until each migration phase is implemented and verified.
+The repository manifest is currently a transitional Cargo Workspace containing
+the existing root `rove` compatibility package and the independent
+`rove-models` package; the root package remains the default member. Shared
+package metadata and dependency versions are defined at Workspace scope.
+`rove-core`, `rove-runtime`, and first-party app packages have not yet been
+physically extracted, so their ownership remains at the root paths documented
+below until each migration phase is implemented and verified.
 
 ## Shape
 
@@ -58,6 +59,10 @@ cannot supply trustworthy interaction events fail closed.
 
 - Core code emits normalized runtime events and does not depend on the CLI, API, or web UI.
 - Provider adapters normalize provider-specific streams into `ModelEvent`.
+- `rove-models` owns the normalized message/tool/usage/error protocol, provider
+  adapters, routing, health, and Fake Model without depending on another local
+  project package. The root facade re-exports these contracts while
+  AppConfig-driven construction remains transitional product assembly.
 - Tool execution happens through `Executor` and `ToolRegistry`; approval policy is passed through `ToolContext`.
 - Files remain the readable source artifacts; SQLite is the query/replay index.
 - A `step_result` trace event is the append-only terminal fact. The task-state

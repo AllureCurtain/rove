@@ -4,10 +4,9 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::{Instant, sleep, timeout};
 
-use crate::core::types::{Message, ToolSchema};
-use crate::errors::ModelError;
-use crate::models::health::{HealthConfig, ModelHealthStore};
-use crate::models::traits::{ModelClient, ModelEvent};
+use crate::health::{HealthConfig, ModelHealthStore};
+use crate::traits::{ModelClient, ModelEvent};
+use crate::{Message, ModelError, ToolSchema};
 
 /// Model client that tries a primary provider, then fallback providers if the
 /// active provider fails before streaming any response chunks.
@@ -350,11 +349,10 @@ mod tests {
     use tracing_subscriber::layer::Context;
     use tracing_subscriber::prelude::*;
 
-    use crate::core::types::{Message, ToolSchema, Usage};
-    use crate::errors::ModelError;
-    use crate::models::health::{HealthConfig, ModelHealthStore};
-    use crate::models::routing::{RetryPolicy, RoutingModelClient};
-    use crate::models::traits::{ModelClient, ModelEvent};
+    use crate::health::{HealthConfig, ModelHealthStore};
+    use crate::routing::{RetryPolicy, RoutingModelClient};
+    use crate::traits::{ModelClient, ModelEvent};
+    use crate::{Message, ModelError, ToolSchema, Usage};
 
     struct FailingClient {
         id: &'static str,

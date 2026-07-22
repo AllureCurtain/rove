@@ -10,10 +10,11 @@
 This guide is the shortest path from a fresh checkout to making a safe,
 evidence-backed change in rove.
 
-The repository is currently in a compatibility migration window: the root
-manifest is a Cargo Workspace, but its only member is still the existing root
-`rove` package. The target `models/core/runtime/apps` packages are proposed
-until their code, tests, and current runtime documentation are moved together.
+The repository is currently in a compatibility migration window. The Cargo
+Workspace contains the existing root `rove` package plus the independent
+`rove-models` crate; the root package remains the default member. The target
+`core/runtime/apps` packages remain proposed until their code, tests, and
+current runtime documentation are moved together.
 
 ## 1. What rove is
 
@@ -191,7 +192,8 @@ OnCall reference Agent.
 | Web | `web-ui/` | API proxy, state hooks, components, tests |
 | Core | `src/core/` | engine, context, planner, parser, executor, events |
 | State | `src/state/` | store, trace, task state, report/artifacts |
-| Models | `src/models/` | provider adapters and routing |
+| Models | `models/` | independent protocol, provider adapters, routing, fake provider |
+| Provider assembly | `src/models/factory.rs` | transitional AppConfig-driven construction |
 | Tools | `src/tools/` | local tools, shell, memory, MCP, RAG |
 | Memory | `src/memory/` | session and durable memory |
 
@@ -351,6 +353,11 @@ Core code should consume normalized provider results. Provider adapters own:
 - streaming details;
 - usage/error normalization;
 - provider-specific authentication.
+
+These contracts and adapters now live in `rove-models`, which has no local
+project dependencies. `src/models/factory.rs` remains in the root compatibility
+package because it still translates first-party `AppConfig` into model-layer
+constructors; it will move to `apps/bootstrap` later in the migration.
 
 When adding or changing a provider:
 

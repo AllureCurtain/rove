@@ -157,7 +157,7 @@ bearer token server-side and does not expose it to browser JavaScript.
 | Web | `web-ui/` | Next.js workbench that consumes the API and SSE job stream. |
 | Core runtime | `src/core/` | Engine loop, context building, planner, parser, executor, IDs, and workspace detection. |
 | State | `src/state/` | File artifacts under `.rove/runs/` plus SQLite indexing in `.rove/state.sqlite`. |
-| Models | `src/models/` | OpenAI-compatible chat completions, OpenAI Responses, Anthropic, Ollama, fake providers, and routing fallback. |
+| Models | `models/` | Independent `rove-models` crate: normalized protocol, OpenAI-compatible chat completions, OpenAI Responses, Anthropic, Ollama, fake provider, routing, and health. Product config assembly remains temporarily in `src/models/factory.rs`. |
 | Tools | `src/tools/` | Filesystem, shell, memory, request input, MCP proxy, and optional RAG tools. |
 | Memory | `src/memory/` | Session summaries and bounded durable memory recall. |
 | Docs | `docs/runtime/` | Current architecture, subsystem boundaries, and implementation status. |

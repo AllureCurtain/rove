@@ -6,10 +6,8 @@ use reqwest::{
 };
 use std::collections::BTreeMap;
 
-use crate::config::ProviderOptions;
-use crate::core::types::{Message, Role, ToolSchema, Usage};
-use crate::errors::ModelError;
-use crate::models::traits::{ModelClient, ModelClientId, ModelEvent};
+use crate::traits::{ModelClient, ModelClientId, ModelEvent};
+use crate::{Message, ModelError, ProviderOptions, Role, ToolSchema, Usage};
 
 /// OpenAI-compatible model client.
 ///
@@ -451,8 +449,7 @@ impl ModelClient for OpenAiClient {
 mod tests {
     use super::*;
 
-    use crate::config::ProviderOptions;
-    use crate::core::types::{Message, ToolSchema};
+    use crate::{Message, ProviderOptions, ToolCallRef, ToolSchema};
     use reqwest::{
         StatusCode,
         header::{HeaderMap, HeaderValue, RETRY_AFTER},
@@ -532,7 +529,7 @@ mod tests {
             &[
                 Message::assistant_with_tool_calls(
                     "I will inspect that.".to_string(),
-                    vec![crate::core::types::ToolCallRef {
+                    vec![ToolCallRef {
                         id: "call_1".to_string(),
                         name: "fs_read".to_string(),
                         args: serde_json::json!({ "path": "Cargo.toml" }),

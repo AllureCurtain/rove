@@ -3,9 +3,10 @@
 This guide is for maintainers who need to understand, debug, or extend the current implementation. It describes what exists in the codebase today. Product intent and historical design rationale live in the top-level docs; the current runtime source of truth remains this `docs/runtime/` directory.
 
 The root manifest is currently a transitional resolver-3 Cargo Workspace with
-the existing root `rove` package as its only member and default member. Use
-Workspace-wide commands for full gates, while all implementation paths in this
-guide still refer to the root package until modular crates are extracted.
+the root `rove` compatibility package as default member and the independent
+`rove-models` package as its first extracted layer. Use Workspace-wide commands
+for full gates. Core/runtime/app implementation paths still refer to the root
+package until those packages are extracted.
 
 ## 1. Runtime Shape
 
@@ -40,7 +41,8 @@ Important entry points:
 | Web workbench | `web-ui/` |
 | Engine and runtime types | `src/core/*` |
 | State artifacts and SQLite index | `src/state/*` |
-| Model providers | `src/models/*` |
+| Model protocol and providers | `models/src/*` |
+| Product provider assembly | transitional `src/models/factory.rs` |
 | Tools and MCP/RAG adapters | `src/tools/*` |
 | Memory hooks and stores | `src/memory/*`, `src/hooks/*` |
 
@@ -760,10 +762,11 @@ Native providers:
 
 | Provider | File |
 |---|---|
-| OpenAI-compatible | `src/models/openai.rs` |
-| Anthropic | `src/models/anthropic.rs` |
-| Ollama | `src/models/ollama.rs` |
-| Fake | `src/models/fake.rs` |
+| OpenAI-compatible | `models/src/openai.rs` |
+| OpenAI Responses | `models/src/openai_responses.rs` |
+| Anthropic | `models/src/anthropic.rs` |
+| Ollama | `models/src/ollama.rs` |
+| Fake | `models/src/fake.rs` |
 
 Provider-native tool use is the preferred path for real providers. Provider adapters emit `ToolUseStart` and `ToolUseDone`, `src/core/model_turn.rs` converts those into `ToolCallAction` values, and `LlmMessage.tool_calls` plus `tool_call_id` preserve structured history for provider replay. OpenAI-compatible, Anthropic, and Ollama formatters replay that history in their native request shapes.
 
@@ -773,16 +776,17 @@ The JSON text action path remains for compatibility and fake-model tests. It is 
 
 Each routed provider candidate is attempted up to `routing.retry_max_attempts` before moving to fallback. Retryable request failures, stream interruptions, and rate limits before commit use exponential backoff from `routing.retry_backoff_base_ms` capped by `routing.retry_backoff_max_ms`; rate-limit `retry-after` values override the computed delay. Authentication and context-length errors are never retried, though another fallback candidate can still be tried if no output or tool-use has committed. After committed text or committed native tool-use begins, later stream errors are returned directly with no retry and no fallback.
 
-`src/models/health.rs` owns `ModelHealthStore`, `HealthConfig`, and circuit state. CLI-created routed clients keep private health state configured from `routing.failure_threshold` and `routing.open_cooldown_ms`. API state creates one process-shared `ModelHealthStore` and injects it into routed model clients so API jobs share circuit breaker decisions across runs in the same process.
+`models/src/health.rs` owns `ModelHealthStore`, `HealthConfig`, and circuit state. CLI-created routed clients keep private health state configured from `routing.failure_threshold` and `routing.open_cooldown_ms`. API state creates one process-shared `ModelHealthStore` and injects it into routed model clients so API jobs share circuit breaker decisions across runs in the same process.
 
 First-packet routing decisions are emitted through `tracing`: candidate start, skipped open circuit, committed first event, no content, timeout, error-before-commit, retry scheduling, and candidate exhaustion. These are observability records only; they do not add user-facing `StreamEvent` variants.
 
 Relevant code:
 
-- `src/models/traits.rs`
-- `src/models/factory.rs`
-- `src/models/routing.rs`
-- `src/errors.rs`
+- `models/src/protocol.rs`
+- `models/src/traits.rs`
+- `models/src/routing.rs`
+- `models/src/error.rs`
+- `src/models/factory.rs` (transitional product assembly)
 
 ## 12. Tool System
 

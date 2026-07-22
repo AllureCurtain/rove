@@ -5169,6 +5169,7 @@ dependencies = [
  "pretty_assertions",
  "ratatui",
  "reqwest 0.13.3",
+ "rove-models",
  "rusqlite",
  "rustyline",
  "serde",
@@ -5188,6 +5189,24 @@ dependencies = [
  "utoipa-axum",
  "utoipa-swagger-ui",
  "walkdir",
+]
+
+[[package]]
+name = "rove-models"
+version = "0.1.0"
+dependencies = [
+ "async-stream",
+ "async-trait",
+ "eventsource-stream",
+ "futures",
+ "reqwest 0.13.3",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

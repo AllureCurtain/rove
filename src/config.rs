@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::memory::paths::MemoryPaths;
 
+pub use rove_models::ProviderOptions;
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct AppConfig {
@@ -62,36 +64,15 @@ pub struct FallbackProviderConfig {
     pub options: Option<ProviderOptions>,
 }
 
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
-pub struct ProviderOptions {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_tokens: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub temperature: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub top_p: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub frequency_penalty: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub presence_penalty: Option<f64>,
-}
-
-impl ProviderOptions {
-    pub fn max_tokens_or(&self, default: u32) -> u32 {
-        self.max_tokens.unwrap_or(default)
+fn validate_provider_options(options: &ProviderOptions, prefix: &str) -> anyhow::Result<()> {
+    if options.max_tokens == Some(0) {
+        anyhow::bail!("{prefix}.max_tokens must be greater than 0");
     }
-
-    fn validate(&self, prefix: &str) -> anyhow::Result<()> {
-        if self.max_tokens == Some(0) {
-            anyhow::bail!("{prefix}.max_tokens must be greater than 0");
-        }
-        validate_finite_option(prefix, "temperature", self.temperature)?;
-        validate_finite_option(prefix, "top_p", self.top_p)?;
-        validate_finite_option(prefix, "frequency_penalty", self.frequency_penalty)?;
-        validate_finite_option(prefix, "presence_penalty", self.presence_penalty)?;
-        Ok(())
-    }
+    validate_finite_option(prefix, "temperature", options.temperature)?;
+    validate_finite_option(prefix, "top_p", options.top_p)?;
+    validate_finite_option(prefix, "frequency_penalty", options.frequency_penalty)?;
+    validate_finite_option(prefix, "presence_penalty", options.presence_penalty)?;
+    Ok(())
 }
 
 fn validate_finite_option(prefix: &str, field: &str, value: Option<f64>) -> anyhow::Result<()> {
@@ -470,10 +451,10 @@ impl AppConfig {
                 anyhow::bail!("provider.fallback_providers.model must not be empty");
             }
             if let Some(options) = &fallback.options {
-                options.validate("provider.fallback_providers.options")?;
+                validate_provider_options(options, "provider.fallback_providers.options")?;
             }
         }
-        self.provider.options.validate("provider.options")?;
+        validate_provider_options(&self.provider.options, "provider.options")?;
         if self.runtime.max_steps == 0 {
             anyhow::bail!("runtime.max_steps must be greater than 0");
         }

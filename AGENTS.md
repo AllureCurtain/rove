@@ -40,7 +40,7 @@ Additional routing:
 |---|---|
 | Engine/planning/events | `docs/runtime/react-loop.md`, `src/core/`, `tests/e2e.rs` |
 | State/resume/artifacts | `docs/runtime/subsystems.md`, `src/state/` |
-| Providers/routing | `docs/runtime/provider-smoke.md`, `src/models/` |
+| Providers/routing | `docs/runtime/provider-smoke.md`, `models/src/`, transitional `src/models/factory.rs` |
 | Tools/safety/MCP | `docs/runtime/subsystems.md`, `src/tools/`, `tests/tool_safety.rs`, `tests/mcp.rs` |
 | Memory/context | `MEMORY_DOCTRINE.md`, `src/memory/`, `src/core/context.rs` |
 | RAG | `docs/runtime/integration-testing.md`, `src/tools/rag/`, RAG feature tests |
@@ -52,8 +52,9 @@ Additional routing:
 
 | Path | Responsibility |
 |---|---|
+| `models/` | `rove-models`: normalized model protocol, providers, routing, fake provider |
 | `src/core/` | Shared Engine, context, planner, executor, events, IDs, workspace |
-| `src/models/` | Model providers, normalization, routing, fake provider |
+| `src/models/factory.rs` | Transitional AppConfig-driven provider assembly for the root facade |
 | `src/tools/` | Local tools, safety metadata, MCP proxy, optional RAG |
 | `src/state/` | Run artifacts, SQLite index, trace/state/report persistence |
 | `src/memory/` | Session and durable memory |
@@ -99,11 +100,15 @@ and updates its tests and current documentation:
 
 ## 5. Current implementation boundaries
 
-As of 2026-07-15:
+As of 2026-07-22:
 
 - rove is a local-first Rust runtime with CLI, API, Web, persisted run state,
   resume, provider routing, tools, layered memory, optional RAG, and
   deterministic benchmarks.
+- The transitional Cargo Workspace contains the root compatibility package and
+  the independent `rove-models` package. The model package has no local project
+  dependencies; AppConfig-driven provider selection remains in the root facade
+  until `apps/bootstrap` is extracted.
 - `docs/runtime/` describes the implemented MVP.
 - MCP currently supports stdio and the existing legacy SSE path. Streamable
   HTTP, negotiated sessions, rich MCP result envelopes, and Tool Artifacts are

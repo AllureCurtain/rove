@@ -81,6 +81,12 @@ Default compaction is deterministic and artifact-based. Optional model-generated
 
 ## Provider And Routing
 
+The independent `rove-models` package owns provider-neutral `Message`,
+`ToolSchema`, `Usage`, `ModelError`, `ModelClient`, and `ModelEvent` contracts,
+plus provider adapters, Fake Model, routing, and health. It has no local project
+dependency. The root compatibility package re-exports those types; only
+AppConfig-driven construction remains in transitional `src/models/factory.rs`.
+
 The model boundary is `ModelClient`, which streams normalized `ModelEvent` values. Raw provider thinking deltas are not exposed to interfaces; the engine converts model-side progress into safe `model_status` stream events. Native providers are peers:
 
 - OpenAI-compatible

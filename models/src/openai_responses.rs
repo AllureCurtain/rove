@@ -6,10 +6,8 @@ use reqwest::{
 };
 use std::collections::BTreeMap;
 
-use crate::config::ProviderOptions;
-use crate::core::types::{Message, Role, ToolSchema, Usage};
-use crate::errors::ModelError;
-use crate::models::traits::{ModelClient, ModelClientId, ModelEvent};
+use crate::traits::{ModelClient, ModelClientId, ModelEvent};
+use crate::{Message, ModelError, ProviderOptions, Role, ToolSchema, Usage};
 
 /// OpenAI Responses API model client.
 pub struct OpenAiResponsesClient {
@@ -544,8 +542,7 @@ impl ModelClient for OpenAiResponsesClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::ProviderOptions;
-    use crate::core::types::{Message, ToolCallRef, ToolSchema};
+    use crate::{Message, ProviderOptions, ToolCallRef, ToolSchema};
     use reqwest::header::{HeaderMap, HeaderValue, RETRY_AFTER};
 
     #[test]
