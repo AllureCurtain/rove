@@ -12,10 +12,11 @@ only on those two packages and owns runtime identity, task/execution contracts,
 Workspace/path safety, prompt metadata, and approval/input provider contracts.
 The same crate now also owns canonical `StreamEvent` and StateStore, trace,
 task/report artifacts, SQLite indexing, repair, cleanup, resume,
-context/compaction, and session/durable memory services. Persistent
-coordination, the session-summary post-run hook, official tools, MCP/RAG,
-durable-event translation, and first-party apps still remain at the
-transitional root paths documented below.
+context/compaction, session/durable memory services, local built-in tools, and
+their invocation adapters. Persistent coordination, the session-summary
+post-run hook, product tool-registry assembly, MCP/RAG, durable-event
+translation, and first-party apps still remain at the transitional root paths
+documented below.
 
 ## Shape
 
@@ -85,15 +86,16 @@ cannot supply trustworthy interaction events fail closed.
   prompt checkpoints, execution-policy and plan-ledger data, Workspace/path
   enforcement, prompt metadata/runtime identity, approval/input provider
   contracts, the task-local input registration context, canonical
-  `StreamEvent`, context/compaction, session/durable memory, and
+  `StreamEvent`, context/compaction, session/durable memory, local built-in
+  filesystem/shell/memory/input tools and invocation adapters, and
   state/trace/artifact/SQLite/repair/resume services. Its only local
   dependencies are `rove-models` and `rove-core`.
 - Model-visible `rove_models::ToolSchema` is separate from operational
   `rove_core::ToolDescriptor`; provider payloads receive only the model schema.
-- Persistent tool execution still passes through the root `Executor` and
-  tool-turn coordinator. Runtime-specific Workspace, Memory, policy, and
-  input services are attached as a typed invocation extension rather than
-  fields on the minimal core `ToolContext`.
+- Local built-in tool implementations and runtime-specific Workspace, Memory,
+  policy, and input invocation services live in `rove-runtime`. Persistent
+  execution still passes through the root `Executor` and tool-turn coordinator;
+  product registry assembly, MCP, and RAG remain transitional root services.
 - The event chain is `ModelEvent -> AgentEvent -> StreamEvent`.
   `rove-runtime` owns the canonical `StreamEvent` type; the root compatibility
   model-turn adapter still performs the synchronous translation today. Only

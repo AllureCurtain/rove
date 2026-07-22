@@ -12,6 +12,7 @@ pub mod types;
 pub mod workspace;
 
 pub mod state;
+pub mod tools;
 
 pub use types::{JobId, RunId, RunRequest, SessionId, TaskState};
 pub use workspace::{Workspace, WorkspaceKind};

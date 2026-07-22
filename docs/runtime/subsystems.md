@@ -125,9 +125,13 @@ Native provider tool-use and JSON text action parsing are both supported. Native
 `rove-core` owns `Tool`, `ToolOutput`, `ToolRegistry`, invocation-scoped
 `ToolContext`, argument validation, and `ToolDescriptor`. The descriptor holds
 `destructive`, `parallel_safe`, and capability fields while its model-schema
-projection omits them. The persistent root runtime executes registered tools
-through `Executor`, approval/input handling, hooks, and durable event mapping.
-CLI and API assemble tools through the same runtime registry builder, which registers built-ins and then loads configured MCP tools.
+projection omits them. Local built-in tool implementations and their typed
+invocation adapters live in `runtime/src/tools/`; compatibility modules under
+`src/tools/` re-export them. The persistent root runtime executes registered
+tools through `Executor`, approval/input handling, hooks, and durable event
+mapping. CLI and API assemble tools through the same transitional product
+registry builder, which registers runtime built-ins and then loads configured
+MCP/RAG tools.
 
 Workspace, resolved Memory paths, approval policy, and input providers are
 runtime-owned services attached to a tool invocation through a typed extension.
@@ -164,10 +168,11 @@ external side effect cannot be repeated automatically.
 
 ## Memory
 
-Memory paths, session storage, durable topic parsing/recall, and layered prompt
-loading live in `runtime/src/memory/`. Transitional `src/memory/` modules
-re-export those APIs. The session-summary post-run hook and built-in memory
-tools remain in the root package until their later runtime slice.
+Memory paths, session storage, durable topic parsing/recall, layered prompt
+loading, and built-in memory tools live in `runtime/src/`. Transitional
+`src/memory/` and `src/tools/memory.rs` modules re-export those APIs. The
+session-summary post-run hook remains in the root package until its later
+runtime slice.
 
 The memory model has three layers:
 

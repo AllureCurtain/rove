@@ -1,6 +1,6 @@
 # Rove Modular Workspace Migration Plan - 2026-07-22
 
-> Status: **In Progress / Phase 5 Memory Verified**
+> Status: **In Progress / Phase 5 Built-In Tools Verified**
 >
 > Design source:
 > [`../design/2026-07-22-modular-workspace-architecture.md`](../design/2026-07-22-modular-workspace-architecture.md)
@@ -434,10 +434,15 @@ Current verified progress:
 - Order item 3 is implemented: token-aware context construction, structured
   model/deterministic compaction, memory paths, session storage, durable recall,
   and layered prompt memory now live in `rove-runtime`.
+- Order item 4 is partially implemented: local echo, filesystem, shell, memory,
+  and request-input tools plus runtime invocation adapters now live in
+  `rove-runtime`. Product registry assembly, MCP, and optional RAG remain for
+  the next independent slice.
 - The root `rove::core::*`, `rove::state::*`, and `rove::memory::*` paths remain
-  compatibility re-exports. Engine coordination, the session-summary post-run
-  hook, and event translation producers remain in the root package until later
-  order items move.
+  compatibility re-exports. The corresponding local `rove::tools::*` paths are
+  also compatibility re-exports. Engine coordination, the session-summary
+  post-run hook, product registry assembly, MCP/RAG, and event translation
+  producers remain in the root package until later order items move.
 - Full first-party `AppConfig` remains in the root package because API/Web and
   provider assembly fields must be separated through `apps/bootstrap`; it was
   not pulled into `rove-runtime` merely to complete a directory move.

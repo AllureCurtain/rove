@@ -48,7 +48,8 @@ Important entry points:
 | State artifacts and SQLite index | `runtime/src/state/*` |
 | Model protocol and providers | `models/src/*` |
 | Product provider assembly | transitional `src/models/factory.rs` |
-| Tools and MCP/RAG adapters | `src/tools/*` |
+| Local built-in tools and invocation adapters | `runtime/src/tools/*` |
+| Product registry assembly and MCP/RAG adapters | transitional `src/tools/*` |
 | Memory/context/compaction services | `runtime/src/memory/*`, `runtime/src/context.rs`, `runtime/src/compaction.rs` |
 | Transitional memory hook | `src/hooks/session_memory.rs` |
 
@@ -809,8 +810,9 @@ Relevant code:
 
 Tools implement the `rove-core` `Tool` contract and are registered in its
 `ToolRegistry`. The registry projects operational `ToolDescriptor` values into
-model-visible schemas and dispatches validated execution by name. The root
-compatibility modules re-export these contracts.
+model-visible schemas and dispatches validated execution by name. Local
+built-in implementations and invocation adapters live in
+`runtime/src/tools/`; root compatibility modules re-export their public API.
 
 Current built-in tools:
 
@@ -869,8 +871,10 @@ Relevant code:
 - `core/src/tools.rs`
 - `core/src/policy.rs`
 - `core/src/validation.rs`
+- `runtime/src/tools/`
 - `src/tools/traits.rs` and `src/tools/registry.rs` (compatibility re-exports)
-- `src/tools/runtime_context.rs`
+- `src/tools/{echo,fs,memory,request_input,runtime_context,shell}.rs`
+  (compatibility re-exports)
 - `src/core/executor.rs`
 - `runtime/src/boundary.rs`
 - `src/hooks/mod.rs`
@@ -1028,7 +1032,7 @@ Relevant code:
 - `runtime/src/memory/session.rs`
 - `runtime/src/memory/durable.rs`
 - `src/hooks/session_memory.rs`
-- `src/tools/memory.rs`
+- `runtime/src/tools/memory.rs`
 
 ## 17. MCP
 

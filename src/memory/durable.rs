@@ -1,4 +1,3 @@
-pub(crate) use rove_runtime::memory::durable::parse_frontmatter;
 pub use rove_runtime::memory::durable::{
     MemoryScope, MemoryTopicInfo, MemoryType, RecallHit, RecallOptions, TopicMetadata,
     list_memory_topics_from_dir_sync, list_memory_topics_sync, read_memory_index_from_dir_sync,
