@@ -55,10 +55,10 @@ Additional routing:
 |---|---|
 | `models/` | `rove-models`: normalized model protocol, providers, routing, fake provider |
 | `core/` | `rove-core`: in-memory Agent loop, core events/control, tool contracts and registry |
-| `runtime/` | `rove-runtime`: contracts/events, workspace, context/compaction, memory, local built-in tools, state/artifacts/SQLite/repair/resume |
+| `runtime/` | `rove-runtime`: contracts/events, workspace, context/compaction, memory, local built-in tools, MCP proxy, state/artifacts/SQLite/repair/resume |
 | `src/core/` | Transitional persistent Engine, planning/run coordination, durable event translation and tool turns |
 | `src/models/factory.rs` | Transitional AppConfig-driven provider assembly for the root facade |
-| `src/tools/` | Transitional tool re-exports and product registry assembly, MCP proxy, optional RAG |
+| `src/tools/` | Transitional tool re-exports and product registry assembly, optional RAG |
 | `src/state/` | Transitional compatibility re-exports for `rove-runtime` state modules |
 | `src/memory/` | Transitional compatibility re-exports for `rove-runtime` memory modules |
 | `src/interfaces/api/` | HTTP job lifecycle and SSE |
@@ -116,12 +116,13 @@ As of 2026-07-22:
   owns IDs, task/checkpoint and execution-policy contracts, Workspace/path
   safety, prompt metadata/runtime identity, approval/input provider contracts,
   canonical `StreamEvent`, context/compaction services, session/durable memory,
-  local filesystem/shell/memory/input tools and invocation adapters, and
-  state/trace/artifact/SQLite/repair/resume services. Persistent Engine
-  coordination, the session-summary post-run hook, product tool-registry
-  assembly, MCP/RAG, and `AgentEvent -> StreamEvent` translation remain in the
-  root facade while later Phase 5 slices are extracted. AppConfig-driven
-  provider selection also remains there until `apps/bootstrap` is extracted.
+  local filesystem/shell/memory/input tools, invocation adapters, and the
+  existing stdio/legacy-SSE MCP proxy, plus state/trace/artifact/SQLite/
+  repair/resume services. Persistent Engine coordination, the session-summary
+  post-run hook, product tool-registry assembly, optional RAG, and
+  `AgentEvent -> StreamEvent` translation remain in the root facade while later
+  Phase 5 slices are extracted. AppConfig-driven provider selection also
+  remains there until `apps/bootstrap` is extracted.
 - `docs/runtime/` describes the implemented MVP.
 - MCP currently supports stdio and the existing legacy SSE path. Streamable
   HTTP, negotiated sessions, rich MCP result envelopes, and Tool Artifacts are

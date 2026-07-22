@@ -129,9 +129,11 @@ projection omits them. Local built-in tool implementations and their typed
 invocation adapters live in `runtime/src/tools/`; compatibility modules under
 `src/tools/` re-export them. The persistent root runtime executes registered
 tools through `Executor`, approval/input handling, hooks, and durable event
-mapping. CLI and API assemble tools through the same transitional product
-registry builder, which registers runtime built-ins and then loads configured
-MCP/RAG tools.
+mapping. The existing stdio/legacy-SSE MCP proxy is implemented in
+`runtime/src/tools/mcp_proxy.rs`. CLI and API assemble tools through the same
+transitional product registry builder, which registers runtime built-ins and
+then loads configured MCP tools; optional RAG remains in the root feature-gated
+adapter for a later refactor.
 
 Workspace, resolved Memory paths, approval policy, and input providers are
 runtime-owned services attached to a tool invocation through a typed extension.
@@ -139,7 +141,7 @@ They are not fields on the minimal `rove-core` context, so an embedded custom
 Tool needs only call identity and cancellation unless it explicitly opts into
 runtime services.
 
-MCP stdio transport is bounded by per-server policy. Initialize, list, and call requests time out; stderr is captured up to the configured diagnostic limit; JSON-RPC errors are mapped to structured tool execution failures; and child processes are killed when their client is dropped. `cargo test --test mcp` covers mock stdio registration, timeout/error/cleanup behavior, and includes an opt-in real filesystem MCP smoke test gated by `ROVE_MCP_FILESYSTEM_SMOKE=1`.
+MCP stdio transport is bounded by per-server policy. Initialize, list, and call requests time out; stderr is captured up to the configured diagnostic limit; JSON-RPC errors are mapped to structured tool execution failures; and child processes are killed when their client is dropped. `runtime/tests/mcp_contract.rs` and `cargo test --test mcp` cover mock stdio registration, annotation safety, timeout/error/cleanup behavior, and include an opt-in real filesystem MCP smoke test gated by `ROVE_MCP_FILESYSTEM_SMOKE=1`.
 
 Batch execution rules:
 

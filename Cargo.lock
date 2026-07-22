@@ -5235,6 +5235,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "futures",
+ "reqwest 0.13.3",
  "rove-core",
  "rove-models",
  "rusqlite",

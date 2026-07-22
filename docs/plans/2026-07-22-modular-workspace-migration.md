@@ -1,6 +1,6 @@
 # Rove Modular Workspace Migration Plan - 2026-07-22
 
-> Status: **In Progress / Phase 5 Built-In Tools Verified**
+> Status: **In Progress / Phase 5 MCP Verified**
 >
 > Design source:
 > [`../design/2026-07-22-modular-workspace-architecture.md`](../design/2026-07-22-modular-workspace-architecture.md)
@@ -435,13 +435,15 @@ Current verified progress:
   model/deterministic compaction, memory paths, session storage, durable recall,
   and layered prompt memory now live in `rove-runtime`.
 - Order item 4 is partially implemented: local echo, filesystem, shell, memory,
-  and request-input tools plus runtime invocation adapters now live in
-  `rove-runtime`. Product registry assembly, MCP, and optional RAG remain for
-  the next independent slice.
+  and request-input tools, runtime invocation adapters, and the existing
+  stdio/legacy-SSE MCP proxy now live in `rove-runtime`. Product registry
+  assembly remains root-owned. Optional RAG is explicitly frozen for a later
+  user-led refactor; its full feature test suite is not part of this migration
+  gate.
 - The root `rove::core::*`, `rove::state::*`, and `rove::memory::*` paths remain
   compatibility re-exports. The corresponding local `rove::tools::*` paths are
   also compatibility re-exports. Engine coordination, the session-summary
-  post-run hook, product registry assembly, MCP/RAG, and event translation
+  post-run hook, product registry assembly, optional RAG, and event translation
   producers remain in the root package until later order items move.
 - Full first-party `AppConfig` remains in the root package because API/Web and
   provider assembly fields must be separated through `apps/bootstrap`; it was
@@ -646,7 +648,8 @@ reviewed migration with defaults, fixtures, and current documentation.
 - [ ] `rove-core` embeds with Fake Model and a custom Tool without runtime
   state or app dependencies.
 - [ ] `rove-runtime` provides persistence, approval, planning, resume, memory,
-  MCP/RAG, official tools, and canonical durable events.
+  MCP, official tools, and canonical durable events; optional RAG remains the
+  explicitly deferred user-led refactor recorded in Phase 5 progress.
 - [ ] CLI, API, benchmark, and Web consume the same runtime.
 - [ ] CLI/API/SSE/Web behavior and binary names remain compatible.
 - [ ] Existing trace/task-state/report/SQLite artifacts remain readable and

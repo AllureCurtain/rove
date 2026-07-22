@@ -17,11 +17,12 @@ the default member. `rove-core` is the implemented in-memory embedding layer.
 `rove-runtime` currently owns the verified foundation slice for identity,
 resumable task/execution contracts, Workspace/path safety, prompt/runtime
 identity, approval/input contracts, canonical events, context/compaction,
-session/durable memory, local built-in tools and invocation adapters, and
-durable state/trace/artifact/SQLite/repair/resume services. Persistent
-coordination, the session-summary post-run hook, product tool-registry
-assembly, MCP/RAG, and app packages remain in the compatibility root until
-their later migration slices move code, tests, and docs together.
+session/durable memory, local built-in tools, invocation adapters, and the
+existing MCP proxy, plus durable state/trace/artifact/SQLite/repair/resume
+services. Persistent coordination, the session-summary post-run hook, product
+tool-registry assembly, optional RAG, and app packages remain in the
+compatibility root until their later migration slices move code, tests, and
+docs together.
 
 ## 1. What rove is
 
@@ -198,13 +199,13 @@ OnCall reference Agent.
 | RAG index | indexing binary under `src/bin/` | `src/tools/rag/` |
 | Web | `web-ui/` | API proxy, state hooks, components, tests |
 | Agent core | `core/` | in-memory Agent/model/tool loop, control, core events, contracts |
-| Persistent runtime | `runtime/` | contracts/events, workspace, context/compaction, memory, local built-in tools, StateStore, artifacts/SQLite, repair and resume |
+| Persistent runtime | `runtime/` | contracts/events, workspace, context/compaction, memory, local built-in tools, MCP proxy, StateStore, artifacts/SQLite, repair and resume |
 | Persistent coordinator | `src/core/` | transitional Engine, planning/run coordination, tool turns, memory-flush ordering, durable event translation |
 | State compatibility | `src/state/` | temporary re-exports of `runtime/src/state/` |
 | Models | `models/` | independent protocol, provider adapters, routing, fake provider |
 | Provider assembly | `src/models/factory.rs` | transitional AppConfig-driven construction |
 | Runtime tools | `runtime/src/tools/` | echo, filesystem, shell, memory, request-input, and invocation adapters |
-| Tool assembly | `src/tools/` | compatibility re-exports, product registry assembly, MCP, and RAG |
+| Tool assembly | `src/tools/` | compatibility re-exports, product registry assembly, and optional RAG |
 | Memory compatibility | `src/memory/` | temporary re-exports of `runtime/src/memory/` |
 
 ## 7. Request lifecycle
@@ -394,7 +395,7 @@ Current MCP truth:
 
 See:
 
-- `src/tools/mcp_proxy.rs`;
+- `runtime/src/tools/mcp_proxy.rs`;
 - `tests/mcp.rs`;
 - [`runtime/subsystems.md`](runtime/subsystems.md);
 - [future MCP design](design/2026-07-15-mcp-streamable-http-and-tool-artifacts-design.md).

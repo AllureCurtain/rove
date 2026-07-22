@@ -49,7 +49,8 @@ Important entry points:
 | Model protocol and providers | `models/src/*` |
 | Product provider assembly | transitional `src/models/factory.rs` |
 | Local built-in tools and invocation adapters | `runtime/src/tools/*` |
-| Product registry assembly and MCP/RAG adapters | transitional `src/tools/*` |
+| Product registry assembly and optional RAG adapter | transitional `src/tools/*` |
+| MCP transport/proxy | `runtime/src/tools/mcp_proxy.rs` |
 | Memory/context/compaction services | `runtime/src/memory/*`, `runtime/src/context.rs`, `runtime/src/compaction.rs` |
 | Transitional memory hook | `src/hooks/session_memory.rs` |
 
@@ -1095,7 +1096,7 @@ By default that smoke test runs `npx -y @modelcontextprotocol/server-filesystem 
 
 Relevant code:
 
-- `src/tools/mcp_proxy.rs`
+- `runtime/src/tools/mcp_proxy.rs`
 - `tests/mcp.rs`
 - `tests/fixtures/mcp_mock_server.py`
 
