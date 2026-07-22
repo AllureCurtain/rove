@@ -694,7 +694,7 @@ reviewed migration with defaults, fixtures, and current documentation.
 - [x] Cargo metadata proves the allowed one-way local dependency graph.
 - [x] `rove-core` embeds with Fake Model and a custom Tool without runtime
   state or app dependencies.
-- [ ] `rove-runtime` provides persistence, approval, planning, resume, memory,
+- [x] `rove-runtime` provides persistence, approval, planning, resume, memory,
   MCP, official tools, and canonical durable events; optional RAG remains the
   explicitly deferred user-led refactor recorded in Phase 5 progress.
 - [x] CLI, API, benchmark, and Web consume the same runtime.
@@ -705,8 +705,9 @@ reviewed migration with defaults, fixtures, and current documentation.
   RAG feature compile/clippy passes; full RAG test suite remains owner-deferred.
   Browser E2E and real-provider/full integration remain opt-in as before.
 - [x] Current runtime documentation points to the new implementation paths.
-- [ ] Every Rust crate has a boundary README and public usage example.
+- [x] Every Rust crate has a boundary README and public usage example.
 - [x] The modular architecture design status is updated only after code, tests,
   and current docs agree.
-- [ ] Temporary worktree, generated artifacts, and migration-only compatibility
-  modules are absent from the final repository.
+- [x] Temporary migration baseline worktree and root compatibility package are
+  removed from the canonical repository; local generated artifacts remain
+  gitignored (`.rove/`, `target/`, `apps/web/node_modules/`, etc.).

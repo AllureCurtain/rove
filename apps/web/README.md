@@ -17,12 +17,13 @@ That starts both `rove-api` and the workbench, then prints the Web and API URLs.
 Start the API server from the repository root:
 
 ```powershell
-cargo run --bin rove-api
+cargo run -p rove-api
 ```
 
-Start the workbench from this directory:
+Start the workbench from this directory (`apps/web`):
 
 ```powershell
+pnpm install --frozen-lockfile
 pnpm dev
 ```
 

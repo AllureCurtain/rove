@@ -1,18 +1,27 @@
 # rove-models
 
-`rove-models` owns Rove's provider-neutral message protocol, model-visible tool
-schema, usage/error normalization, model client contract, provider adapters,
-deterministic fake provider, routing, and provider health primitives.
+## Responsibility
 
-The model-visible `ToolSchema` contains only name, description, and JSON input
-schema. Destructive, parallel, and capability metadata belongs to
-`rove_core::ToolDescriptor` and is projected away before provider calls.
+Provider-neutral model protocol and adapters:
 
-It does not own Agent execution, workspace policy, tools, persistence,
-configuration loading, CLI/API types, or product assembly. First-party
-provider selection from `AppConfig` remains above this crate.
+- `Message`, `Role`, `ToolCallRef`, `Usage`
+- model-visible `ToolSchema` (name/description/input only)
+- `ModelClient`, `ModelEvent`, `ModelError`
+- OpenAI-compatible, OpenAI Responses, Anthropic, Ollama, and Fake clients
+- provider stream parsing, routing, and health primitives
 
-Local project dependencies: none.
+## Non-responsibility
+
+Does **not** own Agent execution, workspaces, tools, persistence, product
+`AppConfig`, CLI/API types, or provider selection from first-party config.
+
+## Local dependencies
+
+```text
+(none)
+```
+
+## Minimal public API example
 
 ```rust
 use futures::StreamExt;
@@ -20,17 +29,19 @@ use rove_models::{FakeModelClient, Message, ModelClient};
 
 # async fn example() {
 let client = FakeModelClient::new("hello".to_string());
-let events = client.stream(&[Message::user("hi")], &[]).collect::<Vec<_>>().await;
+let events = client
+    .stream(&[Message::user("hi")], &[])
+    .collect::<Vec<_>>()
+    .await;
 assert!(!events.is_empty());
 # }
 ```
 
-Focused verification:
+## Focused verification
 
 ```powershell
 cargo test -p rove-models
 ```
 
-Compatibility status: pre-1.0 and extracted behind the temporary root `rove`
-facade. Serialized protocol names and provider payload behavior remain covered
-by existing tests.
+Compatibility status: pre-1.0. Serialized protocol names and provider payload
+behavior are covered by package and integration tests.

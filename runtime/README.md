@@ -1,57 +1,49 @@
 # rove-runtime
 
-`rove-runtime` owns Rove's persistent and product-level execution contracts.
-During the modular Workspace migration it is extracted in verified slices from
-the temporary root `rove` compatibility package.
+## Responsibility
 
-The current crate owns:
+Persistent Rove execution semantics:
 
-- run, job, and session IDs;
-- resumable task and prompt-checkpoint types;
-- execution policy and plan-ledger data contracts;
-- workspace detection and path-boundary enforcement;
-- prompt metadata and runtime identity evaluation;
-- approval and request-input provider contracts;
-- canonical durable `StreamEvent`;
-- token-aware context construction and deterministic/model compaction;
-- session/durable memory paths, storage, recall, and prompt assembly;
-- local built-in tools, invocation adapters, and the existing MCP proxy;
-- the tool `Executor` pipeline and pre/post-tool plus post-run hooks;
-- planner, plan evaluator, plan loop, step runner, unplanned run loop, and
-  tool-turn coordination;
-- durable `AgentEvent -> StreamEvent` translation and the persistent `Engine`
-  facade;
-- StateStore, trace, task/report artifacts, SQLite index, repair, cleanup, and
-  resume.
+- run/job/session IDs, `RunRequest`, resumable task state
+- workspace detection and path-boundary enforcement
+- planning, step runner, tool turns, hooks, `Executor`
+- approval/input contracts and runtime policy adapters
+- context/compaction, session/durable memory
+- local built-in tools, MCP proxy
+- canonical durable `StreamEvent`
+- StateStore, trace/task/report artifacts, SQLite, repair, cleanup, resume
+- persistent `Engine` facade
 
-Product tool-registry assembly, optional RAG, and first-party `AppConfig`
-remain in the root compatibility package until Phase 6 extracts apps and
-bootstrap. This crate must not depend on CLI, API, benchmark, or Web packages.
+## Non-responsibility
 
-Local project dependencies:
+Does **not** own first-party `AppConfig`, CLI/TUI rendering, Axum routes,
+benchmark suite schemas, or product tool-registry composition. Optional heavy
+RAG implementation lives in `rove-cli` behind `--features rag`.
+
+## Local dependencies
 
 ```text
 rove-models <- rove-core <- rove-runtime
 ```
 
-Minimal foundation usage:
+## Minimal public API example
 
 ```rust
 use rove_runtime::{RunId, Workspace};
 
+# fn example() -> anyhow::Result<()> {
 let workspace = Workspace::detect(std::path::Path::new("."))?;
 let run_id = RunId::new();
 println!("{run_id} in {}", workspace.root.display());
-# Ok::<(), anyhow::Error>(())
+# Ok(())
+# }
 ```
 
-Focused verification:
+## Focused verification
 
 ```powershell
 cargo test -p rove-runtime
 ```
 
-Compatibility status: pre-1.0 and transitional. The root `rove::core::*`,
-`rove::state::*`, `rove::memory::*`, and `rove::hooks::*` module paths re-export
-these contracts until application crates and tests have migrated to the new
-package.
+Compatibility status: pre-1.0. Apps and integration tests consume this crate
+directly after the modular workspace migration.
