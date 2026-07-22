@@ -1,6 +1,6 @@
 # Rove Modular Workspace Migration Plan - 2026-07-22
 
-> Status: **Phase 5 Complete (RAG deferred / product registry root-owned)**
+> Status: **In Progress / Phase 6 Bootstrap Extracted**
 >
 > Design source:
 > [`../design/2026-07-22-modular-workspace-architecture.md`](../design/2026-07-22-modular-workspace-architecture.md)
@@ -473,6 +473,16 @@ rove-runtime -X-> apps
 ```
 
 ### Phase 6: Extract First-Party Rust Apps
+
+Current verified progress:
+
+- Order item 1 (`rove-app-bootstrap`) is implemented for product config loading,
+  provider factory construction, non-RAG product tool registry assembly, and
+  shared first-party Engine assembly helpers. Root `src/config.rs`,
+  `src/models/factory.rs`, and interface assembly remain compatibility wrappers.
+  Optional RAG tool registration still happens in the root product registry so
+  bootstrap does not depend on the deferred RAG modules.
+
 
 Goal: make each user-facing Rust surface a thin consumer of runtime.
 

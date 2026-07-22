@@ -5169,6 +5169,7 @@ dependencies = [
  "pretty_assertions",
  "ratatui",
  "reqwest 0.13.3",
+ "rove-app-bootstrap",
  "rove-core",
  "rove-models",
  "rove-runtime",
@@ -5191,6 +5192,22 @@ dependencies = [
  "utoipa-axum",
  "utoipa-swagger-ui",
  "walkdir",
+]
+
+[[package]]
+name = "rove-app-bootstrap"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "dotenvy",
+ "figment",
+ "rove-core",
+ "rove-models",
+ "rove-runtime",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]

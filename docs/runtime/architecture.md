@@ -4,7 +4,7 @@
 
 The repository manifest is currently a transitional Cargo Workspace containing
 the existing root `rove` compatibility package and the independent
-`rove-models`, `rove-core`, and `rove-runtime` packages; the root package
+`rove-models`, `rove-core`, `rove-runtime`, and `rove-app-bootstrap` packages; the root package
 remains the default member. Shared package metadata and dependency versions are
 defined at Workspace scope. `rove-core` is the in-memory embedding layer and
 depends only on `rove-models`. The first verified `rove-runtime` slice depends

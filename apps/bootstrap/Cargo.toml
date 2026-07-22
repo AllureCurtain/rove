@@ -1,0 +1,19 @@
+[package]
+name = "rove-app-bootstrap"
+version.workspace = true
+edition.workspace = true
+description = "First-party config loading and product assembly for Rove"
+
+[dependencies]
+anyhow.workspace = true
+dotenvy.workspace = true
+figment.workspace = true
+rove-core.workspace = true
+rove-models.workspace = true
+rove-runtime.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

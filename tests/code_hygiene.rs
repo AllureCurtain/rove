@@ -36,7 +36,9 @@ fn dev_launcher_documents_process_lifecycle_and_modes() {
 
 #[test]
 fn config_tests_clear_every_env_key_loaded_by_env_layer() {
-    let source = std::fs::read_to_string("src/config.rs").expect("src/config.rs should exist");
+    let source = std::fs::read_to_string("apps/bootstrap/src/config.rs")
+        .expect("apps/bootstrap/src/config.rs should exist")
+        .replace("\r\n", "\n");
     let loaded = extract_env_string_keys(&source);
     let clear_start = source
         .find("fn clear_config_env()")
@@ -44,6 +46,7 @@ fn config_tests_clear_every_env_key_loaded_by_env_layer() {
     let clear_rest = &source[clear_start..];
     let clear_end = clear_rest
         .find("\n    }\n\n    #[test]")
+        .or_else(|| clear_rest.find("\n    }\n    #[test]"))
         .expect("clear_config_env should be followed by config tests");
     let cleared = extract_quoted_env_keys(&clear_rest[..clear_end]);
     let missing: Vec<_> = loaded.difference(&cleared).cloned().collect();
@@ -51,6 +54,14 @@ fn config_tests_clear_every_env_key_loaded_by_env_layer() {
     assert!(
         missing.is_empty(),
         "clear_config_env must remove every env var read by env_layer; missing: {missing:?}"
+    );
+
+    let root_facade = std::fs::read_to_string("src/config.rs")
+        .expect("root config re-export should exist")
+        .replace("\r\n", "\n");
+    assert!(
+        root_facade.contains("rove_app_bootstrap::config"),
+        "root config path should re-export bootstrap config during migration"
     );
 }
 
