@@ -403,9 +403,9 @@ cargo test --test mcp mcp_official_filesystem_server_smoke_when_enabled -- --exa
 RAG remains feature-gated and deterministic by default:
 
 ```powershell
-cargo check --features rag --bin rove-index
-cargo test --features rag --test cli_index
-cargo test --features rag --test rag
+
+
+
 ```
 
 Provider embeddings or reranking should be enabled only through explicit environment gates and should write artifacts under the integration state directory.
@@ -441,7 +441,7 @@ pnpm build
 Feature and optional gates can be layered afterward:
 
 ```powershell
-cargo test --features rag
+
 cd apps/web
 pnpm test:e2e
 ```

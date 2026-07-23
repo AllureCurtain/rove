@@ -82,8 +82,8 @@ pnpm build
 Optional RAG verification remains separate:
 
 ```powershell
-cargo check --features rag --bin rove-index
-cargo test --features rag
+
+
 ```
 
 Optional Unix TUI PTY verification also remains separate from the default gate:

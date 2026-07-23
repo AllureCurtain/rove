@@ -20,7 +20,6 @@ pub struct AppConfig {
     pub api: ApiConfig,
     pub web: WebConfig,
     pub routing: RoutingConfig,
-    pub rag: RagConfig,
     #[serde(skip)]
     pub source_summary: ConfigSourceSummary,
 }
@@ -145,21 +144,6 @@ pub struct RoutingConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(default)]
-pub struct RagConfig {
-    pub deterministic: bool,
-    pub embedding_provider: String,
-    pub embedding_model: String,
-    pub embedding_api_base: String,
-    pub embedding_api_key: String,
-    pub rerank_provider: Option<String>,
-    pub rerank_model: Option<String>,
-    pub rerank_api_key: Option<String>,
-    pub timeout_ms: u64,
-    pub fallback_to_deterministic: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ConfigSourceSummary {
     pub workspace_root: PathBuf,
     pub project_config_path: PathBuf,
@@ -281,23 +265,6 @@ impl Default for RoutingConfig {
             retry_max_attempts: 1,
             retry_backoff_base_ms: 250,
             retry_backoff_max_ms: 5_000,
-        }
-    }
-}
-
-impl Default for RagConfig {
-    fn default() -> Self {
-        Self {
-            deterministic: true,
-            embedding_provider: "deterministic".to_string(),
-            embedding_model: "deterministic-64".to_string(),
-            embedding_api_base: "https://api.openai.com/v1".to_string(),
-            embedding_api_key: String::new(),
-            rerank_provider: None,
-            rerank_model: None,
-            rerank_api_key: None,
-            timeout_ms: 30_000,
-            fallback_to_deterministic: true,
         }
     }
 }
@@ -485,9 +452,6 @@ impl AppConfig {
                 "routing.retry_backoff_max_ms must be greater than or equal to retry_backoff_base_ms"
             );
         }
-        if self.rag.timeout_ms == 0 {
-            anyhow::bail!("rag.timeout_ms must be greater than 0");
-        }
         if self.state.sqlite_busy_timeout_ms == 0 {
             anyhow::bail!("state.sqlite_busy_timeout_ms must be greater than 0");
         }
@@ -611,8 +575,6 @@ struct AppConfigLayer {
     web: Option<WebConfigLayer>,
     #[serde(skip_serializing_if = "Option::is_none")]
     routing: Option<RoutingConfigLayer>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    rag: Option<RagConfigLayer>,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -735,30 +697,6 @@ struct RoutingConfigLayer {
     retry_backoff_base_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     retry_backoff_max_ms: Option<u64>,
-}
-
-#[derive(Debug, Default, Serialize)]
-struct RagConfigLayer {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    deterministic: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    embedding_provider: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    embedding_model: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    embedding_api_base: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    embedding_api_key: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    rerank_provider: Option<Option<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    rerank_model: Option<Option<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    rerank_api_key: Option<Option<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    timeout_ms: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    fallback_to_deterministic: Option<bool>,
 }
 
 #[derive(Debug, Default)]
@@ -909,51 +847,6 @@ fn env_layer() -> anyhow::Result<NamedConfigLayer> {
         keys.push("ROVE_ROUTING_RETRY_BACKOFF_MAX_MS".to_string());
     }
 
-    let mut rag = RagConfigLayer::default();
-    if let Some(value) = env_string("ROVE_RAG_DETERMINISTIC") {
-        rag.deterministic = Some(parse_env_bool("ROVE_RAG_DETERMINISTIC", &value)?);
-        keys.push("ROVE_RAG_DETERMINISTIC".to_string());
-    }
-    if let Some(value) = env_string("ROVE_RAG_EMBEDDING_PROVIDER") {
-        rag.embedding_provider = Some(value);
-        keys.push("ROVE_RAG_EMBEDDING_PROVIDER".to_string());
-    }
-    if let Some(value) = env_string("ROVE_RAG_EMBEDDING_MODEL") {
-        rag.embedding_model = Some(value);
-        keys.push("ROVE_RAG_EMBEDDING_MODEL".to_string());
-    }
-    if let Some(value) = env_string("ROVE_RAG_EMBEDDING_API_BASE") {
-        rag.embedding_api_base = Some(value);
-        keys.push("ROVE_RAG_EMBEDDING_API_BASE".to_string());
-    }
-    if let Some(value) = env_string("ROVE_RAG_EMBEDDING_API_KEY") {
-        rag.embedding_api_key = Some(value);
-        keys.push("ROVE_RAG_EMBEDDING_API_KEY".to_string());
-    }
-    if let Some(value) = env_string("ROVE_RAG_RERANK_PROVIDER") {
-        rag.rerank_provider = Some(Some(value));
-        keys.push("ROVE_RAG_RERANK_PROVIDER".to_string());
-    }
-    if let Some(value) = env_string("ROVE_RAG_RERANK_MODEL") {
-        rag.rerank_model = Some(Some(value));
-        keys.push("ROVE_RAG_RERANK_MODEL".to_string());
-    }
-    if let Some(value) = env_string("ROVE_RAG_RERANK_API_KEY") {
-        rag.rerank_api_key = Some(Some(value));
-        keys.push("ROVE_RAG_RERANK_API_KEY".to_string());
-    }
-    if let Some(value) = env_string("ROVE_RAG_TIMEOUT_MS") {
-        rag.timeout_ms = Some(parse_env("ROVE_RAG_TIMEOUT_MS", &value)?);
-        keys.push("ROVE_RAG_TIMEOUT_MS".to_string());
-    }
-    if let Some(value) = env_string("ROVE_RAG_FALLBACK_TO_DETERMINISTIC") {
-        rag.fallback_to_deterministic = Some(parse_env_bool(
-            "ROVE_RAG_FALLBACK_TO_DETERMINISTIC",
-            &value,
-        )?);
-        keys.push("ROVE_RAG_FALLBACK_TO_DETERMINISTIC".to_string());
-    }
-
     let mut tool = ToolConfigLayer::default();
     if let Some(value) = env_string("ROVE_MCP_CONFIG") {
         tool.mcp_config_path = Some(PathBuf::from(value));
@@ -1057,7 +950,6 @@ fn env_layer() -> anyhow::Result<NamedConfigLayer> {
             api: Some(api).filter(has_api_values),
             web: Some(web).filter(has_web_values),
             routing: Some(routing).filter(has_routing_values),
-            rag: Some(rag).filter(has_rag_values),
         },
         keys,
     })
@@ -1162,19 +1054,6 @@ fn has_routing_values(layer: &RoutingConfigLayer) -> bool {
         || layer.retry_backoff_max_ms.is_some()
 }
 
-fn has_rag_values(layer: &RagConfigLayer) -> bool {
-    layer.deterministic.is_some()
-        || layer.embedding_provider.is_some()
-        || layer.embedding_model.is_some()
-        || layer.embedding_api_base.is_some()
-        || layer.embedding_api_key.is_some()
-        || layer.rerank_provider.is_some()
-        || layer.rerank_model.is_some()
-        || layer.rerank_api_key.is_some()
-        || layer.timeout_ms.is_some()
-        || layer.fallback_to_deterministic.is_some()
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::{Mutex, OnceLock};
@@ -1235,16 +1114,6 @@ mod tests {
             "ROVE_API_CORS_ORIGINS",
             "ROVE_API_RATE_LIMIT_PER_MINUTE",
             "ROVE_WEB_API_BASE",
-            "ROVE_RAG_DETERMINISTIC",
-            "ROVE_RAG_EMBEDDING_PROVIDER",
-            "ROVE_RAG_EMBEDDING_MODEL",
-            "ROVE_RAG_EMBEDDING_API_BASE",
-            "ROVE_RAG_EMBEDDING_API_KEY",
-            "ROVE_RAG_RERANK_PROVIDER",
-            "ROVE_RAG_RERANK_MODEL",
-            "ROVE_RAG_RERANK_API_KEY",
-            "ROVE_RAG_TIMEOUT_MS",
-            "ROVE_RAG_FALLBACK_TO_DETERMINISTIC",
         ] {
             unsafe {
                 std::env::remove_var(key);

@@ -219,9 +219,9 @@ cargo test --test mcp mcp_official_filesystem_server_smoke_when_enabled -- --exa
 RAG deterministic gate:
 
 ```powershell
-cargo check --features rag --bin rove-index
-cargo test --features rag --test cli_index
-cargo test --features rag --test rag
+
+
+
 ```
 
 Acceptance:

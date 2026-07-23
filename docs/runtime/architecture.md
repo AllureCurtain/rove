@@ -16,8 +16,7 @@ context/compaction, session/durable memory services, local built-in tools,
 their invocation adapters, the existing MCP proxy, the tool Executor pipeline,
 pre/post-tool plus post-run hooks, planning/step coordination, durable event
 translation, and the persistent Engine facade. Product tool-registry assembly,
-optional RAG, first-party AppConfig, and app packages still remain at the
-transitional root paths documented below.
+first-party AppConfig and product assembly live in `apps/bootstrap`; product apps live under `apps/`.
 
 ## Shape
 
@@ -99,7 +98,7 @@ cannot supply trustworthy interaction events fail closed.
 - Local built-in tool implementations, runtime-specific Workspace, Memory,
   policy and input invocation services, MCP proxy, `Executor`, hooks, tool
   turns, planning, and Engine live in `rove-runtime`. Product registry assembly
-  and optional RAG remain transitional root services.
+  live in `apps/bootstrap` and first-party apps.
 - The event chain is `ModelEvent -> AgentEvent -> StreamEvent`.
   `rove-runtime` owns the canonical `StreamEvent` type and performs the
   synchronous translation in `runtime/src/model_turn.rs`. Only `StreamEvent` is
@@ -112,7 +111,7 @@ cannot supply trustworthy interaction events fail closed.
   rule-first `plan_decision`; replacement work is represented by an immutable
   parent-linked `plan_revised` event. These are canonical stream events shared
   by persistence, API/SSE, terminal views, and Web.
-- RAG is feature-gated behind `--features rag`; default builds keep stub schemas and clear disabled-feature errors.
+- Built-in vector RAG is not part of the product; workspace context comes from tools and layered file memory.
 
 ## State Artifacts
 
@@ -125,12 +124,8 @@ cannot supply trustworthy interaction events fail closed.
   memory/MEMORY.md
   memory/topics/*.md
   memory/sessions/<session_id>.md
-  rag_manifest.json
-  rag_index_log.jsonl
-  rag_eval/<run_id>.json
 ```
 
-The RAG files are only produced when the `rag` feature is enabled and indexing/eval commands are run.
 
 ## Restart Semantics
 

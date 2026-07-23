@@ -2,8 +2,6 @@
 
 pub mod cli;
 pub mod product_registry;
-#[cfg(feature = "rag")]
-pub mod rag;
 pub mod terminal;
 pub mod tui;
 

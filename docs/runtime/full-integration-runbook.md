@@ -511,9 +511,9 @@ Acceptance:
 Run deterministic RAG checks:
 
 ```powershell
-cargo check --features rag --bin rove-index
-cargo test --features rag --test cli_index
-cargo test --features rag --test rag
+
+
+
 ```
 
 If using provider embeddings, first confirm the embedding model is visible to the

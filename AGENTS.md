@@ -44,7 +44,7 @@ Additional routing:
 | Providers/routing | `docs/runtime/provider-smoke.md`, `models/src/`, `apps/bootstrap/src/factory.rs` |
 | Tools/safety/MCP | `docs/runtime/subsystems.md`, `runtime/src/tools/`, `apps/bootstrap/src/registry.rs`, `tests/tool_safety.rs`, `tests/mcp.rs` |
 | Memory/context | `MEMORY_DOCTRINE.md`, `runtime/src/memory/`, `runtime/src/context.rs`, `runtime/src/compaction.rs` |
-| RAG | `docs/runtime/integration-testing.md`, `apps/cli/src/rag/`, `tests/rag*.rs` |
+| Workspace retrieval | Tools (`fs`/`shell`) + layered MD memory (`MEMORY_DOCTRINE.md`); no built-in vector RAG |
 | API | `docs/runtime/implementation-guide.md`, `apps/api/`, `tests/api.rs` |
 | Web | `apps/web/` tests and package scripts |
 | Benchmarks | `docs/runtime/benchmark-evidence.md`, `apps/bench/`, `tests/bench.rs` |
@@ -103,7 +103,7 @@ and updates its tests and current documentation:
 As of 2026-07-22:
 
 - rove is a local-first Rust runtime with CLI, API, Web, persisted run state,
-  resume, provider routing, tools, layered memory, optional RAG, and
+  resume, provider routing, tools, layered memory, optional future external retrieval, and
   deterministic benchmarks.
 - The repository is a virtual Cargo Workspace with default member `apps/cli`.
   Package layout is `rove-models <- rove-core <- rove-runtime <-
@@ -112,9 +112,7 @@ As of 2026-07-22:
   `rove-core` depends only on `rove-models`. `rove-runtime` owns durable
   execution, state, memory, tools/MCP, planning, and the Engine facade.
   `rove-app-bootstrap` owns first-party AppConfig, provider factory, product
-  registry assembly, and shared Engine assembly. Optional heavy RAG
-  implementation lives in `rove-cli` behind `--features rag`; default builds use
-  bootstrap-owned disabled stubs.
+  registry assembly, and shared Engine assembly. Workspace retrieval is tool-based plus layered file memory; there is no built-in vector RAG.
 - `docs/runtime/` describes the implemented MVP.
 - MCP currently supports stdio and the existing legacy SSE path. Streamable
   HTTP, negotiated sessions, rich MCP result envelopes, and Tool Artifacts are
@@ -197,9 +195,7 @@ cargo test --test bench
 ### RAG feature
 
 ```powershell
-cargo check --features rag --bin rove-index
-cargo clippy --all-targets --features rag -- -D warnings
-cargo test --features rag
+cargo clippy --all-targets (removed) -- -D warnings
 ```
 
 ### Web

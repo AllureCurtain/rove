@@ -85,18 +85,6 @@ pub fn format_effective_config(config: &AppConfig) -> String {
             "retry_backoff_base_ms": config.routing.retry_backoff_base_ms,
             "retry_backoff_max_ms": config.routing.retry_backoff_max_ms,
         },
-        "rag": {
-            "deterministic": config.rag.deterministic,
-            "embedding_provider": config.rag.embedding_provider,
-            "embedding_model": config.rag.embedding_model,
-            "embedding_api_base": config.rag.embedding_api_base,
-            "embedding_api_key_set": !config.rag.embedding_api_key.is_empty(),
-            "rerank_provider": config.rag.rerank_provider,
-            "rerank_model": config.rag.rerank_model,
-            "rerank_api_key_set": config.rag.rerank_api_key.as_deref().is_some_and(|key| !key.is_empty()),
-            "timeout_ms": config.rag.timeout_ms,
-            "fallback_to_deterministic": config.rag.fallback_to_deterministic,
-        },
         "sources": {
             "workspace_root": config.source_summary.workspace_root.to_string_lossy(),
             "project_config_path": config.source_summary.project_config_path.to_string_lossy(),

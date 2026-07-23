@@ -134,7 +134,7 @@ coordinator live in `runtime/src/executor.rs`, `runtime/src/hooks/`, and
 existing stdio/legacy-SSE MCP proxy is implemented in
 `runtime/src/tools/mcp_proxy.rs`. CLI and API assemble tools through the same
 transitional product registry builder, which registers runtime built-ins and
-then loads configured MCP tools; optional RAG remains in the root feature-gated
+then loads configured MCP tools.
 adapter for a later refactor.
 
 Workspace, resolved Memory paths, approval policy, and input providers are
@@ -220,28 +220,10 @@ when needed, and returns only redacted key presence and model visibility.
 official API, relay/gateway API, native Anthropic endpoint, local Ollama, or the
 fake provider without changing the API process defaults.
 
-## RAG
+## Workspace retrieval
 
-The RAG implementation is behind `--features rag` and lives under `src/tools/rag/`. It includes:
+rove does not ship a built-in vector database. Agents retrieve workspace context with filesystem/shell tools and layered session/durable memory. Future semantic retrieval, if any, would be an optional external service and is not implemented.
 
-- deterministic and OpenAI-compatible embedders;
-- explicit RAG provider config with deterministic fallback behavior;
-- staged ingestion with logging;
-- fixed, markdown-aware, and lightweight code-aware chunking;
-- LanceDB storage plus manifest fallback;
-- vector, lexical, and path-scoped retrieval channels;
-- postprocessing for dedupe and score normalization;
-- pure retrieval eval reports that record embedder and reranker identity;
-- optional routed remote rerank for eval retrieval with `rerank-noop` fallback;
-- a `RagPromptService` formatting boundary for retrieved evidence.
-
-RAG artifacts resolve under the configured `state.state_dir`; the default remains `.rove/rag.lancedb`, `.rove/rag_manifest.json`, `.rove/rag_index_log.jsonl`, and `.rove/rag_eval/`. Default builds expose stub `retrieve_code` and `retrieve_docs` tools with disabled capability metadata and JSON output explaining the feature requirement. Feature-enabled builds expose enabled capability metadata. Remote rerank is optional for eval retrieval: when `rag.rerank_provider`, `rag.rerank_model`, and `rag.rerank_api_key` are configured, the routed reranker calls the configured provider endpoint and records the reranker identity in reports; otherwise eval retrieval uses `rerank-noop`.
-
-The in-agent `retrieve_code` and `retrieve_docs` tools currently use deterministic
-retrieval services at execution time while reading artifacts from the configured
-state directory. Extending runtime tool construction to inject configured
-embedder/reranker services is the planned direction when provider-backed
-tool-time retrieval is needed.
 
 ## Web
 
@@ -278,7 +260,6 @@ pnpm test:e2e
 CI is split by dependency weight:
 
 - `.github/workflows/ci.yml`: Rust default fmt/clippy/test and web test/typecheck/build.
-- `.github/workflows/rag-ci.yml`: RAG feature clippy, full `--features rag` tests, and `rove-index` feature/smoke coverage.
 
 RAG remains separate so DataFusion/LanceDB dependencies do not slow every default feedback loop.
 

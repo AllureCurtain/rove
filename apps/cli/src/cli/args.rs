@@ -80,20 +80,6 @@ pub enum Command {
         #[arg(value_name = "MESSAGE", num_args = 1.., required = true)]
         message: Vec<String>,
     },
-    /// Index a workspace for RAG retrieval.
-    Index {
-        /// Workspace path to index. Defaults to the current working directory.
-        #[arg(value_name = "PATH")]
-        path: Option<PathBuf>,
-
-        /// Use deterministic local embeddings instead of the OpenAI embedding API.
-        #[arg(long)]
-        deterministic: bool,
-
-        /// OpenAI-compatible embedding model.
-        #[arg(long)]
-        embedding_model: Option<String>,
-    },
     /// List resumable local task states.
     Sessions,
     /// Maintain the local state index.
@@ -234,32 +220,6 @@ mod tests {
         match args.command {
             Some(Command::Exec { message }) => assert_eq!(message, vec!["hello".to_string()]),
             other => panic!("expected exec subcommand, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn index_subcommand_parses_options_without_message() {
-        let args = Args::parse_from([
-            "rove",
-            "index",
-            "src",
-            "--deterministic",
-            "--embedding-model",
-            "text-embedding-3-large",
-        ]);
-
-        assert!(args.message().is_none());
-        match args.command {
-            Some(Command::Index {
-                path,
-                deterministic,
-                embedding_model,
-            }) => {
-                assert_eq!(path, Some(PathBuf::from("src")));
-                assert!(deterministic);
-                assert_eq!(embedding_model.as_deref(), Some("text-embedding-3-large"));
-            }
-            other => panic!("expected index subcommand, got {other:?}"),
         }
     }
 

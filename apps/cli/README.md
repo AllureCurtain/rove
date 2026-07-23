@@ -7,14 +7,12 @@ User-facing terminal product:
 - CLI arguments, one-shot/exec, REPL
 - sessions/state maintenance commands
 - terminal rendering and full-screen TUI
-- feature-gated `rove-index` and RAG implementation
 - default-run `rove` binary
 
 ## Non-responsibility
 
-Does **not** own Axum/SSE, durable runtime internals, or first-party config
-schema definition (uses `rove-app-bootstrap`). Default builds keep disabled RAG
-stubs from bootstrap; real RAG requires `--features rag`.
+Does **not** own Axum/SSE, durable runtime internals, first-party config schema
+definition (uses `rove-app-bootstrap`), or built-in vector/RAG indexing.
 
 ## Local dependencies
 

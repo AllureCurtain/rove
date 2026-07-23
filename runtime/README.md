@@ -18,7 +18,7 @@ Persistent Rove execution semantics:
 
 Does **not** own first-party `AppConfig`, CLI/TUI rendering, Axum routes,
 benchmark suite schemas, or product tool-registry composition. Optional heavy
-RAG implementation lives in `rove-cli` behind `--features rag`.
+Built-in vector RAG is not part of this crate or the default product.
 
 ## Local dependencies
 

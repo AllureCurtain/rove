@@ -3,7 +3,6 @@
 pub mod assembly;
 pub mod config;
 pub mod factory;
-pub mod rag_stub;
 pub mod registry;
 
 pub use assembly::{
@@ -12,8 +11,8 @@ pub use assembly::{
 };
 pub use config::{
     ApiConfig, AppConfig, AppConfigOverrides, ConfigSourceSummary, FallbackProviderConfig,
-    MemoryConfig, ProviderConfig, ProviderOptions, RagConfig, RoutingConfig, RuntimeConfig,
-    ShellConfig, StateConfig, ToolConfig, WebConfig,
+    MemoryConfig, ProviderConfig, ProviderOptions, RoutingConfig, RuntimeConfig, ShellConfig,
+    StateConfig, ToolConfig, WebConfig,
 };
 pub use factory::{
     build_anthropic_model_client, build_model_client, build_model_client_with_health,

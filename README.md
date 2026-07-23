@@ -1,6 +1,6 @@
 # rove
 
-`rove` is a local-first, stateful agent runtime written in Rust. It provides a CLI (including an optional full-screen TUI), an HTTP API, a standalone web workbench, tool execution, resumable run state, layered memory, provider routing, and optional RAG indexing.
+`rove` is a local-first, stateful agent runtime written in Rust. It provides a CLI (including an optional full-screen TUI), an HTTP API, a standalone web workbench, tool execution, resumable run state, layered memory, provider routing, and tool-based workspace retrieval.
 
 The runtime is designed around a small core engine:
 
@@ -163,6 +163,10 @@ bearer token server-side and does not expose it to browser JavaScript.
 | Docs | `docs/runtime/` | Current architecture, subsystem boundaries, and implementation status. |
 | Maintainers | `AGENTS.md`, `docs/ONBOARDING.md` | Repository rules, source-of-truth order, code map, workflows, and verification. |
 
+
+## Workspace retrieval and memory
+
+rove obtains workspace context through tools (`fs_read`/`fs_write`, `shell`) and layered file memory (session + durable `MEMORY.md` / topics). There is **no built-in vector database or embedding index** in the default product.
 ## Configuration
 
 Configuration is layered as:
@@ -220,23 +224,6 @@ Files are the readable artifacts. SQLite is the index used for listing, replay, 
 
 `memory.session_dir` and `memory.durable_dir` can move session summaries and durable memory away from the default `.rove/memory` layout. Session summaries are deterministic markdown with the goal, final status, output excerpt, completed plan steps, tools used, and reported file changes.
 
-## RAG
-
-The RAG subsystem is optional and compiled behind the `rag` feature:
-
-```bash
-cargo test --features rag
-cargo check --features rag --bin rove-index
-cargo test --features rag --test cli_index deterministic_index_run_writes_manifest -- --exact
-```
-
-Index a workspace with deterministic local embeddings:
-
-```bash
-cargo run -p rove-cli --features rag --bin rove-index -- --deterministic -C .
-```
-
-RAG artifacts use the configured `state.state_dir` and default to `.rove/rag.lancedb`, `.rove/rag_manifest.json`, `.rove/rag_index_log.jsonl`, and `.rove/rag_eval/`. Provider embeddings are configured under `[rag]`; if provider mode lacks an API key and deterministic fallback is enabled, indexing falls back to local deterministic embeddings.
 
 ## Verification
 
@@ -257,8 +244,6 @@ pnpm build
 RAG feature checks:
 
 ```bash
-cargo clippy --all-targets --features rag -- -D warnings
-cargo test --features rag
 ```
 
 Deterministic benchmark checks:

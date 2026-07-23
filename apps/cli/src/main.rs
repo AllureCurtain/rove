@@ -7,7 +7,6 @@ use rove_app_bootstrap::AppConfigOverrides;
 use rove_cli::cli::args::{Args, Command};
 use rove_cli::cli::config as cli_config;
 use rove_cli::cli::exec::run_exec_with_cancel;
-use rove_cli::cli::index::{self as cli_index, IndexOptions};
 use rove_cli::cli::repl;
 use rove_cli::cli::runtime::{CliRuntimeInteraction, CliRuntimeOptions, build_cli_runtime};
 use rove_cli::cli::sessions;
@@ -63,21 +62,6 @@ fn run_sync_fast_path(args: Args) -> anyhow::Result<()> {
 
 async fn async_main(args: Args) -> anyhow::Result<()> {
     match args.command.clone() {
-        Some(Command::Index {
-            path,
-            deterministic,
-            embedding_model,
-        }) => {
-            return cli_index::run(IndexOptions {
-                cwd: path.or_else(|| args.cwd.clone().map(PathBuf::from)),
-                deterministic,
-                embedding_model,
-                eval_query: None,
-                eval_kind: None,
-                eval_limit: 8,
-            })
-            .await;
-        }
         Some(Command::Sessions) => return sessions::run(args.cwd.clone()).await,
         Some(Command::State { command }) => return cli_state::run(args.cwd.clone(), command).await,
         Some(Command::Tui) => {

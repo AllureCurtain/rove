@@ -7,13 +7,13 @@ First-party product assembly shared by CLI and API:
 - `.rove/config.toml`, environment, and override loading
 - complete first-party config document and source summary
 - provider construction from model-layer clients
-- non-RAG product tool registry and disabled RAG stubs
+- product tool registry assembly
 - shared product `Engine` assembly helpers
 
 ## Non-responsibility
 
 Does **not** own Axum routes, clap CLI parsing, TUI rendering, benchmark
-schemas, durable runtime internals, or the heavy RAG feature implementation.
+schemas, durable runtime internals, or vector/RAG indexing.
 
 ## Local dependencies
 

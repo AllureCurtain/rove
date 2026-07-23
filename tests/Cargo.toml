@@ -5,10 +5,6 @@ edition.workspace = true
 description = "Cross-package integration and compatibility contracts for Rove"
 publish = false
 
-[features]
-default = []
-rag = ["rove-cli/rag"]
-
 
 [dependencies]
 anyhow.workspace = true
@@ -48,9 +44,6 @@ path = "bench.rs"
 name = "cli_config"
 path = "cli_config.rs"
 [[test]]
-name = "cli_index"
-path = "cli_index.rs"
-[[test]]
 name = "cli_repl"
 path = "cli_repl.rs"
 [[test]]
@@ -83,12 +76,6 @@ path = "model_factory.rs"
 [[test]]
 name = "provider_smoke"
 path = "provider_smoke.rs"
-[[test]]
-name = "rag"
-path = "rag.rs"
-[[test]]
-name = "rag_default"
-path = "rag_default.rs"
 [[test]]
 name = "request_input_tool"
 path = "request_input_tool.rs"

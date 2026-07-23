@@ -50,7 +50,7 @@ Important entry points:
 | Model protocol and providers | `models/src/*` |
 | Product provider assembly | transitional `src/models/factory.rs` |
 | Local built-in tools and invocation adapters | `runtime/src/tools/*` |
-| Product registry assembly and optional RAG adapter | transitional `src/tools/*` |
+| Product registry assembly | `apps/bootstrap` |
 | MCP transport/proxy | `runtime/src/tools/mcp_proxy.rs` |
 | Memory/context/compaction services | `runtime/src/memory/*`, `runtime/src/context.rs`, `runtime/src/compaction.rs` |
 | Tool executor and hooks | `runtime/src/executor.rs`, `runtime/src/hooks/` |
@@ -162,12 +162,6 @@ Common paths and defaults:
 | `routing.retry_backoff_base_ms` | `250` |
 | `routing.retry_backoff_max_ms` | `5000` |
 | `api.bind_addr` | `127.0.0.1:8787` |
-| `rag.deterministic` | `true` |
-| `rag.embedding_provider` | `deterministic` |
-| `rag.embedding_model` | `deterministic-64` |
-| `rag.embedding_api_base` | `https://api.openai.com/v1` |
-| `rag.timeout_ms` | `30000` |
-| `rag.fallback_to_deterministic` | `true` |
 
 Remote API binding is rejected unless token auth is configured or `api.unsafe_remote_without_auth = true` is set.
 
@@ -630,7 +624,7 @@ context/compaction, memory, events, state services, the tool `Executor`
 pipeline, hooks, runtime-specific tool turns, planning/run coordination, and
 durable event translation live in `rove-runtime`; the normalized model turn and
 action parser live in `rove-core`. Root `src/core/*` paths remain compatibility
-re-exports. Product registry assembly, optional RAG, and first-party
+re-exports. Product registry assembly and first-party
 `AppConfig` remain transitional root concerns until later phases.
 
 The high-level run flow:
@@ -840,8 +834,8 @@ Current built-in tools:
 | `update_memory_index` | Rebuild durable memory index |
 | `read_memory_topic` | Read durable memory topic |
 | `request_input` | Ask user/interface for mid-run input |
-| `retrieve_code` | RAG code retrieval or stub |
-| `retrieve_docs` | RAG docs retrieval or stub |
+
+
 | `mcp__<server>__<tool>` | MCP-proxied remote tools |
 
 CLI and API construct runtime tools through the shared async
@@ -1118,72 +1112,8 @@ Relevant code:
 
 ## 18. RAG
 
-RAG is optional and gated behind the `rag` feature. Default builds expose stub `retrieve_code` and `retrieve_docs` tools with disabled capability metadata and JSON failure output that explains how to enable the feature. Feature-enabled builds mark those schemas with enabled RAG capability metadata.
+Built-in vector RAG has been removed. Use tools and layered memory for workspace context.
 
-Feature-enabled RAG includes:
-
-- deterministic and OpenAI-compatible embedders;
-- a routed embedder foundation that reuses `ModelHealthStore` for production embedding providers;
-- staged ingestion;
-- fixed, Markdown-aware, and lightweight code-aware chunking;
-- LanceDB storage;
-- manifest fallback retrieval;
-- vector, lexical, and path-scoped channels;
-- dedupe and score normalization;
-- retrieval eval reports;
-- prompt formatting service.
-
-RAG config lives under `[rag]`:
-
-| Config | Default |
-|---|---|
-| `rag.deterministic` | `true` |
-| `rag.embedding_provider` | `deterministic` |
-| `rag.embedding_model` | `deterministic-64` |
-| `rag.embedding_api_base` | `https://api.openai.com/v1` |
-| `rag.embedding_api_key` | empty |
-| `rag.rerank_provider` | unset |
-| `rag.rerank_model` | unset |
-| `rag.rerank_api_key` | unset |
-| `rag.timeout_ms` | `30000` |
-| `rag.fallback_to_deterministic` | `true` |
-
-`dump-config` prints these fields with API keys redacted as presence flags. Environment overrides use `ROVE_RAG_*` names, such as `ROVE_RAG_DETERMINISTIC`, `ROVE_RAG_EMBEDDING_MODEL`, `ROVE_RAG_EMBEDDING_API_KEY`, and `ROVE_RAG_FALLBACK_TO_DETERMINISTIC`.
-
-Main artifact paths are resolved under the configured `state.state_dir`; the default remains `.rove`:
-
-```text
-<state_dir>/rag.lancedb
-<state_dir>/rag_manifest.json
-<state_dir>/rag_index_log.jsonl
-<state_dir>/rag_eval/<run_id>.json
-```
-
-Useful commands:
-
-```powershell
-cargo run -p rove-cli --features rag --bin rove-index -- --deterministic -C .
-cargo test --features rag --test cli_index deterministic_index_run_writes_manifest -- --exact
-```
-
-The CLI uses deterministic embeddings when requested or when `rag.deterministic = true`. With `rag.deterministic = false`, indexing constructs an OpenAI-compatible embedder from `rag.embedding_api_base`, `rag.embedding_api_key`, and `rag.embedding_model`. If the key is missing and `rag.fallback_to_deterministic = true`, indexing falls back to deterministic embeddings; if fallback is disabled, indexing fails with a config error. Retrieval/eval reports record the embedder and reranker identities. Remote rerank is optional: when `rag.rerank_provider` and `rag.rerank_model` are set, eval retrieval builds a routed reranker using `rag.rerank_api_key` and the RAG embedding API base as the first-pass rerank endpoint base. If rerank is unconfigured, or if fallback is enabled after a provider failure, retrieval uses `rerank-noop` and keeps deterministic local behavior.
-
-Agent tool-time retrieval is intentionally narrower today. The in-agent
-`retrieve_code` and `retrieve_docs` tools read the configured state directory
-for RAG artifacts, but they still construct deterministic retrieval services
-inside the tool. Passing configured embedder/reranker services into
-`runtime_tool_registry` is the follow-up direction when tool-time retrieval
-needs to use provider-backed embeddings or rerankers.
-
-Relevant code:
-
-- `src/tools/rag/mod.rs`
-- `src/tools/rag/index.rs`
-- `src/tools/rag/ingest/*`
-- `src/tools/rag/retrieve/*`
-- `src/tools/rag/eval.rs`
-- `src/bin/rove-index.rs`
-- `src/interfaces/cli/index.rs`
 
 ## 19. API Security
 
@@ -1225,9 +1155,9 @@ cargo test
 RAG feature checks:
 
 ```powershell
-cargo check --features rag --bin rove-index
-cargo clippy --all-targets --features rag -- -D warnings
-cargo test --features rag
+
+
+
 ```
 
 Web checks:
@@ -1255,7 +1185,7 @@ cargo test --test cli_repl
 cargo test --test api
 cargo test --test e2e
 cargo test --test mcp
-cargo test --features rag --test rag
+
 ```
 
 TUI terminal verification is split between deterministic renderer/terminal
@@ -1367,7 +1297,6 @@ These are implementation-level issues to keep in mind before extending the syste
    yet reconcile a canonical trace tail written after the latest snapshot.
 
 2. Agent tool-time RAG retrieval remains deterministic.
-   Indexing and eval use configurable embedders and rerankers. The in-agent `retrieve_code` and `retrieve_docs` tools still construct deterministic retrieval directly; passing configured RAG provider services into runtime tool construction remains a follow-up.
 
 3. TUI real-terminal evidence is platform-scoped. The standard-library PTY
    smoke covers Unix when explicitly enabled, while Windows ConPTY automation is
@@ -1389,7 +1318,7 @@ As of 2026-07-20, the following checks were run locally and passed:
 cargo fmt --all --check
 cargo clippy --all-targets -- -D warnings
 cargo test
-cargo check --features rag --bin rove-index
+
 cd apps/web; pnpm test
 cd apps/web; pnpm typecheck
 cd apps/web; pnpm build

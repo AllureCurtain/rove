@@ -43,7 +43,7 @@ pub async fn build_interface_engine(options: EngineAssemblyOptions<'_>) -> anyho
 }
 
 /// Build a product Engine when the caller already assembled a registry
-/// (for example after injecting optional RAG tools).
+/// when the caller already assembled a custom registry.
 pub fn build_product_engine_with_registry(
     options: ProductEngineOptions<'_>,
     registry: ToolRegistry,

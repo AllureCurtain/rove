@@ -1,6 +1,5 @@
 use std::path::PathBuf;
 
-use crate::rag_stub::RagRetrieveStub;
 use rove_core::{Tool, ToolRegistry};
 use rove_runtime::tools::echo::EchoTool;
 use rove_runtime::tools::fs::{FsReadTool, FsWriteTool};
@@ -10,7 +9,7 @@ use rove_runtime::tools::request_input::RequestInputTool;
 use rove_runtime::tools::shell::{ShellPolicy, ShellTool};
 use rove_runtime::workspace::Workspace;
 
-/// Build the default first-party tool registry without optional RAG tools.
+/// Build the default first-party tool registry.
 pub fn product_tool_registry(workspace: &Workspace) -> ToolRegistry {
     product_tool_registry_with_shell_policy(workspace, ShellPolicy::default())
 }
@@ -27,8 +26,6 @@ pub fn product_tool_registry_with_shell_policy(
     registry.register(Box::new(ReadMemoryTopicTool::new()));
     registry.register(Box::new(SaveMemoryTool::new()));
     registry.register(Box::new(UpdateMemoryIndexTool::new()));
-    registry.register(Box::new(RagRetrieveStub::code(workspace.root.clone())));
-    registry.register(Box::new(RagRetrieveStub::docs(workspace.root.clone())));
     registry.register(Box::new(RequestInputTool));
     registry.register(Box::new(ShellTool::with_policy(
         workspace.root.clone(),
@@ -48,7 +45,6 @@ pub async fn product_runtime_tool_registry(
     Ok(registry)
 }
 
-/// Compatibility aliases used by transitional root re-exports.
 pub fn default_tool_registry(workspace: &Workspace) -> ToolRegistry {
     product_tool_registry(workspace)
 }
