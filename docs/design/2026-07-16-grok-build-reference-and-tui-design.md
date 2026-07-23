@@ -30,9 +30,11 @@ rove 已有最重要的 renderer-neutral 基础：
 
 - 当前交互面仍保留 rich、line-oriented REPL；全屏 TUI 的当前行为见
   [implementation guide](../runtime/implementation-guide.md#full-screen-tui)；
-- [`RunViewState`](../../src/interfaces/terminal/view.rs) 将 canonical
+- 当前 TUI 实现位于 `apps/cli/`，通过 `rove-runtime` 和 canonical `StreamEvent`
+  复用共享运行时生命周期，不维护独立的 TUI agent loop；
+- [`RunViewState`](../../apps/cli/src/terminal/view.rs) 将 canonical
   `StreamEvent` 投影为终端状态；
-- [`TerminalAction`](../../src/interfaces/terminal/action.rs) 已包含 prompt、
+- [`TerminalAction`](../../apps/cli/src/terminal/action.rs) 已包含 prompt、
   cancel、approval、input、resume、status、sessions 和 exit 动作；
 - CLI、API 与 Web 复用相同的 engine 和 durable state model；
 - Web workbench 继续作为更丰富的浏览器界面。

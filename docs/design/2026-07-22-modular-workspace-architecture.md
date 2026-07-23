@@ -261,6 +261,8 @@ Rove 不照搬 Pi 的“所有高级能力都不内置”立场。Plan、审批�
 
 ## 8. 从当前单 crate 迁移
 
+> **实现说明（2026-07-23）**：本节及其 Phase 1-4 保留的是 2026-07-22 作出架构决策时的原始迁移计划和历史记录。“不立即移动代码”等表述对应当时状态，不代表当前状态。模块化 Workspace 迁移现已完成；当前实现以仓库代码、各 Cargo manifest 与 [`docs/runtime/`](../runtime/README.md) 为准。本次迁移未创建 `apps/desktop`，它仍是后续方向中的明确非目标。RAG 目前仅按 baseline 范围保留，完整 RAG 架构重构延期，后续另行设计和实施。
+
 本次决策只新增文档，不立即移动代码。当前工作树正在进行 Agent execution lifecycle 重构，在该重构收口前进行全仓目录迁移会放大冲突和回归范围。
 
 建议分四步实施：
@@ -331,4 +333,5 @@ Rove 不照搬 Pi 的“所有高级能力都不内置”立场。Plan、审批�
 
 ## Changelog
 
+- 2026-07-23：补充说明本节 Phase 1-4 是原始迁移计划；模块化 Workspace 已完成，`apps/desktop` 未纳入本次迁移，完整 RAG 重构延期。
 - 2026-07-22：确认 `models / core / runtime / apps` 四层目标结构；目录去掉 `rove-` 前缀，Cargo package 保留前缀；记录从单 crate 渐进迁移的边界与验收条件。
