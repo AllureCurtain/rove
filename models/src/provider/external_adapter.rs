@@ -785,8 +785,7 @@ fn validate_working_directory(
         let resolved = path.to_path_buf();
         if !(resolved.starts_with(workspace_root)) {
             return Err(ModelError::InvalidConfiguration(
-                "external-adapter-v1 working_directory resolves outside the workspace"
-                    .to_string(),
+                "external-adapter-v1 working_directory resolves outside the workspace".to_string(),
             ));
         }
         return Ok(());
