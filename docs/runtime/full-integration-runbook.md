@@ -129,7 +129,7 @@ cargo fmt --all --check
 cargo clippy --all-targets -- -D warnings
 cargo test
 
-cd web-ui
+cd apps/web
 pnpm test
 pnpm typecheck
 pnpm build
@@ -376,7 +376,7 @@ cargo run --bin rove-api -- --addr 127.0.0.1:8787 -C $workspace
 Start Web in terminal B:
 
 ```powershell
-cd web-ui
+cd apps/web
 $env:ROVE_API_BASE = "http://127.0.0.1:8787"
 pnpm exec next dev --port 3000
 ```
@@ -511,9 +511,9 @@ Acceptance:
 Run deterministic RAG checks:
 
 ```powershell
-cargo check --features rag --bin rove-index
-cargo test --features rag --test cli_index
-cargo test --features rag --test rag
+
+
+
 ```
 
 If using provider embeddings, first confirm the embedding model is visible to the

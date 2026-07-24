@@ -1,29 +1,38 @@
 //! Cross-language contract guard for the streaming event surface.
 //!
-//! The engine emits [`StreamEvent`](rove::core::events::StreamEvent) variants that
+//! The runtime defines [`StreamEvent`](rove_runtime::events::StreamEvent) variants that
 //! three consumers depend on: the CLI, the API/SSE layer, and the Web UI. The Rust
 //! compiler already forces `StreamEvent::event_name` to cover every variant
 //! (exhaustive match), so it is the authoritative list of wire event names. The Web
-//! UI re-declares the same surface by hand in `web-ui/lib/rove-types.ts`
+//! UI re-declares the same surface by hand in `apps/web/lib/rove-types.ts`
 //! (`STREAM_EVENT_NAMES` plus the `StreamEvent` union discriminants).
 //!
 //! Those hand-written copies drift: a new Rust variant once shipped without the
 //! matching Web type. These tests fail when the Rust and Web event surfaces diverge,
 //! turning a silent contract drift into a red build.
 
-const EVENTS_RS: &str = "src/core/events.rs";
-const WEB_TYPES_TS: &str = "web-ui/lib/rove-types.ts";
+use std::path::{Path, PathBuf};
+
+fn workspace_root() -> PathBuf {
+    let mut root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    root.pop();
+    root
+}
+
+fn workspace_path(rel: impl AsRef<Path>) -> PathBuf {
+    workspace_root().join(rel)
+}
+
+const EVENTS_RS: &str = "runtime/src/events.rs";
+const WEB_TYPES_TS: &str = "apps/web/lib/rove-types.ts";
 
 /// Event names returned by `StreamEvent::event_name` in source order.
-///
-/// Scans the `event_name` function body for `=> "..."` match arms. Because the
-/// match is exhaustive (enforced by the compiler), this is the complete set.
 fn rust_event_names() -> Vec<String> {
-    let source = std::fs::read_to_string(EVENTS_RS)
+    let source = std::fs::read_to_string(workspace_path(EVENTS_RS))
         .unwrap_or_else(|err| panic!("failed to read {EVENTS_RS}: {err}"));
     let fn_start = source
         .find("fn event_name")
-        .expect("src/core/events.rs should define fn event_name");
+        .expect("runtime/src/events.rs should define fn event_name");
     source[fn_start..]
         .lines()
         .filter_map(|line| {
@@ -48,7 +57,6 @@ fn web_union_names() -> Vec<String> {
         .find("export type StreamEvent =")
         .expect("rove-types.ts should declare export type StreamEvent");
     let block = &source[start..];
-    // The union ends where the next top-level declaration begins.
     let end = block.find("\n\nexport ").unwrap_or(block.len());
     block[..end]
         .lines()
@@ -61,11 +69,10 @@ fn web_union_names() -> Vec<String> {
 }
 
 fn read_web_types() -> String {
-    std::fs::read_to_string(WEB_TYPES_TS)
+    std::fs::read_to_string(workspace_path(WEB_TYPES_TS))
         .unwrap_or_else(|err| panic!("failed to read {WEB_TYPES_TS}: {err}"))
 }
 
-/// Extracts string literals from a TS array literal that follows `marker`.
 fn extract_ts_string_array(source: &str, marker: &str) -> Vec<String> {
     let start = source
         .find(marker)
@@ -84,6 +91,13 @@ fn extract_ts_string_array(source: &str, marker: &str) -> Vec<String> {
         .collect()
 }
 
+fn difference(left: &[String], right: &[String]) -> Vec<String> {
+    left.iter()
+        .filter(|item| !right.contains(item))
+        .cloned()
+        .collect()
+}
+
 #[test]
 fn rust_and_web_stream_event_names_match() {
     let rust = rust_event_names();
@@ -99,7 +113,7 @@ fn rust_and_web_stream_event_names_match() {
         web,
         "Rust StreamEvent::event_name and Web STREAM_EVENT_NAMES drifted.\n  \
          only in Rust: {:?}\n  only in Web: {:?}\n\
-         Update web-ui/lib/rove-types.ts to match src/core/events.rs.",
+         Update apps/web/lib/rove-types.ts to match runtime/src/events.rs.",
         difference(&rust, &web),
         difference(&web, &rust),
     );
@@ -118,9 +132,4 @@ fn web_stream_event_union_matches_name_list() {
         difference(&names, &union),
         difference(&union, &names),
     );
-}
-
-/// Names present in `a` but not in `b`, preserving order.
-fn difference(a: &[String], b: &[String]) -> Vec<String> {
-    a.iter().filter(|name| !b.contains(name)).cloned().collect()
 }

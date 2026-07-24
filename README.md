@@ -1,6 +1,6 @@
 # rove
 
-`rove` is a local-first, stateful agent runtime written in Rust. It provides a CLI (including an optional full-screen TUI), an HTTP API, a standalone web workbench, tool execution, resumable run state, layered memory, provider routing, and optional RAG indexing.
+`rove` is a local-first, stateful agent runtime written in Rust. It provides a CLI (including an optional full-screen TUI), an HTTP API, a standalone web workbench, tool execution, resumable run state, layered memory, provider routing, and tool-based workspace retrieval.
 
 The runtime is designed around a small core engine:
 
@@ -25,14 +25,14 @@ Browser/Desktop workspaces, hosted multi-user identity, distributed rate limitin
 Start the interactive terminal REPL without network credentials:
 
 ```bash
-cargo run -- --model fake
+cargo run -p rove-cli -- --model fake
 ```
 
 Start the full-screen TUI without network credentials. This command requires
 an interactive terminal:
 
 ```bash
-cargo run -- tui --model fake
+cargo run -p rove-cli -- tui --model fake
 ```
 
 Approval and input modals additionally require reliable key events. Non-Windows
@@ -59,13 +59,13 @@ yet include native ConPTY automation; that skip is not a passing result.
 Start the same REPL with an initial prompt:
 
 ```bash
-cargo run -- --model fake "echo hello from rove"
+cargo run -p rove-cli -- --model fake "echo hello from rove"
 ```
 
 Run a non-interactive exec prompt and exit:
 
 ```bash
-cargo run -- exec --model fake "echo hello from rove"
+cargo run -p rove-cli -- exec --model fake "echo hello from rove"
 ```
 
 Start the local API and Web workbench together in fake-provider mode:
@@ -101,7 +101,7 @@ profiles without sending raw provider keys from the browser.
 Run in an isolated standalone Task workspace:
 
 ```bash
-cargo run -- --task-workspace invoice-check --task-base .rove/tasks --model fake "review this task"
+cargo run -p rove-cli -- --task-workspace invoice-check --task-base .rove/tasks --model fake "review this task"
 ```
 
 Task workspaces keep their files, `.rove` state, and default memory under the
@@ -111,31 +111,31 @@ needed.
 Inspect effective configuration:
 
 ```bash
-cargo run -- dump-config
+cargo run -p rove-cli -- dump-config
 ```
 
 List resumable local task states:
 
 ```bash
-cargo run -- sessions
+cargo run -p rove-cli -- sessions
 ```
 
 Run deterministic local benchmark tasks:
 
 ```bash
-cargo run --bin rove-bench -- --suite benchmarks/agent-smoke.json --output-dir .rove/bench
+cargo run -p rove-bench -- --suite benchmarks/agent-smoke.json --output-dir .rove/bench
 ```
 
 Manual API/Web startup remains available. Start the local API server:
 
 ```bash
-cargo run --bin rove-api
+cargo run -p rove-api
 ```
 
 Start the web workbench in another shell:
 
 ```bash
-cd web-ui
+cd apps/web
 pnpm install --frozen-lockfile
 pnpm dev
 ```
@@ -151,18 +151,22 @@ bearer token server-side and does not expose it to browser JavaScript.
 
 | Area | Path | Purpose |
 |---|---|---|
-| CLI / TUI | `src/main.rs`, `src/interfaces/tui/` | Rich terminal REPL, full-screen TUI with capability-gated approval/input, bounded resume/tool/help overlays and visible timeline, explicit `exec` runs, config dump, sessions, and RAG indexing command dispatch. |
-| API | `src/bin/rove-api.rs`, `src/interfaces/api/` | HTTP job lifecycle, SSE event streaming, approvals, inputs, and cancellation. |
-| Benchmarks | `src/bin/rove-bench.rs`, `benchmarks/` | Deterministic no-network benchmark tasks with artifact-path reports. |
-| Web | `web-ui/` | Next.js workbench that consumes the API and SSE job stream. |
-| Core runtime | `src/core/` | Engine loop, context building, planner, parser, executor, IDs, and workspace detection. |
-| State | `src/state/` | File artifacts under `.rove/runs/` plus SQLite indexing in `.rove/state.sqlite`. |
-| Models | `src/models/` | OpenAI-compatible chat completions, OpenAI Responses, Anthropic, Ollama, fake providers, and routing fallback. |
-| Tools | `src/tools/` | Filesystem, shell, memory, request input, MCP proxy, and optional RAG tools. |
-| Memory | `src/memory/` | Session summaries and bounded durable memory recall. |
+| CLI / TUI | `apps/cli/` | Rich terminal REPL, full-screen TUI, exec, config dump, sessions, and feature-gated RAG indexing. |
+| API | `apps/api/` | HTTP job lifecycle, SSE event streaming, approvals, inputs, and cancellation. |
+| Benchmarks | `apps/bench/`, `benchmarks/` | Deterministic no-network benchmark tasks with artifact-path reports. |
+| Bootstrap | `apps/bootstrap/` | First-party AppConfig, provider factory, product registry, shared Engine assembly. |
+| Web | `apps/web/` | Next.js workbench that consumes the API and SSE job stream. |
+| Agent core | `core/` | Independent `rove-core` crate: in-memory Agent/model/tool loop and tool contracts. |
+| Persistent runtime | `runtime/` | Independent `rove-runtime` crate: durable execution, tools/MCP, planning, Engine, state/memory. |
+| Models | `models/` | Independent `rove-models` crate: normalized protocol and provider adapters. |
+| Integration tests | `tests/` | Cross-package contracts package `rove-integration-tests`. |
 | Docs | `docs/runtime/` | Current architecture, subsystem boundaries, and implementation status. |
 | Maintainers | `AGENTS.md`, `docs/ONBOARDING.md` | Repository rules, source-of-truth order, code map, workflows, and verification. |
 
+
+## Workspace retrieval and memory
+
+rove obtains workspace context through tools (`fs_read`/`fs_write`, `shell`) and layered file memory (session + durable `MEMORY.md` / topics). There is **no built-in vector database or embedding index** in the default product.
 ## Configuration
 
 Configuration is layered as:
@@ -220,23 +224,6 @@ Files are the readable artifacts. SQLite is the index used for listing, replay, 
 
 `memory.session_dir` and `memory.durable_dir` can move session summaries and durable memory away from the default `.rove/memory` layout. Session summaries are deterministic markdown with the goal, final status, output excerpt, completed plan steps, tools used, and reported file changes.
 
-## RAG
-
-The RAG subsystem is optional and compiled behind the `rag` feature:
-
-```bash
-cargo test --features rag
-cargo check --features rag --bin rove-index
-cargo test --features rag --test cli_index deterministic_index_run_writes_manifest -- --exact
-```
-
-Index a workspace with deterministic local embeddings:
-
-```bash
-cargo run --features rag --bin rove-index -- --deterministic -C .
-```
-
-RAG artifacts use the configured `state.state_dir` and default to `.rove/rag.lancedb`, `.rove/rag_manifest.json`, `.rove/rag_index_log.jsonl`, and `.rove/rag_eval/`. Provider embeddings are configured under `[rag]`; if provider mode lacks an API key and deterministic fallback is enabled, indexing falls back to local deterministic embeddings.
 
 ## Verification
 
@@ -247,7 +234,7 @@ cargo fmt --all --check
 cargo clippy --all-targets -- -D warnings
 cargo test
 
-cd web-ui
+cd apps/web
 pnpm install --frozen-lockfile
 pnpm test
 pnpm typecheck
@@ -257,15 +244,13 @@ pnpm build
 RAG feature checks:
 
 ```bash
-cargo clippy --all-targets --features rag -- -D warnings
-cargo test --features rag
 ```
 
 Deterministic benchmark checks:
 
 ```bash
 cargo test --test bench
-cargo run --bin rove-bench -- --suite benchmarks/agent-smoke.json --output-dir .rove/bench
+cargo run -p rove-bench -- --suite benchmarks/agent-smoke.json --output-dir .rove/bench
 ```
 
 ## Runtime Docs

@@ -1,0 +1,20 @@
+[package]
+name = "rove-core"
+version.workspace = true
+edition.workspace = true
+description = "Embeddable, in-memory Agent and tool loop for Rove"
+
+[dependencies]
+async-stream.workspace = true
+async-trait.workspace = true
+futures.workspace = true
+rove-models.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+ulid.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }

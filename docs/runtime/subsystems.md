@@ -14,6 +14,10 @@ Validation currently covers provider names, model values, fallback providers, ro
 
 ## Workspace
 
+Workspace detection and path-boundary enforcement are implemented in
+`runtime/src/workspace.rs` and `runtime/src/boundary.rs`; the root
+`rove::core::{workspace,boundary}` paths are compatibility re-exports.
+
 The runtime currently supports three workspace kinds:
 
 - `Folder`: the canonical starting directory when no `.git` ancestor exists.
@@ -35,16 +39,23 @@ tool stubs for those kinds.
 
 ## State, Job, And Run
 
-`StateStore` coordinates file artifacts and the SQLite `StateIndex`.
+`StateStore`, file artifacts, SQLite `StateIndex`, trace/report writers,
+repair, cleanup, and resume are implemented in `runtime/src/state/`.
+`TaskState`, `PromptCheckpoint`, IDs, lifecycle ledger data, and canonical
+`StreamEvent` are owned by the same crate. Transitional `src/state/` and
+`src/core/events.rs` modules only re-export these contracts for existing root
+callers.
 
 Files:
 
 - `trace.jsonl` records append-only runtime events, including canonical
-  `step_result` facts for terminal planned-step attempts.
-- `task_state.json` stores resumable task state, the materialized step ledger,
-  any active step attempt, and the prompt checkpoint.
+  `step_result`, `plan_decision`, and `plan_revised` facts for planned
+  execution.
+- `task_state.json` stores resumable task state, materialized step records,
+  plan decisions and revisions, any active step attempt, and the prompt
+  checkpoint.
 - `report.json` stores final status, output, identity metadata, and the run's
-  terminal step records.
+  terminal step records, decisions, and immutable revisions.
 
 SQLite:
 
@@ -55,11 +66,17 @@ SQLite:
 
 Repair treats trace files as the append-only event source and SQLite as a
 rebuildable index. `rove state repair` imports task state snapshots, report
-artifacts, trace events (including `step_result`), and event offsets; corrupted
-trace lines are reported and skipped. There is no separate mutable step table
-or fourth ledger artifact.
+artifacts, trace events (including `step_result`, `plan_decision`, and
+`plan_revised`), and event offsets; corrupted trace lines are reported and
+skipped. There is no separate mutable lifecycle table or fourth ledger
+artifact.
 
 ## Context And Compaction
+
+The context builder and both compaction implementations live in
+`runtime/src/context.rs` and `runtime/src/compaction.rs`. The root
+`rove::core::context` path is a compatibility re-export; the root run and step
+loops still coordinate when compaction and its durable events occur.
 
 `ContextManager` supports token-aware prompt construction with soft, hard, and reserved budgets. Prompt order is:
 
@@ -78,6 +95,15 @@ Default compaction is deterministic and artifact-based. Optional model-generated
 
 ## Provider And Routing
 
+The independent `rove-models` package owns provider-neutral `Message`,
+`ToolSchema`, `Usage`, `ModelError`, `ModelClient`, and `ModelEvent` contracts,
+plus provider adapters, Fake Model, routing, and health. It has no local project
+dependency. The root compatibility package re-exports those types; only
+AppConfig-driven construction remains in transitional `src/models/factory.rs`.
+Its `ToolSchema` contains only the model-visible name, description, and input
+schema. Operational fields live in `rove_core::ToolDescriptor` and are not
+included in provider payloads.
+
 The model boundary is `ModelClient`, which streams normalized `ModelEvent` values. Raw provider thinking deltas are not exposed to interfaces; the engine converts model-side progress into safe `model_status` stream events. Native providers are peers:
 
 - OpenAI-compatible
@@ -90,16 +116,34 @@ Fallback can be configured as:
 - `provider.fallback_models`: model names using the primary provider;
 - `provider.fallback_providers`: explicit provider/model/base/key records.
 
-Native provider tool-use and JSON text action parsing are both supported. Native tool-use is preferred for real providers because it preserves provider IDs through `Message.tool_calls` and `tool_call_id` history. The JSON text path remains for fake and compatibility scenarios and is used only when a model turn emitted no native tool calls. Planned and unplanned execution share this conversion in `src/core/model_turn.rs`.
+Native provider tool-use and JSON text action parsing are both supported. Native tool-use is preferred for real providers because it preserves provider IDs through `Message.tool_calls` and `tool_call_id` history. The JSON text path remains for fake and compatibility scenarios and is used only when a model turn emitted no native tool calls. Planned, unplanned, and embedded execution share the conversion in `core/src/model_turn.rs`; `runtime/src/model_turn.rs` translates its `AgentEvent` values to durable `StreamEvent` values.
 
 `RoutingModelClient` can fall back before user-visible content or committed tool-use begins. It tracks provider health with a failure threshold and cooldown. For each routed candidate, `routing.retry_max_attempts`, `routing.retry_backoff_base_ms`, and `routing.retry_backoff_max_ms` control retry behavior for retryable pre-commit failures; rate-limit `retry-after` values are honored directly. Auth and context-length errors are not retried, and once text or native tool-use has committed, no retry or fallback is attempted.
 
 ## Tool Orchestration
 
-Tools are registered in `ToolRegistry` and executed through `Executor`. Tool schemas include `destructive` and `parallel_safe` flags.
-CLI and API assemble tools through the same runtime registry builder, which registers built-ins and then loads configured MCP tools.
+`rove-core` owns `Tool`, `ToolOutput`, `ToolRegistry`, invocation-scoped
+`ToolContext`, argument validation, and `ToolDescriptor`. The descriptor holds
+`destructive`, `parallel_safe`, and capability fields while its model-schema
+projection omits them. Local built-in tool implementations and their typed
+invocation adapters live in `runtime/src/tools/`; compatibility modules under
+`src/tools/` re-export them. The tool `Executor` pipeline, pre/post-tool plus
+post-run hooks (including session-summary), and the durable tool-turn
+coordinator live in `runtime/src/executor.rs`, `runtime/src/hooks/`, and
+`runtime/src/tool_turn.rs`; root modules re-export the public surface. The
+existing stdio/legacy-SSE MCP proxy is implemented in
+`runtime/src/tools/mcp_proxy.rs`. CLI and API assemble tools through the same
+transitional product registry builder, which registers runtime built-ins and
+then loads configured MCP tools.
+adapter for a later refactor.
 
-MCP stdio transport is bounded by per-server policy. Initialize, list, and call requests time out; stderr is captured up to the configured diagnostic limit; JSON-RPC errors are mapped to structured tool execution failures; and child processes are killed when their client is dropped. `cargo test --test mcp` covers mock stdio registration, timeout/error/cleanup behavior, and includes an opt-in real filesystem MCP smoke test gated by `ROVE_MCP_FILESYSTEM_SMOKE=1`.
+Workspace, resolved Memory paths, approval policy, and input providers are
+runtime-owned services attached to a tool invocation through a typed extension.
+They are not fields on the minimal `rove-core` context, so an embedded custom
+Tool needs only call identity and cancellation unless it explicitly opts into
+runtime services.
+
+MCP stdio transport is bounded by per-server policy. Initialize, list, and call requests time out; stderr is captured up to the configured diagnostic limit; JSON-RPC errors are mapped to structured tool execution failures; and child processes are killed when their client is dropped. `runtime/tests/mcp_contract.rs` and `cargo test --test mcp` cover mock stdio registration, annotation safety, timeout/error/cleanup behavior, and include an opt-in real filesystem MCP smoke test gated by `ROVE_MCP_FILESYSTEM_SMOKE=1`.
 
 Batch execution rules:
 
@@ -112,7 +156,11 @@ the output of a previous call, the model issues it in a later turn and the
 runtime runs that sequence serially. The current runtime does not infer hidden
 dependencies between arbitrary tool arguments.
 
-Approval policy is `ask`, `auto`, or `never`. The CLI uses stdin for approvals; the API exposes pending approvals through `/jobs/{job_id}/approvals/{call_id}`.
+Approval policy is `ask`, `auto`, or `never`. The provider contracts and the
+task-local request-input registration context are owned by `rove-runtime`; the
+root Engine/tool-turn and interface implementations consume them through
+compatibility re-exports. The CLI uses stdin for approvals; the API exposes
+pending approvals through `/jobs/{job_id}/approvals/{call_id}`.
 
 API approval/input restart behavior uses Policy A. Pending records are
 persisted while live, but the in-memory answer channels are not reconstructed
@@ -123,6 +171,12 @@ emits an `interrupted` `StepRecord` and terminates with an error so an unknown
 external side effect cannot be repeated automatically.
 
 ## Memory
+
+Memory paths, session storage, durable topic parsing/recall, layered prompt
+loading, and built-in memory tools live in `runtime/src/`. Transitional
+`src/memory/` and `src/tools/memory.rs` modules re-export those APIs. The
+session-summary post-run hook remains in the root package until its later
+runtime slice.
 
 The memory model has three layers:
 
@@ -166,32 +220,14 @@ when needed, and returns only redacted key presence and model visibility.
 official API, relay/gateway API, native Anthropic endpoint, local Ollama, or the
 fake provider without changing the API process defaults.
 
-## RAG
+## Workspace retrieval
 
-The RAG implementation is behind `--features rag` and lives under `src/tools/rag/`. It includes:
+rove does not ship a built-in vector database. Agents retrieve workspace context with filesystem/shell tools and layered session/durable memory. Future semantic retrieval, if any, would be an optional external service and is not implemented.
 
-- deterministic and OpenAI-compatible embedders;
-- explicit RAG provider config with deterministic fallback behavior;
-- staged ingestion with logging;
-- fixed, markdown-aware, and lightweight code-aware chunking;
-- LanceDB storage plus manifest fallback;
-- vector, lexical, and path-scoped retrieval channels;
-- postprocessing for dedupe and score normalization;
-- pure retrieval eval reports that record embedder and reranker identity;
-- optional routed remote rerank for eval retrieval with `rerank-noop` fallback;
-- a `RagPromptService` formatting boundary for retrieved evidence.
-
-RAG artifacts resolve under the configured `state.state_dir`; the default remains `.rove/rag.lancedb`, `.rove/rag_manifest.json`, `.rove/rag_index_log.jsonl`, and `.rove/rag_eval/`. Default builds expose stub `retrieve_code` and `retrieve_docs` tools with disabled capability metadata and JSON output explaining the feature requirement. Feature-enabled builds expose enabled capability metadata. Remote rerank is optional for eval retrieval: when `rag.rerank_provider`, `rag.rerank_model`, and `rag.rerank_api_key` are configured, the routed reranker calls the configured provider endpoint and records the reranker identity in reports; otherwise eval retrieval uses `rerank-noop`.
-
-The in-agent `retrieve_code` and `retrieve_docs` tools currently use deterministic
-retrieval services at execution time while reading artifacts from the configured
-state directory. Extending runtime tool construction to inject configured
-embedder/reranker services is the planned direction when provider-backed
-tool-time retrieval is needed.
 
 ## Web
 
-`web-ui/` is a standalone Next.js app. Browser code talks to `/api/*`; a server-side Next.js route proxies requests to `ROVE_API_BASE` or `http://127.0.0.1:8787`. When `ROVE_API_TOKEN` is set on the Next.js server, the proxy injects `Authorization: Bearer <token>` upstream and preserves SSE response bodies for `EventSource`.
+`apps/web/` is a standalone Next.js app. Browser code talks to `/api/*`; a server-side Next.js route proxies requests to `ROVE_API_BASE` or `http://127.0.0.1:8787`. When `ROVE_API_TOKEN` is set on the Next.js server, the proxy injects `Authorization: Bearer <token>` upstream and preserves SSE response bodies for `EventSource`.
 
 The workbench exposes a provider selector for runtime default vs.
 OpenAI-compatible per-run profiles. For official APIs and relay/gateway APIs,
@@ -208,10 +244,10 @@ pnpm typecheck
 pnpm build
 ```
 
-The Web event contract includes plan/revision/attempt identity and
-`step_result`. The reducer retains records in a deduplicated structured
-projection while the compatibility plan-step event remains the owner of the
-visible trace row, avoiding duplicate timeline entries.
+The Web event contract includes plan/revision/attempt identity, `step_result`,
+`plan_decision`, and `plan_revised`. The reducer retains records, decisions,
+and revisions in deduplicated structured projections while preserving the
+compatibility plan-step timeline behavior.
 
 Browser-level checks are available separately:
 
@@ -224,7 +260,6 @@ pnpm test:e2e
 CI is split by dependency weight:
 
 - `.github/workflows/ci.yml`: Rust default fmt/clippy/test and web test/typecheck/build.
-- `.github/workflows/rag-ci.yml`: RAG feature clippy, full `--features rag` tests, and `rove-index` feature/smoke coverage.
 
 RAG remains separate so DataFusion/LanceDB dependencies do not slow every default feedback loop.
 

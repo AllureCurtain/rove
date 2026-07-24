@@ -125,7 +125,7 @@ $env:ROVE_WEB_PORT = $WebPort
 $env:PLAYWRIGHT_BASE_URL = "http://localhost:$WebPort"
 
 if ($InstallWebDeps) {
-    Push-Location (Join-Path $RepoRoot "web-ui")
+    Push-Location (Join-Path $RepoRoot "apps/web")
     try {
         pnpm install --frozen-lockfile
     } finally {
@@ -140,8 +140,8 @@ try {
     $apiProcess = Start-BackgroundCommand -Command "cargo" -Arguments @("run", "--bin", "rove-api", "--", "--addr", $ApiAddr, "-C", $Workspace) -WorkingDirectory $RepoRoot
     Wait-HttpOk -Uri "http://$ApiAddr/runs?limit=1" -TimeoutSeconds 60 -Name "rove-api"
 
-    $webProcess = Start-BackgroundCommand -Command "pnpm" -Arguments @("exec", "next", "dev", "--port", $WebPort) -WorkingDirectory (Join-Path $RepoRoot "web-ui")
-    Wait-HttpOk -Uri "http://localhost:$WebPort" -TimeoutSeconds 120 -Name "web-ui"
+    $webProcess = Start-BackgroundCommand -Command "pnpm" -Arguments @("exec", "next", "dev", "--port", $WebPort) -WorkingDirectory (Join-Path $RepoRoot "apps/web")
+    Wait-HttpOk -Uri "http://localhost:$WebPort" -TimeoutSeconds 120 -Name "web"
 
     Write-Host "rove dev environment is running"
     Write-Host "Web:       http://localhost:$WebPort"
@@ -163,7 +163,7 @@ try {
             throw "rove-api exited with code $($apiProcess.ExitCode)"
         }
         if ($webProcess.HasExited) {
-            throw "web-ui exited with code $($webProcess.ExitCode)"
+            throw "web exited with code $($webProcess.ExitCode)"
         }
     }
 } finally {

@@ -38,30 +38,31 @@ Additional routing:
 
 | Change area | Read first |
 |---|---|
-| Engine/planning/events | `docs/runtime/react-loop.md`, `src/core/`, `tests/e2e.rs` |
-| State/resume/artifacts | `docs/runtime/subsystems.md`, `src/state/` |
-| Providers/routing | `docs/runtime/provider-smoke.md`, `src/models/` |
-| Tools/safety/MCP | `docs/runtime/subsystems.md`, `src/tools/`, `tests/tool_safety.rs`, `tests/mcp.rs` |
-| Memory/context | `MEMORY_DOCTRINE.md`, `src/memory/`, `src/core/context.rs` |
-| RAG | `docs/runtime/integration-testing.md`, `src/tools/rag/`, RAG feature tests |
-| API | `docs/runtime/implementation-guide.md`, `src/interfaces/api/`, `tests/api.rs` |
-| Web | `web-ui/` tests and package scripts |
-| Benchmarks | `docs/runtime/benchmark-evidence.md`, `src/bench/`, `tests/bench.rs` |
+| Embedded Agent/tool loop | `core/src/`, `tests/embedding_contract.rs` |
+| Persistent Engine/planning/events | `docs/runtime/react-loop.md`, `runtime/src/`, `tests/e2e.rs` |
+| State/resume/artifacts | `docs/runtime/subsystems.md`, `runtime/src/state/`, `tests/` |
+| Providers/routing | `docs/runtime/provider-smoke.md`, `models/src/`, `apps/bootstrap/src/factory.rs` |
+| Tools/safety/MCP | `docs/runtime/subsystems.md`, `runtime/src/tools/`, `apps/bootstrap/src/registry.rs`, `tests/tool_safety.rs`, `tests/mcp.rs` |
+| Memory/context | `MEMORY_DOCTRINE.md`, `runtime/src/memory/`, `runtime/src/context.rs`, `runtime/src/compaction.rs` |
+| Workspace retrieval | Tools (`fs`/`shell`) + layered MD memory (`MEMORY_DOCTRINE.md`); no built-in vector RAG |
+| API | `docs/runtime/implementation-guide.md`, `apps/api/`, `tests/api.rs` |
+| Web | `apps/web/` tests and package scripts |
+| Benchmarks | `docs/runtime/benchmark-evidence.md`, `apps/bench/`, `tests/bench.rs` |
 
 ## 3. Repository map
 
 | Path | Responsibility |
 |---|---|
-| `src/core/` | Shared Engine, context, planner, executor, events, IDs, workspace |
-| `src/models/` | Model providers, normalization, routing, fake provider |
-| `src/tools/` | Local tools, safety metadata, MCP proxy, optional RAG |
-| `src/state/` | Run artifacts, SQLite index, trace/state/report persistence |
-| `src/memory/` | Session and durable memory |
-| `src/interfaces/api/` | HTTP job lifecycle and SSE |
-| `src/bin/` | API, benchmark, and indexing binaries |
-| `tests/` | Cross-module and integration contracts |
+| `models/` | `rove-models`: normalized model protocol, providers, routing, fake provider |
+| `core/` | `rove-core`: in-memory Agent loop, core events/control, tool contracts and registry |
+| `apps/cli/` | `rove-cli`: CLI/REPL/TUI and feature-gated index/RAG |
+| `apps/api/` | `rove-api`: HTTP/SSE/OpenAPI surface |
+| `apps/bench/` | `rove-bench`: deterministic benchmark runner |
+| `apps/bootstrap/` | `rove-app-bootstrap`: product config and assembly |
+| `runtime/` | `rove-runtime`: contracts/events, workspace, context/compaction, memory, local built-in tools, MCP proxy, Executor/hooks, planning, Engine, state/artifacts/SQLite/repair/resume |
+| `tests/` | `rove-integration-tests`: cross-package contracts |
 | `benchmarks/` | Deterministic benchmark definitions and published evidence |
-| `web-ui/` | Standalone Next.js workbench |
+| `apps/web/` | Standalone Next.js workbench |
 | `scripts/` | Local development and integration runners |
 | `docs/runtime/` | Current implementation source of truth |
 | `docs/design/` | Proposed/target design documents |
@@ -99,11 +100,19 @@ and updates its tests and current documentation:
 
 ## 5. Current implementation boundaries
 
-As of 2026-07-15:
+As of 2026-07-22:
 
 - rove is a local-first Rust runtime with CLI, API, Web, persisted run state,
-  resume, provider routing, tools, layered memory, optional RAG, and
+  resume, provider routing, tools, layered memory, optional future external retrieval, and
   deterministic benchmarks.
+- The repository is a virtual Cargo Workspace with default member `apps/cli`.
+  Package layout is `rove-models <- rove-core <- rove-runtime <-
+  rove-app-bootstrap <- {rove-cli, rove-api, rove-bench}` plus
+  `rove-integration-tests`. `rove-models` has no local project dependency;
+  `rove-core` depends only on `rove-models`. `rove-runtime` owns durable
+  execution, state, memory, tools/MCP, planning, and the Engine facade.
+  `rove-app-bootstrap` owns first-party AppConfig, provider factory, product
+  registry assembly, and shared Engine assembly. Workspace retrieval is tool-based plus layered file memory; there is no built-in vector RAG.
 - `docs/runtime/` describes the implemented MVP.
 - MCP currently supports stdio and the existing legacy SSE path. Streamable
   HTTP, negotiated sessions, rich MCP result envelopes, and Tool Artifacts are
@@ -138,8 +147,8 @@ The optional terminal-interface direction is documented separately in
   `git checkout --` without explicit authorization.
 - Keep changes scoped. If an existing edit overlaps the requested change,
   preserve it and report any ambiguity.
-- Generated state such as `.rove/`, `target/`, `web-ui/.next/`,
-  `web-ui/node_modules/`, test results, and temporary integration output must
+- Generated state such as `.rove/`, `target/`, `apps/web/.next/`,
+  `apps/web/node_modules/`, test results, and temporary integration output must
   not be committed.
 
 ## 7. Editing rules
@@ -186,14 +195,12 @@ cargo test --test bench
 ### RAG feature
 
 ```powershell
-cargo check --features rag --bin rove-index
-cargo clippy --all-targets --features rag -- -D warnings
-cargo test --features rag
+cargo clippy --all-targets (removed) -- -D warnings
 ```
 
 ### Web
 
-From `web-ui/`:
+From `apps/web/`:
 
 ```powershell
 pnpm test

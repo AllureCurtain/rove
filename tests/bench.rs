@@ -1,13 +1,26 @@
+use std::path::{Path, PathBuf};
+
+fn workspace_root() -> PathBuf {
+    let mut root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    // tests package lives at <workspace>/tests
+    root.pop();
+    root
+}
+
+fn workspace_path(rel: impl AsRef<Path>) -> PathBuf {
+    workspace_root().join(rel)
+}
+
 use std::collections::BTreeSet;
 
-use rove::bench::{
+use rove_bench::{
     BenchmarkOutcome, default_profile_params, generate_dataprep_suite, load_benchmark_suite,
     resolve_suite, run_benchmark_suite, stress_profile_params,
 };
 
 #[tokio::test]
 async fn default_benchmark_suite_has_at_least_three_no_network_tasks() {
-    let suite = load_benchmark_suite("benchmarks/agent-smoke.json")
+    let suite = load_benchmark_suite(workspace_path("benchmarks/agent-smoke.json"))
         .await
         .unwrap();
 
@@ -31,7 +44,7 @@ async fn default_benchmark_suite_has_at_least_three_no_network_tasks() {
 #[tokio::test]
 async fn default_benchmark_suite_passes_and_reports_artifact_paths() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let suite = load_benchmark_suite("benchmarks/agent-smoke.json")
+    let suite = load_benchmark_suite(workspace_path("benchmarks/agent-smoke.json"))
         .await
         .unwrap();
 
@@ -159,7 +172,8 @@ fn resolve_suite_supports_dataprep_and_agent_smoke() {
 
 #[test]
 fn acceptance_matrix_covers_m0_to_m6_with_concrete_verification() {
-    let content = std::fs::read_to_string("docs/runtime/acceptance-matrix.md").unwrap();
+    let content =
+        std::fs::read_to_string(workspace_path("docs/runtime/acceptance-matrix.md")).unwrap();
 
     for milestone in ["M0", "M1", "M2", "M3", "M4", "M5", "M6"] {
         assert!(content.contains(&format!("| {milestone} |")), "{milestone}");
@@ -171,6 +185,7 @@ fn acceptance_matrix_covers_m0_to_m6_with_concrete_verification() {
     assert!(content.contains("cargo test"));
     assert!(content.contains("cargo run --bin rove-bench"));
 
-    let guide = std::fs::read_to_string("docs/runtime/implementation-guide.md").unwrap();
+    let guide =
+        std::fs::read_to_string(workspace_path("docs/runtime/implementation-guide.md")).unwrap();
     assert!(guide.contains("docs/runtime/acceptance-matrix.md"));
 }

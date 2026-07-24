@@ -1,12 +1,12 @@
 use futures::StreamExt;
-use rove::config::{AppConfig, AppConfigOverrides};
-use rove::core::context::ContextManager;
-use rove::core::engine::{Engine, EngineConfig};
-use rove::core::events::StreamEvent;
-use rove::core::types::ApprovalPolicy;
-use rove::core::workspace::Workspace;
-use rove::models::factory::build_model_client;
-use rove::tools::default_tool_registry;
+use rove_app_bootstrap::build_model_client;
+use rove_app_bootstrap::default_tool_registry;
+use rove_app_bootstrap::{AppConfig, AppConfigOverrides};
+use rove_runtime::context::ContextManager;
+use rove_runtime::engine::{Engine, EngineConfig};
+use rove_runtime::events::StreamEvent;
+use rove_runtime::types::ApprovalPolicy;
+use rove_runtime::workspace::Workspace;
 
 const SMOKE_PHRASE: &str = "rove provider smoke ok";
 const TOOL_SMOKE_PHRASE: &str = "rove provider tool smoke ok";

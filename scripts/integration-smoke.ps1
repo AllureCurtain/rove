@@ -287,8 +287,8 @@ $ArtifactsDir = Resolve-RepoPath $(if ($env:ROVE_INTEGRATION_ARTIFACTS) { $env:R
 $ApiArtifacts = Join-Path $ArtifactsDir "api"
 $ApiStdoutLog = Join-Path $ArtifactsDir "rove-api.out.log"
 $ApiStderrLog = Join-Path $ArtifactsDir "rove-api.err.log"
-$WebStdoutLog = Join-Path $ArtifactsDir "web-ui.out.log"
-$WebStderrLog = Join-Path $ArtifactsDir "web-ui.err.log"
+$WebStdoutLog = Join-Path $ArtifactsDir "web.out.log"
+$WebStderrLog = Join-Path $ArtifactsDir "web.err.log"
 $ApiBase = "http://$ApiAddr"
 $WebBase = "http://127.0.0.1:$WebPort"
 $script:RunIds = @()
@@ -355,10 +355,10 @@ try {
             }
         }
 
-        $webProcess = Start-BackgroundCommand -Command "pnpm" -Arguments @("exec", "next", "dev", "--port", $WebPort) -WorkingDirectory (Join-Path $RepoRoot "web-ui") -StdoutLog $WebStdoutLog -StderrLog $WebStderrLog
-        Wait-HttpOk -Uri $WebBase -TimeoutSeconds 120 -Name "web-ui"
+        $webProcess = Start-BackgroundCommand -Command "pnpm" -Arguments @("exec", "next", "dev", "--port", $WebPort) -WorkingDirectory (Join-Path $RepoRoot "apps/web") -StdoutLog $WebStdoutLog -StderrLog $WebStderrLog
+        Wait-HttpOk -Uri $WebBase -TimeoutSeconds 120 -Name "web"
 
-        Push-Location (Join-Path $RepoRoot "web-ui")
+        Push-Location (Join-Path $RepoRoot "apps/web")
         try {
             $playwrightOutput = Join-Path $ArtifactsDir "playwright-results"
             pnpm exec playwright test tests/e2e/real-api.spec.ts --project=chromium --output $playwrightOutput

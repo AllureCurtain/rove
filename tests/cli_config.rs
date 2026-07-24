@@ -1,5 +1,5 @@
-use rove::config::{AppConfig, FallbackProviderConfig, ProviderOptions};
-use rove::interfaces::cli::config::format_effective_config;
+use rove_app_bootstrap::{AppConfig, FallbackProviderConfig, ProviderOptions};
+use rove_cli::cli::config::format_effective_config;
 
 #[test]
 fn format_effective_config_prints_json_without_secret_value() {
@@ -46,16 +46,6 @@ fn format_effective_config_prints_json_without_secret_value() {
     config.memory.session_dir = "custom-memory/sessions".into();
     config.memory.durable_dir = "custom-memory/durable".into();
     config.memory.recall_limit = 4;
-    config.rag.deterministic = false;
-    config.rag.embedding_provider = "openai-compatible".to_string();
-    config.rag.embedding_model = "text-embedding-large".to_string();
-    config.rag.embedding_api_base = "https://embedding.test/v1".to_string();
-    config.rag.embedding_api_key = "embedding-secret".to_string();
-    config.rag.rerank_provider = Some("cohere-compatible".to_string());
-    config.rag.rerank_model = Some("rerank-v1".to_string());
-    config.rag.rerank_api_key = Some("rerank-secret".to_string());
-    config.rag.timeout_ms = 9_000;
-    config.rag.fallback_to_deterministic = false;
     config.source_summary.workspace_root = std::path::PathBuf::from("D:/workspace");
 
     let output = format_effective_config(&config);
@@ -118,19 +108,7 @@ fn format_effective_config_prints_json_without_secret_value() {
     assert_eq!(json["memory"]["session_dir"], "custom-memory/sessions");
     assert_eq!(json["memory"]["durable_dir"], "custom-memory/durable");
     assert_eq!(json["memory"]["recall_limit"], 4);
-    assert_eq!(json["rag"]["deterministic"], false);
-    assert_eq!(json["rag"]["embedding_provider"], "openai-compatible");
-    assert_eq!(json["rag"]["embedding_model"], "text-embedding-large");
-    assert_eq!(
-        json["rag"]["embedding_api_base"],
-        "https://embedding.test/v1"
-    );
-    assert_eq!(json["rag"]["embedding_api_key_set"], true);
-    assert_eq!(json["rag"]["rerank_provider"], "cohere-compatible");
-    assert_eq!(json["rag"]["rerank_model"], "rerank-v1");
-    assert_eq!(json["rag"]["rerank_api_key_set"], true);
-    assert_eq!(json["rag"]["timeout_ms"], 9_000);
-    assert_eq!(json["rag"]["fallback_to_deterministic"], false);
+    assert!(json.get("rag").is_none());
     let resolved_session_dir = json["resolved_paths"]["memory_session_dir"]
         .as_str()
         .unwrap()
@@ -144,6 +122,4 @@ fn format_effective_config_prints_json_without_secret_value() {
     assert!(!output.contains("secret-token"));
     assert!(!output.contains("fallback-secret"));
     assert!(!output.contains("anthropic-secret"));
-    assert!(!output.contains("embedding-secret"));
-    assert!(!output.contains("rerank-secret"));
 }

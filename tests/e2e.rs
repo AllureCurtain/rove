@@ -6,36 +6,39 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
-use rove::config::{AppConfig, AppConfigOverrides};
-use rove::core::context::{ContextBudget, ContextManager};
-use rove::core::engine::{Engine, EngineConfig};
-use rove::core::events::StreamEvent;
-use rove::core::execution::{
-    PlanIdentity, StepAttempt, StepCompletionBasis, StepLedgerState, StepRecord, StepRecordStatus,
+use rove_app_bootstrap::{AppConfig, AppConfigOverrides};
+use rove_cli::cli::oneshot::{run_oneshot, run_oneshot_with_cancel};
+use rove_core::ToolError;
+use rove_core::ToolRegistry;
+use rove_core::{Tool, ToolOutput};
+use rove_models::ModelError;
+use rove_models::{ModelClient, ModelEvent};
+use rove_runtime::context::{ContextBudget, ContextManager};
+use rove_runtime::engine::{Engine, EngineConfig};
+use rove_runtime::events::StreamEvent;
+use rove_runtime::execution::{
+    PlanDecisionKind, PlanFinishReason, PlanIdentity, StepAttempt, StepCompletionBasis,
+    StepLedgerState, StepRecord, StepRecordStatus,
 };
-use rove::core::types::{
-    ApprovalDecision, ApprovalPolicy, CallId, JobId, Message, PendingToolApproval,
+use rove_runtime::hooks::{
+    HookRegistry, PostRunHook, PostRunHookContext, PostToolHook, PostToolHookContext, PreToolHook,
+};
+use rove_runtime::memory::durable::read_memory_index_sync;
+use rove_runtime::memory::paths::MemoryPaths;
+use rove_runtime::state::report::RunReport;
+use rove_runtime::state::store::StateStore;
+use rove_runtime::tools::echo::EchoTool;
+use rove_runtime::tools::fs::{FsReadTool, FsWriteTool};
+use rove_runtime::tools::request_input::RequestInputTool;
+use rove_runtime::tools::runtime_context::{runtime_tool_context, runtime_tool_services};
+use rove_runtime::tools::shell::ShellTool;
+use rove_runtime::types::{
+    ApprovalDecision, ApprovalPolicy, CallId, JobId, Message, ModelToolSchema, PendingToolApproval,
     PendingUserInput, PlanStep, PromptCheckpoint, Role, RunId, RunRequest, SessionId, TaskPlan,
     TaskState, TerminationReason, ToolApprovalProvider, ToolApprovalRequest, ToolContext,
     ToolSchema, Usage, UserInputProvider, UserInputRequest,
 };
-use rove::core::workspace::{Workspace, WorkspaceKind};
-use rove::errors::{ModelError, ToolError};
-use rove::hooks::{
-    HookRegistry, PostRunHook, PostRunHookContext, PostToolHook, PostToolHookContext, PreToolHook,
-};
-use rove::interfaces::cli::oneshot::{run_oneshot, run_oneshot_with_cancel};
-use rove::memory::durable::read_memory_index_sync;
-use rove::memory::paths::MemoryPaths;
-use rove::models::traits::{ModelClient, ModelEvent};
-use rove::state::report::RunReport;
-use rove::state::store::StateStore;
-use rove::tools::echo::EchoTool;
-use rove::tools::fs::{FsReadTool, FsWriteTool};
-use rove::tools::registry::ToolRegistry;
-use rove::tools::request_input::RequestInputTool;
-use rove::tools::shell::ShellTool;
-use rove::tools::traits::{Tool, ToolOutput};
+use rove_runtime::workspace::{Workspace, WorkspaceKind};
 
 fn user_message(content: &str) -> Message {
     Message::user(content)
@@ -92,7 +95,7 @@ impl ModelClient for FakeModelClient {
     fn stream(
         &self,
         _messages: &[Message],
-        _tools: &[ToolSchema],
+        _tools: &[ModelToolSchema],
     ) -> BoxStream<'_, Result<ModelEvent, ModelError>> {
         let idx = self
             .call_count
@@ -138,7 +141,7 @@ impl ModelClient for StepFailureModelClient {
     fn stream(
         &self,
         _messages: &[Message],
-        _tools: &[ToolSchema],
+        _tools: &[ModelToolSchema],
     ) -> BoxStream<'_, Result<ModelEvent, ModelError>> {
         let call = self
             .call_count
@@ -185,7 +188,7 @@ impl ModelClient for FailingAfterFirstCallModelClient {
     fn stream(
         &self,
         _messages: &[Message],
-        _tools: &[ToolSchema],
+        _tools: &[ModelToolSchema],
     ) -> BoxStream<'_, Result<ModelEvent, ModelError>> {
         let idx = self
             .call_count
@@ -226,7 +229,7 @@ impl ModelClient for CapturingFakeModelClient {
     fn stream(
         &self,
         messages: &[Message],
-        _tools: &[ToolSchema],
+        _tools: &[ModelToolSchema],
     ) -> BoxStream<'_, Result<ModelEvent, ModelError>> {
         self.captured_messages
             .lock()
@@ -266,7 +269,7 @@ impl ModelClient for RecordingModelClient {
     fn stream(
         &self,
         messages: &[Message],
-        _tools: &[ToolSchema],
+        _tools: &[ModelToolSchema],
     ) -> BoxStream<'_, Result<ModelEvent, ModelError>> {
         *self.captured_messages.lock().unwrap() = Some(messages.to_vec());
         Box::pin(futures::stream::iter([
@@ -306,7 +309,7 @@ impl ModelClient for NativeToolUseModelClient {
     fn stream(
         &self,
         _messages: &[Message],
-        _tools: &[ToolSchema],
+        _tools: &[ModelToolSchema],
     ) -> BoxStream<'_, Result<ModelEvent, ModelError>> {
         let idx = self
             .call_count
@@ -347,7 +350,7 @@ impl ModelClient for ThinkingStatusModelClient {
     fn stream(
         &self,
         _messages: &[Message],
-        _tools: &[ToolSchema],
+        _tools: &[ModelToolSchema],
     ) -> BoxStream<'_, Result<ModelEvent, ModelError>> {
         Box::pin(futures::stream::iter([
             Ok(ModelEvent::ThinkingDelta {
@@ -679,7 +682,7 @@ impl Tool for PublicProviderInputTool {
         args: serde_json::Value,
         ctx: &ToolContext<'_>,
     ) -> Result<ToolOutput, ToolError> {
-        let provider = ctx
+        let provider = runtime_tool_services(ctx)?
             .input_provider
             .as_ref()
             .ok_or_else(|| ToolError::ExecutionFailed {
@@ -814,13 +817,14 @@ fn build_test_engine_with_workspace(responses: Vec<String>, workspace: Workspace
 }
 
 fn tool_context(workspace: &Workspace, approval_policy: ApprovalPolicy) -> ToolContext<'_> {
-    ToolContext {
+    runtime_tool_context(
+        CallId::new(),
         workspace,
-        memory_paths: MemoryPaths::from_workspace(workspace, 8),
+        MemoryPaths::from_workspace(workspace, 8),
         approval_policy,
-        cancel_token: CancellationToken::new(),
-        input_provider: None,
-    }
+        None,
+        CancellationToken::new(),
+    )
 }
 
 fn build_engine_with_destructive_tool(
@@ -924,7 +928,7 @@ async fn destructive_tool_is_blocked_when_policy_is_never() {
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(FakeDestructiveTool));
 
-    let executor = rove::core::executor::Executor::new(&registry);
+    let executor = rove_runtime::executor::Executor::new(&registry);
     let ctx = tool_context(&workspace, ApprovalPolicy::Never);
 
     let err = executor
@@ -943,7 +947,7 @@ async fn destructive_tool_requires_explicit_approval_when_policy_is_ask() {
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(FakeDestructiveTool));
 
-    let executor = rove::core::executor::Executor::new(&registry);
+    let executor = rove_runtime::executor::Executor::new(&registry);
     let ctx = tool_context(&workspace, ApprovalPolicy::Ask);
 
     let err = executor
@@ -1130,7 +1134,7 @@ async fn executor_rejects_wrong_argument_type_before_tool_runs() {
         calls: calls.clone(),
     }));
 
-    let executor = rove::core::executor::Executor::new(&registry);
+    let executor = rove_runtime::executor::Executor::new(&registry);
     let ctx = tool_context(&workspace, ApprovalPolicy::Auto);
 
     let err = executor
@@ -1158,7 +1162,7 @@ async fn empty_hook_registry_preserves_tool_result() {
         calls: calls.clone(),
     }));
 
-    let executor = rove::core::executor::Executor::with_hooks(&registry, HookRegistry::default());
+    let executor = rove_runtime::executor::Executor::with_hooks(&registry, HookRegistry::default());
     let ctx = tool_context(&workspace, ApprovalPolicy::Auto);
 
     let result = executor
@@ -1186,7 +1190,7 @@ async fn pre_tool_hook_can_block_before_tool_runs() {
         calls: calls.clone(),
     }));
     let hooks = HookRegistry::default().with_pre_tool(Box::new(BlockingPreHook));
-    let executor = rove::core::executor::Executor::with_hooks(&registry, hooks);
+    let executor = rove_runtime::executor::Executor::with_hooks(&registry, hooks);
     let ctx = tool_context(&workspace, ApprovalPolicy::Auto);
 
     let err = executor
@@ -1218,15 +1222,16 @@ async fn pre_tool_hook_receives_cancellation_token_in_context() {
     let hooks = HookRegistry::default().with_pre_tool(Box::new(RecordingCancelTokenHook {
         states: states.clone(),
     }));
-    let executor = rove::core::executor::Executor::with_hooks(&registry, hooks);
+    let executor = rove_runtime::executor::Executor::with_hooks(&registry, hooks);
     let cancel = CancellationToken::new();
-    let ctx = ToolContext {
-        workspace: &workspace,
-        memory_paths: MemoryPaths::from_workspace(&workspace, 8),
-        approval_policy: ApprovalPolicy::Auto,
-        cancel_token: cancel.clone(),
-        input_provider: None,
-    };
+    let ctx = runtime_tool_context(
+        CallId::new(),
+        &workspace,
+        MemoryPaths::from_workspace(&workspace, 8),
+        ApprovalPolicy::Auto,
+        None,
+        cancel.clone(),
+    );
     cancel.cancel();
 
     executor
@@ -1255,7 +1260,7 @@ async fn post_tool_hook_observes_successful_tool_result() {
     let hooks = HookRegistry::default().with_post_tool(Box::new(RecordingPostHook {
         records: records.clone(),
     }));
-    let executor = rove::core::executor::Executor::with_hooks(&registry, hooks);
+    let executor = rove_runtime::executor::Executor::with_hooks(&registry, hooks);
     let ctx = tool_context(&workspace, ApprovalPolicy::Auto);
 
     let result = executor
@@ -1468,7 +1473,7 @@ async fn engine_runs_tool_calls_through_pre_tool_hooks() {
 #[tokio::test]
 async fn latest_task_state_is_loaded_for_resume() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let store = rove::state::store::StateStore::new(tmp.path());
+    let store = rove_runtime::state::store::StateStore::new(tmp.path());
 
     let state = TaskState {
         schema_version: 1,
@@ -1494,7 +1499,7 @@ async fn latest_task_state_is_loaded_for_resume() {
 #[tokio::test]
 async fn latest_task_state_rejects_unsupported_schema_version() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let store = rove::state::store::StateStore::new(tmp.path());
+    let store = rove_runtime::state::store::StateStore::new(tmp.path());
 
     let state = TaskState {
         schema_version: 99,
@@ -1524,7 +1529,7 @@ async fn latest_task_state_rejects_unsupported_schema_version() {
 #[tokio::test]
 async fn list_resumable_task_states_filters_by_session_and_newest_first() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let store = rove::state::store::StateStore::new(tmp.path());
+    let store = rove_runtime::state::store::StateStore::new(tmp.path());
     let target_session = SessionId::new();
     let other_session = SessionId::new();
 
@@ -1595,7 +1600,7 @@ async fn list_resumable_task_states_filters_by_session_and_newest_first() {
 #[tokio::test]
 async fn list_task_states_returns_all_snapshots_newest_first() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let store = rove::state::store::StateStore::new(tmp.path());
+    let store = rove_runtime::state::store::StateStore::new(tmp.path());
 
     let older = TaskState {
         schema_version: 1,
@@ -1640,7 +1645,7 @@ async fn list_task_states_returns_all_snapshots_newest_first() {
 #[tokio::test]
 async fn load_task_state_reads_exact_run_id() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let store = rove::state::store::StateStore::new(tmp.path());
+    let store = rove_runtime::state::store::StateStore::new(tmp.path());
     let session_id = SessionId::new();
     let target_run_id = RunId::new();
     let other_run_id = RunId::new();
@@ -1688,7 +1693,7 @@ async fn load_task_state_reads_exact_run_id() {
 #[tokio::test]
 async fn load_task_state_returns_not_found_for_missing_run() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let store = rove::state::store::StateStore::new(tmp.path());
+    let store = rove_runtime::state::store::StateStore::new(tmp.path());
 
     let err = store.load_task_state(RunId::new()).await.unwrap_err();
 
@@ -1850,6 +1855,7 @@ async fn repair_index_rebuilds_events_and_report_from_artifacts() {
         active_plan_revision: 0,
         step_records: vec![record.clone()],
         active_step_attempt: None,
+        plan_lifecycle: Default::default(),
     };
     let state = TaskState {
         schema_version: 1,
@@ -1876,7 +1882,7 @@ async fn repair_index_rebuilds_events_and_report_from_artifacts() {
         TerminationReason::Final,
     );
     report.step_records.push(record);
-    rove::state::report::write_report(&run.run_dir, &report).unwrap();
+    rove_runtime::state::report::write_report(&run.run_dir, &report).unwrap();
     std::fs::remove_file(store.index.path()).unwrap();
 
     let repaired = store.repair_index().await.unwrap();
@@ -2321,7 +2327,7 @@ async fn engine_honors_configured_session_memory_dir_for_read_and_write() {
         workspace.clone(),
         ApprovalPolicy::Auto,
     )
-    .with_memory_paths(rove::memory::paths::MemoryPaths {
+    .with_memory_paths(rove_runtime::memory::paths::MemoryPaths {
         session_dir: session_dir.clone(),
         durable_dir: workspace.state_dir.join("memory"),
         recall_limit: 8,
@@ -2568,7 +2574,7 @@ async fn engine_honors_configured_durable_memory_dir_for_prompt_recall() {
         workspace.clone(),
         ApprovalPolicy::Auto,
     )
-    .with_memory_paths(rove::memory::paths::MemoryPaths {
+    .with_memory_paths(rove_runtime::memory::paths::MemoryPaths {
         session_dir: workspace.state_dir.join("memory").join("sessions"),
         durable_dir: durable_dir.clone(),
         recall_limit: 1,
@@ -2637,7 +2643,7 @@ async fn planner_persists_steps_and_resumes_mid_plan() {
     assert!(matches!(
         events.last(),
         Some(StreamEvent::RunCompleted {
-            reason: rove::core::types::TerminationReason::Final,
+            reason: rove_runtime::types::TerminationReason::Final,
             ..
         })
     ));
@@ -2811,11 +2817,15 @@ async fn planner_resumes_at_current_step() {
 
     let events = collect_events_with_request(&engine, req).await;
 
-    assert!(
-        !events
-            .iter()
-            .any(|event| matches!(event, StreamEvent::PlanCreated { .. }))
-    );
+    assert!(events.iter().any(|event| {
+        matches!(
+            event,
+            StreamEvent::PlanCreated {
+                plan_revision: Some(revision),
+                ..
+            } if revision.safe_reason_codes == ["legacy_plan_migrated"]
+        )
+    }));
     assert!(events.iter().any(|event| {
         matches!(
             event,
@@ -2880,10 +2890,16 @@ async fn planner_resume_checkpoint_does_not_repeat_completed_steps() {
     let events = collect_events_with_request(&engine, req).await;
 
     assert!(
-        !events
-            .iter()
-            .any(|event| matches!(event, StreamEvent::PlanCreated { .. })),
-        "resume should use checkpoint plan without drafting a new one"
+        events.iter().any(|event| {
+            matches!(
+                event,
+                StreamEvent::PlanCreated {
+                    plan_revision: Some(revision),
+                    ..
+                } if revision.safe_reason_codes == ["legacy_plan_migrated"]
+            )
+        }),
+        "resume should wrap the checkpoint plan without asking the model to draft a new one"
     );
     assert!(!events.iter().any(|event| {
         matches!(
@@ -2989,13 +3005,13 @@ async fn planner_resume_applies_terminal_success_without_replaying_the_step() {
         steps: vec![PlanStep {
             id: "1".to_string(),
             title: "already completed".to_string(),
-            done: false,
+            done: true,
         }],
-        current_step: 0,
+        current_step: 1,
     };
     let mut step_ledger = StepLedgerState::default();
     step_ledger.set_plan_identity(&identity);
-    step_ledger.step_records.push(record);
+    step_ledger.step_records.push(record.clone());
     let req = RunRequest {
         session_id: SessionId::new(),
         job_id: JobId::new(),
@@ -3034,6 +3050,18 @@ async fn planner_resume_applies_terminal_success_without_replaying_the_step() {
             StreamEvent::PlanStepCompleted { step, .. } if step.id == "1"
         )
     }));
+    assert_eq!(
+        events
+            .iter()
+            .filter_map(|event| match event {
+                StreamEvent::PlanDecision { record } => Some(record.as_ref()),
+                _ => None,
+            })
+            .filter(|decision| decision.trigger_step_record_id == record.record_id)
+            .count(),
+        1,
+        "resume must fill the missing decision exactly once"
+    );
     assert!(matches!(
         events.last(),
         Some(StreamEvent::RunCompleted {
@@ -3125,8 +3153,23 @@ async fn planned_step_emits_complete_step_record_before_compatibility_completion
         .iter()
         .position(|event| matches!(event, StreamEvent::PlanStepCompleted { .. }))
         .unwrap();
+    let (decision_index, decision) = events
+        .iter()
+        .enumerate()
+        .find_map(|(index, event)| match event {
+            StreamEvent::PlanDecision { record } => Some((index, record.as_ref())),
+            _ => None,
+        })
+        .expect("terminal step should emit a plan decision");
 
-    assert!(record_index < completed_index);
+    assert!(record_index < decision_index);
+    assert!(decision_index < completed_index);
+    assert_eq!(decision.trigger_step_record_id, record.record_id);
+    assert_eq!(decision.decision.kind, PlanDecisionKind::Finish);
+    assert_eq!(
+        decision.decision.finish_reason,
+        Some(PlanFinishReason::Completed)
+    );
     assert!(started.is_complete());
     assert_eq!(record.plan_id, started.plan_id);
     assert_eq!(record.plan_revision_id, started.plan_revision_id);
@@ -3151,13 +3194,23 @@ async fn replanning_retains_failed_record_and_advances_revision_identity() {
     let engine = build_replanning_test_engine();
 
     let events = collect_events(&engine, "fix the docs").await;
-    let identities: Vec<_> = events
+    let initial_revision = events
         .iter()
-        .filter_map(|event| match event {
-            StreamEvent::PlanCreated { identity, .. } => Some(identity),
+        .find_map(|event| match event {
+            StreamEvent::PlanCreated {
+                plan_revision: Some(revision),
+                ..
+            } => Some(revision.as_ref()),
             _ => None,
         })
-        .collect();
+        .expect("initial plan should carry revision zero");
+    let revised = events
+        .iter()
+        .find_map(|event| match event {
+            StreamEvent::PlanRevised { revision, .. } => Some(revision.as_ref()),
+            _ => None,
+        })
+        .expect("recoverable failure should create a child revision");
     let records: Vec<_> = events
         .iter()
         .filter_map(|event| match event {
@@ -3165,20 +3218,72 @@ async fn replanning_retains_failed_record_and_advances_revision_identity() {
             _ => None,
         })
         .collect();
+    let replace_decision = events
+        .iter()
+        .find_map(|event| match event {
+            StreamEvent::PlanDecision { record }
+                if record.decision.kind == PlanDecisionKind::ReplaceRemaining =>
+            {
+                Some(record.as_ref())
+            }
+            _ => None,
+        })
+        .expect("recoverable failure should emit a replace decision");
 
-    assert_eq!(identities.len(), 2);
-    assert_eq!(identities[0].plan_id, identities[1].plan_id);
-    assert_ne!(
-        identities[0].plan_revision_id,
-        identities[1].plan_revision_id
+    assert_eq!(initial_revision.plan_id, revised.plan_id);
+    assert_ne!(initial_revision.revision_id, revised.revision_id);
+    assert_eq!(initial_revision.revision, 0);
+    assert_eq!(revised.revision, 1);
+    assert_eq!(
+        revised.parent_revision_id.as_deref(),
+        Some(initial_revision.revision_id.as_str())
     );
-    assert_eq!(identities[0].revision, 0);
-    assert_eq!(identities[1].revision, 1);
+    assert_eq!(
+        revised.trigger_step_record_id.as_deref(),
+        Some(records[0].record_id.as_str())
+    );
+    assert_eq!(revised.decision_id, replace_decision.decision.decision_id);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, StreamEvent::PlanCreated { .. }))
+            .count(),
+        1,
+        "replanning must not masquerade as a second initial plan"
+    );
     assert_eq!(records.len(), 2);
     assert_eq!(records[0].status, StepRecordStatus::Failed);
+    assert_eq!(
+        records[0].error_code.as_deref(),
+        Some("step_recoverable_failure")
+    );
     assert_eq!(records[1].status, StepRecordStatus::Succeeded);
     assert_eq!(records[0].plan_id, records[1].plan_id);
     assert_ne!(records[0].plan_revision_id, records[1].plan_revision_id);
+
+    let failed_record_index = events
+        .iter()
+        .position(|event| {
+            matches!(event, StreamEvent::StepResult { record } if record.record_id == records[0].record_id)
+        })
+        .unwrap();
+    let replace_decision_index = events
+        .iter()
+        .position(|event| {
+            matches!(event, StreamEvent::PlanDecision { record } if record.decision.kind == PlanDecisionKind::ReplaceRemaining)
+        })
+        .unwrap();
+    let compatibility_failure_index = events
+        .iter()
+        .position(|event| matches!(event, StreamEvent::PlanStepFailed { .. }))
+        .unwrap();
+    let revised_index = events
+        .iter()
+        .position(|event| matches!(event, StreamEvent::PlanRevised { .. }))
+        .unwrap();
+    assert!(failed_record_index < replace_decision_index);
+    assert!(replace_decision_index < compatibility_failure_index);
+    assert!(compatibility_failure_index < revised_index);
 }
 
 #[tokio::test]
@@ -3373,7 +3478,14 @@ async fn planner_replans_after_step_failure() {
             .iter()
             .filter(|event| matches!(event, StreamEvent::PlanCreated { .. }))
             .count(),
-        2
+        1
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, StreamEvent::PlanRevised { .. }))
+            .count(),
+        1
     );
     assert!(events.iter().any(|event| {
         matches!(
@@ -3414,7 +3526,11 @@ async fn oneshot_persists_replanned_task_state() {
     )
     .unwrap();
     let persisted_records = task_state.step_ledger.step_records.clone();
+    let persisted_decisions = task_state.step_ledger.plan_lifecycle.decisions.clone();
+    let persisted_revisions = task_state.step_ledger.plan_lifecycle.revisions.clone();
     assert_eq!(persisted_records.len(), 2);
+    assert_eq!(persisted_decisions.len(), 2);
+    assert_eq!(persisted_revisions.len(), 2);
     assert_eq!(persisted_records[0].status, StepRecordStatus::Failed);
     assert_eq!(persisted_records[1].status, StepRecordStatus::Succeeded);
     assert!(task_state.step_ledger.active_step_attempt.is_none());
@@ -3423,6 +3539,20 @@ async fn oneshot_persists_replanned_task_state() {
             .checkpoint
             .as_ref()
             .map(|checkpoint| checkpoint.step_ledger.step_record_count),
+        Some(2)
+    );
+    assert_eq!(
+        task_state
+            .checkpoint
+            .as_ref()
+            .map(|checkpoint| checkpoint.step_ledger.plan_lifecycle.decision_count),
+        Some(2)
+    );
+    assert_eq!(
+        task_state
+            .checkpoint
+            .as_ref()
+            .map(|checkpoint| checkpoint.step_ledger.plan_lifecycle.revision_count),
         Some(2)
     );
     let plan = task_state
@@ -3444,6 +3574,8 @@ async fn oneshot_persists_replanned_task_state() {
 
     let report = state_store.load_report(run_id).await.unwrap();
     assert_eq!(report.step_records, persisted_records);
+    assert_eq!(report.plan_decisions, persisted_decisions);
+    assert_eq!(report.plan_revisions, persisted_revisions);
     let trace = std::fs::read_to_string(state_store.run_store.run_dir(&run_id).join("trace.jsonl"))
         .unwrap();
     let traced_records: Vec<_> = trace
@@ -3455,6 +3587,28 @@ async fn oneshot_persists_replanned_task_state() {
         })
         .collect();
     assert_eq!(traced_records, persisted_records);
+    let traced_decisions: Vec<_> = trace
+        .lines()
+        .map(|line| serde_json::from_str::<StreamEvent>(line).unwrap())
+        .filter_map(|event| match event {
+            StreamEvent::PlanDecision { record } => Some(*record),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(traced_decisions, persisted_decisions);
+    let traced_revisions: Vec<_> = trace
+        .lines()
+        .map(|line| serde_json::from_str::<StreamEvent>(line).unwrap())
+        .filter_map(|event| match event {
+            StreamEvent::PlanCreated {
+                plan_revision: Some(revision),
+                ..
+            }
+            | StreamEvent::PlanRevised { revision, .. } => Some(*revision),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(traced_revisions, persisted_revisions);
 }
 
 #[tokio::test]
@@ -3495,10 +3649,16 @@ async fn resumed_run_uses_persisted_replanned_task_state() {
     let events = collect_events_with_request(&engine, req).await;
 
     assert!(
-        !events
-            .iter()
-            .any(|event| matches!(event, StreamEvent::PlanCreated { .. })),
-        "resume should use the persisted re-planned plan without drafting a new one"
+        events.iter().any(|event| {
+            matches!(
+                event,
+                StreamEvent::PlanCreated {
+                    plan_revision: Some(revision),
+                    ..
+                } if revision.safe_reason_codes == ["legacy_plan_migrated"]
+            )
+        }),
+        "resume should wrap the persisted re-planned plan without asking the model to draft a new one"
     );
     assert!(events.iter().any(|event| {
         matches!(
@@ -3523,7 +3683,7 @@ async fn file_tools_read_and_write_inside_workspace() {
     registry.register(Box::new(FsWriteTool::new(workspace.root.clone())));
     registry.register(Box::new(FsReadTool::new(workspace.root.clone())));
 
-    let executor = rove::core::executor::Executor::new(&registry);
+    let executor = rove_runtime::executor::Executor::new(&registry);
     let ctx = tool_context(&workspace, ApprovalPolicy::Auto);
 
     executor
@@ -3556,7 +3716,7 @@ async fn shell_tool_is_blocked_when_policy_is_never() {
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(ShellTool::new(workspace.root.clone())));
 
-    let executor = rove::core::executor::Executor::new(&registry);
+    let executor = rove_runtime::executor::Executor::new(&registry);
     let ctx = tool_context(&workspace, ApprovalPolicy::Never);
 
     let err = executor
@@ -3580,7 +3740,7 @@ async fn shell_tool_rejects_empty_command() {
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(ShellTool::new(workspace.root.clone())));
 
-    let executor = rove::core::executor::Executor::new(&registry);
+    let executor = rove_runtime::executor::Executor::new(&registry);
     let ctx = tool_context(&workspace, ApprovalPolicy::Auto);
 
     let err = executor
@@ -3607,7 +3767,7 @@ async fn shell_tool_rejects_nul_byte_command() {
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(ShellTool::new(workspace.root.clone())));
 
-    let executor = rove::core::executor::Executor::new(&registry);
+    let executor = rove_runtime::executor::Executor::new(&registry);
     let ctx = tool_context(&workspace, ApprovalPolicy::Auto);
 
     let err = executor
@@ -3634,7 +3794,7 @@ async fn shell_tool_runs_non_empty_command_when_approved() {
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(ShellTool::new(workspace.root.clone())));
 
-    let executor = rove::core::executor::Executor::new(&registry);
+    let executor = rove_runtime::executor::Executor::new(&registry);
     let ctx = tool_context(&workspace, ApprovalPolicy::Auto);
 
     let command = if cfg!(windows) {
@@ -3706,7 +3866,7 @@ async fn run_with_cancel_completes_cancelled_while_tool_is_waiting() {
     assert!(matches!(
         event,
         StreamEvent::RunCompleted {
-            reason: rove::core::types::TerminationReason::Cancelled,
+            reason: rove_runtime::types::TerminationReason::Cancelled,
             output: None,
         }
     ));
@@ -3889,7 +4049,7 @@ async fn run_stream_cancel_completes_cancelled_while_tool_is_waiting() {
     assert!(matches!(
         event,
         StreamEvent::RunCompleted {
-            reason: rove::core::types::TerminationReason::Cancelled,
+            reason: rove_runtime::types::TerminationReason::Cancelled,
             output: None,
         }
     ));
@@ -3940,7 +4100,7 @@ fn compaction_policy_requests_auto_compaction_after_soft_limit() {
         hard_limit_tokens: 80,
         reserved_tokens: 5,
     };
-    let build = rove::core::context::ContextBuild {
+    let build = rove_runtime::context::ContextBuild {
         messages: vec![user_message("large context")],
         token_estimate: 24,
         included_history_messages: 3,
@@ -3950,11 +4110,11 @@ fn compaction_policy_requests_auto_compaction_after_soft_limit() {
         metadata: Default::default(),
     };
 
-    let decision = rove::core::context::CompactionPolicy::default().decide(&build, budget);
+    let decision = rove_runtime::context::CompactionPolicy::default().decide(&build, budget);
 
     assert_eq!(
         decision.mode,
-        rove::core::context::CompactionMode::Automatic
+        rove_runtime::context::CompactionMode::Automatic
     );
     assert!(!decision.circuit_open);
 }
@@ -3966,7 +4126,7 @@ fn compaction_policy_opens_circuit_after_repeated_failures() {
         hard_limit_tokens: 80,
         reserved_tokens: 5,
     };
-    let build = rove::core::context::ContextBuild {
+    let build = rove_runtime::context::ContextBuild {
         messages: vec![user_message("large context")],
         token_estimate: 24,
         included_history_messages: 3,
@@ -3976,13 +4136,16 @@ fn compaction_policy_opens_circuit_after_repeated_failures() {
         metadata: Default::default(),
     };
 
-    let decision = rove::core::context::CompactionPolicy {
+    let decision = rove_runtime::context::CompactionPolicy {
         consecutive_failures: 3,
         failure_threshold: 3,
     }
     .decide(&build, budget);
 
-    assert_eq!(decision.mode, rove::core::context::CompactionMode::Disabled);
+    assert_eq!(
+        decision.mode,
+        rove_runtime::context::CompactionMode::Disabled
+    );
     assert!(decision.circuit_open);
 }
 
@@ -4051,7 +4214,7 @@ async fn oneshot_persists_prompt_checkpoint() {
     assert!(checkpoint.token_estimate > 0);
     assert_eq!(
         checkpoint.compaction.mode,
-        rove::core::types::PromptCompactionMode::Deterministic
+        rove_runtime::types::PromptCompactionMode::Deterministic
     );
     assert!(!checkpoint.compaction.circuit_open);
 }
@@ -4111,7 +4274,7 @@ async fn model_compaction_stores_generated_summary_in_checkpoint() {
     );
     assert_eq!(
         checkpoint.compaction.mode,
-        rove::core::types::PromptCompactionMode::ModelGenerated
+        rove_runtime::types::PromptCompactionMode::ModelGenerated
     );
     assert_eq!(checkpoint.compaction.model.as_deref(), Some("fake-model"));
     assert_eq!(checkpoint.compaction.source_message_count, 2);
@@ -4280,7 +4443,7 @@ async fn failing_model_compaction_falls_back_to_deterministic_summary_with_circu
         .expect("task_state should include a prompt checkpoint");
     assert_eq!(
         checkpoint.compaction.mode,
-        rove::core::types::PromptCompactionMode::Degraded
+        rove_runtime::types::PromptCompactionMode::Degraded
     );
     // v2 structured fallback: deterministic_structured_summary renders as a
     // non-empty "Compact summary" (Goal/Key results/etc.) rather than the old
@@ -4428,7 +4591,7 @@ fn report_serializes_workspace_and_identity_metadata() {
         workspace_root.clone(),
         WorkspaceKind::Folder,
         "fake-model".to_string(),
-        rove::core::types::TerminationReason::Final,
+        rove_runtime::types::TerminationReason::Final,
     );
 
     let json = serde_json::to_value(&report).unwrap();
@@ -4527,7 +4690,7 @@ async fn engine_produces_final_answer() {
     let last = events.last().unwrap();
     match last {
         StreamEvent::RunCompleted { reason, output } => {
-            assert_eq!(*reason, rove::core::types::TerminationReason::Final);
+            assert_eq!(*reason, rove_runtime::types::TerminationReason::Final);
             assert!(output.is_some());
             assert_eq!(output.as_deref().unwrap(), "Hello from the agent!");
         }
@@ -4560,7 +4723,7 @@ async fn engine_handles_tool_call() {
     assert!(matches!(
         last,
         StreamEvent::RunCompleted {
-            reason: rove::core::types::TerminationReason::Final,
+            reason: rove_runtime::types::TerminationReason::Final,
             ..
         }
     ));
@@ -4665,7 +4828,7 @@ async fn engine_runs_parallel_safe_tool_batch_concurrently_with_ordered_writebac
     assert!(matches!(
         events.last(),
         Some(StreamEvent::RunCompleted {
-            reason: rove::core::types::TerminationReason::Final,
+            reason: rove_runtime::types::TerminationReason::Final,
             output: Some(output),
         }) if output == "done"
     ));
@@ -4715,7 +4878,7 @@ async fn engine_runs_non_parallel_safe_tool_batch_serially() {
     assert!(matches!(
         events.last(),
         Some(StreamEvent::RunCompleted {
-            reason: rove::core::types::TerminationReason::Final,
+            reason: rove_runtime::types::TerminationReason::Final,
             output: Some(output),
         }) if output == "done"
     ));
@@ -4752,7 +4915,7 @@ async fn engine_executes_native_model_tool_use() {
     assert!(matches!(
         events.last(),
         Some(StreamEvent::RunCompleted {
-            reason: rove::core::types::TerminationReason::Final,
+            reason: rove_runtime::types::TerminationReason::Final,
             output: Some(output),
         }) if output == "done with native tool"
     ));
@@ -4839,7 +5002,7 @@ async fn engine_routes_request_input_tool_to_input_provider() {
     assert!(matches!(
         events.last(),
         Some(StreamEvent::RunCompleted {
-            reason: rove::core::types::TerminationReason::Final,
+            reason: rove_runtime::types::TerminationReason::Final,
             output: Some(output),
         }) if output == "I will use main."
     ));
@@ -4976,7 +5139,7 @@ async fn engine_respects_step_limit() {
     assert!(matches!(
         last,
         StreamEvent::RunCompleted {
-            reason: rove::core::types::TerminationReason::StepLimit,
+            reason: rove_runtime::types::TerminationReason::StepLimit,
             ..
         }
     ));
@@ -5000,7 +5163,7 @@ async fn engine_handles_unknown_tool() {
 async fn trace_writer_records_events() {
     let tmp = tempfile::TempDir::new().unwrap();
     let trace_path = tmp.path().join("trace.jsonl");
-    let trace_writer = rove::state::trace::TraceWriter::new(tmp.path()).unwrap();
+    let trace_writer = rove_runtime::state::trace::TraceWriter::new(tmp.path()).unwrap();
 
     let engine = build_test_engine(vec!["done".to_string()]);
     let stream = engine.ask("test".to_string(), Some(trace_writer));
@@ -5040,7 +5203,7 @@ impl ModelClient for RoundTripRecordingModel {
     fn stream(
         &self,
         messages: &[Message],
-        _tools: &[ToolSchema],
+        _tools: &[ModelToolSchema],
     ) -> BoxStream<'_, Result<ModelEvent, ModelError>> {
         let idx = self
             .call_count
@@ -5163,7 +5326,7 @@ impl ModelClient for NativeBatchModel {
     fn stream(
         &self,
         messages: &[Message],
-        _tools: &[ToolSchema],
+        _tools: &[ModelToolSchema],
     ) -> BoxStream<'_, Result<ModelEvent, ModelError>> {
         let idx = self
             .call_count

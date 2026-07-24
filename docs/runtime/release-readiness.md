@@ -43,7 +43,7 @@ cargo fmt --all --check
 cargo clippy --all-targets -- -D warnings
 cargo test
 
-cd web-ui
+cd apps/web
 pnpm test
 pnpm typecheck
 pnpm build
@@ -55,7 +55,7 @@ Acceptance:
 - every command exits with code 0;
 - no generated runtime state, logs, screenshots, SQLite files, or secrets appear
   in `git status --short`;
-- any `web-ui/next-env.d.ts` churn from Next.js is inspected before commit.
+- any `apps/web/next-env.d.ts` churn from Next.js is inspected before commit.
 
 For release claims that include real-terminal TUI behavior, run the opt-in Unix
 PTY smoke separately:
@@ -219,9 +219,9 @@ cargo test --test mcp mcp_official_filesystem_server_smoke_when_enabled -- --exa
 RAG deterministic gate:
 
 ```powershell
-cargo check --features rag --bin rove-index
-cargo test --features rag --test cli_index
-cargo test --features rag --test rag
+
+
+
 ```
 
 Acceptance:

@@ -2,13 +2,26 @@
 
 > Status: **Current Maintainer Guide**
 >
-> Last reviewed: 2026-07-19. This guide explains the repository as it exists
+> Last reviewed: 2026-07-22. This guide explains the repository as it exists
 > today. For exact subsystem contracts and implementation status, follow
 > [`docs/runtime/`](runtime/README.md). Documents marked
 > `Proposed / Not Implemented` describe future work.
 
 This guide is the shortest path from a fresh checkout to making a safe,
 evidence-backed change in rove.
+
+The repository is currently in a compatibility migration window. The Cargo
+Workspace contains the existing root `rove` package plus the independent
+`rove-models`, `rove-core`, and `rove-runtime` crates; the root package remains
+the default member. `rove-core` is the implemented in-memory embedding layer.
+`rove-runtime` currently owns the verified foundation slice for identity,
+resumable task/execution contracts, Workspace/path safety, prompt/runtime
+identity, approval/input contracts, canonical events, context/compaction,
+session/durable memory, local built-in tools, invocation adapters, and the
+existing MCP proxy, the tool Executor pipeline, pre/post-tool and post-run
+hooks, planning/step coordination, durable event translation, the persistent
+Engine facade, plus durable state/trace/artifact/SQLite/repair/resume services.
+Product tool-registry assembly, first-party AppConfig and product assembly live in `rove-app-bootstrap`; apps live under `apps/`. Built-in vector RAG has been removed.
 
 ## 1. What rove is
 
@@ -19,7 +32,7 @@ core is used by:
 - an HTTP API with job lifecycle and SSE events;
 - a standalone Next.js workbench;
 - deterministic local benchmarks;
-- optional RAG indexing and retrieval.
+- tool-based workspace retrieval and layered file memory.
 
 The runtime combines:
 
@@ -76,7 +89,7 @@ Required for the Rust runtime:
 Required for the Web workbench:
 
 - a current Node.js version compatible with the lockfile;
-- pnpm 10, as declared by `web-ui/package.json`.
+- pnpm 10, as declared by `apps/web/package.json`.
 
 Useful for repository scripts and optional checks:
 
@@ -116,22 +129,22 @@ and untracked files may be user work.
 Interactive:
 
 ```powershell
-cargo run -- --model fake
+cargo run -p rove-cli -- --model fake
 ```
 
 One initial prompt:
 
 ```powershell
-cargo run -- --model fake "echo hello from rove"
+cargo run -p rove-cli -- --model fake "echo hello from rove"
 ```
 
 Non-interactive:
 
 ```powershell
-cargo run -- exec --model fake "echo hello from rove"
+cargo run -p rove-cli -- exec --model fake "echo hello from rove"
 ```
 
-`Cargo.toml` sets `default-run = "rove"`, so plain `cargo run -- ...` selects
+`Cargo.toml` sets `default-run = "rove"`, so plain `cargo run -p rove-cli -- ...` selects
 the CLI binary.
 
 ### 5.2 API and Web
@@ -157,8 +170,8 @@ powershell -ExecutionPolicy Bypass -File scripts/dev.ps1 -ApiAddr 127.0.0.1:1878
 Manual startup remains possible:
 
 ```powershell
-cargo run --bin rove-api
-cd web-ui
+cargo run -p rove-api
+cd apps/web
 pnpm install --frozen-lockfile
 pnpm dev
 ```
@@ -169,7 +182,7 @@ The API exposes generated OpenAPI at `/api/openapi.json` and Swagger UI at
 ### 5.3 Benchmark smoke
 
 ```powershell
-cargo run --bin rove-bench -- --suite benchmarks/agent-smoke.json --output-dir .rove/bench
+cargo run -p rove-bench -- --suite benchmarks/agent-smoke.json --output-dir .rove/bench
 ```
 
 This is a deterministic, no-network smoke. It does not evaluate the proposed
@@ -179,16 +192,17 @@ OnCall reference Agent.
 
 | Surface | Entry | Follow next |
 |---|---|---|
-| CLI | `src/main.rs` | command dispatch and shared runtime construction |
-| API | `src/bin/rove-api.rs` | `src/interfaces/api/` |
-| Benchmark | `src/bin/rove-bench.rs` | `src/bench/` |
-| RAG index | indexing binary under `src/bin/` | `src/tools/rag/` |
-| Web | `web-ui/` | API proxy, state hooks, components, tests |
-| Core | `src/core/` | engine, context, planner, parser, executor, events |
-| State | `src/state/` | store, trace, task state, report/artifacts |
-| Models | `src/models/` | provider adapters and routing |
-| Tools | `src/tools/` | local tools, shell, memory, MCP, RAG |
-| Memory | `src/memory/` | session and durable memory |
+| CLI | `apps/cli` | command dispatch, REPL, TUI |
+| API | `apps/api` | HTTP/SSE surface |
+| Benchmark | `apps/bench` | Deterministic benchmark runner |
+| Web | `apps/web/` | API proxy, state hooks, components, tests |
+| Agent core | `core/` | in-memory Agent/model/tool loop, control, core events, contracts |
+| Persistent runtime | `runtime/` | contracts/events, workspace, context/compaction, memory, local built-in tools, MCP proxy, StateStore, artifacts/SQLite, repair and resume |
+| Persistent coordinator | `src/core/` | transitional Engine, planning/run coordination, tool turns, memory-flush ordering, durable event translation |
+| Models | `models/` | independent protocol, provider adapters, routing, fake provider |
+| Provider assembly | `src/models/factory.rs` | transitional AppConfig-driven construction |
+| Runtime tools | `runtime/src/tools/` | echo, filesystem, shell, memory, request-input, and invocation adapters |
+| Tool assembly | `apps/bootstrap` + `runtime/src/tools` | product registry assembly and built-in tools |
 
 ## 7. Request lifecycle
 
@@ -212,8 +226,8 @@ CLI/API/benchmark request
 
 When tracing a bug, follow both:
 
-1. control flow in `src/core/`;
-2. emitted events and persisted state in `src/state/`.
+1. model/tool mechanics in `core/src/`, runtime contracts in `runtime/src/`, and persistent control flow in `src/core/`;
+2. canonical events and persisted state implementation in `runtime/src/`.
 
 Do not debug only from the final assistant text. It is a projection, not the
 whole execution history.
@@ -231,7 +245,7 @@ Common modes:
 Example Task workspace:
 
 ```powershell
-cargo run -- --task-workspace invoice-check --task-base .rove/tasks --model fake "review this task"
+cargo run -p rove-cli -- --task-workspace invoice-check --task-base .rove/tasks --model fake "review this task"
 ```
 
 Task workspaces isolate files, state, and default memory beneath the task
@@ -249,7 +263,7 @@ defaults < .rove/config.toml < environment < CLI overrides
 Inspect the resolved, redacted configuration:
 
 ```powershell
-cargo run -- dump-config
+cargo run -p rove-cli -- dump-config
 ```
 
 Important rules:
@@ -280,7 +294,7 @@ layout centered on:
       ...
 ```
 
-Exact filenames can evolve; use `src/state/` and current runtime docs as truth.
+Exact filenames can evolve; use `runtime/src/state/` and current runtime docs as truth.
 
 Semantics:
 
@@ -292,9 +306,9 @@ Semantics:
 Useful commands:
 
 ```powershell
-cargo run -- sessions
-cargo run -- state repair
-cargo run -- state cleanup
+cargo run -p rove-cli -- sessions
+cargo run -p rove-cli -- state repair
+cargo run -p rove-cli -- state cleanup
 ```
 
 When changing persistence:
@@ -347,6 +361,11 @@ Core code should consume normalized provider results. Provider adapters own:
 - usage/error normalization;
 - provider-specific authentication.
 
+These contracts and adapters now live in `rove-models`, which has no local
+project dependencies. `src/models/factory.rs` remains in the root compatibility
+package because it still translates first-party `AppConfig` into model-layer
+constructors; it will move to `apps/bootstrap` later in the migration.
+
 When adding or changing a provider:
 
 - test payload shape without real network;
@@ -372,7 +391,7 @@ Current MCP truth:
 
 See:
 
-- `src/tools/mcp_proxy.rs`;
+- `runtime/src/tools/mcp_proxy.rs`;
 - `tests/mcp.rs`;
 - [`runtime/subsystems.md`](runtime/subsystems.md);
 - [future MCP design](design/2026-07-15-mcp-streamable-http-and-tool-artifacts-design.md).
@@ -382,28 +401,15 @@ local workspace path.
 
 ## 14. Optional RAG
 
-RAG is behind the `rag` Cargo feature. The default build has no RAG feature.
+Built-in vector RAG has been removed. Workspace context comes from tools and layered file memory.
 
-Verification:
-
-```powershell
-cargo check --features rag --bin rove-index
-cargo clippy --all-targets --features rag -- -D warnings
-cargo test --features rag
-```
-
-Deterministic local embeddings are the default verification path. Provider
-embeddings are opt-in and need explicit keys/config.
-
-Do not call ordinary reference RAG “procedural knowledge.” Versioned procedure
-catalogs and selection are proposed future work.
 
 ## 15. Web workbench
 
-`web-ui/` is a standalone Next.js application. It consumes the API and SSE
+`apps/web/` is a standalone Next.js application. It consumes the API and SSE
 rather than embedding a second runtime.
 
-From `web-ui/`:
+From `apps/web/`:
 
 ```powershell
 pnpm install --frozen-lockfile
@@ -441,7 +447,7 @@ Fast checks:
 
 ```powershell
 cargo test --test bench
-cargo run --bin rove-bench -- --suite benchmarks/agent-smoke.json --output-dir .rove/bench
+cargo run -p rove-bench -- --suite benchmarks/agent-smoke.json --output-dir .rove/bench
 ```
 
 Published evidence and provenance rules are described in
@@ -456,8 +462,8 @@ The proposed V2 Agent evaluation and OnCall reference suite are documented in
 
 ```powershell
 cargo fmt --all --check
-cargo clippy --all-targets -- -D warnings
-cargo test
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
 ```
 
 Start focused when iterating:
@@ -473,7 +479,7 @@ cargo test --test bench
 ### 17.2 Web
 
 ```powershell
-cd web-ui
+cd apps/web
 pnpm test
 pnpm typecheck
 pnpm build
@@ -604,7 +610,7 @@ Use them for rationale, not as current API/runtime truth when they disagree with
 - Browser/Desktop workspace specs are future, outside the current local-first
   MVP.
 - Hosted multi-user identity and distributed rate limiting are outside the MVP.
-- RAG is optional.
+- Built-in vector RAG is not provided.
 - Real provider/MCP tests are gated.
 - The current MCP path is not the proposed Streamable HTTP design.
 - The runtime does not yet compile versioned AgentDefinition packages.

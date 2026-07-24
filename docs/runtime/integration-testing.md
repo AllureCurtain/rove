@@ -53,7 +53,7 @@ The runner removes or recreates `<integration-root>/workspace` at the start of a
 - provider `fake`
 - model `fake` or `fake-raw` depending on the scenario
 - real `rove-api`
-- real `web-ui`
+- real `apps/web`
 - built-in tools from the runtime registry
 - local filesystem workspace rooted under `<integration-root>/workspace`
 
@@ -160,7 +160,7 @@ Invoke-RestMethod `
 Start the Web workbench in another terminal:
 
 ```powershell
-cd web-ui
+cd apps/web
 $env:ROVE_API_BASE = "http://127.0.0.1:8787"
 pnpm dev
 ```
@@ -209,7 +209,7 @@ The runner:
 4. Starts `cargo run --bin rove-api -- --addr <addr> -C <workspace>` with integration env.
 5. Waits until `GET /runs` succeeds.
 6. Runs API smoke scenarios and saves JSON responses under `<integration-root>/artifacts/api`.
-7. Starts `pnpm exec next dev --port <port>` in `web-ui` with `ROVE_API_BASE` pointing to the API.
+7. Starts `pnpm exec next dev --port <port>` in `apps/web` with `ROVE_API_BASE` pointing to the API.
 8. Runs the gated real-API Playwright suite with `ROVE_REAL_API_E2E=1`,
    `ROVE_WEB_PORT=<port>`, and `PLAYWRIGHT_BASE_URL=http://127.0.0.1:<port>`.
 9. Stops API and Web processes even when a check fails.
@@ -328,7 +328,7 @@ and provider bases, never key values.
 
 ## Real-API Playwright Design
 
-The existing browser E2E tests mock the API at the browser boundary. The real-API suite is `web-ui/tests/e2e/real-api.spec.ts` and is gated by `ROVE_REAL_API_E2E=1`.
+The existing browser E2E tests mock the API at the browser boundary. The real-API suite is `apps/web/tests/e2e/real-api.spec.ts` and is gated by `ROVE_REAL_API_E2E=1`.
 
 The real-API suite does not start the Rust API itself. The runner owns API/Web process lifecycle so failures can preserve both logs. The test:
 
@@ -403,9 +403,9 @@ cargo test --test mcp mcp_official_filesystem_server_smoke_when_enabled -- --exa
 RAG remains feature-gated and deterministic by default:
 
 ```powershell
-cargo check --features rag --bin rove-index
-cargo test --features rag --test cli_index
-cargo test --features rag --test rag
+
+
+
 ```
 
 Provider embeddings or reranking should be enabled only through explicit environment gates and should write artifacts under the integration state directory.
@@ -432,7 +432,7 @@ cargo fmt --all --check
 cargo clippy --all-targets -- -D warnings
 cargo test
 
-cd web-ui
+cd apps/web
 pnpm test
 pnpm typecheck
 pnpm build
@@ -441,7 +441,7 @@ pnpm build
 Feature and optional gates can be layered afterward:
 
 ```powershell
-cargo test --features rag
-cd web-ui
+
+cd apps/web
 pnpm test:e2e
 ```

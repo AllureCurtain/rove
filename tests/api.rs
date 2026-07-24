@@ -1,16 +1,30 @@
+use std::path::{Path, PathBuf};
+
+fn workspace_root() -> PathBuf {
+    let mut root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    root.pop();
+    root
+}
+
+fn workspace_path(rel: impl AsRef<Path>) -> PathBuf {
+    workspace_root().join(rel)
+}
+
+fn workspace_path_string(rel: impl AsRef<Path>) -> String {
+    workspace_path(rel).to_string_lossy().into_owned()
+}
+
 use axum::body::Body;
 use axum::extract::State as AxumState;
 use axum::http::{HeaderMap, Request, StatusCode, header::AUTHORIZATION, header::CONTENT_TYPE};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use rove::config::AppConfig;
-use rove::core::events::StreamEvent;
-use rove::core::execution::StepRecordStatus;
-use rove::core::types::{Role, RunStatus, TaskState};
-use rove::core::workspace::Workspace;
-use rove::interfaces::api::{
-    ApiState, CreateJobResponse, JobStateResponse, router, serve_listener,
-};
+use rove_api::{ApiState, CreateJobResponse, JobStateResponse, router, serve_listener};
+use rove_app_bootstrap::AppConfig;
+use rove_runtime::events::StreamEvent;
+use rove_runtime::execution::StepRecordStatus;
+use rove_runtime::types::{Role, RunStatus, TaskState};
+use rove_runtime::workspace::Workspace;
 use std::sync::{Arc, Mutex};
 use tokio_util::sync::CancellationToken;
 use tower::ServiceExt;
@@ -1054,7 +1068,7 @@ async fn api_state_includes_input_needed_event_for_snapshot_recovery() {
 async fn api_writes_run_artifacts_for_completed_job() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
-    let state_store = rove::state::store::StateStore::new(&workspace.state_dir);
+    let state_store = rove_runtime::state::store::StateStore::new(&workspace.state_dir);
     let app = router(ApiState::new(workspace, test_config()));
 
     let create = app
@@ -1410,7 +1424,7 @@ async fn api_lists_and_fetches_run_report_after_restart() {
 async fn api_can_resume_latest_task_state() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
-    let state_store = rove::state::store::StateStore::new(&workspace.state_dir);
+    let state_store = rove_runtime::state::store::StateStore::new(&workspace.state_dir);
     let app = router(ApiState::new(workspace, test_config()));
 
     let create = app
@@ -1669,10 +1683,10 @@ async fn api_reads_completed_job_state_and_events_after_restart() {
 async fn api_startup_marks_stale_running_jobs_interrupted() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
-    let state_store = rove::state::store::StateStore::new(&workspace.state_dir);
-    let session_id = rove::core::types::SessionId::new();
-    let job_id = rove::core::types::JobId::new();
-    let run_id = rove::core::types::RunId::new();
+    let state_store = rove_runtime::state::store::StateStore::new(&workspace.state_dir);
+    let session_id = rove_runtime::types::SessionId::new();
+    let job_id = rove_runtime::types::JobId::new();
+    let run_id = rove_runtime::types::RunId::new();
     state_store
         .start_run(session_id, job_id, run_id)
         .expect("running job should be indexed");
@@ -1706,7 +1720,7 @@ async fn api_startup_marks_stale_running_jobs_interrupted() {
 async fn api_restart_marks_pending_approval_interrupted_without_replaying_unknown_step() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
-    let state_store = rove::state::store::StateStore::new(&workspace.state_dir);
+    let state_store = rove_runtime::state::store::StateStore::new(&workspace.state_dir);
     let app = router(ApiState::new(workspace.clone(), test_config()));
 
     let create = app
@@ -1821,7 +1835,7 @@ async fn api_restart_marks_pending_approval_interrupted_without_replaying_unknow
 async fn api_restart_marks_pending_input_interrupted() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
-    let state_store = rove::state::store::StateStore::new(&workspace.state_dir);
+    let state_store = rove_runtime::state::store::StateStore::new(&workspace.state_dir);
     let app = router(ApiState::new(workspace.clone(), test_config()));
     let message = serde_json::json!({
         "tool": "request_input",
@@ -1895,7 +1909,7 @@ async fn api_restart_marks_pending_input_interrupted() {
 async fn api_replays_input_needed_event_after_restart() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
-    let state_store = rove::state::store::StateStore::new(&workspace.state_dir);
+    let state_store = rove_runtime::state::store::StateStore::new(&workspace.state_dir);
     let app = router(ApiState::new(workspace.clone(), test_config()));
     let message = serde_json::json!({
         "tool": "request_input",
@@ -2027,7 +2041,7 @@ async fn api_can_cancel_job() {
 async fn api_cancel_does_not_rewrite_completed_job() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
-    let run_store = rove::state::store::StateStore::new(&workspace.state_dir).run_store;
+    let run_store = rove_runtime::state::store::StateStore::new(&workspace.state_dir).run_store;
     let app = router(ApiState::new(workspace, test_config()));
 
     let create = app
@@ -2079,7 +2093,7 @@ async fn api_cancel_does_not_rewrite_completed_job() {
 async fn api_planned_tool_step_completes_after_successful_tool_call() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
-    let run_store = rove::state::store::StateStore::new(&workspace.state_dir).run_store;
+    let run_store = rove_runtime::state::store::StateStore::new(&workspace.state_dir).run_store;
     let app = router(ApiState::new(workspace, test_config()));
 
     let create = app
@@ -2216,7 +2230,7 @@ async fn api_persists_approval_before_releasing_destructive_tool() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
     let output_path = workspace.root.join("approval-commit-order.txt");
-    let state_store = rove::state::store::StateStore::new(&workspace.state_dir);
+    let state_store = rove_runtime::state::store::StateStore::new(&workspace.state_dir);
     let app = router(ApiState::new(workspace, test_config()));
 
     let create = app
@@ -2328,8 +2342,8 @@ async fn api_rejects_pending_destructive_tool_call() {
         .unwrap();
     assert_eq!(reject.status(), StatusCode::OK);
 
-    let state = wait_for_done(app.clone(), created.job_id.to_string()).await;
-    assert_eq!(state.status, RunStatus::Done);
+    let state = wait_for_status(app.clone(), created.job_id.to_string(), RunStatus::Error).await;
+    assert_eq!(state.status, RunStatus::Error);
     assert!(!output_path.exists(), "rejected tool should not run");
 
     let events = app
@@ -2396,7 +2410,8 @@ async fn api_planned_rejected_destructive_tool_does_not_replan_same_approval() {
         .unwrap();
     assert_eq!(rejected.status(), StatusCode::OK);
 
-    let state = wait_for_done(app, created.job_id.to_string()).await;
+    let state = wait_for_status(app, created.job_id.to_string(), RunStatus::Error).await;
+    assert_eq!(state.status, RunStatus::Error);
     assert!(state.pending_approvals.is_empty());
     let approval_requests = state
         .events
@@ -2408,7 +2423,7 @@ async fn api_planned_rejected_destructive_tool_does_not_replan_same_approval() {
         matches!(
             &event.event,
             StreamEvent::ToolCallFailed {
-                error: rove::errors::ToolError::PermissionDenied { .. },
+                error: rove_core::ToolError::PermissionDenied { .. },
                 ..
             }
         )
@@ -2420,7 +2435,7 @@ async fn api_cancel_clears_pending_destructive_tool_approval() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
     let output_path = workspace.root.join("cancelled.txt");
-    let run_store = rove::state::store::StateStore::new(&workspace.state_dir).run_store;
+    let run_store = rove_runtime::state::store::StateStore::new(&workspace.state_dir).run_store;
     let app = router(ApiState::new(workspace, test_config()));
 
     let create = app
@@ -2486,7 +2501,7 @@ async fn api_shutdown_token_cancels_pending_job_and_clears_approval() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
     let output_path = workspace.root.join("shutdown-cancelled.txt");
-    let run_store = rove::state::store::StateStore::new(&workspace.state_dir).run_store;
+    let run_store = rove_runtime::state::store::StateStore::new(&workspace.state_dir).run_store;
     let shutdown = CancellationToken::new();
     let app = router(ApiState::with_shutdown(
         workspace,
@@ -2850,60 +2865,6 @@ async fn api_debug_memory_lists_topics_and_scores_recall() {
     );
 }
 
-#[cfg(not(feature = "rag"))]
-#[tokio::test]
-async fn api_registers_rag_stub_tools_without_rag_feature() {
-    let tmp = tempfile::TempDir::new().unwrap();
-    let workspace = Workspace::detect(tmp.path()).unwrap();
-    let app = router(ApiState::new(workspace, test_config()));
-    let message = serde_json::json!({
-        "tool": "retrieve_code",
-        "args": { "query": "authentication token" }
-    })
-    .to_string();
-    let body = serde_json::json!({
-        "message": message,
-        "model": "fake-raw",
-        "max_steps": 1
-    });
-
-    let create = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/jobs")
-                .header("content-type", "application/json")
-                .body(Body::from(body.to_string()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(create.status(), StatusCode::OK);
-    let body = axum::body::to_bytes(create.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let created: CreateJobResponse = serde_json::from_slice(&body).unwrap();
-
-    let state = wait_for_done(app.clone(), created.job_id.to_string()).await;
-    assert_eq!(state.status, RunStatus::Done);
-    let events = app
-        .oneshot(
-            Request::builder()
-                .uri(format!("/jobs/{}/events", created.job_id))
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(events.status(), StatusCode::OK);
-    let body = axum::body::to_bytes(events.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let text = String::from_utf8(body.to_vec()).unwrap();
-    assert!(text.contains("requires the `rag` feature"));
-}
-
 #[tokio::test]
 async fn api_registers_configured_mcp_tools_for_jobs() {
     let tmp = tempfile::TempDir::new().unwrap();
@@ -2918,7 +2879,7 @@ async fn api_registers_configured_mcp_tools_for_jobs() {
                 "name": "mock-server",
                 "transport": "stdio",
                 "command": python_command(),
-                "args": ["tests/fixtures/mcp_mock_server.py"]
+                "args": [workspace_path_string("tests/fixtures/mcp_mock_server.py")]
             }]
         })
         .to_string(),

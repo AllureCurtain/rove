@@ -1,16 +1,51 @@
+use std::path::PathBuf;
+use std::process::{Command, Stdio};
+
+fn workspace_root() -> PathBuf {
+    let mut root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    root.pop();
+    root
+}
+
+fn rove_bin() -> PathBuf {
+    if let Ok(path) = std::env::var("CARGO_BIN_EXE_rove") {
+        return PathBuf::from(path);
+    }
+    let root = workspace_root();
+    let exe = if cfg!(windows) { "rove.exe" } else { "rove" };
+    let candidate = root.join("target/debug").join(exe);
+    if !candidate.exists() {
+        let status = Command::new(env!("CARGO"))
+            .args(["build", "-p", "rove-cli", "--bin", "rove"])
+            .current_dir(&root)
+            .status()
+            .expect("failed to spawn cargo build for rove-cli");
+        assert!(
+            status.success(),
+            "cargo build -p rove-cli --bin rove failed"
+        );
+    }
+    assert!(
+        candidate.exists(),
+        "expected built CLI binary at {}",
+        candidate.display()
+    );
+    candidate
+}
+
 #[test]
 fn no_args_accepts_exit_command_and_exits_zero() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_rove"))
+    let output = Command::new(rove_bin())
         .arg("--cwd")
         .arg(tmp.path())
         .arg("--model")
         .arg("fake")
         .arg("--approval")
         .arg("never")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .spawn()
         .and_then(|mut child| {
             use std::io::Write as _;
@@ -37,16 +72,16 @@ fn no_args_accepts_exit_command_and_exits_zero() {
 #[test]
 fn repl_status_command_prints_runtime_context() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_rove"))
+    let output = Command::new(rove_bin())
         .arg("--cwd")
         .arg(tmp.path())
         .arg("--model")
         .arg("fake")
         .arg("--approval")
         .arg("never")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .spawn()
         .and_then(|mut child| {
             use std::io::Write as _;
@@ -76,16 +111,16 @@ fn repl_status_command_prints_runtime_context() {
 #[test]
 fn repl_fake_run_uses_compact_sections() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_rove"))
+    let output = Command::new(rove_bin())
         .arg("--cwd")
         .arg(tmp.path())
         .arg("--model")
         .arg("fake")
         .arg("--approval")
         .arg("never")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .spawn()
         .and_then(|mut child| {
             use std::io::Write as _;
@@ -116,7 +151,7 @@ fn repl_fake_run_uses_compact_sections() {
 #[test]
 fn message_enters_repl_runs_first_prompt_and_accepts_exit() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_rove"))
+    let output = Command::new(rove_bin())
         .arg("--cwd")
         .arg(tmp.path())
         .arg("--model")
@@ -124,9 +159,9 @@ fn message_enters_repl_runs_first_prompt_and_accepts_exit() {
         .arg("--approval")
         .arg("never")
         .arg("hello")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .spawn()
         .and_then(|mut child| {
             use std::io::Write as _;
@@ -150,7 +185,7 @@ fn message_enters_repl_runs_first_prompt_and_accepts_exit() {
 #[test]
 fn unquoted_multi_word_message_enters_repl_as_initial_prompt() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_rove"))
+    let output = Command::new(rove_bin())
         .arg("--cwd")
         .arg(tmp.path())
         .arg("--model")
@@ -158,9 +193,9 @@ fn unquoted_multi_word_message_enters_repl_as_initial_prompt() {
         .arg("--approval")
         .arg("never")
         .args(["hello", "world"])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .spawn()
         .and_then(|mut child| {
             use std::io::Write as _;
@@ -181,7 +216,7 @@ fn unquoted_multi_word_message_enters_repl_as_initial_prompt() {
 #[test]
 fn exec_message_does_not_wait_for_repl_input() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_rove"))
+    let output = Command::new(rove_bin())
         .arg("exec")
         .arg("--cwd")
         .arg(tmp.path())
@@ -206,7 +241,7 @@ fn exec_message_does_not_wait_for_repl_input() {
 #[test]
 fn exec_unquoted_multi_word_message_joins_message() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_rove"))
+    let output = Command::new(rove_bin())
         .arg("exec")
         .arg("--cwd")
         .arg(tmp.path())

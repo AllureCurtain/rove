@@ -10,23 +10,26 @@ use tempfile::TempDir;
 
 use async_trait::async_trait;
 use futures::stream::BoxStream;
-use rove::core::context::ContextManager;
-use rove::core::engine::{Engine, EngineConfig};
-use rove::core::executor::Executor;
-use rove::core::types::{
-    ApprovalPolicy, CallId, Message, RunId, SessionId, ToolContext, ToolSchema, Usage,
+use rove_cli::cli::oneshot::run_oneshot;
+use rove_core::ToolError;
+use rove_core::ToolRegistry;
+use rove_core::{Tool, ToolOutput};
+use rove_models::ModelError;
+use rove_models::{ModelClient, ModelEvent};
+use rove_runtime::context::ContextManager;
+use rove_runtime::engine::{Engine, EngineConfig};
+use rove_runtime::executor::Executor;
+use rove_runtime::memory::paths::MemoryPaths;
+use rove_runtime::state::store::StateStore;
+use rove_runtime::tools::fs::{FsReadTool, FsWriteTool};
+use rove_runtime::tools::memory::SaveMemoryTool;
+use rove_runtime::tools::runtime_context::runtime_tool_context;
+use rove_runtime::tools::shell::{ShellPolicy, ShellTool};
+use rove_runtime::types::{
+    ApprovalPolicy, CallId, Message, ModelToolSchema, RunId, SessionId, ToolContext, ToolSchema,
+    Usage,
 };
-use rove::core::workspace::Workspace;
-use rove::errors::{ModelError, ToolError};
-use rove::interfaces::cli::oneshot::run_oneshot;
-use rove::memory::paths::MemoryPaths;
-use rove::models::traits::{ModelClient, ModelEvent};
-use rove::state::store::StateStore;
-use rove::tools::fs::{FsReadTool, FsWriteTool};
-use rove::tools::memory::SaveMemoryTool;
-use rove::tools::registry::ToolRegistry;
-use rove::tools::shell::{ShellPolicy, ShellTool};
-use rove::tools::traits::{Tool, ToolOutput};
+use rove_runtime::workspace::Workspace;
 use tokio_util::sync::CancellationToken;
 
 struct FakeModelClient {
@@ -48,7 +51,7 @@ impl ModelClient for FakeModelClient {
     fn stream(
         &self,
         _messages: &[Message],
-        _tools: &[ToolSchema],
+        _tools: &[ModelToolSchema],
     ) -> BoxStream<'_, Result<ModelEvent, ModelError>> {
         let idx = self.call_count.fetch_add(1, Ordering::SeqCst);
         let response = self
@@ -126,7 +129,7 @@ async fn fs_write_records_diff_metadata_in_report() {
     let state_store = StateStore::new(&workspace.state_dir);
     let run_id = RunId::new();
     let run = state_store
-        .start_run(SessionId::new(), rove::core::types::JobId::new(), run_id)
+        .start_run(SessionId::new(), rove_runtime::types::JobId::new(), run_id)
         .unwrap();
 
     let mut registry = ToolRegistry::new();
@@ -484,13 +487,14 @@ async fn nested_schema_validation_rejects_numeric_bounds_before_execution() {
 }
 
 fn tool_context(workspace: &Workspace) -> ToolContext<'_> {
-    ToolContext {
+    runtime_tool_context(
+        CallId::new(),
         workspace,
-        memory_paths: MemoryPaths::from_workspace(workspace, 8),
-        approval_policy: ApprovalPolicy::Auto,
-        cancel_token: CancellationToken::new(),
-        input_provider: None,
-    }
+        MemoryPaths::from_workspace(workspace, 8),
+        ApprovalPolicy::Auto,
+        None,
+        CancellationToken::new(),
+    )
 }
 
 fn workspace_with_outside_file() -> (TempDir, Workspace, PathBuf) {

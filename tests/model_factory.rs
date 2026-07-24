@@ -1,5 +1,5 @@
-use rove::config::{AppConfig, FallbackProviderConfig};
-use rove::models::factory::{build_model_client, build_openai_model_client};
+use rove_app_bootstrap::{AppConfig, FallbackProviderConfig};
+use rove_app_bootstrap::{build_model_client, build_openai_model_client};
 
 #[test]
 fn build_openai_model_client_uses_configured_fallback_models() {

@@ -83,11 +83,11 @@ jobs:
         run: corepack enable pnpm
 
       - name: pnpm install
-        working-directory: web-ui
+        working-directory: apps/web
         run: pnpm install --frozen-lockfile
 
       - name: Install Playwright chromium
-        working-directory: web-ui
+        working-directory: apps/web
         run: pnpm exec playwright install chromium
 
       - name: Run local-full integration gate
@@ -153,12 +153,12 @@ jobs:
 
       - name: pnpm install
         if: steps.secret.outputs.present == 'true'
-        working-directory: web-ui
+        working-directory: apps/web
         run: pnpm install --frozen-lockfile
 
       - name: Install Playwright chromium
         if: steps.secret.outputs.present == 'true'
-        working-directory: web-ui
+        working-directory: apps/web
         run: pnpm exec playwright install chromium
 
       - name: Run provider integration gate

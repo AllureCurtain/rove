@@ -2,6 +2,13 @@
 
 This guide is for maintainers who need to understand, debug, or extend the current implementation. It describes what exists in the codebase today. Product intent and historical design rationale live in the top-level docs; the current runtime source of truth remains this `docs/runtime/` directory.
 
+The root manifest is currently a transitional resolver-3 Cargo Workspace with
+the root `rove` compatibility package as default member and the independent
+`rove-models`, `rove-core`, and foundational `rove-runtime` packages as
+extracted lower layers. Use Workspace-wide commands for full gates. Persistent
+coordination/state services and app implementation paths still refer to the
+root package until their later extraction slices are complete.
+
 ## 1. Runtime Shape
 
 `rove` is a local-first agent runtime with three user-facing shells. The CLI
@@ -9,10 +16,12 @@ offers REPL, exec, and optional full-screen TUI modes:
 
 ```text
 CLI (REPL / exec / TUI) / API / Web
-    -> Engine
+    -> root Engine compatibility facade
         -> ContextManager
-        -> ModelClient / RoutingModelClient
-        -> Executor / ToolRegistry
+        -> rove-runtime identity / task / execution / workspace contracts
+        -> rove-core model turn / ToolRegistry
+            -> rove-models ModelClient / RoutingModelClient
+        -> runtime Executor / approval / input
         -> Memory loaders and hooks
         -> StateStore
 
@@ -32,12 +41,20 @@ Important entry points:
 | CLI binary | `src/main.rs`, `src/interfaces/cli/*` |
 | Full-screen TUI mode | `src/interfaces/tui/*`, `src/interfaces/terminal/*` |
 | API binary | `src/bin/rove-api.rs`, `src/interfaces/api/mod.rs` |
-| Web workbench | `web-ui/` |
-| Engine and runtime types | `src/core/*` |
-| State artifacts and SQLite index | `src/state/*` |
-| Model providers | `src/models/*` |
-| Tools and MCP/RAG adapters | `src/tools/*` |
-| Memory hooks and stores | `src/memory/*`, `src/hooks/*` |
+| Web workbench | `apps/web/` |
+| In-memory Agent and tool contracts | `core/src/*` |
+| Persistent runtime services | `runtime/src/*` |
+| Persistent Engine and coordination | `runtime/src/engine.rs`, `runtime/src/{planner,plan_loop,step_runner,run_loop,tool_turn,model_turn,plan_evaluator}.rs` |
+| Compatibility Engine re-exports | `src/core/*` |
+| State artifacts and SQLite index | `runtime/src/state/*` |
+| Model protocol and providers | `models/src/*` |
+| Product provider assembly | transitional `src/models/factory.rs` |
+| Local built-in tools and invocation adapters | `runtime/src/tools/*` |
+| Product registry assembly | `apps/bootstrap` |
+| MCP transport/proxy | `runtime/src/tools/mcp_proxy.rs` |
+| Memory/context/compaction services | `runtime/src/memory/*`, `runtime/src/context.rs`, `runtime/src/compaction.rs` |
+| Tool executor and hooks | `runtime/src/executor.rs`, `runtime/src/hooks/` |
+| Transitional hook re-exports | `src/hooks/` |
 
 ## 2. Workspaces
 
@@ -65,7 +82,7 @@ the task root so defaults resolve to:
 CLI runs create or reuse a task workspace with:
 
 ```powershell
-cargo run -- --task-workspace invoice-check --task-base .rove/tasks --model fake "review the files in this task"
+cargo run -p rove-cli -- --task-workspace invoice-check --task-base .rove/tasks --model fake "review the files in this task"
 ```
 
 If `--task-base` is omitted, the CLI uses `<configured state_dir>/tasks` from
@@ -107,7 +124,9 @@ Browser and Desktop workspaces are documented future designs only:
 
 Relevant code:
 
-- `src/core/workspace.rs`
+- `runtime/src/workspace.rs`
+- `runtime/src/boundary.rs`
+- compatibility re-exports in `src/core/workspace.rs` and `src/core/boundary.rs`
 - `src/config.rs`
 
 ## 3. Configuration
@@ -143,19 +162,13 @@ Common paths and defaults:
 | `routing.retry_backoff_base_ms` | `250` |
 | `routing.retry_backoff_max_ms` | `5000` |
 | `api.bind_addr` | `127.0.0.1:8787` |
-| `rag.deterministic` | `true` |
-| `rag.embedding_provider` | `deterministic` |
-| `rag.embedding_model` | `deterministic-64` |
-| `rag.embedding_api_base` | `https://api.openai.com/v1` |
-| `rag.timeout_ms` | `30000` |
-| `rag.fallback_to_deterministic` | `true` |
 
 Remote API binding is rejected unless token auth is configured or `api.unsafe_remote_without_auth = true` is set.
 
 Useful commands:
 
 ```powershell
-cargo run -- dump-config
+cargo run -p rove-cli -- dump-config
 ```
 
 Relevant code:
@@ -202,30 +215,30 @@ High-level flow in `src/main.rs`:
 Interactive REPL smoke command:
 
 ```powershell
-cargo run -- --model fake
+cargo run -p rove-cli -- --model fake
 ```
 
 Interactive REPL with an initial prompt:
 
 ```powershell
-cargo run -- --model fake "echo hello from rove"
+cargo run -p rove-cli -- --model fake "echo hello from rove"
 ```
 
 Non-interactive exec smoke command:
 
 ```powershell
-cargo run -- exec --model fake "echo hello from rove"
+cargo run -p rove-cli -- exec --model fake "echo hello from rove"
 ```
 
 The CLI accepts unquoted multi-word initial prompts and exec prompts by joining
 the trailing message words:
 
 ```powershell
-cargo run -- --model fake inspect this workspace
-cargo run -- exec --model fake inspect this workspace
+cargo run -p rove-cli -- --model fake inspect this workspace
+cargo run -p rove-cli -- exec --model fake inspect this workspace
 ```
 
-`Cargo.toml` sets `default-run = "rove"`, so plain `cargo run -- ...` uses the CLI binary.
+`Cargo.toml` sets `default-run = "rove"`, so plain `cargo run -p rove-cli -- ...` uses the CLI binary.
 
 Running `rove` with no task enters the rich scrollback terminal REPL in the
 current terminal. Startup prints the active workspace, model, provider, state
@@ -258,7 +271,7 @@ loop or persistence format.
 The current full-screen TUI is available with:
 
 ```powershell
-cargo run -- tui --model fake
+cargo run -p rove-cli -- tui --model fake
 ```
 
 `rove tui` enters raw mode and the alternate screen through the RAII
@@ -397,9 +410,9 @@ Relevant code:
 - `src/interfaces/terminal/interaction.rs`
 - `src/interfaces/terminal/run.rs`
 - `src/interfaces/terminal/view.rs`
-- `src/state/index.rs`
-- `src/state/resume.rs`
-- `src/state/store.rs`
+- `runtime/src/state/index.rs`
+- `runtime/src/state/resume.rs`
+- `runtime/src/state/store.rs`
 - `scripts/tui-pty-smoke.py`
 
 ## 5. API Startup Path
@@ -461,7 +474,7 @@ Relevant code:
 
 ## 6. Web Workbench Path
 
-`web-ui/` is a standalone Next.js app. Browser code talks to relative `/api/*`
+`apps/web/` is a standalone Next.js app. Browser code talks to relative `/api/*`
 URLs. A Next.js app route proxies those requests to the Rust API:
 
 ```text
@@ -491,23 +504,23 @@ twice.
 
 Relevant code:
 
-- `web-ui/components/rove-workbench.tsx`
-- `web-ui/app/api/[...path]/route.ts`
-- `web-ui/lib/rove-api-proxy.ts`
-- `web-ui/lib/rove-client.ts`
-- `web-ui/lib/rove-state.ts`
-- `web-ui/lib/rove-types.ts`
+- `apps/web/components/rove-workbench.tsx`
+- `apps/web/app/api/[...path]/route.ts`
+- `apps/web/lib/rove-api-proxy.ts`
+- `apps/web/lib/rove-client.ts`
+- `apps/web/lib/rove-state.ts`
+- `apps/web/lib/rove-types.ts`
 
 Current Web checks:
 
 ```powershell
-cd web-ui
+cd apps/web
 pnpm test
 pnpm typecheck
 pnpm build
 ```
 
-Browser-level Playwright tests live under `web-ui/tests/e2e` and run through
+Browser-level Playwright tests live under `apps/web/tests/e2e` and run through
 `pnpm test:e2e`. They are separate from the default fast Web checks so the
 unit/type/build loop stays lightweight.
 
@@ -522,23 +535,31 @@ The core type model is centered on explicit IDs and serializable runtime state:
 | `SessionId` | User-level continuity across jobs |
 | `JobId` | One submitted task |
 | `RunId` | One engine execution |
-| `CallId` | One tool call |
+| `CallId` | One tool call; owned by `rove-core` |
 | `RunRequest` | Identity + user message + optional resume state |
 | `TaskState` | Serializable resume snapshot |
 | `PromptCheckpoint` | Compact reconstruction point for resume |
 | `TaskPlan` | Planner output and current step pointer |
 | `PlanIdentity` | Stable logical plan and compatibility revision identity |
+| `PlanRevision` | Immutable initial or replacement snapshot of remaining work |
+| `PlanDecisionRecord` | Correlation from one terminal step fact to its rule-first decision |
+| `PlanLifecycleState` | Materialized revision and decision projections |
 | `StepAttempt` | Persisted identity for one in-flight planned attempt |
 | `StepRecord` | Append-only terminal fact for one planned attempt |
 | `StepLedgerState` | Materialized ledger and active-attempt projection |
-| `Message` | Provider-facing conversation message |
-| `ToolSchema` | Tool contract exposed to the model |
+| `Message` | Provider-facing conversation message; owned by `rove-models` |
+| `rove_models::ToolSchema` | Model-visible name, description, and input schema |
+| `rove_core::ToolDescriptor` | Operational schema plus destructive/parallel/capability metadata |
 | `RunStatus` | API/job status |
 | `TerminationReason` | Engine completion reason |
 
 Relevant code:
 
-- `src/core/types.rs`
+- `models/src/protocol.rs`
+- `core/src/types.rs`
+- `runtime/src/types.rs`
+- `runtime/src/execution.rs`
+- compatibility re-exports in `src/core/types.rs` and `src/core/execution.rs`
 
 ## 8. Stream Events
 
@@ -560,6 +581,8 @@ Current event variants:
 - `plan_step_completed`
 - `plan_step_failed`
 - `step_result`
+- `plan_decision`
+- `plan_revised`
 - `prompt_compacted`
 - `memory_flushed`
 - `prompt_built`
@@ -568,8 +591,10 @@ Current event variants:
 The API serializes these events as SSE using `StreamEvent::event_name()`. The
 trace writer serializes the same events to `trace.jsonl` and indexes them in
 SQLite with sequence numbers. `PlanCreated` and `PlanStepStarted` carry stable
-plan/revision/attempt identity. `step_result` is the canonical terminal fact;
-the older completed/failed events remain compatibility notifications.
+plan/revision/attempt identity. `step_result` is the canonical terminal fact,
+`plan_decision` records the deterministic transition selected for it, and
+`plan_revised` carries an immutable child revision when remaining work is
+replaced. The older completed/failed events remain compatibility notifications.
 
 `model_status` is the safe progress surface for model-side work. It can say
 that the model is thinking, has selected a tool, or that the run is waiting for
@@ -579,18 +604,28 @@ text.
 Adding a new event requires checking:
 
 - CLI rendering in `src/interfaces/cli/oneshot.rs`
-- API SSE/event persistence in `src/interfaces/api/mod.rs` and `src/state/index.rs`
-- Web types and reducer in `web-ui/lib/rove-types.ts` and `web-ui/lib/rove-state.ts`
-- artifact recording in `src/state/artifacts.rs` if it affects resume/report state
+- API SSE/event persistence in `src/interfaces/api/mod.rs` and `runtime/src/state/index.rs`
+- Web types and reducer in `apps/web/lib/rove-types.ts` and `apps/web/lib/rove-state.ts`
+- artifact recording in `runtime/src/state/artifacts.rs` if it affects resume/report state
 
 Relevant code:
 
-- `src/core/events.rs`
-- `src/state/trace.rs`
+- `runtime/src/events.rs`
+- `runtime/src/state/trace.rs`
 
 ## 9. Engine Execution Flow
 
-`Engine` owns the model client, tool registry, context manager, workspace, approval policy, hooks, resolved memory paths, planner prompt, and optional interface providers for approval/input. `Engine` is the public orchestration shell; model turns, tool turns, and planned/unplanned run loops live in focused modules.
+`Engine` is the persistent orchestration facade and now lives in
+`rove-runtime`. It owns the model client, tool registry, context manager,
+workspace, approval policy, hooks, resolved memory paths, planner prompt, and
+optional interface providers for approval/input. IDs, task/execution data,
+Workspace/path safety, runtime identity, approval/input contracts,
+context/compaction, memory, events, state services, the tool `Executor`
+pipeline, hooks, runtime-specific tool turns, planning/run coordination, and
+durable event translation live in `rove-runtime`; the normalized model turn and
+action parser live in `rove-core`. Root `src/core/*` paths remain compatibility
+re-exports. Product registry assembly and first-party
+`AppConfig` remain transitional root concerns until later phases.
 
 The high-level run flow:
 
@@ -599,7 +634,8 @@ The high-level run flow:
 3. Load durable/session memory into working prompt memory.
 4. If planning is enabled:
    - draft a new `TaskPlan` with the configured planner prompt, or resume a saved plan;
-   - emit `PlanCreated` for initial plans and replacement plans;
+   - emit `PlanCreated` with an immutable revision for an initial plan, or wrap
+     a legacy persisted mutable plan once as revision zero;
    - loop over plan steps;
    - run each step through `step_runner.rs` with a four-model-turn compatibility
      ceiling;
@@ -609,10 +645,13 @@ The high-level run flow:
    - complete the step only on a model step conclusion;
    - collect model-turn, tool-call, mutation, and token metrics from emitted
      events;
-   - emit a terminal `step_result` before the compatibility
+   - emit a terminal `step_result`, evaluate it deterministically, and emit one
+     correlated `plan_decision` before the compatibility
      `PlanStepCompleted` / `PlanStepFailed` event;
-   - repair malformed/recoverable tool output within the step, and replan only
-     after a terminal recoverable step failure.
+   - continue, finish with a typed reason, or emit `plan_revised` after an
+     explicitly recoverable terminal failure;
+   - repair malformed/recoverable tool output within the step before creating
+     a terminal failure.
 5. If planning is disabled:
    - run the simpler ReAct loop over the original user message.
 6. Emit `RunCompleted`.
@@ -627,34 +666,44 @@ Termination can happen because of:
 - planner error;
 - cancellation.
 
-The planned and unplanned paths share model-turn and tool-turn helpers. If you are changing model streaming, native tool-use conversion, approval, batch execution, or history mutation, start in `model_turn.rs` or `tool_turn.rs`. `step_runner.rs` owns bounded within-step iteration, scoped history, and event-derived attempt metrics; `plan_loop.rs` owns plan identity, attempt closure, the append-only terminal record, plan cursor, replacement-plan compatibility, and plan-step lifecycle events.
+The planned and unplanned paths share model-turn and tool-turn helpers. If you are changing model streaming, native tool-use conversion, approval, batch execution, or history mutation, start in `model_turn.rs` or `tool_turn.rs`. `step_runner.rs` owns bounded within-step iteration, scoped history, and event-derived attempt metrics; `plan_evaluator.rs` owns replay-safe rule-first decisions; `plan_loop.rs` owns plan/revision identity, attempt closure, the append-only terminal record, decision ordering, plan cursor, replacement revisions, and compatibility plan-step events.
 
 Plan mutation semantics:
 
 - Step IDs are stable within one `TaskPlan`.
-- Replanning currently replaces the active `TaskPlan` and emits another
-  `PlanCreated` with the same logical `plan_id`, a new `plan_revision_id`, and
-  an incremented compatibility revision. An immutable typed parent revision
-  chain and `plan_revised` event are not persisted yet.
+- Initial planning emits `PlanCreated` with revision zero. Replanning replaces
+  only the active remaining `TaskPlan` and emits `PlanRevised` with the same
+  logical `plan_id`, a new `revision_id`, an incremented revision, parent and
+  trigger correlations, retained/superseded step IDs, and a budget snapshot.
+- Each terminal `StepRecord` is followed by one rule-first decision. Only an
+  explicitly recoverable failure can select `replace_remaining`; approval
+  denial and other blocked outcomes finish without asking the planner to find
+  a way around the boundary.
 - Completed and failed attempt records remain append-only across replacement
   plans; replanning does not overwrite their evidence, tool IDs, or mutations.
 - Resume prefers the checkpoint plan when present, then the task-state plan. A
   terminal successful record advances a stale materialized cursor without
-  replay. A complete active attempt without a terminal record becomes
-  `interrupted` and the resumed run stops with an error. Resume does not yet
-  scan trace events newer than the task-state projection.
+  replay, and a terminal record missing its decision is evaluated exactly once.
+  A complete active attempt without a terminal record becomes `interrupted`
+  and the resumed run stops with an error. Resume does not yet scan trace
+  events newer than the task-state projection.
 
 Relevant code:
 
-- `src/core/engine.rs`
-- `src/core/model_turn.rs`
-- `src/core/tool_turn.rs`
-- `src/core/run_loop.rs`
-- `src/core/step_runner.rs`
-- `src/core/plan_loop.rs`
-- `src/core/planner.rs`
-- `src/core/context.rs`
-- `src/core/parser.rs`
+- `runtime/src/engine.rs`
+- `src/core/engine.rs` (compatibility re-export)
+- `core/src/agent.rs`
+- `core/src/model_turn.rs`
+- `core/src/parser.rs`
+- `runtime/src/model_turn.rs` (durable event translation)
+- `runtime/src/tool_turn.rs`
+- `runtime/src/run_loop.rs`
+- `runtime/src/step_runner.rs`
+- `runtime/src/plan_loop.rs`
+- `runtime/src/plan_evaluator.rs`
+- `runtime/src/planner.rs`
+- `runtime/src/context.rs`
+- `runtime/src/compaction.rs`
 
 ## 10. Context And Compaction
 
@@ -690,9 +739,9 @@ When automatic compaction is needed and old history has been dropped from the ac
 - compacted message count;
 - compaction metadata, including mode, degraded state, model, prompt version,
   source message count, and last error when present;
-- bounded ledger metadata: active plan/revision identity, terminal record count,
-  and an optional active attempt. Full `StepRecord` values remain in
-  `TaskState` and `trace.jsonl`.
+- bounded lifecycle metadata: active plan/revision identity, terminal record,
+  revision, and decision counts, plus an optional active attempt. Full records,
+  decisions, and revisions remain in `TaskState` and `trace.jsonl`.
 
 Resume prefers checkpoint tail/summary over replaying the full saved history.
 During a planned step, current-step assistant/tool messages are injected as a
@@ -702,8 +751,9 @@ step reaches a terminal outcome.
 
 Relevant code:
 
-- `src/core/context.rs`
-- `src/state/artifacts.rs`
+- `runtime/src/context.rs`
+- `runtime/src/compaction.rs`
+- `runtime/src/state/artifacts.rs`
 
 ## 11. Model Layer
 
@@ -711,7 +761,7 @@ All providers implement:
 
 ```rust
 trait ModelClient {
-    fn stream(&self, messages: &[Message], tools: &[ToolSchema])
+    fn stream(&self, messages: &[Message], tools: &[rove_models::ToolSchema])
         -> BoxStream<'_, Result<ModelEvent, ModelError>>;
 
     fn model_id(&self) -> &str;
@@ -738,12 +788,13 @@ Native providers:
 
 | Provider | File |
 |---|---|
-| OpenAI-compatible | `src/models/openai.rs` |
-| Anthropic | `src/models/anthropic.rs` |
-| Ollama | `src/models/ollama.rs` |
-| Fake | `src/models/fake.rs` |
+| OpenAI-compatible | `models/src/openai.rs` |
+| OpenAI Responses | `models/src/openai_responses.rs` |
+| Anthropic | `models/src/anthropic.rs` |
+| Ollama | `models/src/ollama.rs` |
+| Fake | `models/src/fake.rs` |
 
-Provider-native tool use is the preferred path for real providers. Provider adapters emit `ToolUseStart` and `ToolUseDone`, `src/core/model_turn.rs` converts those into `ToolCallAction` values, and `LlmMessage.tool_calls` plus `tool_call_id` preserve structured history for provider replay. OpenAI-compatible, Anthropic, and Ollama formatters replay that history in their native request shapes.
+Provider-native tool use is the preferred path for real providers. Provider adapters emit `ToolUseStart` and `ToolUseDone`, `core/src/model_turn.rs` converts those into `ToolCallAction` and `AgentEvent` values, and the root adapter maps the latter to durable `StreamEvent` values. `LlmMessage.tool_calls` plus `tool_call_id` preserve structured history for provider replay. OpenAI-compatible, Anthropic, and Ollama formatters replay that history in their native request shapes.
 
 The JSON text action path remains for compatibility and fake-model tests. It is used only when no native tool calls were emitted, flows through `parse_action`, and produces no provider-native `tool_use_id`. Planned and unplanned loops both call the same `run_model_turn` helper, whose `build_action_from_model_output` boundary chooses native tool calls before text fallback.
 
@@ -751,20 +802,25 @@ The JSON text action path remains for compatibility and fake-model tests. It is 
 
 Each routed provider candidate is attempted up to `routing.retry_max_attempts` before moving to fallback. Retryable request failures, stream interruptions, and rate limits before commit use exponential backoff from `routing.retry_backoff_base_ms` capped by `routing.retry_backoff_max_ms`; rate-limit `retry-after` values override the computed delay. Authentication and context-length errors are never retried, though another fallback candidate can still be tried if no output or tool-use has committed. After committed text or committed native tool-use begins, later stream errors are returned directly with no retry and no fallback.
 
-`src/models/health.rs` owns `ModelHealthStore`, `HealthConfig`, and circuit state. CLI-created routed clients keep private health state configured from `routing.failure_threshold` and `routing.open_cooldown_ms`. API state creates one process-shared `ModelHealthStore` and injects it into routed model clients so API jobs share circuit breaker decisions across runs in the same process.
+`models/src/health.rs` owns `ModelHealthStore`, `HealthConfig`, and circuit state. CLI-created routed clients keep private health state configured from `routing.failure_threshold` and `routing.open_cooldown_ms`. API state creates one process-shared `ModelHealthStore` and injects it into routed model clients so API jobs share circuit breaker decisions across runs in the same process.
 
 First-packet routing decisions are emitted through `tracing`: candidate start, skipped open circuit, committed first event, no content, timeout, error-before-commit, retry scheduling, and candidate exhaustion. These are observability records only; they do not add user-facing `StreamEvent` variants.
 
 Relevant code:
 
-- `src/models/traits.rs`
-- `src/models/factory.rs`
-- `src/models/routing.rs`
-- `src/errors.rs`
+- `models/src/protocol.rs`
+- `models/src/traits.rs`
+- `models/src/routing.rs`
+- `models/src/error.rs`
+- `src/models/factory.rs` (transitional product assembly)
 
 ## 12. Tool System
 
-Tools implement `Tool` and are registered in `ToolRegistry`. The registry exposes schemas to the model and dispatches execution by name.
+Tools implement the `rove-core` `Tool` contract and are registered in its
+`ToolRegistry`. The registry projects operational `ToolDescriptor` values into
+model-visible schemas and dispatches validated execution by name. Local
+built-in implementations and invocation adapters live in
+`runtime/src/tools/`; root compatibility modules re-export their public API.
 
 Current built-in tools:
 
@@ -778,18 +834,19 @@ Current built-in tools:
 | `update_memory_index` | Rebuild durable memory index |
 | `read_memory_topic` | Read durable memory topic |
 | `request_input` | Ask user/interface for mid-run input |
-| `retrieve_code` | RAG code retrieval or stub |
-| `retrieve_docs` | RAG docs retrieval or stub |
+
+
 | `mcp__<server>__<tool>` | MCP-proxied remote tools |
 
 CLI and API construct runtime tools through the shared async
 `runtime_tool_registry(&Workspace, ShellPolicy, mcp_config_path)` builder. That
 builder registers built-ins through `default_tool_registry_with_shell_policy`
 and then loads configured MCP tools. Root-bound tools receive the workspace root
-at construction. Memory tools are context-bound and derive their paths from
-`ToolContext.memory_paths`.
+at construction. Runtime-specific Workspace, Memory paths, approval policy, and
+input provider are attached to the invocation through `RuntimeToolServices`;
+they are not fields on the minimal `rove_core::ToolContext`.
 
-Tool schemas include:
+Operational Tool descriptors include:
 
 - `destructive`: requires approval unless policy allows it;
 - `parallel_safe`: allows concurrent batch execution if every call is non-destructive and safe.
@@ -803,7 +860,7 @@ schema lookup -> argument validation -> pre-tool hooks -> permission -> execute 
 
 Argument validation supports the JSON Schema subset used by built-in tools: object, array, string, number, integer, boolean, and null type checks; required fields; enum values; nested properties; array `items`, `minItems`, and `maxItems`; numeric `minimum` and `maximum`; string `minLength` and `maxLength`; and `additionalProperties: false`. Validation failures preserve `ToolError::InvalidArgs` and happen before tool execution.
 
-Filesystem tools resolve paths through `src/core/boundary.rs`. Reads canonicalize the final target; writes canonicalize existing targets or the nearest existing ancestor for new files. Both paths reject absolute paths, lexical workspace escapes, and symlink/reparse-point escapes that resolve outside the workspace.
+Filesystem tools resolve paths through `runtime/src/boundary.rs` (re-exported by `src/core/boundary.rs`). Reads canonicalize the final target; writes canonicalize existing targets or the nearest existing ancestor for new files. Both paths reject absolute paths, lexical workspace escapes, and symlink/reparse-point escapes that resolve outside the workspace.
 
 `fs_write` returns structured mutation metadata for deterministic file writes. The metadata includes path, operation type, and a textual diff; it is exposed on `ToolCallCompleted.result.mutations` and persisted to `report.json` as `tool_mutations`. Shell commands are bounded by policy and return structured stdout/stderr/exit metadata, but shell write-sets are intentionally not inferred or snapshotted.
 
@@ -819,11 +876,18 @@ calls.
 
 Relevant code:
 
-- `src/tools/traits.rs`
-- `src/tools/registry.rs`
-- `src/core/executor.rs`
-- `src/core/boundary.rs`
-- `src/hooks/mod.rs`
+- `core/src/tools.rs`
+- `core/src/policy.rs`
+- `core/src/validation.rs`
+- `runtime/src/tools/`
+- `src/tools/traits.rs` and `src/tools/registry.rs` (compatibility re-exports)
+- `src/tools/{echo,fs,memory,request_input,runtime_context,shell}.rs`
+  (compatibility re-exports)
+- `runtime/src/executor.rs`
+- `src/core/executor.rs` (compatibility re-export)
+- `runtime/src/boundary.rs`
+- `runtime/src/hooks/`
+- `src/hooks/` (compatibility re-exports)
 
 ## 13. Approval And Input
 
@@ -851,9 +915,9 @@ Pending approval/input answer channels are live-only. API rows are persisted whi
 
 Relevant code:
 
-- `src/core/tool_input.rs`
-- `src/core/tool_turn.rs`
-- `src/core/types.rs`
+- `runtime/src/types.rs`
+- `runtime/src/tool_input.rs`
+- `runtime/src/tool_turn.rs`
 - `src/interfaces/cli/approval.rs`
 - `src/interfaces/cli/input.rs`
 - `src/interfaces/api/mod.rs`
@@ -903,10 +967,10 @@ planned attempts use `step_result` as their canonical ledger transition.
 
 Relevant code:
 
-- `src/state/store.rs`
-- `src/state/trace.rs`
-- `src/state/artifacts.rs`
-- `src/state/report.rs`
+- `runtime/src/state/store.rs`
+- `runtime/src/state/trace.rs`
+- `runtime/src/state/artifacts.rs`
+- `runtime/src/state/report.rs`
 
 ## 15. SQLite State Index
 
@@ -936,15 +1000,15 @@ Startup and maintenance behavior:
 Useful commands:
 
 ```powershell
-cargo run --bin rove -- sessions
-cargo run --bin rove -- state repair
-cargo run --bin rove -- state cleanup
+cargo run -p rove-cli -- sessions
+cargo run -p rove-cli -- state repair
+cargo run -p rove-cli -- state cleanup
 ```
 
 Relevant code:
 
-- `src/state/index.rs`
-- `src/state/store.rs`
+- `runtime/src/state/index.rs`
+- `runtime/src/state/store.rs`
 - `src/interfaces/cli/state.rs`
 
 ## 16. Memory
@@ -973,12 +1037,13 @@ CLI and API engine assembly pass `AppConfig::memory_paths()` into the runtime, s
 
 Relevant code:
 
-- `src/memory/layered.rs`
-- `src/memory/paths.rs`
-- `src/memory/session.rs`
-- `src/memory/durable.rs`
-- `src/hooks/session_memory.rs`
-- `src/tools/memory.rs`
+- `runtime/src/memory/layered.rs`
+- `runtime/src/memory/paths.rs`
+- `runtime/src/memory/session.rs`
+- `runtime/src/memory/durable.rs`
+- `runtime/src/hooks/session_memory.rs`
+- `src/hooks/` (compatibility re-exports)
+- `runtime/src/tools/memory.rs`
 
 ## 17. MCP
 
@@ -1041,78 +1106,14 @@ By default that smoke test runs `npx -y @modelcontextprotocol/server-filesystem 
 
 Relevant code:
 
-- `src/tools/mcp_proxy.rs`
+- `runtime/src/tools/mcp_proxy.rs`
 - `tests/mcp.rs`
 - `tests/fixtures/mcp_mock_server.py`
 
 ## 18. RAG
 
-RAG is optional and gated behind the `rag` feature. Default builds expose stub `retrieve_code` and `retrieve_docs` tools with disabled capability metadata and JSON failure output that explains how to enable the feature. Feature-enabled builds mark those schemas with enabled RAG capability metadata.
+Built-in vector RAG has been removed. Use tools and layered memory for workspace context.
 
-Feature-enabled RAG includes:
-
-- deterministic and OpenAI-compatible embedders;
-- a routed embedder foundation that reuses `ModelHealthStore` for production embedding providers;
-- staged ingestion;
-- fixed, Markdown-aware, and lightweight code-aware chunking;
-- LanceDB storage;
-- manifest fallback retrieval;
-- vector, lexical, and path-scoped channels;
-- dedupe and score normalization;
-- retrieval eval reports;
-- prompt formatting service.
-
-RAG config lives under `[rag]`:
-
-| Config | Default |
-|---|---|
-| `rag.deterministic` | `true` |
-| `rag.embedding_provider` | `deterministic` |
-| `rag.embedding_model` | `deterministic-64` |
-| `rag.embedding_api_base` | `https://api.openai.com/v1` |
-| `rag.embedding_api_key` | empty |
-| `rag.rerank_provider` | unset |
-| `rag.rerank_model` | unset |
-| `rag.rerank_api_key` | unset |
-| `rag.timeout_ms` | `30000` |
-| `rag.fallback_to_deterministic` | `true` |
-
-`dump-config` prints these fields with API keys redacted as presence flags. Environment overrides use `ROVE_RAG_*` names, such as `ROVE_RAG_DETERMINISTIC`, `ROVE_RAG_EMBEDDING_MODEL`, `ROVE_RAG_EMBEDDING_API_KEY`, and `ROVE_RAG_FALLBACK_TO_DETERMINISTIC`.
-
-Main artifact paths are resolved under the configured `state.state_dir`; the default remains `.rove`:
-
-```text
-<state_dir>/rag.lancedb
-<state_dir>/rag_manifest.json
-<state_dir>/rag_index_log.jsonl
-<state_dir>/rag_eval/<run_id>.json
-```
-
-Useful commands:
-
-```powershell
-cargo run --features rag --bin rove-index -- --deterministic -C .
-cargo test --features rag --test cli_index deterministic_index_run_writes_manifest -- --exact
-```
-
-The CLI uses deterministic embeddings when requested or when `rag.deterministic = true`. With `rag.deterministic = false`, indexing constructs an OpenAI-compatible embedder from `rag.embedding_api_base`, `rag.embedding_api_key`, and `rag.embedding_model`. If the key is missing and `rag.fallback_to_deterministic = true`, indexing falls back to deterministic embeddings; if fallback is disabled, indexing fails with a config error. Retrieval/eval reports record the embedder and reranker identities. Remote rerank is optional: when `rag.rerank_provider` and `rag.rerank_model` are set, eval retrieval builds a routed reranker using `rag.rerank_api_key` and the RAG embedding API base as the first-pass rerank endpoint base. If rerank is unconfigured, or if fallback is enabled after a provider failure, retrieval uses `rerank-noop` and keeps deterministic local behavior.
-
-Agent tool-time retrieval is intentionally narrower today. The in-agent
-`retrieve_code` and `retrieve_docs` tools read the configured state directory
-for RAG artifacts, but they still construct deterministic retrieval services
-inside the tool. Passing configured embedder/reranker services into
-`runtime_tool_registry` is the follow-up direction when tool-time retrieval
-needs to use provider-backed embeddings or rerankers.
-
-Relevant code:
-
-- `src/tools/rag/mod.rs`
-- `src/tools/rag/index.rs`
-- `src/tools/rag/ingest/*`
-- `src/tools/rag/retrieve/*`
-- `src/tools/rag/eval.rs`
-- `src/bin/rove-index.rs`
-- `src/interfaces/cli/index.rs`
 
 ## 19. API Security
 
@@ -1154,15 +1155,15 @@ cargo test
 RAG feature checks:
 
 ```powershell
-cargo check --features rag --bin rove-index
-cargo clippy --all-targets --features rag -- -D warnings
-cargo test --features rag
+
+
+
 ```
 
 Web checks:
 
 ```powershell
-cd web-ui
+cd apps/web
 pnpm test
 pnpm typecheck
 pnpm build
@@ -1171,7 +1172,7 @@ pnpm build
 Optional browser E2E checks:
 
 ```powershell
-cd web-ui
+cd apps/web
 pnpm test:e2e
 ```
 
@@ -1184,7 +1185,7 @@ cargo test --test cli_repl
 cargo test --test api
 cargo test --test e2e
 cargo test --test mcp
-cargo test --features rag --test rag
+
 ```
 
 TUI terminal verification is split between deterministic renderer/terminal
@@ -1204,7 +1205,7 @@ Deterministic local benchmark checks:
 
 ```powershell
 cargo test --test bench
-cargo run --bin rove-bench -- --suite benchmarks/agent-smoke.json --output-dir .rove/bench
+cargo run -p rove-bench -- --suite benchmarks/agent-smoke.json --output-dir .rove/bench
 ```
 
 `rove-bench` reads JSON benchmark task definitions, creates isolated local
@@ -1265,7 +1266,7 @@ When adding a new event:
 3. Update CLI rendering.
 4. Update API persistence/SSE assumptions if needed.
 5. Update `RunArtifactRecorder` if artifacts should change.
-6. Update `web-ui/lib/rove-types.ts` and reducer handling.
+6. Update `apps/web/lib/rove-types.ts` and reducer handling.
 7. Add at least one integration test.
 
 When changing run identity or resume:
@@ -1279,7 +1280,8 @@ When changing provider tool-use:
 
 1. Update provider parser tests.
 2. Update `ModelEvent` normalization.
-3. Check shared engine native tool-use handling in `src/core/model_turn.rs`.
+3. Check native tool-use normalization in `core/src/model_turn.rs` and durable
+   translation in `runtime/src/model_turn.rs`.
 4. Check structured history round-trip tests.
 5. Preserve the native-before-text action conversion in `build_action_from_model_output`.
 
@@ -1287,15 +1289,14 @@ When changing provider tool-use:
 
 These are implementation-level issues to keep in mind before extending the system.
 
-1. The planned-step ledger does not complete the future lifecycle design.
-   Replacement plans still use `PlanCreated` rather than an immutable parent
-   `PlanRevision` chain; Evaluator, Finalizer, global multidimensional budgets,
-   and structured budget/decision/finalization events remain unimplemented.
-   Resume uses the materialized `TaskState` ledger and does not yet reconcile a
-   canonical trace tail written after the latest snapshot.
+1. The implemented lifecycle evaluator is deterministic and rule-first; it
+   does not call a model for ambiguous evidence. An independent Finalizer,
+   public and globally enforced multidimensional budgets, structured budget and
+   finalization events, and model-on-ambiguity evaluation remain unimplemented.
+   Resume uses the materialized `TaskState` lifecycle projection and does not
+   yet reconcile a canonical trace tail written after the latest snapshot.
 
 2. Agent tool-time RAG retrieval remains deterministic.
-   Indexing and eval use configurable embedders and rerankers. The in-agent `retrieve_code` and `retrieve_docs` tools still construct deterministic retrieval directly; passing configured RAG provider services into runtime tool construction remains a follow-up.
 
 3. TUI real-terminal evidence is platform-scoped. The standard-library PTY
    smoke covers Unix when explicitly enabled, while Windows ConPTY automation is
@@ -1317,9 +1318,9 @@ As of 2026-07-20, the following checks were run locally and passed:
 cargo fmt --all --check
 cargo clippy --all-targets -- -D warnings
 cargo test
-cargo check --features rag --bin rove-index
-cd web-ui; pnpm test
-cd web-ui; pnpm typecheck
-cd web-ui; pnpm build
+
+cd apps/web; pnpm test
+cd apps/web; pnpm typecheck
+cd apps/web; pnpm build
 git diff --check
 ```

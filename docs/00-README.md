@@ -52,6 +52,7 @@
 | future | [MCP Streamable HTTP 与 Tool Artifacts](./design/2026-07-15-mcp-streamable-http-and-tool-artifacts-design.md) | Proposed: transport/session/result/artifact 演进 |
 | future | [OnCall Reference Agent Evaluation](./design/2026-07-15-oncall-reference-agent-evaluation-plan.md) | Proposed: 合成 reference Agent 与 deterministic evaluation |
 | future | [Grok Build 借鉴与 TUI 方向](./design/2026-07-16-grok-build-reference-and-tui-design.md) | Proposed: 保留 REPL/exec，新增复用 shared runtime 的可选 TUI |
+| future | [模块化 Workspace 目标架构](./design/2026-07-22-modular-workspace-architecture.md) | Accepted direction: `models / core / runtime / apps` 四层结构与渐进迁移边界 |
 | ref | [ragent 流式与模型设计借鉴](./RAGENT-STREAM-MODEL-NOTES-2026-05-24.md) | 记录 ragent 在 SSE、模型流、取消和路由降级上的可借鉴思想 |
 
 ---
@@ -94,3 +95,4 @@
 - 2026-05-24:新增 [当前 runtime 文档](./runtime/README.md),补齐 root README、总架构、子系统设计、当前实现 vs 目标设计对照。
 - 2026-05-25:将 `docs/runtime/` 标为当前权威入口,04/05/06 改为历史参考;删除前日临时目标文件。
 - 2026-07-15:新增维护者 onboarding、根级 `AGENTS.md` 与四篇 Agent 机制未来设计;`docs/runtime/` 继续作为当前实现事实来源。
+- 2026-07-22:新增 [模块化 Workspace 目标架构](./design/2026-07-22-modular-workspace-architecture.md),确认 `models / core / runtime / apps` 四层目标结构；当前实现仍以 `docs/runtime/` 为准。
