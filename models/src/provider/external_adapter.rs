@@ -728,9 +728,10 @@ fn validate_executable_path(
             "external-adapter-v1 executable path contains NUL".to_string(),
         ));
     }
-    // Absolute paths are allowed only when external paths are enabled, or when
-    // the absolute path still resolves under the workspace root.
-    if path.is_absolute() {
+    // Absolute paths (including Windows drive/UNC forms when validating on Unix)
+    // are allowed only when external paths are enabled, or when the absolute path
+    // still resolves under the workspace root.
+    if path_looks_absolute(path) {
         if allow_external_paths {
             return Ok(());
         }
@@ -747,6 +748,26 @@ fn validate_executable_path(
     Ok(())
 }
 
+/// True for host-native absolute paths and for Windows drive/UNC paths even when
+/// the current process is running on Unix (common for configs validated in Linux CI).
+fn path_looks_absolute(path: &Path) -> bool {
+    if path.is_absolute() {
+        return true;
+    }
+    let raw = path.to_string_lossy();
+    let bytes = raw.as_bytes();
+    // `C:\...` or `C:/...`
+    if bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && (bytes[2] == b'\\' || bytes[2] == b'/')
+    {
+        return true;
+    }
+    // UNC: `\\server\share` or `//server/share`
+    raw.starts_with("\\\\") || raw.starts_with("//")
+}
+
 fn validate_working_directory(
     path: &Path,
     workspace_root: &Path,
@@ -760,11 +781,17 @@ fn validate_working_directory(
     if allow_external_paths {
         return Ok(());
     }
-    let resolved = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        workspace_root.join(path)
-    };
+    if path_looks_absolute(path) {
+        let resolved = path.to_path_buf();
+        if !(resolved.starts_with(workspace_root)) {
+            return Err(ModelError::InvalidConfiguration(
+                "external-adapter-v1 working_directory resolves outside the workspace"
+                    .to_string(),
+            ));
+        }
+        return Ok(());
+    }
+    let resolved = workspace_root.join(path);
     if !resolved.starts_with(workspace_root) {
         return Err(ModelError::InvalidConfiguration(
             "external-adapter-v1 working_directory resolves outside the workspace".to_string(),
@@ -1023,9 +1050,11 @@ mod tests {
         .unwrap_err();
         assert!(err.to_string().contains("direct executable"));
 
+        // Use a Windows-style absolute path so Linux CI still rejects configs that
+        // were authored against a Windows host (drive letters are not absolute on Unix).
         let err = ExternalAdapterConfig::from_protocol_options(
             &serde_json::json!({
-                "command": ["C:\\\\Windows\\\\System32\\\\cmd.exe"]
+                "command": ["C:/Windows/System32/cmd.exe"]
             }),
             "",
             "m",
@@ -1036,6 +1065,29 @@ mod tests {
             false,
         )
         .unwrap_err();
-        assert!(err.to_string().contains("outside the workspace"));
+        assert!(
+            err.to_string().contains("outside the workspace"),
+            "unexpected error: {err}"
+        );
+
+        let unix_outside = ExternalAdapterConfig::from_protocol_options(
+            &serde_json::json!({
+                "command": ["/usr/bin/true"]
+            }),
+            "",
+            "m",
+            ResolvedAuth::none(),
+            Vec::new(),
+            ProviderOptions::default(),
+            tmp.path(),
+            false,
+        );
+        if cfg!(unix) {
+            let err = unix_outside.unwrap_err();
+            assert!(
+                err.to_string().contains("outside the workspace"),
+                "unexpected error: {err}"
+            );
+        }
     }
 }
