@@ -21,20 +21,6 @@ pub fn format_effective_config(config: &AppConfig) -> String {
         .iter()
         .map(|(name, profile)| (name.clone(), profile_summary(profile)))
         .collect::<serde_json::Map<_, _>>();
-    let fallback_providers: Vec<_> = config
-        .provider
-        .fallback_providers
-        .iter()
-        .map(|provider| {
-            serde_json::json!({
-                "name": provider.name,
-                "api_base": provider.api_base,
-                "api_key_set": !provider.api_key.is_empty(),
-                "model": provider.model,
-                "options": provider.options,
-            })
-        })
-        .collect();
     let value = serde_json::json!({
         "runtime": {
             "max_steps": config.runtime.max_steps,
@@ -50,14 +36,9 @@ pub fn format_effective_config(config: &AppConfig) -> String {
             "active": config.provider.active,
             "profiles": profiles,
             "fallback_profiles": config.provider.fallback_profiles,
-            "name": config.provider.name,
-            "api_base": config.provider.api_base,
-            "api_key_set": !config.provider.api_key.is_empty(),
-            "anthropic_api_key_set": !config.provider.anthropic_api_key.is_empty(),
             "model": config.provider.model,
             "options": config.provider.options,
             "fallback_models": config.provider.fallback_models,
-            "fallback_providers": fallback_providers,
         },
         "tool": {
             "mcp_config_path": config.tool.mcp_config_path.to_string_lossy(),
@@ -130,7 +111,7 @@ fn profile_summary(profile: &ProviderProfileConfig) -> serde_json::Value {
         .unwrap_or_default();
     protocol_option_keys.sort();
     serde_json::json!({
-        "wire_protocol": profile.wire_protocol,
+        "provider_type": profile.provider_type,
         "base_url": profile.base_url,
         "model": profile.model,
         "auth": auth_summary(&profile.auth),

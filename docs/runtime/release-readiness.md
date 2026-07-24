@@ -13,7 +13,7 @@ Included:
 - Standalone Web workbench backed by the local API.
 - Local state under `.rove/`.
 - Folder, Repo, and Task workspaces.
-- Built-in tools, MCP proxy, memory tools, fake provider, OpenAI-compatible /
+- Built-in tools, MCP proxy, memory tools, fake provider, OpenAI /
   Responses, Anthropic, Ollama, named provider profiles, and the opt-in
   external process adapter.
 
@@ -100,7 +100,7 @@ required for deterministic local MVP operation.
 
 Prefer the generic provider runner because it verifies provider reachability,
 API jobs, Web records, stress evidence, and evidence capture in one repeatable
-gate for OpenAI-compatible, OpenAI Responses, Anthropic, and Ollama profiles:
+gate for OpenAI, OpenAI Responses, Anthropic, and Ollama profiles:
 
 ```powershell
 $env:OPENAI_API_KEY = "<secret>"
@@ -116,7 +116,7 @@ that account's values. If the gateway does not expose `/models`, pass
 `-SkipModelInventory` and record the provider's own model-selection evidence
 separately.
 
-OpenAI Responses is a separate native provider gate from OpenAI-compatible chat
+OpenAI Responses is a separate native provider gate from OpenAI chat
 completions:
 
 ```powershell
@@ -160,13 +160,13 @@ deterministic fixture.
 
 | Provider | Required before release claim | Long stress required | Notes |
 |---|---:|---:|---|
-| OpenAI-compatible official API | Yes when claiming official API readiness | Yes when quota allows | Includes relay/gateway-compatible surface. |
+| OpenAI official API | Yes when claiming official API readiness | Yes when quota allows | Includes relay/gateway-compatible surface. |
 | OpenAI Responses official API | Yes when claiming Codex-style/OpenAI Responses readiness | Yes when quota allows | Uses `/v1/responses`; separate from chat completions. |
-| OpenAI-compatible relay/gateway | Yes when claiming relay/gateway readiness | Yes when quota allows | Record gateway model inventory or `-SkipModelInventory` reason. |
+| OpenAI relay/gateway | Yes when claiming relay/gateway readiness | Yes when quota allows | Record gateway model inventory or `-SkipModelInventory` reason. |
 | Anthropic | Yes when claiming Anthropic readiness | Optional unless target release advertises Anthropic as verified | Native Messages API path. |
 | Ollama | Yes when claiming local-model readiness | Optional but recommended | Requires local Ollama server and pulled model. |
 
-For OpenAI-compatible official APIs or relay/gateway APIs, manual inventory is
+For OpenAI official APIs or relay/gateway APIs, manual inventory is
 the same shape regardless of vendor:
 
 ```powershell
@@ -187,7 +187,7 @@ Select a chat/tool model from the authenticated inventory, then run:
 ```powershell
 $env:ROVE_PROVIDER_SMOKE_OPENAI = "1"
 $env:ROVE_PROVIDER_SMOKE_OPENAI_MODEL = "<selected model>"
-cargo test --test provider_smoke openai_compatible_real_provider_smoke_when_enabled -- --exact --nocapture
+cargo test --test provider_smoke openai_real_provider_smoke_when_enabled -- --exact --nocapture
 ```
 
 Per-run API/Web profiles also support `anthropic`, `ollama`, and `fake`; use

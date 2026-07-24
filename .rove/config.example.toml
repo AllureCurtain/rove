@@ -12,15 +12,24 @@ context_hard_limit_tokens = 30000
 context_reserved_tokens = 4000
 
 [provider]
-# `fake` is the required provider for the deterministic `local-full` profile.
-# Use the gated provider-smoke profile for real model endpoints.
-name = "fake"
+# Profiles-only config. `fake` is the required provider for the deterministic
+# `local-full` profile. Use the gated provider-smoke profile for real endpoints.
+active = "local"
 model = "fake"
-api_base = "https://api.openai.com/v1"
-api_key = ""
-anthropic_api_key = ""
 fallback_models = []
-fallback_providers = []
+fallback_profiles = []
+
+[provider.profiles.local]
+provider_type = "fake"
+base_url = ""
+model = "fake"
+
+# Example real endpoint (env secret only — never put literal keys in this file):
+# [provider.profiles.relay]
+# provider_type = "openai"
+# base_url = "https://example.invalid/v1"
+# model = "gpt-4.1-mini"
+# auth = { style = "bearer", secret = { env = "OPENAI_API_KEY" } }
 
 [tool]
 mcp_config_path = ".rove/mcp_servers.json"

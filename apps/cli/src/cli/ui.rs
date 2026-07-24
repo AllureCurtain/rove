@@ -212,8 +212,15 @@ fn clean_windows_verbatim_prefix(path: &str) -> String {
 fn provider_label(view: &ReplStatusView<'_>) -> String {
     if view.model_id == "fake" {
         "fake".to_string()
+    } else if let Some(active) = view.config.provider.active.as_deref() {
+        view.config
+            .provider
+            .profiles
+            .get(active)
+            .map(|profile| profile.provider_type.clone())
+            .unwrap_or_else(|| active.to_string())
     } else {
-        view.config.provider.name.clone()
+        "unknown".to_string()
     }
 }
 
@@ -307,7 +314,19 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let workspace = Workspace::detect(tmp.path()).unwrap();
         let mut config = AppConfig::default();
-        config.provider.name = "openai".to_string();
+        config.provider.active = Some("openai".to_string());
+        config.provider.profiles.insert(
+            "openai".to_string(),
+            rove_app_bootstrap::ProviderProfileConfig {
+                provider_type: "openai".to_string(),
+                base_url: "https://api.openai.com/v1".to_string(),
+                model: "test-model".to_string(),
+                auth: rove_app_bootstrap::ProviderAuthConfig::None,
+                headers: Default::default(),
+                options: Default::default(),
+                protocol_options: serde_json::json!({}),
+            },
+        );
         config.provider.model = "test-model".to_string();
         let session_id = SessionId::new();
 

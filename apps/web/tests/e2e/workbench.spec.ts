@@ -112,22 +112,21 @@ test("loads models, tests, and submits an OpenAI provider profile", async ({ pag
   await page.route("/api/providers/models", async (route) => {
     const body = route.request().postDataJSON() as {
       provider?: {
-        channel?: string;
+        provider_type?: string;
         name?: string;
         api_base?: string;
         api_key_env?: string;
       };
     };
     sawProviderModels =
-      body.provider?.channel === "openai" &&
+      body.provider?.provider_type === "openai" &&
       body.provider.api_base === "https://gateway.test/v1" &&
       body.provider.api_key_env === "GATEWAY_API_KEY";
     await route.fulfill({
       contentType: "application/json",
       body: JSON.stringify({
         provider: "gateway.test",
-        channel: "openai",
-        wire_protocol: "openai-chat",
+        provider_type: "openai",
         api_base: "https://gateway.test/v1",
         key_env: "GATEWAY_API_KEY",
         key_present: true,
@@ -139,7 +138,7 @@ test("loads models, tests, and submits an OpenAI provider profile", async ({ pag
   await page.route("/api/providers/test", async (route) => {
     const body = route.request().postDataJSON() as {
       provider?: {
-        channel?: string;
+        provider_type?: string;
         name?: string;
         api_base?: string;
         api_key_env?: string;
@@ -147,7 +146,7 @@ test("loads models, tests, and submits an OpenAI provider profile", async ({ pag
       model?: string;
     };
     sawProviderTest =
-      body.provider?.channel === "openai" &&
+      body.provider?.provider_type === "openai" &&
       body.provider.api_base === "https://gateway.test/v1" &&
       body.provider.api_key_env === "GATEWAY_API_KEY" &&
       body.model === "relay/deepseek-v3.2";
@@ -156,8 +155,7 @@ test("loads models, tests, and submits an OpenAI provider profile", async ({ pag
       body: JSON.stringify({
         status: "pass",
         provider: "gateway.test",
-        channel: "openai",
-        wire_protocol: "openai-chat",
+        provider_type: "openai",
         api_base: "https://gateway.test/v1",
         key_env: "GATEWAY_API_KEY",
         key_present: true,
@@ -170,7 +168,7 @@ test("loads models, tests, and submits an OpenAI provider profile", async ({ pag
   await page.route("/api/jobs", async (route) => {
     const body = route.request().postDataJSON() as {
       provider?: {
-        channel?: string;
+        provider_type?: string;
         name?: string;
         api_base?: string;
         api_key_env?: string;
@@ -178,7 +176,7 @@ test("loads models, tests, and submits an OpenAI provider profile", async ({ pag
       model?: string;
     };
     sawProviderJob =
-      body.provider?.channel === "openai" &&
+      body.provider?.provider_type === "openai" &&
       body.provider.api_base === "https://gateway.test/v1" &&
       body.provider.api_key_env === "GATEWAY_API_KEY" &&
       body.model === "relay/deepseek-v3.2";
@@ -249,11 +247,11 @@ test("tests and submits an OpenAI Responses provider profile", async ({ page }) 
   await installRunsMock(page);
   await page.route("/api/providers/test", async (route) => {
     const body = route.request().postDataJSON() as {
-      provider?: { channel?: string; api_base?: string; api_key_env?: string };
+      provider?: { provider_type?: string; api_base?: string; api_key_env?: string };
       model?: string;
     };
     sawProviderTest =
-      body.provider?.channel === "openai-responses" &&
+      body.provider?.provider_type === "openai-responses" &&
       body.provider.api_base === "https://api.openai.com/v1" &&
       body.provider.api_key_env === "OPENAI_API_KEY" &&
       body.model === "gpt-4.1-mini";
@@ -262,8 +260,7 @@ test("tests and submits an OpenAI Responses provider profile", async ({ page }) 
       body: JSON.stringify({
         status: "pass",
         provider: "openai-responses",
-        channel: "openai-responses",
-        wire_protocol: "openai-responses",
+        provider_type: "openai-responses",
         api_base: "https://api.openai.com/v1",
         key_env: "OPENAI_API_KEY",
         key_present: true,
@@ -275,11 +272,11 @@ test("tests and submits an OpenAI Responses provider profile", async ({ page }) 
   });
   await page.route("/api/jobs", async (route) => {
     const body = route.request().postDataJSON() as {
-      provider?: { channel?: string; api_base?: string; api_key_env?: string };
+      provider?: { provider_type?: string; api_base?: string; api_key_env?: string };
       model?: string;
     };
     sawProviderJob =
-      body.provider?.channel === "openai-responses" &&
+      body.provider?.provider_type === "openai-responses" &&
       body.provider.api_base === "https://api.openai.com/v1" &&
       body.provider.api_key_env === "OPENAI_API_KEY" &&
       body.model === "gpt-4.1-mini";
@@ -337,33 +334,33 @@ test("tests and submits an OpenAI Responses provider profile", async ({ page }) 
 
 test("submits Anthropic and Ollama provider profiles", async ({ page }) => {
   const jobs: Array<{
-    provider?: { channel?: string; api_base?: string; api_key_env?: string };
+    provider?: { provider_type?: string; api_base?: string; api_key_env?: string };
     model?: string;
   }> = [];
   await installRunsMock(page);
   await page.route("/api/providers/test", async (route) => {
     const body = route.request().postDataJSON() as {
-      provider?: { channel?: string; api_base?: string; api_key_env?: string };
+      provider?: { provider_type?: string; api_base?: string; api_key_env?: string };
       model?: string;
     };
     await route.fulfill({
       contentType: "application/json",
       body: JSON.stringify({
         status: "pass",
-        provider: body.provider?.channel,
-        channel: body.provider?.channel,
+        provider: body.provider?.provider_type,
+        provider_type: body.provider?.provider_type,
         api_base: body.provider?.api_base,
         key_env: body.provider?.api_key_env ?? "",
         key_present: Boolean(body.provider?.api_key_env),
         model: body.model,
         model_present: true,
-        models_count: body.provider?.channel === "ollama" ? 1 : 4,
+        models_count: body.provider?.provider_type === "ollama" ? 1 : 4,
       }),
     });
   });
   await page.route("/api/jobs", async (route) => {
     const body = route.request().postDataJSON() as {
-      provider?: { channel?: string; api_base?: string; api_key_env?: string };
+      provider?: { provider_type?: string; api_base?: string; api_key_env?: string };
       model?: string;
     };
     jobs.push(body);
@@ -406,7 +403,7 @@ test("submits Anthropic and Ollama provider profiles", async ({ page }) => {
   await page.getByRole("button", { name: "Run" }).click();
 
   await expect
-    .poll(() => jobs[0]?.provider?.channel, {
+    .poll(() => jobs[0]?.provider?.provider_type, {
       message: "anthropic job should send provider profile",
     })
     .toBe("anthropic");
@@ -419,7 +416,7 @@ test("submits Anthropic and Ollama provider profiles", async ({ page }) => {
   await page.getByRole("button", { name: "Run" }).click();
 
   await expect
-    .poll(() => jobs[1]?.provider?.channel, {
+    .poll(() => jobs[1]?.provider?.provider_type, {
       message: "ollama job should send provider profile",
     })
     .toBe("ollama");

@@ -88,9 +88,9 @@ exits. Use custom ports when the defaults are busy:
 powershell -ExecutionPolicy Bypass -File scripts/dev.ps1 -ApiAddr 127.0.0.1:18787 -WebPort 3001
 ```
 
-Start the same API/Web flow with a real OpenAI-compatible provider by setting
+Start the same API/Web flow with a real OpenAI provider by setting
 provider environment first. This can be an official API, a relay, or a gateway
-that exposes an OpenAI-compatible `/v1` API:
+that exposes an OpenAI Chat Completions `/v1` API:
 
 ```powershell
 $env:ROVE_PROVIDER = "openai"
@@ -101,7 +101,7 @@ powershell -ExecutionPolicy Bypass -File scripts/dev.ps1 -Provider
 ```
 
 The Web workbench can also override the provider per run. It supports runtime
-default, OpenAI-compatible, OpenAI Responses, Anthropic, Ollama, and fake
+default, OpenAI, OpenAI Responses, Anthropic, Ollama, and fake
 profiles without sending raw provider keys from the browser.
 
 Run in an isolated standalone Task workspace:
@@ -188,8 +188,8 @@ Common environment variables:
 |---|---|
 | `ROVE_MODEL` | Primary model override. Use `fake` for local deterministic smoke runs. |
 | `ROVE_PROVIDER` | Provider name: `openai`, `openai-responses`, `anthropic`, `ollama`, or `fake`. |
-| `OPENAI_API_KEY` | OpenAI-compatible API key. |
-| `OPENAI_API_BASE` | OpenAI-compatible API base URL. |
+| `OPENAI_API_KEY` | OpenAI API key (or compatible relay). |
+| `OPENAI_API_BASE` | OpenAI API base URL (or compatible relay). |
 | `ANTHROPIC_API_KEY` | Anthropic API key. |
 | `ROVE_API_BIND_ADDR` | API bind address override. Defaults to `127.0.0.1:8787`. |
 | `ROVE_API_TOKEN` | Bearer token required by the Rust API and injected by the Web proxy when set server-side. |

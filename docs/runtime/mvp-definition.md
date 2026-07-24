@@ -25,8 +25,8 @@ This MVP is not a SaaS product, browser automation runtime, desktop automation r
 - Core engine with planned and unplanned loops sharing model turns, tool turns, context checkpoints, and history writeback.
 - Local state under `.rove/` with trace, task state, report, and SQLite index.
 - Folder, Repo, and Task workspaces.
-- Built-in filesystem, shell, memory, request-input, MCP, and feature-gated RAG tools.
-- Provider abstraction for OpenAI-compatible, Anthropic, Ollama, and fake providers.
+- Built-in filesystem, shell, memory, request-input, and MCP tools. No built-in vector RAG.
+- Provider abstraction for OpenAI, OpenAI Responses, Anthropic, Ollama, and fake providers.
 - Deterministic no-network benchmarks and default test coverage.
 
 ## Out of scope

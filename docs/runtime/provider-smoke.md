@@ -10,13 +10,13 @@ cargo test --test provider_smoke
 
 With no smoke gates enabled, the tests exit early and should pass.
 
-## OpenAI-compatible
+## OpenAI
 
 ```powershell
 $env:ROVE_PROVIDER_SMOKE_OPENAI = "1"
 $env:OPENAI_API_KEY = "<secret>"
 $env:ROVE_PROVIDER_SMOKE_OPENAI_MODEL = "gpt-4.1-mini"
-cargo test --test provider_smoke openai_compatible_real_provider_smoke_when_enabled -- --exact --nocapture
+cargo test --test provider_smoke openai_real_provider_smoke_when_enabled -- --exact --nocapture
 ```
 
 Set `OPENAI_API_BASE` when testing a compatible endpoint that is not OpenAI.
@@ -50,25 +50,25 @@ powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
 
 Use `scripts/provider-integration.ps1` when a provider should be treated as a
 real release gate instead of only a unit-level smoke. The runner is generic for
-official OpenAI-compatible APIs, OpenAI Responses, relay or gateway APIs that
+official OpenAI APIs, OpenAI Responses, relay or gateway APIs that
 expose the OpenAI-style chat API, Anthropic, and local Ollama.
 
 For product use through the Web workbench, provider targets can be supplied as
 per-run profiles: provider name, API base URL, key environment variable name
 when needed, and model id. The browser sends only the environment variable name,
 never the key value. The API route `POST /providers/test` checks model
-inventory for OpenAI-compatible, OpenAI Responses, Anthropic, and Ollama profiles, then
+inventory for OpenAI, OpenAI Responses, Anthropic, and Ollama profiles, then
 `POST /jobs` can carry the same profile for the actual run. `fake` is accepted
 for deterministic local runs.
 
 The dedicated provider runner now automates the release gate for
-OpenAI-compatible, OpenAI Responses, Anthropic, and Ollama profiles. It
+OpenAI, OpenAI Responses, Anthropic, and Ollama profiles. It
 normalizes provider names, queries the provider-specific model inventory
 endpoint, dispatches the matching provider smoke test, submits API jobs with a
 per-run provider profile, selects the same profile in the Web workbench, and
 writes a redacted evidence summary.
 
-For official OpenAI-compatible APIs:
+For official OpenAI APIs:
 
 ```powershell
 $env:OPENAI_API_KEY = "<secret>"
@@ -210,7 +210,7 @@ can be reached, stream events can be normalized, native tool-use events can
 round trip through the engine, and the engine can complete or step-limit the
 minimal tool run without losing the tool call or tool result.
 
-Some OpenAI-compatible models keep calling the same tool after receiving a valid
+Some OpenAI Chat Completions models keep calling the same tool after receiving a valid
 tool result instead of producing the requested final text. The smoke therefore
 requires the separate direct final-answer check for text generation, and the
 tool-use check for native tool-call round trip. A tool-use run that reaches the

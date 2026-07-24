@@ -88,7 +88,7 @@ describe("rove client", () => {
       max_steps: 2,
       approval: "ask",
       provider: {
-        channel: "openai",
+        provider_type: "openai",
         api_base: "https://gateway.test/v1",
         api_key_env: "GATEWAY_API_KEY",
       },
@@ -105,7 +105,7 @@ describe("rove client", () => {
         max_steps: 2,
         approval: "ask",
         provider: {
-          channel: "openai",
+          provider_type: "openai",
           api_base: "https://gateway.test/v1",
           api_key_env: "GATEWAY_API_KEY",
         },
@@ -127,7 +127,7 @@ describe("rove client", () => {
       message: "run claude",
       model: "claude-3-5-haiku-latest",
       provider: {
-        channel: "anthropic",
+        provider_type: "anthropic",
         api_base: "https://api.anthropic.com",
         api_key_env: "ANTHROPIC_API_KEY",
       },
@@ -142,7 +142,7 @@ describe("rove client", () => {
         message: "run claude",
         model: "claude-3-5-haiku-latest",
         provider: {
-          channel: "anthropic",
+          provider_type: "anthropic",
           api_base: "https://api.anthropic.com",
           api_key_env: "ANTHROPIC_API_KEY",
         },
@@ -156,8 +156,7 @@ describe("rove client", () => {
       json: async () => ({
         status: "pass",
         provider: "gateway.test",
-        channel: "openai",
-        wire_protocol: "openai-chat",
+        provider_type: "openai",
         api_base: "https://gateway.test/v1",
         key_env: "GATEWAY_API_KEY",
         key_present: true,
@@ -170,7 +169,7 @@ describe("rove client", () => {
 
     const result = await testProvider({
       provider: {
-        channel: "openai",
+        provider_type: "openai",
         api_base: "https://gateway.test/v1",
         api_key_env: "GATEWAY_API_KEY",
       },
@@ -184,7 +183,7 @@ describe("rove client", () => {
       },
       body: JSON.stringify({
         provider: {
-          channel: "openai",
+          provider_type: "openai",
           api_base: "https://gateway.test/v1",
           api_key_env: "GATEWAY_API_KEY",
         },
@@ -200,8 +199,7 @@ describe("rove client", () => {
       ok: true,
       json: async () => ({
         provider: "gateway.test",
-        channel: "openai",
-        wire_protocol: "openai-chat",
+        provider_type: "openai",
         api_base: "https://gateway.test/v1",
         key_env: "GATEWAY_API_KEY",
         key_present: true,
@@ -213,7 +211,7 @@ describe("rove client", () => {
 
     const result = await listProviderModels({
       provider: {
-        channel: "openai",
+        provider_type: "openai",
         api_base: "https://gateway.test/v1",
         api_key_env: "GATEWAY_API_KEY",
       },
@@ -226,7 +224,7 @@ describe("rove client", () => {
       },
       body: JSON.stringify({
         provider: {
-          channel: "openai",
+          provider_type: "openai",
           api_base: "https://gateway.test/v1",
           api_key_env: "GATEWAY_API_KEY",
         },

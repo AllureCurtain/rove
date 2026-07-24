@@ -232,7 +232,7 @@ fn provider_integration_runner_is_generic_and_documented() {
     assert!(env_example.contains("ROVE_PROVIDER_INTEGRATION_LONG_SOAK_DELAY_MS=500"));
 
     assert!(provider_docs.contains("scripts/provider-integration.ps1"));
-    assert!(provider_docs.contains("official OpenAI-compatible APIs"));
+    assert!(provider_docs.contains("official OpenAI APIs"));
     assert!(provider_docs.contains("relay or gateway APIs"));
     assert!(provider_docs.contains("-RunStress"));
     assert!(provider_docs.contains("-RunExternalMcp"));
@@ -262,7 +262,7 @@ fn provider_integration_runner_supports_native_provider_protocols() {
     assert!(script.contains("anthropic_real_provider_smoke_when_enabled"));
     assert!(script.contains("ollama_real_provider_smoke_when_enabled"));
     assert!(script.contains("provider = @{"));
-    assert!(script.contains("name = $Provider"));
+    assert!(script.contains("provider_type = $Provider"));
     assert!(script.contains("api_key_env = $ApiKeyEnv"));
     assert!(script.contains("if ($normalized -eq \"ollama\")"));
     assert!(script.contains("return \"\""));

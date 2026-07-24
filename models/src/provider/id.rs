@@ -3,10 +3,10 @@ use std::{fmt, str::FromStr};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use thiserror::Error;
 
-pub const OPENAI_CHAT_PROTOCOL: &str = "openai-chat";
+pub const OPENAI_COMPLETIONS_PROTOCOL: &str = "openai-completions";
 pub const OPENAI_RESPONSES_PROTOCOL: &str = "openai-responses";
 pub const ANTHROPIC_MESSAGES_PROTOCOL: &str = "anthropic-messages";
-pub const OLLAMA_CHAT_PROTOCOL: &str = "ollama-chat";
+pub const OLLAMA_PROTOCOL: &str = "ollama";
 pub const FAKE_PROTOCOL: &str = "fake";
 pub const EXTERNAL_ADAPTER_V1_PROTOCOL: &str = "external-adapter-v1";
 
@@ -141,10 +141,10 @@ mod tests {
     #[test]
     fn accepts_builtin_and_namespaced_protocol_ids() {
         for value in [
-            OPENAI_CHAT_PROTOCOL,
+            OPENAI_COMPLETIONS_PROTOCOL,
             OPENAI_RESPONSES_PROTOCOL,
             ANTHROPIC_MESSAGES_PROTOCOL,
-            OLLAMA_CHAT_PROTOCOL,
+            OLLAMA_PROTOCOL,
             FAKE_PROTOCOL,
             EXTERNAL_ADAPTER_V1_PROTOCOL,
             "acme/custom_v2",

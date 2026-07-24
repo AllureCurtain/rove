@@ -2,25 +2,19 @@ use std::{collections::HashSet, sync::Arc, time::Duration};
 
 use anyhow::Context;
 use futures::stream::{self, BoxStream};
-use reqwest::header::HeaderName;
 use rove_models::fake::FakeModelClient;
 use rove_models::health::{HealthConfig, ModelHealthStore};
 use rove_models::provider::{
-    ExternalAdapterClient, ExternalAdapterConfig, ProviderClient, ResolvedAuth, Transport,
-    TransportConfig, WireProtocolId, WireProtocolRegistry,
+    ExternalAdapterClient, ExternalAdapterConfig, ProviderClient, Transport, TransportConfig,
+    WireProtocolRegistry,
 };
 use rove_models::routing::{RetryPolicy, RoutingModelClient};
-use rove_models::{
-    Message, ModelClient, ModelClientId, ModelError, ModelEvent, ProviderOptions, ToolSchema,
-};
+use rove_models::{Message, ModelClient, ModelClientId, ModelError, ModelEvent, ToolSchema};
 
-use crate::config::{AppConfig, FallbackProviderConfig};
+use crate::config::AppConfig;
 use crate::provider::{
     ResolvedProviderProfile, default_wire_protocol_registry, protocol_client_namespace,
 };
-
-const DEFAULT_ANTHROPIC_BASE: &str = "https://api.anthropic.com";
-const DEFAULT_OLLAMA_BASE: &str = "http://localhost:11434";
 
 /// Registry and shared HTTP transport used to assemble provider targets.
 ///
@@ -56,7 +50,7 @@ impl ModelClientFactory {
         config: &AppConfig,
         model_id: String,
     ) -> anyhow::Result<Box<dyn ModelClient>> {
-        self.try_build(config, PrimarySelection::Configured, model_id, None)
+        self.try_build(config, model_id, None)
     }
 
     pub fn try_build_model_client_with_health(
@@ -65,23 +59,16 @@ impl ModelClientFactory {
         model_id: String,
         health: Arc<ModelHealthStore>,
     ) -> anyhow::Result<Box<dyn ModelClient>> {
-        self.try_build(config, PrimarySelection::Configured, model_id, Some(health))
+        self.try_build(config, model_id, Some(health))
     }
 
     fn try_build(
         &self,
         config: &AppConfig,
-        selection: PrimarySelection,
         model_id: String,
         health: Option<Arc<ModelHealthStore>>,
     ) -> anyhow::Result<Box<dyn ModelClient>> {
-        let (primary, fallbacks) = match selection {
-            PrimarySelection::Configured if !config.provider.profiles.is_empty() => {
-                named_targets(config, &model_id)?
-            }
-            PrimarySelection::Configured => legacy_targets(config, None, model_id)?,
-            PrimarySelection::Legacy(kind) => legacy_targets(config, Some(kind), model_id)?,
-        };
+        let (primary, fallbacks) = named_targets(config, &model_id)?;
         self.build_routed(config, primary, fallbacks, health)
     }
 
@@ -183,39 +170,10 @@ pub fn build_model_client_with_health(
         .unwrap_or_else(|error| invalid_configuration_client(error_model_id, error))
 }
 
-pub fn build_openai_model_client(config: &AppConfig, model_id: String) -> Box<dyn ModelClient> {
-    build_legacy_model_client(config, LegacyProviderKind::OpenAiChat, model_id)
-}
-
-pub fn build_anthropic_model_client(config: &AppConfig, model_id: String) -> Box<dyn ModelClient> {
-    build_legacy_model_client(config, LegacyProviderKind::Anthropic, model_id)
-}
-
-pub fn build_ollama_model_client(config: &AppConfig, model_id: String) -> Box<dyn ModelClient> {
-    build_legacy_model_client(config, LegacyProviderKind::Ollama, model_id)
-}
-
-fn build_legacy_model_client(
-    config: &AppConfig,
-    kind: LegacyProviderKind,
-    model_id: String,
-) -> Box<dyn ModelClient> {
-    let error_model_id = model_id.clone();
-    let result = ModelClientFactory::native().and_then(|factory| {
-        factory.try_build(config, PrimarySelection::Legacy(kind), model_id, None)
-    });
-    result.unwrap_or_else(|error| invalid_configuration_client(error_model_id, error))
-}
-
 fn named_targets(
     config: &AppConfig,
     model_id: &str,
 ) -> anyhow::Result<(ResolvedProviderProfile, Vec<ResolvedProviderProfile>)> {
-    if !config.provider.fallback_providers.is_empty() {
-        anyhow::bail!(
-            "provider.fallback_providers cannot be combined with named profiles; use provider.fallback_profiles"
-        );
-    }
     let active = config
         .provider
         .active
@@ -231,7 +189,9 @@ fn named_targets(
             config.state.allow_external_paths,
             Some(model_id),
         )
-        .with_context(|| format!("provider profile `{active}` could not be resolved"))?;
+        .map_err(|error| {
+            anyhow::anyhow!("provider profile `{active}` could not be resolved: {error}")
+        })?;
 
     let mut fallbacks = config
         .provider
@@ -261,199 +221,12 @@ fn named_targets(
                     config.state.allow_external_paths,
                     None,
                 )
-                .with_context(|| format!("provider profile `{name}` could not be resolved"))?,
+                .map_err(|error| {
+                    anyhow::anyhow!("provider profile `{name}` could not be resolved: {error}")
+                })?,
         );
     }
     Ok((primary, fallbacks))
-}
-
-fn legacy_targets(
-    config: &AppConfig,
-    forced_kind: Option<LegacyProviderKind>,
-    model_id: String,
-) -> anyhow::Result<(ResolvedProviderProfile, Vec<ResolvedProviderProfile>)> {
-    if config.provider.active.is_some() || !config.provider.fallback_profiles.is_empty() {
-        anyhow::bail!("named provider selection requires provider.profiles");
-    }
-    let primary_kind = forced_kind
-        .map(Ok)
-        .unwrap_or_else(|| LegacyProviderKind::from_name(&config.provider.name))?;
-    let primary_key = if primary_kind == LegacyProviderKind::Anthropic
-        && !config.provider.anthropic_api_key.is_empty()
-    {
-        config.provider.anthropic_api_key.clone()
-    } else {
-        config.provider.api_key.clone()
-    };
-    let primary = legacy_target(
-        primary_kind,
-        config.provider.api_base.clone(),
-        primary_key,
-        model_id,
-        config.provider.options,
-        config.provider.responses_prompt_cache,
-        config.provider.responses_prompt_cache_retention.clone(),
-    )?;
-
-    let mut fallbacks = config
-        .provider
-        .fallback_models
-        .iter()
-        .map(|model| {
-            let mut target = primary.clone();
-            target.model = model.trim().to_string();
-            target
-        })
-        .collect::<Vec<_>>();
-    for fallback in &config.provider.fallback_providers {
-        fallbacks.push(legacy_fallback_target(fallback)?);
-    }
-    Ok((primary, fallbacks))
-}
-
-fn legacy_fallback_target(
-    fallback: &FallbackProviderConfig,
-) -> anyhow::Result<ResolvedProviderProfile> {
-    legacy_target(
-        LegacyProviderKind::from_name(&fallback.name)?,
-        fallback.api_base.clone(),
-        fallback.api_key.clone(),
-        fallback.model.clone(),
-        fallback.options.unwrap_or_default(),
-        false,
-        None,
-    )
-}
-
-fn legacy_target(
-    kind: LegacyProviderKind,
-    api_base: String,
-    api_key: String,
-    model: String,
-    options: ProviderOptions,
-    responses_prompt_cache: bool,
-    responses_prompt_cache_retention: Option<String>,
-) -> anyhow::Result<ResolvedProviderProfile> {
-    let (protocol, base_url, auth, protocol_options) = match kind {
-        LegacyProviderKind::OpenAiChat => (
-            "openai-chat",
-            api_base,
-            legacy_bearer_auth(api_key)?,
-            serde_json::json!({}),
-        ),
-        LegacyProviderKind::OpenAiResponses => {
-            let mut protocol_options = serde_json::Map::new();
-            protocol_options.insert(
-                "prompt_cache_enabled".to_string(),
-                serde_json::Value::Bool(responses_prompt_cache),
-            );
-            // Omit unset retention instead of serializing JSON null; the wire
-            // protocol rejects non-string values for this option.
-            if let Some(retention) = responses_prompt_cache_retention {
-                protocol_options.insert(
-                    "prompt_cache_retention".to_string(),
-                    serde_json::Value::String(retention),
-                );
-            }
-            (
-                "openai-responses",
-                api_base,
-                legacy_bearer_auth(api_key)?,
-                serde_json::Value::Object(protocol_options),
-            )
-        }
-        LegacyProviderKind::Anthropic => (
-            "anthropic-messages",
-            legacy_anthropic_base(api_base),
-            legacy_header_auth("x-api-key", api_key)?,
-            serde_json::json!({}),
-        ),
-        LegacyProviderKind::Ollama => (
-            "ollama-chat",
-            legacy_ollama_base(api_base),
-            ResolvedAuth::none(),
-            serde_json::json!({}),
-        ),
-        LegacyProviderKind::Fake => (
-            "fake",
-            String::new(),
-            ResolvedAuth::none(),
-            serde_json::json!({}),
-        ),
-    };
-    Ok(ResolvedProviderProfile {
-        protocol_id: WireProtocolId::new(protocol)?,
-        base_url: base_url.trim().trim_end_matches('/').to_string(),
-        model: model.trim().to_string(),
-        auth,
-        headers: Vec::new(),
-        options,
-        protocol_options,
-    })
-}
-
-fn legacy_bearer_auth(secret: String) -> anyhow::Result<ResolvedAuth> {
-    if secret.trim().is_empty() {
-        Ok(ResolvedAuth::none())
-    } else {
-        Ok(ResolvedAuth::bearer(secret)?)
-    }
-}
-
-fn legacy_header_auth(name: &'static str, secret: String) -> anyhow::Result<ResolvedAuth> {
-    if secret.trim().is_empty() {
-        Ok(ResolvedAuth::none())
-    } else {
-        Ok(ResolvedAuth::header(HeaderName::from_static(name), secret)?)
-    }
-}
-
-fn legacy_anthropic_base(api_base: String) -> String {
-    let trimmed = api_base.trim();
-    if trimmed.is_empty() || trimmed.contains("api.openai.com") {
-        DEFAULT_ANTHROPIC_BASE.to_string()
-    } else {
-        trimmed.to_string()
-    }
-}
-
-fn legacy_ollama_base(api_base: String) -> String {
-    let trimmed = api_base.trim();
-    if trimmed.is_empty() || trimmed.contains("openai") {
-        DEFAULT_OLLAMA_BASE.to_string()
-    } else {
-        trimmed.to_string()
-    }
-}
-
-#[derive(Clone, Copy)]
-enum PrimarySelection {
-    Configured,
-    Legacy(LegacyProviderKind),
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum LegacyProviderKind {
-    OpenAiChat,
-    OpenAiResponses,
-    Anthropic,
-    Ollama,
-    Fake,
-}
-
-impl LegacyProviderKind {
-    fn from_name(name: &str) -> anyhow::Result<Self> {
-        match name.trim().to_ascii_lowercase().as_str() {
-            "openai" => Ok(Self::OpenAiChat),
-            "openai-responses" => Ok(Self::OpenAiResponses),
-            "anthropic" => Ok(Self::Anthropic),
-            "ollama" => Ok(Self::Ollama),
-            "fake" => Ok(Self::Fake),
-            other => anyhow::bail!(
-                "unknown provider `{other}`; expected openai, openai-responses, anthropic, ollama, or fake"
-            ),
-        }
-    }
 }
 
 struct InvalidConfigurationModelClient {

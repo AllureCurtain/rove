@@ -39,7 +39,7 @@ import {
 } from "../lib/rove-client";
 import {
   STREAM_EVENT_NAMES,
-  type ProviderChannel,
+  type ProviderType,
   type ProviderModelsResponse,
   type ProviderTestResponse,
   type RunReport,
@@ -49,7 +49,7 @@ import {
 import { createWorkbenchState, workbenchReducer, type ToolCallView } from "../lib/rove-state";
 import { BenchmarkPanel } from "./benchmark-panel";
 
-type ProviderMode = "default" | ProviderChannel;
+type ProviderMode = "default" | ProviderType;
 type ViewTab = "agent" | "benchmark";
 
 export function RoveWorkbench() {
@@ -156,7 +156,7 @@ export function RoveWorkbench() {
         provider:
           providerMode !== "default"
             ? {
-                channel: providerMode,
+                provider_type: providerMode,
                 name: providerDisplayLabel.trim() || undefined,
                 api_base: providerApiBase.trim(),
                 api_key_env: providerNeedsKey
@@ -185,7 +185,7 @@ export function RoveWorkbench() {
       return null;
     }
     return {
-      channel: providerMode,
+      provider_type: providerMode,
       name: providerDisplayLabel.trim() || undefined,
       api_base: providerApiBase.trim(),
       api_key_env: providerNeedsKey

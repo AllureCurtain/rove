@@ -2,7 +2,7 @@
 
 This guide is for maintainers who need to understand, debug, or extend the current implementation. It describes what exists in the codebase today. Product intent and historical design rationale live in the top-level docs; the current runtime source of truth remains this `docs/runtime/` directory.
 
-The root manifest is currently a transitional resolver-3 Cargo Workspace with
+The root manifest is a modular resolver-3 Cargo Workspace with
 the root `rove` compatibility package as default member and the independent
 `rove-models`, `rove-core`, and foundational `rove-runtime` packages as
 extracted lower layers. Use Workspace-wide commands for full gates. Persistent
@@ -632,7 +632,7 @@ pipeline, hooks, runtime-specific tool turns, planning/run coordination, and
 durable event translation live in `rove-runtime`; the normalized model turn and
 action parser live in `rove-core`. Root `src/core/*` paths remain compatibility
 re-exports. Product registry assembly and first-party
-`AppConfig` remain transitional root concerns until later phases.
+`AppConfig` live in product bootstrap and app shells.
 
 The high-level run flow:
 
@@ -795,7 +795,7 @@ Native providers:
 
 | Provider | File |
 |---|---|
-| OpenAI Chat | `models/src/provider/protocols/openai_chat.rs` |
+| OpenAI Chat | `models/src/provider/protocols/openai_completions.rs` |
 | OpenAI Responses | `models/src/provider/protocols/openai_responses.rs` |
 | Anthropic Messages | `models/src/provider/protocols/anthropic.rs` |
 | Ollama Chat | `models/src/provider/protocols/ollama.rs` |
@@ -826,7 +826,7 @@ and `ollama.rs` remain as compatibility and parity-test references during the
 documented transition window. Production bootstrap assembly does not construct
 those legacy HTTP clients.
 
-Provider-native tool use is the preferred path for real providers. Provider adapters emit `ToolUseStart` and `ToolUseDone`, `core/src/model_turn.rs` converts those into `ToolCallAction` and `AgentEvent` values, and the root adapter maps the latter to durable `StreamEvent` values. `LlmMessage.tool_calls` plus `tool_call_id` preserve structured history for provider replay. OpenAI-compatible, Anthropic, and Ollama formatters replay that history in their native request shapes.
+Provider-native tool use is the preferred path for real providers. Provider adapters emit `ToolUseStart` and `ToolUseDone`, `core/src/model_turn.rs` converts those into `ToolCallAction` and `AgentEvent` values, and the root adapter maps the latter to durable `StreamEvent` values. `LlmMessage.tool_calls` plus `tool_call_id` preserve structured history for provider replay. OpenAI, Anthropic, and Ollama formatters replay that history in their native request shapes.
 
 The JSON text action path remains for compatibility and fake-model tests. It is used only when no native tool calls were emitted, flows through `parse_action`, and produces no provider-native `tool_use_id`. Planned and unplanned loops both call the same `run_model_turn` helper, whose `build_action_from_model_output` boundary chooses native tool calls before text fallback.
 

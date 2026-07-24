@@ -118,9 +118,9 @@ bounded HTTP transport, `ProviderClient`, native OpenAI Chat / Responses /
 Anthropic Messages / Ollama Chat strategies and decoders, and the opt-in
 `external-adapter-v1` process client. Product bootstrap resolves all native
 HTTP targets through `ProviderClient`, routes `external-adapter-v1` profiles to
-the process client, and keeps Fake as a local deterministic client. Legacy
-modules under `models/src/openai.rs` (and siblings) remain only for parity tests
-and the documented compatibility window.
+the process client, and keeps Fake as a local deterministic client. Legacy dual
+client modules under `models/src/openai.rs` (and siblings) are test-only parity
+helpers and are not part of production assembly.
 Invalid transport configuration is typed as `ModelError::InvalidConfiguration`
 and is not retried or counted as a provider-health failure.
 
@@ -132,13 +132,13 @@ active = "team-gateway"
 fallback_profiles = ["claude"]
 
 [provider.profiles.team-gateway]
-wire_protocol = "openai-chat"
+provider_type = "openai"
 base_url = "https://gateway.example.test/v1"
 model = "team/model"
 auth = { style = "bearer", secret = { env = "TEAM_GATEWAY_KEY" } }
 
 [provider.profiles.claude]
-wire_protocol = "anthropic-messages"
+provider_type = "anthropic"
 base_url = "https://api.anthropic.com"
 model = "claude-sonnet"
 auth = { style = "header", header = "x-api-key", secret = { env = "ANTHROPIC_API_KEY" } }
@@ -151,32 +151,31 @@ compatible gateways by changing profile data. Applications may inject a
 custom in-process `WireProtocolRegistry` through `ModelClientFactory`; unknown
 IDs fail explicitly and never fall back to OpenAI behavior.
 
-Legacy flat provider fields remain supported through deterministic in-memory
-target conversion. They preserve existing target identity and fallback order,
-but `provider.fallback_providers` cannot be mixed with named profiles. API and
-Web per-run provider profiles prefer a user-facing **type** (`openai`,
-`openai-responses`, `anthropic`, `ollama`, or `fake`) that maps to an internal
-wire protocol. Official endpoints and relays share the same type; only
-`api_base`, key env, and model differ. Display `name` is optional and defaults
-from `api_base` (hostname). Advanced clients may still set `wire_protocol`
-directly. Secrets continue to be passed only as environment variable names,
-never as raw key values in browser-visible fields.
+Provider config is **profiles-only**: `provider.active` plus
+`provider.profiles.<name>` with product field `provider_type`. The system maps
+`provider_type` to an internal `wire_protocol` (for example `openai` →
+`openai-completions`). Flat `provider.name` / `api_base` / `api_key` assembly is
+gone. API and Web per-run profiles use the same product types (`openai`,
+`openai-responses`, `anthropic`, `ollama`, or `fake`). Official endpoints and
+relays share the same type; only `api_base`, key env, and model differ. Display
+`name` is optional and defaults from `api_base` (hostname). Requests must not
+send a writable `wire_protocol`; responses may echo the mapped id for debugging.
+Secrets continue to be passed only as environment variable names, never as raw
+key values in browser-visible fields.
 
 The model boundary is `ModelClient`, which streams normalized `ModelEvent` values. Raw provider thinking deltas are not exposed to interfaces; the engine converts model-side progress into safe `model_status` stream events. Native providers are peers:
 
-- OpenAI Chat (`openai-chat`)
+- OpenAI Completions (`openai` → `openai-completions`)
 - OpenAI Responses (`openai-responses`)
-- Anthropic Messages (`anthropic-messages`)
-- Ollama Chat (`ollama-chat`)
+- Anthropic Messages (`anthropic` → `anthropic-messages`)
+- Ollama (`ollama`)
 - Fake (`fake`)
 - Opt-in external process adapter (`external-adapter-v1`)
 
 Fallback can be configured as:
 
 - `provider.fallback_models`: model names using the primary provider;
-- `provider.fallback_profiles`: named target profiles;
-- `provider.fallback_providers`: legacy explicit provider/model/base/key
-  records when named profiles are not in use.
+- `provider.fallback_profiles`: named target profiles.
 
 Native provider tool-use and JSON text action parsing are both supported. Native tool-use is preferred for real providers because it preserves provider IDs through `Message.tool_calls` and `tool_call_id` history. The JSON text path remains for fake and compatibility scenarios and is used only when a model turn emitted no native tool calls. Planned, unplanned, and embedded execution share the conversion in `core/src/model_turn.rs`; `runtime/src/model_turn.rs` translates its `AgentEvent` values to durable `StreamEvent` values.
 
@@ -195,7 +194,7 @@ coordinator live in `runtime/src/executor.rs`, `runtime/src/hooks/`, and
 `runtime/src/tool_turn.rs`; root modules re-export the public surface. The
 existing stdio/legacy-SSE MCP proxy is implemented in
 `runtime/src/tools/mcp_proxy.rs`. CLI and API assemble tools through the same
-transitional product registry builder, which registers runtime built-ins and
+product registry builder, which registers runtime built-ins and
 then loads configured MCP tools.
 adapter for a later refactor.
 
@@ -275,7 +274,7 @@ credential environment variable names through `api_key_env`; raw provider keys a
 
 The API default is local-only binding. Config supports token auth, CORS origin allowlists, rate limits, and an explicit unsafe remote-without-auth override. Token auth, CORS enforcement, and rate limiting are implemented as API middleware. Multi-user identity and distributed rate limiting are later deployment/product concerns rather than current runtime requirements.
 
-Provider profiles use a user-facing **type** (`channel`: `openai`,
+Provider profiles use a user-facing **type** (`provider_type`: `openai`,
 `openai-responses`, `anthropic`, `ollama`, or `fake`) plus `api_base` and
 optional display `name` / `api_key_env`. Official and relay endpoints share the
 same type; only base URL, key, and model differ.
@@ -302,7 +301,7 @@ rove does not ship a built-in vector database. Agents retrieve workspace context
 `apps/web/` is a standalone Next.js app. Browser code talks to `/api/*`; a server-side Next.js route proxies requests to `ROVE_API_BASE` or `http://127.0.0.1:8787`. When `ROVE_API_TOKEN` is set on the Next.js server, the proxy injects `Authorization: Bearer <token>` upstream and preserves SSE response bodies for `EventSource`.
 
 The workbench exposes a provider selector for runtime default vs.
-OpenAI-compatible per-run profiles. For official APIs and relay/gateway APIs,
+OpenAI per-run profiles. For official APIs and relay/gateway APIs,
 users enter API base URL, key environment variable name, and model id, then use
 the Test action before starting a run. Browser code sends only the key
 environment variable name; raw provider keys stay in the Rust API server

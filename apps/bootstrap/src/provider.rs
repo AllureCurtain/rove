@@ -14,7 +14,8 @@ use serde::{Deserialize, Serialize};
 
 use rove_models::ProviderOptions;
 use rove_models::provider::protocols::{
-    AnthropicMessagesProtocol, OllamaChatProtocol, OpenAiChatProtocol, OpenAiResponsesProtocol,
+    AnthropicMessagesProtocol, OllamaChatProtocol, OpenAiCompletionsProtocol,
+    OpenAiResponsesProtocol,
 };
 use rove_models::provider::{
     ProviderClientConfig, ResolvedAuth, ResolvedHeader, Transport, WireProtocolId,
@@ -107,7 +108,9 @@ impl ProviderHeaderValue {
 /// Serializable, named endpoint profile.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProviderProfileConfig {
-    pub wire_protocol: WireProtocolId,
+    /// Product type: openai | openai-responses | anthropic | ollama | fake.
+    /// System maps this to an internal wire protocol id.
+    pub provider_type: String,
     pub base_url: String,
     pub model: String,
     #[serde(default)]
@@ -138,7 +141,8 @@ impl ProviderProfileConfig {
         workspace_root: &Path,
         allow_external_paths: bool,
     ) -> anyhow::Result<()> {
-        let protocol = self.wire_protocol.as_str();
+        let protocol_id = wire_protocol_for_provider_type(&self.provider_type)?;
+        let protocol = protocol_id.as_str();
         if protocol == "fake" {
             if !self.base_url.trim().is_empty() {
                 anyhow::bail!("fake provider profile base_url must be empty");
@@ -217,7 +221,7 @@ impl ProviderProfileConfig {
             headers.push(ResolvedHeader::try_new(name, resolved)?);
         }
         Ok(ResolvedProviderProfile {
-            protocol_id: self.wire_protocol.clone(),
+            protocol_id: wire_protocol_for_provider_type(&self.provider_type)?,
             base_url: self.base_url.trim().trim_end_matches('/').to_string(),
             model,
             auth,
@@ -242,12 +246,28 @@ impl ResolvedProviderProfile {
     }
 }
 
+/// Map product `provider_type` to the system wire protocol id.
+pub fn wire_protocol_for_provider_type(provider_type: &str) -> anyhow::Result<WireProtocolId> {
+    let id = match provider_type.trim().to_ascii_lowercase().as_str() {
+        "openai" => "openai-completions",
+        "openai-responses" => "openai-responses",
+        "anthropic" => "anthropic-messages",
+        "ollama" => "ollama",
+        "fake" => "fake",
+        "external-adapter-v1" => "external-adapter-v1",
+        other => anyhow::bail!(
+            "unsupported provider_type `{other}`; expected openai, openai-responses, anthropic, ollama, or fake"
+        ),
+    };
+    WireProtocolId::new(id).map_err(|error| anyhow::anyhow!(error.to_string()))
+}
+
 pub fn protocol_client_namespace(protocol: &WireProtocolId) -> String {
     match protocol.as_str() {
-        "openai-chat" => "openai".to_string(),
+        "openai-completions" => "openai".to_string(),
         "openai-responses" => "openai-responses".to_string(),
         "anthropic-messages" => "anthropic".to_string(),
-        "ollama-chat" => "ollama".to_string(),
+        "ollama" => "ollama".to_string(),
         "fake" => "fake".to_string(),
         other => other.to_string(),
     }
@@ -256,7 +276,7 @@ pub fn protocol_client_namespace(protocol: &WireProtocolId) -> String {
 pub fn default_wire_protocol_registry() -> Arc<WireProtocolRegistry> {
     let mut registry = WireProtocolRegistry::new();
     registry
-        .register(Arc::new(OpenAiChatProtocol::new()))
+        .register(Arc::new(OpenAiCompletionsProtocol::new()))
         .expect("built-in OpenAI Chat protocol ID must be unique");
     registry
         .register(Arc::new(OpenAiResponsesProtocol::new()))
@@ -524,7 +544,7 @@ mod tests {
 
     fn test_profile() -> ProviderProfileConfig {
         ProviderProfileConfig {
-            wire_protocol: WireProtocolId::new("openai-chat").unwrap(),
+            provider_type: "openai".to_string(),
             base_url: "https://gateway.example.test/v1".to_string(),
             model: "team/model".to_string(),
             auth: ProviderAuthConfig::None,
@@ -712,7 +732,13 @@ mod tests {
     fn default_registry_contains_all_native_protocols() {
         let registry = default_wire_protocol_registry();
         assert_eq!(registry.len(), 4);
-        assert!(registry.ids().iter().any(|id| id.as_str() == "openai-chat"));
+        assert!(
+            registry
+                .ids()
+                .iter()
+                .any(|id| id.as_str() == "openai-completions")
+        );
+        assert!(registry.ids().iter().any(|id| id.as_str() == "ollama"));
         assert!(
             registry
                 .ids()
