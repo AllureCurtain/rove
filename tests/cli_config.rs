@@ -1,5 +1,11 @@
-use rove_app_bootstrap::{AppConfig, FallbackProviderConfig, ProviderOptions};
+use std::collections::BTreeMap;
+
+use rove_app_bootstrap::{
+    AppConfig, FallbackProviderConfig, ProviderAuthConfig, ProviderHeaderValue, ProviderOptions,
+    ProviderProfileConfig, SecretSource,
+};
 use rove_cli::cli::config::format_effective_config;
+use rove_models::provider::WireProtocolId;
 
 #[test]
 fn format_effective_config_prints_json_without_secret_value() {
@@ -122,4 +128,77 @@ fn format_effective_config_prints_json_without_secret_value() {
     assert!(!output.contains("secret-token"));
     assert!(!output.contains("fallback-secret"));
     assert!(!output.contains("anthropic-secret"));
+}
+
+#[test]
+fn format_effective_config_summarizes_profile_secret_sources() {
+    let mut config = AppConfig::default();
+    config.provider.active = Some("gateway".to_string());
+    config.provider.fallback_profiles = vec!["local".to_string()];
+    config.provider.profiles.insert(
+        "gateway".to_string(),
+        ProviderProfileConfig {
+            wire_protocol: WireProtocolId::new("openai-responses").unwrap(),
+            base_url: "https://gateway.example.test/v1".to_string(),
+            model: "gateway-model".to_string(),
+            auth: ProviderAuthConfig::Bearer {
+                secret: SecretSource::Env {
+                    env: "GATEWAY_API_KEY".to_string(),
+                },
+            },
+            headers: BTreeMap::from([
+                (
+                    "x-literal".to_string(),
+                    ProviderHeaderValue::Literal("literal-header-value".to_string()),
+                ),
+                (
+                    "x-file".to_string(),
+                    ProviderHeaderValue::File {
+                        file: ".rove/header-secret".into(),
+                    },
+                ),
+            ]),
+            options: ProviderOptions::default(),
+            protocol_options: serde_json::json!({
+                "prompt_cache_enabled": true,
+                "private_option": "protocol-option-value",
+            }),
+        },
+    );
+    config.provider.profiles.insert(
+        "local".to_string(),
+        ProviderProfileConfig {
+            wire_protocol: WireProtocolId::new("ollama-chat").unwrap(),
+            base_url: "http://localhost:11434".to_string(),
+            model: "local-model".to_string(),
+            auth: ProviderAuthConfig::None,
+            headers: BTreeMap::new(),
+            options: ProviderOptions::default(),
+            protocol_options: serde_json::json!({}),
+        },
+    );
+
+    let output = format_effective_config(&config);
+    let json: serde_json::Value = serde_json::from_str(&output).unwrap();
+
+    assert_eq!(json["provider"]["active"], "gateway");
+    assert_eq!(json["provider"]["fallback_profiles"][0], "local");
+    assert_eq!(
+        json["provider"]["profiles"]["gateway"]["auth"]["secret"]["source"],
+        "env"
+    );
+    assert_eq!(
+        json["provider"]["profiles"]["gateway"]["auth"]["secret"]["name"],
+        "GATEWAY_API_KEY"
+    );
+    assert_eq!(
+        json["provider"]["profiles"]["gateway"]["headers"]["x-literal"]["source"],
+        "literal"
+    );
+    assert_eq!(
+        json["provider"]["profiles"]["gateway"]["protocol_option_keys"],
+        serde_json::json!(["private_option", "prompt_cache_enabled"])
+    );
+    assert!(!output.contains("literal-header-value"));
+    assert!(!output.contains("protocol-option-value"));
 }

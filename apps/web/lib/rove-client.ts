@@ -8,6 +8,8 @@ import type {
   ListBenchRunsResponse,
   ListBenchSuitesResponse,
   ListRunsResponse,
+  ProviderModelsRequest,
+  ProviderModelsResponse,
   ProviderTestRequest,
   ProviderTestResponse,
   RunReport,
@@ -52,6 +54,20 @@ export async function testProvider(
     body: JSON.stringify(payload),
   });
   return parseJson<ProviderTestResponse>(response);
+}
+
+/** List models available on a provider endpoint (requires base URL + key env). */
+export async function listProviderModels(
+  payload: ProviderModelsRequest,
+): Promise<ProviderModelsResponse> {
+  const response = await fetch(apiUrl("/providers/models"), {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+  return parseJson<ProviderModelsResponse>(response);
 }
 
 export async function cancelJob(jobId: string): Promise<JobStateResponse> {

@@ -383,7 +383,7 @@ async fn api_tests_openai_compatible_provider_profile_without_exposing_key() {
                 .body(Body::from(
                     serde_json::json!({
                         "provider": {
-                            "name": "openai-compatible",
+                            "channel": "openai",
                             "api_base": format!("{}/v1", provider.base_url),
                             "api_key_env": key_env
                         },
@@ -407,7 +407,15 @@ async fn api_tests_openai_compatible_provider_profile_without_exposing_key() {
     let text = String::from_utf8(body.to_vec()).unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json["status"], "pass");
-    assert_eq!(json["provider"], "openai-compatible");
+    // The `openai` type maps to the openai-chat wire protocol; the display name
+    // defaults from the endpoint host rather than echoing the type label.
+    assert_eq!(json["channel"], "openai");
+    assert_eq!(json["wire_protocol"], "openai-chat");
+    let provider_label = json["provider"].as_str().unwrap_or_default();
+    assert!(
+        provider_label.starts_with("127.0.0.1:") || provider_label == "openai",
+        "expected host-derived provider label, got {provider_label}"
+    );
     assert_eq!(json["key_env"], key_env);
     assert_eq!(json["key_present"], true);
     assert_eq!(json["model"], "relay/deepseek-v3.2");
@@ -417,6 +425,64 @@ async fn api_tests_openai_compatible_provider_profile_without_exposing_key() {
     assert_eq!(
         provider.captured.lock().unwrap().models_auth.as_deref(),
         Some("Bearer dummy-provider-token")
+    );
+}
+
+#[tokio::test]
+async fn api_lists_provider_models_without_exposing_key() {
+    let provider = start_openai_compatible_test_server().await;
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let app = router(ApiState::new(workspace, test_config()));
+    let key_env = unique_env_key("ROVE_TEST_PROVIDER_MODELS_KEY");
+    unsafe {
+        std::env::set_var(&key_env, "dummy-models-token");
+    }
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/providers/models")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "provider": {
+                            "channel": "openai",
+                            "api_base": format!("{}/v1", provider.base_url),
+                            "api_key_env": key_env
+                        }
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    unsafe {
+        std::env::remove_var(&key_env);
+    }
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let text = String::from_utf8(body.to_vec()).unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["channel"], "openai");
+    assert_eq!(json["wire_protocol"], "openai-chat");
+    assert_eq!(json["key_env"], key_env);
+    assert_eq!(json["key_present"], true);
+    assert_eq!(json["models_count"], 2);
+    assert_eq!(
+        json["models"],
+        serde_json::json!(["relay/deepseek-v3.2", "official/gpt-compatible"])
+    );
+    assert!(!text.contains("dummy-models-token"));
+    assert_eq!(
+        provider.captured.lock().unwrap().models_auth.as_deref(),
+        Some("Bearer dummy-models-token")
     );
 }
 
@@ -440,7 +506,7 @@ async fn api_tests_openai_responses_provider_profile_without_exposing_key() {
                 .body(Body::from(
                     serde_json::json!({
                         "provider": {
-                            "name": "openai-responses",
+                            "channel": "openai-responses",
                             "api_base": format!("{}/v1", provider.base_url),
                             "api_key_env": key_env
                         },
@@ -464,7 +530,13 @@ async fn api_tests_openai_responses_provider_profile_without_exposing_key() {
     let text = String::from_utf8(body.to_vec()).unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json["status"], "pass");
-    assert_eq!(json["provider"], "openai-responses");
+    assert_eq!(json["channel"], "openai-responses");
+    assert_eq!(json["wire_protocol"], "openai-responses");
+    let provider_label = json["provider"].as_str().unwrap_or_default();
+    assert!(
+        provider_label.starts_with("127.0.0.1:") || provider_label == "openai-responses",
+        "expected host-derived provider label, got {provider_label}"
+    );
     assert_eq!(json["key_env"], key_env);
     assert_eq!(json["key_present"], true);
     assert_eq!(json["model"], "gpt-4.1-mini");
@@ -502,7 +574,7 @@ async fn api_jobs_accept_openai_compatible_provider_profile_per_request() {
                         "approval": "auto",
                         "max_steps": 1,
                         "provider": {
-                            "name": "openai-compatible",
+                            "channel": "openai",
                             "api_base": format!("{}/v1", provider.base_url),
                             "api_key_env": key_env
                         }
@@ -567,7 +639,7 @@ async fn api_jobs_accept_openai_responses_provider_profile_per_request() {
                         "approval": "auto",
                         "max_steps": 1,
                         "provider": {
-                            "name": "openai-responses",
+                            "channel": "openai-responses",
                             "api_base": format!("{}/v1", provider.base_url),
                             "api_key_env": key_env
                         }
@@ -633,7 +705,7 @@ async fn api_jobs_accept_anthropic_provider_profile_per_request() {
                         "approval": "auto",
                         "max_steps": 1,
                         "provider": {
-                            "name": "anthropic",
+                            "channel": "anthropic",
                             "api_base": provider.base_url,
                             "api_key_env": key_env
                         }
@@ -694,7 +766,7 @@ async fn api_jobs_accept_ollama_provider_profile_without_key() {
                         "approval": "auto",
                         "max_steps": 1,
                         "provider": {
-                            "name": "ollama",
+                            "channel": "ollama",
                             "api_base": provider.base_url
                         }
                     })

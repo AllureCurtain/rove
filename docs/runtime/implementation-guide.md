@@ -48,7 +48,7 @@ Important entry points:
 | Compatibility Engine re-exports | `src/core/*` |
 | State artifacts and SQLite index | `runtime/src/state/*` |
 | Model protocol and providers | `models/src/*` |
-| Product provider assembly | transitional `src/models/factory.rs` |
+| Product provider assembly | `apps/bootstrap/src/factory.rs` |
 | Local built-in tools and invocation adapters | `runtime/src/tools/*` |
 | Product registry assembly | `apps/bootstrap` |
 | MCP transport/proxy | `runtime/src/tools/mcp_proxy.rs` |
@@ -137,7 +137,13 @@ Relevant code:
 defaults < .rove/config.toml < environment < CLI/API overrides
 ```
 
-The config is grouped by runtime, provider, tool, memory, state, API, web, routing, and RAG. `dump-config` prints the effective config, source summary, resolved paths, and redacted secret presence flags.
+The config is grouped by runtime, provider, tool, memory, state, API, web, and
+routing. Provider configuration supports named profiles with explicit wire
+protocol IDs, active/fallback references, environment or bounded-file secret
+references, custom headers, provider options, and protocol options. Legacy
+flat provider fields remain compatible. `dump-config` prints the effective
+config, source summary, resolved paths, legacy secret-presence flags, and
+profile secret/header source summaries without resolved values.
 
 Common paths and defaults:
 
@@ -173,8 +179,9 @@ cargo run -p rove-cli -- dump-config
 
 Relevant code:
 
-- `src/config.rs`
-- `src/interfaces/cli/config.rs`
+- `apps/bootstrap/src/config.rs`
+- `apps/bootstrap/src/provider.rs`
+- `apps/cli/src/cli/config.rs`
 
 ## 4. CLI Startup Path
 
@@ -788,11 +795,36 @@ Native providers:
 
 | Provider | File |
 |---|---|
-| OpenAI-compatible | `models/src/openai.rs` |
-| OpenAI Responses | `models/src/openai_responses.rs` |
-| Anthropic | `models/src/anthropic.rs` |
-| Ollama | `models/src/ollama.rs` |
+| OpenAI Chat | `models/src/provider/protocols/openai_chat.rs` |
+| OpenAI Responses | `models/src/provider/protocols/openai_responses.rs` |
+| Anthropic Messages | `models/src/provider/protocols/anthropic.rs` |
+| Ollama Chat | `models/src/provider/protocols/ollama.rs` |
+| External adapter v1 | `models/src/provider/external_adapter.rs` |
 | Fake | `models/src/fake.rs` |
+
+`models/src/provider/` supplies validated protocol IDs, strategy and decoder
+contracts, a duplicate-safe registry, bounded SSE/JSONL framing, redacted
+resolved authentication, shared bounded HTTP transport, `ProviderClient`, and
+native OpenAI Chat, OpenAI Responses, Anthropic Messages, and Ollama Chat
+protocol implementations with legacy parity tests. An opt-in
+`external-adapter-v1` process client can run a direct argv sidecar for
+unsupported wire formats with bounded timeouts, env allowlisting, secret
+injection, and kill-on-drop cleanup. `ModelClientFactory` in `apps/bootstrap`
+assembles native primary and fallback targets through `ProviderClient`,
+resolves named profiles and bounded secret references, accepts an injected
+protocol registry, converts legacy flat provider configuration without changing
+target identity, and routes `external-adapter-v1` profiles to the process
+client. Fake remains local. API and Web per-run profiles prefer a product
+**type** (OpenAI / OpenAI Responses / Anthropic / Ollama / Fake) that maps to
+an internal `wire_protocol`. Official and relay Base URLs use the same type.
+Display names are optional and default from the endpoint host.
+Environment-variable secret names remain the only browser-visible credential
+surface.
+
+The modules under `models/src/openai.rs`, `openai_responses.rs`, `anthropic.rs`,
+and `ollama.rs` remain as compatibility and parity-test references during the
+documented transition window. Production bootstrap assembly does not construct
+those legacy HTTP clients.
 
 Provider-native tool use is the preferred path for real providers. Provider adapters emit `ToolUseStart` and `ToolUseDone`, `core/src/model_turn.rs` converts those into `ToolCallAction` and `AgentEvent` values, and the root adapter maps the latter to durable `StreamEvent` values. `LlmMessage.tool_calls` plus `tool_call_id` preserve structured history for provider replay. OpenAI-compatible, Anthropic, and Ollama formatters replay that history in their native request shapes.
 
@@ -800,7 +832,7 @@ The JSON text action path remains for compatibility and fake-model tests. It is 
 
 `RoutingModelClient` wraps a primary model plus fallback models/providers. It can fall back only before committed visible output or committed tool-use. Provider target identity is provider plus endpoint plus model, exposed as `ModelClientId`, so two providers using the same model name do not share a health bucket.
 
-Each routed provider candidate is attempted up to `routing.retry_max_attempts` before moving to fallback. Retryable request failures, stream interruptions, and rate limits before commit use exponential backoff from `routing.retry_backoff_base_ms` capped by `routing.retry_backoff_max_ms`; rate-limit `retry-after` values override the computed delay. Authentication and context-length errors are never retried, though another fallback candidate can still be tried if no output or tool-use has committed. After committed text or committed native tool-use begins, later stream errors are returned directly with no retry and no fallback.
+Each routed provider candidate is attempted up to `routing.retry_max_attempts` before moving to fallback. Retryable request failures, stream interruptions, and rate limits before commit use exponential backoff from `routing.retry_backoff_base_ms` capped by `routing.retry_backoff_max_ms`; rate-limit `retry-after` values override the computed delay. Authentication, context-length, and invalid-provider-configuration errors are never retried, though another fallback candidate can still be tried if no output or tool-use has committed. After committed text or committed native tool-use begins, later stream errors are returned directly with no retry and no fallback.
 
 `models/src/health.rs` owns `ModelHealthStore`, `HealthConfig`, and circuit state. CLI-created routed clients keep private health state configured from `routing.failure_threshold` and `routing.open_cooldown_ms`. API state creates one process-shared `ModelHealthStore` and injects it into routed model clients so API jobs share circuit breaker decisions across runs in the same process.
 
@@ -812,7 +844,9 @@ Relevant code:
 - `models/src/traits.rs`
 - `models/src/routing.rs`
 - `models/src/error.rs`
-- `src/models/factory.rs` (transitional product assembly)
+- `models/src/provider/`
+- `apps/bootstrap/src/provider.rs`
+- `apps/bootstrap/src/factory.rs`
 
 ## 12. Tool System
 

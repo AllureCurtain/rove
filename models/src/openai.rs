@@ -36,7 +36,11 @@ impl OpenAiClient {
         self.options = *options;
     }
 
-    fn build_request_body(&self, messages: &[Message], tools: &[ToolSchema]) -> serde_json::Value {
+    pub(crate) fn build_request_body(
+        &self,
+        messages: &[Message],
+        tools: &[ToolSchema],
+    ) -> serde_json::Value {
         let msgs: Vec<serde_json::Value> = messages.iter().map(format_openai_message).collect();
 
         let tool_defs: Vec<serde_json::Value> = tools
@@ -101,7 +105,11 @@ fn insert_float_option(
     }
 }
 
-fn classify_http_error(status: StatusCode, headers: &HeaderMap, body: &str) -> ModelError {
+pub(crate) fn classify_http_error(
+    status: StatusCode,
+    headers: &HeaderMap,
+    body: &str,
+) -> ModelError {
     if matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) {
         return ModelError::AuthFailed;
     }
@@ -185,7 +193,7 @@ fn unsigned_numbers(text: &str) -> Vec<u32> {
 }
 
 #[derive(Debug, Default)]
-struct OpenAiToolCallState {
+pub(crate) struct OpenAiToolCallState {
     calls: BTreeMap<u64, OpenAiPartialToolCall>,
 }
 
@@ -295,7 +303,7 @@ fn normalize_openai_chat_chunk(
     Ok(events)
 }
 
-fn normalize_openai_sse_data(
+pub(crate) fn normalize_openai_sse_data(
     state: &mut OpenAiToolCallState,
     data: &str,
 ) -> serde_json::Result<Vec<ModelEvent>> {
@@ -441,7 +449,7 @@ impl ModelClient for OpenAiClient {
     }
 
     fn client_id(&self) -> ModelClientId {
-        ModelClientId::new("openai-compatible", &self.api_base, &self.model)
+        ModelClientId::new("openai", &self.api_base, &self.model)
     }
 }
 

@@ -43,7 +43,11 @@ impl OpenAiResponsesClient {
         self.options = *options;
     }
 
-    fn build_request_body(&self, messages: &[Message], tools: &[ToolSchema]) -> serde_json::Value {
+    pub(crate) fn build_request_body(
+        &self,
+        messages: &[Message],
+        tools: &[ToolSchema],
+    ) -> serde_json::Value {
         let (instructions, input) = format_responses_input(messages);
         let tool_defs = tools.iter().map(format_responses_tool).collect::<Vec<_>>();
         let mut body = serde_json::json!({
@@ -181,7 +185,7 @@ fn prompt_cache_key(messages: &[Message], tools: &[ToolSchema]) -> String {
 }
 
 #[derive(Debug, Default)]
-struct ResponsesStreamState {
+pub(crate) struct ResponsesStreamState {
     function_calls: BTreeMap<String, ResponsesFunctionCall>,
 }
 
@@ -193,12 +197,12 @@ struct ResponsesFunctionCall {
     done: bool,
 }
 
-struct NormalizedResponse {
-    events: Vec<ModelEvent>,
-    fatal_error: Option<String>,
+pub(crate) struct NormalizedResponse {
+    pub(crate) events: Vec<ModelEvent>,
+    pub(crate) fatal_error: Option<String>,
 }
 
-fn normalize_responses_event(
+pub(crate) fn normalize_responses_event(
     state: &mut ResponsesStreamState,
     data: &str,
 ) -> serde_json::Result<NormalizedResponse> {
@@ -439,7 +443,7 @@ fn parse_retry_after_ms(headers: &HeaderMap) -> Option<u64> {
         .map(|seconds| seconds.saturating_mul(1000))
 }
 
-fn classify_responses_http_error(
+pub(crate) fn classify_responses_http_error(
     status: StatusCode,
     headers: &HeaderMap,
     body: &str,

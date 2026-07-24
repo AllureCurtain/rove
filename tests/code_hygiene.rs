@@ -200,7 +200,7 @@ fn provider_integration_runner_is_generic_and_documented() {
     assert!(script.contains("[int]$LongSoakCount"));
     assert!(script.contains("[int]$LongSoakDelayMs"));
     assert!(script.contains("[string]$ExternalMcpToolName"));
-    assert!(script.contains("openai-compatible"));
+    assert!(script.contains("openai"));
     assert!(script.contains("Invoke-ProviderSmoke"));
     assert!(script.contains("Invoke-ApiSmoke"));
     assert!(script.contains("Invoke-WebSmoke"));
@@ -222,7 +222,7 @@ fn provider_integration_runner_is_generic_and_documented() {
     assert!(script.contains("key_present"));
     assert!(!script.contains("SiliconFlow only"));
 
-    assert!(env_example.contains("ROVE_PROVIDER_INTEGRATION_PROVIDER=openai-compatible"));
+    assert!(env_example.contains("ROVE_PROVIDER_INTEGRATION_PROVIDER=openai"));
     assert!(env_example.contains("ROVE_PROVIDER_INTEGRATION_MODEL="));
     assert!(env_example.contains("ROVE_PROVIDER_INTEGRATION_API_BASE="));
     assert!(env_example.contains("ROVE_PROVIDER_INTEGRATION_API_KEY_ENV=OPENAI_API_KEY"));

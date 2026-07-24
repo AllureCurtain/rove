@@ -87,7 +87,7 @@ provider environment first. This can be an official API, a relay, or a gateway
 that exposes an OpenAI-compatible `/v1` API:
 
 ```powershell
-$env:ROVE_PROVIDER = "openai-compatible"
+$env:ROVE_PROVIDER = "openai"
 $env:ROVE_MODEL = "<model-id>"
 $env:OPENAI_API_BASE = "https://<provider-or-gateway>/v1"
 $env:OPENAI_API_KEY = "<secret>"
@@ -180,7 +180,7 @@ Common environment variables:
 | Variable | Purpose |
 |---|---|
 | `ROVE_MODEL` | Primary model override. Use `fake` for local deterministic smoke runs. |
-| `ROVE_PROVIDER` | Provider name: `openai`, `openai-compatible`, `openai-responses`, `anthropic`, `ollama`, or `fake`. |
+| `ROVE_PROVIDER` | Provider name: `openai`, `openai-responses`, `anthropic`, `ollama`, or `fake`. |
 | `OPENAI_API_KEY` | OpenAI-compatible API key. |
 | `OPENAI_API_BASE` | OpenAI-compatible API base URL. |
 | `ANTHROPIC_API_KEY` | Anthropic API key. |

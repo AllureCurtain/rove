@@ -793,7 +793,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn does_not_retry_auth_or_context_errors() {
+    async fn does_not_retry_auth_context_or_configuration_errors() {
         let auth_calls = Arc::new(AtomicUsize::new(0));
         let fallback_calls = Arc::new(AtomicUsize::new(0));
         let model = RoutingModelClient::new(
@@ -843,6 +843,30 @@ mod tests {
         assert!(matches!(
             chunks[0],
             Err(ModelError::ContextLengthExceeded { used: 10, max: 5 })
+        ));
+
+        let configuration_calls = Arc::new(AtomicUsize::new(0));
+        let model = RoutingModelClient::new(
+            Box::new(FixedErrorClient {
+                id: "primary",
+                error: ModelError::InvalidConfiguration("invalid endpoint".to_string()),
+                calls: configuration_calls.clone(),
+            }),
+            Vec::new(),
+        )
+        .with_retry_policy(RetryPolicy {
+            max_attempts: 3,
+            backoff_base: std::time::Duration::from_millis(0),
+            backoff_max: std::time::Duration::from_millis(0),
+        });
+
+        let chunks = model.stream(&messages, &tools).collect::<Vec<_>>().await;
+
+        assert_eq!(configuration_calls.load(Ordering::SeqCst), 1);
+        assert!(matches!(
+            chunks[0],
+            Err(ModelError::InvalidConfiguration(ref message))
+                if message == "invalid endpoint"
         ));
     }
 

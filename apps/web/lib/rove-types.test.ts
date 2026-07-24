@@ -228,11 +228,16 @@ const streamEventFixtures: StreamEvent[] = [
 ];
 
 const providerProfileFixtures = [
-  { name: "openai-compatible", api_base: "https://api.openai.com/v1" },
-  { name: "openai-responses", api_base: "https://api.openai.com/v1" },
-  { name: "anthropic", api_base: "https://api.anthropic.com" },
-  { name: "ollama", api_base: "http://localhost:11434" },
-  { name: "fake", api_base: "local" },
+  { channel: "openai", api_base: "https://api.openai.com/v1" },
+  { channel: "openai-responses", api_base: "https://api.openai.com/v1" },
+  { channel: "anthropic", api_base: "https://api.anthropic.com" },
+  { channel: "ollama", api_base: "http://localhost:11434" },
+  { channel: "fake", api_base: "local" },
+  {
+    // Advanced escape hatch still accepted.
+    wire_protocol: "openai-chat",
+    api_base: "https://gateway.example.test/v1",
+  },
 ] satisfies ProviderProfile[];
 
 describe("rove stream event types", () => {
@@ -241,12 +246,17 @@ describe("rove stream event types", () => {
   });
 
   it("keeps web provider profiles aligned with the API provider surface", () => {
-    expect(providerProfileFixtures.map((profile) => profile.name)).toEqual([
-      "openai-compatible",
+    expect(
+      providerProfileFixtures.map(
+        (profile) => profile.channel ?? profile.wire_protocol,
+      ),
+    ).toEqual([
+      "openai",
       "openai-responses",
       "anthropic",
       "ollama",
       "fake",
+      "openai-chat",
     ]);
   });
 });

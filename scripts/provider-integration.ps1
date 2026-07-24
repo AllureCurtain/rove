@@ -1,5 +1,5 @@
 param(
-    [string]$Provider = $(if ($env:ROVE_PROVIDER_INTEGRATION_PROVIDER) { $env:ROVE_PROVIDER_INTEGRATION_PROVIDER } else { "openai-compatible" }),
+    [string]$Provider = $(if ($env:ROVE_PROVIDER_INTEGRATION_PROVIDER) { $env:ROVE_PROVIDER_INTEGRATION_PROVIDER } else { "openai" }),
     [string]$Model = $(if ($env:ROVE_PROVIDER_INTEGRATION_MODEL) { $env:ROVE_PROVIDER_INTEGRATION_MODEL } elseif ($env:ROVE_PROVIDER_SMOKE_OPENAI_MODEL) { $env:ROVE_PROVIDER_SMOKE_OPENAI_MODEL } else { "" }),
     [string]$ApiBase = $(if ($env:ROVE_PROVIDER_INTEGRATION_API_BASE) { $env:ROVE_PROVIDER_INTEGRATION_API_BASE } else { "" }),
     [string]$ApiKeyEnv = $(if ($env:ROVE_PROVIDER_INTEGRATION_API_KEY_ENV) { $env:ROVE_PROVIDER_INTEGRATION_API_KEY_ENV } else { "" }),
@@ -89,21 +89,19 @@ function Add-CorsOrigins([string[]]$Origins) {
 function Normalize-ProviderName([string]$Name) {
     $normalized = $Name.Trim().ToLowerInvariant()
     switch ($normalized) {
-        "openai" { return "openai-compatible" }
-        "openai-compatible" { return "openai-compatible" }
+        "openai" { return "openai" }
         "openai-responses" { return "openai-responses" }
-        "responses" { return "openai-responses" }
         "anthropic" { return "anthropic" }
         "ollama" { return "ollama" }
         default {
-            throw "Unsupported provider '$Name'. Expected openai-compatible, openai-responses, anthropic, or ollama."
+            throw "Unsupported provider '$Name'. Expected openai, openai-responses, anthropic, or ollama."
         }
     }
 }
 
 function Provider-RequiresKey([string]$Name) {
     $normalized = Normalize-ProviderName $Name
-    return $normalized -in @("openai-compatible", "openai-responses", "anthropic")
+    return $normalized -in @("openai", "openai-responses", "anthropic")
 }
 
 function Default-KeyEnvForProvider([string]$Name) {
@@ -208,7 +206,7 @@ function Get-ApiKeyValue {
         return ""
     }
     $value = [Environment]::GetEnvironmentVariable($ApiKeyEnv, "Process")
-    if (-not $value -and $Provider -eq "openai-compatible" -and $ApiKeyEnv -ne "OPENAI_API_KEY") {
+    if (-not $value -and $Provider -eq "openai" -and $ApiKeyEnv -ne "OPENAI_API_KEY") {
         $value = [Environment]::GetEnvironmentVariable("OPENAI_API_KEY", "Process")
     }
     if (-not $value) {
@@ -230,7 +228,7 @@ function Set-ProviderEnvironment {
     $env:ROVE_PROVIDER = $Provider
     $env:ROVE_MODEL = $Model
 
-    if ($Provider -in @("openai-compatible", "openai-responses")) {
+    if ($Provider -in @("openai", "openai-responses")) {
         $env:OPENAI_API_KEY = $key
         $env:OPENAI_API_BASE = $ApiBase
         return
@@ -332,7 +330,7 @@ function Invoke-ProviderSmoke {
 
     $testName = ""
     switch ($Provider) {
-        "openai-compatible" {
+        "openai" {
             $env:ROVE_PROVIDER_SMOKE_OPENAI = "1"
             $env:ROVE_PROVIDER_SMOKE_OPENAI_MODEL = $Model
             $testName = "openai_compatible_real_provider_smoke_when_enabled"
@@ -992,7 +990,7 @@ if (-not $PSBoundParameters.ContainsKey("ExternalMcpToolName") -and $env:ROVE_PR
     $ExternalMcpToolName = $env:ROVE_PROVIDER_INTEGRATION_EXTERNAL_MCP_TOOL
 }
 $Provider = Normalize-ProviderName $Provider
-if (-not $PSBoundParameters.ContainsKey("ApiBase") -and -not $ApiBase -and ($Provider -in @("openai-compatible", "openai-responses")) -and $env:OPENAI_API_BASE) {
+if (-not $PSBoundParameters.ContainsKey("ApiBase") -and -not $ApiBase -and ($Provider -in @("openai", "openai-responses")) -and $env:OPENAI_API_BASE) {
     $ApiBase = $env:OPENAI_API_BASE
 }
 if ($Provider -eq "ollama") {

@@ -238,7 +238,7 @@ Fast OpenAI-compatible gate:
 ```powershell
 $env:OPENAI_API_KEY = "<secret>"
 powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
-  -Provider openai-compatible `
+  -Provider openai `
   -ApiBase "https://api.openai.com/v1" `
   -ApiKeyEnv OPENAI_API_KEY `
   -Model "gpt-4.1-mini"
@@ -249,7 +249,7 @@ Relay or gateway gate:
 ```powershell
 $env:OPENAI_API_KEY = "<relay-secret>"
 powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
-  -Provider openai-compatible `
+  -Provider openai `
   -ApiBase "https://<gateway-host>/v1" `
   -ApiKeyEnv OPENAI_API_KEY `
   -Model "<provider/model-id>"
@@ -279,7 +279,7 @@ Release stress with restart:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
-  -Provider openai-compatible `
+  -Provider openai `
   -ApiBase "https://<provider-or-gateway>/v1" `
   -ApiKeyEnv OPENAI_API_KEY `
   -Model "<model-id>" `
@@ -293,7 +293,7 @@ Long soak:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
-  -Provider openai-compatible `
+  -Provider openai `
   -ApiBase "https://<provider-or-gateway>/v1" `
   -ApiKeyEnv OPENAI_API_KEY `
   -Model "<model-id>" `

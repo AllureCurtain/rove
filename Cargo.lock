@@ -2103,6 +2103,8 @@ dependencies = [
  "async-trait",
  "dotenvy",
  "figment",
+ "futures",
+ "reqwest",
  "rove-core",
  "rove-models",
  "rove-runtime",

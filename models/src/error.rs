@@ -3,6 +3,9 @@ use thiserror::Error;
 /// Errors from LLM model interactions.
 #[derive(Debug, Clone, Error)]
 pub enum ModelError {
+    #[error("Invalid provider configuration: {0}")]
+    InvalidConfiguration(String),
+
     #[error("API request failed: {0}")]
     RequestFailed(String),
 
@@ -22,6 +25,7 @@ pub enum ModelError {
 impl ModelError {
     pub fn error_code(&self) -> &'static str {
         match self {
+            ModelError::InvalidConfiguration(_) => "invalid_configuration",
             ModelError::RequestFailed(_) => "request_failed",
             ModelError::StreamInterrupted(_) => "stream_interrupted",
             ModelError::RateLimited { .. } => "rate_limited",
@@ -56,6 +60,10 @@ mod tests {
     #[test]
     fn model_error_codes_are_stable() {
         assert_eq!(
+            ModelError::InvalidConfiguration("bad endpoint".to_string()).error_code(),
+            "invalid_configuration"
+        );
+        assert_eq!(
             ModelError::RequestFailed("network".to_string()).error_code(),
             "request_failed"
         );
@@ -88,6 +96,7 @@ mod tests {
             .is_retryable()
         );
         assert!(!ModelError::AuthFailed.is_retryable());
+        assert!(!ModelError::InvalidConfiguration("bad".to_string()).is_retryable());
         assert!(!ModelError::ContextLengthExceeded { used: 10, max: 5 }.is_retryable());
 
         assert!(ModelError::RequestFailed("network".to_string()).counts_as_health_failure());
@@ -99,6 +108,7 @@ mod tests {
             .counts_as_health_failure()
         );
         assert!(!ModelError::AuthFailed.counts_as_health_failure());
+        assert!(!ModelError::InvalidConfiguration("bad".to_string()).counts_as_health_failure());
         assert!(!ModelError::ContextLengthExceeded { used: 10, max: 5 }.counts_as_health_failure());
     }
 }

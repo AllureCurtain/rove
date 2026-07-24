@@ -45,7 +45,11 @@ impl OllamaClient {
         self.options.top_p = provider_options.top_p;
     }
 
-    fn build_request_body(&self, messages: &[Message], tools: &[ToolSchema]) -> serde_json::Value {
+    pub(crate) fn build_request_body(
+        &self,
+        messages: &[Message],
+        tools: &[ToolSchema],
+    ) -> serde_json::Value {
         let msgs: Vec<serde_json::Value> = messages.iter().map(format_ollama_message).collect();
 
         let mut body = serde_json::json!({
@@ -161,7 +165,11 @@ fn parse_retry_after_ms(headers: &HeaderMap) -> Option<u64> {
         .map(|seconds| seconds.saturating_mul(1000))
 }
 
-fn classify_ollama_error(status: StatusCode, headers: &HeaderMap, body: &str) -> ModelError {
+pub(crate) fn classify_ollama_error(
+    status: StatusCode,
+    headers: &HeaderMap,
+    body: &str,
+) -> ModelError {
     match status {
         StatusCode::NOT_FOUND => ModelError::RequestFailed(format!("model not found: {body}")),
         StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => ModelError::AuthFailed,
@@ -184,7 +192,7 @@ fn is_ollama_context_length_error(body: &str) -> bool {
         || lower.contains("input too long")
 }
 
-fn normalize_ollama_chat_line(line: &str) -> serde_json::Result<Vec<ModelEvent>> {
+pub(crate) fn normalize_ollama_chat_line(line: &str) -> serde_json::Result<Vec<ModelEvent>> {
     let json = serde_json::from_str::<serde_json::Value>(line)?;
     let mut events = Vec::new();
 

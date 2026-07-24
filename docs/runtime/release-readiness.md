@@ -13,8 +13,9 @@ Included:
 - Standalone Web workbench backed by the local API.
 - Local state under `.rove/`.
 - Folder, Repo, and Task workspaces.
-- Built-in tools, MCP proxy, memory tools, fake provider, OpenAI-compatible,
-  Anthropic, Ollama, and feature-gated RAG.
+- Built-in tools, MCP proxy, memory tools, fake provider, OpenAI-compatible /
+  Responses, Anthropic, Ollama, named provider profiles, and the opt-in
+  external process adapter.
 
 Not included:
 
@@ -104,7 +105,7 @@ gate for OpenAI-compatible, OpenAI Responses, Anthropic, and Ollama profiles:
 ```powershell
 $env:OPENAI_API_KEY = "<secret>"
 powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
-  -Provider openai-compatible `
+  -Provider openai `
   -ApiBase "https://api.openai.com/v1" `
   -ApiKeyEnv OPENAI_API_KEY `
   -Model "gpt-4.1-mini"

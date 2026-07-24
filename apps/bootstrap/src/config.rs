@@ -1,3 +1,5 @@
+use std::collections::{BTreeMap, HashSet};
+use std::fmt;
 use std::net::SocketAddr;
 use std::path::{Component, Path, PathBuf};
 
@@ -6,6 +8,8 @@ use figment::providers::{Format, Serialized, Toml};
 use serde::{Deserialize, Serialize};
 
 use rove_runtime::memory::paths::MemoryPaths;
+
+use crate::provider::ProviderProfileConfig;
 
 pub use rove_models::ProviderOptions;
 
@@ -37,9 +41,12 @@ pub struct RuntimeConfig {
     pub context_reserved_tokens: usize,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct ProviderConfig {
+    pub active: Option<String>,
+    pub profiles: BTreeMap<String, ProviderProfileConfig>,
+    pub fallback_profiles: Vec<String>,
     pub name: String,
     pub api_base: String,
     pub api_key: String,
@@ -52,7 +59,7 @@ pub struct ProviderConfig {
     pub options: ProviderOptions,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
 pub struct FallbackProviderConfig {
     #[serde(default = "default_fallback_provider_name")]
     pub name: String,
@@ -61,6 +68,43 @@ pub struct FallbackProviderConfig {
     pub model: String,
     #[serde(default)]
     pub options: Option<ProviderOptions>,
+}
+
+impl fmt::Debug for ProviderConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ProviderConfig")
+            .field("active", &self.active)
+            .field("profiles", &self.profiles)
+            .field("fallback_profiles", &self.fallback_profiles)
+            .field("name", &self.name)
+            .field("api_base", &self.api_base)
+            .field("api_key_set", &!self.api_key.is_empty())
+            .field("anthropic_api_key_set", &!self.anthropic_api_key.is_empty())
+            .field("model", &self.model)
+            .field("responses_prompt_cache", &self.responses_prompt_cache)
+            .field(
+                "responses_prompt_cache_retention",
+                &self.responses_prompt_cache_retention,
+            )
+            .field("fallback_models", &self.fallback_models)
+            .field("fallback_providers", &self.fallback_providers)
+            .field("options", &self.options)
+            .finish()
+    }
+}
+
+impl fmt::Debug for FallbackProviderConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("FallbackProviderConfig")
+            .field("name", &self.name)
+            .field("api_base", &self.api_base)
+            .field("api_key_set", &!self.api_key.is_empty())
+            .field("model", &self.model)
+            .field("options", &self.options)
+            .finish()
+    }
 }
 
 fn validate_provider_options(options: &ProviderOptions, prefix: &str) -> anyhow::Result<()> {
@@ -177,6 +221,9 @@ impl Default for RuntimeConfig {
 impl Default for ProviderConfig {
     fn default() -> Self {
         Self {
+            active: None,
+            profiles: BTreeMap::new(),
+            fallback_profiles: Vec::new(),
             name: "openai".to_string(),
             api_base: "https://api.openai.com/v1".to_string(),
             api_key: String::new(),
@@ -192,7 +239,7 @@ impl Default for ProviderConfig {
 }
 
 fn default_fallback_provider_name() -> String {
-    "openai-compatible".to_string()
+    "openai".to_string()
 }
 
 impl Default for ToolConfig {
@@ -319,6 +366,7 @@ impl AppConfig {
             env_keys,
             cli_keys,
         };
+        config.normalize_active_profile_model();
         config.validate()?;
         Ok(config)
     }
@@ -384,13 +432,30 @@ impl AppConfig {
         self.source_summary.project_config_loaded = false;
     }
 
-    fn validate(&self) -> anyhow::Result<()> {
-        let provider = self.provider.name.as_str();
-        if canonical_provider_name(provider).is_none() {
-            anyhow::bail!(
-                "invalid provider `{provider}`; expected openai, openai-compatible, openai-responses, anthropic, ollama, or fake"
-            );
+    fn normalize_active_profile_model(&mut self) {
+        let model_overridden = self
+            .source_summary
+            .env_keys
+            .iter()
+            .any(|key| key == "ROVE_MODEL")
+            || self
+                .source_summary
+                .cli_keys
+                .iter()
+                .any(|key| key == "provider.model");
+        if model_overridden {
+            return;
         }
+        let Some(active) = self.provider.active.as_deref() else {
+            return;
+        };
+        if let Some(profile) = self.provider.profiles.get(active) {
+            self.provider.model = profile.model.clone();
+        }
+    }
+
+    fn validate(&self) -> anyhow::Result<()> {
+        self.validate_provider_config()?;
         if self.provider.model.trim().is_empty() {
             anyhow::bail!("provider.model must not be empty");
         }
@@ -401,25 +466,6 @@ impl AppConfig {
             .any(|model| model.trim().is_empty())
         {
             anyhow::bail!("provider.fallback_models must not contain empty model names");
-        }
-        for fallback in &self.provider.fallback_providers {
-            let fallback_provider = fallback.name.as_str();
-            let Some(fallback_kind) = canonical_provider_name(fallback_provider) else {
-                anyhow::bail!(
-                    "invalid fallback provider `{fallback_provider}`; expected openai, openai-compatible, openai-responses, anthropic, ollama, or fake"
-                );
-            };
-            if fallback_kind == "openai-compatible" && fallback.api_base.trim().is_empty() {
-                anyhow::bail!(
-                    "provider.fallback_providers.api_base must not be empty for OpenAI-compatible providers"
-                );
-            }
-            if fallback.model.trim().is_empty() {
-                anyhow::bail!("provider.fallback_providers.model must not be empty");
-            }
-            if let Some(options) = &fallback.options {
-                validate_provider_options(options, "provider.fallback_providers.options")?;
-            }
         }
         validate_provider_options(&self.provider.options, "provider.options")?;
         if self.runtime.max_steps == 0 {
@@ -460,6 +506,66 @@ impl AppConfig {
         }
         self.validate_api_remote_mode()?;
         self.validate_workspace_paths()?;
+        Ok(())
+    }
+
+    fn validate_provider_config(&self) -> anyhow::Result<()> {
+        if self.provider.profiles.is_empty() {
+            if self.provider.active.is_some() {
+                anyhow::bail!("provider.active requires provider.profiles");
+            }
+            if !self.provider.fallback_profiles.is_empty() {
+                anyhow::bail!("provider.fallback_profiles requires provider.profiles");
+            }
+            let provider = self.provider.name.as_str();
+            if canonical_provider_name(provider).is_none() {
+                anyhow::bail!(
+                    "invalid provider `{provider}`; expected openai, openai-responses, anthropic, ollama, or fake"
+                );
+            }
+            for fallback in &self.provider.fallback_providers {
+                validate_legacy_fallback(fallback)?;
+            }
+            return Ok(());
+        }
+
+        let active =
+            self.provider.active.as_deref().ok_or_else(|| {
+                anyhow::anyhow!("provider.active is required when profiles exist")
+            })?;
+        validate_profile_name(active, "provider.active")?;
+        if !self.provider.profiles.contains_key(active) {
+            anyhow::bail!("provider.active references unknown profile `{active}`");
+        }
+        if !self.provider.fallback_providers.is_empty() {
+            anyhow::bail!(
+                "provider.fallback_providers cannot be combined with named profiles; use provider.fallback_profiles"
+            );
+        }
+        let mut seen_fallbacks = HashSet::new();
+        for fallback in &self.provider.fallback_profiles {
+            validate_profile_name(fallback, "provider.fallback_profiles")?;
+            if fallback == active {
+                anyhow::bail!("provider.fallback_profiles must not contain the active profile");
+            }
+            if !seen_fallbacks.insert(fallback) {
+                anyhow::bail!("provider.fallback_profiles must not contain duplicates");
+            }
+            if !self.provider.profiles.contains_key(fallback) {
+                anyhow::bail!("provider.fallback_profiles references unknown profile `{fallback}`");
+            }
+        }
+        for (name, profile) in &self.provider.profiles {
+            validate_profile_name(name, "provider.profiles")?;
+            profile
+                .validate(
+                    &self.source_summary.workspace_root,
+                    self.state.allow_external_paths,
+                )
+                .map_err(|error| {
+                    anyhow::anyhow!("provider profile `{name}` is invalid: {error}")
+                })?;
+        }
         Ok(())
     }
 
@@ -526,13 +632,48 @@ impl AppConfig {
 
 fn canonical_provider_name(name: &str) -> Option<&'static str> {
     match name.trim().to_ascii_lowercase().as_str() {
-        "openai" | "openai-compatible" => Some("openai-compatible"),
-        "openai-responses" | "responses" => Some("openai-responses"),
+        "openai" => Some("openai"),
+        "openai-responses" => Some("openai-responses"),
         "anthropic" => Some("anthropic"),
         "ollama" => Some("ollama"),
         "fake" => Some("fake"),
         _ => None,
     }
+}
+
+fn validate_legacy_fallback(fallback: &FallbackProviderConfig) -> anyhow::Result<()> {
+    let fallback_provider = fallback.name.as_str();
+    let Some(fallback_kind) = canonical_provider_name(fallback_provider) else {
+        anyhow::bail!(
+            "invalid fallback provider `{fallback_provider}`; expected openai, openai-responses, anthropic, ollama, or fake"
+        );
+    };
+    if fallback_kind == "openai" && fallback.api_base.trim().is_empty() {
+        anyhow::bail!(
+            "provider.fallback_providers.api_base must not be empty for OpenAI providers"
+        );
+    }
+    if fallback.model.trim().is_empty() {
+        anyhow::bail!("provider.fallback_providers.model must not be empty");
+    }
+    if let Some(options) = &fallback.options {
+        validate_provider_options(options, "provider.fallback_providers.options")?;
+    }
+    Ok(())
+}
+
+fn validate_profile_name(name: &str, field: &str) -> anyhow::Result<()> {
+    let bytes = name.as_bytes();
+    if bytes.is_empty()
+        || bytes.len() > 64
+        || (!bytes[0].is_ascii_lowercase() && !bytes[0].is_ascii_digit())
+        || !bytes.iter().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_' | b'.')
+        })
+    {
+        anyhow::bail!("{field} must use 1-64 lowercase ASCII letters, digits, '-', '_', or '.'");
+    }
+    Ok(())
 }
 
 fn normalize_path(path: impl AsRef<Path>) -> PathBuf {
@@ -599,6 +740,12 @@ struct RuntimeConfigLayer {
 
 #[derive(Debug, Default, Serialize)]
 struct ProviderConfigLayer {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    active: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    profiles: Option<BTreeMap<String, ProviderProfileConfig>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fallback_profiles: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -779,6 +926,18 @@ fn env_layer() -> anyhow::Result<NamedConfigLayer> {
     }
 
     let mut provider = ProviderConfigLayer::default();
+    if let Some(value) = env_string("ROVE_PROVIDER_ACTIVE") {
+        provider.active = Some(value);
+        keys.push("ROVE_PROVIDER_ACTIVE".to_string());
+    }
+    if let Some(value) = env_string("ROVE_PROVIDER_PROFILES") {
+        provider.profiles = Some(serde_json::from_str(&value)?);
+        keys.push("ROVE_PROVIDER_PROFILES".to_string());
+    }
+    if let Some(value) = env_string("ROVE_PROVIDER_FALLBACK_PROFILES") {
+        provider.fallback_profiles = Some(parse_csv(&value));
+        keys.push("ROVE_PROVIDER_FALLBACK_PROFILES".to_string());
+    }
     if let Some(value) = env_string("ROVE_PROVIDER") {
         provider.name = Some(value);
         keys.push("ROVE_PROVIDER".to_string());
@@ -999,7 +1158,10 @@ fn has_runtime_values(layer: &RuntimeConfigLayer) -> bool {
 }
 
 fn has_provider_values(layer: &ProviderConfigLayer) -> bool {
-    layer.name.is_some()
+    layer.active.is_some()
+        || layer.profiles.is_some()
+        || layer.fallback_profiles.is_some()
+        || layer.name.is_some()
         || layer.api_base.is_some()
         || layer.api_key.is_some()
         || layer.anthropic_api_key.is_some()
@@ -1071,6 +1233,9 @@ mod tests {
 
     fn clear_config_env() {
         for key in [
+            "ROVE_PROVIDER_ACTIVE",
+            "ROVE_PROVIDER_PROFILES",
+            "ROVE_PROVIDER_FALLBACK_PROFILES",
             "ROVE_PROVIDER",
             "ROVE_PROVIDER_API_BASE",
             "OPENAI_API_BASE",
@@ -1193,7 +1358,166 @@ retry_backoff_max_ms = 456
     }
 
     #[test]
-    fn fallback_provider_config_defaults_to_openai_compatible() {
+    fn project_config_parses_named_profiles_and_protocol_options() {
+        let _guard = env_lock();
+        clear_config_env();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let config_dir = tmp.path().join(".rove");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::write(
+            config_dir.join("config.toml"),
+            r#"
+[provider]
+active = "team-gateway"
+fallback_profiles = ["claude"]
+
+[provider.profiles.team-gateway]
+wire_protocol = "openai-responses"
+base_url = "https://gateway.example.test/v1"
+model = "project-model"
+auth = { style = "bearer", secret = { env = "TEAM_GATEWAY_KEY" } }
+headers = { x-tenant = "tenant-secret" }
+protocol_options = { prompt_cache_enabled = true, prompt_cache_retention = "24h" }
+
+[provider.profiles.team-gateway.options]
+max_tokens = 1024
+temperature = 0.2
+
+[provider.profiles.claude]
+wire_protocol = "anthropic-messages"
+base_url = "https://api.anthropic.com"
+model = "claude-fallback"
+auth = { style = "header", header = "x-api-key", secret = { env = "ANTHROPIC_API_KEY" } }
+"#,
+        )
+        .unwrap();
+
+        let config = AppConfig::load(tmp.path(), AppConfigOverrides::default()).unwrap();
+
+        assert_eq!(config.provider.active.as_deref(), Some("team-gateway"));
+        assert_eq!(config.provider.model, "project-model");
+        assert_eq!(config.provider.fallback_profiles, ["claude"]);
+        let profile = &config.provider.profiles["team-gateway"];
+        assert_eq!(profile.wire_protocol.as_str(), "openai-responses");
+        assert_eq!(profile.options.max_tokens, Some(1024));
+        assert_eq!(profile.protocol_options["prompt_cache_enabled"], true);
+        assert_eq!(profile.protocol_options["prompt_cache_retention"], "24h");
+        clear_config_env();
+    }
+
+    #[test]
+    fn named_profile_model_uses_project_env_cli_precedence() {
+        let _guard = env_lock();
+        clear_config_env();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let config_dir = tmp.path().join(".rove");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::write(
+            config_dir.join("config.toml"),
+            r#"
+[provider]
+active = "gateway"
+
+[provider.profiles.gateway]
+wire_protocol = "openai-chat"
+base_url = "https://gateway.example.test/v1"
+model = "project-model"
+"#,
+        )
+        .unwrap();
+
+        let project = AppConfig::load(tmp.path(), AppConfigOverrides::default()).unwrap();
+        assert_eq!(project.provider.model, "project-model");
+
+        unsafe { std::env::set_var("ROVE_MODEL", "env-model") };
+        let env = AppConfig::load(tmp.path(), AppConfigOverrides::default()).unwrap();
+        assert_eq!(env.provider.model, "env-model");
+
+        let cli = AppConfig::load(
+            tmp.path(),
+            AppConfigOverrides {
+                model: Some("cli-model".to_string()),
+                ..AppConfigOverrides::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(cli.provider.model, "cli-model");
+        clear_config_env();
+    }
+
+    #[test]
+    fn named_profile_references_fail_closed() {
+        let _guard = env_lock();
+        clear_config_env();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let config_dir = tmp.path().join(".rove");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        let path = config_dir.join("config.toml");
+        let profile = r#"
+[provider.profiles.gateway]
+wire_protocol = "openai-chat"
+base_url = "https://gateway.example.test/v1"
+model = "model"
+"#;
+
+        std::fs::write(&path, profile).unwrap();
+        let error = AppConfig::load(tmp.path(), AppConfigOverrides::default())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("provider.active is required"));
+
+        std::fs::write(
+            &path,
+            format!(
+                "[provider]\nactive = \"gateway\"\nfallback_profiles = [\"missing\"]\n{profile}"
+            ),
+        )
+        .unwrap();
+        let error = AppConfig::load(tmp.path(), AppConfigOverrides::default())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("unknown profile `missing`"));
+
+        std::fs::write(
+            &path,
+            format!(
+                "[provider]\nactive = \"gateway\"\nfallback_profiles = [\"other\", \"other\"]\n{profile}\n[provider.profiles.other]\nwire_protocol = \"ollama-chat\"\nbase_url = \"http://localhost:11434\"\nmodel = \"other\"\n"
+            ),
+        )
+        .unwrap();
+        let error = AppConfig::load(tmp.path(), AppConfigOverrides::default())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("must not contain duplicates"));
+        clear_config_env();
+    }
+
+    #[test]
+    fn provider_debug_redacts_legacy_secret_values() {
+        let mut config = AppConfig::default();
+        config.provider.api_key = "primary-debug-secret".to_string();
+        config.provider.anthropic_api_key = "anthropic-debug-secret".to_string();
+        config
+            .provider
+            .fallback_providers
+            .push(FallbackProviderConfig {
+                name: "openai".to_string(),
+                api_base: "https://fallback.example.test/v1".to_string(),
+                api_key: "fallback-debug-secret".to_string(),
+                model: "fallback".to_string(),
+                options: None,
+            });
+
+        let debug = format!("{config:?}");
+
+        assert!(!debug.contains("primary-debug-secret"));
+        assert!(!debug.contains("anthropic-debug-secret"));
+        assert!(!debug.contains("fallback-debug-secret"));
+        assert!(debug.contains("api_key_set: true"));
+    }
+
+    #[test]
+    fn fallback_provider_config_defaults_to_openai() {
         let fallback: FallbackProviderConfig = serde_json::from_str(
             r#"{
                 "api_base": "https://fallback.test/v1",
@@ -1203,7 +1527,7 @@ retry_backoff_max_ms = 456
         )
         .unwrap();
 
-        assert_eq!(fallback.name, "openai-compatible");
+        assert_eq!(fallback.name, "openai");
         assert_eq!(fallback.model, "fallback-model");
     }
 
@@ -1237,7 +1561,7 @@ api_base = "https://api.openai.com/v1"
             config_dir.join("config.toml"),
             r#"
 [provider]
-name = "openai-compatible"
+name = "openai"
 model = "primary-model"
 fallback_providers = [
   { name = "openai-responses", api_base = "https://api.openai.com/v1", api_key = "secret", model = "gpt-4.1-mini" }
@@ -1263,10 +1587,10 @@ fallback_providers = [
             config_dir.join("config.toml"),
             r#"
 [provider]
-name = "openai-compatible"
+name = "openai"
 model = "primary-model"
 fallback_providers = [
-  { name = "openai-compatible", api_base = "https://fallback.test/v1", api_key = "secret", model = "fallback-model", options = { max_tokens = 512, temperature = 0.1 } }
+  { name = "openai", api_base = "https://fallback.test/v1", api_key = "secret", model = "fallback-model", options = { max_tokens = 512, temperature = 0.1 } }
 ]
 
 [provider.options]
@@ -1317,7 +1641,7 @@ presence_penalty = 0.4
             .provider
             .fallback_providers
             .push(FallbackProviderConfig {
-                name: "openai-compatible".to_string(),
+                name: "openai".to_string(),
                 api_base: "https://fallback.test/v1".to_string(),
                 api_key: "secret".to_string(),
                 model: "fallback-model".to_string(),

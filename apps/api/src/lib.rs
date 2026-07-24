@@ -117,6 +117,7 @@ struct RunsQuery {
 
 pub fn router(state: ApiState) -> Router {
     let (api_router, api) = OpenApiRouter::with_openapi(docs::ApiDoc::openapi())
+        .routes(routes!(list_provider_models))
         .routes(routes!(test_provider))
         .routes(routes!(create_job))
         .routes(routes!(job_events))
@@ -323,6 +324,38 @@ async fn create_job(
 
 #[utoipa::path(
     post,
+    path = "/providers/models",
+    tag = docs::PROVIDERS_TAG,
+    security(("BearerAuth" = [])),
+    request_body = ProviderModelsRequest,
+    responses(
+        (status = 200, description = "Provider model catalog", body = ProviderModelsResponse, content_type = "application/json"),
+        (status = 400, description = "Invalid provider profile or missing key env", body = serde_json::Value, content_type = "application/json"),
+        (status = 502, description = "Provider model inventory request failed", body = serde_json::Value, content_type = "application/json"),
+        (status = 500, description = "Internal runtime error", body = serde_json::Value, content_type = "application/json")
+    )
+)]
+async fn list_provider_models(
+    State(_state): State<ApiState>,
+    Json(req): Json<ProviderModelsRequest>,
+) -> Result<Json<ProviderModelsResponse>, ApiError> {
+    let profile = normalize_provider_profile(&req.provider)?;
+    let key_env = provider_key_env(&profile);
+    let inventory = provider_inventory(&profile, &key_env, req.models_endpoint.as_deref()).await?;
+    Ok(Json(ProviderModelsResponse {
+        provider: profile.name,
+        channel: profile.channel,
+        wire_protocol: profile.wire_protocol,
+        api_base: profile.api_base,
+        key_env,
+        key_present: inventory.key_present,
+        models_count: inventory.models.len(),
+        models: inventory.models,
+    }))
+}
+
+#[utoipa::path(
+    post,
     path = "/providers/test",
     tag = docs::PROVIDERS_TAG,
     security(("BearerAuth" = [])),
@@ -348,6 +381,8 @@ async fn test_provider(
     Ok(Json(ProviderTestResponse {
         status: "pass".to_string(),
         provider: profile.name,
+        channel: Some(profile.channel),
+        wire_protocol: Some(profile.wire_protocol),
         api_base: profile.api_base,
         key_env,
         key_present: inventory.key_present,

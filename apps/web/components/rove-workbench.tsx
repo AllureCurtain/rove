@@ -30,6 +30,7 @@ import {
   createJob,
   fetchJobState,
   fetchRunReport,
+  listProviderModels,
   listRuns,
   openJobStream,
   submitApproval,
@@ -38,8 +39,9 @@ import {
 } from "../lib/rove-client";
 import {
   STREAM_EVENT_NAMES,
+  type ProviderChannel,
+  type ProviderModelsResponse,
   type ProviderTestResponse,
-  type ProviderProfile,
   type RunReport,
   type RunSummary,
   type StreamEvent,
@@ -47,7 +49,7 @@ import {
 import { createWorkbenchState, workbenchReducer, type ToolCallView } from "../lib/rove-state";
 import { BenchmarkPanel } from "./benchmark-panel";
 
-type ProviderMode = "default" | ProviderProfile["name"];
+type ProviderMode = "default" | ProviderChannel;
 type ViewTab = "agent" | "benchmark";
 
 export function RoveWorkbench() {
@@ -60,12 +62,20 @@ export function RoveWorkbench() {
   const [message, setMessage] = useState("inspect this workspace");
   const [model, setModel] = useState("fake");
   const [providerMode, setProviderMode] = useState<ProviderMode>("default");
+  const [providerDisplayLabel, setProviderDisplayLabel] = useState("");
   const [providerApiBase, setProviderApiBase] = useState("https://api.openai.com/v1");
   const [providerKeyEnv, setProviderKeyEnv] = useState("OPENAI_API_KEY");
   const [providerTestBusy, setProviderTestBusy] = useState(false);
   const [providerTestResult, setProviderTestResult] =
     useState<ProviderTestResponse | null>(null);
   const [providerTestError, setProviderTestError] = useState<string | null>(null);
+  const [providerModelsBusy, setProviderModelsBusy] = useState(false);
+  const [providerModelsResult, setProviderModelsResult] =
+    useState<ProviderModelsResponse | null>(null);
+  const [providerModelsError, setProviderModelsError] = useState<string | null>(
+    null,
+  );
+  const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [maxSteps, setMaxSteps] = useState("8");
   const [submitting, setSubmitting] = useState(false);
   const [approvalBusy, setApprovalBusy] = useState<string | null>(null);
@@ -81,10 +91,12 @@ export function RoveWorkbench() {
   const totalSteps = state.plan?.steps.length ?? 0;
   const activeStep = state.plan?.steps[state.plan.current_step]?.title ?? "idle";
   const modelLabel = model.trim() || "fake";
-  const providerLabel =
+  const providerSummary =
     providerMode === "default"
       ? "runtime default"
-      : `${providerDisplayName(providerMode)} / ${compactProviderLabel(providerApiBase)}`;
+      : `${providerDisplayName(providerMode)} / ${
+          providerDisplayLabel.trim() || compactProviderLabel(providerApiBase)
+        }`;
   const providerNeedsKey = providerMode !== "default" && providerRequiresKey(providerMode);
   const stepsLabel = `${maxSteps || "8"} steps`;
   const runMeta = useMemo(() => {
@@ -144,7 +156,8 @@ export function RoveWorkbench() {
         provider:
           providerMode !== "default"
             ? {
-                name: providerMode,
+                channel: providerMode,
+                name: providerDisplayLabel.trim() || undefined,
                 api_base: providerApiBase.trim(),
                 api_key_env: providerNeedsKey
                   ? providerKeyEnv.trim() || providerDefaultKeyEnv(providerMode)
@@ -167,8 +180,26 @@ export function RoveWorkbench() {
     }
   }
 
+  function buildProviderProfile() {
+    if (providerMode === "default") {
+      return null;
+    }
+    return {
+      channel: providerMode,
+      name: providerDisplayLabel.trim() || undefined,
+      api_base: providerApiBase.trim(),
+      api_key_env: providerNeedsKey
+        ? providerKeyEnv.trim() || providerDefaultKeyEnv(providerMode)
+        : undefined,
+    };
+  }
+
   async function handleProviderTest() {
     if (providerMode === "default" || providerTestBusy) {
+      return;
+    }
+    const provider = buildProviderProfile();
+    if (!provider?.api_base) {
       return;
     }
     setProviderTestBusy(true);
@@ -176,13 +207,7 @@ export function RoveWorkbench() {
     setProviderTestResult(null);
     try {
       const result = await testProvider({
-        provider: {
-          name: providerMode,
-          api_base: providerApiBase.trim(),
-          api_key_env: providerNeedsKey
-            ? providerKeyEnv.trim() || providerDefaultKeyEnv(providerMode)
-            : undefined,
-        },
+        provider,
         model: model.trim() || undefined,
       });
       setProviderTestResult(result);
@@ -190,6 +215,38 @@ export function RoveWorkbench() {
       setProviderTestError(describeError(error));
     } finally {
       setProviderTestBusy(false);
+    }
+  }
+
+  async function handleLoadProviderModels() {
+    if (providerMode === "default" || providerModelsBusy) {
+      return;
+    }
+    const provider = buildProviderProfile();
+    if (!provider?.api_base) {
+      return;
+    }
+    setProviderModelsBusy(true);
+    setProviderModelsError(null);
+    setProviderModelsResult(null);
+    try {
+      const result = await listProviderModels({ provider });
+      setProviderModelsResult(result);
+      setAvailableModels(result.models);
+      if (
+        result.models.length > 0 &&
+        model.trim() &&
+        !result.models.includes(model.trim())
+      ) {
+        // Keep the current free-form model; the user may still type a custom id.
+      } else if (!model.trim() && result.models[0]) {
+        setModel(result.models[0]);
+      }
+    } catch (error) {
+      setProviderModelsError(describeError(error));
+      setAvailableModels([]);
+    } finally {
+      setProviderModelsBusy(false);
     }
   }
 
@@ -344,7 +401,7 @@ export function RoveWorkbench() {
             </div>
             <div className="hero-band__meta">
               <span>{state.activeJobId ? "connected" : "idle"}</span>
-              <span>{providerLabel}</span>
+              <span>{providerSummary}</span>
               <span>{modelLabel}</span>
               <span>{stepsLabel}</span>
             </div>
@@ -401,7 +458,7 @@ export function RoveWorkbench() {
           </div>
           <div className="signal-band__cell">
             <span>provider</span>
-            <strong>{providerLabel}</strong>
+            <strong>{providerSummary}</strong>
             <p>{providerMode === "default" ? "server config" : providerKeySummary(providerMode, providerKeyEnv)}</p>
           </div>
           <div className="signal-band__cell">
@@ -431,7 +488,7 @@ export function RoveWorkbench() {
 
               <div className="composer-controls">
                 <label className="field">
-                  <span>Provider</span>
+                  <span>Type</span>
                   <select
                     value={providerMode}
                     onChange={(event) => {
@@ -441,10 +498,13 @@ export function RoveWorkbench() {
                       setProviderKeyEnv(providerDefaultKeyEnv(nextMode));
                       setProviderTestResult(null);
                       setProviderTestError(null);
+                      setProviderModelsResult(null);
+                      setProviderModelsError(null);
+                      setAvailableModels([]);
                     }}
                   >
                     <option value="default">Runtime default</option>
-                    <option value="openai-compatible">OpenAI-compatible</option>
+                    <option value="openai">OpenAI</option>
                     <option value="openai-responses">OpenAI Responses</option>
                     <option value="anthropic">Anthropic</option>
                     <option value="ollama">Ollama</option>
@@ -458,7 +518,19 @@ export function RoveWorkbench() {
                     value={model}
                     onChange={(event) => setModel(event.target.value)}
                     placeholder="fake"
+                    list={
+                      availableModels.length > 0
+                        ? "provider-model-options"
+                        : undefined
+                    }
                   />
+                  {availableModels.length > 0 ? (
+                    <datalist id="provider-model-options">
+                      {availableModels.map((id) => (
+                        <option key={id} value={id} />
+                      ))}
+                    </datalist>
+                  ) : null}
                 </label>
 
                 <label className="field field--steps">
@@ -502,6 +574,20 @@ export function RoveWorkbench() {
               {providerMode !== "default" ? (
                 <div className="provider-panel" aria-label="Runtime connection settings">
                   <label className="field">
+                    <span>Display name (optional)</span>
+                    <input
+                      value={providerDisplayLabel}
+                      onChange={(event) => {
+                        setProviderDisplayLabel(event.target.value);
+                        setProviderTestResult(null);
+                        setProviderTestError(null);
+                        setProviderModelsResult(null);
+                        setProviderModelsError(null);
+                      }}
+                      placeholder={compactProviderLabel(providerApiBase) || "derived from base URL"}
+                    />
+                  </label>
+                  <label className="field">
                     <span>API base</span>
                     <input
                       value={providerApiBase}
@@ -509,6 +595,9 @@ export function RoveWorkbench() {
                         setProviderApiBase(event.target.value);
                         setProviderTestResult(null);
                         setProviderTestError(null);
+                        setProviderModelsResult(null);
+                        setProviderModelsError(null);
+                        setAvailableModels([]);
                       }}
                       placeholder={providerDefaultApiBase(providerMode)}
                     />
@@ -522,31 +611,55 @@ export function RoveWorkbench() {
                           setProviderKeyEnv(event.target.value);
                           setProviderTestResult(null);
                           setProviderTestError(null);
+                          setProviderModelsResult(null);
+                          setProviderModelsError(null);
+                          setAvailableModels([]);
                         }}
                         placeholder={providerDefaultKeyEnv(providerMode)}
                       />
                     </label>
                   ) : null}
-                  <button
-                    type="button"
-                    className="secondary provider-panel__test"
-                    onClick={handleProviderTest}
-                    disabled={providerTestBusy || !providerApiBase.trim()}
-                  >
-                    <Link2Icon width={15} height={15} />
-                    Test
-                  </button>
+                  <div className="action-row provider-panel__actions">
+                    <button
+                      type="button"
+                      className="secondary provider-panel__test"
+                      onClick={handleLoadProviderModels}
+                      disabled={
+                        providerModelsBusy || !providerApiBase.trim()
+                      }
+                    >
+                      <CubeIcon width={15} height={15} />
+                      Load models
+                    </button>
+                    <button
+                      type="button"
+                      className="secondary provider-panel__test"
+                      onClick={handleProviderTest}
+                      disabled={providerTestBusy || !providerApiBase.trim()}
+                    >
+                      <Link2Icon width={15} height={15} />
+                      Test
+                    </button>
+                  </div>
                   <div className="provider-panel__result" role="status">
-                    {providerTestBusy ? (
+                    {providerModelsBusy ? (
+                      <span>Loading models</span>
+                    ) : providerModelsError ? (
+                      <span data-tone="error">{providerModelsError}</span>
+                    ) : providerModelsResult ? (
+                      <span data-tone="ok">
+                        {providerModelsResult.models_count} models available
+                      </span>
+                    ) : providerTestBusy ? (
                       <span>Testing provider</span>
                     ) : providerTestError ? (
                       <span data-tone="error">{providerTestError}</span>
                     ) : providerTestResult ? (
                       <span data-tone="ok">
-                        {providerTestResult.models_count} models /{" "}
+                        selected model{" "}
                         {providerTestResult.model_present === false
-                          ? "model not listed"
-                          : "model ready"}
+                          ? "not listed"
+                          : "ready"}
                       </span>
                     ) : (
                       <span>Key values stay on the API server</span>
@@ -935,7 +1048,7 @@ function shortId(value: string | null): string {
 function compactProviderLabel(value: string): string {
   const trimmed = value.trim();
   if (!trimmed) {
-    return "OpenAI-compatible";
+    return "OpenAI";
   }
   try {
     return new URL(trimmed).host || trimmed;
@@ -947,8 +1060,7 @@ function compactProviderLabel(value: string): string {
 function providerDisplayName(mode: ProviderMode): string {
   switch (mode) {
     case "openai":
-    case "openai-compatible":
-      return "OpenAI-compatible";
+      return "OpenAI";
     case "openai-responses":
       return "OpenAI Responses";
     case "anthropic":
@@ -965,7 +1077,6 @@ function providerDisplayName(mode: ProviderMode): string {
 function providerRequiresKey(mode: ProviderMode): boolean {
   return (
     mode === "openai" ||
-    mode === "openai-compatible" ||
     mode === "openai-responses" ||
     mode === "anthropic"
   );
@@ -980,7 +1091,6 @@ function providerDefaultApiBase(mode: ProviderMode): string {
     case "fake":
       return "local";
     case "openai":
-    case "openai-compatible":
     case "openai-responses":
       return "https://api.openai.com/v1";
     default:
@@ -993,7 +1103,6 @@ function providerDefaultKeyEnv(mode: ProviderMode): string {
     case "anthropic":
       return "ANTHROPIC_API_KEY";
     case "openai":
-    case "openai-compatible":
     case "openai-responses":
       return "OPENAI_API_KEY";
     default:

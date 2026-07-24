@@ -7,6 +7,7 @@ pub mod openai;
 pub mod openai_responses;
 mod options;
 mod protocol;
+pub mod provider;
 pub mod routing;
 pub mod traits;
 
