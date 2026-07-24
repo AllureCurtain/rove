@@ -39,6 +39,8 @@
 | archive | [历史文档归档](./Archive/README.md) | 起步期决策、设计讨论、handoff 和实现对照，仅保留历史脉络 |
 | design | [模块化 Workspace 架构](./design/2026-07-22-modular-workspace-architecture.md) | Implemented: `models / core / runtime / apps` 四层结构 |
 | design | [Provider Layer 重构](./design/2026-07-23-provider-layer-redesign-design.md) | Accepted/implemented provider protocol registry and profiles |
+| design | [Cleanup & naming decisions](./design/2026-07-24-cleanup-and-naming-decisions.md) | Accepted: delete legacy, provider_type/wire_protocol vocabulary, tools, W1–W3 |
+| plan | [Cleanup W1/W2/W3 delivery](./plans/2026-07-24-cleanup-w1-w2-w3.md) | Execution checklist for cleanup waves |
 | future | [Agent Execution Lifecycle](./design/2026-07-14-agent-execution-lifecycle-design.md) | Proposed: execution strategy、StepRecord、Replanner、Finalizer |
 | future | [Agent Definition 与程序性知识](./design/2026-07-14-agent-definition-and-procedural-knowledge-design.md) | Proposed: versioned Agent profile、procedure 与 capability binding |
 | future | [MCP Streamable HTTP 与 Tool Artifacts](./design/2026-07-15-mcp-streamable-http-and-tool-artifacts-design.md) | Proposed: transport/session/result/artifact 演进 |
