@@ -506,34 +506,7 @@ Acceptance:
 - destructive MCP tools are marked destructive and require approval when policy is `ask`;
 - rejected destructive MCP calls do not perform the destructive action and produce an explainable failed/rejected record.
 
-## Gate 6: RAG Optional External Gate
-
-Run deterministic RAG checks:
-
-```powershell
-
-
-
-```
-
-If using provider embeddings, first confirm the embedding model is visible to the
-configured provider account. Then configure:
-
-```powershell
-$env:ROVE_RAG_DETERMINISTIC = "false"
-$env:ROVE_RAG_EMBEDDING_PROVIDER = "openai"
-$env:ROVE_RAG_EMBEDDING_MODEL = "<embedding model>"
-$env:ROVE_RAG_EMBEDDING_API_BASE = "https://<provider-or-gateway>/v1"
-$env:ROVE_RAG_EMBEDDING_API_KEY = "<secret>"
-```
-
-Acceptance:
-
-- deterministic RAG tests pass;
-- provider-backed embedding runs write all index, manifest, and eval artifacts under the isolated integration state directory;
-- no RAG artifact is written into the normal `.rove` runtime state unless the test explicitly chooses that workspace.
-
-## Gate 7: `stress`
+## Gate 6: `stress`
 
 Run stress only after `local-full`, `provider-smoke`, `provider-full`, and `external-tools` pass.
 

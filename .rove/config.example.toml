@@ -59,15 +59,3 @@ open_cooldown_ms = 30000
 retry_max_attempts = 1
 retry_backoff_base_ms = 250
 retry_backoff_max_ms = 5000
-
-[rag]
-deterministic = true
-embedding_provider = "deterministic"
-embedding_model = "deterministic-64"
-embedding_api_base = "https://api.openai.com/v1"
-embedding_api_key = ""
-timeout_ms = 30000
-fallback_to_deterministic = true
-# rerank_provider = "dashscope"
-# rerank_model = "qwen3-rerank"
-# rerank_api_key = "set-via-environment"

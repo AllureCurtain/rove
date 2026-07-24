@@ -333,7 +333,9 @@ CI is split by dependency weight:
 
 - `.github/workflows/ci.yml`: Rust default fmt/clippy/test and web test/typecheck/build.
 
-RAG remains separate so DataFusion/LanceDB dependencies do not slow every default feedback loop.
+Default feedback loops stay free of heavy retrieval dependencies. Workspace
+retrieval is tool-based (`fs`/`shell`) plus layered session/durable file memory;
+there is no built-in vector database.
 
 ## Benchmark And Acceptance
 

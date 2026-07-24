@@ -1,6 +1,6 @@
 # Integration Testing
 
-This document defines the first full end-to-end integration profile for rove and the optional gates that extend it to real providers, MCP, and RAG. The goal is to prove the product's own runtime loop before adding external-service variability.
+This document defines the first full end-to-end integration profile for rove and the optional gates that extend it to real providers and MCP. The goal is to prove the product's own runtime loop before adding external-service variability.
 
 ## Profiles
 
@@ -9,10 +9,10 @@ This document defines the first full end-to-end integration profile for rove and
 | `local-full` | Yes | No | Proves fake provider, real API, real Web workbench, built-in tools, approval/input resume, persistent state, and Web history. |
 | `provider-smoke` | No | Provider key, network, or local Ollama | Proves a configured real provider can answer and perform one native tool-use round trip. |
 | `provider-integration` | No | Provider key/network, except local Ollama | Proves a real OpenAI-compatible, Anthropic, or Ollama provider through inventory, provider smoke, API jobs, Web records, and saved evidence. |
-| `external-tools` | No | MCP server or RAG provider configuration | Proves configured external tools can be discovered, called, and shown in API/Web records. |
+| `external-tools` | No | MCP server configuration | Proves configured external tools can be discovered, called, and shown in API/Web records. |
 | `stress` | No | Depends on selected profile | Later profile for concurrent runs, long-running jobs, repeated resume, and restart recovery. |
 
-The first integration baseline is `local-full`. Real model providers, MCP servers, RAG provider embeddings, and stress tests are gated follow-ups, not first-round blockers.
+The first integration baseline is `local-full`. Real model providers, MCP servers, and stress tests are gated follow-ups, not first-round blockers.
 
 ## Required Local Files
 
@@ -397,18 +397,6 @@ The official filesystem MCP smoke remains opt-in:
 $env:ROVE_MCP_FILESYSTEM_SMOKE = "1"
 cargo test --test mcp mcp_official_filesystem_server_smoke_when_enabled -- --exact --nocapture
 ```
-
-### RAG
-
-RAG remains feature-gated and deterministic by default:
-
-```powershell
-
-
-
-```
-
-Provider embeddings or reranking should be enabled only through explicit environment gates and should write artifacts under the integration state directory.
 
 ## Pass Criteria
 

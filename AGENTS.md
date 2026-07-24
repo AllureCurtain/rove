@@ -13,8 +13,8 @@ Use this precedence when sources disagree:
    and known gaps.
 3. Root `README.md`, `MEMORY_DOCTRINE.md`, and `docs/ONBOARDING.md` for the
    maintained project overview.
-4. `docs/design/` for proposed or historical target designs.
-5. Older top-level design and handoff documents for design history only.
+4. `docs/design/` for active proposed or accepted target designs.
+5. `docs/Archive/` for early design, plan, handoff, and comparison history only.
 
 Do not silently choose one side of a code/document contradiction. Confirm the
 behavior, keep the safer current contract, and update the stale current-state
@@ -55,7 +55,7 @@ Additional routing:
 |---|---|
 | `models/` | `rove-models`: normalized model protocol, providers, routing, fake provider |
 | `core/` | `rove-core`: in-memory Agent loop, core events/control, tool contracts and registry |
-| `apps/cli/` | `rove-cli`: CLI/REPL/TUI and feature-gated index/RAG |
+| `apps/cli/` | `rove-cli`: CLI/REPL/TUI and local command surfaces |
 | `apps/api/` | `rove-api`: HTTP/SSE/OpenAPI surface |
 | `apps/bench/` | `rove-bench`: deterministic benchmark runner |
 | `apps/bootstrap/` | `rove-app-bootstrap`: product config and assembly |
@@ -65,8 +65,9 @@ Additional routing:
 | `apps/web/` | Standalone Next.js workbench |
 | `scripts/` | Local development and integration runners |
 | `docs/runtime/` | Current implementation source of truth |
-| `docs/design/` | Proposed/target design documents |
-| `docs/plans/` | Implementation plans and historical execution checklists |
+| `docs/design/` | Active proposed/target and implemented architecture documents |
+| `docs/plans/` | Active and recent implementation plans |
+| `docs/Archive/` | Historical early designs, plans, handoffs, and comparisons |
 
 ## 4. Architecture invariants
 
@@ -90,9 +91,9 @@ and updates its tests and current documentation:
   durable truth.
 - Completed mutations and completed plan work must not be replayed on resume.
   Unknown in-flight side effects require conservative handling.
-- Memory, RAG, workspace instructions, tool output, and runtime policy are
-  distinct authorities. Retrieved or generated text is not automatically a
-  trusted instruction.
+- Memory, optional external retrieval, workspace instructions, tool output, and
+  runtime policy are distinct authorities. Retrieved or generated text is not
+  automatically a trusted instruction.
 - Local deterministic execution must remain available without provider keys or
   network access.
 - Secrets must not appear in committed configuration, normal logs, trace,
@@ -100,7 +101,7 @@ and updates its tests and current documentation:
 
 ## 5. Current implementation boundaries
 
-As of 2026-07-22:
+As of 2026-07-24:
 
 - rove is a local-first Rust runtime with CLI, API, Web, persisted run state,
   resume, provider routing, tools, layered memory, optional future external retrieval, and
@@ -178,24 +179,18 @@ Run the smallest relevant check first, then expand in proportion to risk.
 
 ```powershell
 cargo fmt --all --check
-cargo clippy --all-targets -- -D warnings
-cargo test
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
 ```
 
 Focused examples:
 
 ```powershell
-cargo test --test e2e
-cargo test --test api
-cargo test --test mcp
-cargo test --test tool_safety
-cargo test --test bench
-```
-
-### RAG feature
-
-```powershell
-cargo clippy --all-targets (removed) -- -D warnings
+cargo test -p rove-integration-tests --test e2e
+cargo test -p rove-integration-tests --test api
+cargo test -p rove-integration-tests --test mcp
+cargo test -p rove-integration-tests --test tool_safety
+cargo test -p rove-integration-tests --test bench
 ```
 
 ### Web
@@ -215,8 +210,8 @@ approval/input/cancel/resume, or the API proxy. Follow the opt-in gates in
 ### Integration and real services
 
 - Use `scripts/integration-smoke.ps1` for the local full stack when appropriate.
-- Provider, real MCP, RAG-provider, and real browser gates are opt-in. Never
-  assume credentials or external services are available.
+- Provider, real MCP, and real browser gates are opt-in. Never assume credentials
+  or external services are available.
 - A skipped real-service test only proves the skip path, not interoperability.
 - Never point tests at production services.
 
@@ -240,9 +235,10 @@ task explicitly asks for a full gate.
 - `docs/runtime/` describes current behavior and must be updated in the same
   implementation change that changes the contract.
 - Future architecture belongs under `docs/design/` and must carry a
-  visible status.
+  visible status. Early historical designs live under `docs/Archive/`.
 - Implementation plans belong under `docs/plans/` and must not require a
-  particular external agent skill.
+  particular external agent skill. Completed early plans live under
+  `docs/Archive/plans/`.
 - Do not update `docs/runtime/implementation-status.md` or
   `docs/runtime/acceptance-matrix.md` to `Met` before code and tests exist.
 - Keep examples secret-free and portable; prefer relative paths and environment
@@ -254,7 +250,7 @@ task explicitly asks for a full gate.
 
 ## 10. Security checklist
 
-Before handing off a change involving tools, API, providers, state, MCP, RAG,
+Before handing off a change involving tools, API, providers, state, MCP,
 artifacts, or Web:
 
 - Are input size, path, timeout, and concurrency bounded?
