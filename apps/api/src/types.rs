@@ -50,15 +50,11 @@ pub struct ProviderProfileRequest {
     /// `anthropic`, `ollama`, `fake`. Official and relay endpoints share the
     /// same type; only `api_base` / key / model differ.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub channel: Option<String>,
+    pub provider_type: Option<String>,
     /// Optional display label. When empty, the API derives a name from
-    /// `api_base` (hostname). Use `channel` to select the type, not `name`.
+    /// `api_base` (hostname). Use `provider_type` to select the type, not `name`.
     #[serde(default)]
     pub name: String,
-    /// Advanced: open wire protocol id (`openai-chat`, `anthropic-messages`, …).
-    /// Optional when `channel` is set.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub wire_protocol: Option<String>,
     pub api_base: String,
     pub api_key_env: Option<String>,
 }
@@ -72,7 +68,7 @@ pub struct ProviderTestRequest {
 
 /// Request body for listing models available on a provider endpoint.
 ///
-/// Requires a typed provider profile (`channel` or `wire_protocol` + `api_base`).
+/// Requires a typed provider profile (`provider_type` + `api_base`).
 /// For OpenAI/Anthropic families the API key is read from `api_key_env` on the
 /// server process; Ollama and Fake do not need a key.
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
@@ -169,7 +165,7 @@ pub struct ProviderTestResponse {
     pub status: String,
     pub provider: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub channel: Option<String>,
+    pub provider_type: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wire_protocol: Option<String>,
     pub api_base: String,
@@ -184,7 +180,7 @@ pub struct ProviderTestResponse {
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct ProviderModelsResponse {
     pub provider: String,
-    pub channel: String,
+    pub provider_type: String,
     pub wire_protocol: String,
     pub api_base: String,
     pub key_env: String,

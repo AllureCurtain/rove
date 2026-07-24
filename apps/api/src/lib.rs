@@ -344,7 +344,7 @@ async fn list_provider_models(
     let inventory = provider_inventory(&profile, &key_env, req.models_endpoint.as_deref()).await?;
     Ok(Json(ProviderModelsResponse {
         provider: profile.name,
-        channel: profile.channel,
+        provider_type: profile.provider_type,
         wire_protocol: profile.wire_protocol,
         api_base: profile.api_base,
         key_env,
@@ -381,7 +381,7 @@ async fn test_provider(
     Ok(Json(ProviderTestResponse {
         status: "pass".to_string(),
         provider: profile.name,
-        channel: Some(profile.channel),
+        provider_type: Some(profile.provider_type),
         wire_protocol: Some(profile.wire_protocol),
         api_base: profile.api_base,
         key_env,

@@ -268,7 +268,7 @@ function Invoke-ProviderRestMethod([string]$Uri, [hashtable]$Headers = $null) {
     }
 }
 
-function Invoke-OpenAiCompatibleModelInventory {
+function Invoke-OpenAiModelInventory {
     $endpoint = Get-DefaultModelsEndpoint
     $headers = @{ Authorization = "Bearer $(Get-ApiKeyValue)" }
     $models = Invoke-ProviderRestMethod -Uri $endpoint -Headers $headers
@@ -308,7 +308,7 @@ function Invoke-ModelInventory {
     $modelIds = switch ($Provider) {
         "anthropic" { Invoke-AnthropicModelInventory }
         "ollama" { Invoke-OllamaModelInventory }
-        default { Invoke-OpenAiCompatibleModelInventory }
+        default { Invoke-OpenAiModelInventory }
     }
 
     $Model | Set-Content -LiteralPath (Join-Path $ArtifactsDir "selected-provider-model.txt")
@@ -333,7 +333,7 @@ function Invoke-ProviderSmoke {
         "openai" {
             $env:ROVE_PROVIDER_SMOKE_OPENAI = "1"
             $env:ROVE_PROVIDER_SMOKE_OPENAI_MODEL = $Model
-            $testName = "openai_compatible_real_provider_smoke_when_enabled"
+            $testName = "openai_real_provider_smoke_when_enabled"
         }
         "openai-responses" {
             $env:ROVE_PROVIDER_SMOKE_OPENAI_RESPONSES = "1"
@@ -380,6 +380,7 @@ function Invoke-ProviderSmoke {
 function New-ProviderProfileBody {
     if (Provider-RequiresKey $Provider) {
         $provider = @{
+            provider_type = $Provider
             name = $Provider
             api_base = $ApiBase
             api_key_env = $ApiKeyEnv
@@ -387,6 +388,7 @@ function New-ProviderProfileBody {
         return $provider
     }
     $provider = @{
+        provider_type = $Provider
         name = $Provider
         api_base = $ApiBase
     }

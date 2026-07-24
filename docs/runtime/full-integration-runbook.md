@@ -23,7 +23,7 @@ The local deterministic runner implements `local-full`:
 powershell -ExecutionPolicy Bypass -File scripts/integration-smoke.ps1
 ```
 
-The provider runner implements real provider gates for OpenAI-compatible,
+The provider runner implements real provider gates for OpenAI,
 Anthropic, and Ollama profiles:
 
 ```powershell
@@ -79,7 +79,7 @@ Never commit real keys or generated runtime state. Do not paste keys into `.rove
 For a local session, set provider keys only in the current PowerShell process:
 
 ```powershell
-$env:OPENAI_API_KEY = Read-Host "OpenAI-compatible key"
+$env:OPENAI_API_KEY = Read-Host "OpenAI key"
 $env:ANTHROPIC_API_KEY = Read-Host "Anthropic key"
 ```
 
@@ -89,7 +89,7 @@ If a key was pasted into a chat, terminal transcript, or committed file, rotate 
 
 Provider profiles are not vendor-specific. The runtime can use:
 
-- official OpenAI-compatible APIs and compatible relay/gateway `/v1` APIs;
+- official OpenAI APIs and compatible relay/gateway `/v1` APIs;
 - native Anthropic Messages API;
 - local Ollama `/api/chat`;
 - deterministic fake providers for local verification.
@@ -98,10 +98,10 @@ The Web workbench and `POST /jobs` accept the same per-run profile shape:
 provider name, API base, key environment variable name when needed, and model id.
 Browser code sends only the environment variable name, never the raw key.
 
-SiliconFlow is one OpenAI-compatible example. Useful public surfaces:
+SiliconFlow is one OpenAI example. Useful public surfaces:
 
 - Platform introduction: `https://api-docs.siliconflow.cn/docs/userguide/get_started/introduction`
-- OpenAI-compatible chat endpoint: `https://api-docs.siliconflow.cn/docs/api/chat-completions-post`
+- OpenAI chat endpoint: `https://api-docs.siliconflow.cn/docs/api/chat-completions-post`
 - Model list endpoint: `https://api-docs.siliconflow.cn/docs/api/models-get`
 - Public model center: `https://www.siliconflow.cn/models`
 
@@ -210,7 +210,7 @@ Acceptance:
 
 ## Gate 2: `provider-model-inventory`
 
-For OpenAI-compatible official APIs or relay/gateway APIs, set the key in the
+For OpenAI official APIs or relay/gateway APIs, set the key in the
 current shell and query the configured model list endpoint:
 
 ```powershell
@@ -259,7 +259,7 @@ Acceptance:
 
 ## Gate 3: `provider-smoke`
 
-Use the generic provider runner for OpenAI-compatible endpoints, relay/gateway
+Use the generic provider runner for OpenAI endpoints, relay/gateway
 endpoints, Anthropic, and Ollama. It runs model inventory, provider smoke, API
 provider jobs, Web provider records, and evidence capture:
 
@@ -308,7 +308,7 @@ The API and Web workbench also accept the same per-run profiles for
 `openai`, `anthropic`, `ollama`, and `fake`. Browser code sends key
 environment variable names only; it never sends raw key values.
 
-For a smoke-only manual check, use rove's OpenAI-compatible provider path
+For a smoke-only manual check, use rove's OpenAI provider path
 directly:
 
 ```powershell
@@ -317,7 +317,7 @@ $env:OPENAI_API_KEY = "<secret>"
 $env:OPENAI_API_BASE = "https://<provider-or-gateway>/v1"
 $env:ROVE_PROVIDER_SMOKE_OPENAI_MODEL = "<chat/tool model>"
 
-cargo test --test provider_smoke openai_compatible_real_provider_smoke_when_enabled -- --exact --nocapture
+cargo test --test provider_smoke openai_real_provider_smoke_when_enabled -- --exact --nocapture
 ```
 
 The test performs:
@@ -341,7 +341,7 @@ Acceptance:
 ## Gate 4: `provider-full`
 
 This gate proves real provider + real API + real Web records. Prefer
-`scripts/provider-integration.ps1` for OpenAI-compatible official APIs,
+`scripts/provider-integration.ps1` for OpenAI official APIs,
 relay/gateway APIs, Anthropic, and Ollama. Use the manual profile below only for
 diagnostics when the runner needs to be decomposed.
 

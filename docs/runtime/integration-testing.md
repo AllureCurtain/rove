@@ -8,7 +8,7 @@ This document defines the first full end-to-end integration profile for rove and
 |---|---:|---|---|
 | `local-full` | Yes | No | Proves fake provider, real API, real Web workbench, built-in tools, approval/input resume, persistent state, and Web history. |
 | `provider-smoke` | No | Provider key, network, or local Ollama | Proves a configured real provider can answer and perform one native tool-use round trip. |
-| `provider-integration` | No | Provider key/network, except local Ollama | Proves a real OpenAI-compatible, Anthropic, or Ollama provider through inventory, provider smoke, API jobs, Web records, and saved evidence. |
+| `provider-integration` | No | Provider key/network, except local Ollama | Proves a real OpenAI, Anthropic, or Ollama provider through inventory, provider smoke, API jobs, Web records, and saved evidence. |
 | `external-tools` | No | MCP server configuration | Proves configured external tools can be discovered, called, and shown in API/Web records. |
 | `stress` | No | Depends on selected profile | Later profile for concurrent runs, long-running jobs, repeated resume, and restart recovery. |
 
@@ -220,7 +220,7 @@ The runner does not run `provider-smoke`, `external-tools`, or `stress`; those r
 ## Generic Provider Runner
 
 `scripts/provider-integration.ps1` is the provider gate for
-OpenAI-compatible APIs, Anthropic, and local Ollama. It is intentionally not
+OpenAI APIs, Anthropic, and local Ollama. It is intentionally not
 tied to one vendor: the provider, base URL, API-key environment variable, model
 id, ports, stress counts, restart recovery, long-soak settings, and model-list
 endpoint are parameters.
@@ -230,10 +230,10 @@ code submits `name`, `api_base`, and `api_key_env` when a key is required; the
 Rust API reads the named environment variable and never receives a raw key from
 the browser. `POST /providers/test` verifies model inventory before a run, and
 `POST /jobs` may include the provider profile to route that single job through
-OpenAI-compatible, Anthropic, Ollama, or fake providers. Official APIs and
-relay/gateway APIs are covered through the OpenAI-compatible profile.
+OpenAI, Anthropic, Ollama, or fake providers. Official APIs and
+relay/gateway APIs are covered through the OpenAI profile.
 
-Fast OpenAI-compatible gate:
+Fast OpenAI gate:
 
 ```powershell
 $env:OPENAI_API_KEY = "<secret>"
@@ -373,7 +373,7 @@ Use `docs/runtime/provider-smoke.md` as the source of truth. With no gate enable
 $env:ROVE_PROVIDER_SMOKE_OPENAI = "1"
 $env:OPENAI_API_KEY = "<secret>"
 $env:ROVE_PROVIDER_SMOKE_OPENAI_MODEL = "gpt-4.1-mini"
-cargo test --test provider_smoke openai_compatible_real_provider_smoke_when_enabled -- --exact --nocapture
+cargo test --test provider_smoke openai_real_provider_smoke_when_enabled -- --exact --nocapture
 ```
 
 Passing `provider-smoke` proves provider reachability, event normalization, and one native tool-use round trip. It does not replace `local-full`.

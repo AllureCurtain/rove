@@ -7,7 +7,7 @@ Provider-neutral model protocol and adapters:
 - `Message`, `Role`, `ToolCallRef`, `Usage`
 - model-visible `ToolSchema` (name/description/input only)
 - `ModelClient`, `ModelEvent`, `ModelError`
-- OpenAI-compatible, OpenAI Responses, Anthropic, Ollama, and Fake clients
+- OpenAI Completions, OpenAI Responses, Anthropic, Ollama, and Fake protocols via `provider/*`
 - provider stream parsing, routing, and health primitives
 
 ## Non-responsibility

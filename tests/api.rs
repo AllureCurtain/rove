@@ -364,8 +364,8 @@ async fn api_accepts_matching_bearer_token() {
 }
 
 #[tokio::test]
-async fn api_tests_openai_compatible_provider_profile_without_exposing_key() {
-    let provider = start_openai_compatible_test_server().await;
+async fn api_tests_openai_provider_profile_without_exposing_key() {
+    let provider = start_openai_test_server().await;
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
     let app = router(ApiState::new(workspace, test_config()));
@@ -383,7 +383,7 @@ async fn api_tests_openai_compatible_provider_profile_without_exposing_key() {
                 .body(Body::from(
                     serde_json::json!({
                         "provider": {
-                            "channel": "openai",
+                            "provider_type": "openai",
                             "api_base": format!("{}/v1", provider.base_url),
                             "api_key_env": key_env
                         },
@@ -407,10 +407,10 @@ async fn api_tests_openai_compatible_provider_profile_without_exposing_key() {
     let text = String::from_utf8(body.to_vec()).unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json["status"], "pass");
-    // The `openai` type maps to the openai-chat wire protocol; the display name
+    // The `openai` type maps to the openai-completions wire protocol; the display name
     // defaults from the endpoint host rather than echoing the type label.
-    assert_eq!(json["channel"], "openai");
-    assert_eq!(json["wire_protocol"], "openai-chat");
+    assert_eq!(json["provider_type"], "openai");
+    assert_eq!(json["wire_protocol"], "openai-completions");
     let provider_label = json["provider"].as_str().unwrap_or_default();
     assert!(
         provider_label.starts_with("127.0.0.1:") || provider_label == "openai",
@@ -430,7 +430,7 @@ async fn api_tests_openai_compatible_provider_profile_without_exposing_key() {
 
 #[tokio::test]
 async fn api_lists_provider_models_without_exposing_key() {
-    let provider = start_openai_compatible_test_server().await;
+    let provider = start_openai_test_server().await;
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
     let app = router(ApiState::new(workspace, test_config()));
@@ -448,7 +448,7 @@ async fn api_lists_provider_models_without_exposing_key() {
                 .body(Body::from(
                     serde_json::json!({
                         "provider": {
-                            "channel": "openai",
+                            "provider_type": "openai",
                             "api_base": format!("{}/v1", provider.base_url),
                             "api_key_env": key_env
                         }
@@ -470,8 +470,8 @@ async fn api_lists_provider_models_without_exposing_key() {
         .unwrap();
     let text = String::from_utf8(body.to_vec()).unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(json["channel"], "openai");
-    assert_eq!(json["wire_protocol"], "openai-chat");
+    assert_eq!(json["provider_type"], "openai");
+    assert_eq!(json["wire_protocol"], "openai-completions");
     assert_eq!(json["key_env"], key_env);
     assert_eq!(json["key_present"], true);
     assert_eq!(json["models_count"], 2);
@@ -488,7 +488,7 @@ async fn api_lists_provider_models_without_exposing_key() {
 
 #[tokio::test]
 async fn api_tests_openai_responses_provider_profile_without_exposing_key() {
-    let provider = start_openai_compatible_test_server().await;
+    let provider = start_openai_test_server().await;
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
     let app = router(ApiState::new(workspace, test_config()));
@@ -506,7 +506,7 @@ async fn api_tests_openai_responses_provider_profile_without_exposing_key() {
                 .body(Body::from(
                     serde_json::json!({
                         "provider": {
-                            "channel": "openai-responses",
+                            "provider_type": "openai-responses",
                             "api_base": format!("{}/v1", provider.base_url),
                             "api_key_env": key_env
                         },
@@ -530,7 +530,7 @@ async fn api_tests_openai_responses_provider_profile_without_exposing_key() {
     let text = String::from_utf8(body.to_vec()).unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json["status"], "pass");
-    assert_eq!(json["channel"], "openai-responses");
+    assert_eq!(json["provider_type"], "openai-responses");
     assert_eq!(json["wire_protocol"], "openai-responses");
     let provider_label = json["provider"].as_str().unwrap_or_default();
     assert!(
@@ -550,8 +550,8 @@ async fn api_tests_openai_responses_provider_profile_without_exposing_key() {
 }
 
 #[tokio::test]
-async fn api_jobs_accept_openai_compatible_provider_profile_per_request() {
-    let provider = start_openai_compatible_test_server().await;
+async fn api_jobs_accept_openai_provider_profile_per_request() {
+    let provider = start_openai_test_server().await;
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
     let app = router(ApiState::new(workspace, test_config()));
@@ -574,7 +574,7 @@ async fn api_jobs_accept_openai_compatible_provider_profile_per_request() {
                         "approval": "auto",
                         "max_steps": 1,
                         "provider": {
-                            "channel": "openai",
+                            "provider_type": "openai",
                             "api_base": format!("{}/v1", provider.base_url),
                             "api_key_env": key_env
                         }
@@ -616,7 +616,7 @@ async fn api_jobs_accept_openai_compatible_provider_profile_per_request() {
 
 #[tokio::test]
 async fn api_jobs_accept_openai_responses_provider_profile_per_request() {
-    let provider = start_openai_compatible_test_server().await;
+    let provider = start_openai_test_server().await;
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
     let app = router(ApiState::new(workspace, test_config()));
@@ -639,7 +639,7 @@ async fn api_jobs_accept_openai_responses_provider_profile_per_request() {
                         "approval": "auto",
                         "max_steps": 1,
                         "provider": {
-                            "channel": "openai-responses",
+                            "provider_type": "openai-responses",
                             "api_base": format!("{}/v1", provider.base_url),
                             "api_key_env": key_env
                         }
@@ -705,7 +705,7 @@ async fn api_jobs_accept_anthropic_provider_profile_per_request() {
                         "approval": "auto",
                         "max_steps": 1,
                         "provider": {
-                            "channel": "anthropic",
+                            "provider_type": "anthropic",
                             "api_base": provider.base_url,
                             "api_key_env": key_env
                         }
@@ -766,7 +766,7 @@ async fn api_jobs_accept_ollama_provider_profile_without_key() {
                         "approval": "auto",
                         "max_steps": 1,
                         "provider": {
-                            "channel": "ollama",
+                            "provider_type": "ollama",
                             "api_base": provider.base_url
                         }
                     })
@@ -3333,7 +3333,7 @@ struct CapturedProviderRequests {
     ollama_model: Option<String>,
 }
 
-struct OpenAiCompatibleTestServer {
+struct OpenAiTestServer {
     base_url: String,
     captured: Arc<Mutex<CapturedProviderRequests>>,
 }
@@ -3353,7 +3353,7 @@ fn sse_response(
     ([(CONTENT_TYPE, "text/event-stream")], body)
 }
 
-async fn start_openai_compatible_test_server() -> OpenAiCompatibleTestServer {
+async fn start_openai_test_server() -> OpenAiTestServer {
     let captured = Arc::new(Mutex::new(CapturedProviderRequests::default()));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -3495,7 +3495,7 @@ async fn start_openai_compatible_test_server() -> OpenAiCompatibleTestServer {
     tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
     });
-    OpenAiCompatibleTestServer {
+    OpenAiTestServer {
         base_url: format!("http://{addr}"),
         captured,
     }
@@ -3649,8 +3649,7 @@ fn unique_env_key(prefix: &str) -> String {
 
 fn test_config() -> AppConfig {
     let mut config = AppConfig::default();
-    config.provider.name = "openai".to_string();
-    config.provider.api_base = "http://127.0.0.1".to_string();
+    // Default profiles-only config already uses a fake provider.
     config.provider.model = "fake".to_string();
     config.runtime.max_steps = 4;
     config

@@ -1,7 +1,12 @@
+use std::collections::BTreeMap;
+
 use futures::StreamExt;
 use rove_app_bootstrap::build_model_client;
 use rove_app_bootstrap::default_tool_registry;
-use rove_app_bootstrap::{AppConfig, AppConfigOverrides};
+use rove_app_bootstrap::{
+    AppConfig, AppConfigOverrides, ProviderAuthConfig, ProviderProfileConfig, SecretSource,
+};
+use rove_models::ProviderOptions;
 use rove_runtime::context::ContextManager;
 use rove_runtime::engine::{Engine, EngineConfig};
 use rove_runtime::events::StreamEvent;
@@ -30,7 +35,51 @@ struct ProviderSmokeResult {
     event_names: Vec<&'static str>,
 }
 
-async fn run_provider_smoke(provider: &str, model: String, message: &str) -> ProviderSmokeResult {
+fn smoke_profile(provider_type: &str, model: &str) -> ProviderProfileConfig {
+    let (base_url, auth) = match provider_type {
+        "openai" | "openai-responses" => (
+            std::env::var("ROVE_PROVIDER_SMOKE_API_BASE")
+                .or_else(|_| std::env::var("OPENAI_API_BASE"))
+                .unwrap_or_else(|_| "https://api.openai.com/v1".to_string()),
+            ProviderAuthConfig::Bearer {
+                secret: SecretSource::Env {
+                    env: "OPENAI_API_KEY".to_string(),
+                },
+            },
+        ),
+        "anthropic" => (
+            std::env::var("ROVE_PROVIDER_SMOKE_ANTHROPIC_BASE")
+                .unwrap_or_else(|_| "https://api.anthropic.com".to_string()),
+            ProviderAuthConfig::Header {
+                header: "x-api-key".to_string(),
+                secret: SecretSource::Env {
+                    env: "ANTHROPIC_API_KEY".to_string(),
+                },
+            },
+        ),
+        "ollama" => (
+            std::env::var("ROVE_PROVIDER_SMOKE_OLLAMA_BASE")
+                .unwrap_or_else(|_| "http://localhost:11434".to_string()),
+            ProviderAuthConfig::None,
+        ),
+        other => panic!("unsupported smoke provider_type `{other}`"),
+    };
+    ProviderProfileConfig {
+        provider_type: provider_type.to_string(),
+        base_url,
+        model: model.to_string(),
+        auth,
+        headers: BTreeMap::new(),
+        options: ProviderOptions::default(),
+        protocol_options: serde_json::json!({}),
+    }
+}
+
+async fn run_provider_smoke(
+    provider_type: &str,
+    model: String,
+    message: &str,
+) -> ProviderSmokeResult {
     let workspace = Workspace::detect(std::env::current_dir().unwrap().as_path()).unwrap();
     let mut config = AppConfig::load(
         &workspace.root,
@@ -41,14 +90,17 @@ async fn run_provider_smoke(provider: &str, model: String, message: &str) -> Pro
         },
     )
     .unwrap();
-    config.provider.name = provider.to_string();
-    config.provider.model = model;
+    let mut profiles = BTreeMap::new();
+    profiles.insert("smoke".to_string(), smoke_profile(provider_type, &model));
+    config.provider.active = Some("smoke".to_string());
+    config.provider.profiles = profiles;
+    config.provider.fallback_profiles.clear();
     config.provider.fallback_models.clear();
-    config.provider.fallback_providers.clear();
+    config.provider.model = model.clone();
 
-    let model = build_model_client(&config, config.provider.model.clone());
+    let model_client = build_model_client(&config, model);
     let engine = Engine::with_workspace(
-        model,
+        model_client,
         default_tool_registry(&workspace),
         ContextManager::new(config.load_system_prompt()),
         EngineConfig {
@@ -83,9 +135,9 @@ async fn run_provider_smoke(provider: &str, model: String, message: &str) -> Pro
     result
 }
 
-async fn assert_provider_smoke(provider: &str, model: String) {
+async fn assert_provider_smoke(provider_type: &str, model: String) {
     let final_answer = run_provider_smoke(
-        provider,
+        provider_type,
         model.clone(),
         "Reply with exactly: rove provider smoke ok",
     )
@@ -100,7 +152,7 @@ async fn assert_provider_smoke(provider: &str, model: String) {
     );
 
     let tool_use = run_provider_smoke(
-        provider,
+        provider_type,
         model,
         "Use the echo tool exactly once with message \"rove provider tool smoke ok\", then reply with exactly: rove provider smoke ok",
     )
@@ -125,7 +177,7 @@ async fn assert_provider_smoke(provider: &str, model: String) {
 }
 
 #[tokio::test]
-async fn openai_compatible_real_provider_smoke_when_enabled() {
+async fn openai_real_provider_smoke_when_enabled() {
     if !smoke_enabled("ROVE_PROVIDER_SMOKE_OPENAI") {
         return;
     }
@@ -162,7 +214,7 @@ async fn ollama_real_provider_smoke_when_enabled() {
     if !smoke_enabled("ROVE_PROVIDER_SMOKE_OLLAMA") {
         return;
     }
-    let model = std::env::var("ROVE_PROVIDER_SMOKE_OLLAMA_MODEL")
-        .unwrap_or_else(|_| "llama3.2".to_string());
+    let model =
+        std::env::var("ROVE_PROVIDER_SMOKE_OLLAMA_MODEL").unwrap_or_else(|_| "llama3".to_string());
     assert_provider_smoke("ollama", model).await;
 }

@@ -294,9 +294,9 @@ export interface CreateJobRequest {
 /**
  * User-facing provider type (protocol family). Official and relay endpoints
  * share the same type; only base URL / key / model differ. Gemini relays that
- * expose an OpenAI-compatible API use the `openai` type.
+ * expose an OpenAI Chat Completions API use the `openai` type.
  */
-export type ProviderChannel =
+export type ProviderType =
   | "openai"
   | "openai-responses"
   | "anthropic"
@@ -308,19 +308,12 @@ export interface ProviderProfile {
    * Provider type: openai | openai-responses | anthropic | ollama | fake.
    * Maps to an internal wire protocol on the API. Not "official vs relay".
    */
-  channel?: ProviderChannel;
+  provider_type?: ProviderType;
   /**
    * Optional display label. When omitted/empty the API derives a name from
-   * `api_base`. Use `channel` to select the type, not `name`.
+   * `api_base`. Use `provider_type` to select the type, not `name`.
    */
   name?: string;
-  /** Advanced: open wire protocol id. Prefer `channel` for product UI. */
-  wire_protocol?:
-    | "openai-chat"
-    | "openai-responses"
-    | "anthropic-messages"
-    | "ollama-chat"
-    | "fake";
   api_base: string;
   api_key_env?: string;
 }
@@ -334,7 +327,7 @@ export interface ProviderTestRequest {
 export interface ProviderTestResponse {
   status: string;
   provider: string;
-  channel?: string | null;
+  provider_type?: string | null;
   wire_protocol?: string | null;
   api_base: string;
   key_env: string;
@@ -354,7 +347,7 @@ export interface ProviderModelsRequest {
 /** Catalog of model ids returned by a provider inventory endpoint. */
 export interface ProviderModelsResponse {
   provider: string;
-  channel: string;
+  provider_type: string;
   wire_protocol: string;
   api_base: string;
   key_env: string;

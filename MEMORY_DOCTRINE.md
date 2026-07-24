@@ -128,7 +128,7 @@ temporary compatibility re-exports. Engine coordination, the final session
 summary hook, and built-in memory tools have not moved yet.
 
 Durable memory is helpful context, not an authoritative database. Session memory
-is a resumability aid, not a full transcript. RAG is a separate retrieval layer
+is a resumability aid, not a full transcript. Vector RAG is not a built-in product path; retrieval is tools + file memory
 and should not be mixed into durable memory unless the fact is stable enough to
 survive across sessions.
 

@@ -2,7 +2,7 @@
 
 `rove` is a local-first runtime with remote-ready seams. The default mode is local: CLI runs in the current workspace, API binds to `127.0.0.1:8787`, and state is written under `.rove/`.
 
-The repository manifest is currently a transitional Cargo Workspace containing
+The repository manifest is a modular Cargo Workspace containing
 a virtual Cargo Workspace of `rove-models`, `rove-core`, `rove-runtime`,
 `rove-app-bootstrap`, `rove-cli`, `rove-api`, `rove-bench`, and
 `rove-integration-tests`; the default member is `apps/cli`. Shared package metadata and dependency versions are
@@ -78,7 +78,7 @@ cannot supply trustworthy interaction events fail closed.
 - `rove-models` owns the normalized message/tool/usage/error protocol, provider
   adapters, routing, health, and Fake Model without depending on another local
   project package. The root facade re-exports these contracts while
-  AppConfig-driven construction remains transitional product assembly.
+  AppConfig-driven construction is the product assembly path (named profiles only).
 - `rove-core` owns the in-memory `Agent`, `AgentEvent`, action/parser and model
   turn, cancellation/control, `Tool`/`ToolRegistry`, `ToolDescriptor`, and
   runtime-neutral policy hook. It depends only on `rove-models` and creates no

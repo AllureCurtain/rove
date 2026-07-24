@@ -3,7 +3,8 @@
 //! User-facing profiles select a **type** (`openai`, `openai-responses`,
 //! `anthropic`, `ollama`, `fake`). The type maps to an internal
 //! [`WireProtocolId`]. Display `name` is optional and defaults from `api_base`
-//! when omitted. Advanced clients may still set `wire_protocol` directly.
+//! when omitted. Clients must not supply `wire_protocol`; responses may echo it
+//! as a read-only diagnostic.
 
 use std::collections::BTreeMap;
 
@@ -20,10 +21,11 @@ const JOB_PROVIDER_PROFILE: &str = "__api_request__";
 /// Normalized provider identity used by job assembly and inventory.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct NormalizedProviderProfile {
-    /// Stable open wire protocol id (`openai-chat`, `anthropic-messages`, …).
+    /// Stable open wire protocol id (`openai-completions`, `anthropic-messages`, …).
+    /// System-mapped from `provider_type`; never accepted from request bodies.
     pub(super) wire_protocol: String,
-    /// User-facing channel id when known.
-    pub(super) channel: String,
+    /// User-facing provider type (`openai`, `anthropic`, …).
+    pub(super) provider_type: String,
     /// Display name (custom label or derived from `api_base`).
     pub(super) name: String,
     pub(super) api_base: String,
@@ -33,7 +35,7 @@ pub(super) struct NormalizedProviderProfile {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum InventoryFamily {
-    OpenAiCompatible,
+    OpenAi,
     Anthropic,
     Ollama,
     Fake,
@@ -62,7 +64,8 @@ pub(super) fn apply_provider_profile(
         model
     };
 
-    let wire_protocol = WireProtocolId::new(profile.wire_protocol.clone()).map_err(|error| {
+    // Validate the mapped wire id early so bad configs fail before job start.
+    WireProtocolId::new(profile.wire_protocol.clone()).map_err(|error| {
         ApiError::bad_request(format!("provider wire_protocol is invalid: {error}"))
     })?;
     let key_env = provider_key_env(&profile);
@@ -71,7 +74,7 @@ pub(super) fn apply_provider_profile(
     // before the async job builds its model client.
     let api_key = provider_api_key(&profile.inventory_family, &key_env)?;
     let auth = match profile.inventory_family {
-        InventoryFamily::OpenAiCompatible => {
+        InventoryFamily::OpenAi => {
             if api_key.is_empty() {
                 ProviderAuthConfig::None
             } else {
@@ -97,7 +100,7 @@ pub(super) fn apply_provider_profile(
     profiles.insert(
         JOB_PROVIDER_PROFILE.to_string(),
         ProviderProfileConfig {
-            wire_protocol,
+            provider_type: profile.provider_type.clone(),
             base_url: if profile.inventory_family == InventoryFamily::Fake {
                 String::new()
             } else {
@@ -115,56 +118,32 @@ pub(super) fn apply_provider_profile(
     config.provider.profiles = profiles;
     config.provider.fallback_profiles.clear();
     config.provider.fallback_models.clear();
-    config.provider.fallback_providers.clear();
     config.provider.model = model;
-    // Keep legacy fields coherent for dump-config and older diagnostics without
-    // driving assembly (named profiles take precedence when present).
-    config.provider.name = profile.name;
-    config.provider.api_base = profile.api_base;
-    config.provider.api_key.clear();
-    config.provider.anthropic_api_key.clear();
     Ok(())
 }
 
 pub(super) fn normalize_provider_profile(
     profile: &ProviderProfileRequest,
 ) -> Result<NormalizedProviderProfile, ApiError> {
-    let explicit_protocol = profile
-        .wire_protocol
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-    let channel = profile
-        .channel
+    let provider_type = profile
+        .provider_type
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .map(str::to_ascii_lowercase);
+        .map(str::to_ascii_lowercase)
+        .ok_or_else(|| {
+            ApiError::bad_request(
+                "provider profile requires provider_type (openai, openai-responses, anthropic, ollama, or fake)",
+            )
+        })?;
     let raw_name = profile.name.trim();
 
-    let (wire_protocol, channel_id, inventory_family) = if let Some(protocol) = explicit_protocol {
-        let (wire, channel_id, family) = resolve_protocol_identity(protocol)?;
-        // Optional channel must agree when both are set.
-        if let Some(ref ch) = channel {
-            let from_channel = resolve_channel_identity(ch)?;
-            if from_channel.0 != wire {
-                return Err(ApiError::bad_request(format!(
-                    "provider.channel `{ch}` does not match wire_protocol `{wire}`"
-                )));
-            }
-        }
-        (wire, channel_id, family)
-    } else if let Some(ref ch) = channel {
-        resolve_channel_identity(ch)?
-    } else {
-        return Err(ApiError::bad_request(
-            "provider profile requires a type (openai, openai-responses, anthropic, ollama, or fake); advanced clients may set wire_protocol instead",
-        ));
-    };
+    let (wire_protocol, provider_type_id, inventory_family) =
+        resolve_provider_type_identity(&provider_type)?;
 
     let api_base = profile.api_base.trim().trim_end_matches('/').to_string();
     match inventory_family {
-        InventoryFamily::OpenAiCompatible | InventoryFamily::Anthropic => {
+        InventoryFamily::OpenAi | InventoryFamily::Anthropic => {
             if api_base.is_empty() {
                 return Err(ApiError::bad_request("provider.api_base must not be empty"));
             }
@@ -183,11 +162,11 @@ pub(super) fn normalize_provider_profile(
         ApiError::bad_request(format!("provider wire_protocol is invalid: {error}"))
     })?;
 
-    let display_name = display_name_for_profile(raw_name, &api_base, &channel_id);
+    let display_name = display_name_for_profile(raw_name, &api_base, &provider_type_id);
 
     Ok(NormalizedProviderProfile {
         wire_protocol,
-        channel: channel_id,
+        provider_type: provider_type_id,
         name: display_name,
         api_base,
         api_key_env: profile.api_key_env.clone(),
@@ -195,12 +174,12 @@ pub(super) fn normalize_provider_profile(
     })
 }
 
-fn display_name_for_profile(raw_name: &str, api_base: &str, channel_id: &str) -> String {
+fn display_name_for_profile(raw_name: &str, api_base: &str, provider_type: &str) -> String {
     let trimmed = raw_name.trim();
     if !trimmed.is_empty() {
         return trimmed.to_string();
     }
-    name_from_base_url(api_base).unwrap_or_else(|| channel_id.to_string())
+    name_from_base_url(api_base).unwrap_or_else(|| provider_type.to_string())
 }
 
 fn name_from_base_url(api_base: &str) -> Option<String> {
@@ -231,24 +210,26 @@ fn name_from_base_url(api_base: &str) -> Option<String> {
     }
 }
 
-/// User-facing type → (wire_protocol, channel_id, inventory family).
+/// User-facing type → (wire_protocol, provider_type, inventory family).
 ///
 /// Types are product labels (`openai`, `anthropic`, …), not "official vs
 /// relay". Official and gateway endpoints share the same type; only base URL,
-/// key, and model differ. Gateways that speak Gemini's OpenAI-compatible API
-/// are reached with the `openai` type.
-fn resolve_channel_identity(channel: &str) -> Result<(String, String, InventoryFamily), ApiError> {
-    match channel.trim().to_ascii_lowercase().as_str() {
+/// key, and model differ. Gateways that speak OpenAI Chat Completions are
+/// reached with the `openai` type.
+fn resolve_provider_type_identity(
+    provider_type: &str,
+) -> Result<(String, String, InventoryFamily), ApiError> {
+    match provider_type.trim().to_ascii_lowercase().as_str() {
         // Chat Completions wire: official OpenAI, relays, vLLM, DeepSeek, ZenMux, …
         "openai" => Ok((
-            "openai-chat".to_string(),
+            "openai-completions".to_string(),
             "openai".to_string(),
-            InventoryFamily::OpenAiCompatible,
+            InventoryFamily::OpenAi,
         )),
         "openai-responses" => Ok((
             "openai-responses".to_string(),
             "openai-responses".to_string(),
-            InventoryFamily::OpenAiCompatible,
+            InventoryFamily::OpenAi,
         )),
         "anthropic" => Ok((
             "anthropic-messages".to_string(),
@@ -256,7 +237,7 @@ fn resolve_channel_identity(channel: &str) -> Result<(String, String, InventoryF
             InventoryFamily::Anthropic,
         )),
         "ollama" => Ok((
-            "ollama-chat".to_string(),
+            "ollama".to_string(),
             "ollama".to_string(),
             InventoryFamily::Ollama,
         )),
@@ -267,42 +248,6 @@ fn resolve_channel_identity(channel: &str) -> Result<(String, String, InventoryF
         )),
         other => Err(ApiError::bad_request(format!(
             "unsupported provider type `{other}`; choose openai, openai-responses, anthropic, ollama, or fake"
-        ))),
-    }
-}
-
-fn resolve_protocol_identity(
-    protocol: &str,
-) -> Result<(String, String, InventoryFamily), ApiError> {
-    let protocol = protocol.trim().to_ascii_lowercase();
-    match protocol.as_str() {
-        "openai-chat" => Ok((
-            "openai-chat".to_string(),
-            "openai".to_string(),
-            InventoryFamily::OpenAiCompatible,
-        )),
-        "openai-responses" => Ok((
-            "openai-responses".to_string(),
-            "openai-responses".to_string(),
-            InventoryFamily::OpenAiCompatible,
-        )),
-        "anthropic-messages" => Ok((
-            "anthropic-messages".to_string(),
-            "anthropic".to_string(),
-            InventoryFamily::Anthropic,
-        )),
-        "ollama-chat" => Ok((
-            "ollama-chat".to_string(),
-            "ollama".to_string(),
-            InventoryFamily::Ollama,
-        )),
-        "fake" => Ok((
-            "fake".to_string(),
-            "fake".to_string(),
-            InventoryFamily::Fake,
-        )),
-        other => Err(ApiError::bad_request(format!(
-            "unsupported provider wire_protocol `{other}`; supported built-ins: openai-chat, openai-responses, anthropic-messages, ollama-chat, fake"
         ))),
     }
 }
@@ -342,9 +287,7 @@ pub(super) async fn provider_inventory(
     requested_endpoint: Option<&str>,
 ) -> Result<ProviderInventory, ApiError> {
     match profile.inventory_family {
-        InventoryFamily::OpenAiCompatible => {
-            openai_compatible_inventory(profile, key_env, requested_endpoint).await
-        }
+        InventoryFamily::OpenAi => openai_inventory(profile, key_env, requested_endpoint).await,
         InventoryFamily::Anthropic => {
             anthropic_inventory(profile, key_env, requested_endpoint).await
         }
@@ -356,7 +299,7 @@ pub(super) async fn provider_inventory(
     }
 }
 
-async fn openai_compatible_inventory(
+async fn openai_inventory(
     profile: &NormalizedProviderProfile,
     key_env: &str,
     requested_endpoint: Option<&str>,
@@ -450,26 +393,24 @@ mod tests {
     use crate::ProviderProfileRequest;
 
     #[test]
-    fn channel_maps_to_wire_protocol_and_name_defaults_from_base_url() {
+    fn provider_type_maps_to_wire_protocol_and_name_defaults_from_base_url() {
         let profile = normalize_provider_profile(&ProviderProfileRequest {
-            channel: Some("openai".to_string()),
+            provider_type: Some("openai".to_string()),
             name: String::new(),
-            wire_protocol: None,
             api_base: "https://relay.example.com/v1".to_string(),
             api_key_env: None,
         })
         .unwrap();
-        assert_eq!(profile.wire_protocol, "openai-chat");
-        assert_eq!(profile.channel, "openai");
+        assert_eq!(profile.wire_protocol, "openai-completions");
+        assert_eq!(profile.provider_type, "openai");
         assert_eq!(profile.name, "relay.example.com");
     }
 
     #[test]
     fn custom_display_name_is_preserved() {
         let profile = normalize_provider_profile(&ProviderProfileRequest {
-            channel: Some("anthropic".to_string()),
+            provider_type: Some("anthropic".to_string()),
             name: "team-claude".to_string(),
-            wire_protocol: None,
             api_base: "https://api.anthropic.com".to_string(),
             api_key_env: None,
         })
@@ -481,17 +422,16 @@ mod tests {
     #[test]
     fn name_is_treated_as_label_not_a_type() {
         // A free-form name is a display label; it never selects the type.
-        // Without an explicit channel/wire_protocol the request is rejected.
+        // Without an explicit provider_type the request is rejected.
         let error = normalize_provider_profile(&ProviderProfileRequest {
-            channel: None,
+            provider_type: None,
             name: "my gateway".to_string(),
-            wire_protocol: None,
             api_base: "https://gateway.test/v1".to_string(),
             api_key_env: None,
         })
         .unwrap_err();
         assert!(
-            error.message.contains("requires a type"),
+            error.message.contains("requires provider_type"),
             "unexpected error: {}",
             error.message
         );
@@ -499,26 +439,24 @@ mod tests {
 
     #[test]
     fn gemini_relay_uses_openai_type() {
-        // Gemini's OpenAI-compatible gateways are reached with the `openai` type;
+        // Gemini OpenAI Chat Completions gateways are reached with the `openai` type;
         // there is no separate gemini type.
         let profile = normalize_provider_profile(&ProviderProfileRequest {
-            channel: Some("openai".to_string()),
+            provider_type: Some("openai".to_string()),
             name: String::new(),
-            wire_protocol: None,
             api_base: "https://zenmux.ai/api/v1".to_string(),
             api_key_env: None,
         })
         .unwrap();
-        assert_eq!(profile.wire_protocol, "openai-chat");
-        assert_eq!(profile.channel, "openai");
+        assert_eq!(profile.wire_protocol, "openai-completions");
+        assert_eq!(profile.provider_type, "openai");
     }
 
     #[test]
     fn unsupported_type_is_rejected() {
         let error = normalize_provider_profile(&ProviderProfileRequest {
-            channel: Some("gemini-openai-compat".to_string()),
+            provider_type: Some("gemini-openai-compat".to_string()),
             name: String::new(),
-            wire_protocol: None,
             api_base: "https://zenmux.ai/api/v1".to_string(),
             api_key_env: None,
         })

@@ -4,8 +4,8 @@ use reqwest::{
 };
 
 use crate::provider::{
-    AuthStyle, Framing, OLLAMA_CHAT_PROTOCOL, StreamDecoder, WireProtocol, WireProtocolId,
-    WireRequest, WireRequestInput,
+    AuthStyle, Framing, OLLAMA_PROTOCOL, StreamDecoder, WireProtocol, WireProtocolId, WireRequest,
+    WireRequestInput,
 };
 use crate::{Message, ModelError, ModelEvent, Role, ToolSchema, Usage};
 
@@ -16,8 +16,8 @@ pub struct OllamaChatProtocol {
 impl OllamaChatProtocol {
     pub fn new() -> Self {
         Self {
-            id: WireProtocolId::new(OLLAMA_CHAT_PROTOCOL)
-                .expect("the built-in Ollama Chat protocol id is valid"),
+            id: WireProtocolId::new(OLLAMA_PROTOCOL)
+                .expect("the built-in Ollama protocol id is valid"),
         }
     }
 }

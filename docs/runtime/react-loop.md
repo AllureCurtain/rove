@@ -18,7 +18,7 @@ translation, and the persistent `Engine` facade.
 `AgentEvent` values into durable `StreamEvent` values. Root `src/core/*`
 modules re-export the public surface during the compatibility window.
 Product tool-registry assembly and first-party `AppConfig`
-remain transitional root concerns until later phases. Runtime tool turns
+live in product bootstrap and app shells. Runtime tool turns
 consume the `rove-core` Tool contract and registry without placing
 Workspace, Memory, approval, or input fields on the minimal core `ToolContext`.
 

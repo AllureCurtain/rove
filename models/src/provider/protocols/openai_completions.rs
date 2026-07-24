@@ -6,31 +6,31 @@ use reqwest::{
 };
 
 use crate::provider::{
-    AuthStyle, Framing, OPENAI_CHAT_PROTOCOL, StreamDecoder, WireProtocol, WireProtocolId,
+    AuthStyle, Framing, OPENAI_COMPLETIONS_PROTOCOL, StreamDecoder, WireProtocol, WireProtocolId,
     WireRequest, WireRequestInput,
 };
 use crate::{Message, ModelError, ModelEvent, Role, ToolSchema, Usage};
 
-pub struct OpenAiChatProtocol {
+pub struct OpenAiCompletionsProtocol {
     id: WireProtocolId,
 }
 
-impl OpenAiChatProtocol {
+impl OpenAiCompletionsProtocol {
     pub fn new() -> Self {
         Self {
-            id: WireProtocolId::new(OPENAI_CHAT_PROTOCOL)
-                .expect("the built-in OpenAI Chat protocol id is valid"),
+            id: WireProtocolId::new(OPENAI_COMPLETIONS_PROTOCOL)
+                .expect("the built-in OpenAI Completions protocol id is valid"),
         }
     }
 }
 
-impl Default for OpenAiChatProtocol {
+impl Default for OpenAiCompletionsProtocol {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl WireProtocol for OpenAiChatProtocol {
+impl WireProtocol for OpenAiCompletionsProtocol {
     fn id(&self) -> &WireProtocolId {
         &self.id
     }
@@ -401,7 +401,7 @@ mod tests {
 
     #[test]
     fn request_contains_native_tools_options_and_history() {
-        let protocol = OpenAiChatProtocol::new();
+        let protocol = OpenAiCompletionsProtocol::new();
         let messages = [
             Message::assistant_with_tool_calls(
                 "checking".to_string(),
@@ -448,7 +448,7 @@ mod tests {
     }
 
     #[test]
-    fn request_body_matches_legacy_openai_chat_client() {
+    fn request_body_matches_legacy_openai_completions_client() {
         let messages = [
             Message::system("follow policy"),
             Message::user("inspect"),
@@ -486,7 +486,7 @@ mod tests {
         );
         legacy.apply_options(&options);
         let legacy_body = legacy.build_request_body(&messages, &tools);
-        let migrated_body = OpenAiChatProtocol::new()
+        let migrated_body = OpenAiCompletionsProtocol::new()
             .build_request(&WireRequestInput {
                 model: "gpt-test",
                 messages: &messages,
@@ -502,7 +502,7 @@ mod tests {
 
     #[test]
     fn decoder_normalizes_fragmented_tool_calls_usage_and_done() {
-        let protocol = OpenAiChatProtocol::new();
+        let protocol = OpenAiCompletionsProtocol::new();
         let mut decoder = protocol.decoder();
         let frames = [
             serde_json::json!({"choices":[{"delta":{"content":"hello"}}]}).to_string(),
@@ -531,7 +531,7 @@ mod tests {
     }
 
     #[test]
-    fn decoder_events_match_legacy_openai_chat_client() {
+    fn decoder_events_match_legacy_openai_completions_client() {
         let frames = [
             serde_json::json!({"choices":[{"delta":{"content":"hello"}}]}).to_string(),
             serde_json::json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"echo","arguments":"{\"message\""}}]}}]}).to_string(),
@@ -539,7 +539,7 @@ mod tests {
             "[DONE]".to_string(),
         ];
         let mut legacy_state = OpenAiToolCallState::default();
-        let mut migrated_decoder = OpenAiChatProtocol::new().decoder();
+        let mut migrated_decoder = OpenAiCompletionsProtocol::new().decoder();
         let mut legacy_events = Vec::new();
         let mut migrated_events = Vec::new();
 
@@ -563,7 +563,7 @@ mod tests {
     }
 
     #[test]
-    fn http_error_classification_matches_legacy_openai_chat_client() {
+    fn http_error_classification_matches_legacy_openai_completions_client() {
         let mut rate_limit_headers = HeaderMap::new();
         rate_limit_headers.insert(RETRY_AFTER, HeaderValue::from_static("3"));
         let context_body = serde_json::json!({
@@ -591,7 +591,7 @@ mod tests {
                 "temporarily unavailable",
             ),
         ];
-        let protocol = OpenAiChatProtocol::new();
+        let protocol = OpenAiCompletionsProtocol::new();
 
         for (status, headers, body) in cases {
             let legacy = legacy_classify_http_error(status, &headers, body);
@@ -635,7 +635,7 @@ mod tests {
 
     #[test]
     fn decoder_rejects_malformed_json_without_echoing_frame() {
-        let mut decoder = OpenAiChatProtocol::new().decoder();
+        let mut decoder = OpenAiCompletionsProtocol::new().decoder();
         let error = decoder.push("not-json-secret-value").unwrap_err();
         assert!(matches!(error, ModelError::StreamInterrupted(_)));
         assert!(!error.to_string().contains("not-json-secret-value"));
@@ -716,7 +716,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn provider_client_streams_openai_chat_with_legacy_identity() {
+    async fn provider_client_streams_openai_completions_with_legacy_identity() {
         let (base_url, request_receiver, server) = mock_openai_server().await;
         let client = ProviderClient::new(
             ProviderClientConfig {
@@ -728,7 +728,7 @@ mod tests {
                 options: ProviderOptions::default(),
                 protocol_options: serde_json::json!({}),
             },
-            Arc::new(OpenAiChatProtocol::new()),
+            Arc::new(OpenAiCompletionsProtocol::new()),
             Arc::new(Transport::new(TransportConfig::default()).unwrap()),
         )
         .unwrap();

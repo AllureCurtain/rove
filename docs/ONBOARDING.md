@@ -197,9 +197,9 @@ OnCall reference Agent.
 | Web | `apps/web/` | API proxy, state hooks, components, tests |
 | Agent core | `core/` | in-memory Agent/model/tool loop, control, core events, contracts |
 | Persistent runtime | `runtime/` | contracts/events, workspace, context/compaction, memory, local built-in tools, MCP proxy, StateStore, artifacts/SQLite, repair and resume |
-| Persistent coordinator | `src/core/` | transitional Engine, planning/run coordination, tool turns, memory-flush ordering, durable event translation |
+| Persistent coordinator | `runtime/` | Engine, planning/run coordination, tool turns, memory-flush ordering, durable event translation |
 | Models | `models/` | independent protocol, provider adapters, routing, fake provider |
-| Provider assembly | `src/models/factory.rs` | transitional AppConfig-driven construction |
+| Provider assembly | `apps/bootstrap/` | AppConfig + named profiles -> ProviderClient registry path |
 | Runtime tools | `runtime/src/tools/` | echo, filesystem, shell, memory, request-input, and invocation adapters |
 | Tool assembly | `apps/bootstrap` + `runtime/src/tools` | product registry assembly and built-in tools |
 
@@ -345,7 +345,7 @@ Do not merge all retrieved content into one high-authority prompt.
 
 Current provider families include:
 
-- OpenAI-compatible Chat Completions;
+- OpenAI Chat Completions (`provider_type=openai` -> `wire_protocol=openai-completions`);
 - OpenAI Responses;
 - Anthropic;
 - Ollama;
