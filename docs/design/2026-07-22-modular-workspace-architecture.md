@@ -1,6 +1,6 @@
 # Rove 模块化 Workspace 目标架构 - 2026-07-22
 
-> Status: **Implemented** (modular workspace migration complete; optional full RAG feature suite remains owner-deferred)
+> Status: **Implemented** (modular Workspace migration complete; built-in vector RAG removed)
 >
 > 本文记录 Rove 从单 crate 项目演进为可嵌入、可扩展 Agent 平台的目标目录与依赖边界。模块化 Workspace 主体已落地。当前运行时事实仍以代码、测试和 [`docs/runtime/`](../runtime/README.md) 为准。
 

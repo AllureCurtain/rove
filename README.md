@@ -2,23 +2,29 @@
 
 `rove` is a local-first, stateful agent runtime written in Rust. It provides a CLI (including an optional full-screen TUI), an HTTP API, a standalone web workbench, tool execution, resumable run state, layered memory, provider routing, and tool-based workspace retrieval.
 
-The runtime is designed around a small core engine:
+The repository is a virtual Cargo Workspace. Its implemented dependency and
+product flow is:
 
 ```text
-CLI (REPL / exec / TUI) / API / Web
-    -> Engine
-        -> Context + checkpoints
-        -> Provider routing
-        -> Tool orchestration
-        -> Memory layers
-        -> State store
+apps/web --HTTP/SSE--> apps/api
+
+apps/cli / apps/api / apps/bench
+    -> apps/bootstrap      product configuration and assembly
+        -> runtime         durable Engine, state, tools, memory, planning
+            -> core        in-memory Agent loop and tool contracts
+                -> models  normalized providers, routing, fake model
 ```
 
 ## Current MVP
 
-rove has reached its local-first MVP: CLI, API, Web workbench, streaming events, bounded tool execution, persisted state, resume, deterministic benchmarks, and runtime docs are all present. The current MVP boundary is documented in [docs/runtime/mvp-definition.md](docs/runtime/mvp-definition.md).
+As of 2026-07-24, the modular Workspace migration and Provider Layer redesign
+are on `main`. rove has reached its local-first MVP: CLI, API, Web workbench,
+streaming events, bounded tool execution, persisted state, resume, deterministic
+benchmarks, and current runtime docs are all present. The exact boundary is
+documented in [docs/runtime/mvp-definition.md](docs/runtime/mvp-definition.md).
 
-Browser/Desktop workspaces, hosted multi-user identity, distributed rate limiting, and deeper provider-backed tool-time RAG are outside this MVP.
+Browser/Desktop workspaces, hosted multi-user identity, distributed rate
+limiting, and optional external semantic retrieval are outside this MVP.
 
 ## Quick Start
 
@@ -151,8 +157,8 @@ bearer token server-side and does not expose it to browser JavaScript.
 
 | Area | Path | Purpose |
 |---|---|---|
-| CLI / TUI | `apps/cli/` | Rich terminal REPL, full-screen TUI, exec, config dump, sessions, and feature-gated RAG indexing. |
-| API | `apps/api/` | HTTP job lifecycle, SSE event streaming, approvals, inputs, and cancellation. |
+| CLI / TUI | `apps/cli/` | Rich terminal REPL, full-screen TUI, exec, config dump, and sessions. |
+| API | `apps/api/` | HTTP job lifecycle, SSE event streaming, approvals, inputs, cancellation, and provider inventory/test. |
 | Benchmarks | `apps/bench/`, `benchmarks/` | Deterministic no-network benchmark tasks with artifact-path reports. |
 | Bootstrap | `apps/bootstrap/` | First-party AppConfig, provider factory, product registry, shared Engine assembly. |
 | Web | `apps/web/` | Next.js workbench that consumes the API and SSE job stream. |
@@ -161,6 +167,7 @@ bearer token server-side and does not expose it to browser JavaScript.
 | Models | `models/` | Independent `rove-models` crate: normalized protocol and provider adapters. |
 | Integration tests | `tests/` | Cross-package contracts package `rove-integration-tests`. |
 | Docs | `docs/runtime/` | Current architecture, subsystem boundaries, and implementation status. |
+| History | `docs/Archive/` | Early designs, plans, handoffs, and comparisons. |
 | Maintainers | `AGENTS.md`, `docs/ONBOARDING.md` | Repository rules, source-of-truth order, code map, workflows, and verification. |
 
 
@@ -199,9 +206,6 @@ Common environment variables:
 | `ROVE_SHELL_MAX_OUTPUT_BYTES` | Max captured stdout/stderr bytes per stream. Defaults to `65536`. |
 | `ROVE_SHELL_INHERIT_ENVIRONMENT` | Whether shell commands inherit the process environment. Defaults to `true`. |
 | `ROVE_SHELL_DENYLIST` | Comma-separated shell command substrings to reject before execution. |
-| `ROVE_RAG_DETERMINISTIC` | Use deterministic local RAG embeddings. Defaults to `true`. |
-| `ROVE_RAG_EMBEDDING_MODEL` | RAG embedding model when provider mode is enabled. |
-| `ROVE_RAG_EMBEDDING_API_KEY` | RAG embedding API key; redacted in `dump-config`. |
 
 `dump-config` prints the effective config, source summary, resolved paths, and secret-redacted provider fields.
 
@@ -239,11 +243,6 @@ pnpm install --frozen-lockfile
 pnpm test
 pnpm typecheck
 pnpm build
-```
-
-RAG feature checks:
-
-```bash
 ```
 
 Deterministic benchmark checks:

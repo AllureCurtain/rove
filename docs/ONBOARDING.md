@@ -2,7 +2,7 @@
 
 > Status: **Current Maintainer Guide**
 >
-> Last reviewed: 2026-07-22. This guide explains the repository as it exists
+> Last reviewed: 2026-07-24. This guide explains the repository as it exists
 > today. For exact subsystem contracts and implementation status, follow
 > [`docs/runtime/`](runtime/README.md). Documents marked
 > `Proposed / Not Implemented` describe future work.
@@ -10,18 +10,17 @@
 This guide is the shortest path from a fresh checkout to making a safe,
 evidence-backed change in rove.
 
-The repository is currently in a compatibility migration window. The Cargo
-Workspace contains the existing root `rove` package plus the independent
-`rove-models`, `rove-core`, and `rove-runtime` crates; the root package remains
-the default member. `rove-core` is the implemented in-memory embedding layer.
-`rove-runtime` currently owns the verified foundation slice for identity,
-resumable task/execution contracts, Workspace/path safety, prompt/runtime
-identity, approval/input contracts, canonical events, context/compaction,
-session/durable memory, local built-in tools, invocation adapters, and the
-existing MCP proxy, the tool Executor pipeline, pre/post-tool and post-run
-hooks, planning/step coordination, durable event translation, the persistent
-Engine facade, plus durable state/trace/artifact/SQLite/repair/resume services.
-Product tool-registry assembly, first-party AppConfig and product assembly live in `rove-app-bootstrap`; apps live under `apps/`. Built-in vector RAG has been removed.
+The repository is a virtual Cargo Workspace. The dependency chain is
+`rove-models <- rove-core <- rove-runtime <- rove-app-bootstrap <-
+{rove-cli, rove-api, rove-bench}` plus `rove-integration-tests`.
+
+- `rove-models` owns the normalized model protocol, providers, and routing.
+- `rove-core` is the implemented in-memory embedding layer.
+- `rove-runtime` owns durable execution, state, memory, tools/MCP, planning, and
+  the Engine facade.
+- `rove-app-bootstrap` owns first-party AppConfig, provider factory, product
+  registry assembly, and shared Engine assembly.
+- Product surfaces live under `apps/`. Built-in vector RAG has been removed.
 
 ## 1. What rove is
 
@@ -66,7 +65,7 @@ Read in this order:
 3. [runtime architecture](runtime/architecture.md) — major components.
 4. [ReAct loop](runtime/react-loop.md) — current execution behavior.
 5. [subsystems](runtime/subsystems.md) — config, state, providers, tools,
-   memory, API, RAG, Web, and CI.
+   memory, API, workspace retrieval, Web, and CI.
 6. [implementation guide](runtime/implementation-guide.md) — code paths and
    verification commands.
 7. [implementation status](runtime/implementation-status.md) — implemented

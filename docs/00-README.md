@@ -2,7 +2,7 @@
 
 `rove` 的设计文档集合。
 
-**当前阶段:代码已经进入实现期,核心内核、API、Web workbench 和 runtime hardening 主线都在推进中。当前实现事实以 `docs/runtime/` 为准。**
+**当前阶段：模块化 Cargo Workspace 与 Provider Layer 重构均已合入 `main`。当前实现事实以代码、测试和 `docs/runtime/` 为准；项目起步期材料统一归档在 `docs/Archive/`。**
 
 ---
 
@@ -11,7 +11,7 @@
 - **名字**: rove /roʊv/ (漫游、探索)
 - **语言**: Rust
 - **形态演进**: CLI → API → Web
-- **位置**: `D:/Study/project/agent/rove/` (Rust 项目已初始化,CLI/API/Web workbench 均在实现中)
+- **位置**: `D:/Study/project/agent/rove/`
 
 ---
 
@@ -21,15 +21,11 @@
 |---|---|
 | ✅ | 项目命名 (rove) |
 | ✅ | 语言选型 (Rust) |
-| ✅ | 框架立场 (不用 agent 编排框架,用基础设施 crate) |
-| ✅ | 形态规划 (CLI → API → Web 渐进) |
-| ✅ | 思想基础对齐 |
-| ✅ | 技术栈清单 |
-| ✅ | 整体架构与路线图 |
-| ✅ | 产品定位与 Workspace 抽象 |
-| ✅ | 统一执行内核详细设计(站 1-12 v1 完整,作为历史参考保留) |
-| ✅ | Layer 5 数据类型详设计(分散在各站) |
+| ✅ | 模块化 Cargo Workspace (`models / core / runtime / apps`) |
+| ✅ | 本地优先 MVP：CLI / API / Web / state / resume / tools / memory |
+| ✅ | Provider Layer redesign：开放协议注册、named profiles、`/providers/models` |
 | ✅ | `docs/runtime/` 与当前实现对齐 |
+| 📦 | 起步期设计、handoff、对照材料归档到 `docs/Archive/` |
 
 ---
 
@@ -38,32 +34,26 @@
 | # | 文件 | 一句话说明 |
 |---|---|---|
 | 00 | [README](./00-README.md) | 本文件,总目录 |
-| 01 | [愿景与关键决策](./01-愿景与关键决策.md) | 做什么、不做什么,六个核心决策与理由 |
-| 02 | [agent 思想基础](./02-agent-思想基础.md) | agent 是什么,好坏分界线,流派(语言无关) |
-| 03 | [技术栈与依赖](./03-技术栈与依赖.md) | Rust crate 清单,反推荐清单 |
-| 04 | [架构与路线图](./04-架构与路线图.md) | 历史路线图,保留设计脉络 |
-| 05 | [下一步:统一执行内核 [历史参考]](./05-下一步-统一执行内核.md) | 第一个 deep dive 的起点 |
-| 06 | [请求生命周期 [历史参考]](./06-请求生命周期.md) | 12 站全流程早期设计 |
-| 07 | [产品定位与 Workspace](./07-产品定位与Workspace.md) | rove 的上层产品定位:`Workspace` runtime |
 | onboarding | [维护者 Onboarding](./ONBOARDING.md) | 当前仓库入口、代码地图、运行方式、验证矩阵和文档事实边界 |
 | runtime | [当前 runtime 文档](./runtime/README.md) | 当前实现的权威架构、子系统边界、实现状态对照 |
+| archive | [历史文档归档](./Archive/README.md) | 起步期决策、设计讨论、handoff 和实现对照，仅保留历史脉络 |
+| design | [模块化 Workspace 架构](./design/2026-07-22-modular-workspace-architecture.md) | Implemented: `models / core / runtime / apps` 四层结构 |
+| design | [Provider Layer 重构](./design/2026-07-23-provider-layer-redesign-design.md) | Accepted/implemented provider protocol registry and profiles |
 | future | [Agent Execution Lifecycle](./design/2026-07-14-agent-execution-lifecycle-design.md) | Proposed: execution strategy、StepRecord、Replanner、Finalizer |
 | future | [Agent Definition 与程序性知识](./design/2026-07-14-agent-definition-and-procedural-knowledge-design.md) | Proposed: versioned Agent profile、procedure 与 capability binding |
 | future | [MCP Streamable HTTP 与 Tool Artifacts](./design/2026-07-15-mcp-streamable-http-and-tool-artifacts-design.md) | Proposed: transport/session/result/artifact 演进 |
 | future | [OnCall Reference Agent Evaluation](./design/2026-07-15-oncall-reference-agent-evaluation-plan.md) | Proposed: 合成 reference Agent 与 deterministic evaluation |
 | future | [Grok Build 借鉴与 TUI 方向](./design/2026-07-16-grok-build-reference-and-tui-design.md) | Proposed: 保留 REPL/exec，新增复用 shared runtime 的可选 TUI |
-| future | [模块化 Workspace 目标架构](./design/2026-07-22-modular-workspace-architecture.md) | Accepted direction: `models / core / runtime / apps` 四层结构与渐进迁移边界 |
-| ref | [ragent 流式与模型设计借鉴](./RAGENT-STREAM-MODEL-NOTES-2026-05-24.md) | 记录 ragent 在 SSE、模型流、取消和路由降级上的可借鉴思想 |
 
 ---
 
 ## 建议阅读顺序
 
-**第一次读**:onboarding → runtime → 01 → 07 → 02 → 03
+**第一次读**: onboarding → runtime → 当前任务相关的 design
 
-**回看时**:先看 runtime (当前实现)和 07 (产品定位),再跳到任何感兴趣的历史 deep dive
+**回看时**: 先看 runtime（当前实现），需要了解决策沿革时再进入 Archive
 
-**面试 / 给人讲项目时**:01 + 07 + 02 即可,这三份能讲清楚为什么做、产品边界和 agent 思想基础
+**历史背景**: 早期愿景、产品定位和 agent 思想材料统一位于 [Archive](./Archive/README.md)
 
 ---
 
@@ -71,7 +61,7 @@
 
 - 每个关键决策都附 **理由** 和 **反例** (为什么不选 X)
 - 标注 **[WIP]** = 进行中,**[决策]** = 已锁定,**[待定]** = 未决
-- 引用 pico 代码时给出文件路径,引用 Claude Code 解析时给出章节号
+- 引用代码时给出文件路径
 - 中文为主,代码/术语保留英文
 - 决策修改请在文末加 changelog,不要静默改
 
@@ -81,18 +71,18 @@
 
 - **pico** (`D:/Study/project/agent/pico/`):前一个 Python coding agent 项目,**继承思想,不复用代码**(语言已切换到 Rust)
 - **Claude Code 解析** (`D:/Study/project/claude-code-analysis/analysis/`):工业级 agent 的逆向工程文档,13k+ 行,是本项目的主要参考来源
-- **ragent** (`D:/Study/project/agent/ragent/`):SSE 生命周期、模型流取消、首包探测和路由降级的参考实现。详见 [ragent 流式与模型设计借鉴](./RAGENT-STREAM-MODEL-NOTES-2026-05-24.md)
+- **ragent** (`D:/Study/project/agent/ragent/`):SSE 生命周期、模型流取消、首包探测和路由降级的参考实现。历史分析见 [ragent 流式与模型设计借鉴](./Archive/RAGENT-STREAM-MODEL-NOTES-2026-05-24.md)
 
 ---
 
 ## changelog
 
 - 2026-05-17:初版,完成 M0 之前的纸上设计 (Python 路径)
-- 2026-05-17:**重大决策切换 —— 语言从 Python 改为 Rust**,项目命名定为 rove。原因详见 [01 决策 1]。01/03/04/05 同步更新
-- 2026-05-18:新增 [07 产品定位与 Workspace](./07-产品定位与Workspace.md),确认 rove 是 Workspace runtime,第一阶段先做 Folder/Repo Workspace。
-- 2026-05-22:更新当前状态,代码已推进到 API / Web workbench 阶段,文档开始对齐实际实现。
-- 2026-05-24:新增 [ragent 流式与模型设计借鉴](./RAGENT-STREAM-MODEL-NOTES-2026-05-24.md),沉淀 SSE、模型流、取消和路由降级参考思想。
-- 2026-05-24:新增 [当前 runtime 文档](./runtime/README.md),补齐 root README、总架构、子系统设计、当前实现 vs 目标设计对照。
-- 2026-05-25:将 `docs/runtime/` 标为当前权威入口,04/05/06 改为历史参考;删除前日临时目标文件。
-- 2026-07-15:新增维护者 onboarding、根级 `AGENTS.md` 与四篇 Agent 机制未来设计;`docs/runtime/` 继续作为当前实现事实来源。
-- 2026-07-22:新增 [模块化 Workspace 目标架构](./design/2026-07-22-modular-workspace-architecture.md),确认 `models / core / runtime / apps` 四层目标结构；当前实现仍以 `docs/runtime/` 为准。
+- 2026-05-17:**重大决策切换 —— 语言从 Python 改为 Rust**,项目命名定为 rove。
+- 2026-05-18:新增产品定位与 Workspace 文档（现已归档）。
+- 2026-05-22:更新当前状态,代码已推进到 API / Web workbench 阶段。
+- 2026-05-24:新增 ragent 流式与模型设计借鉴、`docs/runtime/` 入口。
+- 2026-05-25:将 `docs/runtime/` 标为当前权威入口。
+- 2026-07-15:新增维护者 onboarding、根级 `AGENTS.md` 与未来设计。
+- 2026-07-22:模块化 Workspace 架构落地。
+- 2026-07-24:Provider Layer redesign 合入 main；起步期材料迁入 `docs/Archive/`，总目录改为 onboarding / runtime / Archive / 活跃 design。

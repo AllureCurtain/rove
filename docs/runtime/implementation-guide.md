@@ -1182,16 +1182,8 @@ Default Rust checks:
 
 ```powershell
 cargo fmt --all --check
-cargo clippy --all-targets -- -D warnings
-cargo test
-```
-
-RAG feature checks:
-
-```powershell
-
-
-
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
 ```
 
 Web checks:
@@ -1255,7 +1247,7 @@ The current M0-M6 milestone proof map lives in
 CI is split:
 
 - `.github/workflows/ci.yml` runs default Rust and Web checks.
-- `.github/workflows/rag-ci.yml` runs RAG feature checks and index smoke coverage.
+- Optional provider, MCP, and browser gates remain opt-in outside default CI.
 
 ## 21. Runtime Docs As Source Of Truth
 
