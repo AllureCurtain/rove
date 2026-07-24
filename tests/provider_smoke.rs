@@ -132,7 +132,7 @@ async fn openai_compatible_real_provider_smoke_when_enabled() {
     require_env("OPENAI_API_KEY");
     let model = std::env::var("ROVE_PROVIDER_SMOKE_OPENAI_MODEL")
         .unwrap_or_else(|_| "gpt-4.1-mini".to_string());
-    assert_provider_smoke("openai-compatible", model).await;
+    assert_provider_smoke("openai", model).await;
 }
 
 #[tokio::test]

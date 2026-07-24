@@ -34,6 +34,8 @@ pub const DEBUG_TAG: &str = "Debug";
             super::ProviderProfileRequest,
             super::ProviderTestRequest,
             super::ProviderTestResponse,
+            super::ProviderModelsRequest,
+            super::ProviderModelsResponse,
             super::debug::RecallHitResponse,
             super::debug::RecallTestRequest,
             super::debug::RecallTestResponse,
@@ -47,7 +49,7 @@ pub const DEBUG_TAG: &str = "Debug";
         (name = JOB_EVENTS_TAG, description = "Stream job lifecycle events over Server-Sent Events"),
         (name = APPROVALS_TAG, description = "Resolve pending tool approvals and user input requests"),
         (name = RUNS_TAG, description = "List completed runs and fetch persisted run reports"),
-        (name = PROVIDERS_TAG, description = "Validate per-request provider profiles without exposing provider secrets"),
+        (name = PROVIDERS_TAG, description = "List provider models and validate per-request profiles without exposing provider secrets"),
         (name = DEBUG_TAG, description = "Inspect durable memory topics and recall scoring")
     ),
     modifiers(&BearerAuth)

@@ -104,17 +104,50 @@ test("starts a resume-latest job and displays resumed source identity", async ({
   await expect(page.locator(".message-stream").getByText("Resume complete")).toBeVisible();
 });
 
-test("tests and submits an OpenAI-compatible provider profile", async ({ page }) => {
+test("loads models, tests, and submits an OpenAI provider profile", async ({ page }) => {
+  let sawProviderModels = false;
   let sawProviderTest = false;
   let sawProviderJob = false;
   await installRunsMock(page);
+  await page.route("/api/providers/models", async (route) => {
+    const body = route.request().postDataJSON() as {
+      provider?: {
+        channel?: string;
+        name?: string;
+        api_base?: string;
+        api_key_env?: string;
+      };
+    };
+    sawProviderModels =
+      body.provider?.channel === "openai" &&
+      body.provider.api_base === "https://gateway.test/v1" &&
+      body.provider.api_key_env === "GATEWAY_API_KEY";
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        provider: "gateway.test",
+        channel: "openai",
+        wire_protocol: "openai-chat",
+        api_base: "https://gateway.test/v1",
+        key_env: "GATEWAY_API_KEY",
+        key_present: true,
+        models: ["relay/deepseek-v3.2", "official/gpt-compatible"],
+        models_count: 2,
+      }),
+    });
+  });
   await page.route("/api/providers/test", async (route) => {
     const body = route.request().postDataJSON() as {
-      provider?: { name?: string; api_base?: string; api_key_env?: string };
+      provider?: {
+        channel?: string;
+        name?: string;
+        api_base?: string;
+        api_key_env?: string;
+      };
       model?: string;
     };
     sawProviderTest =
-      body.provider?.name === "openai-compatible" &&
+      body.provider?.channel === "openai" &&
       body.provider.api_base === "https://gateway.test/v1" &&
       body.provider.api_key_env === "GATEWAY_API_KEY" &&
       body.model === "relay/deepseek-v3.2";
@@ -122,23 +155,30 @@ test("tests and submits an OpenAI-compatible provider profile", async ({ page })
       contentType: "application/json",
       body: JSON.stringify({
         status: "pass",
-        provider: "openai-compatible",
+        provider: "gateway.test",
+        channel: "openai",
+        wire_protocol: "openai-chat",
         api_base: "https://gateway.test/v1",
         key_env: "GATEWAY_API_KEY",
         key_present: true,
         model: "relay/deepseek-v3.2",
         model_present: true,
-        models_count: 12,
+        models_count: 2,
       }),
     });
   });
   await page.route("/api/jobs", async (route) => {
     const body = route.request().postDataJSON() as {
-      provider?: { name?: string; api_base?: string; api_key_env?: string };
+      provider?: {
+        channel?: string;
+        name?: string;
+        api_base?: string;
+        api_key_env?: string;
+      };
       model?: string;
     };
     sawProviderJob =
-      body.provider?.name === "openai-compatible" &&
+      body.provider?.channel === "openai" &&
       body.provider.api_base === "https://gateway.test/v1" &&
       body.provider.api_key_env === "GATEWAY_API_KEY" &&
       body.model === "relay/deepseek-v3.2";
@@ -174,15 +214,22 @@ test("tests and submits an OpenAI-compatible provider profile", async ({ page })
   });
 
   await page.goto("/");
-  await page.getByLabel("Provider").selectOption("openai-compatible");
+  await page.getByLabel("Type").selectOption("openai");
   await page.getByLabel("API base").fill("https://gateway.test/v1");
   await page.getByLabel("Key env").fill("GATEWAY_API_KEY");
+  await page.getByRole("button", { name: "Load models" }).click();
+  await expect(page.getByText("2 models available")).toBeVisible();
   await page.getByLabel("Model").fill("relay/deepseek-v3.2");
   await page.getByRole("button", { name: "Test" }).click();
-  await expect(page.getByText("12 models / model ready")).toBeVisible();
+  await expect(page.getByText("selected model ready")).toBeVisible();
   await page.getByLabel("Task").fill("Use the configured provider");
   await page.getByRole("button", { name: "Run" }).click();
 
+  await expect
+    .poll(() => sawProviderModels, {
+      message: "provider models should send profile without key value",
+    })
+    .toBe(true);
   await expect
     .poll(() => sawProviderTest, {
       message: "provider test should send profile without key value",
@@ -202,11 +249,11 @@ test("tests and submits an OpenAI Responses provider profile", async ({ page }) 
   await installRunsMock(page);
   await page.route("/api/providers/test", async (route) => {
     const body = route.request().postDataJSON() as {
-      provider?: { name?: string; api_base?: string; api_key_env?: string };
+      provider?: { channel?: string; api_base?: string; api_key_env?: string };
       model?: string;
     };
     sawProviderTest =
-      body.provider?.name === "openai-responses" &&
+      body.provider?.channel === "openai-responses" &&
       body.provider.api_base === "https://api.openai.com/v1" &&
       body.provider.api_key_env === "OPENAI_API_KEY" &&
       body.model === "gpt-4.1-mini";
@@ -215,6 +262,8 @@ test("tests and submits an OpenAI Responses provider profile", async ({ page }) 
       body: JSON.stringify({
         status: "pass",
         provider: "openai-responses",
+        channel: "openai-responses",
+        wire_protocol: "openai-responses",
         api_base: "https://api.openai.com/v1",
         key_env: "OPENAI_API_KEY",
         key_present: true,
@@ -226,11 +275,11 @@ test("tests and submits an OpenAI Responses provider profile", async ({ page }) 
   });
   await page.route("/api/jobs", async (route) => {
     const body = route.request().postDataJSON() as {
-      provider?: { name?: string; api_base?: string; api_key_env?: string };
+      provider?: { channel?: string; api_base?: string; api_key_env?: string };
       model?: string;
     };
     sawProviderJob =
-      body.provider?.name === "openai-responses" &&
+      body.provider?.channel === "openai-responses" &&
       body.provider.api_base === "https://api.openai.com/v1" &&
       body.provider.api_key_env === "OPENAI_API_KEY" &&
       body.model === "gpt-4.1-mini";
@@ -266,10 +315,10 @@ test("tests and submits an OpenAI Responses provider profile", async ({ page }) 
   });
 
   await page.goto("/");
-  await page.getByLabel("Provider").selectOption("openai-responses");
+  await page.getByLabel("Type").selectOption("openai-responses");
   await page.getByLabel("Model").fill("gpt-4.1-mini");
   await page.getByRole("button", { name: "Test" }).click();
-  await expect(page.getByText("8 models / model ready")).toBeVisible();
+  await expect(page.getByText("selected model ready")).toBeVisible();
   await page.getByLabel("Task").fill("Use responses provider");
   await page.getByRole("button", { name: "Run" }).click();
 
@@ -288,32 +337,33 @@ test("tests and submits an OpenAI Responses provider profile", async ({ page }) 
 
 test("submits Anthropic and Ollama provider profiles", async ({ page }) => {
   const jobs: Array<{
-    provider?: { name?: string; api_base?: string; api_key_env?: string };
+    provider?: { channel?: string; api_base?: string; api_key_env?: string };
     model?: string;
   }> = [];
   await installRunsMock(page);
   await page.route("/api/providers/test", async (route) => {
     const body = route.request().postDataJSON() as {
-      provider?: { name?: string; api_base?: string; api_key_env?: string };
+      provider?: { channel?: string; api_base?: string; api_key_env?: string };
       model?: string;
     };
     await route.fulfill({
       contentType: "application/json",
       body: JSON.stringify({
         status: "pass",
-        provider: body.provider?.name,
+        provider: body.provider?.channel,
+        channel: body.provider?.channel,
         api_base: body.provider?.api_base,
         key_env: body.provider?.api_key_env ?? "",
         key_present: Boolean(body.provider?.api_key_env),
         model: body.model,
         model_present: true,
-        models_count: body.provider?.name === "ollama" ? 1 : 4,
+        models_count: body.provider?.channel === "ollama" ? 1 : 4,
       }),
     });
   });
   await page.route("/api/jobs", async (route) => {
     const body = route.request().postDataJSON() as {
-      provider?: { name?: string; api_base?: string; api_key_env?: string };
+      provider?: { channel?: string; api_base?: string; api_key_env?: string };
       model?: string;
     };
     jobs.push(body);
@@ -349,27 +399,27 @@ test("submits Anthropic and Ollama provider profiles", async ({ page }) => {
   });
 
   await page.goto("/");
-  await page.getByLabel("Provider").selectOption("anthropic");
+  await page.getByLabel("Type").selectOption("anthropic");
   await page.getByLabel("API base").fill("https://api.anthropic.com");
   await page.getByLabel("Key env").fill("ANTHROPIC_API_KEY");
   await page.getByLabel("Model").fill("claude-3-5-haiku-latest");
   await page.getByRole("button", { name: "Run" }).click();
 
   await expect
-    .poll(() => jobs[0]?.provider?.name, {
+    .poll(() => jobs[0]?.provider?.channel, {
       message: "anthropic job should send provider profile",
     })
     .toBe("anthropic");
   expect(jobs[0].provider?.api_key_env).toBe("ANTHROPIC_API_KEY");
 
-  await page.getByLabel("Provider").selectOption("ollama");
+  await page.getByLabel("Type").selectOption("ollama");
   await page.getByLabel("API base").fill("http://localhost:11434");
   await expect(page.getByLabel("Key env")).toHaveCount(0);
   await page.getByLabel("Model").fill("llama3.2");
   await page.getByRole("button", { name: "Run" }).click();
 
   await expect
-    .poll(() => jobs[1]?.provider?.name, {
+    .poll(() => jobs[1]?.provider?.channel, {
       message: "ollama job should send provider profile",
     })
     .toBe("ollama");

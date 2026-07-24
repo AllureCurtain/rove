@@ -307,7 +307,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let workspace = Workspace::detect(tmp.path()).unwrap();
         let mut config = AppConfig::default();
-        config.provider.name = "openai-compatible".to_string();
+        config.provider.name = "openai".to_string();
         config.provider.model = "test-model".to_string();
         let session_id = SessionId::new();
 
@@ -326,7 +326,7 @@ mod tests {
         assert!(output.contains("model"));
         assert!(output.contains("test-model"));
         assert!(output.contains("provider"));
-        assert!(output.contains("openai-compatible"));
+        assert!(output.contains("openai"));
         assert!(output.contains("state"));
         assert!(output.contains("session"));
         assert!(output.contains("new"));

@@ -291,8 +291,36 @@ export interface CreateJobRequest {
   provider?: ProviderProfile;
 }
 
+/**
+ * User-facing provider type (protocol family). Official and relay endpoints
+ * share the same type; only base URL / key / model differ. Gemini relays that
+ * expose an OpenAI-compatible API use the `openai` type.
+ */
+export type ProviderChannel =
+  | "openai"
+  | "openai-responses"
+  | "anthropic"
+  | "ollama"
+  | "fake";
+
 export interface ProviderProfile {
-  name: "openai-compatible" | "openai-responses" | "openai" | "anthropic" | "ollama" | "fake";
+  /**
+   * Provider type: openai | openai-responses | anthropic | ollama | fake.
+   * Maps to an internal wire protocol on the API. Not "official vs relay".
+   */
+  channel?: ProviderChannel;
+  /**
+   * Optional display label. When omitted/empty the API derives a name from
+   * `api_base`. Use `channel` to select the type, not `name`.
+   */
+  name?: string;
+  /** Advanced: open wire protocol id. Prefer `channel` for product UI. */
+  wire_protocol?:
+    | "openai-chat"
+    | "openai-responses"
+    | "anthropic-messages"
+    | "ollama-chat"
+    | "fake";
   api_base: string;
   api_key_env?: string;
 }
@@ -306,11 +334,32 @@ export interface ProviderTestRequest {
 export interface ProviderTestResponse {
   status: string;
   provider: string;
+  channel?: string | null;
+  wire_protocol?: string | null;
   api_base: string;
   key_env: string;
   key_present: boolean;
   model?: string | null;
   model_present?: boolean | null;
+  models_count: number;
+}
+
+/** Request body for listing models available on a provider endpoint. */
+export interface ProviderModelsRequest {
+  provider: ProviderProfile;
+  /** Optional override for the models inventory URL. */
+  models_endpoint?: string;
+}
+
+/** Catalog of model ids returned by a provider inventory endpoint. */
+export interface ProviderModelsResponse {
+  provider: string;
+  channel: string;
+  wire_protocol: string;
+  api_base: string;
+  key_env: string;
+  key_present: boolean;
+  models: string[];
   models_count: number;
 }
 

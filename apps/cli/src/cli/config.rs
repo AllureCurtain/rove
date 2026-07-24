@@ -1,6 +1,9 @@
 use std::path::PathBuf;
 
-use rove_app_bootstrap::{AppConfig, AppConfigOverrides};
+use rove_app_bootstrap::{
+    AppConfig, AppConfigOverrides, ProviderAuthConfig, ProviderHeaderValue, ProviderProfileConfig,
+    SecretSource,
+};
 use rove_runtime::workspace::Workspace;
 
 pub fn run(cwd: Option<PathBuf>, overrides: AppConfigOverrides) -> anyhow::Result<()> {
@@ -12,6 +15,12 @@ pub fn run(cwd: Option<PathBuf>, overrides: AppConfigOverrides) -> anyhow::Resul
 }
 
 pub fn format_effective_config(config: &AppConfig) -> String {
+    let profiles = config
+        .provider
+        .profiles
+        .iter()
+        .map(|(name, profile)| (name.clone(), profile_summary(profile)))
+        .collect::<serde_json::Map<_, _>>();
     let fallback_providers: Vec<_> = config
         .provider
         .fallback_providers
@@ -38,6 +47,9 @@ pub fn format_effective_config(config: &AppConfig) -> String {
             "context_reserved_tokens": config.runtime.context_reserved_tokens,
         },
         "provider": {
+            "active": config.provider.active,
+            "profiles": profiles,
+            "fallback_profiles": config.provider.fallback_profiles,
             "name": config.provider.name,
             "api_base": config.provider.api_base,
             "api_key_set": !config.provider.api_key.is_empty(),
@@ -103,4 +115,72 @@ pub fn format_effective_config(config: &AppConfig) -> String {
         },
     });
     serde_json::to_string_pretty(&value).expect("effective config snapshot should serialize")
+}
+
+fn profile_summary(profile: &ProviderProfileConfig) -> serde_json::Value {
+    let headers = profile
+        .headers
+        .iter()
+        .map(|(name, value)| (name.clone(), header_source_summary(value)))
+        .collect::<serde_json::Map<_, _>>();
+    let mut protocol_option_keys = profile
+        .protocol_options
+        .as_object()
+        .map(|options| options.keys().cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
+    protocol_option_keys.sort();
+    serde_json::json!({
+        "wire_protocol": profile.wire_protocol,
+        "base_url": profile.base_url,
+        "model": profile.model,
+        "auth": auth_summary(&profile.auth),
+        "headers": headers,
+        "options": profile.options,
+        "protocol_option_keys": protocol_option_keys,
+    })
+}
+
+fn auth_summary(auth: &ProviderAuthConfig) -> serde_json::Value {
+    match auth {
+        ProviderAuthConfig::None => serde_json::json!({ "style": "none" }),
+        ProviderAuthConfig::Bearer { secret } => serde_json::json!({
+            "style": "bearer",
+            "secret": secret_source_summary(secret),
+        }),
+        ProviderAuthConfig::Header { header, secret } => serde_json::json!({
+            "style": "header",
+            "header": header,
+            "secret": secret_source_summary(secret),
+        }),
+    }
+}
+
+fn header_source_summary(value: &ProviderHeaderValue) -> serde_json::Value {
+    match value {
+        ProviderHeaderValue::Literal(_) => {
+            serde_json::json!({ "source": "literal", "value_set": true })
+        }
+        ProviderHeaderValue::Env { env } => {
+            serde_json::json!({ "source": "env", "name": env })
+        }
+        ProviderHeaderValue::File { file } => serde_json::json!({
+            "source": "file",
+            "path": file.to_string_lossy(),
+        }),
+    }
+}
+
+fn secret_source_summary(source: &SecretSource) -> serde_json::Value {
+    match source {
+        SecretSource::Env { env } => {
+            serde_json::json!({ "source": "env", "name": env })
+        }
+        SecretSource::File { file } => serde_json::json!({
+            "source": "file",
+            "path": file.to_string_lossy(),
+        }),
+        SecretSource::Literal(_) => {
+            serde_json::json!({ "source": "literal", "value_set": true })
+        }
+    }
 }

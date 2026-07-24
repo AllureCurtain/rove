@@ -2,7 +2,8 @@
 
 ## Configuration
 
-Configuration is typed in `src/config.rs` and grouped by runtime, provider, tool, memory, state, API, web, routing, and RAG.
+Configuration is typed in `apps/bootstrap/src/config.rs` and grouped by
+runtime, provider, tool, memory, state, API, web, and routing.
 
 Merge order:
 
@@ -10,7 +11,13 @@ Merge order:
 defaults < .rove/config.toml < environment < CLI/API overrides
 ```
 
-Validation currently covers provider names, model values, fallback providers, routing thresholds and retry/backoff fields, compaction thresholds, token budgets, RAG timeout, SQLite timeout, memory recall limit, API remote-bind safety, and workspace-relative paths. `rove dump-config` prints effective config with secrets redacted, including provider and RAG key presence flags, plus resolved path fields.
+Validation covers legacy and named provider selection, profile/fallback
+references, endpoints, model and protocol-option bounds, auth/header names,
+workspace-bounded secret files, routing thresholds and retry/backoff fields,
+compaction thresholds, token budgets, SQLite timeout, memory recall limit, API
+remote-bind safety, and workspace-relative paths. `rove dump-config` prints the
+effective config with legacy key-presence flags and named-profile secret/header
+source summaries; resolved secret values and literal header values are omitted.
 
 ## Workspace
 
@@ -98,23 +105,78 @@ Default compaction is deterministic and artifact-based. Optional model-generated
 The independent `rove-models` package owns provider-neutral `Message`,
 `ToolSchema`, `Usage`, `ModelError`, `ModelClient`, and `ModelEvent` contracts,
 plus provider adapters, Fake Model, routing, and health. It has no local project
-dependency. The root compatibility package re-exports those types; only
-AppConfig-driven construction remains in transitional `src/models/factory.rs`.
+dependency. AppConfig-driven construction lives in
+`apps/bootstrap/src/factory.rs`.
 Its `ToolSchema` contains only the model-visible name, description, and input
 schema. Operational fields live in `rove_core::ToolDescriptor` and are not
 included in provider payloads.
 
+`models/src/provider/` contains validated open wire-protocol IDs, a
+duplicate-safe strategy registry, per-stream decoder contracts, bounded
+byte-safe SSE/JSONL framing, resolved auth/header redaction wrappers, a shared
+bounded HTTP transport, `ProviderClient`, native OpenAI Chat / Responses /
+Anthropic Messages / Ollama Chat strategies and decoders, and the opt-in
+`external-adapter-v1` process client. Product bootstrap resolves all native
+HTTP targets through `ProviderClient`, routes `external-adapter-v1` profiles to
+the process client, and keeps Fake as a local deterministic client. Legacy
+modules under `models/src/openai.rs` (and siblings) remain only for parity tests
+and the documented compatibility window.
+Invalid transport configuration is typed as `ModelError::InvalidConfiguration`
+and is not retried or counted as a provider-health failure.
+
+Provider configuration supports an explicit named-profile form:
+
+```toml
+[provider]
+active = "team-gateway"
+fallback_profiles = ["claude"]
+
+[provider.profiles.team-gateway]
+wire_protocol = "openai-chat"
+base_url = "https://gateway.example.test/v1"
+model = "team/model"
+auth = { style = "bearer", secret = { env = "TEAM_GATEWAY_KEY" } }
+
+[provider.profiles.claude]
+wire_protocol = "anthropic-messages"
+base_url = "https://api.anthropic.com"
+model = "claude-sonnet"
+auth = { style = "header", header = "x-api-key", secret = { env = "ANTHROPIC_API_KEY" } }
+```
+
+Secret references may use bounded environment variables or UTF-8 files. Files
+are limited to the workspace unless `state.allow_external_paths` is enabled.
+Known wire protocols work with official APIs, self-hosted endpoints, and
+compatible gateways by changing profile data. Applications may inject a
+custom in-process `WireProtocolRegistry` through `ModelClientFactory`; unknown
+IDs fail explicitly and never fall back to OpenAI behavior.
+
+Legacy flat provider fields remain supported through deterministic in-memory
+target conversion. They preserve existing target identity and fallback order,
+but `provider.fallback_providers` cannot be mixed with named profiles. API and
+Web per-run provider profiles prefer a user-facing **type** (`openai`,
+`openai-responses`, `anthropic`, `ollama`, or `fake`) that maps to an internal
+wire protocol. Official endpoints and relays share the same type; only
+`api_base`, key env, and model differ. Display `name` is optional and defaults
+from `api_base` (hostname). Advanced clients may still set `wire_protocol`
+directly. Secrets continue to be passed only as environment variable names,
+never as raw key values in browser-visible fields.
+
 The model boundary is `ModelClient`, which streams normalized `ModelEvent` values. Raw provider thinking deltas are not exposed to interfaces; the engine converts model-side progress into safe `model_status` stream events. Native providers are peers:
 
-- OpenAI-compatible
-- Anthropic
-- Ollama
-- Fake
+- OpenAI Chat (`openai-chat`)
+- OpenAI Responses (`openai-responses`)
+- Anthropic Messages (`anthropic-messages`)
+- Ollama Chat (`ollama-chat`)
+- Fake (`fake`)
+- Opt-in external process adapter (`external-adapter-v1`)
 
 Fallback can be configured as:
 
 - `provider.fallback_models`: model names using the primary provider;
-- `provider.fallback_providers`: explicit provider/model/base/key records.
+- `provider.fallback_profiles`: named target profiles;
+- `provider.fallback_providers`: legacy explicit provider/model/base/key
+  records when named profiles are not in use.
 
 Native provider tool-use and JSON text action parsing are both supported. Native tool-use is preferred for real providers because it preserves provider IDs through `Message.tool_calls` and `tool_call_id` history. The JSON text path remains for fake and compatibility scenarios and is used only when a model turn emitted no native tool calls. Planned, unplanned, and embedded execution share the conversion in `core/src/model_turn.rs`; `runtime/src/model_turn.rs` translates its `AgentEvent` values to durable `StreamEvent` values.
 
@@ -198,6 +260,7 @@ The API routes are:
 - `POST /jobs/{job_id}/inputs/{input_id}`
 - `GET /runs`
 - `GET /runs/{run_id}/report`
+- `POST /providers/models`
 - `POST /providers/test`
 
 The API server also exposes generated documentation:
@@ -212,13 +275,22 @@ credential environment variable names through `api_key_env`; raw provider keys a
 
 The API default is local-only binding. Config supports token auth, CORS origin allowlists, rate limits, and an explicit unsafe remote-without-auth override. Token auth, CORS enforcement, and rate limiting are implemented as API middleware. Multi-user identity and distributed rate limiting are later deployment/product concerns rather than current runtime requirements.
 
-`POST /providers/test` accepts a provider profile with `name`, `api_base`,
-optional `api_key_env`, and optional model id. It checks model inventory for
-OpenAI-compatible, Anthropic, and Ollama profiles with server-side credentials
-when needed, and returns only redacted key presence and model visibility.
-`POST /jobs` may include the same profile to route that single run through an
-official API, relay/gateway API, native Anthropic endpoint, local Ollama, or the
-fake provider without changing the API process defaults.
+Provider profiles use a user-facing **type** (`channel`: `openai`,
+`openai-responses`, `anthropic`, `ollama`, or `fake`) plus `api_base` and
+optional display `name` / `api_key_env`. Official and relay endpoints share the
+same type; only base URL, key, and model differ.
+
+- `POST /providers/models` lists available model ids for that endpoint. OpenAI
+  and Anthropic families require a server-side key from `api_key_env`; Ollama
+  and Fake do not. The response returns `models: string[]` and never raw
+  secrets.
+- `POST /providers/test` checks whether a selected model is present in that
+  inventory (`model_present`) and reports key presence / inventory count. Use
+  this after the user picks a model; use `/providers/models` to discover
+  options first.
+- `POST /jobs` may include the same profile to route that single run through an
+  official API, relay/gateway API, native Anthropic endpoint, local Ollama, or
+  the fake provider without changing the API process defaults.
 
 ## Workspace retrieval
 

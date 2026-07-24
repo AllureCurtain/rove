@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createJob,
   fetchRunReport,
+  listProviderModels,
   listRuns,
   submitApproval,
   testProvider,
@@ -87,7 +88,7 @@ describe("rove client", () => {
       max_steps: 2,
       approval: "ask",
       provider: {
-        name: "openai-compatible",
+        channel: "openai",
         api_base: "https://gateway.test/v1",
         api_key_env: "GATEWAY_API_KEY",
       },
@@ -104,7 +105,7 @@ describe("rove client", () => {
         max_steps: 2,
         approval: "ask",
         provider: {
-          name: "openai-compatible",
+          channel: "openai",
           api_base: "https://gateway.test/v1",
           api_key_env: "GATEWAY_API_KEY",
         },
@@ -126,7 +127,7 @@ describe("rove client", () => {
       message: "run claude",
       model: "claude-3-5-haiku-latest",
       provider: {
-        name: "anthropic",
+        channel: "anthropic",
         api_base: "https://api.anthropic.com",
         api_key_env: "ANTHROPIC_API_KEY",
       },
@@ -141,7 +142,7 @@ describe("rove client", () => {
         message: "run claude",
         model: "claude-3-5-haiku-latest",
         provider: {
-          name: "anthropic",
+          channel: "anthropic",
           api_base: "https://api.anthropic.com",
           api_key_env: "ANTHROPIC_API_KEY",
         },
@@ -154,7 +155,9 @@ describe("rove client", () => {
       ok: true,
       json: async () => ({
         status: "pass",
-        provider: "openai-compatible",
+        provider: "gateway.test",
+        channel: "openai",
+        wire_protocol: "openai-chat",
         api_base: "https://gateway.test/v1",
         key_env: "GATEWAY_API_KEY",
         key_present: true,
@@ -167,7 +170,7 @@ describe("rove client", () => {
 
     const result = await testProvider({
       provider: {
-        name: "openai-compatible",
+        channel: "openai",
         api_base: "https://gateway.test/v1",
         api_key_env: "GATEWAY_API_KEY",
       },
@@ -181,7 +184,7 @@ describe("rove client", () => {
       },
       body: JSON.stringify({
         provider: {
-          name: "openai-compatible",
+          channel: "openai",
           api_base: "https://gateway.test/v1",
           api_key_env: "GATEWAY_API_KEY",
         },
@@ -190,6 +193,51 @@ describe("rove client", () => {
     });
     expect(JSON.stringify(fetchMock.mock.calls)).not.toContain("secret");
     expect(result.model_present).toBe(true);
+  });
+
+  it("lists provider models without sending key values", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        provider: "gateway.test",
+        channel: "openai",
+        wire_protocol: "openai-chat",
+        api_base: "https://gateway.test/v1",
+        key_env: "GATEWAY_API_KEY",
+        key_present: true,
+        models: ["relay/deepseek-v3.2", "official/gpt-compatible"],
+        models_count: 2,
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await listProviderModels({
+      provider: {
+        channel: "openai",
+        api_base: "https://gateway.test/v1",
+        api_key_env: "GATEWAY_API_KEY",
+      },
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/providers/models", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        provider: {
+          channel: "openai",
+          api_base: "https://gateway.test/v1",
+          api_key_env: "GATEWAY_API_KEY",
+        },
+      }),
+    });
+    expect(JSON.stringify(fetchMock.mock.calls)).not.toContain("secret");
+    expect(result.models).toEqual([
+      "relay/deepseek-v3.2",
+      "official/gpt-compatible",
+    ]);
+    expect(result.models_count).toBe(2);
   });
 
   it("sends resume mode when creating a resumed job", async () => {

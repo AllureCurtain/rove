@@ -46,7 +46,19 @@ pub struct CreateJobRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ProviderProfileRequest {
+    /// User-facing provider type. Values: `openai`, `openai-responses`,
+    /// `anthropic`, `ollama`, `fake`. Official and relay endpoints share the
+    /// same type; only `api_base` / key / model differ.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel: Option<String>,
+    /// Optional display label. When empty, the API derives a name from
+    /// `api_base` (hostname). Use `channel` to select the type, not `name`.
+    #[serde(default)]
     pub name: String,
+    /// Advanced: open wire protocol id (`openai-chat`, `anthropic-messages`, …).
+    /// Optional when `channel` is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wire_protocol: Option<String>,
     pub api_base: String,
     pub api_key_env: Option<String>,
 }
@@ -55,6 +67,20 @@ pub struct ProviderProfileRequest {
 pub struct ProviderTestRequest {
     pub provider: ProviderProfileRequest,
     pub model: Option<String>,
+    pub models_endpoint: Option<String>,
+}
+
+/// Request body for listing models available on a provider endpoint.
+///
+/// Requires a typed provider profile (`channel` or `wire_protocol` + `api_base`).
+/// For OpenAI/Anthropic families the API key is read from `api_key_env` on the
+/// server process; Ollama and Fake do not need a key.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct ProviderModelsRequest {
+    pub provider: ProviderProfileRequest,
+    /// Optional override for the models inventory URL. When omitted the API
+    /// uses the protocol default (`{api_base}/models`, Anthropic `/v1/models`,
+    /// Ollama `/api/tags`).
     pub models_endpoint: Option<String>,
 }
 
@@ -142,11 +168,28 @@ pub struct RunSummaryResponse {
 pub struct ProviderTestResponse {
     pub status: String,
     pub provider: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wire_protocol: Option<String>,
     pub api_base: String,
     pub key_env: String,
     pub key_present: bool,
     pub model: Option<String>,
     pub model_present: Option<bool>,
+    pub models_count: usize,
+}
+
+/// Catalog of model ids returned by a provider inventory endpoint.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct ProviderModelsResponse {
+    pub provider: String,
+    pub channel: String,
+    pub wire_protocol: String,
+    pub api_base: String,
+    pub key_env: String,
+    pub key_present: bool,
+    pub models: Vec<String>,
     pub models_count: usize,
 }
 

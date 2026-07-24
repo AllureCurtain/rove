@@ -229,7 +229,7 @@ mod tests {
         let current = build_runtime_identity(RuntimeIdentityInput {
             workspace: &workspace,
             model_id: "gpt-4.1",
-            provider_target: "openai-compatible:https://api.openai.com/v1:gpt-4.1",
+            provider_target: "openai:https://api.openai.com/v1:gpt-4.1",
             approval_policy: ApprovalPolicy::Never,
             max_steps: 8,
             plan_enabled: false,

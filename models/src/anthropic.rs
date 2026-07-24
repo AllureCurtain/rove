@@ -46,7 +46,11 @@ impl AnthropicClient {
         self.top_p = options.top_p;
     }
 
-    fn build_request_body(&self, messages: &[Message], tools: &[ToolSchema]) -> serde_json::Value {
+    pub(crate) fn build_request_body(
+        &self,
+        messages: &[Message],
+        tools: &[ToolSchema],
+    ) -> serde_json::Value {
         let (system_prompt, conversation) = extract_system(messages);
 
         let msgs: Vec<serde_json::Value> =
@@ -168,7 +172,11 @@ fn parse_retry_after_ms(headers: &HeaderMap) -> Option<u64> {
         .map(|seconds| seconds.saturating_mul(1000))
 }
 
-fn classify_anthropic_error(status: StatusCode, headers: &HeaderMap, body: &str) -> ModelError {
+pub(crate) fn classify_anthropic_error(
+    status: StatusCode,
+    headers: &HeaderMap,
+    body: &str,
+) -> ModelError {
     if matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) {
         return ModelError::AuthFailed;
     }
@@ -191,7 +199,7 @@ fn classify_anthropic_error(status: StatusCode, headers: &HeaderMap, body: &str)
 }
 
 #[derive(Debug, Default)]
-struct AnthropicToolUseState {
+pub(crate) struct AnthropicToolUseState {
     blocks: BTreeMap<u64, AnthropicPartialToolUse>,
     usage: Usage,
 }
@@ -203,7 +211,7 @@ struct AnthropicPartialToolUse {
     input_json: String,
 }
 
-fn normalize_anthropic_event(
+pub(crate) fn normalize_anthropic_event(
     state: &mut AnthropicToolUseState,
     data: &str,
 ) -> serde_json::Result<Vec<ModelEvent>> {

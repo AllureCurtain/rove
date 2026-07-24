@@ -28,7 +28,7 @@ Anthropic, and Ollama profiles:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
-  -Provider openai-compatible `
+  -Provider openai `
   -ApiBase "<provider-or-gateway-v1-base>" `
   -ApiKeyEnv OPENAI_API_KEY `
   -Model "<model-id>"
@@ -62,7 +62,7 @@ Configure the provider gate once at the repository level:
 | Kind | Name | Purpose |
 |---|---|---|
 | Secret | `ROVE_PROVIDER_API_KEY` | Provider key, injected as `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` for the run. |
-| Variable | `ROVE_PROVIDER_NAME` | Provider profile (defaults to `openai-compatible`). |
+| Variable | `ROVE_PROVIDER_NAME` | Provider profile (defaults to `openai`). |
 | Variable | `ROVE_PROVIDER_API_BASE` | Provider `/v1` (or native) base URL. |
 | Variable | `ROVE_PROVIDER_MODEL` | Model id to smoke test. |
 | Variable | `ROVE_PROVIDER_MODELS_ENDPOINT` | Optional explicit models inventory endpoint. |
@@ -156,7 +156,7 @@ For provider-backed local use, set provider environment first, then pass
 `-Provider` so the launcher does not force fake mode:
 
 ```powershell
-$env:ROVE_PROVIDER = "openai-compatible"
+$env:ROVE_PROVIDER = "openai"
 $env:ROVE_MODEL = "<chat/tool model>"
 $env:OPENAI_API_BASE = "https://<provider-or-gateway>/v1"
 $env:OPENAI_API_KEY = "<secret>"
@@ -266,7 +266,7 @@ provider jobs, Web provider records, and evidence capture:
 ```powershell
 $env:OPENAI_API_KEY = "<secret>"
 powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
-  -Provider openai-compatible `
+  -Provider openai `
   -ApiBase "https://api.openai.com/v1" `
   -ApiKeyEnv OPENAI_API_KEY `
   -Model "gpt-4.1-mini"
@@ -277,7 +277,7 @@ For SiliconFlow, `deepseek-ai/DeepSeek-V3.2` is one verified example:
 ```powershell
 $env:SILICONFLOW_API_KEY = "<secret>"
 powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
-  -Provider openai-compatible `
+  -Provider openai `
   -ApiBase "https://api.siliconflow.cn/v1" `
   -ApiKeyEnv SILICONFLOW_API_KEY `
   -Model "deepseek-ai/DeepSeek-V3.2"
@@ -305,7 +305,7 @@ powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
 ```
 
 The API and Web workbench also accept the same per-run profiles for
-`openai-compatible`, `anthropic`, `ollama`, and `fake`. Browser code sends key
+`openai`, `anthropic`, `ollama`, and `fake`. Browser code sends key
 environment variable names only; it never sends raw key values.
 
 For a smoke-only manual check, use rove's OpenAI-compatible provider path
@@ -354,7 +354,7 @@ $state = Join-Path $workspace ".rove-integration-state"
 $artifacts = Join-Path $root "artifacts"
 New-Item -ItemType Directory -Force -Path $workspace, $state, $artifacts | Out-Null
 
-$env:ROVE_PROVIDER = "openai-compatible"
+$env:ROVE_PROVIDER = "openai"
 $env:ROVE_MODEL = "<chat/tool model>"
 $env:OPENAI_API_BASE = "https://<provider-or-gateway>/v1"
 $env:OPENAI_API_KEY = "<secret>"
@@ -521,7 +521,7 @@ configured provider account. Then configure:
 
 ```powershell
 $env:ROVE_RAG_DETERMINISTIC = "false"
-$env:ROVE_RAG_EMBEDDING_PROVIDER = "openai-compatible"
+$env:ROVE_RAG_EMBEDDING_PROVIDER = "openai"
 $env:ROVE_RAG_EMBEDDING_MODEL = "<embedding model>"
 $env:ROVE_RAG_EMBEDDING_API_BASE = "https://<provider-or-gateway>/v1"
 $env:ROVE_RAG_EMBEDDING_API_KEY = "<secret>"
@@ -541,7 +541,7 @@ The provider runner owns the preferred stress evidence path:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
-  -Provider openai-compatible `
+  -Provider openai `
   -ApiBase "https://<provider-or-gateway>/v1" `
   -ApiKeyEnv OPENAI_API_KEY `
   -Model "<model-id>" `
@@ -555,7 +555,7 @@ For a long soak:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
-  -Provider openai-compatible `
+  -Provider openai `
   -ApiBase "https://<provider-or-gateway>/v1" `
   -ApiKeyEnv OPENAI_API_KEY `
   -Model "<model-id>" `

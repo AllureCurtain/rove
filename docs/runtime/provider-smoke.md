@@ -24,7 +24,7 @@ Set `OPENAI_API_BASE` when testing a compatible endpoint that is not OpenAI.
 ## OpenAI Responses
 
 Use `openai-responses` for OpenAI's `/v1/responses` endpoint. This path is
-separate from `openai-compatible`, which continues to use `/chat/completions`.
+separate from `openai`, which continues to use `/chat/completions`.
 
 ```powershell
 $env:OPENAI_API_KEY = "<secret>"
@@ -73,7 +73,7 @@ For official OpenAI-compatible APIs:
 ```powershell
 $env:OPENAI_API_KEY = "<secret>"
 powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
-  -Provider openai-compatible `
+  -Provider openai `
   -ApiBase "https://api.openai.com/v1" `
   -ApiKeyEnv OPENAI_API_KEY `
   -Model "gpt-4.1-mini"
@@ -85,7 +85,7 @@ that account:
 ```powershell
 $env:OPENAI_API_KEY = "<relay-or-gateway-secret>"
 powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
-  -Provider openai-compatible `
+  -Provider openai `
   -ApiBase "https://<gateway-host>/v1" `
   -ApiKeyEnv OPENAI_API_KEY `
   -Model "<provider/model-id>"
@@ -97,7 +97,7 @@ hard-coded product dependency:
 ```powershell
 $env:SILICONFLOW_API_KEY = "<secret>"
 powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
-  -Provider openai-compatible `
+  -Provider openai `
   -ApiBase "https://api.siliconflow.cn/v1" `
   -ApiKeyEnv SILICONFLOW_API_KEY `
   -Model "deepseek-ai/DeepSeek-V3.2"
@@ -136,7 +136,7 @@ still visible. Tune counts and timeouts when quota is limited:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
-  -Provider openai-compatible `
+  -Provider openai `
   -ApiBase "https://<gateway-host>/v1" `
   -ApiKeyEnv OPENAI_API_KEY `
   -Model "<provider/model-id>" `
@@ -152,7 +152,7 @@ latency can absorb a longer run:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
-  -Provider openai-compatible `
+  -Provider openai `
   -ApiBase "https://<gateway-host>/v1" `
   -ApiKeyEnv OPENAI_API_KEY `
   -Model "<provider/model-id>" `
@@ -169,7 +169,7 @@ the local mock fixture, and the default tool name matches that fixture:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
-  -Provider openai-compatible `
+  -Provider openai `
   -ApiBase "https://<gateway-host>/v1" `
   -ApiKeyEnv OPENAI_API_KEY `
   -Model "<provider/model-id>" `
