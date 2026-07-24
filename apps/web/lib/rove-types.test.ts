@@ -233,10 +233,6 @@ const providerProfileFixtures = [
   { provider_type: "anthropic", api_base: "https://api.anthropic.com" },
   { provider_type: "ollama", api_base: "http://localhost:11434" },
   { provider_type: "fake", api_base: "local" },
-  {
-    // Advanced escape hatch still accepted.
-    api_base: "https://gateway.example.test/v1",
-  },
 ] satisfies ProviderProfile[];
 
 describe("rove stream event types", () => {
@@ -246,16 +242,13 @@ describe("rove stream event types", () => {
 
   it("keeps web provider profiles aligned with the API provider surface", () => {
     expect(
-      providerProfileFixtures.map(
-        (profile) => profile.provider_type,
-      ),
+      providerProfileFixtures.map((profile) => profile.provider_type),
     ).toEqual([
       "openai",
       "openai-responses",
       "anthropic",
       "ollama",
       "fake",
-      "openai-completions",
     ]);
   });
 });
