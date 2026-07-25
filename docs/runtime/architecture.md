@@ -111,7 +111,7 @@ cannot supply trustworthy interaction events fail closed.
   live in `apps/bootstrap` and first-party apps.
 - The event chain is `ModelEvent -> AgentEvent -> StreamEvent`.
   `rove-runtime` owns the canonical `StreamEvent` type and performs the
-  synchronous translation in `runtime/src/model_turn.rs`. Only `StreamEvent` is
+  synchronous translation in `runtime/src/engine/model_turn.rs`. Only `StreamEvent` is
   persisted or exposed by apps.
 - Files remain the readable source artifacts; SQLite is the query/replay index.
 - A `step_result` trace event is the append-only terminal fact. The task-state

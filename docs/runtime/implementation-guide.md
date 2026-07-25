@@ -48,15 +48,15 @@ Important entry points:
 | Web workbench | `apps/web/` |
 | In-memory Agent and tool contracts | `core/src/*` |
 | Persistent runtime services | `runtime/src/*` |
-| Persistent Engine and coordination | `runtime/src/engine.rs`, `runtime/src/{planner,plan_loop,step_runner,run_loop,tool_turn,model_turn,plan_evaluator}.rs` |
+| Persistent Engine and coordination | `runtime/src/engine/*`, `runtime/src/planning/*` |
 | State artifacts and SQLite index | `runtime/src/state/*` |
 | Model protocol and providers | `models/src/*` |
 | Product provider assembly | `apps/bootstrap/src/factory.rs` |
 | Local built-in tools and invocation adapters | `runtime/src/tools/*` |
 | Product registry assembly | `apps/bootstrap` |
 | MCP transport/proxy | `runtime/src/tools/mcp_proxy.rs` |
-| Memory/context/compaction services | `runtime/src/memory/*`, `runtime/src/context.rs`, `runtime/src/compaction.rs` |
-| Tool executor and hooks | `runtime/src/executor.rs`, `runtime/src/hooks/` |
+| Memory/context/compaction services | `runtime/src/memory/*`, `runtime/src/context/manager.rs`, `runtime/src/context/compaction.rs` |
+| Tool executor and hooks | `runtime/src/tools/executor.rs`, `runtime/src/tools/hooks/` |
 
 ## 2. Workspaces
 
@@ -126,8 +126,8 @@ Browser and Desktop workspaces are documented future designs only:
 
 Relevant code:
 
-- `runtime/src/workspace.rs`
-- `runtime/src/boundary.rs`
+- `runtime/src/workspace/root.rs`
+- `runtime/src/workspace/boundary.rs`
 - `apps/bootstrap/src/config.rs`
 
 ## 3. Configuration
@@ -565,8 +565,8 @@ Relevant code:
 
 - `models/src/protocol.rs`
 - `core/src/types.rs`
-- `runtime/src/types.rs`
-- `runtime/src/execution.rs`
+- `runtime/src/foundation/types.rs`
+- `runtime/src/planning/execution.rs`
 
 ## 8. Stream Events
 
@@ -615,7 +615,7 @@ Adding a new event requires checking:
 
 Relevant code:
 
-- `runtime/src/events.rs`
+- `runtime/src/foundation/events.rs`
 - `runtime/src/state/trace.rs`
 
 ## 9. Engine Execution Flow
@@ -693,19 +693,19 @@ Plan mutation semantics:
 
 Relevant code:
 
-- `runtime/src/engine.rs`
+- `runtime/src/engine/facade.rs`
 - `core/src/agent.rs`
 - `core/src/model_turn.rs`
 - `core/src/parser.rs`
-- `runtime/src/model_turn.rs` (durable event translation)
-- `runtime/src/tool_turn.rs`
-- `runtime/src/run_loop.rs`
-- `runtime/src/step_runner.rs`
-- `runtime/src/plan_loop.rs`
-- `runtime/src/plan_evaluator.rs`
-- `runtime/src/planner.rs`
-- `runtime/src/context.rs`
-- `runtime/src/compaction.rs`
+- `runtime/src/engine/model_turn.rs` (durable event translation)
+- `runtime/src/engine/tool_turn.rs`
+- `runtime/src/engine/run_loop.rs`
+- `runtime/src/engine/step_runner.rs`
+- `runtime/src/engine/plan_loop.rs`
+- `runtime/src/planning/plan_evaluator.rs`
+- `runtime/src/planning/planner.rs`
+- `runtime/src/context/manager.rs`
+- `runtime/src/context/compaction.rs`
 
 ## 10. Context And Compaction
 
@@ -753,8 +753,8 @@ step reaches a terminal outcome.
 
 Relevant code:
 
-- `runtime/src/context.rs`
-- `runtime/src/compaction.rs`
+- `runtime/src/context/manager.rs`
+- `runtime/src/context/compaction.rs`
 - `runtime/src/state/artifacts.rs`
 
 ## 11. Model Layer
@@ -889,7 +889,7 @@ schema lookup -> argument validation -> pre-tool hooks -> permission -> execute 
 
 Argument validation supports the JSON Schema subset used by built-in tools: object, array, string, number, integer, boolean, and null type checks; required fields; enum values; nested properties; array `items`, `minItems`, and `maxItems`; numeric `minimum` and `maximum`; string `minLength` and `maxLength`; and `additionalProperties: false`. Validation failures preserve `ToolError::InvalidArgs` and happen before tool execution.
 
-Filesystem tools resolve paths through `runtime/src/boundary.rs`. Reads canonicalize the final target; writes canonicalize existing targets or the nearest existing ancestor for new files. Both paths reject absolute paths, lexical workspace escapes, and symlink/reparse-point escapes that resolve outside the workspace.
+Filesystem tools resolve paths through `runtime/src/workspace/boundary.rs`. Reads canonicalize the final target; writes canonicalize existing targets or the nearest existing ancestor for new files. Both paths reject absolute paths, lexical workspace escapes, and symlink/reparse-point escapes that resolve outside the workspace.
 
 `write_file` returns structured mutation metadata for deterministic file writes. The metadata includes path, operation type, and a textual diff; it is exposed on `ToolCallCompleted.result.mutations` and persisted to `report.json` as `tool_mutations`. Shell commands are bounded by policy and return structured stdout/stderr/exit metadata, but shell write-sets are intentionally not inferred or snapshotted.
 
@@ -909,9 +909,9 @@ Relevant code:
 - `core/src/policy.rs`
 - `core/src/validation.rs`
 - `runtime/src/tools/`
-- `runtime/src/executor.rs`
-- `runtime/src/boundary.rs`
-- `runtime/src/hooks/`
+- `runtime/src/tools/executor.rs`
+- `runtime/src/workspace/boundary.rs`
+- `runtime/src/tools/hooks/`
 
 ## 13. Approval And Input
 
@@ -939,9 +939,9 @@ Pending approval/input answer channels are live-only. API rows are persisted whi
 
 Relevant code:
 
-- `runtime/src/types.rs`
-- `runtime/src/tool_input.rs`
-- `runtime/src/tool_turn.rs`
+- `runtime/src/foundation/types.rs`
+- `runtime/src/tools/tool_input.rs`
+- `runtime/src/engine/tool_turn.rs`
 - `apps/cli/src/cli/approval.rs`
 - `apps/cli/src/cli/input.rs`
 - `apps/api/src/lib.rs`
@@ -1065,7 +1065,7 @@ Relevant code:
 - `runtime/src/memory/paths.rs`
 - `runtime/src/memory/session.rs`
 - `runtime/src/memory/durable.rs`
-- `runtime/src/hooks/session_memory.rs`
+- `runtime/src/tools/hooks/session_memory.rs`
 - `runtime/src/tools/memory.rs`
 
 ## 17. MCP
@@ -1296,7 +1296,7 @@ When changing provider tool-use:
 1. Update provider parser tests.
 2. Update `ModelEvent` normalization.
 3. Check native tool-use normalization in `core/src/model_turn.rs` and durable
-   translation in `runtime/src/model_turn.rs`.
+   translation in `runtime/src/engine/model_turn.rs`.
 4. Check structured history round-trip tests.
 5. Preserve the native-before-text action conversion in `build_action_from_model_output`.
 

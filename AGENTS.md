@@ -43,7 +43,7 @@ Additional routing:
 | State/resume/artifacts | `docs/runtime/subsystems.md`, `runtime/src/state/`, `tests/` |
 | Providers/routing | `docs/runtime/provider-smoke.md`, `models/src/`, `apps/bootstrap/src/factory.rs` |
 | Tools/safety/MCP | `docs/runtime/subsystems.md`, `runtime/src/tools/`, `apps/bootstrap/src/registry.rs`, `tests/tool_safety.rs`, `tests/mcp.rs` |
-| Memory/context | `MEMORY_DOCTRINE.md`, `runtime/src/memory/`, `runtime/src/context.rs`, `runtime/src/compaction.rs` |
+| Memory/context | `MEMORY_DOCTRINE.md`, `runtime/src/memory/`, `runtime/src/context/manager.rs`, `runtime/src/context/compaction.rs` |
 | Workspace retrieval | Tools (`fs`/`shell`) + layered MD memory (`MEMORY_DOCTRINE.md`); no built-in vector RAG |
 | API | `docs/runtime/implementation-guide.md`, `apps/api/`, `tests/api.rs` |
 | Web | `apps/web/` tests and package scripts |
