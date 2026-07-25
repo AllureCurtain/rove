@@ -25,7 +25,8 @@
 | ✅ | 本地优先 MVP：CLI / API / Web / state / resume / tools / memory |
 | ✅ | Provider Layer redesign：开放协议注册、named profiles、`/providers/models` |
 | ✅ | `docs/runtime/` 与当前实现对齐 |
-| 🧭 | Agent Desktop + Web 共享 UI 已封板；Web M1 按 worktree 串行波次交付（文档先合入 `main`，实现未宣称完成） |
+| ✅ | Agent Desktop + Web 共享 UI 封板；Web M1（F0–F2）已合入 `main` |
+| 🧭 | **Web Complete** 已封板：一次完善 Web 至日常主力可用；Desktop 后置 |
 | 📦 | 起步期设计、handoff、对照材料归档到 `docs/Archive/` |
 
 ---
@@ -41,9 +42,11 @@
 | design | [模块化 Workspace 架构](./design/2026-07-22-modular-workspace-architecture.md) | Implemented: `models / core / runtime / apps` 四层结构 |
 | design | [Provider Layer 重构](./design/2026-07-23-provider-layer-redesign-design.md) | Accepted/implemented provider protocol registry and profiles |
 | design | [Cleanup & naming decisions](./design/2026-07-24-cleanup-and-naming-decisions.md) | Accepted: delete legacy, provider_type/wire_protocol vocabulary, tools, W1–W3 |
-| design | [Agent Desktop + Web Shared UI](./design/2026-07-25-agent-desktop-web-ui-design.md) | Accepted/sealed: shared product UI, Web first, Tauri later, hard resume + workspace root |
+| design | [Agent Desktop + Web Shared UI](./design/2026-07-25-agent-desktop-web-ui-design.md) | Accepted/sealed: shared product UI; order now Web M1 → Web Complete → Tauri |
+| design | [Web Complete](./design/2026-07-26-web-complete-design.md) | Accepted/sealed: daily-driver Web (restore, full settings, API persistence, deep links); Desktop deferred |
 | plan | [Cleanup W1/W2/W3 delivery](./plans/2026-07-24-cleanup-w1-w2-w3.md) | Execution checklist for cleanup waves |
-| plan | [Web Management M1 delivery](./plans/2026-07-25-web-management-m1.md) | Serial worktree waves Docs → F0 foundation → F1 shell → F2 polish; Desktop queued |
+| plan | [Web Management M1 delivery](./plans/2026-07-25-web-management-m1.md) | Completed serial waves F0→F1→F2 on main |
+| plan | [Web Complete delivery](./plans/2026-07-26-web-complete.md) | Serial worktrees C0 persistence → C1 continuity → C2 settings → C3 polish |
 | future | [Agent Execution Lifecycle](./design/2026-07-14-agent-execution-lifecycle-design.md) | Proposed: execution strategy、StepRecord、Replanner、Finalizer |
 | future | [Agent Definition 与程序性知识](./design/2026-07-14-agent-definition-and-procedural-knowledge-design.md) | Proposed: versioned Agent profile、procedure 与 capability binding |
 | future | [MCP Streamable HTTP 与 Tool Artifacts](./design/2026-07-15-mcp-streamable-http-and-tool-artifacts-design.md) | Proposed: transport/session/result/artifact 演进 |
@@ -92,3 +95,4 @@
 - 2026-07-22:模块化 Workspace 架构落地。
 - 2026-07-24:Provider Layer redesign 合入 main；起步期材料迁入 `docs/Archive/`，总目录改为 onboarding / runtime / Archive / 活跃 design。
 - 2026-07-25:登记 Agent Desktop + Web 共享 UI 封板设计与 Web M1 worktree 交付计划（串行 F0→F1→F2）。
+- 2026-07-26:Web M1 已合入 main；新增 Web Complete 封板设计与 C0–C3 串行交付计划，Desktop 继续后置。

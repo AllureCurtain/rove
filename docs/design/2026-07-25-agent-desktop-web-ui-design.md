@@ -24,8 +24,8 @@ Current runtime truth remains `docs/runtime/**` and the code.
 |------|----------|
 | Product | **Agent Desktop + Web management UI** |
 | UI strategy | **One shared product UI, two hosts** |
-| Delivery order | **(1) seal UI/spec on `main` → (2) Web M1 in worktrees → (3) Tauri Desktop** |
-| Desktop shell | **Tauri 2** (later) |
+| Delivery order | **(1) seal UI/spec → (2) Web M1 → (3) Web Complete → (4) Tauri Desktop** |
+| Desktop shell | **Tauri 2** (after Web Complete; see `2026-07-26-web-complete-design.md`) |
 | Remote Gateway / control plane | **Out of scope for now** |
 | Old Web workbench | **Not the product line**; M1 primary entry becomes the new shell |
 
@@ -298,3 +298,5 @@ Do not do now:
 
 - 2026-07-25: Accepted and sealed after product grilling. Restored onto post-W2a
   `main` baseline for commit-before-worktree delivery. No implementation claimed.
+- 2026-07-26: Delivery order updated — **Web Complete** inserted before Tauri
+  Desktop. See `2026-07-26-web-complete-design.md`.
