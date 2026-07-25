@@ -6,9 +6,9 @@ This document defines the first full end-to-end integration profile for rove and
 
 | Profile | Required by first round | External dependencies | Purpose |
 |---|---:|---|---|
-| `local-full` | Yes | No | Proves fake provider, real API, real Web workbench, built-in tools, approval/input resume, persistent state, and Web history. |
+| `local-full` | Yes | No | Proves fake provider, real API, built-in tools, approval/input resume, persistent state, and the advanced `/dev/workbench` history/detail surface. |
 | `provider-smoke` | No | Provider key, network, or local Ollama | Proves a configured real provider can answer and perform one native tool-use round trip. |
-| `provider-integration` | No | Provider key/network, except local Ollama | Proves a real OpenAI, Anthropic, or Ollama provider through inventory, provider smoke, API jobs, Web records, and saved evidence. |
+| `provider-integration` | No | Provider key/network, except local Ollama | Proves a real OpenAI, Anthropic, or Ollama provider through inventory, provider smoke, API jobs, and saved evidence. Its current browser step is stale after Web M1. |
 | `external-tools` | No | MCP server configuration | Proves configured external tools can be discovered, called, and shown in API/Web records. |
 | `stress` | No | Depends on selected profile | Later profile for concurrent runs, long-running jobs, repeated resume, and restart recovery. |
 
@@ -68,20 +68,20 @@ Web/API request
   -> approval/input resolution
   -> run completion or expected failure
   -> trace/report/task state persisted
-  -> /runs and Web history show the record
+  -> /runs and advanced /dev/workbench history show the record
 ```
 
 ## Required Scenarios
 
 | Scenario | Request shape | Expected evidence |
 |---|---|---|
-| Plain run | `{"message":"local-full plain run","model":"fake","approval":"auto"}` | Job completes, `/runs` includes a done run, Web history shows the run. |
+| Plain run | `{"message":"local-full plain run","model":"fake","approval":"auto"}` | Job completes, `/runs` includes a done run, advanced `/dev/workbench` history shows the run. |
 | Tool run | `{"message":"{\"tool\":\"echo\",\"args\":{\"message\":\"hello local-full\"}}","model":"fake-raw","approval":"auto"}` | Tool lifecycle events appear, final text includes the echo result, run detail/report records the tool step. |
 | Approval approved | `{"message":"{\"tool\":\"write_file\",\"args\":{\"path\":\"approved.txt\",\"content\":\"ok\"}}","model":"fake-raw","approval":"ask","max_steps":1}` | Job exposes one pending `write_file` approval, approve resumes the run, file is written inside the integration workspace, `/runs` reports done. |
 | Approval rejected | Same as approval approved with `rejected.txt`, then reject | Job records the rejected tool decision, no file is written, terminal state is visible and explainable in API/Web. |
 | Input resume | `{"message":"{\"tool\":\"request_input\",\"args\":{\"prompt\":\"Which branch should I use?\"}}","model":"fake-raw","approval":"auto","max_steps":1}` | Job exposes pending input, answer submission resumes the run, pending input clears, final output includes or reflects the supplied answer. |
 | Failure record | A request that triggers a known tool failure, such as an invalid filesystem path inside the isolated workspace policy | API state and Web detail show the failed tool result or failed run status with diagnostic text. |
-| History consistency | After all scenarios | `/runs`, `/runs/{run_id}/report`, Web history, and Web detail agree on run ids, statuses, timestamps, and tool/input/approval records. |
+| History consistency | After all scenarios | `/runs`, `/runs/{run_id}/report`, advanced `/dev/workbench` history, and its detail view agree on run ids, statuses, timestamps, and tool/input/approval records. |
 
 ## Manual API Smoke Commands
 
@@ -157,7 +157,7 @@ Invoke-RestMethod `
 
 ## Manual Web Smoke
 
-Start the Web workbench in another terminal:
+Start the Web application in another terminal:
 
 ```powershell
 cd apps/web
@@ -165,13 +165,16 @@ $env:ROVE_API_BASE = "http://127.0.0.1:8787"
 pnpm dev
 ```
 
-Open `http://localhost:3000` and run the same scenarios through the UI. The Web pass criteria are:
+Open `http://localhost:3000` for the default M1 product shell. Open
+`http://localhost:3000/dev/workbench` only for the advanced direct-run/history
+surface. The product-shell manual pass criteria are:
 
 - creating a job from the UI works against the real API, not a mocked API;
 - live status updates appear from the SSE stream;
 - pending approvals and inputs are visible and actionable;
-- history shows completed, interrupted, rejected, and failed runs as applicable;
-- detail/report views show tool names, arguments or summaries, and final status;
+- the selected product session and Inspector show completed, interrupted,
+  rejected, and failed states as applicable;
+- the Inspector shows tool names, arguments or summaries, and final status;
 - Playwright screenshots and traces are retained under `<integration-root>/artifacts` when automated.
 
 ## Runner
@@ -217,6 +220,10 @@ The runner:
 
 The runner does not run `provider-smoke`, `external-tools`, or `stress`; those remain explicit follow-up gates.
 
+`real-api.spec.ts` explicitly navigates to `/dev/workbench`. The runner's three
+browser cases therefore prove the historical advanced surface against the real
+API, not the default product shell.
+
 ## Generic Provider Runner
 
 `scripts/provider-integration.ps1` is the provider gate for
@@ -225,13 +232,20 @@ tied to one vendor: the provider, base URL, API-key environment variable, model
 id, ports, stress counts, restart recovery, long-soak settings, and model-list
 endpoint are parameters.
 
-The API and Web workbench also support provider profiles at runtime. Browser
-code submits `name`, `api_base`, and `api_key_env` when a key is required; the
-Rust API reads the named environment variable and never receives a raw key from
-the browser. `POST /providers/test` verifies model inventory before a run, and
-`POST /jobs` may include the provider profile to route that single job through
-OpenAI, Anthropic, Ollama, or fake providers. Official APIs and
-relay/gateway APIs are covered through the OpenAI profile.
+The API and both Web surfaces support provider profiles at runtime. Browser
+code submits `provider_type`, `api_base`, optional display `name`, and
+`api_key_env` when a key is required. It cannot submit `wire_protocol`; the
+system maps that diagnostic identity from `provider_type`. The Rust API reads
+the named environment variable, while the raw key never enters the browser or
+request payload. `POST /providers/test` verifies model inventory before a run,
+and `POST /jobs` may include the same profile to route that job through OpenAI,
+OpenAI Responses, Anthropic, Ollama, or Fake. Relay/gateway APIs use the
+`openai` type with their own base URL.
+
+The provider runner's optional browser script currently navigates to `/` but
+still looks for the old Workbench `Task`, `Model`, and `Steps` controls. Use
+`-SkipWebSmoke` on current `main`; fixing that selector/flow contract is part of
+Web Complete C3.
 
 Fast OpenAI gate:
 
@@ -241,7 +255,8 @@ powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
   -Provider openai `
   -ApiBase "https://api.openai.com/v1" `
   -ApiKeyEnv OPENAI_API_KEY `
-  -Model "gpt-4.1-mini"
+  -Model "gpt-4.1-mini" `
+  -SkipWebSmoke
 ```
 
 Relay or gateway gate:
@@ -252,7 +267,8 @@ powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
   -Provider openai `
   -ApiBase "https://<gateway-host>/v1" `
   -ApiKeyEnv OPENAI_API_KEY `
-  -Model "<provider/model-id>"
+  -Model "<provider/model-id>" `
+  -SkipWebSmoke
 ```
 
 Anthropic gate:
@@ -263,7 +279,8 @@ powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
   -Provider anthropic `
   -ApiBase "https://api.anthropic.com" `
   -ApiKeyEnv ANTHROPIC_API_KEY `
-  -Model "claude-3-5-haiku-latest"
+  -Model "claude-3-5-haiku-latest" `
+  -SkipWebSmoke
 ```
 
 Ollama gate:
@@ -272,7 +289,8 @@ Ollama gate:
 powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
   -Provider ollama `
   -ApiBase "http://localhost:11434" `
-  -Model "llama3.2"
+  -Model "llama3.2" `
+  -SkipWebSmoke
 ```
 
 Release stress with restart:
@@ -283,6 +301,7 @@ powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
   -ApiBase "https://<provider-or-gateway>/v1" `
   -ApiKeyEnv OPENAI_API_KEY `
   -Model "<model-id>" `
+  -SkipWebSmoke `
   -RunStress `
   -RunRestartRecovery `
   -StressSequentialCount 20 `
@@ -297,6 +316,7 @@ powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
   -ApiBase "https://<provider-or-gateway>/v1" `
   -ApiKeyEnv OPENAI_API_KEY `
   -Model "<model-id>" `
+  -SkipWebSmoke `
   -RunStress `
   -RunRestartRecovery `
   -RunLongSoak `
@@ -310,8 +330,9 @@ The runner:
 2. Queries the provider-specific model inventory unless `-SkipModelInventory` is set.
 3. Runs the provider-specific smoke unless `-SkipProviderSmoke` is set.
 4. Starts an isolated `rove-api` and runs one plain job plus one `echo` tool job.
-5. Starts the Web workbench and verifies a real provider `echo` tool run through
-   Playwright unless `-SkipWebSmoke` is set.
+5. Unless `-SkipWebSmoke` is set, starts the Web application and attempts a
+   real-provider `echo` run. This step still uses pre-M1 Workbench selectors and
+   is currently a known stale gate, not accepted product-shell evidence.
 6. Runs sequential/concurrent provider stress only when `-RunStress` is passed,
    writes per-job state/report artifacts, and classifies failures.
 7. Restarts the stress API and verifies completed run ids when
@@ -328,16 +349,24 @@ and provider bases, never key values.
 
 ## Real-API Playwright Design
 
-The existing browser E2E tests mock the API at the browser boundary. The real-API suite is `apps/web/tests/e2e/real-api.spec.ts` and is gated by `ROVE_REAL_API_E2E=1`.
+`shell.spec.ts` covers the default `/` product shell with browser-boundary
+mocks, and `workbench.spec.ts` mock-covers the advanced surface. The real-API
+suite is `apps/web/tests/e2e/real-api.spec.ts`, is gated by
+`ROVE_REAL_API_E2E=1`, and opens `/dev/workbench`.
 
 The real-API suite does not start the Rust API itself. The runner owns API/Web process lifecycle so failures can preserve both logs. The test:
 
-- open the workbench against the runner's Web URL;
+- open `/dev/workbench` against the runner's Web URL;
 - create a plain fake-provider run;
 - create an approval run and approve it from the UI;
 - create a request-input run and answer it from the UI;
 - verify history and detail records after each run;
 - attach screenshots or traces when assertions fail.
+
+No current automated gate exercises the complete default product-shell flow
+against the live Rust API. The narrow provider runner script is stale as noted
+above; Web Complete C3 owns the replacement live-API product-shell acceptance
+flow and visual evidence.
 
 ## Optional Gates
 
@@ -400,16 +429,21 @@ cargo test --test mcp mcp_official_filesystem_server_smoke_when_enabled -- --exa
 
 ## Pass Criteria
 
-`local-full` passes only when all required scenarios have evidence from both API/state and Web:
+`local-full` passes only when all required scenarios have evidence from API/state
+and the advanced Web surface:
 
 - every expected run has a run id and terminal status;
 - approval and input pending records are created, resolved, and no longer pending afterward;
 - filesystem writes stay inside `<integration-root>/workspace`;
 - `/runs` and `/runs/{run_id}/report` agree with live job state;
-- Web history and detail views show the same statuses and important steps as the API;
+- `/dev/workbench` history and detail views show the same statuses and important
+  steps as the API;
 - logs and artifacts are saved for the run.
 
 If `local-full` passes but a gated provider or external tool profile fails, the first-round baseline still passes. Track the gated failure separately with its profile name, env configuration, and artifact path.
+
+Passing `local-full` is not the Web Complete product-shell gate. It does not
+exercise `/` against the live API.
 
 ## Pre-Integration Unit Gates
 

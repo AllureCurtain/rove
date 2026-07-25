@@ -37,14 +37,15 @@ rove 已有最重要的 renderer-neutral 基础：
 - [`TerminalAction`](../../apps/cli/src/terminal/action.rs) 已包含 prompt、
   cancel、approval、input、resume、status、sessions 和 exit 动作；
 - CLI、API 与 Web 复用相同的 engine 和 durable state model；
-- Web workbench 继续作为更丰富的浏览器界面。
+- 默认 Web product shell 继续作为更丰富的产品交互界面；
+  `/dev/workbench` 只保留为高级运行历史/详情入口。
 
 现有实现已补齐键盘事件、焦点、布局、渲染、terminal lifecycle、共享异步
 run driver、artifact finalization、可靠按键事件终端上的 fail-closed
 approval/input modal、session picker、tool detail、keymap help、严格可见时间线，以及
 Unix opt-in PTY smoke。Windows ConPTY 自动化仍未实现；当前 Windows 结果是 typed
 skip，而不是互操作通过证据。本文是现有
-[TUI-ready terminal plan](../plans/2026-06-09-tui-ready-terminal-architecture.md#follow-up-plan-after-this-one)
+[TUI-ready terminal plan](../Archive/plans/2026-06-09-tui-ready-terminal-architecture.md#follow-up-plan-after-this-one)
 所预留的后续方向。
 
 ## 3. Grok Build 参考边界
@@ -250,10 +251,11 @@ Agent/MCP/coding-tool 能力。
 ## 9. 与其他设计的关系
 
 - 当前 REPL contract 仍由
-  [Rich Terminal REPL Design](2026-06-09-rich-terminal-repl-design.md) 定义；
+  已归档的 [Rich Terminal REPL Design](../Archive/design/2026-06-09-rich-terminal-repl-design.md)
+  记录其设计背景；当前行为以 runtime docs 为准；
 - Agent packaging 与 workspace instructions 仍属于 proposed
   [Agent Definition and Procedural Knowledge](2026-07-14-agent-definition-and-procedural-knowledge-design.md)；
-- planned execution semantics 仍属于 proposed
+- planned execution semantics 已部分实现，其余目标见
   [Agent Execution Lifecycle](2026-07-14-agent-execution-lifecycle-design.md)；
 - modern MCP 与 rich tool result 仍属于 proposed
   [MCP Streamable HTTP and Tool Artifacts](2026-07-15-mcp-streamable-http-and-tool-artifacts-design.md)。

@@ -1,6 +1,9 @@
 # Runtime Documentation
 
-This directory is the authoritative runtime documentation surface. It summarizes the implemented architecture and the remaining gaps against the runtime hardening target.
+This directory is the authoritative current-state documentation surface. It
+summarizes the implemented runtime, API, Web M1 product shell, and remaining
+gaps. Future Web Complete and Desktop contracts remain under `docs/design/` and
+`docs/plans/` until their code and tests land.
 
 New maintainers should start with [`docs/ONBOARDING.md`](../ONBOARDING.md), then use this directory for current subsystem truth.
 
@@ -28,6 +31,21 @@ The current architecture is based on:
 
 - [`docs/design/2026-07-22-modular-workspace-architecture.md`](../design/2026-07-22-modular-workspace-architecture.md)
 - [`docs/design/2026-07-23-provider-layer-redesign-design.md`](../design/2026-07-23-provider-layer-redesign-design.md)
+- [`docs/design/2026-07-24-cleanup-and-naming-decisions.md`](../design/2026-07-24-cleanup-and-naming-decisions.md)
+
+The Web product line is tracked separately:
+
+- Web M1 is implemented; its ledger is
+  [`docs/plans/2026-07-25-web-management-m1.md`](../plans/2026-07-25-web-management-m1.md).
+- M1 product-shell browser coverage is mock-backed. The gated `local-full`
+  real-API suite targets advanced `/dev/workbench`; live-API acceptance of `/`
+  remains Web Complete C3 work.
+- Web Complete C0–C3 is active but not implemented; follow
+  [`docs/design/2026-07-26-web-complete-design.md`](../design/2026-07-26-web-complete-design.md)
+  and the
+  [`Web → Desktop coordinator plan`](../plans/2026-07-25-web-desktop-master-delivery.md).
+- No Tauri Desktop host exists. `desktop-workspace-spec.md` is an automation
+  workspace note, not the Desktop product-shell design.
 
 Historical May/June hardening and RAG design notes live under
 [`docs/Archive/design/`](../Archive/design/). These runtime docs describe what

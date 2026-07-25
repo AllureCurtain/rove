@@ -6,6 +6,12 @@
 >
 > Design source: [`../design/2026-07-14-agent-execution-lifecycle-design.md`](../design/2026-07-14-agent-execution-lifecycle-design.md)
 
+> Current-state note (2026-07-25): this is a chronological phase ledger. The
+> repository later moved into the modular Workspace and removed built-in RAG and
+> `rove-index`; the gate commands below are retained as phase-time evidence, not
+> current instructions. Use `AGENTS.md` and `docs/runtime/**` for current paths
+> and verification.
+
 > Follow-up: the append-only step ledger and canonical `step_result` event were
 > implemented in the next phase. The ledger items below remain accurate as
 > non-goals of this StepRunner-only phase. See

@@ -42,6 +42,7 @@ powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
   -ApiBase "https://api.openai.com/v1" `
   -ApiKeyEnv OPENAI_API_KEY `
   -Model "gpt-4.1-mini" `
+  -SkipWebSmoke `
   -RunStress `
   -RunRestartRecovery
 ```
@@ -53,20 +54,23 @@ real release gate instead of only a unit-level smoke. The runner is generic for
 official OpenAI APIs, OpenAI Responses, relay or gateway APIs that
 expose the OpenAI-style chat API, Anthropic, and local Ollama.
 
-For product use through the Web workbench, provider targets can be supplied as
-per-run profiles: provider name, API base URL, key environment variable name
-when needed, and model id. The browser sends only the environment variable name,
-never the key value. The API route `POST /providers/test` checks model
+For product use through either Web surface, provider targets can be supplied as
+per-run profiles: `provider_type`, API base URL, key environment-variable name
+when needed, model id, and an optional display `name`. Clients cannot submit
+`wire_protocol`; the system maps it from `provider_type` and may echo it only as
+response/diagnostic metadata. The browser sends only the environment-variable
+name, never the key value. The API route `POST /providers/test` checks model
 inventory for OpenAI, OpenAI Responses, Anthropic, and Ollama profiles, then
 `POST /jobs` can carry the same profile for the actual run. `fake` is accepted
 for deterministic local runs.
 
-The dedicated provider runner now automates the release gate for
-OpenAI, OpenAI Responses, Anthropic, and Ollama profiles. It
-normalizes provider names, queries the provider-specific model inventory
-endpoint, dispatches the matching provider smoke test, submits API jobs with a
-per-run provider profile, selects the same profile in the Web workbench, and
-writes a redacted evidence summary.
+The dedicated provider runner automates inventory, direct provider smoke, API
+jobs, stress/restart options, and redacted evidence for OpenAI, OpenAI
+Responses, Anthropic, and Ollama profiles. Its optional browser script predates
+the M1 shell: it navigates to `/` but still looks for the old Workbench
+`Task`/`Model`/`Steps` controls. Use `-SkipWebSmoke` on current `main`. Until Web
+Complete C3 replaces that flow, the runner is provider/API evidence rather than
+current product-shell browser evidence.
 
 For official OpenAI APIs:
 
@@ -76,7 +80,8 @@ powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
   -Provider openai `
   -ApiBase "https://api.openai.com/v1" `
   -ApiKeyEnv OPENAI_API_KEY `
-  -Model "gpt-4.1-mini"
+  -Model "gpt-4.1-mini" `
+  -SkipWebSmoke
 ```
 
 For a relay or gateway API, set the relay base URL and choose a model visible to
@@ -88,7 +93,8 @@ powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
   -Provider openai `
   -ApiBase "https://<gateway-host>/v1" `
   -ApiKeyEnv OPENAI_API_KEY `
-  -Model "<provider/model-id>"
+  -Model "<provider/model-id>" `
+  -SkipWebSmoke
 ```
 
 For SiliconFlow, `deepseek-ai/DeepSeek-V3.2` is one tested example, not a
@@ -100,7 +106,8 @@ powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
   -Provider openai `
   -ApiBase "https://api.siliconflow.cn/v1" `
   -ApiKeyEnv SILICONFLOW_API_KEY `
-  -Model "deepseek-ai/DeepSeek-V3.2"
+  -Model "deepseek-ai/DeepSeek-V3.2" `
+  -SkipWebSmoke
 ```
 
 For Anthropic:
@@ -111,7 +118,8 @@ powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
   -Provider anthropic `
   -ApiBase "https://api.anthropic.com" `
   -ApiKeyEnv ANTHROPIC_API_KEY `
-  -Model "claude-3-5-haiku-latest"
+  -Model "claude-3-5-haiku-latest" `
+  -SkipWebSmoke
 ```
 
 For Ollama, start the local server and use a pulled model:
@@ -120,7 +128,8 @@ For Ollama, start the local server and use a pulled model:
 powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
   -Provider ollama `
   -ApiBase "http://localhost:11434" `
-  -Model "llama3.2"
+  -Model "llama3.2" `
+  -SkipWebSmoke
 ```
 
 The runner writes only non-secret artifacts: provider model inventory, selected
@@ -140,6 +149,7 @@ powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
   -ApiBase "https://<gateway-host>/v1" `
   -ApiKeyEnv OPENAI_API_KEY `
   -Model "<provider/model-id>" `
+  -SkipWebSmoke `
   -RunStress `
   -RunRestartRecovery `
   -StressSequentialCount 5 `
@@ -156,6 +166,7 @@ powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
   -ApiBase "https://<gateway-host>/v1" `
   -ApiKeyEnv OPENAI_API_KEY `
   -Model "<provider/model-id>" `
+  -SkipWebSmoke `
   -RunStress `
   -RunRestartRecovery `
   -RunLongSoak `
@@ -173,6 +184,7 @@ powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
   -ApiBase "https://<gateway-host>/v1" `
   -ApiKeyEnv OPENAI_API_KEY `
   -Model "<provider/model-id>" `
+  -SkipWebSmoke `
   -RunExternalMcp `
   -ExternalMcpToolName "mcp__mock_server__echo_remote"
 ```

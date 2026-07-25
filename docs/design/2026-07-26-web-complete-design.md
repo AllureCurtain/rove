@@ -1,6 +1,6 @@
 # Web Complete — Local Agent Web as Daily Driver
 
-> Status: **Accepted / Sealed for implementation**
+> Status: **Accepted / Active — Web M1 implemented; Web Complete C0–C3 not yet implemented**
 >
 > Date: 2026-07-26
 >
@@ -29,7 +29,7 @@ truth remains code + `docs/runtime/**` + the shipped M1 shell.
 | Relation to M1 | **Evolve** the sealed product shell; do not rebuild IA |
 | Desktop (Tauri) | **Deferred** until Web Complete lands |
 | Remote Gateway | Still out of scope |
-| Delivery style | One sealed scope; **multiple serial worktrees** internally |
+| Delivery style | One sealed scope; **coordinator-owned foundations + bounded parallel worker worktrees** |
 
 ### Why Web Complete before Desktop
 
@@ -134,8 +134,13 @@ Client state and server IDs must round-trip through these routes.
 ### 5.1 Hard resume (non-negotiable, inherited)
 
 - First durable turn in a product session: create-job **without** resume.
-- Later turns in that session: **must** send `resume: "latest"` (or equivalent
-  sealed contract) under the **same workspace root**.
+- M1 currently sends workspace-scoped `resume: "latest"`. Web Complete replaces
+  that ambiguous product behavior with a server-owned product-session binding:
+  later turns resolve the session's **exact latest runtime run** under the same
+  workspace root.
+- Client-supplied resume state cannot override or conflict with that server
+  binding. Different product sessions in the same workspace keep distinct
+  runtime chains.
 - Fail closed. No product path that “continues” by opening a disconnected one-shot
   job and stitching bubbles only in the frontend.
 
@@ -231,6 +236,17 @@ Web Complete may extend `apps/api` and thin runtime read models. Constraints:
 - Fail closed on restore/resume errors.
 - Keep OpenAPI and web client types in sync.
 
+The C0 contract is sealed further in the
+[Web → Desktop master delivery plan](../plans/2026-07-25-web-desktop-master-delivery.md):
+
+- `ProductStore` is API application-global state, separate from each execution
+  workspace's trace/task/report store;
+- a server-owned product session binds one workspace to an ordered set of exact
+  runtime session/job/run identities;
+- transcript restore is a read projection over those ordered run bindings and
+  canonical events, with typed `partial` reasons when facts are unavailable;
+- M1 browser migration is versioned and idempotent, and never uploads raw keys.
+
 Platform adapter remains Web-first:
 
 - path entry may stay typed paths on Web
@@ -299,6 +315,11 @@ Web Complete should make that cheaper, not harder:
 
 ## changelog
 
+- 2026-07-25: Delivery coordination amended after implementation audit. The
+  original serial-wave recommendation is replaced by coordinator-owned contract
+  foundations plus bounded disjoint workers. Sealed exact product-session/run
+  binding, canonical-event transcript projection, and API-global ProductStore;
+  Web Complete remains not implemented.
 - 2026-07-26: Accepted. Web Complete sealed as next milestone; Desktop deferred.
   Scope: continuity restore, full settings usability, API-backed persistence,
   deep links; multi-worktree serial delivery defined in the plan.

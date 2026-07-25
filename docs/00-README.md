@@ -41,17 +41,18 @@
 | archive | [历史文档归档](./Archive/README.md) | 起步期决策、设计讨论、handoff 和实现对照，仅保留历史脉络 |
 | design | [模块化 Workspace 架构](./design/2026-07-22-modular-workspace-architecture.md) | Implemented: `models / core / runtime / apps` 四层结构 |
 | design | [Provider Layer 重构](./design/2026-07-23-provider-layer-redesign-design.md) | Accepted/implemented provider protocol registry and profiles |
-| design | [Cleanup & naming decisions](./design/2026-07-24-cleanup-and-naming-decisions.md) | Accepted: delete legacy, provider_type/wire_protocol vocabulary, tools, W1–W3 |
-| design | [Agent Desktop + Web Shared UI](./design/2026-07-25-agent-desktop-web-ui-design.md) | Accepted/sealed: shared product UI; order now Web M1 → Web Complete → Tauri |
-| design | [Web Complete](./design/2026-07-26-web-complete-design.md) | Accepted/sealed: daily-driver Web (restore, full settings, API persistence, deep links); Desktop deferred |
-| plan | [Cleanup W1/W2/W3 delivery](./plans/2026-07-24-cleanup-w1-w2-w3.md) | Execution checklist for cleanup waves |
+| design | [Cleanup & naming decisions](./design/2026-07-24-cleanup-and-naming-decisions.md) | Implemented: delete legacy, provider vocabulary, tools, W1–W3 |
+| design | [Agent Desktop + Web Shared UI](./design/2026-07-25-agent-desktop-web-ui-design.md) | Partially implemented: Web M1 landed; Web Complete → Tauri remains |
+| design | [Web Complete](./design/2026-07-26-web-complete-design.md) | Active/not implemented: daily-driver Web (restore, settings, API persistence, deep links) |
+| plan | [Cleanup W1/W2/W3 delivery](./plans/2026-07-24-cleanup-w1-w2-w3.md) | Completed implementation ledger |
 | plan | [Web Management M1 delivery](./plans/2026-07-25-web-management-m1.md) | Completed serial waves F0→F1→F2 on main |
-| plan | [Web Complete delivery](./plans/2026-07-26-web-complete.md) | Serial worktrees C0 persistence → C1 continuity → C2 settings → C3 polish |
-| future | [Agent Execution Lifecycle](./design/2026-07-14-agent-execution-lifecycle-design.md) | Proposed: execution strategy、StepRecord、Replanner、Finalizer |
+| plan | [Web → Desktop master delivery](./plans/2026-07-25-web-desktop-master-delivery.md) | Active coordinator plan: PR/worktree ownership, C0 contracts, bounded parallel lanes, Desktop gate |
+| plan | [Web Complete delivery](./plans/2026-07-26-web-complete.md) | Foundation + bounded parallel workers through C0–C3 |
+| future | [Agent Execution Lifecycle](./design/2026-07-14-agent-execution-lifecycle-design.md) | Partially implemented: StepRunner/ledger/revision/decisions landed; Finalizer/budgets remain |
 | future | [Agent Definition 与程序性知识](./design/2026-07-14-agent-definition-and-procedural-knowledge-design.md) | Proposed: versioned Agent profile、procedure 与 capability binding |
 | future | [MCP Streamable HTTP 与 Tool Artifacts](./design/2026-07-15-mcp-streamable-http-and-tool-artifacts-design.md) | Proposed: transport/session/result/artifact 演进 |
 | future | [OnCall Reference Agent Evaluation](./design/2026-07-15-oncall-reference-agent-evaluation-plan.md) | Proposed: 合成 reference Agent 与 deterministic evaluation |
-| future | [Grok Build 借鉴与 TUI 方向](./design/2026-07-16-grok-build-reference-and-tui-design.md) | Proposed: 保留 REPL/exec，新增复用 shared runtime 的可选 TUI |
+| design | [Grok Build 借鉴与 TUI 方向](./design/2026-07-16-grok-build-reference-and-tui-design.md) | Bounded TUI MVP implemented; platform verification gap remains |
 
 ---
 
@@ -95,4 +96,6 @@
 - 2026-07-22:模块化 Workspace 架构落地。
 - 2026-07-24:Provider Layer redesign 合入 main；起步期材料迁入 `docs/Archive/`，总目录改为 onboarding / runtime / Archive / 活跃 design。
 - 2026-07-25:登记 Agent Desktop + Web 共享 UI 封板设计与 Web M1 worktree 交付计划（串行 F0→F1→F2）。
+- 2026-07-25:P0 状态校准：登记 Web → Desktop 主交付计划，将 Web Complete
+  调整为契约 foundation + 有界并行 worker，并修正 lifecycle/cleanup/TUI 等状态漂移。
 - 2026-07-26:Web M1 已合入 main；新增 Web Complete 封板设计与 C0–C3 串行交付计划，Desktop 继续后置。

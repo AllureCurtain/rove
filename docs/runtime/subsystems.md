@@ -108,11 +108,11 @@ Default compaction is deterministic and artifact-based. Optional model-generated
 ## Provider And Routing
 
 The independent `rove-models` package owns provider-neutral `Message`,
-`ToolDescriptor`, `Usage`, `ModelError`, `ModelClient`, and `ModelEvent` contracts,
+`ModelToolSchema`, `Usage`, `ModelError`, `ModelClient`, and `ModelEvent` contracts,
 plus provider adapters, Fake Model, routing, and health. It has no local project
 dependency. AppConfig-driven construction lives in
 `apps/bootstrap/src/factory.rs`.
-Its `ToolDescriptor` contains only the model-visible name, description, and input
+Its `ModelToolSchema` contains only the model-visible name, description, and input
 schema. Operational fields live in `rove_core::ToolDescriptor` and are not
 included in provider payloads.
 
@@ -301,12 +301,26 @@ rove does not ship a built-in vector database. Agents retrieve workspace context
 
 `apps/web/` is a standalone Next.js app. Browser code talks to `/api/*`; a server-side Next.js route proxies requests to `ROVE_API_BASE` or `http://127.0.0.1:8787`. When `ROVE_API_TOKEN` is set on the Next.js server, the proxy injects `Authorization: Bearer <token>` upstream and preserves SSE response bodies for `EventSource`.
 
-The workbench exposes a provider selector for runtime default vs.
-OpenAI per-run profiles. For official APIs and relay/gateway APIs,
-users enter API base URL, key environment variable name, and model id, then use
-the Test action before starting a run. Browser code sends only the key
-environment variable name; raw provider keys stay in the Rust API server
-environment.
+The default route is the M1 product shell with Workspace/Session navigation,
+Chat, a collapsible Run Inspector, and a full-page Settings shell. Opening an
+absolute Folder/Repo path binds the subsequent job to that real workspace root.
+The first session turn is fresh; later M1 turns use fail-closed,
+workspace-scoped `resume: "latest"`. `/dev/workbench` is an advanced migration
+escape hatch, not a second primary entry.
+
+Providers supports runtime default, OpenAI, OpenAI Responses, Anthropic,
+Ollama, and Fake per-run profiles. Users provide API base, key environment
+variable name, and model id, then use Test/List Models. Browser code sends only
+the key environment variable name; raw provider keys stay in the Rust API
+server environment.
+
+Current limitations are explicit: M1 catalogs/profiles are browser-authoritative,
+the transcript is not rebuilt after refresh, routes are shallow, focused
+session reattachment is incomplete, several Settings sections are placeholders,
+and workspace-global `latest` is ambiguous across multiple product sessions in
+one workspace. The accepted Web Complete design addresses these through an
+API-global ProductStore, exact server-owned product-session/run binding, and a
+read projection over canonical events. Those contracts are not implemented yet.
 
 The web verification surface is:
 
@@ -318,14 +332,19 @@ pnpm build
 
 The Web event contract includes plan/revision/attempt identity, `step_result`,
 `plan_decision`, and `plan_revised`. The reducer retains records, decisions,
-and revisions in deduplicated structured projections while preserving the
-compatibility plan-step timeline behavior.
+and revisions in deduplicated structured projections; there is no compatibility
+plan-step dual-fire in the current runtime stream.
 
 Browser-level checks are available separately:
 
 ```bash
 pnpm test:e2e
 ```
+
+`shell.spec.ts` covers `/` with browser-boundary mocks. The gated
+`real-api.spec.ts` used by `local-full` opens `/dev/workbench`, and the provider
+runner's optional browser step still uses pre-M1 selectors. Full live-API
+product-shell evidence is therefore a Web Complete C3 gap.
 
 ## CI
 

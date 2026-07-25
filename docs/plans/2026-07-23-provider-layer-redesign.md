@@ -1,13 +1,21 @@
 # Provider Layer Redesign Progress
 
-> Status: **Complete — Stages 0–9 DONE; channel UX follow-up applied**
+> Status: **Complete on `main` — Stages 0–9 and follow-up cleanup integrated**
 >
 > Started: 2026-07-23
 >
-> Last updated: 2026-07-24
+> Last updated: 2026-07-25
 >
 > Design:
 > [`../design/2026-07-23-provider-layer-redesign-design.md`](../design/2026-07-23-provider-layer-redesign-design.md)
+
+This is a chronological implementation ledger. Stage entries below preserve
+transitional `name` / `channel` / request-side `wire_protocol` contracts that
+were later removed by Cleanup W1. Current requests select `provider_type`;
+`wire_protocol` is system-mapped and response/diagnostic-only. When an older
+entry disagrees, the completed
+[`../design/2026-07-24-cleanup-and-naming-decisions.md`](../design/2026-07-24-cleanup-and-naming-decisions.md),
+current code, and `docs/runtime/**` win.
 
 ## 1. Working location
 
@@ -86,12 +94,11 @@ After any interruption:
 
 ## 6. Current safe resume point
 
-All stages 0-9 are DONE. The Provider Layer redesign is implemented and
-verified on `feature/provider-layer-redesign` in the sibling worktree
-`D:\Study\project\agent\rove-provider-layer`. Next human step is review and
-commit/PR from that branch without touching the original dirty `rove` tree.
-Legacy native HTTP client modules remain only as parity-test references; a
-future follow-up may delete them after a separate compatibility-window review.
+All stages 0-9 are DONE and the Provider Layer redesign is on `main`. The later
+cleanup series removed the unreleased product's public legacy config path and
+request-side protocol selection. Legacy native HTTP client modules remain only
+as parity-test references; production assembly uses the registry-driven
+provider path. This section is a historical resume record, not active work.
 
 ## 7. Progress log
 
@@ -700,4 +707,3 @@ Files:
 - `apps/web/components/rove-workbench.tsx`
 - `apps/web/tests/e2e/workbench.spec.ts`
 - `docs/runtime/subsystems.md`
-

@@ -1,6 +1,6 @@
 # Cleanup and Naming Decisions — 2026-07-24
 
-> Status: **Accepted decisions (not yet fully implemented)**
+> Status: **Implemented — W1/W2a/W2b/W3 complete on `main`**
 >
 > Scope: post–provider-redesign cleanup, naming vocabulary, Core/Runtime boundary,
 > tools, config shape, and phased delivery (W1 / W2a / W2b / W3).
@@ -10,6 +10,10 @@
 >
 > Product has **not** shipped. There is **no** legacy compatibility window and
 > **no** migration layer for old config or old code paths.
+
+Implementation evidence: W1 `8ffb291`, W2a `d13646a`, W2b `9847fdd`, and W3
+`a3f2681`. The remainder of this document records the decisions that produced
+those changes; current runtime truth remains [`docs/runtime/`](../runtime/README.md).
 
 ## 1. Product stance
 

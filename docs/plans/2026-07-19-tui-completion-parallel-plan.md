@@ -1,11 +1,11 @@
 # TUI Completion Parallel Plan - 2026-07-19
 
-> Status: **Implementation lanes integrated / final verification and main merge pending**
+> Status: **Completed, verified, and integrated on `main`**
 >
 > Baseline: `7d82df9` (`feat(tui): complete capability-gated interaction`)
 >
-> Integration branch: `feat/tui-completion`; lane commits are integrated and the
-> coordinator records the final verification result before the `main` merge.
+> Integration branch: `feat/tui-completion`; lane commits and final coordinator
+> verification were completed before the `main` merge.
 >
 > This plan completes the TUI state-navigation and hardening work that was
 > intentionally outside M2. The shared runtime, canonical `StreamEvent`

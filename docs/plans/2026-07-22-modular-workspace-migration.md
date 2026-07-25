@@ -8,6 +8,10 @@
 > Current runtime source of truth:
 > [`../runtime/README.md`](../runtime/README.md)
 
+> Historical-scope note: this ledger preserves migration-time `rag` feature and
+> `rove-index` commands. Those paths were removed after the modular migration;
+> they are not current verification instructions or remaining work.
+
 ## 1. Objective
 
 Migrate the current single-package Rove repository into a modular Cargo
