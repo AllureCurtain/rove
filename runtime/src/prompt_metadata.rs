@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::workspace::Workspace;
-use rove_core::ToolDescriptor as ToolSchema;
+use rove_core::ToolDescriptor;
 use rove_models::Message;
 
 const MESSAGE_OVERHEAD_TOKENS: usize = 4;
@@ -60,7 +60,7 @@ fn estimate_text_tokens(text: &str) -> usize {
     text.chars().count().div_ceil(CHARS_PER_TOKEN).max(1)
 }
 
-pub fn tool_signature(tools: &[ToolSchema]) -> String {
+pub fn tool_signature(tools: &[ToolDescriptor]) -> String {
     let mut sorted = tools.to_vec();
     sorted.sort_by(|left, right| left.name.cmp(&right.name));
     stable_hash(&serde_json::to_string(&sorted).unwrap_or_default())
@@ -97,16 +97,16 @@ mod tests {
 
     #[test]
     fn tool_signature_is_stable_across_tool_order() {
-        let read = ToolSchema {
-            name: "fs_read".to_string(),
+        let read = ToolDescriptor {
+            name: "read_file".to_string(),
             description: "Read a file".to_string(),
             parameters: serde_json::json!({ "type": "object" }),
             destructive: false,
             parallel_safe: true,
             capability: None,
         };
-        let write = ToolSchema {
-            name: "fs_write".to_string(),
+        let write = ToolDescriptor {
+            name: "write_file".to_string(),
             description: "Write a file".to_string(),
             parameters: serde_json::json!({ "type": "object" }),
             destructive: true,
@@ -124,7 +124,7 @@ mod tests {
     fn prompt_cache_key_changes_with_tools() {
         let prefix = stable_hash("system");
         let no_tools = tool_signature(&[]);
-        let with_tool = tool_signature(&[ToolSchema {
+        let with_tool = tool_signature(&[ToolDescriptor {
             name: "echo".to_string(),
             description: "Echo".to_string(),
             parameters: serde_json::json!({ "type": "object" }),

@@ -23,8 +23,8 @@ Durable memory is for stable facts, preferences, project conventions, feedback,
 and reference material. It is managed by:
 
 - `save_memory`
-- `update_memory_index`
-- `read_memory_topic`
+- `reindex_memory`
+- `read_memory`
 
 `save_memory` writes topic files with frontmatter:
 

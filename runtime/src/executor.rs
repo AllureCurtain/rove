@@ -3,8 +3,8 @@ use crate::hooks::{HookRegistry, PostToolHookContext};
 use crate::tool_input::RegisteredUserInput;
 use crate::tools::runtime_context::runtime_tool_services;
 use crate::types::{
-    CallId, ToolContext, ToolExecutionMetadata, ToolExecutionStatus, ToolMutation, ToolResult,
-    ToolRiskLevel, ToolSchema,
+    CallId, ToolContext, ToolDescriptor, ToolExecutionMetadata, ToolExecutionStatus, ToolMutation,
+    ToolResult, ToolRiskLevel,
 };
 use rove_core::{ToolError, ToolRegistry};
 use tokio::sync::mpsc;
@@ -52,7 +52,7 @@ impl<'a> Executor<'a> {
         input_events: Option<mpsc::Sender<RegisteredUserInput>>,
     ) -> Result<ToolResult, ToolError> {
         // Step 1: schema lookup
-        let schema = self.registry.schema(name)?;
+        let schema = self.registry.descriptor(name)?;
 
         // Step 2: input validation
         validate_args(&schema.parameters, &args)?;
@@ -310,7 +310,7 @@ fn invalid_args<T>(reason: String) -> Result<T, ToolError> {
     Err(ToolError::InvalidArgs { reason })
 }
 
-fn success_metadata(schema: &ToolSchema, mutations: &[ToolMutation]) -> ToolExecutionMetadata {
+fn success_metadata(schema: &ToolDescriptor, mutations: &[ToolMutation]) -> ToolExecutionMetadata {
     ToolExecutionMetadata {
         status: ToolExecutionStatus::Ok,
         error_code: None,
@@ -375,8 +375,8 @@ mod tests {
     use crate::memory::paths::MemoryPaths;
     use crate::tools::runtime_context::runtime_tool_context;
     use crate::types::{
-        ApprovalPolicy, CallId, ToolContext, ToolExecutionStatus, ToolMutation,
-        ToolMutationOperation, ToolRiskLevel, ToolSchema,
+        ApprovalPolicy, CallId, ToolContext, ToolDescriptor, ToolExecutionStatus, ToolMutation,
+        ToolMutationOperation, ToolRiskLevel,
     };
     use crate::workspace::Workspace;
     use rove_core::{Tool, ToolOutput, ToolRegistry};
@@ -385,8 +385,8 @@ mod tests {
 
     #[async_trait]
     impl Tool for MutatingTool {
-        fn schema(&self) -> ToolSchema {
-            ToolSchema {
+        fn schema(&self) -> ToolDescriptor {
+            ToolDescriptor {
                 name: "write_note".to_string(),
                 description: "Write a note".to_string(),
                 parameters: serde_json::json!({"type": "object"}),

@@ -6,10 +6,7 @@ pub mod factory;
 pub mod provider;
 pub mod registry;
 
-pub use assembly::{
-    EngineAssemblyOptions, ProductEngineOptions, build_interface_engine, build_product_engine,
-    build_product_engine_with_registry,
-};
+pub use assembly::{EngineOptions, build_engine, build_engine_with_registry};
 pub use config::{
     ApiConfig, AppConfig, AppConfigOverrides, ConfigSourceSummary, MemoryConfig, ProviderConfig,
     ProviderOptions, RoutingConfig, RuntimeConfig, ShellConfig, StateConfig, ToolConfig, WebConfig,
@@ -23,7 +20,5 @@ pub use provider::{
     default_wire_protocol_registry, wire_protocol_for_provider_type,
 };
 pub use registry::{
-    default_tool_registry, default_tool_registry_with_shell_policy, product_runtime_tool_registry,
-    product_tool_registry, product_tool_registry_with_shell_policy, register_extra_tools,
-    runtime_tool_registry,
+    register_extra_tools, tool_registry, tool_registry_with_mcp, tool_registry_with_shell_policy,
 };

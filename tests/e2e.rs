@@ -36,7 +36,7 @@ use rove_runtime::types::{
     ApprovalDecision, ApprovalPolicy, CallId, JobId, Message, ModelToolSchema, PendingToolApproval,
     PendingUserInput, PlanStep, PromptCheckpoint, Role, RunId, RunRequest, SessionId, TaskPlan,
     TaskState, TerminationReason, ToolApprovalProvider, ToolApprovalRequest, ToolContext,
-    ToolSchema, Usage, UserInputProvider, UserInputRequest,
+    ToolDescriptor, Usage, UserInputProvider, UserInputRequest,
 };
 use rove_runtime::workspace::{Workspace, WorkspaceKind};
 
@@ -374,8 +374,8 @@ struct FakeDestructiveTool;
 
 #[async_trait]
 impl Tool for FakeDestructiveTool {
-    fn schema(&self) -> ToolSchema {
-        ToolSchema {
+    fn schema(&self) -> ToolDescriptor {
+        ToolDescriptor {
             name: "danger".to_string(),
             description: "A destructive tool used only for boundary tests.".to_string(),
             parameters: serde_json::json!({
@@ -403,8 +403,8 @@ struct CountingTool {
 
 #[async_trait]
 impl Tool for CountingTool {
-    fn schema(&self) -> ToolSchema {
-        ToolSchema {
+    fn schema(&self) -> ToolDescriptor {
+        ToolDescriptor {
             name: "counting".to_string(),
             description: "A tool used to verify executor validation.".to_string(),
             parameters: serde_json::json!({
@@ -434,8 +434,8 @@ struct NeverCompletesTool;
 
 #[async_trait]
 impl Tool for NeverCompletesTool {
-    fn schema(&self) -> ToolSchema {
-        ToolSchema {
+    fn schema(&self) -> ToolDescriptor {
+        ToolDescriptor {
             name: "wait_forever".to_string(),
             description: "A tool that stays pending until the run is cancelled.".to_string(),
             parameters: serde_json::json!({
@@ -483,8 +483,8 @@ impl ProbeTool {
 
 #[async_trait]
 impl Tool for ProbeTool {
-    fn schema(&self) -> ToolSchema {
-        ToolSchema {
+    fn schema(&self) -> ToolDescriptor {
+        ToolDescriptor {
             name: self.name.to_string(),
             description: "A test probe tool for batch orchestration.".to_string(),
             parameters: serde_json::json!({
@@ -660,8 +660,8 @@ struct PublicProviderInputTool;
 
 #[async_trait]
 impl Tool for PublicProviderInputTool {
-    fn schema(&self) -> ToolSchema {
-        ToolSchema {
+    fn schema(&self) -> ToolDescriptor {
+        ToolDescriptor {
             name: "public_provider_input".to_string(),
             description: "Exercise the public user input provider API.".to_string(),
             parameters: serde_json::json!({
@@ -2413,7 +2413,7 @@ async fn engine_writes_deterministic_session_summary_with_tool_activity() {
     registry.register(Box::new(FsWriteTool::new(workspace.root.clone())));
     let engine = Engine::with_workspace(
         Box::new(FakeModelClient::new(vec![
-            r#"{"tool":"fs_write","args":{"path":"note.txt","content":"remember this"}}"#
+            r#"{"tool":"write_file","args":{"path":"note.txt","content":"remember this"}}"#
                 .to_string(),
             "all set".to_string(),
         ])),
@@ -2450,7 +2450,7 @@ async fn engine_writes_deterministic_session_summary_with_tool_activity() {
     assert!(summary.contains("- Goal: write a note"));
     assert!(summary.contains("- Status: final"));
     assert!(summary.contains("- Output: all set"));
-    assert!(summary.contains("- Tools used: fs_write"));
+    assert!(summary.contains("- Tools used: write_file"));
     assert!(summary.contains("- Files changed: note.txt (create)"));
 
     let captured_messages = Arc::new(Mutex::new(None));
@@ -2479,7 +2479,7 @@ async fn engine_writes_deterministic_session_summary_with_tool_activity() {
         message
             .content
             .contains("Session summary: # Session Summary")
-            && message.content.contains("- Tools used: fs_write")
+            && message.content.contains("- Tools used: write_file")
     }));
 }
 
@@ -2636,7 +2636,7 @@ async fn planner_persists_steps_and_resumes_mid_plan() {
     assert_eq!(
         events
             .iter()
-            .filter(|event| matches!(event, StreamEvent::PlanStepCompleted { .. }))
+            .filter(|event| matches!(event, StreamEvent::StepResult { record } if matches!(record.status, rove_runtime::execution::StepRecordStatus::Succeeded | rove_runtime::execution::StepRecordStatus::Skipped)))
             .count(),
         2
     );
@@ -2681,7 +2681,7 @@ async fn engine_writes_completed_plan_steps_to_session_summary() {
     assert_eq!(
         events
             .iter()
-            .filter(|event| matches!(event, StreamEvent::PlanStepCompleted { .. }))
+            .filter(|event| matches!(event, StreamEvent::StepResult { record } if matches!(record.status, rove_runtime::execution::StepRecordStatus::Succeeded | rove_runtime::execution::StepRecordStatus::Skipped)))
             .count(),
         2
     );
@@ -2715,7 +2715,7 @@ async fn planner_accepts_json_inside_markdown_fence() {
     assert!(events.iter().any(|event| {
         matches!(
             event,
-            StreamEvent::PlanStepCompleted { step, .. } if step.id == "1"
+            StreamEvent::StepResult { record, .. } if record.step_id == "1" && matches!(record.status, rove_runtime::execution::StepRecordStatus::Succeeded | rove_runtime::execution::StepRecordStatus::Skipped)
         )
     }));
 }
@@ -2766,7 +2766,7 @@ async fn planner_uses_engine_configured_prompt() {
     assert!(events.iter().any(|event| {
         matches!(
             event,
-            StreamEvent::PlanStepCompleted { step, .. } if step.id == "1"
+            StreamEvent::StepResult { record, .. } if record.step_id == "1" && matches!(record.status, rove_runtime::execution::StepRecordStatus::Succeeded | rove_runtime::execution::StepRecordStatus::Skipped)
         )
     }));
     let captured = captured.lock().unwrap();
@@ -3044,12 +3044,6 @@ async fn planner_resume_applies_terminal_success_without_replaying_the_step() {
                 | StreamEvent::LlmMessage { .. }
         )
     }));
-    assert!(events.iter().any(|event| {
-        matches!(
-            event,
-            StreamEvent::PlanStepCompleted { step, .. } if step.id == "1"
-        )
-    }));
     assert_eq!(
         events
             .iter()
@@ -3060,7 +3054,7 @@ async fn planner_resume_applies_terminal_success_without_replaying_the_step() {
             .filter(|decision| decision.trigger_step_record_id == record.record_id)
             .count(),
         1,
-        "resume must fill the missing decision exactly once"
+        "resume must fill the missing decision exactly once without replaying the step"
     );
     assert!(matches!(
         events.last(),
@@ -3119,7 +3113,7 @@ async fn planned_step_returns_tool_result_to_model_before_completion() {
         .expect("step runner should build another prompt after the tool result");
     let step_completed = events
         .iter()
-        .position(|event| matches!(event, StreamEvent::PlanStepCompleted { .. }))
+        .position(|event| matches!(event, StreamEvent::StepResult { record } if matches!(record.status, rove_runtime::execution::StepRecordStatus::Succeeded | rove_runtime::execution::StepRecordStatus::Skipped)))
         .unwrap();
     assert!(tool_completed < post_tool_prompt);
     assert!(post_tool_prompt < step_completed);
@@ -3151,7 +3145,7 @@ async fn planned_step_emits_complete_step_record_before_compatibility_completion
         .expect("planned step should emit a terminal step_result");
     let completed_index = events
         .iter()
-        .position(|event| matches!(event, StreamEvent::PlanStepCompleted { .. }))
+        .position(|event| matches!(event, StreamEvent::StepResult { record } if matches!(record.status, rove_runtime::execution::StepRecordStatus::Succeeded | rove_runtime::execution::StepRecordStatus::Skipped)))
         .unwrap();
     let (decision_index, decision) = events
         .iter()
@@ -3162,8 +3156,8 @@ async fn planned_step_emits_complete_step_record_before_compatibility_completion
         })
         .expect("terminal step should emit a plan decision");
 
+    assert_eq!(record_index, completed_index);
     assert!(record_index < decision_index);
-    assert!(decision_index < completed_index);
     assert_eq!(decision.trigger_step_record_id, record.record_id);
     assert_eq!(decision.decision.kind, PlanDecisionKind::Finish);
     assert_eq!(
@@ -3273,17 +3267,12 @@ async fn replanning_retains_failed_record_and_advances_revision_identity() {
             matches!(event, StreamEvent::PlanDecision { record } if record.decision.kind == PlanDecisionKind::ReplaceRemaining)
         })
         .unwrap();
-    let compatibility_failure_index = events
-        .iter()
-        .position(|event| matches!(event, StreamEvent::PlanStepFailed { .. }))
-        .unwrap();
     let revised_index = events
         .iter()
         .position(|event| matches!(event, StreamEvent::PlanRevised { .. }))
         .unwrap();
     assert!(failed_record_index < replace_decision_index);
-    assert!(replace_decision_index < compatibility_failure_index);
-    assert!(compatibility_failure_index < revised_index);
+    assert!(replace_decision_index < revised_index);
 }
 
 #[tokio::test]
@@ -3309,13 +3298,22 @@ async fn planned_step_model_turn_budget_exhaustion_is_explicit() {
     assert!(
         !events
             .iter()
-            .any(|event| matches!(event, StreamEvent::PlanStepCompleted { .. }))
+            .any(|event| matches!(event, StreamEvent::StepResult { record } if matches!(record.status, rove_runtime::execution::StepRecordStatus::Succeeded | rove_runtime::execution::StepRecordStatus::Skipped)))
     );
     assert!(events.iter().any(|event| {
         matches!(
             event,
-            StreamEvent::PlanStepFailed { reason, .. }
-                if reason == "step model-turn budget exhausted (max_model_turns_per_step=4)"
+            StreamEvent::StepResult { record }
+                if record.summary.contains(
+                    "step model-turn budget exhausted (max_model_turns_per_step=4)"
+                ) || record
+                    .safe_error_summary
+                    .as_deref()
+                    .is_some_and(|summary| {
+                        summary.contains(
+                            "step model-turn budget exhausted (max_model_turns_per_step=4)",
+                        )
+                    })
         )
     }));
     assert!(events.iter().any(|event| {
@@ -3360,23 +3358,17 @@ async fn planned_permission_denial_emits_blocked_step_record() {
     );
 
     let events = collect_events(&engine, "run danger").await;
-    let result_index = events
-        .iter()
-        .position(|event| {
+    assert!(
+        events.iter().any(|event| {
             matches!(
                 event,
                 StreamEvent::StepResult { record }
                     if record.status == StepRecordStatus::Blocked
                         && record.error_code.as_deref() == Some("permission_denied")
             )
-        })
-        .expect("permission denial should produce a blocked terminal record");
-    let failed_index = events
-        .iter()
-        .position(|event| matches!(event, StreamEvent::PlanStepFailed { .. }))
-        .unwrap();
-
-    assert!(result_index < failed_index);
+        }),
+        "permission denial should produce a blocked terminal record"
+    );
     assert_eq!(
         events
             .iter()
@@ -3457,12 +3449,12 @@ async fn planner_repairs_recoverable_tool_error_within_the_same_step() {
     assert!(
         !events
             .iter()
-            .any(|event| matches!(event, StreamEvent::PlanStepFailed { .. }))
+            .any(|event| matches!(event, StreamEvent::StepResult { record } if matches!(record.status, rove_runtime::execution::StepRecordStatus::Failed | rove_runtime::execution::StepRecordStatus::Blocked | rove_runtime::execution::StepRecordStatus::Interrupted)))
     );
     assert!(events.iter().any(|event| {
         matches!(
             event,
-            StreamEvent::PlanStepCompleted { step, .. } if step.id == "1"
+            StreamEvent::StepResult { record, .. } if record.step_id == "1" && matches!(record.status, rove_runtime::execution::StepRecordStatus::Succeeded | rove_runtime::execution::StepRecordStatus::Skipped)
         )
     }));
 }
@@ -3496,7 +3488,7 @@ async fn planner_replans_after_step_failure() {
     assert!(events.iter().any(|event| {
         matches!(
             event,
-            StreamEvent::PlanStepCompleted { step, .. } if step.id == "2"
+            StreamEvent::StepResult { record, .. } if record.step_id == "2" && matches!(record.status, rove_runtime::execution::StepRecordStatus::Succeeded | rove_runtime::execution::StepRecordStatus::Skipped)
         )
     }));
 }
@@ -3669,7 +3661,7 @@ async fn resumed_run_uses_persisted_replanned_task_state() {
     assert!(events.iter().any(|event| {
         matches!(
             event,
-            StreamEvent::PlanStepCompleted { step, .. } if step.id == "2"
+            StreamEvent::StepResult { record, .. } if record.step_id == "2" && matches!(record.status, rove_runtime::execution::StepRecordStatus::Succeeded | rove_runtime::execution::StepRecordStatus::Skipped)
         )
     }));
 }
@@ -3689,7 +3681,7 @@ async fn file_tools_read_and_write_inside_workspace() {
     executor
         .run(
             &ctx,
-            "fs_write",
+            "write_file",
             serde_json::json!({"path": "note.txt", "content": "hello"}),
             CallId::new(),
         )
@@ -3698,7 +3690,7 @@ async fn file_tools_read_and_write_inside_workspace() {
     let result = executor
         .run(
             &ctx,
-            "fs_read",
+            "read_file",
             serde_json::json!({"path": "note.txt"}),
             CallId::new(),
         )
@@ -3722,7 +3714,7 @@ async fn shell_tool_is_blocked_when_policy_is_never() {
     let err = executor
         .run(
             &ctx,
-            "shell",
+            "run_shell",
             serde_json::json!({"command": "echo should-not-run"}),
             CallId::new(),
         )
@@ -3746,7 +3738,7 @@ async fn shell_tool_rejects_empty_command() {
     let err = executor
         .run(
             &ctx,
-            "shell",
+            "run_shell",
             serde_json::json!({"command": "   \t\n"}),
             CallId::new(),
         )
@@ -3773,7 +3765,7 @@ async fn shell_tool_rejects_nul_byte_command() {
     let err = executor
         .run(
             &ctx,
-            "shell",
+            "run_shell",
             serde_json::json!({"command": "echo before\u{0}echo after"}),
             CallId::new(),
         )
@@ -3805,7 +3797,7 @@ async fn shell_tool_runs_non_empty_command_when_approved() {
     let result = executor
         .run(
             &ctx,
-            "shell",
+            "run_shell",
             serde_json::json!({"command": command}),
             CallId::new(),
         )

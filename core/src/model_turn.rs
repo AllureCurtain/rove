@@ -3,7 +3,9 @@ use futures::StreamExt;
 use futures::stream::BoxStream;
 use tokio_util::sync::CancellationToken;
 
-use rove_models::{Message, ModelClient, ModelError, ModelEvent, ToolCallRef, ToolSchema, Usage};
+use rove_models::{
+    Message, ModelClient, ModelError, ModelEvent, ModelToolSchema, ToolCallRef, Usage,
+};
 
 use crate::{Action, AgentEvent, CallId, ToolCallAction, parse_action};
 
@@ -26,7 +28,7 @@ pub enum ModelTurnItem {
 pub fn run_model_turn<'a>(
     model: &'a dyn ModelClient,
     messages: Vec<Message>,
-    tools: Vec<ToolSchema>,
+    tools: Vec<ModelToolSchema>,
     cancel_token: CancellationToken,
 ) -> BoxStream<'a, ModelTurnItem> {
     Box::pin(stream! {
@@ -140,7 +142,7 @@ mod tests {
                 name: "echo".to_string(),
                 args: serde_json::json!({"message":"native"}),
             }],
-            r#"{"tool":"fs_read","args":{"path":"Cargo.toml"}}"#,
+            r#"{"tool":"read_file","args":{"path":"Cargo.toml"}}"#,
         );
 
         assert!(matches!(
@@ -156,14 +158,14 @@ mod tests {
     fn text_fallback_is_used_without_native_tool_use() {
         let action = build_action_from_model_output(
             Vec::new(),
-            r#"{"tool":"fs_read","args":{"path":"Cargo.toml"}}"#,
+            r#"{"tool":"read_file","args":{"path":"Cargo.toml"}}"#,
         );
 
         assert!(matches!(
             action,
             Action::ToolCall { tool_use_id, name, args, .. }
                 if tool_use_id.is_none()
-                    && name == "fs_read"
+                    && name == "read_file"
                     && args["path"] == "Cargo.toml"
         ));
     }

@@ -171,37 +171,29 @@ pub(crate) fn run_planned_loop<'a>(
                     record: Box::new(decision.clone()),
                 });
 
-                let (compatibility_step, compatibility_index) =
-                    compatibility_step(active_plan, &record);
-                let compatibility_reason = record_reason(&record);
+                let (step, step_index) = compatibility_step(active_plan, &record);
+                let reason = record_reason(&record);
                 match decision.decision.kind {
                     PlanDecisionKind::Continue => {
                         mark_step_done(active_plan, &record.step_id);
-                        yield LoopItem::Event(StreamEvent::PlanStepCompleted {
-                            step: compatibility_step,
-                            index: compatibility_index,
-                        });
                         continue;
                     }
                     PlanDecisionKind::ReplaceRemaining => {
-                        yield LoopItem::Event(StreamEvent::PlanStepFailed {
-                            step: compatibility_step.clone(),
-                            index: compatibility_index,
-                            reason: compatibility_reason.clone(),
-                        });
                         let (replacement, revision) = match replan_and_build_revision(
                             planner,
                             ctx.model,
                             active_plan,
-                            compatibility_index,
-                            &compatibility_step.title,
-                            &compatibility_reason,
+                            step_index,
+                            &step.title,
+                            &reason,
                             &record,
                             &decision,
                             &plan_identity,
                             &mut state.history,
                             cancel_token.clone(),
-                        ).await {
+                        )
+                        .await
+                        {
                             Ok(transition) => transition,
                             Err(item) => {
                                 yield item;
@@ -224,22 +216,9 @@ pub(crate) fn run_planned_loop<'a>(
                             StepRecordStatus::Succeeded | StepRecordStatus::Skipped
                         ) {
                             mark_step_done(active_plan, &record.step_id);
-                            yield LoopItem::Event(StreamEvent::PlanStepCompleted {
-                                step: compatibility_step,
-                                index: compatibility_index,
-                            });
-                        } else {
-                            yield LoopItem::Event(StreamEvent::PlanStepFailed {
-                                step: compatibility_step,
-                                index: compatibility_index,
-                                reason: compatibility_reason,
-                            });
                         }
-                        let (reason, output) = finish_transition(
-                            &decision,
-                            &record,
-                            final_output.clone(),
-                        );
+                        let (reason, output) =
+                            finish_transition(&decision, &record, final_output.clone());
                         yield LoopItem::Complete { reason, output };
                         return;
                     }

@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use crate::memory::durable::{MemoryScope, MemoryType, parse_frontmatter};
 use crate::tools::runtime_context::runtime_tool_services;
-use rove_core::ToolDescriptor as ToolSchema;
+use rove_core::ToolDescriptor;
 use rove_core::{Tool, ToolContext, ToolError, ToolOutput};
 
 const MAX_MEMORY_INDEX_LINES: usize = 200;
@@ -31,8 +31,8 @@ impl Default for SaveMemoryTool {
 
 #[async_trait]
 impl Tool for SaveMemoryTool {
-    fn schema(&self) -> ToolSchema {
-        ToolSchema {
+    fn schema(&self) -> ToolDescriptor {
+        ToolDescriptor {
             name: "save_memory".to_string(),
             description: "Save a durable memory entry that should persist across sessions."
                 .to_string(),
@@ -146,9 +146,9 @@ impl Default for UpdateMemoryIndexTool {
 
 #[async_trait]
 impl Tool for UpdateMemoryIndexTool {
-    fn schema(&self) -> ToolSchema {
-        ToolSchema {
-            name: "update_memory_index".to_string(),
+    fn schema(&self) -> ToolDescriptor {
+        ToolDescriptor {
+            name: "reindex_memory".to_string(),
             description: "Rebuild the durable memory index from saved topic files.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -188,9 +188,9 @@ impl Default for ReadMemoryTopicTool {
 
 #[async_trait]
 impl Tool for ReadMemoryTopicTool {
-    fn schema(&self) -> ToolSchema {
-        ToolSchema {
-            name: "read_memory_topic".to_string(),
+    fn schema(&self) -> ToolDescriptor {
+        ToolDescriptor {
+            name: "read_memory".to_string(),
             description: "Read a durable memory topic by name from the memory topics directory."
                 .to_string(),
             parameters: serde_json::json!({

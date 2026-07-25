@@ -6,7 +6,7 @@ use serde::Serialize;
 use serde_json::Value;
 use tokio::process::Command;
 
-use rove_core::ToolDescriptor as ToolSchema;
+use rove_core::ToolDescriptor;
 use rove_core::{Tool, ToolContext, ToolError, ToolOutput};
 
 /// Execute a shell command in the workspace.
@@ -57,9 +57,9 @@ impl ShellTool {
 
 #[async_trait]
 impl Tool for ShellTool {
-    fn schema(&self) -> ToolSchema {
-        ToolSchema {
-            name: "shell".to_string(),
+    fn schema(&self) -> ToolDescriptor {
+        ToolDescriptor {
+            name: "run_shell".to_string(),
             description: "Run a shell command in the current workspace.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",

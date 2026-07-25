@@ -304,7 +304,7 @@ mod tests {
     fn approval_request() -> ToolApprovalRequest {
         ToolApprovalRequest {
             call_id: CallId::new(),
-            name: "fs_write".to_string(),
+            name: "write_file".to_string(),
             args: serde_json::json!({"path": "result.txt"}),
             reason: "writes a file".to_string(),
         }
@@ -330,7 +330,7 @@ mod tests {
                 request,
                 respond_to,
             } => {
-                assert_eq!(request.name, "fs_write");
+                assert_eq!(request.name, "write_file");
                 respond_to.send(ApprovalDecision::Approve).unwrap();
             }
             TerminalInteractionRequest::Input { .. } => panic!("expected approval request"),

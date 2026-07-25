@@ -103,11 +103,11 @@ Default compaction is deterministic and artifact-based. Optional model-generated
 ## Provider And Routing
 
 The independent `rove-models` package owns provider-neutral `Message`,
-`ToolSchema`, `Usage`, `ModelError`, `ModelClient`, and `ModelEvent` contracts,
+`ToolDescriptor`, `Usage`, `ModelError`, `ModelClient`, and `ModelEvent` contracts,
 plus provider adapters, Fake Model, routing, and health. It has no local project
 dependency. AppConfig-driven construction lives in
 `apps/bootstrap/src/factory.rs`.
-Its `ToolSchema` contains only the model-visible name, description, and input
+Its `ToolDescriptor` contains only the model-visible name, description, and input
 schema. Operational fields live in `rove_core::ToolDescriptor` and are not
 included in provider payloads.
 
@@ -333,7 +333,7 @@ CI is split by dependency weight:
 - `.github/workflows/ci.yml`: Rust default fmt/clippy/test and web test/typecheck/build.
 
 Default feedback loops stay free of heavy retrieval dependencies. Workspace
-retrieval is tool-based (`fs`/`shell`) plus layered session/durable file memory;
+retrieval is tool-based (`fs`/`run_shell`) plus layered session/durable file memory;
 there is no built-in vector database.
 
 ## Benchmark And Acceptance

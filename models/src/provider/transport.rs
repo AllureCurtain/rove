@@ -508,7 +508,7 @@ mod tests {
 
     use super::super::{Framing, StreamDecoder};
     use super::*;
-    use crate::{Message, ProviderOptions, ToolSchema};
+    use crate::{Message, ModelToolSchema, ProviderOptions};
 
     struct TestDecoder;
 
@@ -685,7 +685,7 @@ mod tests {
 
     fn input() -> WireRequestInput<'static> {
         let messages = Box::leak(Box::new([Message::user("hello")]));
-        let tools = Box::leak(Box::new([ToolSchema {
+        let tools = Box::leak(Box::new([ModelToolSchema {
             name: "echo".to_string(),
             description: "echo".to_string(),
             parameters: serde_json::json!({"type":"object"}),

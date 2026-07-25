@@ -100,18 +100,20 @@ impl ToolRegistry {
         self.tools.insert(tool.schema().name.clone(), tool);
     }
 
-    pub fn schemas(&self) -> Vec<ToolDescriptor> {
+    /// Operational descriptors for runtime/policy use (not model payloads).
+    pub fn descriptors(&self) -> Vec<ToolDescriptor> {
         self.tools.values().map(|tool| tool.schema()).collect()
     }
 
-    pub fn model_schemas(&self) -> Vec<rove_models::ToolSchema> {
+    /// Model-facing schemas projected from operational descriptors.
+    pub fn model_schemas(&self) -> Vec<rove_models::ModelToolSchema> {
         self.tools
             .values()
             .map(|tool| tool.schema().model_schema())
             .collect()
     }
 
-    pub fn schema(&self, name: &str) -> Result<ToolDescriptor, ToolError> {
+    pub fn descriptor(&self, name: &str) -> Result<ToolDescriptor, ToolError> {
         self.tools
             .get(name)
             .map(|tool| tool.schema())

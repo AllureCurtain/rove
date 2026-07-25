@@ -6,7 +6,7 @@ use crate::cli::args::CliApprovalPolicy;
 use crate::cli::input::stdin_input_provider;
 use rove_app_bootstrap::build_model_client;
 use rove_app_bootstrap::{AppConfig, AppConfigOverrides};
-use rove_app_bootstrap::{EngineAssemblyOptions, build_interface_engine};
+use rove_app_bootstrap::{EngineOptions, build_engine};
 use rove_models::ModelClient;
 use rove_models::fake::FakeModelClient;
 use rove_runtime::engine::Engine;
@@ -122,7 +122,7 @@ pub async fn build_cli_runtime(options: CliRuntimeOptions) -> anyhow::Result<Cli
 
     let approval_policy = cli_approval_policy(options.approval);
     let providers = options.interaction.into_providers(approval_policy);
-    let engine = build_interface_engine(EngineAssemblyOptions {
+    let engine = build_engine(EngineOptions {
         model,
         workspace: &workspace,
         config: &config,

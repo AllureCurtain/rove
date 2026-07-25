@@ -4,7 +4,7 @@ use crate::execution::ExecutionPolicy;
 use crate::prompt_metadata::{stable_hash, tool_signature};
 use crate::types::ApprovalPolicy;
 use crate::workspace::{Workspace, WorkspaceKind};
-use rove_core::ToolDescriptor as ToolSchema;
+use rove_core::ToolDescriptor;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RuntimeIdentity {
@@ -53,7 +53,7 @@ pub struct RuntimeIdentityInput<'a> {
     pub plan_enabled: bool,
     pub system_prompt: &'a str,
     pub planner_prompt: &'a str,
-    pub tools: &'a [ToolSchema],
+    pub tools: &'a [ToolDescriptor],
 }
 
 pub fn workspace_fingerprint(workspace: &Workspace) -> String {
@@ -143,7 +143,7 @@ mod tests {
     use crate::prompt_metadata::tool_signature;
     use crate::types::ApprovalPolicy;
     use crate::workspace::{Workspace, WorkspaceKind};
-    use rove_core::ToolDescriptor as ToolSchema;
+    use rove_core::ToolDescriptor;
 
     use super::{
         RuntimeIdentityInput, RuntimeIdentityStatus, build_runtime_identity,
@@ -159,9 +159,9 @@ mod tests {
         }
     }
 
-    fn tools() -> Vec<ToolSchema> {
-        vec![ToolSchema {
-            name: "fs_read".to_string(),
+    fn tools() -> Vec<ToolDescriptor> {
+        vec![ToolDescriptor {
+            name: "read_file".to_string(),
             description: "Read a file".to_string(),
             parameters: serde_json::json!({"type": "object"}),
             destructive: false,

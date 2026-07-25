@@ -253,7 +253,7 @@ impl Engine {
     }
 
     pub fn runtime_identity(&self) -> RuntimeIdentity {
-        let tools = self.registry.schemas();
+        let tools = self.registry.descriptors();
         build_runtime_identity(RuntimeIdentityInput {
             workspace: &self.workspace,
             model_id: self.model.model_id(),

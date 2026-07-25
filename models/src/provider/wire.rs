@@ -3,7 +3,7 @@ use reqwest::{
     header::{HeaderMap, HeaderName},
 };
 
-use crate::{Message, ModelError, ModelEvent, ProviderOptions, ToolSchema};
+use crate::{Message, ModelError, ModelEvent, ModelToolSchema, ProviderOptions};
 
 use super::WireProtocolId;
 
@@ -27,7 +27,7 @@ pub enum AuthStyle {
 pub struct WireRequestInput<'a> {
     pub model: &'a str,
     pub messages: &'a [Message],
-    pub tools: &'a [ToolSchema],
+    pub tools: &'a [ModelToolSchema],
     pub options: &'a ProviderOptions,
     pub protocol_options: &'a serde_json::Value,
 }

@@ -26,13 +26,13 @@ rove-app-bootstrap
 ## Minimal public API example
 
 ```rust
-use rove_cli::default_tool_registry;
+use rove_cli::tool_registry;
 use rove_runtime::Workspace;
 
 # fn example() -> anyhow::Result<()> {
 let workspace = Workspace::detect(std::path::Path::new("."))?;
-let registry = default_tool_registry(&workspace);
-assert!(!registry.schemas().is_empty());
+let registry = tool_registry(&workspace);
+assert!(!registry.descriptors().is_empty());
 # Ok(())
 # }
 ```

@@ -3,11 +3,11 @@ use std::pin::Pin;
 
 use async_trait::async_trait;
 pub use rove_core::{
-    Action, CallId, ToolCallAction, ToolCapability, ToolContext, ToolDescriptor as ToolSchema,
-    ToolError, ToolExecutionMetadata, ToolExecutionStatus, ToolMutation, ToolMutationOperation,
-    ToolResult, ToolRiskLevel,
+    Action, CallId, ToolCallAction, ToolCapability, ToolContext, ToolDescriptor, ToolError,
+    ToolExecutionMetadata, ToolExecutionStatus, ToolMutation, ToolMutationOperation, ToolResult,
+    ToolRiskLevel,
 };
-pub use rove_models::{Message, Role, ToolCallRef, ToolSchema as ModelToolSchema, Usage};
+pub use rove_models::{Message, ModelToolSchema, Role, ToolCallRef, Usage};
 use serde::{Deserialize, Serialize};
 use ulid::Ulid;
 

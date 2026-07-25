@@ -13,7 +13,7 @@ use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
 use tokio::time::timeout;
 
-use rove_core::ToolDescriptor as ToolSchema;
+use rove_core::ToolDescriptor;
 use rove_core::{Tool, ToolContext, ToolError, ToolOutput, ToolRegistry};
 
 const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
@@ -81,7 +81,7 @@ pub struct McpConfigFile {
 pub struct McpToolInfo {
     pub server_name: String,
     pub remote_name: String,
-    pub schema: ToolSchema,
+    pub schema: ToolDescriptor,
 }
 
 pub async fn register_mcp_tools_from_file(
@@ -137,7 +137,7 @@ pub struct McpProxyTool {
 
 #[async_trait]
 impl Tool for McpProxyTool {
-    fn schema(&self) -> ToolSchema {
+    fn schema(&self) -> ToolDescriptor {
         self.tool.schema.clone()
     }
 
@@ -317,7 +317,7 @@ impl StdioMcpClient {
         Ok(McpToolInfo {
             server_name: self.server_name.clone(),
             remote_name,
-            schema: ToolSchema {
+            schema: ToolDescriptor {
                 name,
                 description,
                 parameters,
@@ -561,7 +561,7 @@ impl SseMcpClient {
         Ok(McpToolInfo {
             server_name: self.server_name.clone(),
             remote_name,
-            schema: ToolSchema {
+            schema: ToolDescriptor {
                 name,
                 description,
                 parameters,
@@ -612,7 +612,7 @@ pub struct McpSseProxyTool {
 
 #[async_trait]
 impl Tool for McpSseProxyTool {
-    fn schema(&self) -> ToolSchema {
+    fn schema(&self) -> ToolDescriptor {
         self.tool.schema.clone()
     }
 

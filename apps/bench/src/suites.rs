@@ -86,14 +86,14 @@ fn build_dataprep_task(
     // Phase 1: Read inputs
     turns.push(BenchmarkTurn::ToolUse {
         id: format!("call_{idx}_read0"),
-        name: "fs_read".to_string(),
+        name: "read_file".to_string(),
         args: serde_json::json!({ "path": format!("inputs/{dataset}-part0.csv") }),
     });
 
     // Phase 2: Write intermediate summary
     turns.push(BenchmarkTurn::ToolUse {
         id: format!("call_{idx}_write_summary"),
-        name: "fs_write".to_string(),
+        name: "write_file".to_string(),
         args: serde_json::json!({
             "path": format!("intermediates/{dataset}-summary.json"),
             "content": serde_json::json!({
@@ -109,12 +109,12 @@ fn build_dataprep_task(
     if params.include_failure_recovery {
         turns.push(BenchmarkTurn::ToolUse {
             id: format!("call_{idx}_fail_read"),
-            name: "fs_read".to_string(),
+            name: "read_file".to_string(),
             args: serde_json::json!({ "path": format!("inputs/{dataset}-MISSING.csv") }),
         });
         turns.push(BenchmarkTurn::ToolUse {
             id: format!("call_{idx}_read_manifest"),
-            name: "fs_read".to_string(),
+            name: "read_file".to_string(),
             args: serde_json::json!({ "path": format!("inputs/{dataset}-manifest.json") }),
         });
     }
@@ -122,12 +122,12 @@ fn build_dataprep_task(
     // Phase 4: Aggregate via shell + write artifacts
     turns.push(BenchmarkTurn::ToolUse {
         id: format!("call_{idx}_shell"),
-        name: "shell".to_string(),
+        name: "run_shell".to_string(),
         args: serde_json::json!({ "command": shell_echo(&format!("aggregate_phase_{dataset}")) }),
     });
     turns.push(BenchmarkTurn::ToolUse {
         id: format!("call_{idx}_write_report"),
-        name: "fs_write".to_string(),
+        name: "write_file".to_string(),
         args: serde_json::json!({
             "path": format!("outputs/{dataset}-final-report.json"),
             "content": serde_json::json!({
@@ -148,7 +148,7 @@ fn build_dataprep_task(
     });
     turns.push(BenchmarkTurn::ToolUse {
         id: format!("call_{idx}_write_evidence"),
-        name: "fs_write".to_string(),
+        name: "write_file".to_string(),
         args: serde_json::json!({
             "path": format!("outputs/{dataset}-evidence.md"),
             "content": format!(

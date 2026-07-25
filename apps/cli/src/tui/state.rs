@@ -492,7 +492,7 @@ mod tests {
         let input_id = CallId::new();
         let approval = InteractionModalView::Approval {
             call_id: approval_id,
-            name: "fs_write".to_string(),
+            name: "write_file".to_string(),
             args: serde_json::json!({"path":"out.txt"}),
             reason: "writes a file".to_string(),
         };

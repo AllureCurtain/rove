@@ -1,6 +1,8 @@
 use rove_core::ToolError;
 use rove_runtime::events::StreamEvent;
-use rove_runtime::execution::{PlanDecisionKind, PlanDecisionRecord, PlanRevision, StepRecord};
+use rove_runtime::execution::{
+    PlanDecisionKind, PlanDecisionRecord, PlanRevision, StepRecord, StepRecordStatus,
+};
 use rove_runtime::prompt_metadata::PromptBuildMetadata;
 use rove_runtime::types::{
     CallId, JobId, PlanStep, PromptCompactionState, RunId, TaskPlan, TerminationReason, ToolResult,
@@ -171,15 +173,6 @@ pub enum RunViewUpdate {
     PlanStepStarted {
         step: PlanStep,
         index: usize,
-    },
-    PlanStepCompleted {
-        step: PlanStep,
-        index: usize,
-    },
-    PlanStepFailed {
-        step: PlanStep,
-        index: usize,
-        reason: String,
     },
     StepResult {
         record: StepRecord,
@@ -611,36 +604,45 @@ impl RunViewState {
                 self.model_status = None;
                 self.current_step = Some((index, step));
             }
-            RunViewUpdate::PlanStepCompleted { step, index } => {
-                if let Some(plan) = &mut self.plan {
-                    if let Some(stored_step) = plan.steps.get_mut(index) {
-                        stored_step.id = step.id;
-                        stored_step.title = step.title;
-                        stored_step.done = true;
-                    }
-                    plan.current_step = plan
-                        .steps
-                        .iter()
-                        .position(|candidate| !candidate.done)
-                        .unwrap_or(plan.steps.len());
-                }
-                self.current_step = None;
-            }
-            RunViewUpdate::PlanStepFailed {
-                step,
-                index,
-                reason,
-            } => {
-                self.failed_steps.push((index, step, reason));
-                self.current_step = None;
-            }
             RunViewUpdate::StepResult { record } => {
                 if !self
                     .step_records
                     .iter()
                     .any(|saved| saved.record_id == record.record_id)
                 {
-                    self.step_records.push(record);
+                    self.step_records.push(record.clone());
+                }
+                if let Some(plan) = &mut self.plan
+                    && let Some((index, stored_step)) = plan
+                        .steps
+                        .iter_mut()
+                        .enumerate()
+                        .find(|(_, stored_step)| stored_step.id == record.step_id)
+                {
+                    match record.status {
+                        StepRecordStatus::Succeeded | StepRecordStatus::Skipped => {
+                            stored_step.done = true;
+                            plan.current_step = plan
+                                .steps
+                                .iter()
+                                .position(|candidate| !candidate.done)
+                                .unwrap_or(plan.steps.len());
+                            self.current_step = None;
+                        }
+                        StepRecordStatus::Failed
+                        | StepRecordStatus::Blocked
+                        | StepRecordStatus::Interrupted => {
+                            let reason = record
+                                .safe_error_summary
+                                .clone()
+                                .unwrap_or_else(|| record.summary.clone());
+                            self.failed_steps.push((index, stored_step.clone(), reason));
+                            self.current_step = None;
+                        }
+                        _ => {}
+                    }
+                } else {
+                    self.current_step = None;
                 }
             }
             RunViewUpdate::PromptCompacted { summary, state } => {
@@ -759,26 +761,72 @@ impl RunViewState {
                 RunTimelinePlanStepStatus::Started,
                 None,
             )),
-            RunViewUpdate::PlanStepCompleted { step, index } => Some(timeline_plan_step(
-                *index,
-                step,
-                RunTimelinePlanStepStatus::Completed,
-                None,
-            )),
-            RunViewUpdate::PlanStepFailed {
-                step,
-                index,
-                reason,
-            } => Some(timeline_plan_step(
-                *index,
-                step,
-                RunTimelinePlanStepStatus::Failed,
-                Some(bounded_visible_text(reason)),
-            )),
-            // The compatibility completed/failed event owns the visible
-            // timeline entry. Keep the canonical record as structured state
-            // without rendering a duplicate row.
-            RunViewUpdate::StepResult { .. } => None,
+            RunViewUpdate::StepResult { record } => {
+                if self
+                    .step_records
+                    .iter()
+                    .any(|saved| saved.record_id == record.record_id)
+                {
+                    None
+                } else {
+                    let status = match record.status {
+                        StepRecordStatus::Succeeded | StepRecordStatus::Skipped => {
+                            Some(RunTimelinePlanStepStatus::Completed)
+                        }
+                        StepRecordStatus::Failed
+                        | StepRecordStatus::Blocked
+                        | StepRecordStatus::Interrupted => Some(RunTimelinePlanStepStatus::Failed),
+                        _ => None,
+                    };
+                    status.map(|status| {
+                        let reason = match status {
+                            RunTimelinePlanStepStatus::Failed => Some(bounded_visible_text(
+                                record
+                                    .safe_error_summary
+                                    .as_deref()
+                                    .unwrap_or(record.summary.as_str()),
+                            )),
+                            _ => None,
+                        };
+                        let title = self
+                            .plan
+                            .as_ref()
+                            .and_then(|plan| {
+                                plan.steps
+                                    .iter()
+                                    .find(|candidate| candidate.id == record.step_id)
+                                    .map(|step| step.title.clone())
+                            })
+                            .filter(|title| !title.trim().is_empty())
+                            .unwrap_or_else(|| {
+                                if record.summary.trim().is_empty() {
+                                    record.step_id.clone()
+                                } else {
+                                    record.summary.clone()
+                                }
+                            });
+                        let step = PlanStep {
+                            id: record.step_id.clone(),
+                            title,
+                            done: matches!(
+                                record.status,
+                                StepRecordStatus::Succeeded | StepRecordStatus::Skipped
+                            ),
+                        };
+                        let index = self
+                            .plan
+                            .as_ref()
+                            .and_then(|plan| {
+                                plan.steps
+                                    .iter()
+                                    .position(|candidate| candidate.id == record.step_id)
+                            })
+                            .unwrap_or(0);
+                        timeline_plan_step(index, &step, status, reason)
+                    })
+                }
+            }
+            // Canonical step_result owns the visible plan-step timeline entry.
             RunViewUpdate::PromptCompacted { summary, state } => {
                 Some(RunTimelineEntryKind::Compaction {
                     mode: state.mode.clone(),
@@ -1056,19 +1104,6 @@ impl From<&StreamEvent> for RunViewUpdate {
                 step: step.clone(),
                 index: *index,
             },
-            StreamEvent::PlanStepCompleted { step, index } => Self::PlanStepCompleted {
-                step: step.clone(),
-                index: *index,
-            },
-            StreamEvent::PlanStepFailed {
-                step,
-                index,
-                reason,
-            } => Self::PlanStepFailed {
-                step: step.clone(),
-                index: *index,
-                reason: reason.clone(),
-            },
             StreamEvent::StepResult { record } => Self::StepResult {
                 record: record.as_ref().clone(),
             },
@@ -1190,12 +1225,12 @@ mod tests {
             StreamEvent::ToolCallStarted {
                 call_id,
                 tool_use_id: None,
-                name: "fs_read".to_string(),
+                name: "read_file".to_string(),
                 args: serde_json::json!({"path":"README.md"}),
             },
             StreamEvent::ToolCallApprovalNeeded {
                 call_id,
-                name: "fs_write".to_string(),
+                name: "write_file".to_string(),
                 args: serde_json::json!({"path":"out.txt"}),
                 reason: "writes a file".to_string(),
             },
@@ -1229,15 +1264,6 @@ mod tests {
                 index: 0,
                 attempt: Default::default(),
             },
-            StreamEvent::PlanStepCompleted {
-                step: step(),
-                index: 0,
-            },
-            StreamEvent::PlanStepFailed {
-                step: step(),
-                index: 0,
-                reason: "failed".to_string(),
-            },
             StreamEvent::StepResult {
                 record: Box::new(step_record()),
             },
@@ -1259,7 +1285,7 @@ mod tests {
 
         let updates: Vec<RunViewUpdate> = events.iter().map(RunViewUpdate::from).collect();
 
-        assert_eq!(updates.len(), 18);
+        assert_eq!(updates.len(), 16);
         assert!(matches!(
             updates[0],
             RunViewUpdate::RunStarted {
@@ -1269,20 +1295,20 @@ mod tests {
         ));
         assert!(matches!(
             updates[4],
-            RunViewUpdate::ToolCallStarted { ref name, .. } if name == "fs_read"
+            RunViewUpdate::ToolCallStarted { ref name, .. } if name == "read_file"
         ));
         assert!(matches!(
             updates[8],
             RunViewUpdate::InputNeeded { ref prompt, .. } if prompt == "Which branch?"
         ));
+        assert!(matches!(updates[11], RunViewUpdate::StepResult { .. }));
         assert!(matches!(
-            updates[15],
+            updates[13],
             RunViewUpdate::MemoryFlushed { note_count: 1 }
         ));
-        assert!(matches!(updates[13], RunViewUpdate::StepResult { .. }));
-        assert!(matches!(updates[16], RunViewUpdate::PromptBuilt { .. }));
+        assert!(matches!(updates[14], RunViewUpdate::PromptBuilt { .. }));
         assert!(matches!(
-            updates[17],
+            updates[15],
             RunViewUpdate::RunCompleted {
                 reason: TerminationReason::Final,
                 ..
@@ -1316,12 +1342,12 @@ mod tests {
         });
         state.apply_update(RunViewUpdate::ToolCallStarted {
             call_id,
-            name: "fs_read".to_string(),
+            name: "read_file".to_string(),
             args: serde_json::json!({"path":"README.md"}),
         });
         state.apply_update(RunViewUpdate::ToolCallApprovalNeeded {
             call_id,
-            name: "fs_write".to_string(),
+            name: "write_file".to_string(),
             args: serde_json::json!({"path":"out.txt"}),
             reason: "writes a file".to_string(),
         });
@@ -1369,9 +1395,29 @@ mod tests {
             step: first.clone(),
             index: 0,
         });
-        state.apply_update(RunViewUpdate::PlanStepCompleted {
-            step: first,
-            index: 0,
+        state.apply_update(RunViewUpdate::StepResult {
+            record: StepRecord {
+                record_id: "record-1".to_string(),
+                plan_id: "plan-1".to_string(),
+                plan_revision_id: "revision-1".to_string(),
+                step_id: first.id,
+                attempt: 1,
+                status: StepRecordStatus::Succeeded,
+                started_at: "2026-07-20T00:00:00Z".to_string(),
+                finished_at: "2026-07-20T00:00:01Z".to_string(),
+                summary: first.title,
+                completion_basis: StepCompletionBasis::ModelConclusion,
+                evidence_refs: Vec::new(),
+                tool_call_ids: Vec::new(),
+                artifact_refs: Vec::new(),
+                mutations: Vec::new(),
+                model_turns_used: 1,
+                tool_calls_used: 0,
+                token_usage: Usage::default(),
+                error_code: None,
+                safe_error_summary: None,
+                supersedes_record_id: None,
+            },
         });
 
         let plan = state.plan.as_ref().unwrap();
@@ -1381,7 +1427,7 @@ mod tests {
     }
 
     #[test]
-    fn step_result_is_structured_state_without_a_duplicate_timeline_entry() {
+    fn step_result_is_structured_state_and_timeline_entry_is_deduped_by_record_id() {
         let mut state = super::RunViewState::default();
         let record = step_record();
 
@@ -1391,7 +1437,7 @@ mod tests {
         state.apply_update(RunViewUpdate::StepResult { record });
 
         assert_eq!(state.step_records.len(), 1);
-        assert!(state.timeline.is_empty());
+        assert_eq!(state.timeline.len(), 1);
         assert_eq!(state.timeline_high_watermark, 2);
     }
 
@@ -1401,7 +1447,7 @@ mod tests {
         let mut state = super::RunViewState::default();
         let approval = RunViewUpdate::ToolCallApprovalNeeded {
             call_id,
-            name: "fs_write".to_string(),
+            name: "write_file".to_string(),
             args: serde_json::json!({"path":"out.txt"}),
             reason: "writes a file".to_string(),
         };
@@ -1588,12 +1634,12 @@ mod tests {
         });
         state.apply_update(RunViewUpdate::ToolCallStarted {
             call_id,
-            name: "fs_write".to_string(),
+            name: "write_file".to_string(),
             args: serde_json::json!({"path":"out.txt"}),
         });
         state.apply_update(RunViewUpdate::ToolCallApprovalNeeded {
             call_id,
-            name: "fs_write".to_string(),
+            name: "write_file".to_string(),
             args: serde_json::json!({"path":"out.txt"}),
             reason: "writes a file".to_string(),
         });
@@ -1879,7 +1925,7 @@ mod tests {
         });
         state.apply_update(RunViewUpdate::ToolCallApprovalNeeded {
             call_id,
-            name: "fs_write".to_string(),
+            name: "write_file".to_string(),
             args: serde_json::json!({"path":"out.txt"}),
             reason: "writes a file".to_string(),
         });
@@ -1934,12 +1980,12 @@ mod tests {
             StreamEvent::ToolCallStarted {
                 call_id,
                 tool_use_id: None,
-                name: "fs_read".to_string(),
+                name: "read_file".to_string(),
                 args: serde_json::json!({"api_key":"CANARY_TOOL_ARG"}),
             },
             StreamEvent::ToolCallApprovalNeeded {
                 call_id,
-                name: "fs_read".to_string(),
+                name: "read_file".to_string(),
                 args: serde_json::json!({"password":"CANARY_APPROVAL_ARG"}),
                 reason: "secret:CANARY_APPROVAL_REASON".to_string(),
             },

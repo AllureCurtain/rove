@@ -27,7 +27,7 @@ test.describe("real API workbench integration", () => {
     const outputName = `approved-${Date.now()}.txt`;
     await startRun(page, {
       task: JSON.stringify({
-        tool: "fs_write",
+        tool: "write_file",
         args: { path: outputName, content: "ok from real-api e2e" },
       }),
       model: "fake-raw",
@@ -36,7 +36,7 @@ test.describe("real API workbench integration", () => {
 
     const details = page.getByLabel("Run details");
     await expect(details.getByText("pending approval").first()).toBeVisible();
-    await expect(details.getByText("fs_write").first()).toBeVisible();
+    await expect(details.getByText("write_file").first()).toBeVisible();
 
     await page.getByRole("button", { name: "Approve" }).click();
 

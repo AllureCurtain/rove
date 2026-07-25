@@ -7,7 +7,7 @@ use reqwest::{
 use std::collections::BTreeMap;
 
 use crate::traits::{ModelClient, ModelClientId, ModelEvent};
-use crate::{Message, ModelError, ProviderOptions, Role, ToolSchema, Usage};
+use crate::{Message, ModelError, ModelToolSchema, ProviderOptions, Role, Usage};
 
 const DEFAULT_MAX_TOKENS: u32 = 4096;
 const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -50,7 +50,7 @@ impl AnthropicClient {
     pub(crate) fn build_request_body(
         &self,
         messages: &[Message],
-        tools: &[ToolSchema],
+        tools: &[ModelToolSchema],
     ) -> serde_json::Value {
         let (system_prompt, conversation) = extract_system(messages);
 
@@ -336,7 +336,7 @@ impl ModelClient for AnthropicClient {
     fn stream(
         &self,
         messages: &[Message],
-        tools: &[ToolSchema],
+        tools: &[ModelToolSchema],
     ) -> BoxStream<'_, Result<ModelEvent, ModelError>> {
         let body = self.build_request_body(messages, tools);
         let url = format!("{}/v1/messages", self.api_base);
@@ -414,7 +414,7 @@ impl ModelClient for AnthropicClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Message, ProviderOptions, ToolCallRef, ToolSchema};
+    use crate::{Message, ModelToolSchema, ProviderOptions, ToolCallRef};
     use reqwest::header::{HeaderMap, HeaderValue, RETRY_AFTER};
 
     #[test]
@@ -444,8 +444,8 @@ mod tests {
         );
         let body = client.build_request_body(
             &[Message::user("inspect")],
-            &[ToolSchema {
-                name: "fs_read".to_string(),
+            &[ModelToolSchema {
+                name: "read_file".to_string(),
                 description: "Read a file".to_string(),
                 parameters: serde_json::json!({
                     "type": "object",
@@ -456,7 +456,7 @@ mod tests {
             }],
         );
 
-        assert_eq!(body["tools"][0]["name"], "fs_read");
+        assert_eq!(body["tools"][0]["name"], "read_file");
         assert_eq!(body["tools"][0]["description"], "Read a file");
         assert!(body["tools"][0]["input_schema"].is_object());
     }
@@ -495,7 +495,7 @@ mod tests {
                     "I will inspect that.".to_string(),
                     vec![ToolCallRef {
                         id: "toolu_1".to_string(),
-                        name: "fs_read".to_string(),
+                        name: "read_file".to_string(),
                         args: serde_json::json!({ "path": "Cargo.toml" }),
                     }],
                 ),
@@ -512,7 +512,7 @@ mod tests {
         );
         assert_eq!(body["messages"][0]["content"][1]["type"], "tool_use");
         assert_eq!(body["messages"][0]["content"][1]["id"], "toolu_1");
-        assert_eq!(body["messages"][0]["content"][1]["name"], "fs_read");
+        assert_eq!(body["messages"][0]["content"][1]["name"], "read_file");
         assert_eq!(
             body["messages"][0]["content"][1]["input"]["path"],
             "Cargo.toml"
@@ -535,7 +535,7 @@ mod tests {
             "content_block": {
                 "type": "tool_use",
                 "id": "toolu_1",
-                "name": "fs_read",
+                "name": "read_file",
                 "input": {}
             }
         })
@@ -563,14 +563,14 @@ mod tests {
             matches!(
                 event,
                 ModelEvent::ToolUseStart { id, name }
-                    if id == "toolu_1" && name == "fs_read"
+                    if id == "toolu_1" && name == "read_file"
             )
         }));
         assert!(events.iter().any(|event| {
             matches!(
                 event,
                 ModelEvent::ToolUseDone { id, name, args }
-                    if id == "toolu_1" && name == "fs_read" && args["path"] == "Cargo.toml"
+                    if id == "toolu_1" && name == "read_file" && args["path"] == "Cargo.toml"
             )
         }));
     }

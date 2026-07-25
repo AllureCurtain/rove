@@ -59,7 +59,9 @@ async fn runtime_registers_calls_and_classifies_stdio_mcp_tools() {
     .unwrap();
 
     assert_eq!(registered, 2);
-    let destructive = registry.schema("mcp__mock_server__delete_remote").unwrap();
+    let destructive = registry
+        .descriptor("mcp__mock_server__delete_remote")
+        .unwrap();
     assert!(destructive.destructive);
     assert!(!destructive.parallel_safe);
 

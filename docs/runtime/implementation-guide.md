@@ -16,36 +16,41 @@ offers REPL, exec, and optional full-screen TUI modes:
 
 ```text
 CLI (REPL / exec / TUI) / API / Web
-    -> root Engine compatibility facade
+    -> apps/bootstrap build_engine / tool_registry
         -> ContextManager
-        -> rove-runtime identity / task / execution / workspace contracts
+        -> rove-runtime Engine / identity / task / execution / workspace contracts
         -> rove-core model turn / ToolRegistry
             -> rove-models ModelClient / RoutingModelClient
         -> runtime Executor / approval / input
         -> Memory loaders and hooks
         -> StateStore
 
+External embedding
+    -> rove-core::Agent
+        -> rove-models::ModelClient
+        -> custom ToolRegistry / ToolPolicy
+        -> in-memory AgentEvent
+
 StateStore
     -> .rove/runs/<run_id>/*
     -> .rove/state.sqlite
 ```
 
-The interface layers construct the runtime and consume `StreamEvent` values.
-Core code does not depend on CLI, TUI, API, or Web modules.
+Product shells use `runtime::Engine` via `build_engine`. `core::Agent` is
+embed-only. The interface layers construct the runtime and consume `StreamEvent`
+values. Core code does not depend on CLI, TUI, API, or Web modules.
 
 Important entry points:
 
 | Area | Files |
 |---|---|
-| Library module tree | `src/lib.rs` |
-| CLI binary | `src/main.rs`, `src/interfaces/cli/*` |
-| Full-screen TUI mode | `src/interfaces/tui/*`, `src/interfaces/terminal/*` |
-| API binary | `src/bin/rove-api.rs`, `src/interfaces/api/mod.rs` |
+| CLI binary | `apps/cli/src/main.rs`, `apps/cli/src/cli/*` |
+| Full-screen TUI mode | `apps/cli/src/tui/*`, `apps/cli/src/terminal/*` |
+| API binary | `apps/api` |
 | Web workbench | `apps/web/` |
 | In-memory Agent and tool contracts | `core/src/*` |
 | Persistent runtime services | `runtime/src/*` |
 | Persistent Engine and coordination | `runtime/src/engine.rs`, `runtime/src/{planner,plan_loop,step_runner,run_loop,tool_turn,model_turn,plan_evaluator}.rs` |
-| Compatibility Engine re-exports | `src/core/*` |
 | State artifacts and SQLite index | `runtime/src/state/*` |
 | Model protocol and providers | `models/src/*` |
 | Product provider assembly | `apps/bootstrap/src/factory.rs` |
@@ -555,7 +560,7 @@ The core type model is centered on explicit IDs and serializable runtime state:
 | `StepRecord` | Append-only terminal fact for one planned attempt |
 | `StepLedgerState` | Materialized ledger and active-attempt projection |
 | `Message` | Provider-facing conversation message; owned by `rove-models` |
-| `rove_models::ToolSchema` | Model-visible name, description, and input schema |
+| `rove_models::ModelToolSchema` | Model-visible name, description, and input schema |
 | `rove_core::ToolDescriptor` | Operational schema plus destructive/parallel/capability metadata |
 | `RunStatus` | API/job status |
 | `TerminationReason` | Engine completion reason |
@@ -653,8 +658,7 @@ The high-level run flow:
    - collect model-turn, tool-call, mutation, and token metrics from emitted
      events;
    - emit a terminal `step_result`, evaluate it deterministically, and emit one
-     correlated `plan_decision` before the compatibility
-     `PlanStepCompleted` / `PlanStepFailed` event;
+     correlated `plan_decision`;
    - continue, finish with a typed reason, or emit `plan_revised` after an
      explicitly recoverable terminal failure;
    - repair malformed/recoverable tool output within the step before creating
@@ -768,7 +772,7 @@ All providers implement:
 
 ```rust
 trait ModelClient {
-    fn stream(&self, messages: &[Message], tools: &[rove_models::ToolSchema])
+    fn stream(&self, messages: &[Message], tools: &[rove_models::ModelToolSchema])
         -> BoxStream<'_, Result<ModelEvent, ModelError>>;
 
     fn model_id(&self) -> &str;
@@ -860,21 +864,20 @@ Current built-in tools:
 
 | Tool | Purpose |
 |---|---|
-| `echo` | Deterministic smoke/demo tool |
-| `fs_read` | Read UTF-8 workspace file |
-| `fs_write` | Write UTF-8 workspace file |
-| `shell` | Run shell command in workspace |
+| `read_file` | Read UTF-8 workspace file |
+| `write_file` | Write UTF-8 workspace file |
+| `run_shell` | Run shell command in workspace |
 | `save_memory` | Save durable memory topic |
-| `update_memory_index` | Rebuild durable memory index |
-| `read_memory_topic` | Read durable memory topic |
+| `reindex_memory` | Rebuild durable memory index |
+| `read_memory` | Read durable memory topic |
 | `request_input` | Ask user/interface for mid-run input |
 
 
 | `mcp__<server>__<tool>` | MCP-proxied remote tools |
 
 CLI and API construct runtime tools through the shared async
-`runtime_tool_registry(&Workspace, ShellPolicy, mcp_config_path)` builder. That
-builder registers built-ins through `default_tool_registry_with_shell_policy`
+`tool_registry_with_mcp(&Workspace, ShellPolicy, mcp_config_path)` builder. That
+builder registers built-ins through `tool_registry_with_shell_policy`
 and then loads configured MCP tools. Root-bound tools receive the workspace root
 at construction. Runtime-specific Workspace, Memory paths, approval policy, and
 input provider are attached to the invocation through `RuntimeToolServices`;
@@ -896,7 +899,7 @@ Argument validation supports the JSON Schema subset used by built-in tools: obje
 
 Filesystem tools resolve paths through `runtime/src/boundary.rs` (re-exported by `src/core/boundary.rs`). Reads canonicalize the final target; writes canonicalize existing targets or the nearest existing ancestor for new files. Both paths reject absolute paths, lexical workspace escapes, and symlink/reparse-point escapes that resolve outside the workspace.
 
-`fs_write` returns structured mutation metadata for deterministic file writes. The metadata includes path, operation type, and a textual diff; it is exposed on `ToolCallCompleted.result.mutations` and persisted to `report.json` as `tool_mutations`. Shell commands are bounded by policy and return structured stdout/stderr/exit metadata, but shell write-sets are intentionally not inferred or snapshotted.
+`write_file` returns structured mutation metadata for deterministic file writes. The metadata includes path, operation type, and a textual diff; it is exposed on `ToolCallCompleted.result.mutations` and persisted to `report.json` as `tool_mutations`. Shell commands are bounded by policy and return structured stdout/stderr/exit metadata, but shell write-sets are intentionally not inferred or snapshotted.
 
 Shell policy comes from `tool.shell`: timeout, max output bytes per stream, environment inheritance, and a denylist. The shell working directory is fixed to the workspace root. Empty commands, NUL bytes, denied substrings, timeouts, and output truncation are handled before unbounded history growth.
 
@@ -1060,8 +1063,8 @@ Session memory is written by a post-run hook when a run completes with `Terminat
 Durable memory is managed by tools:
 
 - `save_memory`
-- `update_memory_index`
-- `read_memory_topic`
+- `reindex_memory`
+- `read_memory`
 
 `save_memory` rejects unsafe topic names, likely secrets, and transient one-off content before writing. Topic frontmatter records `type` (`user`, `feedback`, `project`, or `reference`), `scope`, `source`, `confidence`, and timestamps.
 

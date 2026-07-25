@@ -6,7 +6,7 @@ use tokio::time::{Instant, sleep, timeout};
 
 use crate::health::{HealthConfig, ModelHealthStore};
 use crate::traits::{ModelClient, ModelEvent};
-use crate::{Message, ModelError, ToolSchema};
+use crate::{Message, ModelError, ModelToolSchema};
 
 /// Model client that tries a primary provider, then fallback providers if the
 /// active provider fails before streaming any response chunks.
@@ -136,7 +136,7 @@ impl ModelClient for RoutingModelClient {
     fn stream(
         &self,
         messages: &[Message],
-        tools: &[ToolSchema],
+        tools: &[ModelToolSchema],
     ) -> BoxStream<'_, Result<ModelEvent, ModelError>> {
         let messages = messages.to_vec();
         let tools = tools.to_vec();
@@ -352,7 +352,7 @@ mod tests {
     use crate::health::{HealthConfig, ModelHealthStore};
     use crate::routing::{RetryPolicy, RoutingModelClient};
     use crate::traits::{ModelClient, ModelEvent};
-    use crate::{Message, ModelError, ToolSchema, Usage};
+    use crate::{Message, ModelError, ModelToolSchema, Usage};
 
     struct FailingClient {
         id: &'static str,
@@ -364,7 +364,7 @@ mod tests {
         fn stream(
             &self,
             _messages: &[Message],
-            _tools: &[ToolSchema],
+            _tools: &[ModelToolSchema],
         ) -> BoxStream<'_, Result<ModelEvent, ModelError>> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             Box::pin(stream::once(async {
@@ -388,7 +388,7 @@ mod tests {
         fn stream(
             &self,
             _messages: &[Message],
-            _tools: &[ToolSchema],
+            _tools: &[ModelToolSchema],
         ) -> BoxStream<'_, Result<ModelEvent, ModelError>> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             let response = self.response.to_string();
@@ -412,7 +412,7 @@ mod tests {
         fn stream(
             &self,
             _messages: &[Message],
-            _tools: &[ToolSchema],
+            _tools: &[ModelToolSchema],
         ) -> BoxStream<'_, Result<ModelEvent, ModelError>> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             Box::pin(stream::iter([
@@ -440,7 +440,7 @@ mod tests {
         fn stream(
             &self,
             _messages: &[Message],
-            _tools: &[ToolSchema],
+            _tools: &[ModelToolSchema],
         ) -> BoxStream<'_, Result<ModelEvent, ModelError>> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             Box::pin(stream::once(async {
@@ -483,7 +483,7 @@ mod tests {
         fn stream(
             &self,
             _messages: &[Message],
-            _tools: &[ToolSchema],
+            _tools: &[ModelToolSchema],
         ) -> BoxStream<'_, Result<ModelEvent, ModelError>> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             Box::pin(stream::iter([
@@ -511,7 +511,7 @@ mod tests {
         fn stream(
             &self,
             _messages: &[Message],
-            _tools: &[ToolSchema],
+            _tools: &[ModelToolSchema],
         ) -> BoxStream<'_, Result<ModelEvent, ModelError>> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             Box::pin(stream::iter([
@@ -535,7 +535,7 @@ mod tests {
         fn stream(
             &self,
             _messages: &[Message],
-            _tools: &[ToolSchema],
+            _tools: &[ModelToolSchema],
         ) -> BoxStream<'_, Result<ModelEvent, ModelError>> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             if self
@@ -567,7 +567,7 @@ mod tests {
         fn stream(
             &self,
             _messages: &[Message],
-            _tools: &[ToolSchema],
+            _tools: &[ModelToolSchema],
         ) -> BoxStream<'_, Result<ModelEvent, ModelError>> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             let error = self.error.clone();
@@ -584,7 +584,7 @@ mod tests {
         fn stream(
             &self,
             _messages: &[Message],
-            _tools: &[ToolSchema],
+            _tools: &[ModelToolSchema],
         ) -> BoxStream<'_, Result<ModelEvent, ModelError>> {
             let call = self.calls.fetch_add(1, Ordering::SeqCst);
             if call == 0 {
@@ -723,7 +723,7 @@ mod tests {
             backoff_max: std::time::Duration::from_millis(0),
         });
         let messages: Vec<Message> = Vec::new();
-        let tools: Vec<ToolSchema> = Vec::new();
+        let tools: Vec<ModelToolSchema> = Vec::new();
 
         let chunks = model.stream(&messages, &tools).collect::<Vec<_>>().await;
 
@@ -752,7 +752,7 @@ mod tests {
             backoff_max: std::time::Duration::from_millis(0),
         });
         let messages: Vec<Message> = Vec::new();
-        let tools: Vec<ToolSchema> = Vec::new();
+        let tools: Vec<ModelToolSchema> = Vec::new();
 
         let chunks = model.stream(&messages, &tools).collect::<Vec<_>>().await;
 
@@ -814,7 +814,7 @@ mod tests {
             backoff_max: std::time::Duration::from_millis(0),
         });
         let messages: Vec<Message> = Vec::new();
-        let tools: Vec<ToolSchema> = Vec::new();
+        let tools: Vec<ModelToolSchema> = Vec::new();
 
         let chunks = model.stream(&messages, &tools).collect::<Vec<_>>().await;
 
@@ -891,7 +891,7 @@ mod tests {
             backoff_max: std::time::Duration::from_millis(0),
         });
         let messages: Vec<Message> = Vec::new();
-        let tools: Vec<ToolSchema> = Vec::new();
+        let tools: Vec<ModelToolSchema> = Vec::new();
 
         let chunks = model.stream(&messages, &tools).collect::<Vec<_>>().await;
 
@@ -922,7 +922,7 @@ mod tests {
             backoff_max: std::time::Duration::from_secs(30),
         });
         let messages: Vec<Message> = Vec::new();
-        let tools: Vec<ToolSchema> = Vec::new();
+        let tools: Vec<ModelToolSchema> = Vec::new();
 
         let started = tokio::time::Instant::now();
         let chunks = model.stream(&messages, &tools).collect::<Vec<_>>().await;
@@ -948,7 +948,7 @@ mod tests {
             })],
         );
         let messages: Vec<Message> = Vec::new();
-        let tools: Vec<ToolSchema> = Vec::new();
+        let tools: Vec<ModelToolSchema> = Vec::new();
 
         let chunks = model.stream(&messages, &tools).collect::<Vec<_>>().await;
 
@@ -974,7 +974,7 @@ mod tests {
             })],
         );
         let messages: Vec<Message> = Vec::new();
-        let tools: Vec<ToolSchema> = Vec::new();
+        let tools: Vec<ModelToolSchema> = Vec::new();
 
         let chunks = model.stream(&messages, &tools).collect::<Vec<_>>().await;
 
@@ -1006,7 +1006,7 @@ mod tests {
         )
         .with_probe_timeout(std::time::Duration::from_secs(1));
         let messages: Vec<Message> = Vec::new();
-        let tools: Vec<ToolSchema> = Vec::new();
+        let tools: Vec<ModelToolSchema> = Vec::new();
 
         let chunks = model.stream(&messages, &tools).collect::<Vec<_>>().await;
 
@@ -1036,7 +1036,7 @@ mod tests {
             open_cooldown: std::time::Duration::from_secs(30),
         });
         let messages: Vec<Message> = Vec::new();
-        let tools: Vec<ToolSchema> = Vec::new();
+        let tools: Vec<ModelToolSchema> = Vec::new();
 
         let first = model.stream(&messages, &tools).collect::<Vec<_>>().await;
         let second = model.stream(&messages, &tools).collect::<Vec<_>>().await;
@@ -1086,7 +1086,7 @@ mod tests {
         );
 
         let messages: Vec<Message> = Vec::new();
-        let tools: Vec<ToolSchema> = Vec::new();
+        let tools: Vec<ModelToolSchema> = Vec::new();
 
         let _ = first.stream(&messages, &tools).collect::<Vec<_>>().await;
         let _ = second.stream(&messages, &tools).collect::<Vec<_>>().await;
@@ -1117,7 +1117,7 @@ mod tests {
             open_cooldown: std::time::Duration::from_secs(30),
         });
         let messages: Vec<Message> = Vec::new();
-        let tools: Vec<ToolSchema> = Vec::new();
+        let tools: Vec<ModelToolSchema> = Vec::new();
 
         let first = model.stream(&messages, &tools).collect::<Vec<_>>().await;
         let second = model.stream(&messages, &tools).collect::<Vec<_>>().await;
@@ -1149,7 +1149,7 @@ mod tests {
             })],
         );
         let messages: Vec<Message> = Vec::new();
-        let tools: Vec<ToolSchema> = Vec::new();
+        let tools: Vec<ModelToolSchema> = Vec::new();
 
         let chunks = model.stream(&messages, &tools).collect::<Vec<_>>().await;
 
@@ -1180,7 +1180,7 @@ mod tests {
             backoff_max: std::time::Duration::from_millis(0),
         });
         let messages: Vec<Message> = Vec::new();
-        let tools: Vec<ToolSchema> = Vec::new();
+        let tools: Vec<ModelToolSchema> = Vec::new();
 
         let chunks = model.stream(&messages, &tools).collect::<Vec<_>>().await;
 

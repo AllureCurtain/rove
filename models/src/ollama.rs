@@ -6,7 +6,7 @@ use reqwest::{
 };
 
 use crate::traits::{ModelClient, ModelClientId, ModelEvent};
-use crate::{Message, ModelError, ProviderOptions, Role, ToolSchema, Usage};
+use crate::{Message, ModelError, ModelToolSchema, ProviderOptions, Role, Usage};
 
 const DEFAULT_OLLAMA_BASE: &str = "http://localhost:11434";
 
@@ -48,7 +48,7 @@ impl OllamaClient {
     pub(crate) fn build_request_body(
         &self,
         messages: &[Message],
-        tools: &[ToolSchema],
+        tools: &[ModelToolSchema],
     ) -> serde_json::Value {
         let msgs: Vec<serde_json::Value> = messages.iter().map(format_ollama_message).collect();
 
@@ -264,7 +264,7 @@ impl ModelClient for OllamaClient {
     fn stream(
         &self,
         messages: &[Message],
-        tools: &[ToolSchema],
+        tools: &[ModelToolSchema],
     ) -> BoxStream<'_, Result<ModelEvent, ModelError>> {
         let body = self.build_request_body(messages, tools);
         let url = format!("{}/api/chat", self.api_base);
@@ -336,7 +336,7 @@ impl ModelClient for OllamaClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Message, ProviderOptions, ToolCallRef, ToolSchema};
+    use crate::{Message, ModelToolSchema, ProviderOptions, ToolCallRef};
     use reqwest::header::{HeaderMap, HeaderValue, RETRY_AFTER};
 
     #[test]
@@ -358,8 +358,8 @@ mod tests {
         let client = OllamaClient::new(String::new(), "llama3".to_string());
         let body = client.build_request_body(
             &[Message::user("inspect")],
-            &[ToolSchema {
-                name: "fs_read".to_string(),
+            &[ModelToolSchema {
+                name: "read_file".to_string(),
                 description: "Read a file".to_string(),
                 parameters: serde_json::json!({
                     "type": "object",
@@ -371,7 +371,7 @@ mod tests {
         );
 
         assert_eq!(body["tools"][0]["type"], "function");
-        assert_eq!(body["tools"][0]["function"]["name"], "fs_read");
+        assert_eq!(body["tools"][0]["function"]["name"], "read_file");
     }
 
     #[test]
@@ -409,7 +409,7 @@ mod tests {
                     "I will inspect that.".to_string(),
                     vec![ToolCallRef {
                         id: "ollama_tool_call_0".to_string(),
-                        name: "fs_read".to_string(),
+                        name: "read_file".to_string(),
                         args: serde_json::json!({ "path": "Cargo.toml" }),
                     }],
                 ),
@@ -422,7 +422,7 @@ mod tests {
         assert_eq!(body["messages"][0]["content"], "I will inspect that.");
         assert_eq!(
             body["messages"][0]["tool_calls"][0]["function"]["name"],
-            "fs_read"
+            "read_file"
         );
         assert_eq!(
             body["messages"][0]["tool_calls"][0]["function"]["arguments"]["path"],
@@ -440,7 +440,7 @@ mod tests {
                 "content": "",
                 "tool_calls": [{
                     "function": {
-                        "name": "fs_read",
+                        "name": "read_file",
                         "arguments": { "path": "Cargo.toml" }
                     }
                 }]
@@ -454,14 +454,14 @@ mod tests {
         assert!(events.iter().any(|event| {
             matches!(
                 event,
-                ModelEvent::ToolUseStart { name, .. } if name == "fs_read"
+                ModelEvent::ToolUseStart { name, .. } if name == "read_file"
             )
         }));
         assert!(events.iter().any(|event| {
             matches!(
                 event,
                 ModelEvent::ToolUseDone { name, args, .. }
-                    if name == "fs_read" && args["path"] == "Cargo.toml"
+                    if name == "read_file" && args["path"] == "Cargo.toml"
             )
         }));
     }

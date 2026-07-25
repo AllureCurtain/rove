@@ -17,7 +17,8 @@ use tokio::process::{Child, Command};
 use tokio::time::{Instant, timeout};
 
 use crate::{
-    Message, ModelClient, ModelClientId, ModelError, ModelEvent, ProviderOptions, ToolSchema, Usage,
+    Message, ModelClient, ModelClientId, ModelError, ModelEvent, ModelToolSchema, ProviderOptions,
+    Usage,
 };
 
 use super::{AuthStyle, EXTERNAL_ADAPTER_V1_PROTOCOL, ResolvedAuth, ResolvedHeader};
@@ -203,7 +204,7 @@ impl ModelClient for ExternalAdapterClient {
     fn stream(
         &self,
         messages: &[Message],
-        tools: &[ToolSchema],
+        tools: &[ModelToolSchema],
     ) -> BoxStream<'_, Result<ModelEvent, ModelError>> {
         let config = Arc::clone(&self.config);
         let messages = messages.to_vec();
@@ -273,7 +274,7 @@ impl ExternalAdapterSession {
     async fn start(
         config: Arc<ExternalAdapterConfig>,
         messages: Vec<Message>,
-        tools: Vec<ToolSchema>,
+        tools: Vec<ModelToolSchema>,
     ) -> Result<Self, ModelError> {
         let mut command = Command::new(&config.command[0]);
         if config.command.len() > 1 {
@@ -410,7 +411,7 @@ impl ExternalAdapterSession {
 fn build_stream_request(
     config: &ExternalAdapterConfig,
     messages: &[Message],
-    tools: &[ToolSchema],
+    tools: &[ModelToolSchema],
 ) -> serde_json::Value {
     let (auth_style, secret_set, auth_header) = match config.auth.style() {
         AuthStyle::None => ("none", false, None),

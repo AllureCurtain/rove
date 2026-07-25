@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::tools::runtime_context::runtime_tool_services;
-use rove_core::ToolDescriptor as ToolSchema;
+use rove_core::ToolDescriptor;
 use rove_core::{Tool, ToolContext, ToolError, ToolOutput};
 
 /// Ask the user for input mid-task.
@@ -13,8 +13,8 @@ pub struct RequestInputTool;
 
 #[async_trait]
 impl Tool for RequestInputTool {
-    fn schema(&self) -> ToolSchema {
-        ToolSchema {
+    fn schema(&self) -> ToolDescriptor {
+        ToolDescriptor {
             name: "request_input".to_string(),
             description: "Ask the user for input mid-task.".to_string(),
             parameters: serde_json::json!({

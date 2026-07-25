@@ -240,17 +240,6 @@ export type StreamEvent =
       started_at?: string;
     }
   | {
-      type: "plan_step_completed";
-      step: PlanStep;
-      index: number;
-    }
-  | {
-      type: "plan_step_failed";
-      step: PlanStep;
-      index: number;
-      reason: string;
-    }
-  | {
       type: "step_result";
       record: StepRecord;
     }
@@ -440,8 +429,6 @@ export const STREAM_EVENT_NAMES = [
   "input_needed",
   "plan_created",
   "plan_step_started",
-  "plan_step_completed",
-  "plan_step_failed",
   "step_result",
   "plan_decision",
   "plan_revised",

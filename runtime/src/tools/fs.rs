@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::boundary::{resolve_workspace_read_path, resolve_workspace_write_path};
-use rove_core::ToolDescriptor as ToolSchema;
+use rove_core::ToolDescriptor;
 use rove_core::{Tool, ToolContext, ToolError, ToolMutation, ToolMutationOperation, ToolOutput};
 
 /// Read a UTF-8 file inside the workspace.
@@ -20,9 +20,9 @@ impl FsReadTool {
 
 #[async_trait]
 impl Tool for FsReadTool {
-    fn schema(&self) -> ToolSchema {
-        ToolSchema {
-            name: "fs_read".to_string(),
+    fn schema(&self) -> ToolDescriptor {
+        ToolDescriptor {
+            name: "read_file".to_string(),
             description: "Read a UTF-8 file from the current workspace.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -71,9 +71,9 @@ impl FsWriteTool {
 
 #[async_trait]
 impl Tool for FsWriteTool {
-    fn schema(&self) -> ToolSchema {
-        ToolSchema {
-            name: "fs_write".to_string(),
+    fn schema(&self) -> ToolDescriptor {
+        ToolDescriptor {
+            name: "write_file".to_string(),
             description: "Write a UTF-8 file in the current workspace.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
