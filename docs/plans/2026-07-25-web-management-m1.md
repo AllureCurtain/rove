@@ -1,6 +1,6 @@
 # Web Management M1 Delivery Plan
 
-> Status: **Ready to implement from a clean `main` worktree**
+> Status: **Completed on `main` — F0 `46b945d`, F1 `ecfabbd`, F2 `93a724c`**
 >
 > Decisions:
 > [`../design/2026-07-25-agent-desktop-web-ui-design.md`](../design/2026-07-25-agent-desktop-web-ui-design.md)
@@ -12,7 +12,8 @@
 > - Decision + plan docs must be **committed on `main` first**, then create the
 >   worktree from that shared baseline.
 > - Order is fixed: **backend probes/fixes for workspace root + hard resume →
->   Web product shell on live API → polish → later Tauri Desktop**.
+>   Web product shell on live API → polish → Web Complete → later Tauri
+>   Desktop**.
 > - Do not invent a second chat protocol. Extend existing jobs/SSE/resume contracts.
 > - Soft session continuity (“new job + frontend transcript stitch only”) is
 >   **forbidden** as the product path.
@@ -124,13 +125,13 @@ git branch -d feature/web-m1-foundation
 | **F0 Foundation** | Opened path executes; same session hard-resumes | Docs on `main` | `apps/api`, `runtime`, bootstrap/config as needed, tests |
 | **F1 Shell** | New Web product shell is primary entry and talks to live API | F0 on `main` | `apps/web`, thin API client/types updates |
 | **F2 Polish** | Theme, inspector depth, placeholders, remove dual entry debt | F1 on `main` | `apps/web` styles/components, docs touch-ups |
-| **D0 Desktop** | Tauri host | F1/F2 stable enough | new desktop crate/app + platform adapter |
+| **D0 Desktop** | Tauri host | Web Complete + dedicated D0 design | new desktop crate/app + platform adapter |
 
 ---
 
 ## 4. F0 — Foundation (workspace root + hard resume)
 
-### Goal
+### F0 goal
 
 Make the two non-negotiables true **before** the product shell depends on them:
 
@@ -191,13 +192,13 @@ Make the two non-negotiables true **before** the product shell depends on them:
 - [x] Hard resume second turn passes automated test
 - [x] No product path documents “stitch transcript as continuity”
 - [x] OpenAPI/types updated if request shape changed
-- [ ] Merged to `main` before F1 worktree creation
+- [x] Merged to `main` before F1 worktree creation
 
 ---
 
 ## 5. F1 — Web product shell on live API
 
-### Goal
+### F1 goal
 
 Replace the developer workbench primary entry with the sealed product shell, backed
 by live `rove-api` (decision **5B**), after F0 is on `main`.
@@ -259,22 +260,22 @@ requests. Browser never sends raw provider keys.
 
 ### F1 exit checklist
 
-- [ ] Default Web entry is the new shell
-- [ ] Open path workspace + create session + run live job works
-- [ ] Second turn hard resume works in UI against live API
-- [ ] Inline approval works
-- [ ] Inspector shows plan/tools/approvals for active run
-- [ ] Settings Providers deep path can test + list models
-- [ ] Settings About shows connection/runtime basics
-- [ ] Other settings sections visible as placeholders
-- [ ] Playwright smoke for empty → open → run → approve (mock or real harness)
-- [ ] Unit tests for client/state critical paths
+- [x] Default Web entry is the new shell
+- [x] Open path workspace + create session + run live job works
+- [x] Second turn hard resume works in UI against live API
+- [x] Inline approval works
+- [x] Inspector shows plan/tools/approvals for active run
+- [x] Settings Providers deep path can test + list models
+- [x] Settings About shows connection/runtime basics
+- [x] Other settings sections visible as placeholders
+- [x] Playwright smoke for empty → open → run → approve (mock or real harness)
+- [x] Unit tests for client/state critical paths
 
 ---
 
 ## 6. F2 — Polish and close dual-entry debt
 
-### Goal
+### F2 goal
 
 Finish M1 product feel and remove temporary debt.
 
@@ -393,6 +394,9 @@ Do **not** pre-create F1/F2 worktrees in parallel with F0 for merge-intended wor
 
 ## changelog
 
+- 2026-07-25: Reconciled completion status with `main`: F0 `46b945d`, F1
+  `ecfabbd`, and F2 `93a724c` are merged. Checked the previously stale F0/F1
+  exit items and recorded Web Complete as the required gate before Desktop.
 - 2026-07-25: F2 polish complete on `feature/web-m1-polish` — theme tokens,
   inspector states, parallel running badges, Advanced-only Benchmark, M2 backlog
   listed; dual primary workbench entry closed.

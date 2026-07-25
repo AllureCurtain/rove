@@ -4,6 +4,15 @@
 >
 > 本文是未来设计 spec，不是当前实现说明，也不是实现计划。当前运行时事实仍以 [`docs/runtime/`](../runtime/README.md) 为准；在 loader、schema、事件、artifact、测试和 runtime 文档全部落地之前，不得把本文中的 Agent package、`AGENTS.md` discovery、procedure catalog 或 selection 行为描述为已实现。
 
+> **Current-state correction (2026-07-25):** built-in vector RAG, LanceDB,
+> `retrieve_code`, and `retrieve_docs` were removed from rove before the modular
+> Workspace cleanup. Workspace retrieval is now bounded tools (`read_file`,
+> `search_code`, `run_shell`) plus layered file memory. Any section below that
+> says an existing RAG pipeline/index can be reused is a historical design-time
+> assumption, not current implementation evidence. A future procedure catalog
+> must start with deterministic source/metadata/lexical selection and may use a
+> separately designed optional external retrieval adapter later.
+
 本文定义 rove 中“一个 Agent 是什么”以及“Agent 如何获得可复用的做事方法”。它把 Agent 的稳定指令、工作区规则、工具能力策略、程序性知识、reference RAG、memory 和本次运行证据拆成不同类型，并规定它们的权限、版本、检索、注入、持久化与恢复边界。
 
 本文承接 [`2026-07-14-agent-execution-lifecycle-design.md`](2026-07-14-agent-execution-lifecycle-design.md)：前一篇定义 `react` / `plan_react`、PlannerContext、bounded StepRunner、StepRecord、PlanEvaluator 和 Finalizer；本文补足其中的 `AgentRuntimeProfile`、instruction bundle、capability policy 和 procedural context 来源。
@@ -28,7 +37,8 @@
 - procedure、reference docs、memory、tool output 与 policy 的权限为什么不同；
 - 外部文档、过期 runbook、危险命令和 prompt injection 如何被隔离；
 - Agent/profile/procedure 的版本与 hash 如何进入事件、artifact、checkpoint、runtime identity 和 resume；
-- 如何复用 rove 现有 RAG pipeline 的工程能力，而不把所有 Markdown 都提升成指令。
+- 如何借鉴已归档 retrieval 设计的工程原则，而不重新引入 built-in RAG
+  或把所有 Markdown 都提升成指令。
 
 ### 1.2 不存在的文件不能作为证据
 
@@ -58,7 +68,7 @@
 | Legacy behavior | 当前 `prompts/system.md` + `prompts/planner.md` 映射为显式 legacy profile，避免升级即破坏行为 |
 | Workspace instructions | `AGENTS.md` 是有目录作用域的 workspace policy，不是 procedure，也不默认进入 RAG |
 | Procedure | procedure 是带 metadata、适用条件、能力要求、风险、验证和版本的 advisory recipe |
-| Reference RAG | reference/code/docs 提供事实证据，不因被检索而获得 instruction authority |
+| Optional reference retrieval | reference/code/docs 提供事实证据，不因被检索而获得 instruction authority |
 | Memory | memory 保存用户偏好、反馈、项目事实和决策，不自动保存 procedure body |
 | Capability | Agent/procedure 引用稳定 capability IDs；实际 tool binding 由 runtime snapshot 完成 |
 | Selection | eligibility filter 在 ranking 之前；trust、scope、platform、freshness、risk、capability 不满足时不得靠相似度入选 |
@@ -100,9 +110,9 @@
 - parallel-safe；
 - 可选 `ToolCapability { status, feature, message }`。
 
-`tool_signature()` 会按名称排序后稳定 hash schemas。RAG enabled/stub tool 也会通过 capability status 明确可用性。这比只在 prompt 里手写工具列表可靠。
+`tool_signature()` 会按名称排序后稳定 hash schemas。工具 availability 也可通过 capability status 明确表达；当前产品不再包含 RAG enabled/stub tools。这比只在 prompt 里手写工具列表可靠。
 
-当前缺少的是稳定的语义 capability ID、版本、risk/effect taxonomy、source identity 和 binding policy。Agent/procedure 只能写 `retrieve_docs` 或 `query_logs` 这样的具体名称，容易与 MCP server、环境或工具重命名耦合。
+当前缺少的是稳定的语义 capability ID、版本、risk/effect taxonomy、source identity 和 binding policy。未来 Agent/procedure 若直接写 `search_code` 或某个 MCP `query_logs` 这样的具体名称，会与 server、环境或工具重命名耦合。
 
 ### 2.3 Memory
 
@@ -124,21 +134,18 @@ prompt path 会按当前 user message 做 bounded lexical recall，并把 durabl
 
 ### 2.4 RAG
 
-当前 RAG 已有较强的工程底座：
+Built-in vector RAG has been removed. Current workspace retrieval is explicit
+tool use plus layered file memory, and there is no ingestion manifest, vector
+index, `retrieve_code`, or `retrieve_docs` runtime path to extend.
 
-- staged ingestion；
-- Markdown-aware 与 code-aware chunking；
-- content/chunk hash 和 manifest；
-- vector、lexical、path channels；
-- dedupe、score normalization 和 rerank boundary；
-- deterministic embedder 与 manifest fallback；
-- retrieval eval/report；
-- `retrieve_code` / `retrieve_docs` tools；
-- source/path/heading/score metadata。
+The missing procedure capabilities remain the same: there is no procedure
+schema, trust/freshness/applicability/capability/risk filter, catalog, or
+pre-planning selection service. Historical RAG design patterns such as content
+hashing, staged validation, bounded lexical selection, and rebuildable indexes
+may inform a future implementation, but they are not reusable current code.
 
-但其知识分类目前只有 `code` 与 `docs`。workspace 内所有 `.md/.mdx/.txt/.rst` 都归为 docs，没有 procedure schema、trust、freshness、agent applicability、capability filter 或 risk filter。`retrieve_docs` 是 Agent 自己决定调用的 tool，PlannerContext 也没有 procedure selection service。
-
-RAG pipeline 可以复用，但 “top-k docs” 不能直接等价为 “top-k instructions”。
+“Top-k retrieved docs” must never be treated as “top-k instructions,” whether a
+future retrieval backend is local or external.
 
 ### 2.5 Prompt assembly and identity
 
@@ -179,8 +186,8 @@ tool schemas 单独传给 provider，prompt metadata 保存 prompt/stable-prefix
 | Instructions | 单一 system text | hard policy / operator policy / user task / defaults / advisory context 分层 |
 | Workspace rules | 无 `AGENTS.md` loader | root + nested scope resolution |
 | Tool declarations | tool name + basic capability status | stable capability IDs + runtime binding + Agent policy |
-| Knowledge | code/docs RAG | reference corpora 与 procedure corpus 分权 |
-| Procedure | 普通 Markdown 可能被当 docs 检索 | typed, validated, versioned, eligibility-filtered procedure |
+| Knowledge | explicit workspace tools + layered file memory | optional reference retrieval 与 procedure catalog 分权 |
+| Procedure | 无 catalog/selection path | typed, validated, versioned, eligibility-filtered procedure |
 | Memory | user/feedback/project/reference | 保持 memory；procedure 不自动混入 |
 | Run identity | prompt hashes + tool signature | agent/profile/instruction/procedure/catalog hashes |
 | Resume | 恢复 prompt/plan/memory | 恢复精确 profile 与 selected procedure snapshots |
@@ -223,7 +230,11 @@ OnCall 的 `aiops-docs/*.md` 体现出 runbook 型知识相较普通 reference d
 
 ### 3.3 rove 应保留的优势
 
-rove 已有 content hash、manifest、deterministic fallback、retrieval channels、tool schemas、runtime identity、workspace safety、approval、events 和 artifacts。正确方向是给这些机制增加 typed knowledge authority，而不是换成 OnCall 的 Milvus/LangChain 上传链路。
+rove 当前保留 tool schemas、runtime identity、workspace safety、approval、
+events、artifacts、layered file memory 和显式 workspace tools。Content hash、
+manifest、deterministic catalog fallback 与 lexical channels 需要由未来
+procedure catalog 重新建立；正确方向不是换成 OnCall 的 Milvus/LangChain
+上传链路。
 
 ## 4. Design Goals
 
@@ -234,7 +245,7 @@ rove 已有 content hash、manifest、deterministic fallback、retrieval channel
 5. 支持根级与嵌套 `AGENTS.md` 的 workspace scope，同时不把它混入 procedure RAG。
 6. 定义人类可读、机器可过滤的 procedure document schema。
 7. 让 procedure selection 先做 trust/applicability/capability/freshness/risk eligibility，再做相关性 ranking。
-8. 复用现有 RAG 的 ingestion、hash、channel、fallback 和 eval 思想，但使用独立 typed corpus。
+8. 借鉴已归档 RAG 设计的 ingestion、hash、channel、fallback 和 eval 原则，重新实现独立 typed corpus。
 9. 让 Planner/StepRunner 通过 progressive disclosure 获取必要 procedure，而不是一次塞入所有 runbooks。
 10. 用 stable capability IDs 解耦 procedure 与具体 tool/MCP server name。
 11. 将 Agent/profile/procedure identity 写入 events、artifacts、checkpoint、report 和 resume diagnostics。
@@ -255,7 +266,8 @@ rove 已有 content hash、manifest、deterministic fallback、retrieval channel
 - 不把一次成功执行自动升级为可信 procedure；
 - 不用 LLM 代替 manifest validation、scope filter 或 safety enforcement；
 - 不在第一阶段实现 cryptographic signature infrastructure；
-- 不改变现有 `retrieve_code` / `retrieve_docs` 对 reference RAG 的 tool boundary；
+- 不在本设计中重新引入已删除的 `retrieve_code` / `retrieve_docs` 或
+  built-in vector RAG；未来 reference retrieval 需要独立设计；
 - 不在本文中创建真实根 `AGENTS.md` 或 onboarding 内容；它们是后续交付文档；
 - 不在本文中修改 Rust、配置、Web 或 runtime current-state 文档。
 
@@ -748,9 +760,9 @@ AgentDefinition/operator policy 的 `allowed_trust_levels` 决定哪些 procedur
 
 ## 13. Procedure Catalog and Indexing
 
-### 13.1 Reuse RAG infrastructure, not authority
+### 13.1 Reuse design principles, not removed infrastructure
 
-procedure catalog 可以复用现有 RAG 的：
+当前仓库没有可复用的 built-in RAG pipeline。procedure catalog 可以借鉴已归档设计中的：
 
 - staged scan/parse/chunk/embed/persist；
 - content/chunk hash；
@@ -759,9 +771,15 @@ procedure catalog 可以复用现有 RAG 的：
 - dedupe、normalization、rerank boundary；
 - deterministic embedder、manifest fallback 与 eval。
 
-但必须新增 typed procedure semantics。建议将通用 retrieval components 抽象为 knowledge infrastructure，由 reference RAG 和 procedure catalog 分别使用；core engine 只依赖窄的 `ProceduralKnowledgeProvider` contract，不直接依赖 LanceDB。
+但必须重新实现 typed procedure semantics。若未来引入通用 retrieval
+components，应由 optional reference retrieval 和 procedure catalog 分别使用；
+core engine 只依赖窄的 `ProceduralKnowledgeProvider` contract，不直接依赖某个
+vector database。
 
-procedure metadata validation、source catalog 和 deterministic selection 属于 Agent runtime baseline，不应被现有可选 `rag` feature 整体关闭。vector embedding/LanceDB/rerank 可以继续 feature-gated；无 RAG feature 的默认 build 仍应能从 validated source/manifest 做 metadata + lexical selection。
+procedure metadata validation、source catalog 和 deterministic selection 属于
+Agent runtime baseline，默认 build 必须能从 validated source/manifest 做
+metadata + lexical selection。Vector/model ranking 只能作为后来单独设计、可
+关闭的增强，不得成为 baseline 正确性的前提。
 
 ### 13.2 Separate logical corpus
 
@@ -831,7 +849,8 @@ procedure selection 由 injected `ProceduralKnowledgeProvider` 在 PlannerContex
 - `core` 不依赖具体 vector store；
 - selection status 是 typed result；
 - PlannerContext 可以记录 catalog/hash/score/provenance；
-- `retrieve_docs` 继续作为运行中的 reference tool。
+- reference material 仍通过当前显式 workspace tools 获取；未来 optional
+  retrieval tool 不会因返回文档而授予 instruction authority。
 
 ### 14.2 Selection input
 
@@ -1097,7 +1116,7 @@ Finalizer 接收 procedure IDs/versions/hashes、哪些 sections 被应用、重
 
 procedure injection 是否值得用于短任务应由 evaluation 决定。
 
-## 18. Memory, Reference RAG, and Procedure Feedback
+## 18. Memory, Optional Reference Retrieval, and Procedure Feedback
 
 ### 18.1 Keep stores logically separate
 
@@ -1105,7 +1124,7 @@ procedure injection 是否值得用于短任务应由 evaluation 决定。
 |---|---|---|
 | Durable memory | user preference, feedback, project fact/decision, reference note | verified procedure or permission |
 | Session memory | current work summary and resume facts | cross-project policy |
-| Reference RAG | code/docs/API/reference material | trusted instruction authority |
+| Optional reference retrieval | code/docs/API/reference material | trusted instruction authority |
 | Procedure catalog | reviewed recipes with metadata | automatic tool authorization |
 | Runtime evidence | current tool results/artifacts/mutations | universal future rule |
 
@@ -1749,9 +1768,9 @@ pre-planning retrieval增加延迟。deterministic metadata/lexical baseline、m
 ### 29.1 Existing docs
 
 - [`2026-07-14-agent-execution-lifecycle-design.md`](2026-07-14-agent-execution-lifecycle-design.md) 消费本文定义的 profile、capability snapshot 和 procedural context。
-- [`2026-05-24-rove-runtime-hardening-design.md`](2026-05-24-rove-runtime-hardening-design.md) 定义 local-first state、context、memory、provider、tool 和 resume 总边界。
-- [`2026-05-24-rag-pipeline-hardening-design.md`](2026-05-24-rag-pipeline-hardening-design.md) 定义现有 reference RAG pipeline；本文复用其工程模式，但增加 typed procedure corpus 与 authority isolation。
-- [`docs/runtime/subsystems.md`](../runtime/subsystems.md) 与 [`docs/runtime/implementation-status.md`](../runtime/implementation-status.md) 继续描述真实的 prompt、memory、RAG 和 tool behavior。
+- [`2026-05-24-rove-runtime-hardening-design.md`](../Archive/design/2026-05-24-rove-runtime-hardening-design.md) 是已归档的 local-first hardening 设计背景。
+- [`2026-05-24-rag-pipeline-hardening-design.md`](../Archive/design/2026-05-24-rag-pipeline-hardening-design.md) 是已归档且其产品路径已被移除的 RAG 设计；只能参考工程原则，不能作为现有基础。
+- [`docs/runtime/subsystems.md`](../runtime/subsystems.md) 与 [`docs/runtime/implementation-status.md`](../runtime/implementation-status.md) 继续描述真实的 prompt、memory、workspace retrieval 和 tool behavior。
 
 ### 29.2 Follow-up specs/documents
 

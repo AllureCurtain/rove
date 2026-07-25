@@ -4,6 +4,12 @@
 >
 > 本文是未来设计 spec，不是当前实现说明，也不是实现计划。当前 MCP、ToolOutput、artifact 与运行时行为仍以 [`docs/runtime/`](../runtime/README.md) 和源码为准；在 transport、schema、事件、持久化、测试与 runtime 文档全部落地之前，不得把本文描述的 Streamable HTTP、session negotiation、structured content 或 Tool Artifact 行为称为已实现。
 
+> **Current-path correction (2026-07-26):** the modular Workspace migration
+> moved MCP implementation to `runtime/src/tools/mcp_proxy.rs` and shared tool
+> contracts to `core/src/tools.rs` / `core/src/types.rs`. Older `src/**` paths in
+> the design-time narrative are historical; use those modular paths for future
+> implementation work.
+
 本文定义 rove 的 MCP client 与工具结果边界如何演进：在保留 stdio 的同时加入符合协议语义的 Streamable HTTP，建立统一的 JSON-RPC dispatcher、版本与 capability negotiation、session ownership、保守重试与 cancellation，并把 MCP 的 text、structured content、image、audio、resource 和 error 结果映射成可持久化、可审计、可投影的 Tool Output Envelope 与 Artifact。
 
 设计参考 OnCall 项目已经采用的 Streamable HTTP 与多 server 管理方式，但不复制其 LangChain adapter、全局 singleton 或无差别重试策略。借鉴的是互操作方向和 interceptor boundary；rove 必须保留自己的 tool safety、approval、event、state、runtime identity 和 local-first artifact 语义。
@@ -54,9 +60,9 @@
 
 | 范围 | 当前证据 |
 |---|---|
-| rove MCP client | `src/tools/mcp_proxy.rs` |
-| rove tool result | `src/tools/traits.rs` |
-| tool/runtime 类型 | `src/core/types.rs`、`src/tools/mod.rs` |
+| rove MCP client | `runtime/src/tools/mcp_proxy.rs` |
+| rove tool result | `core/src/tools.rs` |
+| tool/runtime 类型 | `core/src/types.rs`、`runtime/src/foundation/types.rs` |
 | MCP tests | `tests/mcp.rs`、`tests/fixtures/mcp_*.py` |
 | MCP 示例配置 | `docs/examples/mcp_servers.json` |
 | 当前 runtime 说明 | `docs/runtime/subsystems.md`、`docs/runtime/implementation-guide.md` |
@@ -2254,7 +2260,7 @@ artifact 可能含 secret/PII。默认 local、最小投影、权限下载、ret
 
 - [`2026-07-14-agent-execution-lifecycle-design.md`](2026-07-14-agent-execution-lifecycle-design.md) 消费 tool status、artifact、external effect 与 indeterminate outcome，并写入 StepRecord/Finalizer。
 - [`2026-07-14-agent-definition-and-procedural-knowledge-design.md`](2026-07-14-agent-definition-and-procedural-knowledge-design.md) 定义 stable capability ID、AgentRuntimeProfile 与 procedure eligibility；本文定义 capability 如何绑定到真实 MCP server/tool。
-- [`2026-05-24-rove-runtime-hardening-design.md`](2026-05-24-rove-runtime-hardening-design.md) 定义 state、event、tool safety、artifact 与 resume 总边界。
+- [`2026-05-24-rove-runtime-hardening-design.md`](../Archive/design/2026-05-24-rove-runtime-hardening-design.md) 是已归档的 state、event、tool safety、artifact 与 resume 设计背景。
 
 ### 31.2 Current-state docs
 

@@ -10,7 +10,8 @@ Included:
 
 - CLI one-shot and REPL runs, plus the optional bounded full-screen TUI.
 - Local HTTP API with jobs, SSE, approvals, inputs, cancel, resume, and history.
-- Standalone Web workbench backed by the local API.
+- Standalone Web M1 product shell at `/`, plus the advanced
+  `/dev/workbench`, backed by the local API.
 - Local state under `.rove/`.
 - Folder, Repo, and Task workspaces.
 - Built-in tools, MCP proxy, memory tools, fake provider, OpenAI /
@@ -23,7 +24,7 @@ Not included:
 - Multi-user identity, billing, or distributed rate limiting.
 - Browser/Desktop workspace implementations.
 - Full shell sandboxing beyond the current local policy controls.
-- Default provider-backed tool-time RAG retrieval.
+- Built-in vector or provider-backed RAG retrieval.
 
 ## Out-of-scope Reminders
 
@@ -88,19 +89,24 @@ powershell -ExecutionPolicy Bypass -File scripts/integration-smoke.ps1 `
 Acceptance:
 
 - both commands print `local-full integration smoke completed`;
-- Playwright reports 3 real API tests passed for each run;
+- Playwright reports 3 real API tests passed on `/dev/workbench` for each run;
 - run ids from the output appear in each run's `/runs?limit=25` artifact;
 - API state files and Web assertions cover plain run, approval, input, and
   history/detail records.
+
+These browser assertions do not visit the default product shell. Its current
+browser suite is mock-backed; complete live-API product-shell acceptance remains
+a Web Complete C3 release gap.
 
 ## Provider Smoke
 
 Provider smoke is required before claiming real-provider readiness. It is not
 required for deterministic local MVP operation.
 
-Prefer the generic provider runner because it verifies provider reachability,
-API jobs, Web records, stress evidence, and evidence capture in one repeatable
-gate for OpenAI, OpenAI Responses, Anthropic, and Ollama profiles:
+Prefer the generic provider runner for provider reachability, API jobs, stress
+evidence, and evidence capture across OpenAI, OpenAI Responses, Anthropic, and
+Ollama profiles. On current `main`, skip its browser step because it still uses
+pre-M1 Workbench selectors while navigating to `/`:
 
 ```powershell
 $env:OPENAI_API_KEY = "<secret>"
@@ -108,7 +114,8 @@ powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
   -Provider openai `
   -ApiBase "https://api.openai.com/v1" `
   -ApiKeyEnv OPENAI_API_KEY `
-  -Model "gpt-4.1-mini"
+  -Model "gpt-4.1-mini" `
+  -SkipWebSmoke
 ```
 
 For relay or gateway APIs, replace `-ApiBase`, `-ApiKeyEnv`, and `-Model` with
@@ -126,6 +133,7 @@ powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
   -ApiBase "https://api.openai.com/v1" `
   -ApiKeyEnv OPENAI_API_KEY `
   -Model "gpt-4.1-mini" `
+  -SkipWebSmoke `
   -RunStress `
   -RunRestartRecovery
 ```
@@ -139,12 +147,14 @@ powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
   -Provider anthropic `
   -ApiBase "https://api.anthropic.com" `
   -ApiKeyEnv ANTHROPIC_API_KEY `
-  -Model "claude-3-5-haiku-latest"
+  -Model "claude-3-5-haiku-latest" `
+  -SkipWebSmoke
 
 powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
   -Provider ollama `
   -ApiBase "http://localhost:11434" `
-  -Model "llama3.2"
+  -Model "llama3.2" `
+  -SkipWebSmoke
 ```
 
 When quota allows, add `-RunStress -RunRestartRecovery` to the provider runner
@@ -199,10 +209,11 @@ Acceptance:
 - the selected model id is saved as a non-secret artifact;
 - the smoke test passes, or the failure is classified as key/configuration,
   quota/rate limit, model tool-call capability, or rove runtime defect.
-- `scripts/provider-integration.ps1` writes `evidence-summary.json` for a full
-  provider gate when API/Web checks are run.
+- `scripts/provider-integration.ps1` writes `evidence-summary.json` for the
+  provider/API gate. Its Web result is not required or accepted until the
+  product-shell browser flow replaces the stale selectors.
 
-## External Tools And RAG
+## External Tools
 
 MCP deterministic gate:
 
@@ -217,18 +228,10 @@ $env:ROVE_MCP_FILESYSTEM_SMOKE = "1"
 cargo test --test mcp mcp_official_filesystem_server_smoke_when_enabled -- --exact --nocapture
 ```
 
-RAG deterministic gate:
-
-```powershell
-
-
-
-```
-
 Acceptance:
 
 - deterministic gates pass;
-- external tool and RAG artifacts stay in isolated integration state;
+- external-tool artifacts stay in isolated integration state;
 - any real external-server failure is recorded separately from local MVP health.
 
 ## Stress And Restart Recovery
@@ -260,11 +263,11 @@ Before a packaged release:
 
 - record `git rev-parse HEAD`;
 - build release binaries with `cargo build --release`;
-- run `pnpm build` for the standalone workbench;
+- run `pnpm build` for the standalone Web application;
 - document whether users start API and Web separately or through
   `scripts/dev.ps1`;
 - include required runtime prerequisites: Rust/Cargo for source builds, Node.js
-  and pnpm for the workbench, provider keys for real models.
+  and pnpm for the Web application, provider keys for real models.
 
 This repository does not yet define an installer, bundled desktop app, or single
 binary distribution.
@@ -297,7 +300,7 @@ For a complete readiness pass, preserve:
 - local-full default and custom-port artifact directories;
 - provider model inventory and selected model id;
 - provider smoke output or classified failure notes;
-- MCP/RAG gate output when run;
+- MCP gate output when run;
 - stress snapshots when run;
 - `git status --short` after the pass;
 - `git rev-parse HEAD`.

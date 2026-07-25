@@ -45,7 +45,7 @@ Important entry points:
 | CLI binary | `apps/cli/src/main.rs`, `apps/cli/src/cli/*` |
 | Full-screen TUI mode | `apps/cli/src/tui/*`, `apps/cli/src/terminal/*` |
 | API binary | `apps/api` |
-| Web workbench | `apps/web/` |
+| Web product shell | `apps/web/` |
 | In-memory Agent and tool contracts | `core/src/*` |
 | Persistent runtime services | `runtime/src/*` |
 | Persistent Engine and coordination | `runtime/src/engine/*`, `runtime/src/planning/*` |
@@ -65,7 +65,10 @@ Important entry points:
 - `WorkspaceKind::Repo` with the nearest git root as `workspace.root`;
 - `WorkspaceKind::Folder` with the starting directory as `workspace.root`.
 
-The default state directory is `workspace.root/.rove`. Config can override `state.state_dir`, `state.sqlite_path`, `memory.session_dir`, and `memory.durable_dir`. Core state, memory tools, and RAG artifacts use the resolved config paths.
+The default state directory is `workspace.root/.rove`. Config can override
+`state.state_dir`, `state.sqlite_path`, `memory.session_dir`, and
+`memory.durable_dir`. Core state and layered memory use the resolved config
+paths; there is no built-in vector-RAG artifact path.
 
 `WorkspaceKind::Task` is an explicit standalone workspace. It is created under
 a task base directory and does not require the shell or API server to start
@@ -304,8 +307,9 @@ rove>
 ```
 
 The REPL remains a normal terminal prompt, not a full-screen TUI. During runs it
-prints compact `You`, `Plan`, `Tool`, `Error`, and `Done` sections, while the
-Web workbench remains the richer report/history surface.
+prints compact `You`, `Plan`, `Tool`, `Error`, and `Done` sections. The default
+Web product shell provides the richer product interaction surface, while the
+advanced `/dev/workbench` retains direct run history/report inspection.
 
 The compact REPL is backed by a terminal view/action layer. `StreamEvent` values
 are first projected into terminal view updates and accumulated into view state;
@@ -488,6 +492,8 @@ Routes:
 | `POST /jobs/{job_id}/inputs/{input_id}` | Resolve a pending `request_input` prompt |
 | `GET /runs` | List recent persisted runs |
 | `GET /runs/{run_id}/report` | Read the indexed `report.json` artifact for a run |
+| `POST /providers/models` | List models for a validated per-request provider profile |
+| `POST /providers/test` | Validate provider connectivity/model presence without returning secrets |
 
 API jobs have two state layers:
 
@@ -495,9 +501,11 @@ API jobs have two state layers:
 - durable state in SQLite and `.rove/runs/<run_id>/`.
 
 `POST /jobs` accepts `message`, optional `model`, `max_steps`, `approval`,
-optional `resume`, and optional `workspace`. The only per-job workspace kind
-today is `{"kind":"task","name":"...","base":"..."}`; Folder/Repo jobs use
-the API server workspace.
+optional provider profile, optional `resume`, and optional `workspace`.
+Per-job workspaces support Task (`name`/optional `base`) and explicit Folder or
+Repo (`root`) shapes described in §2. Folder/Repo roots become the real
+execution, state, tool, shell, and memory boundary; they do not fall back to the
+API process workspace.
 `resume` follows the CLI semantics: omit it for a fresh session/job, use `"latest"` for the newest task snapshot, or pass a run id to load that exact snapshot. A resumed API job keeps the loaded `session_id` and `job_id`, creates a new `run_id`, and passes the loaded `TaskState` into `RunRequest` and artifact recording.
 
 After restart, historical job state and SSE events can be read from SQLite.
@@ -519,7 +527,7 @@ Relevant code:
 - `apps/api/src/lib.rs`
 - `apps/api/src/security.rs`
 
-## 6. Web Workbench Path
+## 6. Web Product Shell Path
 
 `apps/web/` is a standalone Next.js app. Browser code talks to relative `/api/*`
 URLs. A Next.js app route proxies those requests to the Rust API:
@@ -534,24 +542,50 @@ through `NEXT_PUBLIC_*` variables or browser JavaScript. SSE job streams are
 proxied by returning the upstream response body directly, so `EventSource` keeps
 using `/api/jobs/{job_id}/events` without custom browser headers.
 
-The main component:
+The default `/` route is the M1 product shell:
 
-1. Creates a job with `POST /api/jobs`.
-2. Opens an `EventSource` for `/api/jobs/{job_id}/events`.
-3. Applies streamed events through `workbenchReducer`.
-4. Calls approval and input endpoints when user action is required.
-5. Fetches job state on stream errors to resync.
-6. Loads recent runs from `GET /api/runs` on page load and after terminal run states.
-7. Fetches a selected report with `GET /api/runs/{run_id}/report` and displays model, workspace, status, termination reason, steps, tool counts, token count, and final output.
+```text
+Workspace/session rail | Chat transcript/composer | collapsible Run Inspector
+```
 
-The reducer also retains `step_result` records in a deduplicated `stepRecords`
-projection. Compatibility `plan_step_completed` / `plan_step_failed` events
-continue to own the visible trace entry, so one terminal attempt does not render
-twice.
+Settings is a separate full-page shell. Providers/About are implemented deeply,
+General owns theme, Advanced owns Benchmark, and several other sections remain
+explicit placeholders. `/dev/workbench` retains the old developer surface as an
+advanced escape hatch only.
+
+The product shell:
+
+1. Opens an absolute Folder or Repo path and stores the M1 catalog in browser
+   storage.
+2. Creates a product session and sends the first turn with `POST /api/jobs`
+   bound to that real workspace root.
+3. Opens `EventSource` on `/api/jobs/{job_id}/events`, applies canonical events
+   through the shared reducer/controller, and renders chat/tool/approval/input
+   projections.
+4. Calls approval, input, and cancel endpoints when required; fetches job state
+   on stream errors to resync.
+5. Continues a durable M1 session using workspace-scoped `resume: "latest"` and
+   surfaces hard failures rather than silently opening a disconnected run.
+6. Sends only provider type/base/model/key-environment references; raw provider
+   keys never enter browser requests.
+
+Current M1 limits are product-significant: transcript messages are in-memory
+and disappear on refresh; workspace/session catalogs and provider profiles are
+browser-authoritative; routes are effectively single-page; background session
+SSE reattachment is incomplete; and several Settings sections are placeholders.
+Workspace-scoped `latest` can also select the wrong chain when multiple product
+sessions share a workspace. Web Complete C0 therefore plans a server-owned exact
+product-session/run binding, API-global ProductStore, and a canonical-event
+transcript read projection before continuity UI work.
 
 Relevant code:
 
-- `apps/web/components/rove-workbench.tsx`
+- `apps/web/shell/ProductApp.tsx`
+- `apps/web/api/run-controller.ts`
+- `apps/web/state/*`
+- `apps/web/chat/*`
+- `apps/web/inspector/*`
+- `apps/web/settings/*`
 - `apps/web/app/api/[...path]/route.ts`
 - `apps/web/lib/rove-api-proxy.ts`
 - `apps/web/lib/rove-client.ts`
@@ -569,7 +603,12 @@ pnpm build
 
 Browser-level Playwright tests live under `apps/web/tests/e2e` and run through
 `pnpm test:e2e`. They are separate from the default fast Web checks so the
-unit/type/build loop stays lightweight.
+unit/type/build loop stays lightweight. `shell.spec.ts` covers the default `/`
+product shell with browser-boundary mocks. `workbench.spec.ts` does the same for
+the advanced surface, and the gated `real-api.spec.ts` opens `/dev/workbench`
+against a live Rust API. Those three real-API cases do not constitute
+live-API acceptance of the default product shell; that remains Web Complete C3
+work.
 
 Real provider smoke tests are opt-in and documented in `docs/runtime/provider-smoke.md`. They are intentionally excluded from default CI because they require credentials, network access, local Ollama availability, or provider quota.
 
@@ -708,7 +747,7 @@ Termination can happen because of:
 - planner error;
 - cancellation.
 
-The planned and unplanned paths share model-turn and tool-turn helpers. If you are changing model streaming, native tool-use conversion, approval, batch execution, or history mutation, start in `model_turn.rs` or `tool_turn.rs`. `step_runner.rs` owns bounded within-step iteration, scoped history, and event-derived attempt metrics; `plan_evaluator.rs` owns replay-safe rule-first decisions; `plan_loop.rs` owns plan/revision identity, attempt closure, the append-only terminal record, decision ordering, plan cursor, replacement revisions, and compatibility plan-step events.
+The planned and unplanned paths share model-turn and tool-turn helpers. If you are changing model streaming, native tool-use conversion, approval, batch execution, or history mutation, start in `model_turn.rs` or `tool_turn.rs`. `step_runner.rs` owns bounded within-step iteration, scoped history, and event-derived attempt metrics; `plan_evaluator.rs` owns replay-safe rule-first decisions; `plan_loop.rs` owns plan/revision identity, attempt closure, the append-only terminal record, decision ordering, plan cursor, and replacement revisions. Current planned execution emits only the canonical lifecycle events; compatibility plan-step dual-fire was removed.
 
 Plan mutation semantics:
 
@@ -846,8 +885,8 @@ unsupported wire formats with bounded timeouts, env allowlisting, secret
 injection, and kill-on-drop cleanup. `ModelClientFactory` in `apps/bootstrap`
 assembles native primary and fallback targets through `ProviderClient`,
 resolves named profiles and bounded secret references, accepts an injected
-protocol registry, converts legacy flat provider configuration without changing
-target identity, and routes `external-adapter-v1` profiles to the process
+protocol registry, rejects removed flat provider configuration, and routes
+`external-adapter-v1` profiles to the process
 client. Fake remains local. API and Web per-run profiles prefer a product
 **type** (OpenAI / OpenAI Responses / Anthropic / Ollama / Fake) that maps to
 an internal `wire_protocol`. Official and relay Base URLs use the same type.
@@ -856,9 +895,9 @@ Environment-variable secret names remain the only browser-visible credential
 surface.
 
 The modules under `models/src/openai.rs`, `openai_responses.rs`, `anthropic.rs`,
-and `ollama.rs` remain as compatibility and parity-test references during the
-documented transition window. Production bootstrap assembly does not construct
-those legacy HTTP clients.
+and `ollama.rs` remain as parity-test references only. Production bootstrap
+assembly does not construct those native legacy HTTP clients, and the
+unreleased product has no public compatibility window for removed config.
 
 Provider-native tool use is the preferred path for real providers. Provider adapters emit `ToolUseStart` and `ToolUseDone`, `core/src/model_turn.rs` converts those into `ToolCallAction` and `AgentEvent` values, and the root adapter maps the latter to durable `StreamEvent` values. `LlmMessage.tool_calls` plus `tool_call_id` preserve structured history for provider replay. OpenAI, Anthropic, and Ollama formatters replay that history in their native request shapes.
 
@@ -1114,7 +1153,7 @@ Relevant code:
 
 MCP integration registers remote server tools into the local `ToolRegistry`.
 Both CLI and API jobs use the same runtime registry builder, so configured MCP
-tools are available through CLI runs, API jobs, and the Web workbench via the
+tools are available through CLI runs, API jobs, and both Web surfaces via the
 API proxy.
 
 Config path:
@@ -1195,7 +1234,7 @@ Limitations:
 
 - no multi-user identity;
 - no distributed rate limiting;
-- no browser login/session flow. The local Web workbench supports API bearer
+- no browser login/session flow. The local Web application supports API bearer
   tokens through its server-side Next.js proxy, not through client-side headers.
 
 These limitations are deployment/product scope for a later phase, not active
@@ -1353,7 +1392,9 @@ These are implementation-level issues to keep in mind before extending the syste
    Resume uses the materialized `TaskState` lifecycle projection and does not
    yet reconcile a canonical trace tail written after the latest snapshot.
 
-2. Agent tool-time RAG retrieval remains deterministic.
+2. Built-in vector RAG is removed. Workspace retrieval is explicit bounded
+   tools plus layered file memory; optional external semantic retrieval remains
+   future work.
 
 3. TUI real-terminal evidence is platform-scoped. The standard-library PTY
    smoke covers Unix when explicitly enabled, while Windows ConPTY automation is
@@ -1366,10 +1407,25 @@ These are implementation-level issues to keep in mind before extending the syste
    not a proof that arbitrary provider text contains no secrets. New display
    fields must remain typed, bounded, and covered by negative tests.
 
+5. Web M1 does not restore transcripts after refresh, keep product catalogs or
+   provider profiles in an API-backed authority, provide durable deep routes,
+   or disambiguate workspace-global `resume: "latest"` across multiple product
+   sessions. These are Web Complete C0–C3 gaps, not implemented behavior.
+
+6. Browser evidence is split by route. The default product shell has
+   mock-backed `shell.spec.ts` coverage. The deterministic `local-full` runner
+   invokes `real-api.spec.ts`, which opens `/dev/workbench`; it proves the
+   advanced surface against the live API, not the product shell's complete
+   live-API lifecycle. The provider integration runner's browser script also
+   still looks for legacy `Task`, `Model`, and `Steps` controls while navigating
+   `/`, so that optional step is stale after Web M1 and must not be counted as
+   current product-shell evidence.
+
 
 ## 24. Current Verification Baseline
 
-As of 2026-07-20, the following checks were run locally and passed:
+As of the Web M1 integration baseline on 2026-07-25, the following categories
+were run and passed on their implementation branches:
 
 ```powershell
 cargo fmt --all --check

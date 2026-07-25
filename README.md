@@ -17,14 +17,18 @@ apps/cli / apps/api / apps/bench
 
 ## Current MVP
 
-As of 2026-07-24, the modular Workspace migration and Provider Layer redesign
-are on `main`. rove has reached its local-first MVP: CLI, API, Web workbench,
+As of 2026-07-25, the modular Workspace migration, Provider Layer redesign,
+cleanup W1–W3, and Web M1 are on `main`. rove has reached its local-first MVP:
+CLI, API, Web product shell,
 streaming events, bounded tool execution, persisted state, resume, deterministic
 benchmarks, and current runtime docs are all present. The exact boundary is
 documented in [docs/runtime/mvp-definition.md](docs/runtime/mvp-definition.md).
 
-Browser/Desktop workspaces, hosted multi-user identity, distributed rate
-limiting, and optional external semantic retrieval are outside this MVP.
+Web Complete is the active product milestone: durable product sessions and
+profiles, transcript restore, deep routes, complete Settings, and final UI
+acceptance. A Tauri Desktop host, Browser/Desktop automation workspaces, hosted
+multi-user identity, distributed rate limiting, and optional external semantic
+retrieval are outside the implemented MVP.
 
 ## Quick Start
 
@@ -140,7 +144,7 @@ Manual API/Web startup remains available. Start the local API server:
 cargo run -p rove-api
 ```
 
-Start the web workbench in another shell:
+Start the Web product shell in another shell:
 
 ```bash
 cd apps/web
@@ -148,7 +152,7 @@ pnpm install --frozen-lockfile
 pnpm dev
 ```
 
-By default the API binds to `127.0.0.1:8787`, and the web workbench proxies `/api/*` to that local API.
+By default the API binds to `127.0.0.1:8787`, and the Web product shell proxies `/api/*` to that local API.
 Generated HTTP API reference is available from the API server at `/swagger-ui`
 and `/api/openapi.json`.
 For token-protected API deployments, set the same `ROVE_API_TOKEN` in the Rust
@@ -163,7 +167,7 @@ bearer token server-side and does not expose it to browser JavaScript.
 | API | `apps/api/` | HTTP job lifecycle, SSE event streaming, approvals, inputs, cancellation, and provider inventory/test. |
 | Benchmarks | `apps/bench/`, `benchmarks/` | Deterministic no-network benchmark tasks with artifact-path reports. |
 | Bootstrap | `apps/bootstrap/` | First-party AppConfig, provider factory, product registry, shared Engine assembly. |
-| Web | `apps/web/` | Next.js workbench that consumes the API and SSE job stream. |
+| Web | `apps/web/` | Next.js product shell that consumes the API and SSE job stream; `/dev/workbench` is advanced-only. |
 | Agent core | `core/` | Independent `rove-core` crate: in-memory Agent/model/tool loop and tool contracts. |
 | Persistent runtime | `runtime/` | Independent `rove-runtime` crate: durable execution, tools/MCP, planning, Engine, state/memory. |
 | Models | `models/` | Independent `rove-models` crate: normalized protocol and provider adapters. |
@@ -175,7 +179,9 @@ bearer token server-side and does not expose it to browser JavaScript.
 
 ## Workspace retrieval and memory
 
-rove obtains workspace context through tools (`read_file`/`write_file`, `run_shell`) and layered file memory (session + durable `MEMORY.md` / topics). There is **no built-in vector database or embedding index** in the default product.
+rove obtains workspace context through bounded tools (`read_file`, `search_code`,
+`run_shell`) and layered file memory (session + durable `MEMORY.md` / topics).
+There is **no built-in vector database or embedding index** in the product.
 ## Configuration
 
 Configuration is layered as:
@@ -189,14 +195,14 @@ Common environment variables:
 | Variable | Purpose |
 |---|---|
 | `ROVE_MODEL` | Primary model override. Use `fake` for local deterministic smoke runs. |
-| `ROVE_PROVIDER` | Provider name: `openai`, `openai-responses`, `anthropic`, `ollama`, or `fake`. |
+| `ROVE_PROVIDER` | Provider type: `openai`, `openai-responses`, `anthropic`, `ollama`, or `fake`. |
 | `OPENAI_API_KEY` | OpenAI API key (or compatible relay). |
 | `OPENAI_API_BASE` | OpenAI API base URL (or compatible relay). |
 | `ANTHROPIC_API_KEY` | Anthropic API key. |
 | `ROVE_API_BIND_ADDR` | API bind address override. Defaults to `127.0.0.1:8787`. |
 | `ROVE_API_TOKEN` | Bearer token required by the Rust API and injected by the Web proxy when set server-side. |
 | `ROVE_API_BASE` | Web proxy upstream API URL. Defaults to `http://127.0.0.1:8787`. |
-| `ROVE_WEB_PORT` | Next.js workbench port used by `scripts/dev.ps1` and Playwright. Defaults to `3000`. |
+| `ROVE_WEB_PORT` | Next.js Web application port used by `scripts/dev.ps1` and Playwright. Defaults to `3000`. |
 | `PLAYWRIGHT_BASE_URL` | Browser E2E base URL override. Defaults to `http://localhost:$ROVE_WEB_PORT`. |
 | `ROVE_FALLBACK_MODELS` | Comma-separated fallback model list using the primary provider. |
 | `ROVE_ROUTING_RETRY_MAX_ATTEMPTS` | Routed provider attempts before fallback. Defaults to `1`. |

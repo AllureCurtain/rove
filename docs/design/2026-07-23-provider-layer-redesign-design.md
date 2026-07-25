@@ -1,29 +1,36 @@
 # Rove Provider Layer Redesign
 
-> Status: **Accepted Target / Implementation In Progress**
+> Status: **Implemented baseline; later cleanup decisions supersede transitional compatibility details**
 >
 > Date: 2026-07-23
 >
 > Progress ledger:
 > [`../plans/2026-07-23-provider-layer-redesign.md`](../plans/2026-07-23-provider-layer-redesign.md)
 
-Implemented so far: Stages 1-9. Protocol IDs, registry, framing, shared
-transport, all four native protocol strategies, named profiles with env/file
-secret refs, legacy conversion, registry-driven bootstrap assembly through
-`ProviderClient`, API/Web open wire-protocol profile contracts, the opt-in
-`external-adapter-v1` process boundary, current-runtime documentation, and
-workspace release-gate evidence are complete. Legacy native HTTP client modules
-remain in-tree only as parity-test references during the compatibility window;
+Implemented: Stages 1-9 established protocol IDs, registry, framing, shared
+transport, all four native protocol strategies, named profiles, registry-driven
+bootstrap assembly through `ProviderClient`, the opt-in `external-adapter-v1`
+process boundary, current-runtime documentation, and release-gate evidence.
+Legacy native HTTP client modules remain in-tree only as parity-test references;
 production assembly does not construct them.
+
+The later
+[`2026-07-24-cleanup-and-naming-decisions.md`](2026-07-24-cleanup-and-naming-decisions.md)
+removed public legacy config migration and request-side `wire_protocol`
+selection for the unreleased product. Where this document's transitional
+compatibility story disagrees with that decision or current code, the cleanup
+decision and [`docs/runtime/`](../runtime/README.md) win.
 
 ## 1. Scope and current truth
 
-This document defines the target Provider architecture. It does not claim that
-the target types or configuration are already available.
+This document records the Provider architecture that was implemented through
+Stages 1–9. It is design history, not a substitute for current API/config
+documentation.
 
-The current runtime has separate OpenAI Chat Completions, OpenAI Responses,
-Anthropic Messages, Ollama, and fake clients under `models/src/`. Product
-selection and fallback assembly live in `apps/bootstrap/src/factory.rs`.
+The current runtime has OpenAI Chat Completions, OpenAI Responses, Anthropic
+Messages, Ollama, and Fake strategies behind the provider registry and
+`ProviderClient`; older direct client modules are parity-test references.
+Product selection and fallback assembly live in `apps/bootstrap/src/factory.rs`.
 Provider-specific API inventory behavior lives in `apps/api/src/provider.rs`.
 All clients already normalize output into `ModelEvent`, and routing operates on
 `Box<dyn ModelClient>`.

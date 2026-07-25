@@ -62,7 +62,7 @@ Additional routing:
 | `runtime/` | `rove-runtime`: contracts/events, workspace, context/compaction, memory, local built-in tools, MCP proxy, Executor/hooks, planning, Engine, state/artifacts/SQLite/repair/resume |
 | `tests/` | `rove-integration-tests`: cross-package contracts |
 | `benchmarks/` | Deterministic benchmark definitions and published evidence |
-| `apps/web/` | Standalone Next.js workbench |
+| `apps/web/` | Standalone Next.js product shell; developer workbench is an advanced escape hatch |
 | `scripts/` | Local development and integration runners |
 | `docs/runtime/` | Current implementation source of truth |
 | `docs/design/` | Active proposed/target and implemented architecture documents |
@@ -101,7 +101,7 @@ and updates its tests and current documentation:
 
 ## 5. Current implementation boundaries
 
-As of 2026-07-24:
+As of 2026-07-25:
 
 - rove is a local-first Rust runtime with CLI, API, Web, persisted run state,
   resume, provider routing, tools, layered memory, optional future external retrieval, and
@@ -114,18 +114,28 @@ As of 2026-07-24:
   execution, state, memory, tools/MCP, planning, and the Engine facade.
   `rove-app-bootstrap` owns first-party AppConfig, provider factory, product
   registry assembly, and shared Engine assembly. Workspace retrieval is tool-based plus layered file memory; there is no built-in vector RAG.
-- `docs/runtime/` describes the implemented MVP.
+- `docs/runtime/` describes the implemented MVP and Web M1 product shell.
 - MCP currently supports stdio and the existing legacy SSE path. Streamable
   HTTP, negotiated sessions, rich MCP result envelopes, and Tool Artifacts are
   proposed, not implemented.
-- Versioned AgentDefinition packages, `AGENTS.md` runtime discovery,
-  typed procedural knowledge, expanded execution lifecycle, and the OnCall
-  reference evaluation suite are proposed, not implemented.
+- Versioned AgentDefinition packages, `AGENTS.md` runtime discovery, typed
+  procedural knowledge, and the OnCall reference evaluation suite are proposed,
+  not implemented. The execution-lifecycle design is partially implemented:
+  bounded planned StepRunner, append-only StepRecord ledger, immutable plan
+  revisions, and rule-first decisions exist; model-on-ambiguity evaluation,
+  independent Finalizer, and full budget surfaces remain proposed.
+- Web M1 is implemented: explicit Folder/Repo roots, fail-closed hard resume,
+  and the Workspace → Session → Chat product shell are on `main`. Web Complete
+  (API-backed product store, exact multi-session bindings, transcript restore,
+  deep routes, complete Settings, and final UI acceptance) is active future
+  work. Product-shell E2E is currently mock-backed; `local-full` real-API
+  Playwright targets `/dev/workbench`, and the provider runner's Web selectors
+  predate M1. No Tauri `apps/desktop` host exists yet.
 - This repository-level `AGENTS.md` guides maintainers and coding agents. Its
   existence does not mean the rove runtime already loads workspace
   `AGENTS.md` files into model context.
 
-The active future design chain is:
+The active future/runtime-evolution design chain is:
 
 - `docs/design/2026-07-14-agent-execution-lifecycle-design.md`
 - `docs/design/2026-07-14-agent-definition-and-procedural-knowledge-design.md`

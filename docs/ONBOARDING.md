@@ -2,7 +2,7 @@
 
 > Status: **Current Maintainer Guide**
 >
-> Last reviewed: 2026-07-24. This guide explains the repository as it exists
+> Last reviewed: 2026-07-25. This guide explains the repository as it exists
 > today. For exact subsystem contracts and implementation status, follow
 > [`docs/runtime/`](runtime/README.md). Documents marked
 > `Proposed / Not Implemented` describe future work.
@@ -29,7 +29,7 @@ core is used by:
 
 - an interactive CLI and non-interactive exec mode;
 - an HTTP API with job lifecycle and SSE events;
-- a standalone Next.js workbench;
+- a standalone Next.js product shell backed by the API/SSE contract;
 - deterministic local benchmarks;
 - tool-based workspace retrieval and layered file memory.
 
@@ -85,7 +85,7 @@ Required for the Rust runtime:
 - Rust stable, selected by `rust-toolchain.toml`;
 - Cargo.
 
-Required for the Web workbench:
+Required for the Web product shell:
 
 - a current Node.js version compatible with the lockfile;
 - pnpm 10, as declared by `apps/web/package.json`.
@@ -338,8 +338,9 @@ Three memory layers:
 - session memory — resumability-oriented summary;
 - durable memory — stable cross-session facts/preferences/feedback/reference.
 
-RAG is separate. Tool output is separate. Workspace rules are separate.
-Do not merge all retrieved content into one high-authority prompt.
+Optional external retrieval would be separate and is not implemented. Tool
+output and workspace rules are also distinct authorities. Do not merge all
+retrieved or generated content into one high-authority prompt.
 
 ## 12. Models and routing
 
@@ -398,15 +399,19 @@ See:
 Never treat MCP annotations as authorization or a remote `file://` URI as a
 local workspace path.
 
-## 14. Optional RAG
+## 14. Workspace retrieval
 
 Built-in vector RAG has been removed. Workspace context comes from tools and layered file memory.
 
 
-## 15. Web workbench
+## 15. Web product shell
 
 `apps/web/` is a standalone Next.js application. It consumes the API and SSE
-rather than embedding a second runtime.
+rather than embedding a second runtime. The default route is the M1 product
+shell (Workspace → Session → Chat + Inspector); `/dev/workbench` is an
+advanced-only migration escape hatch. Web Complete persistence, refresh
+restore, exact multi-session runtime binding, deep routes, and full Settings
+remain active work.
 
 From `apps/web/`:
 
@@ -427,12 +432,17 @@ when changing browser-visible job, SSE, approval, input, cancellation, resume,
 or proxy behavior. Follow the environment gates in
 [`runtime/integration-testing.md`](runtime/integration-testing.md).
 
+Current evidence is route-scoped: `shell.spec.ts` covers `/` with mocked API
+boundaries, while the gated `real-api.spec.ts` used by `local-full` opens
+`/dev/workbench`. Full live-API product-shell acceptance is Web Complete C3
+work, not an already-passing M1 gate.
+
 Keep provider/API tokens server-side. Browser JavaScript must not receive raw
 provider secrets.
 
 ## 16. Benchmark system
 
-Current benchmark code is under `src/bench/`. It supports:
+Current benchmark code is under `apps/bench/`. It supports:
 
 - scripted fake-model turns;
 - setup files;
@@ -501,7 +511,7 @@ Before release-oriented claims, use:
 
 - [`runtime/acceptance-matrix.md`](runtime/acceptance-matrix.md);
 - [`runtime/release-readiness.md`](runtime/release-readiness.md);
-- provider/MCP/RAG opt-in gates as applicable.
+- provider/MCP opt-in gates as applicable.
 
 A skipped external smoke is not evidence that the external integration works.
 
@@ -579,7 +589,20 @@ A skipped external smoke is not evidence that the external integration works.
 3. [MCP Streamable HTTP and Tool Artifacts](design/2026-07-15-mcp-streamable-http-and-tool-artifacts-design.md)
 4. [OnCall Reference Agent and Evaluation](design/2026-07-15-oncall-reference-agent-evaluation-plan.md)
 
-All four are proposed until code/tests/current docs say otherwise.
+The execution lifecycle is partially implemented through bounded StepRunner,
+StepRecord ledger, PlanRevision, and rule-first PlanDecision. Its Finalizer,
+model-on-ambiguity, and full budget target remain proposed. The other three
+documents remain proposed/not implemented.
+
+### Active product delivery
+
+- [Agent Desktop + Web shared UI](design/2026-07-25-agent-desktop-web-ui-design.md)
+  — Web M1 implemented; Web Complete and Desktop pending.
+- [Web Complete design](design/2026-07-26-web-complete-design.md) and
+  [delivery plan](plans/2026-07-26-web-complete.md) — active C0–C3 milestone.
+- [Web → Desktop coordinator plan](plans/2026-07-25-web-desktop-master-delivery.md)
+  — worktree ownership, PR authority, exact product-session binding, and
+  Desktop D0 gate.
 
 ### Independent terminal interface direction
 
@@ -606,8 +629,8 @@ Use them for rationale, not as current API/runtime truth when they disagree with
 
 ## 20. Known boundary reminders
 
-- Browser/Desktop workspace specs are future, outside the current local-first
-  MVP.
+- Browser/Desktop automation workspace specs are future. The Web M1 product
+  shell exists; a Tauri Desktop product host does not.
 - Hosted multi-user identity and distributed rate limiting are outside the MVP.
 - Built-in vector RAG is not provided.
 - Real provider/MCP tests are gated.

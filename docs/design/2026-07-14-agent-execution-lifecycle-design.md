@@ -1,12 +1,35 @@
 # rove Agent Execution Lifecycle Design - 2026-07-14
 
-> Status: **Proposed / Not Implemented**
+> Status: **Partially implemented — remaining target is proposed**
 >
-> 本文是未来设计 spec，不是当前实现说明，也不是实现计划。当前运行时事实仍以 [`docs/runtime/`](../runtime/README.md) 为准；在代码、测试和运行时文档完成同步更新之前，不得把本文中的类型、事件、配置或行为描述为已实现。
+> 本文同时保留原始目标与尚未完成的设计，不是当前实现说明。当前运行时事实仍以 [`docs/runtime/`](../runtime/README.md) 为准；不得因为某一阶段已落地，就把本文剩余的类型、配置或行为整体描述为已实现。
 
 本文定义 rove 下一阶段的 Agent 执行生命周期：如何选择 `react` 或 `plan_react`，Planner 在什么上下文中规划，单个计划步骤如何运行 bounded ReAct，步骤结果如何形成 append-only ledger，何时继续、替换剩余计划或结束，以及最终答案如何基于证据生成。
 
 设计参考了 OnCall 项目中的 Plan-Execute-Replan 思想，但不复制其产品目标、LangGraph 状态图或 Python/LangChain 实现。借鉴对象是机制，不是框架。
+
+## Implementation checkpoint
+
+The following slices are implemented and documented in
+[`docs/runtime/react-loop.md`](../runtime/react-loop.md):
+
+- typed `ExecutionPolicy` with `react` / `plan_react` compatibility resolution;
+- bounded multi-turn ReAct inside each planned step;
+- append-only terminal `StepRecord` facts and conservative resume behavior;
+- immutable parent-linked `PlanRevision` values;
+- deterministic rule-first `PlanDecision` values and canonical
+  `step_result` / `plan_decision` / `plan_revised` events;
+- task-state/checkpoint/report/SQLite projections of that lifecycle.
+
+Still proposed: capability/procedure-aware planning, model-on-ambiguity
+evaluation, an independent evidence-grounded Finalizer, public
+multidimensional budget configuration and global enforcement, structured
+budget/finalization events, and trace-tail reconciliation newer than the latest
+task-state snapshot.
+
+Section 2 below is the design-time snapshot that motivated the work; its file
+paths and “current behavior” statements are historical. Use current code and
+runtime docs for present behavior.
 
 ## Suggested /goal Objective
 
@@ -64,7 +87,7 @@
 | Limits | plan steps、step attempts、model turns、tool calls、revisions、time、tokens/cost 分开预算 |
 | Persistence | 复用 trace + task state + checkpoint + report + SQLite index，不建立第二套状态系统 |
 | Safety | 计划不是授权；workspace、approval、destructive ordering 始终由现有 runtime 执行 |
-| Documentation | 本文保持 Proposed；实现前 `docs/runtime/` 的当前事实不改变 |
+| Documentation | 已实现 slices 写入 `docs/runtime/`；本文其余目标保持 Proposed |
 
 ## 2. Current State: rove 现在真实做了什么
 
@@ -1172,7 +1195,7 @@ MCP 工具可能在运行中变化。通过 snapshot ID、tool signature、显�
 
 ### 24.1 Existing docs
 
-- [`2026-05-24-rove-runtime-hardening-design.md`](2026-05-24-rove-runtime-hardening-design.md) 定义 local-first stateful runtime、provider、context、tool orchestration、memory 和 resume 总边界；本文细化其中尚未展开的 Agent execution lifecycle。
+- [`2026-05-24-rove-runtime-hardening-design.md`](../Archive/design/2026-05-24-rove-runtime-hardening-design.md) 是已归档的 local-first hardening 背景；本文细化其中当时尚未展开的 Agent execution lifecycle。
 - [`docs/runtime/react-loop.md`](../runtime/react-loop.md) 解释当前已实现 loop；本文描述它的目标演进，不替代当前事实。
 - [`docs/runtime/implementation-status.md`](../runtime/implementation-status.md) 继续记录真实实现状态；在代码落地前不应因本文而改成 Met。
 - `trace.jsonl` / `task_state.json` / `report.json` 的事实与索引关系沿用现有 runtime hardening decision。

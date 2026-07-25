@@ -1,6 +1,6 @@
 # Agent Desktop + Web Shared UI
 
-> Status: **Accepted / Sealed for implementation**
+> Status: **Partially implemented — Web M1 on `main`; Web Complete and Desktop pending**
 >
 > Date: 2026-07-25
 >
@@ -10,11 +10,12 @@
 > [`../plans/2026-07-25-web-management-m1.md`](../plans/2026-07-25-web-management-m1.md)
 
 This document freezes the product, information architecture, visual baseline, and
-engineering constraints for rove's next product surface: a **shared product UI**
-hosted first as a **Web management app**, then as a **Tauri desktop shell**.
+engineering constraints for rove's **shared product UI**, hosted first as a Web
+management app and later as a Tauri desktop shell. The Web M1 shell is now on
+`main`; the Web Complete and Desktop portions remain future delivery.
 
-It does **not** claim the target UI or the required API extensions already exist.
-Current runtime truth remains `docs/runtime/**` and the code.
+It does **not** claim Web Complete or Desktop already exists. Current runtime
+truth remains `docs/runtime/**` and the code.
 
 ---
 
@@ -191,11 +192,11 @@ These facts shape M1 engineering:
 | Fact | Implication |
 |------|-------------|
 | API already has jobs, SSE, approvals, inputs, cancel, runs, provider test/models | Chat main path can integrate against live API immediately |
-| `CreateJobRequest.workspace` is currently task-oriented | Arbitrary Folder/Repo open is **not** complete product-ready |
-| API process has a startup `cwd` | Without path binding, “opened workspace” can be cosmetic only |
-| Runtime `Session` is still thin (`SessionId` centered) | Product session continuity needs explicit resume correctness work |
+| `CreateJobRequest.workspace` now supports explicit Folder/Repo/Task binding | Opened M1 paths are real execution roots, not cosmetic catalog entries |
+| Hard resume is workspace-store scoped and M1 uses `resume: "latest"` | Web Complete must bind each product session to its exact runtime run to avoid cross-session ambiguity |
+| Runtime `Session` remains thin (`SessionId` centered) | Durable product catalog, transcript projection, and exact mapping are still C0 work |
 | `RunSummary` already carries `session_id` / `job_id` / `run_id` | Useful mapping anchors exist |
-| Current `apps/web` is a developer workbench | Useful code to absorb; not the target IA |
+| Current `apps/web` defaults to the sealed product shell | Keep the IA; `/dev/workbench` remains an advanced escape hatch only |
 
 ---
 
@@ -296,6 +297,9 @@ Do not do now:
 
 ## changelog
 
+- 2026-07-25: Reconciled status after M1 landed. Marked the shared design
+  partially implemented, updated the Folder/Repo and product-shell facts, and
+  recorded exact product-session binding as Web Complete C0 work.
 - 2026-07-25: Accepted and sealed after product grilling. Restored onto post-W2a
   `main` baseline for commit-before-worktree delivery. No implementation claimed.
 - 2026-07-26: Delivery order updated — **Web Complete** inserted before Tauri

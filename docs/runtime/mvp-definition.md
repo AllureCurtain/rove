@@ -2,7 +2,7 @@
 
 Status: MVP reached for the local-first single-user runtime.
 Date: 2026-05-30
-Last interface update: 2026-07-19 (bounded full-screen TUI navigation, timeline, and terminal hardening).
+Last interface update: 2026-07-25 (Web M1 product shell and advanced Workbench boundary).
 
 ## Definition
 
@@ -21,7 +21,10 @@ This MVP is not a SaaS product, browser automation runtime, desktop automation r
   basic TUI and fail closed for live interaction. Unix PTY smoke is opt-in;
   Windows ConPTY automation is not included and reports a typed skip.
 - HTTP API job lifecycle with SSE, cancel, approval, input, resume, and persisted replay.
-- Standalone Web workbench for submitting jobs, streaming events, approving tools, answering input requests, cancelling runs, resuming latest state, and viewing historical run reports.
+- Standalone Web M1 product shell at `/` for Workspace/Session navigation,
+  chat/SSE, inline tool approval/input/cancel, Inspector state, and provider
+  controls. The advanced `/dev/workbench` retains direct resume/history/report
+  workflows from the historical M6 surface.
 - Core engine with planned and unplanned loops sharing model turns, tool turns, context checkpoints, and history writeback.
 - Local state under `.rove/` with trace, task state, report, and SQLite index.
 - Folder, Repo, and Task workspaces.
@@ -29,12 +32,19 @@ This MVP is not a SaaS product, browser automation runtime, desktop automation r
 - Provider abstraction for OpenAI, OpenAI Responses, Anthropic, Ollama, and fake providers.
 - Deterministic no-network benchmarks and default test coverage.
 
+The product shell is not yet Web Complete: refresh does not rebuild its
+transcript, product catalogs/profiles are browser-authoritative, and
+workspace-scoped `resume: "latest"` cannot safely distinguish multiple product
+sessions in one workspace. Its browser suite is mock-backed; the current gated
+real-API Playwright suite targets `/dev/workbench`.
+
 ## Out of scope
 
 - Browser/Desktop workspace implementations.
 - Multi-user identity, login, hosted billing, distributed rate limiting, and SaaS deployment controls.
 - Full shell sandboxing beyond current local policy, timeout, output, denylist, and approval controls.
-- Provider-backed tool-time RAG retrieval as a default runtime path.
+- Built-in vector or provider-backed RAG retrieval; future semantic retrieval
+  requires a separate optional-external-service design.
 - Long-running human-in-the-loop reconstruction after process restart.
 
 ## Golden paths
@@ -77,13 +87,6 @@ cd apps/web
 pnpm test
 pnpm typecheck
 pnpm build
-```
-
-Optional RAG verification remains separate:
-
-```powershell
-
-
 ```
 
 Optional Unix TUI PTY verification also remains separate from the default gate:

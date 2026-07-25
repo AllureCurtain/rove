@@ -51,11 +51,11 @@ rove 当前：
 
 | 范围 | 证据 |
 |---|---|
-| benchmark schema | `src/bench/schema.rs` |
-| runner | `src/bench/runner.rs` |
-| checks | `src/bench/checks.rs` |
-| evidence report | `src/bench/evidence.rs` |
-| generated suite | `src/bench/suites.rs` |
+| benchmark schema | `apps/bench/src/schema.rs` |
+| runner | `apps/bench/src/runner.rs` |
+| checks | `apps/bench/src/checks.rs` |
+| evidence report | `apps/bench/src/evidence.rs` |
+| generated suite | `apps/bench/src/suites.rs` |
 | current smoke | `benchmarks/agent-smoke.json` |
 | tests | `tests/bench.rs` |
 | runtime evidence | `docs/runtime/benchmark-evidence.md` |

@@ -7,6 +7,12 @@
 > Design source:
 > [`../design/2026-07-14-agent-execution-lifecycle-design.md`](../design/2026-07-14-agent-execution-lifecycle-design.md)
 
+> Current-state note (2026-07-25): this is a chronological phase ledger.
+> Cleanup W2a later removed compatibility `plan_step_*` dual-fire, and the
+> modular cleanup removed built-in RAG, `rove-index`, and the old `web-ui` /
+> `src/interfaces` paths. Preserve the phase-time record below, but use current
+> code and `docs/runtime/**` for today's event contract and gate commands.
+
 ## Objective
 
 Implement the third dependency-ordered lifecycle phase: make every terminal
