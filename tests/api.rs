@@ -1803,7 +1803,7 @@ async fn api_restart_marks_pending_approval_interrupted_without_replaying_unknow
                 .uri("/jobs")
                 .header("content-type", "application/json")
                 .body(Body::from(
-                    r#"{"message":"{\"tool\":\"fs_write\",\"args\":{\"path\":\"pending.txt\",\"content\":\"no\"}}","model":"fake-raw","approval":"ask","max_steps":1}"#,
+                    r#"{"message":"{\"tool\":\"write_file\",\"args\":{\"path\":\"pending.txt\",\"content\":\"no\"}}","model":"fake-raw","approval":"ask","max_steps":1}"#,
                 ))
                 .unwrap(),
         )
@@ -2165,6 +2165,7 @@ async fn api_cancel_does_not_rewrite_completed_job() {
 async fn api_planned_tool_step_completes_after_successful_tool_call() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
+    std::fs::write(workspace.root.join("note.txt"), "planned tool done").unwrap();
     let run_store = rove_runtime::state::store::StateStore::new(&workspace.state_dir).run_store;
     let app = router(ApiState::new(workspace, test_config()));
 
@@ -2176,7 +2177,7 @@ async fn api_planned_tool_step_completes_after_successful_tool_call() {
                 .uri("/jobs")
                 .header("content-type", "application/json")
                 .body(Body::from(
-                    r#"{"message":"{\"tool\":\"echo\",\"args\":{\"message\":\"planned tool done\"}}","model":"fake-raw","approval":"auto","max_steps":3}"#,
+                    r#"{"message":"{\"tool\":\"read_file\",\"args\":{\"path\":\"note.txt\"}}","model":"fake-raw","approval":"auto","max_steps":3}"#,
                 ))
                 .unwrap(),
         )
@@ -2192,7 +2193,7 @@ async fn api_planned_tool_step_completes_after_successful_tool_call() {
     let tool_starts = state
         .events
         .iter()
-        .filter(|event| matches!(&event.event, StreamEvent::ToolCallStarted { name, .. } if name == "echo"))
+        .filter(|event| matches!(&event.event, StreamEvent::ToolCallStarted { name, .. } if name == "read_file"))
         .count();
     assert_eq!(tool_starts, 1);
     let result_index = state
@@ -2207,12 +2208,20 @@ async fn api_planned_tool_step_completes_after_successful_tool_call() {
             )
         })
         .expect("API job state should retain the canonical step_result event");
-    let completed_index = state
-        .events
-        .iter()
-        .position(|event| matches!(event.event, StreamEvent::PlanStepCompleted { .. }))
-        .unwrap();
-    assert!(result_index < completed_index);
+    assert!(
+        state.events.iter().any(|event| {
+            matches!(
+                &event.event,
+                StreamEvent::PlanDecision { record }
+                    if record.trigger_step_record_id
+                        == match &state.events[result_index].event {
+                            StreamEvent::StepResult { record } => record.record_id.as_str(),
+                            _ => "",
+                        }
+            )
+        }),
+        "successful planned tool step should emit a correlated plan_decision"
+    );
 
     let events = app
         .oneshot(
@@ -2255,7 +2264,7 @@ async fn api_approves_pending_destructive_tool_call() {
                 .uri("/jobs")
                 .header("content-type", "application/json")
                 .body(Body::from(
-                    r#"{"message":"{\"tool\":\"fs_write\",\"args\":{\"path\":\"approved.txt\",\"content\":\"ok\"}}","model":"fake-raw","approval":"ask","max_steps":1}"#,
+                    r#"{"message":"{\"tool\":\"write_file\",\"args\":{\"path\":\"approved.txt\",\"content\":\"ok\"}}","model":"fake-raw","approval":"ask","max_steps":1}"#,
                 ))
                 .unwrap(),
         )
@@ -2269,7 +2278,7 @@ async fn api_approves_pending_destructive_tool_call() {
 
     let pending = wait_for_approval_event(app.clone(), created.job_id.to_string()).await;
     let approval = pending.pending_approvals.first().unwrap();
-    assert_eq!(approval.name, "fs_write");
+    assert_eq!(approval.name, "write_file");
     assert!(pending.events.iter().any(|stored| {
         matches!(&stored.event, StreamEvent::ToolCallApprovalNeeded { call_id, .. } if *call_id == approval.call_id)
     }));
@@ -2313,7 +2322,7 @@ async fn api_persists_approval_before_releasing_destructive_tool() {
                 .uri("/jobs")
                 .header("content-type", "application/json")
                 .body(Body::from(
-                    r#"{"message":"{\"tool\":\"fs_write\",\"args\":{\"path\":\"approval-commit-order.txt\",\"content\":\"ok\"}}","model":"fake-raw","approval":"ask","max_steps":1}"#,
+                    r#"{"message":"{\"tool\":\"write_file\",\"args\":{\"path\":\"approval-commit-order.txt\",\"content\":\"ok\"}}","model":"fake-raw","approval":"ask","max_steps":1}"#,
                 ))
                 .unwrap(),
         )
@@ -2381,7 +2390,7 @@ async fn api_rejects_pending_destructive_tool_call() {
                 .uri("/jobs")
                 .header("content-type", "application/json")
                 .body(Body::from(
-                    r#"{"message":"{\"tool\":\"fs_write\",\"args\":{\"path\":\"rejected.txt\",\"content\":\"no\"}}","model":"fake-raw","approval":"ask","max_steps":1}"#,
+                    r#"{"message":"{\"tool\":\"write_file\",\"args\":{\"path\":\"rejected.txt\",\"content\":\"no\"}}","model":"fake-raw","approval":"ask","max_steps":1}"#,
                 ))
                 .unwrap(),
         )
@@ -2395,7 +2404,7 @@ async fn api_rejects_pending_destructive_tool_call() {
 
     let pending = wait_for_pending_approval(app.clone(), created.job_id.to_string()).await;
     let approval = pending.pending_approvals.first().unwrap();
-    assert_eq!(approval.name, "fs_write");
+    assert_eq!(approval.name, "write_file");
 
     let reject = app
         .clone()
@@ -2449,7 +2458,7 @@ async fn api_planned_rejected_destructive_tool_does_not_replan_same_approval() {
                 .uri("/jobs")
                 .header("content-type", "application/json")
                 .body(Body::from(
-                    r#"{"message":"{\"tool\":\"fs_write\",\"args\":{\"path\":\"rejected-planned.txt\",\"content\":\"no\"}}","model":"fake-raw","approval":"ask","max_steps":3}"#,
+                    r#"{"message":"{\"tool\":\"write_file\",\"args\":{\"path\":\"rejected-planned.txt\",\"content\":\"no\"}}","model":"fake-raw","approval":"ask","max_steps":3}"#,
                 ))
                 .unwrap(),
         )
@@ -2463,7 +2472,7 @@ async fn api_planned_rejected_destructive_tool_does_not_replan_same_approval() {
 
     let pending = wait_for_pending_approval(app.clone(), created.job_id.to_string()).await;
     let approval = pending.pending_approvals.first().unwrap();
-    assert_eq!(approval.name, "fs_write");
+    assert_eq!(approval.name, "write_file");
 
     let rejected = app
         .clone()
@@ -2518,7 +2527,7 @@ async fn api_cancel_clears_pending_destructive_tool_approval() {
                 .uri("/jobs")
                 .header("content-type", "application/json")
                 .body(Body::from(
-                    r#"{"message":"{\"tool\":\"fs_write\",\"args\":{\"path\":\"cancelled.txt\",\"content\":\"no\"}}","model":"fake-raw","approval":"ask","max_steps":1}"#,
+                    r#"{"message":"{\"tool\":\"write_file\",\"args\":{\"path\":\"cancelled.txt\",\"content\":\"no\"}}","model":"fake-raw","approval":"ask","max_steps":1}"#,
                 ))
                 .unwrap(),
         )
@@ -2531,7 +2540,7 @@ async fn api_cancel_clears_pending_destructive_tool_approval() {
     let created: CreateJobResponse = serde_json::from_slice(&body).unwrap();
 
     let pending = wait_for_pending_approval(app.clone(), created.job_id.to_string()).await;
-    assert_eq!(pending.pending_approvals[0].name, "fs_write");
+    assert_eq!(pending.pending_approvals[0].name, "write_file");
 
     let cancel = app
         .oneshot(
@@ -2589,7 +2598,7 @@ async fn api_shutdown_token_cancels_pending_job_and_clears_approval() {
                 .uri("/jobs")
                 .header("content-type", "application/json")
                 .body(Body::from(
-                    r#"{"message":"{\"tool\":\"fs_write\",\"args\":{\"path\":\"shutdown-cancelled.txt\",\"content\":\"no\"}}","model":"fake-raw","approval":"ask","max_steps":1}"#,
+                    r#"{"message":"{\"tool\":\"write_file\",\"args\":{\"path\":\"shutdown-cancelled.txt\",\"content\":\"no\"}}","model":"fake-raw","approval":"ask","max_steps":1}"#,
                 ))
                 .unwrap(),
         )
@@ -2602,7 +2611,7 @@ async fn api_shutdown_token_cancels_pending_job_and_clears_approval() {
     let created: CreateJobResponse = serde_json::from_slice(&body).unwrap();
 
     let pending = wait_for_pending_approval(app.clone(), created.job_id.to_string()).await;
-    assert_eq!(pending.pending_approvals[0].name, "fs_write");
+    assert_eq!(pending.pending_approvals[0].name, "write_file");
 
     shutdown.cancel();
     let state = wait_for_status(
@@ -2644,7 +2653,7 @@ async fn api_defaults_to_ask_for_destructive_tool_calls() {
                 .uri("/jobs")
                 .header("content-type", "application/json")
                 .body(Body::from(
-                    r#"{"message":"{\"tool\":\"fs_write\",\"args\":{\"path\":\"default-ask.txt\",\"content\":\"safe\"}}","model":"fake-raw","max_steps":1}"#,
+                    r#"{"message":"{\"tool\":\"write_file\",\"args\":{\"path\":\"default-ask.txt\",\"content\":\"safe\"}}","model":"fake-raw","max_steps":1}"#,
                 ))
                 .unwrap(),
         )
@@ -2657,7 +2666,7 @@ async fn api_defaults_to_ask_for_destructive_tool_calls() {
     let created: CreateJobResponse = serde_json::from_slice(&body).unwrap();
 
     let pending = wait_for_pending_approval(app.clone(), created.job_id.to_string()).await;
-    assert_eq!(pending.pending_approvals[0].name, "fs_write");
+    assert_eq!(pending.pending_approvals[0].name, "write_file");
     assert!(!output_path.exists(), "default approval should wait");
 }
 
@@ -2676,7 +2685,7 @@ async fn api_auto_approval_runs_destructive_tool_without_pending_approval() {
                 .uri("/jobs")
                 .header("content-type", "application/json")
                 .body(Body::from(
-                    r#"{"message":"{\"tool\":\"fs_write\",\"args\":{\"path\":\"auto.txt\",\"content\":\"ok\"}}","model":"fake-raw","approval":"auto","max_steps":1}"#,
+                    r#"{"message":"{\"tool\":\"write_file\",\"args\":{\"path\":\"auto.txt\",\"content\":\"ok\"}}","model":"fake-raw","approval":"auto","max_steps":1}"#,
                 ))
                 .unwrap(),
         )
@@ -2767,7 +2776,7 @@ async fn api_registers_memory_index_and_topic_read_tools_for_jobs() {
     let app = router(ApiState::new(workspace, test_config()));
 
     let update_message = serde_json::json!({
-        "tool": "update_memory_index",
+        "tool": "reindex_memory",
         "args": {}
     })
     .to_string();
@@ -2800,7 +2809,7 @@ async fn api_registers_memory_index_and_topic_read_tools_for_jobs() {
     assert!(index.contains("[Manual Topic](topics/manual-topic.md)"));
 
     let read_message = serde_json::json!({
-        "tool": "read_memory_topic",
+        "tool": "read_memory",
         "args": { "name": "Manual Topic" }
     })
     .to_string();

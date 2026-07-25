@@ -90,7 +90,7 @@ async fn mcp_proxy_registers_and_calls_stdio_tools() {
     assert!(registry.has("mcp__mock_server__delete_remote"));
     assert!(
         registry
-            .schema("mcp__mock_server__delete_remote")
+            .descriptor("mcp__mock_server__delete_remote")
             .unwrap()
             .destructive
     );

@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::{panic::AssertUnwindSafe, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
@@ -56,6 +57,8 @@ pub struct RunSummary {
     pub completed_plan_steps: Vec<PlanStep>,
     pub tools_used: Vec<String>,
     pub tool_mutations: Vec<ToolMutation>,
+    /// Titles observed from `PlanStepStarted`, keyed by step id.
+    plan_step_titles: HashMap<String, String>,
 }
 
 impl RunSummary {
@@ -65,6 +68,7 @@ impl RunSummary {
             completed_plan_steps: Vec::new(),
             tools_used: Vec::new(),
             tool_mutations: Vec::new(),
+            plan_step_titles: HashMap::new(),
         }
     }
 
@@ -78,8 +82,34 @@ impl RunSummary {
             StreamEvent::ToolCallCompleted { result, .. } => {
                 self.tool_mutations.extend(result.mutations.clone());
             }
-            StreamEvent::PlanStepCompleted { step, .. } => {
-                self.completed_plan_steps.push(step.clone());
+            StreamEvent::PlanStepStarted { step, .. } => {
+                self.plan_step_titles
+                    .insert(step.id.clone(), step.title.clone());
+            }
+            StreamEvent::StepResult { record }
+                if matches!(
+                    record.status,
+                    crate::execution::StepRecordStatus::Succeeded
+                        | crate::execution::StepRecordStatus::Skipped
+                ) =>
+            {
+                let title = self
+                    .plan_step_titles
+                    .get(&record.step_id)
+                    .cloned()
+                    .filter(|title| !title.trim().is_empty())
+                    .unwrap_or_else(|| record.step_id.clone());
+                if !self
+                    .completed_plan_steps
+                    .iter()
+                    .any(|step| step.id == record.step_id)
+                {
+                    self.completed_plan_steps.push(PlanStep {
+                        id: record.step_id.clone(),
+                        title,
+                        done: true,
+                    });
+                }
             }
             _ => {}
         }

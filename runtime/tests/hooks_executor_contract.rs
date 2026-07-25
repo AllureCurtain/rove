@@ -10,8 +10,8 @@ use rove_runtime::hooks::{
 use rove_runtime::memory::paths::MemoryPaths;
 use rove_runtime::tools::runtime_context::runtime_tool_context;
 use rove_runtime::types::{
-    ApprovalPolicy, JobId, RunId, SessionId, TerminationReason, ToolExecutionStatus, ToolMutation,
-    ToolMutationOperation, ToolRiskLevel, ToolSchema,
+    ApprovalPolicy, JobId, RunId, SessionId, TerminationReason, ToolDescriptor,
+    ToolExecutionStatus, ToolMutation, ToolMutationOperation, ToolRiskLevel,
 };
 use rove_runtime::workspace::Workspace;
 use tokio_util::sync::CancellationToken;
@@ -20,8 +20,8 @@ struct MutatingTool;
 
 #[async_trait]
 impl Tool for MutatingTool {
-    fn schema(&self) -> ToolSchema {
-        ToolSchema {
+    fn schema(&self) -> ToolDescriptor {
+        ToolDescriptor {
             name: "write_note".to_string(),
             description: "Write a note".to_string(),
             parameters: serde_json::json!({"type": "object"}),

@@ -282,7 +282,7 @@ async fn save_memory_keeps_index_within_hard_limits() {
 }
 
 #[tokio::test]
-async fn update_memory_index_rebuilds_index_from_existing_topics() {
+async fn reindex_memory_rebuilds_index_from_existing_topics() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
     let topics_dir = workspace.root.join(".rove").join("memory").join("topics");
@@ -308,12 +308,7 @@ async fn update_memory_index_rebuilds_index_from_existing_topics() {
     let ctx = tool_context(&workspace);
 
     let result = executor
-        .run(
-            &ctx,
-            "update_memory_index",
-            serde_json::json!({}),
-            CallId::new(),
-        )
+        .run(&ctx, "reindex_memory", serde_json::json!({}), CallId::new())
         .await
         .unwrap();
 
@@ -332,7 +327,7 @@ async fn update_memory_index_rebuilds_index_from_existing_topics() {
 }
 
 #[tokio::test]
-async fn read_memory_topic_reads_only_named_topic() {
+async fn read_memory_reads_only_named_topic() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
     let topics_dir = workspace.root.join(".rove").join("memory").join("topics");
@@ -351,7 +346,7 @@ async fn read_memory_topic_reads_only_named_topic() {
     let result = executor
         .run(
             &ctx,
-            "read_memory_topic",
+            "read_memory",
             serde_json::json!({"name": "Project Conventions"}),
             CallId::new(),
         )
@@ -364,7 +359,7 @@ async fn read_memory_topic_reads_only_named_topic() {
 }
 
 #[tokio::test]
-async fn read_memory_topic_rejects_unsafe_name() {
+async fn read_memory_rejects_unsafe_name() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
     let mut registry = ToolRegistry::new();
@@ -375,7 +370,7 @@ async fn read_memory_topic_rejects_unsafe_name() {
     let err = executor
         .run(
             &ctx,
-            "read_memory_topic",
+            "read_memory",
             serde_json::json!({"name": "../outside"}),
             CallId::new(),
         )

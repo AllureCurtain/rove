@@ -9,7 +9,7 @@ use crate::provider::{
     ANTHROPIC_MESSAGES_PROTOCOL, AuthStyle, Framing, StreamDecoder, WireProtocol, WireProtocolId,
     WireRequest, WireRequestInput,
 };
-use crate::{Message, ModelError, ModelEvent, Role, ToolSchema, Usage};
+use crate::{Message, ModelError, ModelEvent, ModelToolSchema, Role, Usage};
 
 const DEFAULT_MAX_TOKENS: u32 = 4096;
 const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -100,7 +100,7 @@ fn insert_float_option(body: &mut serde_json::Value, key: &str, value: Option<f6
     }
 }
 
-fn format_anthropic_tool(tool: &ToolSchema) -> serde_json::Value {
+fn format_anthropic_tool(tool: &ModelToolSchema) -> serde_json::Value {
     serde_json::json!({
         "name": tool.name,
         "description": tool.description,
@@ -377,7 +377,7 @@ mod tests {
                 "checking".to_string(),
                 vec![ToolCallRef {
                     id: "toolu_1".to_string(),
-                    name: "fs_read".to_string(),
+                    name: "read_file".to_string(),
                     args: serde_json::json!({"path":"Cargo.toml"}),
                 }],
             ),
@@ -386,9 +386,9 @@ mod tests {
         ]
     }
 
-    fn tools() -> Vec<ToolSchema> {
-        vec![ToolSchema {
-            name: "fs_read".to_string(),
+    fn tools() -> Vec<ModelToolSchema> {
+        vec![ModelToolSchema {
+            name: "read_file".to_string(),
             description: "Read a file".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -426,7 +426,7 @@ mod tests {
                 "content_block": {
                     "type": "tool_use",
                     "id": "toolu_1",
-                    "name": "fs_read",
+                    "name": "read_file",
                     "input": {}
                 }
             })
@@ -504,7 +504,7 @@ mod tests {
                 .iter()
                 .any(|event| matches!(event, ModelEvent::TextDelta { text } if text == "hello"))
         );
-        assert!(migrated_events.iter().any(|event| matches!(event, ModelEvent::ToolUseDone { id, name, args } if id == "toolu_1" && name == "fs_read" && args["path"] == "Cargo.toml")));
+        assert!(migrated_events.iter().any(|event| matches!(event, ModelEvent::ToolUseDone { id, name, args } if id == "toolu_1" && name == "read_file" && args["path"] == "Cargo.toml")));
         assert!(
             migrated_events.iter().any(
                 |event| matches!(event, ModelEvent::Usage { usage } if usage.total_tokens == 15)

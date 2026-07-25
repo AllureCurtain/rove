@@ -9,7 +9,7 @@ use crate::provider::{
     AuthStyle, Framing, OPENAI_RESPONSES_PROTOCOL, StreamDecoder, WireProtocol, WireProtocolId,
     WireRequest, WireRequestInput,
 };
-use crate::{Message, ModelError, ModelEvent, Role, ToolSchema, Usage};
+use crate::{Message, ModelError, ModelEvent, ModelToolSchema, Role, Usage};
 
 pub struct OpenAiResponsesProtocol {
     id: WireProtocolId,
@@ -231,7 +231,7 @@ fn output_text_item(text: &str) -> serde_json::Value {
     })
 }
 
-fn format_responses_tool(tool: &ToolSchema) -> serde_json::Value {
+fn format_responses_tool(tool: &ModelToolSchema) -> serde_json::Value {
     serde_json::json!({
         "type": "function",
         "name": tool.name,
@@ -241,7 +241,7 @@ fn format_responses_tool(tool: &ToolSchema) -> serde_json::Value {
     })
 }
 
-fn prompt_cache_key(messages: &[Message], tools: &[ToolSchema]) -> String {
+fn prompt_cache_key(messages: &[Message], tools: &[ModelToolSchema]) -> String {
     let mut hash = 0xcbf29ce484222325u64;
     for byte in serde_json::to_vec(&(messages, tools)).unwrap_or_default() {
         hash ^= u64::from(byte);
@@ -568,7 +568,7 @@ mod tests {
                 "checking".to_string(),
                 vec![ToolCallRef {
                     id: "call_1".to_string(),
-                    name: "fs_read".to_string(),
+                    name: "read_file".to_string(),
                     args: serde_json::json!({"path":"Cargo.toml"}),
                 }],
             ),
@@ -577,9 +577,9 @@ mod tests {
         ]
     }
 
-    fn tools() -> Vec<ToolSchema> {
-        vec![ToolSchema {
-            name: "fs_read".to_string(),
+    fn tools() -> Vec<ModelToolSchema> {
+        vec![ModelToolSchema {
+            name: "read_file".to_string(),
             description: "Read a file".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -612,7 +612,7 @@ mod tests {
                     "type": "function_call",
                     "id": "fc_1",
                     "call_id": "call_1",
-                    "name": "fs_read",
+                    "name": "read_file",
                     "arguments": ""
                 }
             })
@@ -635,7 +635,7 @@ mod tests {
                     "type": "function_call",
                     "id": "fc_1",
                     "call_id": "call_1",
-                    "name": "fs_read",
+                    "name": "read_file",
                     "arguments": "{\"path\":\"Cargo.toml\"}"
                 }
             })
@@ -714,7 +714,7 @@ mod tests {
         }
 
         assert_eq!(migrated_events, legacy_events);
-        assert!(migrated_events.iter().any(|event| matches!(event, ModelEvent::ToolUseDone { id, name, args } if id == "call_1" && name == "fs_read" && args["path"] == "Cargo.toml")));
+        assert!(migrated_events.iter().any(|event| matches!(event, ModelEvent::ToolUseDone { id, name, args } if id == "call_1" && name == "read_file" && args["path"] == "Cargo.toml")));
         assert!(migrated_events.iter().any(|event| matches!(event, ModelEvent::Usage { usage } if usage.total_tokens == 15 && usage.cached_tokens == 4)));
         assert!(
             migrated_events

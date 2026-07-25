@@ -23,8 +23,8 @@ Durable memory is for stable facts, preferences, project conventions, feedback,
 and reference material. It is managed by:
 
 - `save_memory`
-- `update_memory_index`
-- `read_memory_topic`
+- `reindex_memory`
+- `read_memory`
 
 `save_memory` writes topic files with frontmatter:
 
@@ -122,10 +122,10 @@ compaction circuit according to `runtime.compaction_failure_threshold`.
 
 ## Boundaries
 
-Context/compaction and the session/durable memory implementation live under
-`runtime/src/`; the root `rove::core::context` and `rove::memory` paths are
-temporary compatibility re-exports. Engine coordination, the final session
-summary hook, and built-in memory tools have not moved yet.
+Context/compaction, session/durable memory, the final session-summary hook, and
+built-in memory tools live under `runtime/src/`. Product shells assemble
+`runtime::Engine` through `apps/bootstrap`; `core::Agent` remains embed-only and
+does not own workspace or durable memory paths.
 
 Durable memory is helpful context, not an authoritative database. Session memory
 is a resumability aid, not a full transcript. Vector RAG is not a built-in product path; retrieval is tools + file memory

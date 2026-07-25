@@ -3,7 +3,7 @@ use std::path::Path;
 use futures::StreamExt;
 use tokio_util::sync::CancellationToken;
 
-use rove_app_bootstrap::default_tool_registry_with_shell_policy;
+use rove_app_bootstrap::tool_registry_with_shell_policy;
 use rove_models::fake::{FakeModelClient, FakeTurn};
 use rove_runtime::context::ContextManager;
 use rove_runtime::engine::{Engine, EngineConfig};
@@ -441,7 +441,7 @@ fn benchmark_engine(workspace: &Workspace, turns: Vec<FakeTurn>, max_steps: u32)
         inherit_environment: true,
         denylist: Vec::new(),
     };
-    let registry = default_tool_registry_with_shell_policy(workspace, policy);
+    let registry = tool_registry_with_shell_policy(workspace, policy);
     Engine::with_workspace(
         model,
         registry,

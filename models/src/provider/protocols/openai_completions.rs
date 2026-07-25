@@ -9,7 +9,7 @@ use crate::provider::{
     AuthStyle, Framing, OPENAI_COMPLETIONS_PROTOCOL, StreamDecoder, WireProtocol, WireProtocolId,
     WireRequest, WireRequestInput,
 };
-use crate::{Message, ModelError, ModelEvent, Role, ToolSchema, Usage};
+use crate::{Message, ModelError, ModelEvent, ModelToolSchema, Role, Usage};
 
 pub struct OpenAiCompletionsProtocol {
     id: WireProtocolId,
@@ -109,7 +109,7 @@ impl WireProtocol for OpenAiCompletionsProtocol {
     }
 }
 
-fn format_openai_tool(tool: &ToolSchema) -> serde_json::Value {
+fn format_openai_tool(tool: &ModelToolSchema) -> serde_json::Value {
     serde_json::json!({
         "type": "function",
         "function": {
@@ -407,14 +407,14 @@ mod tests {
                 "checking".to_string(),
                 vec![ToolCallRef {
                     id: "call_1".to_string(),
-                    name: "fs_read".to_string(),
+                    name: "read_file".to_string(),
                     args: serde_json::json!({"path":"Cargo.toml"}),
                 }],
             ),
             Message::tool("contents", Some("call_1".to_string())),
         ];
-        let tools = [ToolSchema {
-            name: "fs_read".to_string(),
+        let tools = [ModelToolSchema {
+            name: "read_file".to_string(),
             description: "Read a file".to_string(),
             parameters: serde_json::json!({"type":"object"}),
         }];
@@ -439,7 +439,7 @@ mod tests {
         assert_eq!(request.body["model"], "gpt-test");
         assert_eq!(request.body["messages"][0]["tool_calls"][0]["id"], "call_1");
         assert_eq!(request.body["messages"][1]["tool_call_id"], "call_1");
-        assert_eq!(request.body["tools"][0]["function"]["name"], "fs_read");
+        assert_eq!(request.body["tools"][0]["function"]["name"], "read_file");
         assert_eq!(request.body["max_tokens"], 2048);
         assert_eq!(request.body["temperature"], 0.2);
         assert_eq!(request.body["top_p"], 0.8);
@@ -456,15 +456,15 @@ mod tests {
                 "checking".to_string(),
                 vec![ToolCallRef {
                     id: "call_1".to_string(),
-                    name: "fs_read".to_string(),
+                    name: "read_file".to_string(),
                     args: serde_json::json!({"path":"Cargo.toml"}),
                 }],
             ),
             Message::tool("contents", Some("call_1".to_string())),
             Message::tool("legacy output", None),
         ];
-        let tools = [ToolSchema {
-            name: "fs_read".to_string(),
+        let tools = [ModelToolSchema {
+            name: "read_file".to_string(),
             description: "Read a file".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -735,7 +735,7 @@ mod tests {
         let events = client
             .stream(
                 &[Message::user("use echo")],
-                &[ToolSchema {
+                &[ModelToolSchema {
                     name: "echo".to_string(),
                     description: "Echo".to_string(),
                     parameters: serde_json::json!({"type":"object"}),

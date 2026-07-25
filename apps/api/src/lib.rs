@@ -22,7 +22,7 @@ use utoipa_swagger_ui::SwaggerUi;
 
 use rove_app_bootstrap::build_model_client_with_health;
 use rove_app_bootstrap::{AppConfig, AppConfigOverrides};
-use rove_app_bootstrap::{EngineAssemblyOptions, build_interface_engine};
+use rove_app_bootstrap::{EngineOptions, build_engine};
 use rove_core::ToolError;
 use rove_models::ModelClient;
 use rove_models::fake::FakeModelClient;
@@ -697,7 +697,7 @@ async fn run_job_inner(
     record: &Arc<JobRecord>,
     req: &CreateJobRequest,
 ) -> anyhow::Result<()> {
-    let engine = build_engine(state, &record.message, req, record.clone()).await?;
+    let engine = assemble_job_engine(state, &record.message, req, record.clone()).await?;
     let state_store = state_store_for_record(record);
     let run = state_store.start_run(record.session_id, record.job_id, record.run_id)?;
     let mut recorder = RunArtifactRecorder::new(
@@ -799,7 +799,7 @@ async fn finalize_cancelled_job(_state: &ApiState, record: &Arc<JobRecord>) {
     }
 }
 
-async fn build_engine(
+async fn assemble_job_engine(
     state: &ApiState,
     message: &str,
     req: &CreateJobRequest,
@@ -830,7 +830,7 @@ async fn build_engine(
         }) as Arc<dyn ToolApprovalProvider>
     });
 
-    build_interface_engine(EngineAssemblyOptions {
+    build_engine(EngineOptions {
         model,
         workspace: &workspace,
         config,
@@ -1477,7 +1477,7 @@ mod tests {
         let call_id = CallId::new();
         let request = ToolApprovalRequest {
             call_id,
-            name: "fs_write".to_string(),
+            name: "write_file".to_string(),
             args: serde_json::json!({"path": "result.txt"}),
             reason: "writes a file".to_string(),
         };
@@ -1578,7 +1578,7 @@ mod tests {
             provider
                 .begin_approval(ToolApprovalRequest {
                     call_id,
-                    name: "fs_write".to_string(),
+                    name: "write_file".to_string(),
                     args: serde_json::json!({"path": "blocked.txt"}),
                     reason: "writes a file".to_string(),
                 })
@@ -1624,7 +1624,7 @@ mod tests {
         }
         .begin_approval(ToolApprovalRequest {
             call_id,
-            name: "fs_write".to_string(),
+            name: "write_file".to_string(),
             args: serde_json::json!({"path": "blocked.txt"}),
             reason: "writes a file".to_string(),
         })

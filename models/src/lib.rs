@@ -22,5 +22,5 @@ pub mod traits;
 pub use error::ModelError;
 pub use fake::{FakeModelClient, FakeTurn};
 pub use options::ProviderOptions;
-pub use protocol::{Message, Role, ToolCallRef, ToolSchema, Usage};
+pub use protocol::{Message, ModelToolSchema, Role, ToolCallRef, Usage};
 pub use traits::{ModelClient, ModelClientId, ModelEvent};

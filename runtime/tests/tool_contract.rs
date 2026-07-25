@@ -57,7 +57,7 @@ async fn filesystem_tool_rejects_traversal_and_bounds_writes_to_workspace() {
 
     let error = registry
         .execute(
-            "fs_write",
+            "write_file",
             serde_json::json!({"path": "../outside.txt", "content": "escape"}),
             &context,
         )
@@ -71,7 +71,7 @@ async fn filesystem_tool_rejects_traversal_and_bounds_writes_to_workspace() {
 
     registry
         .execute(
-            "fs_write",
+            "write_file",
             serde_json::json!({"path": "nested/note.txt", "content": "inside"}),
             &context,
         )
@@ -201,7 +201,7 @@ async fn memory_tool_uses_configured_paths_and_rejects_unsafe_promotion() {
 }
 
 #[tokio::test]
-async fn shell_tool_rejects_empty_nul_and_denied_commands_before_execution() {
+async fn run_shell_rejects_empty_nul_and_denied_commands_before_execution() {
     let temp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(temp.path()).unwrap();
     let context = tool_context(&workspace, MemoryPaths::from_workspace(&workspace, 8), None);
@@ -220,7 +220,11 @@ async fn shell_tool_rejects_empty_nul_and_denied_commands_before_execution() {
         ("blocked-command --flag", "permission_denied"),
     ] {
         let error = registry
-            .execute("shell", serde_json::json!({"command": command}), &context)
+            .execute(
+                "run_shell",
+                serde_json::json!({"command": command}),
+                &context,
+            )
             .await
             .unwrap_err();
         assert_eq!(error.error_code(), expected_code);

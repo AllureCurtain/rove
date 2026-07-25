@@ -93,10 +93,14 @@ fn cli_and_api_share_interface_engine_assembly() {
     let api = std::fs::read_to_string(workspace_path("apps/api/src/lib.rs"))
         .expect("API module should exist");
 
-    assert!(shared.contains("ProductEngineOptions") || shared.contains("EngineAssemblyOptions"));
-    assert!(shared.contains("build_product_engine") || shared.contains("build_interface_engine"));
-    assert!(cli.contains("build_interface_engine") || cli.contains("build_product_engine"));
-    assert!(api.contains("build_interface_engine") || api.contains("build_product_engine"));
+    assert!(shared.contains("EngineOptions"));
+    assert!(shared.contains("build_engine"));
+    assert!(cli.contains("build_engine"));
+    assert!(api.contains("build_engine"));
+    assert!(!shared.contains("build_product_engine"));
+    assert!(!shared.contains("build_interface_engine"));
+    assert!(!shared.contains("ProductEngineOptions"));
+    assert!(!shared.contains("EngineAssemblyOptions"));
     assert!(!cli.contains("ContextManager::with_token_budget"));
     assert!(!api.contains("ContextManager::with_token_budget"));
 }

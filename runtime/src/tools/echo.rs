@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use serde_json::Value;
 
-use rove_core::{Tool, ToolContext, ToolDescriptor as ToolSchema, ToolError, ToolOutput};
+use rove_core::{Tool, ToolContext, ToolDescriptor, ToolError, ToolOutput};
 
 /// A minimal echo tool for testing.
 ///
@@ -10,8 +10,8 @@ pub struct EchoTool;
 
 #[async_trait]
 impl Tool for EchoTool {
-    fn schema(&self) -> ToolSchema {
-        ToolSchema {
+    fn schema(&self) -> ToolDescriptor {
+        ToolDescriptor {
             name: "echo".to_string(),
             description: "Echoes back the given message. Useful for testing.".to_string(),
             parameters: serde_json::json!({

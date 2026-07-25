@@ -5,7 +5,7 @@ use futures::stream::BoxStream;
 use thiserror::Error;
 
 use crate::{
-    Message, ModelClient, ModelClientId, ModelError, ModelEvent, ProviderOptions, ToolSchema,
+    Message, ModelClient, ModelClientId, ModelError, ModelEvent, ModelToolSchema, ProviderOptions,
 };
 
 use super::{
@@ -65,7 +65,7 @@ impl ModelClient for ProviderClient {
     fn stream(
         &self,
         messages: &[Message],
-        tools: &[ToolSchema],
+        tools: &[ModelToolSchema],
     ) -> BoxStream<'_, Result<ModelEvent, ModelError>> {
         self.transport.stream(
             &self.config.base_url,

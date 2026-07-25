@@ -97,9 +97,12 @@ pub struct EngineConfig {
 }
 
 impl EngineConfig {
-    /// Resolve the legacy fields into the typed policy used by the engine.
-    pub fn execution_policy(&self) -> ExecutionPolicy {
-        ExecutionPolicy::from_legacy(self.max_steps, self.plan_enabled)
+    /// Project sugar fields into the typed policy used by the engine.
+    ///
+    /// `max_steps` / `plan_enabled` remain convenience inputs; `ExecutionPolicy`
+    /// is the sole execution-config truth.
+    pub fn to_execution_policy(&self) -> ExecutionPolicy {
+        ExecutionPolicy::from_max_steps_and_plan_flag(self.max_steps, self.plan_enabled)
     }
 }
 
@@ -253,7 +256,7 @@ impl Engine {
     }
 
     pub fn runtime_identity(&self) -> RuntimeIdentity {
-        let tools = self.registry.schemas();
+        let tools = self.registry.descriptors();
         build_runtime_identity(RuntimeIdentityInput {
             workspace: &self.workspace,
             model_id: self.model.model_id(),
@@ -406,7 +409,7 @@ impl Engine {
                     .and_then(|checkpoint| checkpoint.plan.clone())
                     .or_else(|| resume_state.as_ref().and_then(|state| state.plan.clone()));
 
-                let execution_policy = self.config.execution_policy();
+                let execution_policy = self.config.to_execution_policy();
                 let max_model_turns_per_step = execution_policy
                     .budgets
                     .max_model_turns_per_step

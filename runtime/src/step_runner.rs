@@ -238,7 +238,7 @@ pub(crate) fn run_step<'a>(
                 }
             }
 
-            let tool_schemas = ctx.registry.schemas();
+            let tool_schemas = ctx.registry.descriptors();
             emit_step_event!(StreamEvent::PromptBuilt {
                 metadata: enrich_prompt_metadata(&ctx, context.metadata.clone(), &tool_schemas),
             });

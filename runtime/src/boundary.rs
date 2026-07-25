@@ -1,10 +1,13 @@
 use std::path::{Component, Path, PathBuf};
 
 use crate::types::ApprovalPolicy;
-use rove_core::{ToolDescriptor as ToolSchema, ToolError};
+use rove_core::{ToolDescriptor, ToolError};
 
 /// Check whether a tool call is allowed under the active approval policy.
-pub fn check_tool_allowed(schema: &ToolSchema, policy: ApprovalPolicy) -> Result<(), ToolError> {
+pub fn check_tool_allowed(
+    schema: &ToolDescriptor,
+    policy: ApprovalPolicy,
+) -> Result<(), ToolError> {
     match (schema.destructive, policy) {
         (true, ApprovalPolicy::Never) => Err(ToolError::PermissionDenied {
             reason: "destructive tool blocked by policy".to_string(),

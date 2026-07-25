@@ -503,7 +503,7 @@ mod tests {
     fn approval_modal(call_id: CallId) -> InteractionModalView {
         InteractionModalView::Approval {
             call_id,
-            name: "fs_write".to_string(),
+            name: "write_file".to_string(),
             args: serde_json::json!({"path":"out.txt"}),
             reason: "writes a file".to_string(),
         }

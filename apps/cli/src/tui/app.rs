@@ -1195,7 +1195,7 @@ mod tests {
     use crate::tui::reducer::reduce;
     use crate::tui::state::{InteractionKeyMode, InteractionModalView, RunLifecycle, TuiState};
     use rove_app_bootstrap::AppConfig;
-    use rove_app_bootstrap::default_tool_registry;
+    use rove_app_bootstrap::tool_registry;
     use rove_models::ModelError;
     use rove_models::fake::{FakeModelClient, FakeTurn};
     use rove_models::{ModelClient, ModelClientId, ModelEvent};
@@ -1365,7 +1365,7 @@ mod tests {
             TerminalInteractionRequest::Approval {
                 request: ToolApprovalRequest {
                     call_id,
-                    name: "fs_write".to_string(),
+                    name: "write_file".to_string(),
                     args: serde_json::json!({"path":"out.txt"}),
                     reason: "writes a file".to_string(),
                 },
@@ -1392,7 +1392,7 @@ mod tests {
     fn approval_view(call_id: CallId) -> InteractionModalView {
         InteractionModalView::Approval {
             call_id,
-            name: "fs_write".to_string(),
+            name: "write_file".to_string(),
             args: serde_json::json!({"path":"out.txt"}),
             reason: "writes a file".to_string(),
         }
@@ -1572,7 +1572,7 @@ mod tests {
             .approval_provider
             .begin_approval(ToolApprovalRequest {
                 call_id: CallId::new(),
-                name: "fs_write".to_string(),
+                name: "write_file".to_string(),
                 args: serde_json::json!({"path":"old.txt"}),
                 reason: "old run".to_string(),
             })
@@ -1602,7 +1602,7 @@ mod tests {
                 vec![
                     FakeTurn::ToolUse {
                         id: "write-1".to_string(),
-                        name: "fs_write".to_string(),
+                        name: "write_file".to_string(),
                         args: serde_json::json!({
                             "path": "blocked.txt",
                             "content": "must not be written"
@@ -1611,7 +1611,7 @@ mod tests {
                     FakeTurn::Text("finished".to_string()),
                 ],
             )),
-            default_tool_registry(&workspace),
+            tool_registry(&workspace),
             ContextManager::new("You are a test agent.".to_string()),
             EngineConfig {
                 max_steps: 3,
@@ -1710,7 +1710,7 @@ mod tests {
             .approval_provider
             .begin_approval(ToolApprovalRequest {
                 call_id,
-                name: "fs_write".to_string(),
+                name: "write_file".to_string(),
                 args: serde_json::json!({"path":"approved.txt"}),
                 reason: "writes a file".to_string(),
             })
@@ -1746,7 +1746,7 @@ mod tests {
                 &updates_tx,
                 RunViewUpdate::ToolCallApprovalNeeded {
                     call_id,
-                    name: "fs_write".to_string(),
+                    name: "write_file".to_string(),
                     args: serde_json::json!({"path":"approved.txt"}),
                     reason: "writes a file".to_string(),
                 },
@@ -1846,7 +1846,7 @@ mod tests {
             .approval_provider
             .begin_approval(ToolApprovalRequest {
                 call_id,
-                name: "fs_write".to_string(),
+                name: "write_file".to_string(),
                 args: serde_json::json!({"path":"approved.txt"}),
                 reason: "writes a file".to_string(),
             })
@@ -1866,7 +1866,7 @@ mod tests {
                 &updates_tx,
                 RunViewUpdate::ToolCallApprovalNeeded {
                     call_id,
-                    name: "fs_write".to_string(),
+                    name: "write_file".to_string(),
                     args: serde_json::json!({"path":"approved.txt"}),
                     reason: "writes a file".to_string(),
                 },
@@ -2110,7 +2110,7 @@ mod tests {
             .approval_provider
             .begin_approval(ToolApprovalRequest {
                 call_id: approval_id,
-                name: "fs_write".to_string(),
+                name: "write_file".to_string(),
                 args: serde_json::json!({"path":"blocked.txt"}),
                 reason: "writes a file".to_string(),
             })
@@ -2140,7 +2140,7 @@ mod tests {
             updates_tx
                 .send(RunViewUpdate::ToolCallApprovalNeeded {
                     call_id: approval_id,
-                    name: "fs_write".to_string(),
+                    name: "write_file".to_string(),
                     args: serde_json::json!({"path":"blocked.txt"}),
                     reason: "writes a file".to_string(),
                 })
@@ -2203,7 +2203,7 @@ mod tests {
                 entered: Arc::clone(&entered),
                 release: Arc::clone(&release),
             }),
-            default_tool_registry(&workspace),
+            tool_registry(&workspace),
             ContextManager::new("You are a test agent.".to_string()),
             EngineConfig {
                 max_steps: 1,
@@ -2230,7 +2230,7 @@ mod tests {
             .approval_provider
             .begin_approval(ToolApprovalRequest {
                 call_id: CallId::new(),
-                name: "fs_write".to_string(),
+                name: "write_file".to_string(),
                 args: serde_json::json!({"path":"stale.txt"}),
                 reason: "belongs to an earlier run".to_string(),
             })
@@ -2310,7 +2310,7 @@ mod tests {
             .approval_provider
             .begin_approval(ToolApprovalRequest {
                 call_id,
-                name: "fs_write".to_string(),
+                name: "write_file".to_string(),
                 args: serde_json::json!({"path":"cancelled.txt"}),
                 reason: "writes a file".to_string(),
             })
@@ -2330,7 +2330,7 @@ mod tests {
                 &updates_tx,
                 RunViewUpdate::ToolCallApprovalNeeded {
                     call_id,
-                    name: "fs_write".to_string(),
+                    name: "write_file".to_string(),
                     args: serde_json::json!({"path":"cancelled.txt"}),
                     reason: "writes a file".to_string(),
                 },
@@ -2601,7 +2601,7 @@ mod tests {
             .approval_provider
             .begin_approval(ToolApprovalRequest {
                 call_id: CallId::new(),
-                name: "fs_write".to_string(),
+                name: "write_file".to_string(),
                 args: serde_json::json!({"path":"must-not-exist.txt"}),
                 reason: "writes a file".to_string(),
             })

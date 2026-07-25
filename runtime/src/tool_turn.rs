@@ -87,7 +87,7 @@ impl<'a> ToolTurnContext<'a> {
         self.approval_policy == ApprovalPolicy::Ask
             && self
                 .registry
-                .schema(tool_name)
+                .descriptor(tool_name)
                 .map(|schema| schema.destructive)
                 .unwrap_or(false)
     }
@@ -100,7 +100,7 @@ impl<'a> ToolTurnContext<'a> {
         if self.approval_policy == ApprovalPolicy::Ask
             && self
                 .registry
-                .schema(tool_name)
+                .descriptor(tool_name)
                 .map(|schema| schema.destructive)
                 .unwrap_or(false)
             && approval_decision == ApprovalDecision::Approve
@@ -122,7 +122,7 @@ impl<'a> ToolTurnContext<'a> {
     }
 
     fn tool_is_parallel_safe(&self, tool_name: &str) -> bool {
-        let Ok(schema) = self.registry.schema(tool_name) else {
+        let Ok(schema) = self.registry.descriptor(tool_name) else {
             return false;
         };
         !schema.destructive && schema.parallel_safe

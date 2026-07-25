@@ -225,7 +225,7 @@ CLI/API/benchmark request
 
 When tracing a bug, follow both:
 
-1. model/tool mechanics in `core/src/`, runtime contracts in `runtime/src/`, and persistent control flow in `src/core/`;
+1. model/tool mechanics in `core/src/` and durable product control flow in `runtime/src/`;
 2. canonical events and persisted state implementation in `runtime/src/`.
 
 Do not debug only from the final assistant text. It is a projection, not the

@@ -87,20 +87,11 @@ pub enum StreamEvent {
         attempt: StepAttempt,
     },
 
-    /// A persisted plan step completed.
-    PlanStepCompleted { step: PlanStep, index: usize },
-
-    /// A persisted plan step failed but the run may continue or retry.
-    PlanStepFailed {
-        step: PlanStep,
-        index: usize,
-        reason: String,
-    },
-
     /// Canonical terminal result for one planned step attempt.
     ///
-    /// This is the append-only lifecycle fact.  The legacy plan-step
-    /// completed/failed events remain derived compatibility notifications.
+    /// This is the append-only lifecycle fact used by resume, UI projection,
+    /// and stream consumers. Compatibility `plan_step_completed` /
+    /// `plan_step_failed` dual-fire events are intentionally not emitted.
     StepResult { record: Box<StepRecord> },
 
     /// Rule-first lifecycle decision for one terminal step record.
@@ -147,8 +138,6 @@ impl StreamEvent {
             Self::InputNeeded { .. } => "input_needed",
             Self::PlanCreated { .. } => "plan_created",
             Self::PlanStepStarted { .. } => "plan_step_started",
-            Self::PlanStepCompleted { .. } => "plan_step_completed",
-            Self::PlanStepFailed { .. } => "plan_step_failed",
             Self::StepResult { .. } => "step_result",
             Self::PlanDecision { .. } => "plan_decision",
             Self::PlanRevised { .. } => "plan_revised",

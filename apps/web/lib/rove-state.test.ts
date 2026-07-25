@@ -318,7 +318,10 @@ describe("workbenchReducer", () => {
     });
 
     expect(replayedWithNewSequence.stepRecords).toEqual([event.record]);
-    expect(replayedWithNewSequence.trace).toHaveLength(0);
+    // First delivery projects one visible step_result row; replay must not
+    // duplicate either the structured record or the trace entry.
+    expect(replayedWithNewSequence.trace).toHaveLength(1);
+    expect(replayedWithNewSequence.trace[0]?.label).toBe("step_result");
   });
 
   it("hydrates recoverable UI state from sequenced job state events", () => {
@@ -394,7 +397,7 @@ describe("workbenchReducer", () => {
         pending_approvals: [
           {
             call_id: "call-2",
-            name: "fs_write",
+            name: "write_file",
             args: { path: "notes.md" },
             reason: "destructive tool requires explicit approval",
           },
@@ -561,7 +564,7 @@ describe("workbenchReducer", () => {
       {
         type: "tool_call_approval_needed",
         call_id: "call-2",
-        name: "fs_write",
+        name: "write_file",
         args: { path: "notes.md" },
         reason: "destructive tool requires explicit approval",
       },
@@ -607,15 +610,26 @@ describe("workbenchReducer", () => {
         step: { id: "1", title: "Read", done: false },
       },
       {
-        type: "plan_step_completed",
-        index: 0,
-        step: { id: "1", title: "Read", done: true },
-      },
-      {
-        type: "plan_step_failed",
-        index: 0,
-        step: { id: "1", title: "Read", done: false },
-        reason: "retry",
+        type: "step_result",
+        record: {
+          record_id: "record-1",
+          plan_id: "plan-1",
+          plan_revision_id: "revision-0",
+          step_id: "1",
+          attempt: 1,
+          status: "succeeded",
+          started_at: "2026-07-20T00:00:00Z",
+          finished_at: "2026-07-20T00:00:01Z",
+          summary: "Read",
+          completion_basis: "model_conclusion",
+          model_turns_used: 1,
+          tool_calls_used: 0,
+          token_usage: {
+            prompt_tokens: 1,
+            completion_tokens: 1,
+            total_tokens: 2,
+          },
+        },
       },
       {
         type: "prompt_compacted",
@@ -665,7 +679,7 @@ describe("workbenchReducer", () => {
     expect(state.pendingInputs).toEqual([
       { input_id: "input-1", prompt: "Continue?" },
     ]);
-    expect(state.plan?.current_step).toBe(0);
+    expect(state.plan?.current_step).toBe(1);
     expect(state.trace.map((entry) => entry.label)).toEqual(
       expect.arrayContaining([
         "run_started",
@@ -677,8 +691,7 @@ describe("workbenchReducer", () => {
         "input_needed",
         "plan_created",
         "plan_step_started",
-        "plan_step_completed",
-        "plan_step_failed",
+        "step_result",
         "prompt_compacted",
         "run_completed",
       ]),
@@ -691,7 +704,7 @@ describe("workbenchReducer", () => {
       event: {
         type: "tool_call_approval_needed",
         call_id: "call-1",
-        name: "fs_write",
+        name: "write_file",
         args: { path: "foo.txt" },
         reason: "destructive tool requires explicit approval",
       },
@@ -716,7 +729,7 @@ describe("workbenchReducer", () => {
       event: {
         type: "tool_call_approval_needed",
         call_id: "call-1",
-        name: "fs_write",
+        name: "write_file",
         args: { path: "foo.txt" },
         reason: "destructive tool requires explicit approval",
       },
@@ -742,7 +755,7 @@ describe("workbenchReducer", () => {
       event: {
         type: "tool_call_approval_needed",
         call_id: "call-2",
-        name: "shell",
+        name: "run_shell",
         args: { command: "rm -rf /tmp/test" },
         reason: "destructive tool requires explicit approval",
       },
@@ -753,7 +766,7 @@ describe("workbenchReducer", () => {
       status: "waiting",
       pendingApproval: {
         call_id: "call-2",
-        name: "shell",
+        name: "run_shell",
         reason: "destructive tool requires explicit approval",
       },
     });
@@ -824,7 +837,7 @@ describe("workbenchReducer", () => {
         pending_approvals: [
           {
             call_id: "call-1",
-            name: "fs_write",
+            name: "write_file",
             args: { path: "notes.md" },
             reason: "destructive tool requires explicit approval",
           },
@@ -850,7 +863,7 @@ describe("workbenchReducer", () => {
     ]);
     expect(state.tools[0]).toMatchObject({
       id: "call-1",
-      name: "fs_write",
+      name: "write_file",
       status: "waiting",
       pendingApproval: {
         call_id: "call-1",
@@ -865,7 +878,7 @@ describe("workbenchReducer", () => {
       event: {
         type: "tool_call_approval_needed",
         call_id: "call-1",
-        name: "fs_write",
+        name: "write_file",
         args: { path: "notes.md" },
         reason: "destructive tool requires explicit approval",
       },

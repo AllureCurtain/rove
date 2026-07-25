@@ -91,7 +91,7 @@ pub struct Usage {
 
 /// Provider-neutral tool schema sent to a model.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolSchema {
+pub struct ModelToolSchema {
     pub name: String,
     pub description: String,
     pub parameters: serde_json::Value,

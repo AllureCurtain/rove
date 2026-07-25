@@ -22,7 +22,7 @@ first-party AppConfig and product assembly live in `apps/bootstrap`; product app
 
 ```text
 CLI / TUI / API / Web
-    -> root Engine compatibility re-export
+    -> rove-app-bootstrap::build_engine / tool_registry
         -> rove-runtime Engine / planning / tool turns / hooks / Executor
         -> rove-runtime context / memory / identity / execution / state / events
         -> rove-core model turn / ToolRegistry contracts
@@ -41,6 +41,16 @@ StateStore
     -> .rove/runs/<run_id>/*
     -> .rove/state.sqlite
 ```
+
+Product shells assemble and run `rove-runtime::Engine`. `rove-core::Agent` is
+embed-only for libraries and tests; it is not the product default entry.
+
+| Layer | Default consumer | Role |
+|---|---|---|
+| `rove-models` | everyone below | Wire protocols, `ModelClient`, routing |
+| `rove-core` | libraries / tests | Embeddable `Agent`, tool contracts |
+| `rove-runtime` | CLI / API / Web / Bench | Durable `Engine`, plan, state, memory, tool impls |
+| `apps/*` | end users | Product shells |
 
 The interface layers are shells. They detect the workspace, load a config snapshot, construct tools and providers, then consume the same engine events.
 
@@ -62,9 +72,9 @@ cannot supply trustworthy interaction events fail closed.
 5. `Engine::run` emits `StreamEvent` values while model events, tool calls,
    approvals, inputs, planner state, and cancellation are processed. Planned
    attempts carry stable plan/revision/attempt identity and end with canonical
-   `step_result` and `plan_decision` events before compatibility plan-step
-   completion/failure events. Replacement work emits a linked
-   `plan_revised` event rather than another initial-plan event.
+   `step_result` and `plan_decision` events. Replacement work emits a linked
+   `plan_revised` event rather than another initial-plan event. Compatibility
+   dual-fire `plan_step_completed` / `plan_step_failed` events are not emitted.
 6. `TraceWriter` writes append-only trace events. `RunArtifactRecorder`
    materializes step records, plan decisions, immutable revisions, and the
    active attempt into task state, stores bounded lifecycle metadata in the
@@ -77,8 +87,8 @@ cannot supply trustworthy interaction events fail closed.
 - Provider adapters normalize provider-specific streams into `ModelEvent`.
 - `rove-models` owns the normalized message/tool/usage/error protocol, provider
   adapters, routing, health, and Fake Model without depending on another local
-  project package. The root facade re-exports these contracts while
-  AppConfig-driven construction is the product assembly path (named profiles only).
+  project package. Product assembly builds clients through
+  `apps/bootstrap` (`AppConfig` + named profiles only).
 - `rove-core` owns the in-memory `Agent`, `AgentEvent`, action/parser and model
   turn, cancellation/control, `Tool`/`ToolRegistry`, `ToolDescriptor`, and
   runtime-neutral policy hook. It depends only on `rove-models` and creates no
@@ -93,7 +103,7 @@ cannot supply trustworthy interaction events fail closed.
   post-run hooks, planning/step coordination, durable event translation, the
   persistent `Engine` facade, and state/trace/artifact/SQLite/repair/resume
   services. Its only local dependencies are `rove-models` and `rove-core`.
-- Model-visible `rove_models::ToolSchema` is separate from operational
+- Model-visible `rove_models::ModelToolSchema` is separate from operational
   `rove_core::ToolDescriptor`; provider payloads receive only the model schema.
 - Local built-in tool implementations, runtime-specific Workspace, Memory,
   policy and input invocation services, MCP proxy, `Executor`, hooks, tool

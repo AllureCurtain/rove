@@ -231,30 +231,33 @@ impl RunArtifactRecorder {
                         .position(|saved_step| !saved_step.done)
                         .unwrap_or(active_plan.steps.len());
                 }
-                self.write_snapshot(state_store).await;
-            }
-            StreamEvent::PlanStepCompleted { step, .. } => {
-                if let Some(active_plan) = self.plan.as_mut()
-                    && let Some(saved_step) = active_plan
-                        .steps
-                        .iter_mut()
-                        .find(|saved_step| saved_step.id == step.id)
-                {
-                    saved_step.done = true;
-                    active_plan.current_step = active_plan
-                        .steps
-                        .iter()
-                        .position(|saved_step| !saved_step.done)
-                        .unwrap_or(active_plan.steps.len());
+                if matches!(
+                    record.status,
+                    StepRecordStatus::Failed
+                        | StepRecordStatus::Blocked
+                        | StepRecordStatus::Interrupted
+                        | StepRecordStatus::BudgetExhausted
+                ) {
+                    let step_title = self
+                        .plan
+                        .as_ref()
+                        .and_then(|plan| {
+                            plan.steps
+                                .iter()
+                                .find(|step| step.id == record.step_id)
+                                .map(|step| step.title.clone())
+                        })
+                        .unwrap_or_else(|| record.step_id.clone());
+                    let reason = record
+                        .safe_error_summary
+                        .as_deref()
+                        .unwrap_or(record.summary.as_str());
+                    self.history
+                        .push(Message::user(planned_step_failure_message(
+                            &step_title,
+                            reason,
+                        )));
                 }
-                self.write_snapshot(state_store).await;
-            }
-            StreamEvent::PlanStepFailed { step, reason, .. } => {
-                self.history
-                    .push(Message::user(planned_step_failure_message(
-                        &step.title,
-                        reason,
-                    )));
                 self.write_snapshot(state_store).await;
             }
             StreamEvent::PromptCompacted { summary, state } => {

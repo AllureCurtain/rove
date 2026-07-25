@@ -26,8 +26,8 @@ use rove_runtime::tools::memory::SaveMemoryTool;
 use rove_runtime::tools::runtime_context::runtime_tool_context;
 use rove_runtime::tools::shell::{ShellPolicy, ShellTool};
 use rove_runtime::types::{
-    ApprovalPolicy, CallId, Message, ModelToolSchema, RunId, SessionId, ToolContext, ToolSchema,
-    Usage,
+    ApprovalPolicy, CallId, Message, ModelToolSchema, RunId, SessionId, ToolContext,
+    ToolDescriptor, Usage,
 };
 use rove_runtime::workspace::Workspace;
 use tokio_util::sync::CancellationToken;
@@ -78,8 +78,8 @@ struct NestedFixtureTool {
 
 #[async_trait]
 impl Tool for NestedFixtureTool {
-    fn schema(&self) -> ToolSchema {
-        ToolSchema {
+    fn schema(&self) -> ToolDescriptor {
+        ToolDescriptor {
             name: "nested_fixture".to_string(),
             description: "Test-only nested schema fixture.".to_string(),
             parameters: serde_json::json!({
@@ -123,7 +123,7 @@ impl Tool for NestedFixtureTool {
 }
 
 #[tokio::test]
-async fn fs_write_records_diff_metadata_in_report() {
+async fn write_file_records_diff_metadata_in_report() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
     let state_store = StateStore::new(&workspace.state_dir);
@@ -136,8 +136,8 @@ async fn fs_write_records_diff_metadata_in_report() {
     registry.register(Box::new(FsWriteTool::new(workspace.root.clone())));
     let engine = Engine::with_workspace(
         Box::new(FakeModelClient::new(vec![
-            r#"{"tool":"fs_write","args":{"path":"note.txt","content":"hello"}}"#.to_string(),
-            r#"{"tool":"fs_write","args":{"path":"note.txt","content":"goodbye"}}"#.to_string(),
+            r#"{"tool":"write_file","args":{"path":"note.txt","content":"hello"}}"#.to_string(),
+            r#"{"tool":"write_file","args":{"path":"note.txt","content":"goodbye"}}"#.to_string(),
             "done".to_string(),
         ])),
         registry,
@@ -172,7 +172,7 @@ async fn fs_write_records_diff_metadata_in_report() {
 }
 
 #[tokio::test]
-async fn fs_read_rejects_parent_traversal() {
+async fn read_file_rejects_parent_traversal() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
     let outside = tmp.path().parent().unwrap().join("outside-rove-test.txt");
@@ -185,7 +185,7 @@ async fn fs_read_rejects_parent_traversal() {
     let err = executor
         .run(
             &ctx,
-            "fs_read",
+            "read_file",
             serde_json::json!({"path": "../outside-rove-test.txt"}),
             CallId::new(),
         )
@@ -200,7 +200,7 @@ async fn fs_read_rejects_parent_traversal() {
 }
 
 #[tokio::test]
-async fn fs_read_rejects_symlink_escape_when_supported() {
+async fn read_file_rejects_symlink_escape_when_supported() {
     let (_tmp, workspace, outside_file) = workspace_with_outside_file();
     let link = workspace.root.join("linked-outside.txt");
     if !create_file_symlink(&outside_file, &link) {
@@ -215,7 +215,7 @@ async fn fs_read_rejects_symlink_escape_when_supported() {
     let err = executor
         .run(
             &ctx,
-            "fs_read",
+            "read_file",
             serde_json::json!({"path": "linked-outside.txt"}),
             CallId::new(),
         )
@@ -229,7 +229,7 @@ async fn fs_read_rejects_symlink_escape_when_supported() {
 }
 
 #[tokio::test]
-async fn fs_write_rejects_existing_symlink_escape_when_supported() {
+async fn write_file_rejects_existing_symlink_escape_when_supported() {
     let (_tmp, workspace, outside_file) = workspace_with_outside_file();
     let link = workspace.root.join("linked-outside.txt");
     if !create_file_symlink(&outside_file, &link) {
@@ -244,7 +244,7 @@ async fn fs_write_rejects_existing_symlink_escape_when_supported() {
     let err = executor
         .run(
             &ctx,
-            "fs_write",
+            "write_file",
             serde_json::json!({"path": "linked-outside.txt", "content": "changed"}),
             CallId::new(),
         )
@@ -259,7 +259,7 @@ async fn fs_write_rejects_existing_symlink_escape_when_supported() {
 }
 
 #[tokio::test]
-async fn fs_write_still_allows_new_normal_files() {
+async fn write_file_still_allows_new_normal_files() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
     let mut registry = ToolRegistry::new();
@@ -270,7 +270,7 @@ async fn fs_write_still_allows_new_normal_files() {
     executor
         .run(
             &ctx,
-            "fs_write",
+            "write_file",
             serde_json::json!({"path": "nested/note.txt", "content": "inside"}),
             CallId::new(),
         )
@@ -284,7 +284,7 @@ async fn fs_write_still_allows_new_normal_files() {
 }
 
 #[tokio::test]
-async fn shell_timeout_returns_structured_tool_error() {
+async fn run_shell_timeout_returns_structured_tool_error() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
     let command = if cfg!(windows) {
@@ -306,7 +306,7 @@ async fn shell_timeout_returns_structured_tool_error() {
     let err = executor
         .run(
             &ctx,
-            "shell",
+            "run_shell",
             serde_json::json!({"command": command}),
             CallId::new(),
         )
@@ -317,7 +317,7 @@ async fn shell_timeout_returns_structured_tool_error() {
 }
 
 #[tokio::test]
-async fn shell_output_is_truncated_and_marked() {
+async fn run_shell_output_is_truncated_and_marked() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
     let command = if cfg!(windows) {
@@ -339,7 +339,7 @@ async fn shell_output_is_truncated_and_marked() {
     let result = executor
         .run(
             &ctx,
-            "shell",
+            "run_shell",
             serde_json::json!({"command": command}),
             CallId::new(),
         )

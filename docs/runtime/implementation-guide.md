@@ -2,12 +2,10 @@
 
 This guide is for maintainers who need to understand, debug, or extend the current implementation. It describes what exists in the codebase today. Product intent and historical design rationale live in the top-level docs; the current runtime source of truth remains this `docs/runtime/` directory.
 
-The root manifest is a modular resolver-3 Cargo Workspace with
-the root `rove` compatibility package as default member and the independent
-`rove-models`, `rove-core`, and foundational `rove-runtime` packages as
-extracted lower layers. Use Workspace-wide commands for full gates. Persistent
-coordination/state services and app implementation paths still refer to the
-root package until their later extraction slices are complete.
+The root manifest is a modular resolver-3 Cargo Workspace whose default
+member is `apps/cli`, with independent packages `rove-models`, `rove-core`,
+`rove-runtime`, `rove-app-bootstrap`, `rove-cli`, `rove-api`, `rove-bench`, and
+`rove-integration-tests`. Use Workspace-wide commands for full gates.
 
 ## 1. Runtime Shape
 
@@ -16,36 +14,41 @@ offers REPL, exec, and optional full-screen TUI modes:
 
 ```text
 CLI (REPL / exec / TUI) / API / Web
-    -> root Engine compatibility facade
+    -> apps/bootstrap build_engine / tool_registry
         -> ContextManager
-        -> rove-runtime identity / task / execution / workspace contracts
+        -> rove-runtime Engine / identity / task / execution / workspace contracts
         -> rove-core model turn / ToolRegistry
             -> rove-models ModelClient / RoutingModelClient
         -> runtime Executor / approval / input
         -> Memory loaders and hooks
         -> StateStore
 
+External embedding
+    -> rove-core::Agent
+        -> rove-models::ModelClient
+        -> custom ToolRegistry / ToolPolicy
+        -> in-memory AgentEvent
+
 StateStore
     -> .rove/runs/<run_id>/*
     -> .rove/state.sqlite
 ```
 
-The interface layers construct the runtime and consume `StreamEvent` values.
-Core code does not depend on CLI, TUI, API, or Web modules.
+Product shells use `runtime::Engine` via `build_engine`. `core::Agent` is
+embed-only. The interface layers construct the runtime and consume `StreamEvent`
+values. Core code does not depend on CLI, TUI, API, or Web modules.
 
 Important entry points:
 
 | Area | Files |
 |---|---|
-| Library module tree | `src/lib.rs` |
-| CLI binary | `src/main.rs`, `src/interfaces/cli/*` |
-| Full-screen TUI mode | `src/interfaces/tui/*`, `src/interfaces/terminal/*` |
-| API binary | `src/bin/rove-api.rs`, `src/interfaces/api/mod.rs` |
+| CLI binary | `apps/cli/src/main.rs`, `apps/cli/src/cli/*` |
+| Full-screen TUI mode | `apps/cli/src/tui/*`, `apps/cli/src/terminal/*` |
+| API binary | `apps/api` |
 | Web workbench | `apps/web/` |
 | In-memory Agent and tool contracts | `core/src/*` |
 | Persistent runtime services | `runtime/src/*` |
 | Persistent Engine and coordination | `runtime/src/engine.rs`, `runtime/src/{planner,plan_loop,step_runner,run_loop,tool_turn,model_turn,plan_evaluator}.rs` |
-| Compatibility Engine re-exports | `src/core/*` |
 | State artifacts and SQLite index | `runtime/src/state/*` |
 | Model protocol and providers | `models/src/*` |
 | Product provider assembly | `apps/bootstrap/src/factory.rs` |
@@ -54,7 +57,6 @@ Important entry points:
 | MCP transport/proxy | `runtime/src/tools/mcp_proxy.rs` |
 | Memory/context/compaction services | `runtime/src/memory/*`, `runtime/src/context.rs`, `runtime/src/compaction.rs` |
 | Tool executor and hooks | `runtime/src/executor.rs`, `runtime/src/hooks/` |
-| Transitional hook re-exports | `src/hooks/` |
 
 ## 2. Workspaces
 
@@ -126,8 +128,7 @@ Relevant code:
 
 - `runtime/src/workspace.rs`
 - `runtime/src/boundary.rs`
-- compatibility re-exports in `src/core/workspace.rs` and `src/core/boundary.rs`
-- `src/config.rs`
+- `apps/bootstrap/src/config.rs`
 
 ## 3. Configuration
 
@@ -191,7 +192,7 @@ runtime construction.
 
 High-level flow in `src/main.rs`:
 
-1. Parse `Args` from `src/interfaces/cli/args.rs`.
+1. Parse `Args` from `apps/cli/src/cli/args.rs`.
 2. If `Args::is_sync_fast_path()` is true, run it without creating a Tokio runtime:
    - `dump-config`
 3. Create a Tokio runtime for async commands and normal runs.
@@ -397,26 +398,26 @@ cancels that run and keeps the REPL process alive.
 Relevant code:
 
 - `src/main.rs`
-- `src/interfaces/cli/args.rs`
-- `src/interfaces/cli/oneshot.rs`
-- `src/interfaces/cli/repl.rs`
-- `src/interfaces/cli/sessions.rs`
-- `src/interfaces/cli/state.rs`
-- `src/interfaces/cli/index.rs`
-- `src/interfaces/tui/action.rs`
-- `src/interfaces/tui/app.rs`
-- `src/interfaces/tui/effect.rs`
-- `src/interfaces/tui/keymap.rs`
-- `src/interfaces/tui/providers.rs`
-- `src/interfaces/tui/state.rs`
-- `src/interfaces/tui/reducer.rs`
-- `src/interfaces/tui/render.rs`
-- `src/interfaces/tui/sanitize.rs`
-- `src/interfaces/tui/terminal.rs`
-- `src/interfaces/tui/widgets/*`
-- `src/interfaces/terminal/interaction.rs`
-- `src/interfaces/terminal/run.rs`
-- `src/interfaces/terminal/view.rs`
+- `apps/cli/src/cli/args.rs`
+- `apps/cli/src/cli/oneshot.rs`
+- `apps/cli/src/cli/repl.rs`
+- `apps/cli/src/cli/sessions.rs`
+- `apps/cli/src/cli/state.rs`
+- `apps/cli/src/cli/index.rs`
+- `apps/cli/src/tui/action.rs`
+- `apps/cli/src/tui/app.rs`
+- `apps/cli/src/tui/effect.rs`
+- `apps/cli/src/tui/keymap.rs`
+- `apps/cli/src/tui/providers.rs`
+- `apps/cli/src/tui/state.rs`
+- `apps/cli/src/tui/reducer.rs`
+- `apps/cli/src/tui/render.rs`
+- `apps/cli/src/tui/sanitize.rs`
+- `apps/cli/src/tui/terminal.rs`
+- `apps/cli/src/tui/widgets/*`
+- `apps/cli/src/terminal/interaction.rs`
+- `apps/cli/src/terminal/run.rs`
+- `apps/cli/src/terminal/view.rs`
 - `runtime/src/state/index.rs`
 - `runtime/src/state/resume.rs`
 - `runtime/src/state/store.rs`
@@ -476,8 +477,8 @@ Historical run discovery is read-only. `/runs` returns recent run identity, stat
 Relevant code:
 
 - `src/bin/rove-api.rs`
-- `src/interfaces/api/mod.rs`
-- `src/interfaces/api/security.rs`
+- `apps/api/src/lib.rs`
+- `apps/api/src/security.rs`
 
 ## 6. Web Workbench Path
 
@@ -555,7 +556,7 @@ The core type model is centered on explicit IDs and serializable runtime state:
 | `StepRecord` | Append-only terminal fact for one planned attempt |
 | `StepLedgerState` | Materialized ledger and active-attempt projection |
 | `Message` | Provider-facing conversation message; owned by `rove-models` |
-| `rove_models::ToolSchema` | Model-visible name, description, and input schema |
+| `rove_models::ModelToolSchema` | Model-visible name, description, and input schema |
 | `rove_core::ToolDescriptor` | Operational schema plus destructive/parallel/capability metadata |
 | `RunStatus` | API/job status |
 | `TerminationReason` | Engine completion reason |
@@ -566,7 +567,6 @@ Relevant code:
 - `core/src/types.rs`
 - `runtime/src/types.rs`
 - `runtime/src/execution.rs`
-- compatibility re-exports in `src/core/types.rs` and `src/core/execution.rs`
 
 ## 8. Stream Events
 
@@ -585,8 +585,6 @@ Current event variants:
 - `input_needed`
 - `plan_created`
 - `plan_step_started`
-- `plan_step_completed`
-- `plan_step_failed`
 - `step_result`
 - `plan_decision`
 - `plan_revised`
@@ -610,8 +608,8 @@ text.
 
 Adding a new event requires checking:
 
-- CLI rendering in `src/interfaces/cli/oneshot.rs`
-- API SSE/event persistence in `src/interfaces/api/mod.rs` and `runtime/src/state/index.rs`
+- CLI rendering in `apps/cli/src/cli/oneshot.rs`
+- API SSE/event persistence in `apps/api/src/lib.rs` and `runtime/src/state/index.rs`
 - Web types and reducer in `apps/web/lib/rove-types.ts` and `apps/web/lib/rove-state.ts`
 - artifact recording in `runtime/src/state/artifacts.rs` if it affects resume/report state
 
@@ -630,8 +628,7 @@ Workspace/path safety, runtime identity, approval/input contracts,
 context/compaction, memory, events, state services, the tool `Executor`
 pipeline, hooks, runtime-specific tool turns, planning/run coordination, and
 durable event translation live in `rove-runtime`; the normalized model turn and
-action parser live in `rove-core`. Root `src/core/*` paths remain compatibility
-re-exports. Product registry assembly and first-party
+action parser live in `rove-core`. Product registry assembly and first-party
 `AppConfig` live in product bootstrap and app shells.
 
 The high-level run flow:
@@ -653,8 +650,7 @@ The high-level run flow:
    - collect model-turn, tool-call, mutation, and token metrics from emitted
      events;
    - emit a terminal `step_result`, evaluate it deterministically, and emit one
-     correlated `plan_decision` before the compatibility
-     `PlanStepCompleted` / `PlanStepFailed` event;
+     correlated `plan_decision`;
    - continue, finish with a typed reason, or emit `plan_revised` after an
      explicitly recoverable terminal failure;
    - repair malformed/recoverable tool output within the step before creating
@@ -698,7 +694,6 @@ Plan mutation semantics:
 Relevant code:
 
 - `runtime/src/engine.rs`
-- `src/core/engine.rs` (compatibility re-export)
 - `core/src/agent.rs`
 - `core/src/model_turn.rs`
 - `core/src/parser.rs`
@@ -768,7 +763,7 @@ All providers implement:
 
 ```rust
 trait ModelClient {
-    fn stream(&self, messages: &[Message], tools: &[rove_models::ToolSchema])
+    fn stream(&self, messages: &[Message], tools: &[rove_models::ModelToolSchema])
         -> BoxStream<'_, Result<ModelEvent, ModelError>>;
 
     fn model_id(&self) -> &str;
@@ -853,28 +848,28 @@ Relevant code:
 Tools implement the `rove-core` `Tool` contract and are registered in its
 `ToolRegistry`. The registry projects operational `ToolDescriptor` values into
 model-visible schemas and dispatches validated execution by name. Local
-built-in implementations and invocation adapters live in
-`runtime/src/tools/`; root compatibility modules re-export their public API.
+built-in implementations and invocation adapters live in `runtime/src/tools/`.
+Product shells assemble the default registry through
+`apps/bootstrap::tool_registry` / `tool_registry_with_mcp`.
 
 Current built-in tools:
 
 | Tool | Purpose |
 |---|---|
-| `echo` | Deterministic smoke/demo tool |
-| `fs_read` | Read UTF-8 workspace file |
-| `fs_write` | Write UTF-8 workspace file |
-| `shell` | Run shell command in workspace |
+| `read_file` | Read UTF-8 workspace file |
+| `write_file` | Write UTF-8 workspace file |
+| `run_shell` | Run shell command in workspace |
 | `save_memory` | Save durable memory topic |
-| `update_memory_index` | Rebuild durable memory index |
-| `read_memory_topic` | Read durable memory topic |
+| `reindex_memory` | Rebuild durable memory index |
+| `read_memory` | Read durable memory topic |
 | `request_input` | Ask user/interface for mid-run input |
 
 
 | `mcp__<server>__<tool>` | MCP-proxied remote tools |
 
 CLI and API construct runtime tools through the shared async
-`runtime_tool_registry(&Workspace, ShellPolicy, mcp_config_path)` builder. That
-builder registers built-ins through `default_tool_registry_with_shell_policy`
+`tool_registry_with_mcp(&Workspace, ShellPolicy, mcp_config_path)` builder. That
+builder registers built-ins through `tool_registry_with_shell_policy`
 and then loads configured MCP tools. Root-bound tools receive the workspace root
 at construction. Runtime-specific Workspace, Memory paths, approval policy, and
 input provider are attached to the invocation through `RuntimeToolServices`;
@@ -894,9 +889,9 @@ schema lookup -> argument validation -> pre-tool hooks -> permission -> execute 
 
 Argument validation supports the JSON Schema subset used by built-in tools: object, array, string, number, integer, boolean, and null type checks; required fields; enum values; nested properties; array `items`, `minItems`, and `maxItems`; numeric `minimum` and `maximum`; string `minLength` and `maxLength`; and `additionalProperties: false`. Validation failures preserve `ToolError::InvalidArgs` and happen before tool execution.
 
-Filesystem tools resolve paths through `runtime/src/boundary.rs` (re-exported by `src/core/boundary.rs`). Reads canonicalize the final target; writes canonicalize existing targets or the nearest existing ancestor for new files. Both paths reject absolute paths, lexical workspace escapes, and symlink/reparse-point escapes that resolve outside the workspace.
+Filesystem tools resolve paths through `runtime/src/boundary.rs`. Reads canonicalize the final target; writes canonicalize existing targets or the nearest existing ancestor for new files. Both paths reject absolute paths, lexical workspace escapes, and symlink/reparse-point escapes that resolve outside the workspace.
 
-`fs_write` returns structured mutation metadata for deterministic file writes. The metadata includes path, operation type, and a textual diff; it is exposed on `ToolCallCompleted.result.mutations` and persisted to `report.json` as `tool_mutations`. Shell commands are bounded by policy and return structured stdout/stderr/exit metadata, but shell write-sets are intentionally not inferred or snapshotted.
+`write_file` returns structured mutation metadata for deterministic file writes. The metadata includes path, operation type, and a textual diff; it is exposed on `ToolCallCompleted.result.mutations` and persisted to `report.json` as `tool_mutations`. Shell commands are bounded by policy and return structured stdout/stderr/exit metadata, but shell write-sets are intentionally not inferred or snapshotted.
 
 Shell policy comes from `tool.shell`: timeout, max output bytes per stream, environment inheritance, and a denylist. The shell working directory is fixed to the workspace root. Empty commands, NUL bytes, denied substrings, timeouts, and output truncation are handled before unbounded history growth.
 
@@ -914,14 +909,9 @@ Relevant code:
 - `core/src/policy.rs`
 - `core/src/validation.rs`
 - `runtime/src/tools/`
-- `src/tools/traits.rs` and `src/tools/registry.rs` (compatibility re-exports)
-- `src/tools/{echo,fs,memory,request_input,runtime_context,shell}.rs`
-  (compatibility re-exports)
 - `runtime/src/executor.rs`
-- `src/core/executor.rs` (compatibility re-export)
 - `runtime/src/boundary.rs`
 - `runtime/src/hooks/`
-- `src/hooks/` (compatibility re-exports)
 
 ## 13. Approval And Input
 
@@ -952,12 +942,12 @@ Relevant code:
 - `runtime/src/types.rs`
 - `runtime/src/tool_input.rs`
 - `runtime/src/tool_turn.rs`
-- `src/interfaces/cli/approval.rs`
-- `src/interfaces/cli/input.rs`
-- `src/interfaces/api/mod.rs`
-- `src/interfaces/terminal/interaction.rs`
-- `src/interfaces/tui/providers.rs`
-- `src/tools/request_input.rs`
+- `apps/cli/src/cli/approval.rs`
+- `apps/cli/src/cli/input.rs`
+- `apps/api/src/lib.rs`
+- `apps/cli/src/terminal/interaction.rs`
+- `apps/cli/src/tui/`
+- `runtime/src/tools/request_input.rs`
 
 ## 14. State Artifacts
 
@@ -1043,7 +1033,7 @@ Relevant code:
 
 - `runtime/src/state/index.rs`
 - `runtime/src/state/store.rs`
-- `src/interfaces/cli/state.rs`
+- `apps/cli/src/cli/state.rs`
 
 ## 16. Memory
 
@@ -1060,8 +1050,8 @@ Session memory is written by a post-run hook when a run completes with `Terminat
 Durable memory is managed by tools:
 
 - `save_memory`
-- `update_memory_index`
-- `read_memory_topic`
+- `reindex_memory`
+- `read_memory`
 
 `save_memory` rejects unsafe topic names, likely secrets, and transient one-off content before writing. Topic frontmatter records `type` (`user`, `feedback`, `project`, or `reference`), `scope`, `source`, `confidence`, and timestamps.
 
@@ -1076,7 +1066,6 @@ Relevant code:
 - `runtime/src/memory/session.rs`
 - `runtime/src/memory/durable.rs`
 - `runtime/src/hooks/session_memory.rs`
-- `src/hooks/` (compatibility re-exports)
 - `runtime/src/tools/memory.rs`
 
 ## 17. MCP
@@ -1173,7 +1162,7 @@ runtime gaps for the current local-first target.
 Relevant code:
 
 - `src/config.rs`
-- `src/interfaces/api/security.rs`
+- `apps/api/src/security.rs`
 - `tests/api.rs`
 
 ## 20. Testing And Verification

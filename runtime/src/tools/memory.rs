@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use crate::memory::durable::{MemoryScope, MemoryType, parse_frontmatter};
 use crate::tools::runtime_context::runtime_tool_services;
-use rove_core::ToolDescriptor as ToolSchema;
+use rove_core::ToolDescriptor;
 use rove_core::{Tool, ToolContext, ToolError, ToolOutput};
 
 const MAX_MEMORY_INDEX_LINES: usize = 200;
@@ -31,8 +31,8 @@ impl Default for SaveMemoryTool {
 
 #[async_trait]
 impl Tool for SaveMemoryTool {
-    fn schema(&self) -> ToolSchema {
-        ToolSchema {
+    fn schema(&self) -> ToolDescriptor {
+        ToolDescriptor {
             name: "save_memory".to_string(),
             description: "Save a durable memory entry that should persist across sessions."
                 .to_string(),
@@ -123,7 +123,7 @@ impl Tool for SaveMemoryTool {
             .await
             .map_err(execution_failed)?;
 
-        update_memory_index(&memory_dir).await?;
+        rebuild_memory_index(&memory_dir).await?;
 
         Ok(ToolOutput::text(format!("saved memory: {slug}")))
     }
@@ -146,9 +146,9 @@ impl Default for UpdateMemoryIndexTool {
 
 #[async_trait]
 impl Tool for UpdateMemoryIndexTool {
-    fn schema(&self) -> ToolSchema {
-        ToolSchema {
-            name: "update_memory_index".to_string(),
+    fn schema(&self) -> ToolDescriptor {
+        ToolDescriptor {
+            name: "reindex_memory".to_string(),
             description: "Rebuild the durable memory index from saved topic files.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -165,7 +165,7 @@ impl Tool for UpdateMemoryIndexTool {
         tokio::fs::create_dir_all(&memory_dir)
             .await
             .map_err(execution_failed)?;
-        update_memory_index(&memory_dir).await?;
+        rebuild_memory_index(&memory_dir).await?;
 
         Ok(ToolOutput::text("updated memory index"))
     }
@@ -188,9 +188,9 @@ impl Default for ReadMemoryTopicTool {
 
 #[async_trait]
 impl Tool for ReadMemoryTopicTool {
-    fn schema(&self) -> ToolSchema {
-        ToolSchema {
-            name: "read_memory_topic".to_string(),
+    fn schema(&self) -> ToolDescriptor {
+        ToolDescriptor {
+            name: "read_memory".to_string(),
             description: "Read a durable memory topic by name from the memory topics directory."
                 .to_string(),
             parameters: serde_json::json!({
@@ -239,7 +239,7 @@ fn memory_dir(ctx: &ToolContext<'_>) -> Result<PathBuf, ToolError> {
     Ok(runtime_tool_services(ctx)?.memory_paths.durable_dir.clone())
 }
 
-async fn update_memory_index(memory_dir: &Path) -> Result<(), ToolError> {
+async fn rebuild_memory_index(memory_dir: &Path) -> Result<(), ToolError> {
     let topics_dir = memory_dir.join("topics");
     let mut topic_paths = Vec::new();
     let mut entries = match tokio::fs::read_dir(&topics_dir).await {

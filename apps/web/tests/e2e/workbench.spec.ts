@@ -495,7 +495,7 @@ async function fulfillJobState(
         ? [
             {
               call_id: "call-approval-1",
-              name: "fs_write",
+              name: "write_file",
               args: { path: "notes.md" },
               reason: "destructive tool requires explicit approval",
             },
@@ -546,7 +546,7 @@ function approvalEventStream(): string {
     sse("tool_call_approval_needed", 2, {
       type: "tool_call_approval_needed",
       call_id: "call-approval-1",
-      name: "fs_write",
+      name: "write_file",
       args: { path: "notes.md" },
       reason: "destructive tool requires explicit approval",
     }),

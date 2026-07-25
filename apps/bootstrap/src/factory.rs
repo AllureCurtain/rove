@@ -9,7 +9,7 @@ use rove_models::provider::{
     WireProtocolRegistry,
 };
 use rove_models::routing::{RetryPolicy, RoutingModelClient};
-use rove_models::{Message, ModelClient, ModelClientId, ModelError, ModelEvent, ToolSchema};
+use rove_models::{Message, ModelClient, ModelClientId, ModelError, ModelEvent, ModelToolSchema};
 
 use crate::config::AppConfig;
 use crate::provider::{
@@ -238,7 +238,7 @@ impl ModelClient for InvalidConfigurationModelClient {
     fn stream(
         &self,
         _messages: &[Message],
-        _tools: &[ToolSchema],
+        _tools: &[ModelToolSchema],
     ) -> BoxStream<'_, Result<ModelEvent, ModelError>> {
         Box::pin(stream::iter([Err(ModelError::InvalidConfiguration(
             self.message.clone(),

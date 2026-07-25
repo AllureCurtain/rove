@@ -194,8 +194,8 @@ Scenarios covered by the runner:
 |---|---|
 | Plain run | API job completes and Web shows final fake response. |
 | `echo` tool | API state records tool lifecycle and output text. |
-| Approved `fs_write` | Pending approval appears, approval resumes run, file is created inside isolated workspace. |
-| Rejected `fs_write` | Rejection is recorded and target file is not created. |
+| Approved `write_file` | Pending approval appears, approval resumes run, file is created inside isolated workspace. |
+| Rejected `write_file` | Rejection is recorded and target file is not created. |
 | `request_input` | Pending input appears, submitted answer resumes run, answer is recorded. |
 | Tool failure | Failed tool event is visible in API artifacts. |
 | Web records | Real Web workbench creates/approves/answers jobs against the real API and shows run detail/history. |
@@ -418,7 +418,7 @@ Approval through Web:
 1. Open `http://localhost:3000`.
 2. Use the selected provider/model profile.
 3. Submit a request asking the model to write a short file through the available file-write tool.
-4. Approve the pending `fs_write` card in the Web panel.
+4. Approve the pending `write_file` card in the Web panel.
 
 Input through Web:
 

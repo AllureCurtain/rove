@@ -7,7 +7,7 @@ use reqwest::{
 use std::collections::BTreeMap;
 
 use crate::traits::{ModelClient, ModelClientId, ModelEvent};
-use crate::{Message, ModelError, ProviderOptions, Role, ToolSchema, Usage};
+use crate::{Message, ModelError, ModelToolSchema, ProviderOptions, Role, Usage};
 
 /// OpenAI-compatible model client.
 ///
@@ -39,7 +39,7 @@ impl OpenAiClient {
     pub(crate) fn build_request_body(
         &self,
         messages: &[Message],
-        tools: &[ToolSchema],
+        tools: &[ModelToolSchema],
     ) -> serde_json::Value {
         let msgs: Vec<serde_json::Value> = messages.iter().map(format_openai_message).collect();
 
@@ -377,7 +377,7 @@ impl ModelClient for OpenAiClient {
     fn stream(
         &self,
         messages: &[Message],
-        tools: &[ToolSchema],
+        tools: &[ModelToolSchema],
     ) -> BoxStream<'_, Result<ModelEvent, ModelError>> {
         let body = self.build_request_body(messages, tools);
         let url = format!("{}/chat/completions", self.api_base);
@@ -457,7 +457,7 @@ impl ModelClient for OpenAiClient {
 mod tests {
     use super::*;
 
-    use crate::{Message, ProviderOptions, ToolCallRef, ToolSchema};
+    use crate::{Message, ModelToolSchema, ProviderOptions, ToolCallRef};
     use reqwest::{
         StatusCode,
         header::{HeaderMap, HeaderValue, RETRY_AFTER},
@@ -472,8 +472,8 @@ mod tests {
         );
         let body = client.build_request_body(
             &[Message::user("inspect")],
-            &[ToolSchema {
-                name: "fs_read".to_string(),
+            &[ModelToolSchema {
+                name: "read_file".to_string(),
                 description: "Read a file".to_string(),
                 parameters: serde_json::json!({
                     "type": "object",
@@ -485,7 +485,7 @@ mod tests {
         );
 
         assert_eq!(body["tools"][0]["type"], "function");
-        assert_eq!(body["tools"][0]["function"]["name"], "fs_read");
+        assert_eq!(body["tools"][0]["function"]["name"], "read_file");
         assert_eq!(body["tools"][0]["function"]["description"], "Read a file");
         assert_eq!(body["tool_choice"], "auto");
     }
@@ -536,7 +536,7 @@ mod tests {
                     "I will inspect that.".to_string(),
                     vec![ToolCallRef {
                         id: "call_1".to_string(),
-                        name: "fs_read".to_string(),
+                        name: "read_file".to_string(),
                         args: serde_json::json!({ "path": "Cargo.toml" }),
                     }],
                 ),
@@ -551,7 +551,7 @@ mod tests {
         assert_eq!(body["messages"][0]["tool_calls"][0]["type"], "function");
         assert_eq!(
             body["messages"][0]["tool_calls"][0]["function"]["name"],
-            "fs_read"
+            "read_file"
         );
         assert_eq!(
             body["messages"][0]["tool_calls"][0]["function"]["arguments"],
@@ -573,7 +573,7 @@ mod tests {
                         "id": "call_1",
                         "type": "function",
                         "function": {
-                            "name": "fs_read",
+                            "name": "read_file",
                             "arguments": "{\"path\""
                         }
                     }]
@@ -603,14 +603,14 @@ mod tests {
             matches!(
                 event,
                 ModelEvent::ToolUseStart { id, name }
-                    if id == "call_1" && name == "fs_read"
+                    if id == "call_1" && name == "read_file"
             )
         }));
         assert!(events.iter().any(|event| {
             matches!(
                 event,
                 ModelEvent::ToolUseDone { id, name, args }
-                    if id == "call_1" && name == "fs_read" && args["path"] == "Cargo.toml"
+                    if id == "call_1" && name == "read_file" && args["path"] == "Cargo.toml"
             )
         }));
     }

@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use futures::StreamExt;
 use rove_app_bootstrap::build_model_client;
-use rove_app_bootstrap::default_tool_registry;
+use rove_app_bootstrap::tool_registry;
 use rove_app_bootstrap::{
     AppConfig, AppConfigOverrides, ProviderAuthConfig, ProviderProfileConfig, SecretSource,
 };
@@ -101,7 +101,7 @@ async fn run_provider_smoke(
     let model_client = build_model_client(&config, model);
     let engine = Engine::with_workspace(
         model_client,
-        default_tool_registry(&workspace),
+        tool_registry(&workspace),
         ContextManager::new(config.load_system_prompt()),
         EngineConfig {
             max_steps: 3,

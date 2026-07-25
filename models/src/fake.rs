@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use futures::stream::BoxStream;
 
 use crate::traits::{ModelClient, ModelClientId, ModelEvent};
-use crate::{Message, ModelError, Role, ToolSchema, Usage};
+use crate::{Message, ModelError, ModelToolSchema, Role, Usage};
 
 /// Scripted turn for a `FakeModelClient` — one entry per LLM call.
 #[derive(Debug, Clone)]
@@ -87,7 +87,7 @@ impl ModelClient for FakeModelClient {
     fn stream(
         &self,
         messages: &[Message],
-        _tools: &[ToolSchema],
+        _tools: &[ModelToolSchema],
     ) -> BoxStream<'_, Result<ModelEvent, ModelError>> {
         if let Some(turn) = self.turns.lock().expect("turns mutex poisoned").pop() {
             return Box::pin(futures::stream::iter(turn_events(turn)));

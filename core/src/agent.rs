@@ -225,7 +225,7 @@ impl Agent {
                     tool_calls += 1;
                     let invocation = invocation_from(call);
                     yield AgentEvent::ToolCallStarted { invocation: invocation.clone() };
-                    let descriptor = match self.tools.schema(&invocation.name) {
+                    let descriptor = match self.tools.descriptor(&invocation.name) {
                         Ok(descriptor) => descriptor,
                         Err(error) => {
                             messages.push(Message::tool(error.to_string(), invocation.tool_use_id.clone()));

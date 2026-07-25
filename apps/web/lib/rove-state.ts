@@ -465,27 +465,53 @@ function applyStreamEvent(
         plan: updatePlan(state.plan, event.index, event.step, false),
         trace: prependTrace(state.trace, event.type, event.step.title),
       };
-    case "plan_step_completed":
+    case "step_result": {
+      const stepRecords = appendStepRecord(state.stepRecords, event.record);
+      if (stepRecords === state.stepRecords) {
+        return next;
+      }
+      const succeeded =
+        event.record.status === "succeeded" || event.record.status === "skipped";
+      const failed =
+        event.record.status === "failed" ||
+        event.record.status === "blocked" ||
+        event.record.status === "interrupted";
+      const plan = state.plan
+        ? {
+            ...state.plan,
+            steps: state.plan.steps.map((step) =>
+              step.id === event.record.step_id
+                ? { ...step, done: succeeded ? true : step.done }
+                : step,
+            ),
+            current_step: succeeded
+              ? (() => {
+                  const updated = state.plan.steps.map((step) =>
+                    step.id === event.record.step_id ? { ...step, done: true } : step,
+                  );
+                  const nextIndex = updated.findIndex((step) => !step.done);
+                  return nextIndex === -1 ? updated.length : nextIndex;
+                })()
+              : state.plan.current_step,
+          }
+        : state.plan;
+      const label = succeeded
+        ? event.record.summary || event.record.step_id
+        : failed
+          ? `${event.record.step_id}: ${
+              event.record.safe_error_summary || event.record.summary || event.record.status
+            }`
+          : event.record.summary || event.record.step_id;
       return {
         ...next,
-        plan: updatePlan(state.plan, event.index, event.step, true),
-        trace: prependTrace(state.trace, event.type, event.step.title),
+        plan,
+        stepRecords,
+        trace:
+          succeeded || failed
+            ? prependTrace(state.trace, event.type, label)
+            : state.trace,
       };
-    case "plan_step_failed":
-      return {
-        ...next,
-        plan: updatePlan(state.plan, event.index, event.step, false),
-        trace: prependTrace(
-          state.trace,
-          event.type,
-          `${event.step.title}: ${event.reason}`,
-        ),
-      };
-    case "step_result":
-      return {
-        ...next,
-        stepRecords: appendStepRecord(state.stepRecords, event.record),
-      };
+    }
     case "prompt_compacted":
       return {
         ...next,

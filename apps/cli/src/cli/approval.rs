@@ -63,7 +63,7 @@ mod tests {
     fn request() -> ToolApprovalRequest {
         ToolApprovalRequest {
             call_id: CallId::new(),
-            name: "fs_write".to_string(),
+            name: "write_file".to_string(),
             args: serde_json::json!({"path":"approved.txt"}),
             reason: "destructive tool requires explicit approval".to_string(),
         }

@@ -22,8 +22,7 @@ source summaries; resolved secret values and literal header values are omitted.
 ## Workspace
 
 Workspace detection and path-boundary enforcement are implemented in
-`runtime/src/workspace.rs` and `runtime/src/boundary.rs`; the root
-`rove::core::{workspace,boundary}` paths are compatibility re-exports.
+`runtime/src/workspace.rs` and `runtime/src/boundary.rs`.
 
 The runtime currently supports three workspace kinds:
 
@@ -49,9 +48,7 @@ tool stubs for those kinds.
 `StateStore`, file artifacts, SQLite `StateIndex`, trace/report writers,
 repair, cleanup, and resume are implemented in `runtime/src/state/`.
 `TaskState`, `PromptCheckpoint`, IDs, lifecycle ledger data, and canonical
-`StreamEvent` are owned by the same crate. Transitional `src/state/` and
-`src/core/events.rs` modules only re-export these contracts for existing root
-callers.
+`StreamEvent` are owned by the same crate.
 
 Files:
 
@@ -81,9 +78,8 @@ artifact.
 ## Context And Compaction
 
 The context builder and both compaction implementations live in
-`runtime/src/context.rs` and `runtime/src/compaction.rs`. The root
-`rove::core::context` path is a compatibility re-export; the root run and step
-loops still coordinate when compaction and its durable events occur.
+`runtime/src/context.rs` and `runtime/src/compaction.rs`. The runtime run and
+step loops coordinate when compaction and its durable events occur.
 
 `ContextManager` supports token-aware prompt construction with soft, hard, and reserved budgets. Prompt order is:
 
@@ -103,11 +99,11 @@ Default compaction is deterministic and artifact-based. Optional model-generated
 ## Provider And Routing
 
 The independent `rove-models` package owns provider-neutral `Message`,
-`ToolSchema`, `Usage`, `ModelError`, `ModelClient`, and `ModelEvent` contracts,
+`ToolDescriptor`, `Usage`, `ModelError`, `ModelClient`, and `ModelEvent` contracts,
 plus provider adapters, Fake Model, routing, and health. It has no local project
 dependency. AppConfig-driven construction lives in
 `apps/bootstrap/src/factory.rs`.
-Its `ToolSchema` contains only the model-visible name, description, and input
+Its `ToolDescriptor` contains only the model-visible name, description, and input
 schema. Operational fields live in `rove_core::ToolDescriptor` and are not
 included in provider payloads.
 
@@ -187,16 +183,14 @@ Native provider tool-use and JSON text action parsing are both supported. Native
 `ToolContext`, argument validation, and `ToolDescriptor`. The descriptor holds
 `destructive`, `parallel_safe`, and capability fields while its model-schema
 projection omits them. Local built-in tool implementations and their typed
-invocation adapters live in `runtime/src/tools/`; compatibility modules under
-`src/tools/` re-export them. The tool `Executor` pipeline, pre/post-tool plus
-post-run hooks (including session-summary), and the durable tool-turn
-coordinator live in `runtime/src/executor.rs`, `runtime/src/hooks/`, and
-`runtime/src/tool_turn.rs`; root modules re-export the public surface. The
-existing stdio/legacy-SSE MCP proxy is implemented in
-`runtime/src/tools/mcp_proxy.rs`. CLI and API assemble tools through the same
-product registry builder, which registers runtime built-ins and
-then loads configured MCP tools.
-adapter for a later refactor.
+invocation adapters live in `runtime/src/tools/`. The tool `Executor`
+pipeline, pre/post-tool plus post-run hooks (including session-summary), and the
+durable tool-turn coordinator live in `runtime/src/executor.rs`,
+`runtime/src/hooks/`, and `runtime/src/tool_turn.rs`. The existing
+stdio/legacy-SSE MCP proxy is implemented in `runtime/src/tools/mcp_proxy.rs`.
+CLI and API assemble tools through the same product registry builder
+(`apps/bootstrap::tool_registry` / `tool_registry_with_mcp`), which registers
+runtime built-ins and then loads configured MCP tools.
 
 Workspace, resolved Memory paths, approval policy, and input providers are
 runtime-owned services attached to a tool invocation through a typed extension.
@@ -218,9 +212,9 @@ runtime runs that sequence serially. The current runtime does not infer hidden
 dependencies between arbitrary tool arguments.
 
 Approval policy is `ask`, `auto`, or `never`. The provider contracts and the
-task-local request-input registration context are owned by `rove-runtime`; the
-root Engine/tool-turn and interface implementations consume them through
-compatibility re-exports. The CLI uses stdin for approvals; the API exposes
+task-local request-input registration context are owned by `rove-runtime`.
+Product shells assemble `runtime::Engine` through `apps/bootstrap` and consume
+those contracts directly. The CLI uses stdin for approvals; the API exposes
 pending approvals through `/jobs/{job_id}/approvals/{call_id}`.
 
 API approval/input restart behavior uses Policy A. Pending records are
@@ -234,10 +228,8 @@ external side effect cannot be repeated automatically.
 ## Memory
 
 Memory paths, session storage, durable topic parsing/recall, layered prompt
-loading, and built-in memory tools live in `runtime/src/`. Transitional
-`src/memory/` and `src/tools/memory.rs` modules re-export those APIs. The
-session-summary post-run hook remains in the root package until its later
-runtime slice.
+loading, built-in memory tools, and the session-summary post-run hook live in
+`runtime/src/`.
 
 The memory model has three layers:
 
@@ -333,7 +325,7 @@ CI is split by dependency weight:
 - `.github/workflows/ci.yml`: Rust default fmt/clippy/test and web test/typecheck/build.
 
 Default feedback loops stay free of heavy retrieval dependencies. Workspace
-retrieval is tool-based (`fs`/`shell`) plus layered session/durable file memory;
+retrieval is tool-based (`fs`/`run_shell`) plus layered session/durable file memory;
 there is no built-in vector database.
 
 ## Benchmark And Acceptance

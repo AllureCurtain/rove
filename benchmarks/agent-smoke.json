@@ -27,7 +27,7 @@
         {
           "type": "tool_use",
           "id": "call_write_note",
-          "name": "fs_write",
+          "name": "write_file",
           "args": {
             "path": "bench-output.txt",
             "content": "written by rove-bench\n"

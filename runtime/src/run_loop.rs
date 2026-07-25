@@ -20,7 +20,7 @@ use crate::tool_turn::{
 };
 use crate::types::{
     Action, ApprovalDecision, ApprovalPolicy, Message, SessionId, TerminationReason,
-    ToolApprovalProvider, ToolSchema, UserInputProvider,
+    ToolApprovalProvider, ToolDescriptor, UserInputProvider,
 };
 use crate::workspace::Workspace;
 use rove_core::ToolRegistry;
@@ -63,7 +63,7 @@ impl<'a> LoopContext<'a> {
 pub(crate) fn enrich_prompt_metadata(
     ctx: &LoopContext<'_>,
     mut metadata: PromptBuildMetadata,
-    tools: &[ToolSchema],
+    tools: &[ToolDescriptor],
 ) -> PromptBuildMetadata {
     metadata.workspace_fingerprint = workspace_fingerprint(ctx.workspace);
     metadata.tool_signature = tool_signature(tools);
@@ -167,7 +167,7 @@ pub(crate) fn run_unplanned_loop<'a>(
                 state.compact_summary.as_deref(),
                 &state.history,
             );
-            let tool_schemas = ctx.registry.schemas();
+            let tool_schemas = ctx.registry.descriptors();
             yield LoopItem::Event(StreamEvent::PromptBuilt {
                 metadata: enrich_prompt_metadata(&ctx, context.metadata.clone(), &tool_schemas),
             });

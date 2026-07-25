@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use futures::stream::BoxStream;
 
-use crate::{Message, ModelError, ToolSchema, Usage};
+use crate::{Message, ModelError, ModelToolSchema, Usage};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ModelClientId(String);
@@ -71,7 +71,7 @@ pub trait ModelClient: Send + Sync {
     fn stream(
         &self,
         messages: &[Message],
-        tools: &[ToolSchema],
+        tools: &[ModelToolSchema],
     ) -> BoxStream<'_, Result<ModelEvent, ModelError>>;
 
     /// The model identifier (for logging/tracing).

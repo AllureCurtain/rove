@@ -173,7 +173,7 @@ bearer token server-side and does not expose it to browser JavaScript.
 
 ## Workspace retrieval and memory
 
-rove obtains workspace context through tools (`fs_read`/`fs_write`, `shell`) and layered file memory (session + durable `MEMORY.md` / topics). There is **no built-in vector database or embedding index** in the default product.
+rove obtains workspace context through tools (`read_file`/`write_file`, `run_shell`) and layered file memory (session + durable `MEMORY.md` / topics). There is **no built-in vector database or embedding index** in the default product.
 ## Configuration
 
 Configuration is layered as:

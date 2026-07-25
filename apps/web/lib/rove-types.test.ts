@@ -44,7 +44,7 @@ const streamEventFixtures: StreamEvent[] = [
   {
     type: "tool_call_approval_needed",
     call_id: "call-1",
-    name: "fs_write",
+    name: "write_file",
     args: { path: "notes.md" },
     reason: "destructive tool requires explicit approval",
   },
@@ -110,17 +110,6 @@ const streamEventFixtures: StreamEvent[] = [
     type: "plan_step_started",
     index: 0,
     step: { id: "1", title: "Inspect", done: false },
-  },
-  {
-    type: "plan_step_completed",
-    index: 0,
-    step: { id: "1", title: "Inspect", done: true },
-  },
-  {
-    type: "plan_step_failed",
-    index: 0,
-    step: { id: "1", title: "Inspect", done: false },
-    reason: "tool failed",
   },
   {
     type: "step_result",

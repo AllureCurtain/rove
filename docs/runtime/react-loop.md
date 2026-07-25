@@ -15,9 +15,9 @@ session/durable memory, local tools/MCP, the tool `Executor` and hooks,
 runtime-specific tool turns, planning/step coordination, durable event
 translation, and the persistent `Engine` facade.
 `runtime/src/model_turn.rs` is the synchronous translator from in-memory
-`AgentEvent` values into durable `StreamEvent` values. Root `src/core/*`
-modules re-export the public surface during the compatibility window.
-Product tool-registry assembly and first-party `AppConfig`
+`AgentEvent` values into durable `StreamEvent` values. The product default
+entry is `runtime::Engine` via `apps/bootstrap::build_engine`; `core::Agent`
+is embed-only. Product tool-registry assembly and first-party `AppConfig`
 live in product bootstrap and app shells. Runtime tool turns
 consume the `rove-core` Tool contract and registry without placing
 Workspace, Memory, approval, or input fields on the minimal core `ToolContext`.
@@ -61,12 +61,14 @@ older history is being compacted. When compaction changes the summary, the
 runner rebuilds the actual model prompt before issuing the turn.
 
 The engine now resolves the legacy `plan_enabled` and `max_steps` fields through
-the typed `core::execution::ExecutionPolicy` boundary before selecting a loop.
+the typed `runtime::execution::ExecutionPolicy` boundary before selecting a loop.
+Those CLI/API fields are sugar that write into `ExecutionPolicy`; the policy is
+the sole execution-config truth.
 `react` maps the old limit to `max_model_turns`, while `plan_react` maps it only
 to `max_step_attempts`. Planned execution separately resolves
 `max_model_turns_per_step = 4` as a named compatibility default; it does not
 reinterpret `max_steps` as a second budget unit. Exhausting this step-local
-ceiling emits the current `PlanStepFailed` event and completes the run with
+ceiling emits a terminal `step_result` and completes the run with
 `TerminationReason::StepLimit` plus an explicit
 `max_model_turns_per_step=4` reason.
 
@@ -80,10 +82,10 @@ Planned execution also maintains an append-only terminal-attempt ledger:
 3. The bounded runner derives model-turn, tool-call, mutation, and token usage
    from the canonical model/tool events emitted during that attempt.
 4. Every terminal attempt emits `step_result` with a `StepRecord`, followed by
-   exactly one `plan_decision`, before the compatibility
-   `PlanStepCompleted` or `PlanStepFailed` event. The runtime currently
-   produces `succeeded`, `failed`, `blocked`, `budget_exhausted`, `cancelled`,
-   and `interrupted` records.
+   exactly one `plan_decision`. Compatibility dual-fire
+   `PlanStepCompleted` / `PlanStepFailed` events are not emitted. The runtime
+   currently produces `succeeded`, `failed`, `blocked`, `budget_exhausted`,
+   `cancelled`, and `interrupted` records.
 5. A recoverable failure emits `plan_revised` with an immutable child revision
    linked to its parent revision, triggering step record, and decision. It does
    not masquerade as another initial `plan_created` event.
@@ -136,7 +138,6 @@ StepRunner =
   -> Action::Final as step conclusion
   -> StepResult
   -> PlanDecision
-  -> compatibility PlanStepCompleted / PlanStepFailed
   -> Continue / PlanRevised / Finish
 ```
 

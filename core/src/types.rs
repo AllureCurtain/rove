@@ -67,8 +67,8 @@ pub struct ToolDescriptor {
 }
 
 impl ToolDescriptor {
-    pub fn model_schema(&self) -> rove_models::ToolSchema {
-        rove_models::ToolSchema {
+    pub fn model_schema(&self) -> rove_models::ModelToolSchema {
+        rove_models::ModelToolSchema {
             name: self.name.clone(),
             description: self.description.clone(),
             parameters: self.parameters.clone(),

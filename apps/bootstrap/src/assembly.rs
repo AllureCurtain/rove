@@ -8,10 +8,10 @@ use rove_runtime::types::{ApprovalPolicy, ToolApprovalProvider, UserInputProvide
 use rove_runtime::workspace::Workspace;
 
 use crate::config::AppConfig;
-use crate::registry::product_runtime_tool_registry;
+use crate::registry::tool_registry_with_mcp;
 
 /// Options shared by first-party CLI/API engine construction.
-pub struct ProductEngineOptions<'a> {
+pub struct EngineOptions<'a> {
     pub model: Box<dyn ModelClient>,
     pub workspace: &'a Workspace,
     pub config: &'a AppConfig,
@@ -21,12 +21,9 @@ pub struct ProductEngineOptions<'a> {
     pub approval_provider: Option<Arc<dyn ToolApprovalProvider>>,
 }
 
-/// Compatibility alias while interfaces migrate naming.
-pub type EngineAssemblyOptions<'a> = ProductEngineOptions<'a>;
-
 /// Build the shared first-party Engine used by CLI and API.
-pub async fn build_product_engine(options: ProductEngineOptions<'_>) -> anyhow::Result<Engine> {
-    let registry = product_runtime_tool_registry(
+pub async fn build_engine(options: EngineOptions<'_>) -> anyhow::Result<Engine> {
+    let registry = tool_registry_with_mcp(
         options.workspace,
         options.config.shell_policy(),
         options
@@ -34,20 +31,11 @@ pub async fn build_product_engine(options: ProductEngineOptions<'_>) -> anyhow::
             .resolve_path(&options.config.tool.mcp_config_path),
     )
     .await?;
-    Ok(build_product_engine_with_registry(options, registry))
+    Ok(build_engine_with_registry(options, registry))
 }
 
-/// Compatibility alias while interfaces migrate naming.
-pub async fn build_interface_engine(options: EngineAssemblyOptions<'_>) -> anyhow::Result<Engine> {
-    build_product_engine(options).await
-}
-
-/// Build a product Engine when the caller already assembled a registry
-/// when the caller already assembled a custom registry.
-pub fn build_product_engine_with_registry(
-    options: ProductEngineOptions<'_>,
-    registry: ToolRegistry,
-) -> Engine {
+/// Build a product Engine when the caller already assembled a registry.
+pub fn build_engine_with_registry(options: EngineOptions<'_>, registry: ToolRegistry) -> Engine {
     let context_manager = ContextManager::with_token_budget(
         options.config.load_system_prompt(),
         ContextBudget {

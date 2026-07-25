@@ -166,7 +166,7 @@ mod tests {
         state.run.tool_calls = vec![
             ToolCallView {
                 call_id: completed_call,
-                name: "fs_read".to_string(),
+                name: "read_file".to_string(),
                 args: serde_json::json!({"path": "README.md"}),
                 status: ToolCallStatus::Completed,
                 output: Some("read 42 lines".to_string()),
@@ -174,7 +174,7 @@ mod tests {
             },
             ToolCallView {
                 call_id: failed_call,
-                name: "shell".to_string(),
+                name: "run_shell".to_string(),
                 args: serde_json::json!({"command": "false"}),
                 status: ToolCallStatus::Failed,
                 output: None,
@@ -184,7 +184,7 @@ mod tests {
             },
             ToolCallView {
                 call_id: approval_call,
-                name: "fs_write".to_string(),
+                name: "write_file".to_string(),
                 args: serde_json::json!({"path": "out.txt"}),
                 status: ToolCallStatus::WaitingApproval,
                 output: None,
@@ -202,7 +202,7 @@ mod tests {
         ));
         state.run.pending_approvals.push(PendingApprovalView {
             call_id: approval_call,
-            name: "fs_write".to_string(),
+            name: "write_file".to_string(),
             args: serde_json::json!({"path": "out.txt"}),
             reason: "writes a file".to_string(),
         });
@@ -282,7 +282,7 @@ mod tests {
         assert!(rendered.contains("Plan  1/2 complete"));
         assert!(rendered.contains("[x] Read state"));
         assert!(rendered.contains("[>] Draw widgets"));
-        assert!(rendered.contains("Tool  fs_read [done]"));
+        assert!(rendered.contains("Tool  read_file [done]"));
         assert!(rendered.contains("Tool execution failed: command failed"));
         assert!(rendered.contains("Approval required"));
         assert!(rendered.contains("Input required"));
@@ -468,7 +468,7 @@ mod tests {
         let approval_state = TuiState {
             modal: Some(InteractionModalView::Approval {
                 call_id: CallId::new(),
-                name: "fs_write".to_string(),
+                name: "write_file".to_string(),
                 args: serde_json::json!({
                     "authorization": "CANARY_AUTH_VALUE",
                     "nested": {"api_token": "CANARY_TOKEN_VALUE"}
@@ -544,7 +544,7 @@ mod tests {
             .unwrap();
         let rendered = rect_text(&buffer, 80, activity);
         assert!(rendered.contains("Tool"));
-        assert!(rendered.contains("fs_write"));
+        assert!(rendered.contains("write_file"));
         assert!(!rendered.contains("stale"));
     }
 
@@ -584,7 +584,7 @@ mod tests {
         let call_id = CallId::new();
         let approval = InteractionModalView::Approval {
             call_id,
-            name: "fs_write".to_string(),
+            name: "write_file".to_string(),
             args: serde_json::json!({"path":"out.txt"}),
             reason: "writes a file".to_string(),
         };
@@ -686,7 +686,7 @@ mod tests {
     fn modal_layout_is_bounded_and_tiny_viewports_do_not_panic() {
         let approval = InteractionModalView::Approval {
             call_id: CallId::new(),
-            name: "fs_write".to_string(),
+            name: "write_file".to_string(),
             args: serde_json::json!({"path": "out.txt"}),
             reason: "writes a file".to_string(),
         };

@@ -163,7 +163,7 @@ function Run-ApiSmoke {
 
     $approvedPath = "approved-api-smoke.txt"
     $approval = Start-JobRequest "approval-approved" @{
-        message = '{"tool":"fs_write","args":{"path":"approved-api-smoke.txt","content":"ok"}}'
+        message = '{"tool":"write_file","args":{"path":"approved-api-smoke.txt","content":"ok"}}'
         model = "fake-raw"
         approval = "ask"
         max_steps = 1
@@ -181,7 +181,7 @@ function Run-ApiSmoke {
     }
 
     $rejected = Start-JobRequest "approval-rejected" @{
-        message = '{"tool":"fs_write","args":{"path":"rejected-api-smoke.txt","content":"no"}}'
+        message = '{"tool":"write_file","args":{"path":"rejected-api-smoke.txt","content":"no"}}'
         model = "fake-raw"
         approval = "ask"
         max_steps = 1
@@ -219,7 +219,7 @@ function Run-ApiSmoke {
     }
 
     $failure = Start-JobRequest "failure" @{
-        message = '{"tool":"fs_read","args":{"path":"missing-api-smoke.txt"}}'
+        message = '{"tool":"read_file","args":{"path":"missing-api-smoke.txt"}}'
         model = "fake-raw"
         approval = "auto"
         max_steps = 1
