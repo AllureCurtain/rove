@@ -271,12 +271,31 @@ export type StreamEvent =
       output?: string | null;
     };
 
+export type CreateJobWorkspaceKind = "folder" | "repo" | "task";
+
+/**
+ * Per-job workspace binding.
+ *
+ * - `folder` / `repo`: bind tools/state to an absolute local `root`.
+ * - `task`: isolated workspace under `base`/`name`.
+ */
+export interface CreateJobWorkspace {
+  kind: CreateJobWorkspaceKind;
+  /** Task workspace name (`kind = "task"` only). */
+  name?: string;
+  /** Task base directory (`kind = "task"` only). */
+  base?: string;
+  /** Absolute local directory for `folder` / `repo`. */
+  root?: string;
+}
+
 export interface CreateJobRequest {
   message: string;
   model?: string;
   max_steps?: number;
   approval?: ApprovalPolicy;
   resume?: ResumeMode;
+  workspace?: CreateJobWorkspace;
   provider?: ProviderProfile;
 }
 

@@ -54,4 +54,7 @@ fn task_workspace_docs_cover_cli_api_lifecycle_and_cleanup() {
     assert!(guide.contains(r#""workspace": {"#));
     assert!(guide.contains("Task workspace lifecycle"));
     assert!(guide.contains("delete the task workspace directory"));
+    assert!(guide.contains(r#""kind": "folder""#));
+    assert!(guide.contains(r#""kind": "repo""#));
+    assert!(guide.contains("absolute existing directory"));
 }

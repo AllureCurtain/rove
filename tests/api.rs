@@ -120,6 +120,8 @@ async fn api_exposes_openapi_json_for_all_routes() {
     for schema in [
         "CreateJobRequest",
         "CreateJobResponse",
+        "CreateJobWorkspace",
+        "CreateJobWorkspaceKind",
         "JobStateResponse",
         "ListRunsResponse",
         "ProviderProfileRequest",
@@ -132,6 +134,34 @@ async fn api_exposes_openapi_json_for_all_routes() {
     ] {
         assert!(schemas.contains_key(schema), "missing schema {schema}");
     }
+
+    let kind_schema = schemas
+        .get("CreateJobWorkspaceKind")
+        .cloned()
+        .expect("CreateJobWorkspaceKind schema");
+    let kind_text = kind_schema.to_string();
+    assert!(
+        kind_text.contains("folder"),
+        "OpenAPI should list folder kind: {kind_text}"
+    );
+    assert!(
+        kind_text.contains("repo"),
+        "OpenAPI should list repo kind: {kind_text}"
+    );
+    assert!(
+        kind_text.contains("task"),
+        "OpenAPI should list task kind: {kind_text}"
+    );
+
+    let workspace_schema = schemas
+        .get("CreateJobWorkspace")
+        .cloned()
+        .expect("CreateJobWorkspace schema");
+    let workspace_text = workspace_schema.to_string();
+    assert!(
+        workspace_text.contains("root"),
+        "OpenAPI CreateJobWorkspace should document root: {workspace_text}"
+    );
 
     assert!(
         spec.pointer("/components/securitySchemes/BearerAuth")
@@ -983,6 +1013,550 @@ async fn api_can_create_job_in_task_workspace() {
     let task_root = tmp.path().join("api-task");
     assert!(task_root.join("api-state").join("runs").is_dir());
     assert!(task_root.join("api-memory").join("sessions").is_dir());
+}
+
+#[tokio::test]
+async fn api_can_create_job_in_explicit_folder_root() {
+    let server = tempfile::TempDir::new().unwrap();
+    let folder = tempfile::TempDir::new().unwrap();
+    let server_workspace = Workspace::detect(server.path()).unwrap();
+    let mut config = test_config();
+    config.state.state_dir = "api-state".into();
+    config.memory.session_dir = "api-memory/sessions".into();
+    config.memory.durable_dir = "api-memory/durable".into();
+    let app = router(ApiState::new(server_workspace, config));
+
+    let marker = folder.path().join("marker.txt");
+    std::fs::write(&marker, "folder-root").unwrap();
+
+    let create_body = serde_json::json!({
+        "message": serde_json::json!({
+            "tool": "write_file",
+            "args": { "path": "from-job.txt", "content": "folder-ok" }
+        }).to_string(),
+        "model": "fake-raw",
+        "approval": "auto",
+        "max_steps": 1,
+        "workspace": {
+            "kind": "folder",
+            "root": folder.path()
+        }
+    });
+
+    let create = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/jobs")
+                .header("content-type", "application/json")
+                .body(Body::from(create_body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(create.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let created: CreateJobResponse = serde_json::from_slice(&body).unwrap();
+    let state = wait_for_status(app, created.job_id.to_string(), RunStatus::Done).await;
+    assert_eq!(state.status, RunStatus::Done);
+
+    let written = folder.path().join("from-job.txt");
+    assert_eq!(std::fs::read_to_string(written).unwrap(), "folder-ok");
+    assert!(
+        folder.path().join("api-state").join("runs").is_dir(),
+        "state should live under the opened folder root"
+    );
+    assert!(
+        !server.path().join("api-state").join("runs").exists(),
+        "server cwd workspace must not receive the job state"
+    );
+    assert_eq!(std::fs::read_to_string(marker).unwrap(), "folder-root");
+}
+
+#[tokio::test]
+async fn api_can_create_job_in_explicit_repo_root() {
+    let server = tempfile::TempDir::new().unwrap();
+    let repo = tempfile::TempDir::new().unwrap();
+    std::fs::create_dir(repo.path().join(".git")).unwrap();
+    let server_workspace = Workspace::detect(server.path()).unwrap();
+    let mut config = test_config();
+    config.state.state_dir = "api-state".into();
+    let app = router(ApiState::new(server_workspace, config));
+
+    let create_body = serde_json::json!({
+        "message": serde_json::json!({
+            "tool": "write_file",
+            "args": { "path": "repo-note.txt", "content": "repo-ok" }
+        }).to_string(),
+        "model": "fake-raw",
+        "approval": "auto",
+        "max_steps": 1,
+        "workspace": {
+            "kind": "repo",
+            "root": repo.path()
+        }
+    });
+
+    let create = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/jobs")
+                .header("content-type", "application/json")
+                .body(Body::from(create_body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(create.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let created: CreateJobResponse = serde_json::from_slice(&body).unwrap();
+    let state = wait_for_status(app, created.job_id.to_string(), RunStatus::Done).await;
+    assert_eq!(state.status, RunStatus::Done);
+
+    assert_eq!(
+        std::fs::read_to_string(repo.path().join("repo-note.txt")).unwrap(),
+        "repo-ok"
+    );
+    assert!(repo.path().join("api-state").join("runs").is_dir());
+    assert!(!server.path().join("api-state").join("runs").exists());
+}
+
+#[tokio::test]
+async fn api_rejects_invalid_folder_and_repo_workspace_bindings() {
+    let server = tempfile::TempDir::new().unwrap();
+    let folder = tempfile::TempDir::new().unwrap();
+    let app = router(ApiState::new(
+        Workspace::detect(server.path()).unwrap(),
+        test_config(),
+    ));
+
+    let missing_root = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/jobs")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "message": "x",
+                        "model": "fake",
+                        "workspace": { "kind": "folder" }
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(missing_root.status(), StatusCode::BAD_REQUEST);
+
+    let relative = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/jobs")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "message": "x",
+                        "model": "fake",
+                        "workspace": {
+                            "kind": "folder",
+                            "root": "relative/not-absolute"
+                        }
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(relative.status(), StatusCode::BAD_REQUEST);
+
+    let repo_without_git = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/jobs")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "message": "x",
+                        "model": "fake",
+                        "workspace": {
+                            "kind": "repo",
+                            "root": folder.path()
+                        }
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(repo_without_git.status(), StatusCode::BAD_REQUEST);
+
+    let mixed_fields = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/jobs")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "message": "x",
+                        "model": "fake",
+                        "workspace": {
+                            "kind": "folder",
+                            "root": folder.path(),
+                            "name": "should-not-be-here"
+                        }
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(mixed_fields.status(), StatusCode::BAD_REQUEST);
+
+    let task_with_root = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/jobs")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "message": "x",
+                        "model": "fake",
+                        "workspace": {
+                            "kind": "task",
+                            "name": "x",
+                            "root": folder.path()
+                        }
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(task_with_root.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn api_hard_resumes_second_turn_in_explicit_folder_workspace() {
+    let server = tempfile::TempDir::new().unwrap();
+    let folder = tempfile::TempDir::new().unwrap();
+    let mut config = test_config();
+    config.state.state_dir = "api-state".into();
+    let app = router(ApiState::new(
+        Workspace::detect(server.path()).unwrap(),
+        config,
+    ));
+    let workspace_binding = serde_json::json!({
+        "kind": "folder",
+        "root": folder.path()
+    });
+
+    let first_body = serde_json::json!({
+        "message": "first folder turn",
+        "model": "fake",
+        "workspace": workspace_binding
+    });
+    let create = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/jobs")
+                .header("content-type", "application/json")
+                .body(Body::from(first_body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(create.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let first: CreateJobResponse = serde_json::from_slice(&body).unwrap();
+    let first_state = wait_for_done(app.clone(), first.job_id.to_string()).await;
+    assert_eq!(first_state.status, RunStatus::Done);
+
+    let state_store = rove_runtime::state::store::StateStore::new(&folder.path().join("api-state"));
+    let first_task_state: TaskState = serde_json::from_slice(
+        &std::fs::read(
+            state_store
+                .run_store
+                .run_dir(&first.run_id)
+                .join("task_state.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+
+    let resume_body = serde_json::json!({
+        "message": "second folder turn",
+        "model": "fake",
+        "resume": "latest",
+        "workspace": workspace_binding
+    });
+    let create = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/jobs")
+                .header("content-type", "application/json")
+                .body(Body::from(resume_body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(create.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let resumed: CreateJobResponse = serde_json::from_slice(&body).unwrap();
+    assert_ne!(resumed.run_id, first.run_id);
+    assert_eq!(resumed.resumed_from_run_id, Some(first.run_id));
+    assert_eq!(resumed.job_id, first.job_id);
+
+    let resumed_state = wait_for_done(app.clone(), resumed.job_id.to_string()).await;
+    assert_eq!(resumed_state.status, RunStatus::Done);
+    assert_eq!(resumed_state.resumed_from_run_id, Some(first.run_id));
+
+    let resumed_task_state: TaskState = serde_json::from_slice(
+        &std::fs::read(
+            state_store
+                .run_store
+                .run_dir(&resumed.run_id)
+                .join("task_state.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(resumed_task_state.session_id, first_task_state.session_id);
+    assert_eq!(resumed_task_state.job_id, first_task_state.job_id);
+    assert!(
+        resumed_task_state
+            .history
+            .iter()
+            .any(|message| message.role == Role::User && message.content == "first folder turn")
+    );
+    assert!(
+        resumed_task_state
+            .history
+            .iter()
+            .any(|message| message.role == Role::User && message.content == "second folder turn")
+    );
+    assert!(
+        !server.path().join("api-state").join("runs").exists(),
+        "hard resume must not fall back to server cwd workspace"
+    );
+}
+
+#[tokio::test]
+async fn api_rejects_resume_when_workspace_root_has_no_task_state() {
+    let server = tempfile::TempDir::new().unwrap();
+    let folder = tempfile::TempDir::new().unwrap();
+    let other = tempfile::TempDir::new().unwrap();
+    let mut config = test_config();
+    config.state.state_dir = "api-state".into();
+    let app = router(ApiState::new(
+        Workspace::detect(server.path()).unwrap(),
+        config,
+    ));
+
+    let first_body = serde_json::json!({
+        "message": "seed folder turn",
+        "model": "fake",
+        "workspace": {
+            "kind": "folder",
+            "root": folder.path()
+        }
+    });
+    let create = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/jobs")
+                .header("content-type", "application/json")
+                .body(Body::from(first_body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(create.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let first: CreateJobResponse = serde_json::from_slice(&body).unwrap();
+    let first_state = wait_for_done(app.clone(), first.job_id.to_string()).await;
+    assert_eq!(first_state.status, RunStatus::Done);
+
+    // Resume against a different explicit root must not invent soft continuity.
+    let mismatched = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/jobs")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "message": "resume wrong root",
+                        "model": "fake",
+                        "resume": "latest",
+                        "workspace": {
+                            "kind": "folder",
+                            "root": other.path()
+                        }
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(mismatched.status(), StatusCode::BAD_REQUEST);
+    let body = axum::body::to_bytes(mismatched.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let error: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(
+        error["error"]
+            .as_str()
+            .unwrap()
+            .contains("nothing to resume in this workspace"),
+        "expected hard-resume failure, got {error}"
+    );
+
+    // Omitting workspace falls back to the API process workspace, which has no
+    // durable state for the folder job — also fail closed.
+    let omitted = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/jobs")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "message": "resume without workspace",
+                        "model": "fake",
+                        "resume": "latest"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(omitted.status(), StatusCode::BAD_REQUEST);
+    let body = axum::body::to_bytes(omitted.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let error: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(
+        error["error"]
+            .as_str()
+            .unwrap()
+            .contains("nothing to resume in this workspace"),
+        "expected hard-resume failure without workspace, got {error}"
+    );
+    assert!(
+        !other.path().join("api-state").join("runs").exists(),
+        "failed resume must not create a silent one-shot job under the wrong root"
+    );
+}
+
+#[tokio::test]
+async fn api_approves_pending_tool_under_explicit_folder_root() {
+    let server = tempfile::TempDir::new().unwrap();
+    let folder = tempfile::TempDir::new().unwrap();
+    let mut config = test_config();
+    config.state.state_dir = "api-state".into();
+    let app = router(ApiState::new(
+        Workspace::detect(server.path()).unwrap(),
+        config,
+    ));
+    let output_path = folder.path().join("approved-folder.txt");
+
+    let create_body = serde_json::json!({
+        "message": serde_json::json!({
+            "tool": "write_file",
+            "args": {
+                "path": "approved-folder.txt",
+                "content": "ok"
+            }
+        }).to_string(),
+        "model": "fake-raw",
+        "approval": "ask",
+        "max_steps": 1,
+        "workspace": {
+            "kind": "folder",
+            "root": folder.path()
+        }
+    });
+
+    let create = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/jobs")
+                .header("content-type", "application/json")
+                .body(Body::from(create_body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(create.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let created: CreateJobResponse = serde_json::from_slice(&body).unwrap();
+
+    let pending = wait_for_approval_event(app.clone(), created.job_id.to_string()).await;
+    let approval = pending.pending_approvals.first().unwrap();
+    assert_eq!(approval.name, "write_file");
+    assert!(!output_path.exists(), "tool should wait before approval");
+
+    let approve = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/jobs/{}/approvals/{}",
+                    created.job_id, approval.call_id
+                ))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"decision":"approve"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(approve.status(), StatusCode::OK);
+
+    let state = wait_for_done(app.clone(), created.job_id.to_string()).await;
+    assert_eq!(state.status, RunStatus::Done);
+    assert_eq!(std::fs::read_to_string(output_path).unwrap(), "ok");
+    assert!(!server.path().join("approved-folder.txt").exists());
 }
 
 #[tokio::test]
