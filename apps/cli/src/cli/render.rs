@@ -137,7 +137,7 @@ fn repl_tool_start_block(name: &str, args: &serde_json::Value) -> ReplToolStartB
     }
 }
 
-fn shell_result_summary(result: &rove_runtime::types::ToolResult) -> Option<Vec<String>> {
+fn run_shell_result_summary(result: &rove_runtime::types::ToolResult) -> Option<Vec<String>> {
     let output: ShellOutputView = serde_json::from_str(&result.output).ok()?;
     let mut lines = Vec::new();
     let exit = output
@@ -256,7 +256,7 @@ fn render_repl_update(
                     .map(|name| name == "run_shell")
                     .unwrap_or(false)
                 {
-                    if let Some(lines) = shell_result_summary(&result) {
+                    if let Some(lines) = run_shell_result_summary(&result) {
                         for line in lines {
                             eprintln!("  {line}");
                         }
@@ -764,7 +764,7 @@ mod tests {
     }
 
     #[test]
-    fn repl_tool_start_block_uses_command_for_shell_tool() {
+    fn repl_tool_start_block_uses_command_for_run_shell() {
         assert_eq!(
             super::repl_tool_start_block("run_shell", &serde_json::json!({"command":"cargo test"})),
             super::ReplToolStartBlock::Command {
@@ -781,7 +781,7 @@ mod tests {
     }
 
     #[test]
-    fn shell_result_summary_formats_exit_code_and_streams() {
+    fn run_shell_result_summary_formats_exit_code_and_streams() {
         let call_id = CallId::new();
         let result = ToolResult {
             call_id,
@@ -799,14 +799,14 @@ mod tests {
             metadata: Default::default(),
         };
 
-        let lines = super::shell_result_summary(&result).unwrap();
+        let lines = super::run_shell_result_summary(&result).unwrap();
 
         assert_eq!(lines[0], "exit 0");
         assert_eq!(lines[1], "stdout ok");
     }
 
     #[test]
-    fn shell_result_summary_marks_truncated_output() {
+    fn run_shell_result_summary_marks_truncated_output() {
         let call_id = CallId::new();
         let result = ToolResult {
             call_id,
@@ -824,7 +824,7 @@ mod tests {
             metadata: Default::default(),
         };
 
-        let lines = super::shell_result_summary(&result).unwrap();
+        let lines = super::run_shell_result_summary(&result).unwrap();
 
         assert_eq!(lines[0], "exit 101");
         assert_eq!(lines[1], "stderr failure");

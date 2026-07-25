@@ -192,7 +192,7 @@ runtime construction.
 
 High-level flow in `src/main.rs`:
 
-1. Parse `Args` from `src/interfaces/cli/args.rs`.
+1. Parse `Args` from `apps/cli/src/cli/args.rs`.
 2. If `Args::is_sync_fast_path()` is true, run it without creating a Tokio runtime:
    - `dump-config`
 3. Create a Tokio runtime for async commands and normal runs.
@@ -398,26 +398,26 @@ cancels that run and keeps the REPL process alive.
 Relevant code:
 
 - `src/main.rs`
-- `src/interfaces/cli/args.rs`
-- `src/interfaces/cli/oneshot.rs`
-- `src/interfaces/cli/repl.rs`
-- `src/interfaces/cli/sessions.rs`
-- `src/interfaces/cli/state.rs`
-- `src/interfaces/cli/index.rs`
-- `src/interfaces/tui/action.rs`
-- `src/interfaces/tui/app.rs`
-- `src/interfaces/tui/effect.rs`
-- `src/interfaces/tui/keymap.rs`
-- `src/interfaces/tui/providers.rs`
-- `src/interfaces/tui/state.rs`
-- `src/interfaces/tui/reducer.rs`
-- `src/interfaces/tui/render.rs`
-- `src/interfaces/tui/sanitize.rs`
-- `src/interfaces/tui/terminal.rs`
-- `src/interfaces/tui/widgets/*`
-- `src/interfaces/terminal/interaction.rs`
-- `src/interfaces/terminal/run.rs`
-- `src/interfaces/terminal/view.rs`
+- `apps/cli/src/cli/args.rs`
+- `apps/cli/src/cli/oneshot.rs`
+- `apps/cli/src/cli/repl.rs`
+- `apps/cli/src/cli/sessions.rs`
+- `apps/cli/src/cli/state.rs`
+- `apps/cli/src/cli/index.rs`
+- `apps/cli/src/tui/action.rs`
+- `apps/cli/src/tui/app.rs`
+- `apps/cli/src/tui/effect.rs`
+- `apps/cli/src/tui/keymap.rs`
+- `apps/cli/src/tui/providers.rs`
+- `apps/cli/src/tui/state.rs`
+- `apps/cli/src/tui/reducer.rs`
+- `apps/cli/src/tui/render.rs`
+- `apps/cli/src/tui/sanitize.rs`
+- `apps/cli/src/tui/terminal.rs`
+- `apps/cli/src/tui/widgets/*`
+- `apps/cli/src/terminal/interaction.rs`
+- `apps/cli/src/terminal/run.rs`
+- `apps/cli/src/terminal/view.rs`
 - `runtime/src/state/index.rs`
 - `runtime/src/state/resume.rs`
 - `runtime/src/state/store.rs`
@@ -477,8 +477,8 @@ Historical run discovery is read-only. `/runs` returns recent run identity, stat
 Relevant code:
 
 - `src/bin/rove-api.rs`
-- `src/interfaces/api/mod.rs`
-- `src/interfaces/api/security.rs`
+- `apps/api/src/lib.rs`
+- `apps/api/src/security.rs`
 
 ## 6. Web Workbench Path
 
@@ -608,8 +608,8 @@ text.
 
 Adding a new event requires checking:
 
-- CLI rendering in `src/interfaces/cli/oneshot.rs`
-- API SSE/event persistence in `src/interfaces/api/mod.rs` and `runtime/src/state/index.rs`
+- CLI rendering in `apps/cli/src/cli/oneshot.rs`
+- API SSE/event persistence in `apps/api/src/lib.rs` and `runtime/src/state/index.rs`
 - Web types and reducer in `apps/web/lib/rove-types.ts` and `apps/web/lib/rove-state.ts`
 - artifact recording in `runtime/src/state/artifacts.rs` if it affects resume/report state
 
@@ -848,8 +848,9 @@ Relevant code:
 Tools implement the `rove-core` `Tool` contract and are registered in its
 `ToolRegistry`. The registry projects operational `ToolDescriptor` values into
 model-visible schemas and dispatches validated execution by name. Local
-built-in implementations and invocation adapters live in
-`runtime/src/tools/`; root compatibility modules re-export their public API.
+built-in implementations and invocation adapters live in `runtime/src/tools/`.
+Product shells assemble the default registry through
+`apps/bootstrap::tool_registry` / `tool_registry_with_mcp`.
 
 Current built-in tools:
 
@@ -941,12 +942,12 @@ Relevant code:
 - `runtime/src/types.rs`
 - `runtime/src/tool_input.rs`
 - `runtime/src/tool_turn.rs`
-- `src/interfaces/cli/approval.rs`
-- `src/interfaces/cli/input.rs`
-- `src/interfaces/api/mod.rs`
-- `src/interfaces/terminal/interaction.rs`
-- `src/interfaces/tui/providers.rs`
-- `src/tools/request_input.rs`
+- `apps/cli/src/cli/approval.rs`
+- `apps/cli/src/cli/input.rs`
+- `apps/api/src/lib.rs`
+- `apps/cli/src/terminal/interaction.rs`
+- `apps/cli/src/tui/`
+- `runtime/src/tools/request_input.rs`
 
 ## 14. State Artifacts
 
@@ -1032,7 +1033,7 @@ Relevant code:
 
 - `runtime/src/state/index.rs`
 - `runtime/src/state/store.rs`
-- `src/interfaces/cli/state.rs`
+- `apps/cli/src/cli/state.rs`
 
 ## 16. Memory
 
@@ -1161,7 +1162,7 @@ runtime gaps for the current local-first target.
 Relevant code:
 
 - `src/config.rs`
-- `src/interfaces/api/security.rs`
+- `apps/api/src/security.rs`
 - `tests/api.rs`
 
 ## 20. Testing And Verification

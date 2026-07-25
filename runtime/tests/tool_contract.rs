@@ -201,7 +201,7 @@ async fn memory_tool_uses_configured_paths_and_rejects_unsafe_promotion() {
 }
 
 #[tokio::test]
-async fn shell_tool_rejects_empty_nul_and_denied_commands_before_execution() {
+async fn run_shell_rejects_empty_nul_and_denied_commands_before_execution() {
     let temp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(temp.path()).unwrap();
     let context = tool_context(&workspace, MemoryPaths::from_workspace(&workspace, 8), None);

@@ -87,8 +87,8 @@ cannot supply trustworthy interaction events fail closed.
 - Provider adapters normalize provider-specific streams into `ModelEvent`.
 - `rove-models` owns the normalized message/tool/usage/error protocol, provider
   adapters, routing, health, and Fake Model without depending on another local
-  project package. The root facade re-exports these contracts while
-  AppConfig-driven construction is the product assembly path (named profiles only).
+  project package. Product assembly builds clients through
+  `apps/bootstrap` (`AppConfig` + named profiles only).
 - `rove-core` owns the in-memory `Agent`, `AgentEvent`, action/parser and model
   turn, cancellation/control, `Tool`/`ToolRegistry`, `ToolDescriptor`, and
   runtime-neutral policy hook. It depends only on `rove-models` and creates no

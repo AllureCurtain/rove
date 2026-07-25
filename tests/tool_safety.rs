@@ -284,7 +284,7 @@ async fn write_file_still_allows_new_normal_files() {
 }
 
 #[tokio::test]
-async fn shell_timeout_returns_structured_tool_error() {
+async fn run_shell_timeout_returns_structured_tool_error() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
     let command = if cfg!(windows) {
@@ -317,7 +317,7 @@ async fn shell_timeout_returns_structured_tool_error() {
 }
 
 #[tokio::test]
-async fn shell_output_is_truncated_and_marked() {
+async fn run_shell_output_is_truncated_and_marked() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
     let command = if cfg!(windows) {

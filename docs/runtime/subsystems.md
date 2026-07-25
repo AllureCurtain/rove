@@ -183,16 +183,14 @@ Native provider tool-use and JSON text action parsing are both supported. Native
 `ToolContext`, argument validation, and `ToolDescriptor`. The descriptor holds
 `destructive`, `parallel_safe`, and capability fields while its model-schema
 projection omits them. Local built-in tool implementations and their typed
-invocation adapters live in `runtime/src/tools/`; compatibility modules under
-`src/tools/` re-export them. The tool `Executor` pipeline, pre/post-tool plus
-post-run hooks (including session-summary), and the durable tool-turn
-coordinator live in `runtime/src/executor.rs`, `runtime/src/hooks/`, and
-`runtime/src/tool_turn.rs`; root modules re-export the public surface. The
-existing stdio/legacy-SSE MCP proxy is implemented in
-`runtime/src/tools/mcp_proxy.rs`. CLI and API assemble tools through the same
-product registry builder, which registers runtime built-ins and
-then loads configured MCP tools.
-adapter for a later refactor.
+invocation adapters live in `runtime/src/tools/`. The tool `Executor`
+pipeline, pre/post-tool plus post-run hooks (including session-summary), and the
+durable tool-turn coordinator live in `runtime/src/executor.rs`,
+`runtime/src/hooks/`, and `runtime/src/tool_turn.rs`. The existing
+stdio/legacy-SSE MCP proxy is implemented in `runtime/src/tools/mcp_proxy.rs`.
+CLI and API assemble tools through the same product registry builder
+(`apps/bootstrap::tool_registry` / `tool_registry_with_mcp`), which registers
+runtime built-ins and then loads configured MCP tools.
 
 Workspace, resolved Memory paths, approval policy, and input providers are
 runtime-owned services attached to a tool invocation through a typed extension.

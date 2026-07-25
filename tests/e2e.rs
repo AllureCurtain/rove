@@ -3701,7 +3701,7 @@ async fn file_tools_read_and_write_inside_workspace() {
 }
 
 #[tokio::test]
-async fn shell_tool_is_blocked_when_policy_is_never() {
+async fn run_shell_is_blocked_when_policy_is_never() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
 
@@ -3725,7 +3725,7 @@ async fn shell_tool_is_blocked_when_policy_is_never() {
 }
 
 #[tokio::test]
-async fn shell_tool_rejects_empty_command() {
+async fn run_shell_rejects_empty_command() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
 
@@ -3752,7 +3752,7 @@ async fn shell_tool_rejects_empty_command() {
 }
 
 #[tokio::test]
-async fn shell_tool_rejects_nul_byte_command() {
+async fn run_shell_rejects_nul_byte_command() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
 
@@ -3779,7 +3779,7 @@ async fn shell_tool_rejects_nul_byte_command() {
 }
 
 #[tokio::test]
-async fn shell_tool_runs_non_empty_command_when_approved() {
+async fn run_shell_runs_non_empty_command_when_approved() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
 
