@@ -80,18 +80,34 @@ pub struct ProviderModelsRequest {
     pub models_endpoint: Option<String>,
 }
 
+/// Per-job workspace binding for create-job.
+///
+/// - `task`: isolated workspace under `base`/`name` (existing behavior).
+/// - `folder` / `repo`: bind tools/state to an absolute local `root`.
+///   The opened path is the real execution root (not the API process cwd).
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct CreateJobWorkspace {
-    #[schema(value_type = String, example = "task")]
+    #[schema(value_type = String, example = "folder")]
     pub kind: CreateJobWorkspaceKind,
+    /// Task workspace name (`kind = task` only).
     pub name: Option<String>,
+    /// Task base directory (`kind = task` only). Defaults to
+    /// `<server state_dir>/tasks` when omitted.
     #[schema(value_type = String)]
     pub base: Option<PathBuf>,
+    /// Absolute local directory for `folder` / `repo` binding.
+    #[schema(value_type = String)]
+    pub root: Option<PathBuf>,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum CreateJobWorkspaceKind {
+    /// Plain local directory execution root.
+    Folder,
+    /// Local git repository execution root (requires `.git` at `root`).
+    Repo,
+    /// Isolated standalone task workspace under `base`/`name`.
     Task,
 }
 

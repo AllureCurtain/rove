@@ -262,6 +262,14 @@ async fn create_job(
     let resume_state = resolve_resume_state(&state_store, req.resume.as_deref())
         .await
         .map_err(|err| ApiError::bad_request(err.to_string()))?;
+    // Hard resume is fail-closed: a requested resume key that does not resolve
+    // durable task_state in the *requested* workspace must not open a silent
+    // one-shot session (product continuity rule 2A).
+    if req.resume.is_some() && resume_state.is_none() {
+        return Err(ApiError::bad_request(
+            "nothing to resume in this workspace; hard resume requires durable task_state under the requested workspace root",
+        ));
+    }
     let session_id = resume_state
         .as_ref()
         .map(|task_state| task_state.session_id)
@@ -871,6 +879,11 @@ fn workspace_for_create_job(
 
     match requested.kind {
         CreateJobWorkspaceKind::Task => {
+            if requested.root.is_some() {
+                return Err(ApiError::bad_request(
+                    "task workspace uses name/base, not root",
+                ));
+            }
             let name = requested
                 .name
                 .as_deref()
@@ -879,17 +892,42 @@ fn workspace_for_create_job(
                 .base
                 .clone()
                 .unwrap_or_else(|| state.inner.config.state_dir().join("tasks"));
-            let mut workspace = Workspace::task(&base, name)
+            let workspace = Workspace::task(&base, name)
                 .map_err(|err| ApiError::bad_request(err.to_string()))?;
-            let mut config = state.inner.config.clone();
-            config.rebase_to_workspace(&workspace.root);
-            workspace.state_dir = config.state_dir();
-            workspace
-                .ensure_state_dir()
-                .map_err(|err| ApiError::internal(err.to_string()))?;
-            Ok((workspace, config))
+            rebased_workspace_config(state, workspace)
+        }
+        CreateJobWorkspaceKind::Folder | CreateJobWorkspaceKind::Repo => {
+            if requested.name.is_some() || requested.base.is_some() {
+                return Err(ApiError::bad_request(
+                    "folder/repo workspace uses root, not name/base",
+                ));
+            }
+            let root = requested
+                .root
+                .as_ref()
+                .ok_or_else(|| ApiError::bad_request("folder/repo workspace root is required"))?;
+            let workspace = match requested.kind {
+                CreateJobWorkspaceKind::Folder => Workspace::open_folder(root),
+                CreateJobWorkspaceKind::Repo => Workspace::open_repo(root),
+                CreateJobWorkspaceKind::Task => unreachable!("task handled above"),
+            }
+            .map_err(|err| ApiError::bad_request(err.to_string()))?;
+            rebased_workspace_config(state, workspace)
         }
     }
+}
+
+fn rebased_workspace_config(
+    state: &ApiState,
+    mut workspace: Workspace,
+) -> Result<(Workspace, AppConfig), ApiError> {
+    let mut config = state.inner.config.clone();
+    config.rebase_to_workspace(&workspace.root);
+    workspace.state_dir = config.state_dir();
+    workspace
+        .ensure_state_dir()
+        .map_err(|err| ApiError::internal(err.to_string()))?;
+    Ok((workspace, config))
 }
 
 fn state_store_for_parts(workspace: &Workspace, config: &AppConfig) -> StateStore {

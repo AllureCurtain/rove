@@ -36,6 +36,15 @@ under that task directory. CLI runs use `--task-workspace <name>` with optional
 `--task-base <path>`. API jobs use a per-job workspace object with
 `kind = "task"`, `name`, and optional `base`.
 
+Folder and Repo product binding (Web M1 F0) uses the same per-job workspace
+object with `kind = "folder"` or `"repo"` and an absolute `root`. The API opens
+that path as the real execution root (tool boundary + rebased state/memory),
+without walking up to a parent git root for Folder, and requiring `.git` at
+`root` for Repo. Hard resume continues only when the second turn targets the
+same workspace root and durable `task_state`; a resume key that resolves to no
+state in that workspace store is rejected with 400 (no silent one-shot
+fallback).
+
 Task cleanup is directory-based: deleting the task workspace directory removes
 its local files, `.rove` state, run artifacts, and default memory. Browser and
 Desktop workspaces remain future specs only in

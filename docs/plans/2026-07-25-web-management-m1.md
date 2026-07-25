@@ -148,8 +148,11 @@ Make the two non-negotiables true **before** the product shell depends on them:
 ### Required outcomes
 
 - Create/run job can target an explicit absolute workspace root.
-- Runtime detects Folder vs Repo (and keeps Task) under that root.
-- State/artifacts for that run live under the target workspace’s `.rove/`.
+- Runtime binds Folder vs Repo (and keeps Task) under that root.
+- State/artifacts for that run live under the target workspace’s rebased state
+  dir (default relative path resolves under the opened root; typically the
+  configured `state.state_dir`, not necessarily a literal `.rove/` unless that
+  is the active config).
 - Continuing a session resumes durable runtime state for that conversation.
   Failure mode is explicit error, not silent one-shot degradation.
 - Integration tests cover:
@@ -184,10 +187,10 @@ Make the two non-negotiables true **before** the product shell depends on them:
 
 ### F0 exit checklist
 
-- [ ] Explicit workspace root executes tools against that root
-- [ ] Hard resume second turn passes automated test
-- [ ] No product path documents “stitch transcript as continuity”
-- [ ] OpenAPI/types updated if request shape changed
+- [x] Explicit workspace root executes tools against that root
+- [x] Hard resume second turn passes automated test
+- [x] No product path documents “stitch transcript as continuity”
+- [x] OpenAPI/types updated if request shape changed
 - [ ] Merged to `main` before F1 worktree creation
 
 ---

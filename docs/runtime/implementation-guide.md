@@ -109,6 +109,45 @@ server workspace config. Each task workspace gets its own resolved state store,
 run artifacts, filesystem tool boundary, shell working directory, session
 memory, and durable memory paths.
 
+API jobs can also bind an explicit absolute Folder or Repo root (product
+workspace open). The path becomes the real tool/state execution root for that
+job; the API process cwd is not used as a silent fallback:
+
+```json
+{
+  "message": "summarize this folder",
+  "model": "fake",
+  "workspace": {
+    "kind": "folder",
+    "root": "D:/projects/notes"
+  }
+}
+```
+
+```json
+{
+  "message": "inspect this repo",
+  "model": "fake",
+  "workspace": {
+    "kind": "repo",
+    "root": "D:/projects/my-repo"
+  }
+}
+```
+
+Rules for `folder` / `repo`:
+
+- `root` is required and must be an absolute existing directory.
+- `folder` pins the provided path even if a parent `.git` exists (no walk-up).
+- `repo` requires a `.git` entry at `root` itself.
+- `name` / `base` are task-only; mixing them with `folder`/`repo` is rejected.
+- Resume (`resume: "latest"` or a `run_id`) is store-scoped to the requested
+  workspace (explicit `folder`/`repo`/`task` root, otherwise the API process
+  workspace). Hard resume is fail-closed: if the resume key does not resolve
+  durable `task_state` in that store, create-job returns **400**
+  (`nothing to resume in this workspace`) instead of opening a silent one-shot
+  session. Clients must re-send the same workspace binding on continue turns.
+
 Task workspace lifecycle:
 
 1. Create or reuse the named workspace through CLI `--task-workspace` or API

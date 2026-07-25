@@ -67,10 +67,59 @@ impl Workspace {
         })
     }
 
+    /// Open an explicit absolute directory as a Folder workspace root.
+    ///
+    /// Unlike [`Self::detect`], this does **not** walk up to a parent git root:
+    /// the provided path is the real execution boundary.
+    pub fn open_folder(root: &Path) -> anyhow::Result<Self> {
+        let root = open_existing_dir(root)?;
+        Ok(Self {
+            state_dir: root.join(".rove"),
+            root,
+            kind: WorkspaceKind::Folder,
+        })
+    }
+
+    /// Open an explicit absolute directory as a Repo workspace root.
+    ///
+    /// Requires a `.git` entry **at** `root` (not only an ancestor). The provided
+    /// path remains the real execution boundary.
+    pub fn open_repo(root: &Path) -> anyhow::Result<Self> {
+        let root = open_existing_dir(root)?;
+        if !root.join(".git").exists() {
+            anyhow::bail!(
+                "repo workspace root must contain a .git entry: {}",
+                root.display()
+            );
+        }
+        Ok(Self {
+            state_dir: root.join(".rove"),
+            root,
+            kind: WorkspaceKind::Repo,
+        })
+    }
+
     /// Ensure the `.rove/` state directory exists.
     pub fn ensure_state_dir(&self) -> std::io::Result<()> {
         std::fs::create_dir_all(&self.state_dir)
     }
+}
+
+fn open_existing_dir(root: &Path) -> anyhow::Result<PathBuf> {
+    if !root.is_absolute() {
+        anyhow::bail!(
+            "workspace root must be an absolute path: {}",
+            root.display()
+        );
+    }
+    if !root.exists() {
+        anyhow::bail!("workspace root does not exist: {}", root.display());
+    }
+    if !root.is_dir() {
+        anyhow::bail!("workspace root must be a directory: {}", root.display());
+    }
+    root.canonicalize()
+        .map_err(|err| anyhow::anyhow!("invalid workspace root {}: {err}", root.display()))
 }
 
 /// Find the nearest ancestor (including self) that contains a `.git` directory.
@@ -154,5 +203,51 @@ mod tests {
         let err = Workspace::task(tmp.path(), "../escape").unwrap_err();
 
         assert!(err.to_string().contains("task workspace name"));
+    }
+
+    #[test]
+    fn open_folder_pins_explicit_root_even_when_git_exists() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::create_dir(tmp.path().join(".git")).unwrap();
+        let nested = tmp.path().join("nested");
+        std::fs::create_dir(&nested).unwrap();
+
+        let ws = Workspace::open_folder(&nested).unwrap();
+
+        assert_eq!(ws.kind, WorkspaceKind::Folder);
+        assert_eq!(ws.root, nested.canonicalize().unwrap());
+        assert_eq!(ws.state_dir, ws.root.join(".rove"));
+    }
+
+    #[test]
+    fn open_repo_requires_git_at_root() {
+        let tmp = TempDir::new().unwrap();
+        let err = Workspace::open_repo(tmp.path()).unwrap_err();
+        assert!(err.to_string().contains(".git"));
+
+        std::fs::create_dir(tmp.path().join(".git")).unwrap();
+        let ws = Workspace::open_repo(tmp.path()).unwrap();
+        assert_eq!(ws.kind, WorkspaceKind::Repo);
+        assert_eq!(ws.root, tmp.path().canonicalize().unwrap());
+    }
+
+    #[test]
+    fn open_folder_rejects_relative_and_missing_paths() {
+        let err = Workspace::open_folder(Path::new("relative/path")).unwrap_err();
+        assert!(err.to_string().contains("absolute path"));
+
+        let missing =
+            std::env::temp_dir().join(format!("rove-missing-workspace-{}", ulid::Ulid::new()));
+        let err = Workspace::open_folder(&missing).unwrap_err();
+        assert!(err.to_string().contains("does not exist"));
+    }
+
+    #[test]
+    fn open_folder_rejects_file_path() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("not-a-dir.txt");
+        std::fs::write(&file, "x").unwrap();
+        let err = Workspace::open_folder(&file).unwrap_err();
+        assert!(err.to_string().contains("must be a directory"));
     }
 }
