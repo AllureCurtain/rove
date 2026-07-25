@@ -132,7 +132,7 @@ model = "claude-..."
 | `read_memory_topic` | **`read_memory`** | Read one topic by name |
 | `request_input` | `request_input` | |
 | `echo` | not in default model registry | tests only |
-| — | `search_code` | **W3 only**; document so it is not forgotten |
+| — | `search_code` | First-class structured workspace search (W3); not vector RAG |
 
 Code basis for memory names: `runtime/src/tools/memory.rs`
 (`UpdateMemoryIndexTool` description: “Rebuild the durable memory index…”).

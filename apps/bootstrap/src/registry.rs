@@ -5,6 +5,7 @@ use rove_runtime::tools::fs::{FsReadTool, FsWriteTool};
 use rove_runtime::tools::mcp_proxy::register_mcp_tools_from_file;
 use rove_runtime::tools::memory::{ReadMemoryTopicTool, SaveMemoryTool, UpdateMemoryIndexTool};
 use rove_runtime::tools::request_input::RequestInputTool;
+use rove_runtime::tools::search::SearchCodeTool;
 use rove_runtime::tools::shell::{ShellPolicy, ShellTool};
 use rove_runtime::workspace::Workspace;
 
@@ -23,6 +24,7 @@ pub fn tool_registry_with_shell_policy(
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(FsReadTool::new(workspace.root.clone())));
     registry.register(Box::new(FsWriteTool::new(workspace.root.clone())));
+    registry.register(Box::new(SearchCodeTool::new(workspace.root.clone())));
     registry.register(Box::new(ReadMemoryTopicTool::new()));
     registry.register(Box::new(SaveMemoryTool::new()));
     registry.register(Box::new(UpdateMemoryIndexTool::new()));

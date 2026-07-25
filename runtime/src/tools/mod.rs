@@ -8,6 +8,7 @@ pub mod mcp_proxy;
 pub mod memory;
 pub mod request_input;
 pub mod runtime_context;
+pub mod search;
 pub mod shell;
 #[doc(hidden)]
 pub mod tool_input;

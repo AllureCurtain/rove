@@ -31,6 +31,7 @@ futures = "0.3.32"
 insta = "1"
 pretty_assertions = "1"
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm_0_29", "unstable-rendered-line-info"] }
+regex = "1"
 reqwest = { version = "0.13.3", features = ["json", "stream"] }
 rove-core = { path = "core" }
 rove-models = { path = "models" }
@@ -57,4 +58,5 @@ ulid = { version = "1.2.1", features = ["serde"] }
 utoipa = { version = "5.5.0", features = ["chrono"] }
 utoipa-axum = "0.2.0"
 utoipa-swagger-ui = { version = "9.0.2", features = ["axum"] }
+walkdir = "2"
 
