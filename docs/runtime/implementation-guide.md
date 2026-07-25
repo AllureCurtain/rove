@@ -858,11 +858,14 @@ Current built-in tools:
 |---|---|
 | `read_file` | Read UTF-8 workspace file |
 | `write_file` | Write UTF-8 workspace file |
+| `search_code` | Structured workspace text/regex search (workspace-bounded; not vector RAG) |
 | `run_shell` | Run shell command in workspace |
 | `save_memory` | Save durable memory topic |
 | `reindex_memory` | Rebuild durable memory index |
 | `read_memory` | Read durable memory topic |
 | `request_input` | Ask user/interface for mid-run input |
+
+Division of labor: prefer `search_code` for repo/text search; use `run_shell` for arbitrary commands.
 
 
 | `mcp__<server>__<tool>` | MCP-proxied remote tools |

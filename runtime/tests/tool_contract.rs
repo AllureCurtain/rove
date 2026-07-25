@@ -8,6 +8,7 @@ use rove_runtime::tools::fs::FsWriteTool;
 use rove_runtime::tools::memory::SaveMemoryTool;
 use rove_runtime::tools::request_input::RequestInputTool;
 use rove_runtime::tools::runtime_context::{runtime_tool_context, runtime_tool_services};
+use rove_runtime::tools::search::{SearchCodePolicy, SearchCodeTool};
 use rove_runtime::tools::shell::{ShellPolicy, ShellTool};
 use rove_runtime::types::{ApprovalPolicy, PendingUserInput, UserInputProvider, UserInputRequest};
 use tokio_util::sync::CancellationToken;
@@ -198,6 +199,69 @@ async fn memory_tool_uses_configured_paths_and_rejects_unsafe_promotion() {
     assert_eq!(output.content, "saved memory: project-convention");
     assert!(durable_dir.join("topics/project-convention.md").exists());
     assert!(!workspace.state_dir.join("memory/topics").exists());
+}
+
+#[tokio::test]
+async fn search_code_returns_structured_matches_and_caps_output() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let workspace_root = temp.path().join("workspace");
+    std::fs::create_dir(&workspace_root).unwrap();
+    let workspace = Workspace::detect(&workspace_root).unwrap();
+    std::fs::create_dir_all(workspace.root.join("src")).unwrap();
+    std::fs::write(
+        workspace.root.join("src/lib.rs"),
+        "pub fn alpha() {}\npub fn beta() {}\n",
+    )
+    .unwrap();
+    std::fs::write(workspace.root.join("src/other.toml"), "alpha = 1\n").unwrap();
+
+    let context = tool_context(&workspace, MemoryPaths::from_workspace(&workspace, 8), None);
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(SearchCodeTool::with_policy(
+        workspace.root.clone(),
+        SearchCodePolicy {
+            max_matches: 10,
+            max_output_bytes: 64 * 1024,
+            ..SearchCodePolicy::default()
+        },
+    )));
+
+    let output = registry
+        .execute(
+            "search_code",
+            serde_json::json!({
+                "query": "alpha",
+                "glob": "*.rs"
+            }),
+            &context,
+        )
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_str(&output.content).unwrap();
+    assert_eq!(body["match_count"], 1);
+    assert_eq!(body["matches"][0]["path"], "src/lib.rs");
+    assert!(
+        body["matches"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("alpha")
+    );
+
+    let escaped = registry
+        .execute(
+            "search_code",
+            serde_json::json!({
+                "query": "alpha",
+                "path": "../"
+            }),
+            &context,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        escaped,
+        ToolError::PermissionDenied { .. } | ToolError::InvalidInput { .. }
+    ));
 }
 
 #[tokio::test]

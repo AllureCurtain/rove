@@ -24,6 +24,7 @@ use rove_runtime::state::store::StateStore;
 use rove_runtime::tools::fs::{FsReadTool, FsWriteTool};
 use rove_runtime::tools::memory::SaveMemoryTool;
 use rove_runtime::tools::runtime_context::runtime_tool_context;
+use rove_runtime::tools::search::{SearchCodePolicy, SearchCodeTool};
 use rove_runtime::tools::shell::{ShellPolicy, ShellTool};
 use rove_runtime::types::{
     ApprovalPolicy, CallId, Message, ModelToolSchema, RunId, SessionId, ToolContext,
@@ -281,6 +282,159 @@ async fn write_file_still_allows_new_normal_files() {
         std::fs::read_to_string(workspace.root.join("nested").join("note.txt")).unwrap(),
         "inside"
     );
+}
+
+#[tokio::test]
+async fn search_code_finds_literal_match_inside_workspace() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    std::fs::create_dir_all(workspace.root.join("src")).unwrap();
+    std::fs::write(
+        workspace.root.join("src").join("main.rs"),
+        "fn unique_search_marker() {}\n",
+    )
+    .unwrap();
+
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(SearchCodeTool::new(workspace.root.clone())));
+    let executor = Executor::new(&registry);
+    let ctx = tool_context(&workspace);
+
+    let result = executor
+        .run(
+            &ctx,
+            "search_code",
+            serde_json::json!({
+                "query": "unique_search_marker",
+                "glob": "*.rs"
+            }),
+            CallId::new(),
+        )
+        .await
+        .unwrap();
+    let output: serde_json::Value = serde_json::from_str(&result.output).unwrap();
+
+    assert_eq!(output["match_count"], 1);
+    assert_eq!(output["matches"][0]["path"], "src/main.rs");
+    assert_eq!(output["matches"][0]["line"], 1);
+    assert!(
+        output["matches"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("unique_search_marker")
+    );
+}
+
+#[tokio::test]
+async fn search_code_rejects_parent_traversal() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(SearchCodeTool::new(workspace.root.clone())));
+    let executor = Executor::new(&registry);
+    let ctx = tool_context(&workspace);
+
+    let err = executor
+        .run(
+            &ctx,
+            "search_code",
+            serde_json::json!({
+                "query": "secret",
+                "path": "../"
+            }),
+            CallId::new(),
+        )
+        .await
+        .unwrap_err();
+
+    assert!(matches!(
+        err,
+        ToolError::PermissionDenied { reason } | ToolError::InvalidInput { reason }
+            if reason.contains("escapes workspace")
+                || reason.contains("absolute")
+                || reason.contains("empty")
+                || reason.contains("invalid path")
+    ));
+}
+
+#[tokio::test]
+async fn search_code_rejects_symlink_escape_when_supported() {
+    let (_tmp, workspace, outside_file) = workspace_with_outside_file();
+    std::fs::write(&outside_file, "outside_secret_token").unwrap();
+    let link = workspace.root.join("linked-outside.txt");
+    if !create_file_symlink(&outside_file, &link) {
+        return;
+    }
+
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(SearchCodeTool::new(workspace.root.clone())));
+    let executor = Executor::new(&registry);
+    let ctx = tool_context(&workspace);
+
+    let err = executor
+        .run(
+            &ctx,
+            "search_code",
+            serde_json::json!({
+                "query": "outside_secret_token",
+                "path": "linked-outside.txt"
+            }),
+            CallId::new(),
+        )
+        .await
+        .unwrap_err();
+
+    assert!(matches!(
+        err,
+        ToolError::PermissionDenied { reason } if reason.contains("escapes workspace")
+    ));
+}
+
+#[tokio::test]
+async fn search_code_respects_max_matches_cap() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let mut content = String::new();
+    for i in 0..20 {
+        content.push_str(&format!("marker_line_{i}\n"));
+    }
+    std::fs::write(workspace.root.join("many.txt"), content).unwrap();
+
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(SearchCodeTool::with_policy(
+        workspace.root.clone(),
+        SearchCodePolicy {
+            max_matches: 3,
+            ..SearchCodePolicy::default()
+        },
+    )));
+    let executor = Executor::new(&registry);
+    let ctx = tool_context(&workspace);
+
+    let result = executor
+        .run(
+            &ctx,
+            "search_code",
+            serde_json::json!({ "query": "marker_line_" }),
+            CallId::new(),
+        )
+        .await
+        .unwrap();
+    let output: serde_json::Value = serde_json::from_str(&result.output).unwrap();
+
+    assert_eq!(output["match_count"], 3);
+    assert_eq!(output["truncated"], true);
+    assert_eq!(output["truncated_reason"], "max_matches");
+}
+
+#[tokio::test]
+async fn search_code_is_registered_in_default_tool_registry() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let registry = rove_app_bootstrap::tool_registry(&workspace);
+    assert!(registry.has("search_code"));
+    assert!(registry.has("read_file"));
+    assert!(registry.has("run_shell"));
 }
 
 #[tokio::test]

@@ -325,8 +325,10 @@ CI is split by dependency weight:
 - `.github/workflows/ci.yml`: Rust default fmt/clippy/test and web test/typecheck/build.
 
 Default feedback loops stay free of heavy retrieval dependencies. Workspace
-retrieval is tool-based (`fs`/`run_shell`) plus layered session/durable file memory;
-there is no built-in vector database.
+retrieval is tool-based (`read_file` / `search_code` / `run_shell`) plus layered
+session/durable file memory; there is no built-in vector database. Prefer
+`search_code` for structured code search and reserve `run_shell` for arbitrary
+commands.
 
 ## Benchmark And Acceptance
 

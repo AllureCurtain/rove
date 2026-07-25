@@ -45,7 +45,7 @@ runtime/src/
     executor.rs
     tool_input.rs
     hooks/
-    fs.rs shell.rs memory.rs request_input.rs mcp_proxy.rs …
+    fs.rs search.rs shell.rs memory.rs request_input.rs mcp_proxy.rs …
   state/          StateStore, trace, artifacts, resume, SQLite
   memory/         durable + session memory services
   context/        ContextManager, compaction, prompt metadata
