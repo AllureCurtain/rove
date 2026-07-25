@@ -15,9 +15,9 @@ session/durable memory, local tools/MCP, the tool `Executor` and hooks,
 runtime-specific tool turns, planning/step coordination, durable event
 translation, and the persistent `Engine` facade.
 `runtime/src/model_turn.rs` is the synchronous translator from in-memory
-`AgentEvent` values into durable `StreamEvent` values. Root `src/core/*`
-modules re-export the public surface during the compatibility window.
-Product tool-registry assembly and first-party `AppConfig`
+`AgentEvent` values into durable `StreamEvent` values. The product default
+entry is `runtime::Engine` via `apps/bootstrap::build_engine`; `core::Agent`
+is embed-only. Product tool-registry assembly and first-party `AppConfig`
 live in product bootstrap and app shells. Runtime tool turns
 consume the `rove-core` Tool contract and registry without placing
 Workspace, Memory, approval, or input fields on the minimal core `ToolContext`.

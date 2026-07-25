@@ -11,10 +11,10 @@ pub const EXECUTION_POLICY_VERSION: u32 = 1;
 
 /// Compatibility ceiling for the first bounded planned-step runner.
 ///
-/// The legacy runtime exposes only `max_steps`, which maps to the number of
-/// planned step attempts. A separate, named ceiling keeps a single step from
-/// consuming that entire run budget while the public multidimensional config
-/// is still being introduced.
+/// The public surface still exposes sugar `max_steps`, which maps to the number
+/// of planned step attempts under PlanReact. A separate, named ceiling keeps a
+/// single step from consuming that entire run budget while the multidimensional
+/// config is still being introduced.
 pub const DEFAULT_MAX_MODEL_TURNS_PER_STEP: u32 = 4;
 
 pub fn planned_step_failure_message(step_title: &str, reason: &str) -> String {
@@ -30,7 +30,8 @@ pub enum ExecutionStrategy {
 }
 
 impl ExecutionStrategy {
-    pub fn from_legacy(plan_enabled: bool) -> Self {
+    /// Map the sugar `plan_enabled` flag into the resolved strategy.
+    pub fn from_plan_enabled(plan_enabled: bool) -> Self {
         if plan_enabled {
             Self::PlanReact
         } else {
@@ -51,7 +52,8 @@ pub enum StrategySelectionSource {
     Session,
     Config,
     CompatibilityDefault,
-    LegacyPlanEnabled,
+    /// Derived from the sugar `plan_enabled` / `max_steps` fields.
+    MaxStepsAndPlanFlag,
 }
 
 /// Independent limits for the lifecycle phases and their observable work.
@@ -73,8 +75,12 @@ pub struct ExecutionBudgetLimits {
 }
 
 impl ExecutionBudgetLimits {
-    /// Resolve the old single counter without assigning it to multiple units.
-    pub fn from_legacy(max_steps: u32, strategy: ExecutionStrategy) -> Self {
+    /// Project the sugar `max_steps` counter into strategy-specific budget units.
+    ///
+    /// React uses model turns; PlanReact uses planned step attempts and keeps the
+    /// independent per-step model-turn ceiling. The single counter is never
+    /// assigned to multiple units at once.
+    pub fn from_max_steps(max_steps: u32, strategy: ExecutionStrategy) -> Self {
         let mut limits = Self::default();
         match strategy {
             ExecutionStrategy::React => limits.max_model_turns = Some(max_steps),
@@ -146,13 +152,17 @@ pub struct ExecutionPolicy {
 }
 
 impl ExecutionPolicy {
-    pub fn from_legacy(max_steps: u32, plan_enabled: bool) -> Self {
-        let strategy = ExecutionStrategy::from_legacy(plan_enabled);
+    /// Build a resolved policy from the sugar `max_steps` / `plan_enabled` fields.
+    ///
+    /// Callers that still expose those fields write into `ExecutionPolicy` here;
+    /// the policy remains the sole execution-config truth.
+    pub fn from_max_steps_and_plan_flag(max_steps: u32, plan_enabled: bool) -> Self {
+        let strategy = ExecutionStrategy::from_plan_enabled(plan_enabled);
         Self {
             version: EXECUTION_POLICY_VERSION,
             strategy,
-            selection_source: StrategySelectionSource::LegacyPlanEnabled,
-            budgets: ExecutionBudgetLimits::from_legacy(max_steps, strategy),
+            selection_source: StrategySelectionSource::MaxStepsAndPlanFlag,
+            budgets: ExecutionBudgetLimits::from_max_steps(max_steps, strategy),
         }
     }
 
@@ -645,13 +655,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn legacy_limits_keep_react_and_plan_units_distinct() {
-        let react = ExecutionPolicy::from_legacy(5, false);
+    fn max_steps_sugar_keeps_react_and_plan_units_distinct() {
+        let react = ExecutionPolicy::from_max_steps_and_plan_flag(5, false);
         assert_eq!(react.strategy, ExecutionStrategy::React);
         assert_eq!(react.budgets.max_model_turns, Some(5));
         assert_eq!(react.budgets.max_step_attempts, None);
 
-        let planned = ExecutionPolicy::from_legacy(5, true);
+        let planned = ExecutionPolicy::from_max_steps_and_plan_flag(5, true);
         assert_eq!(planned.strategy, ExecutionStrategy::PlanReact);
         assert_eq!(planned.budgets.max_step_attempts, Some(5));
         assert_eq!(planned.budgets.max_model_turns, None);

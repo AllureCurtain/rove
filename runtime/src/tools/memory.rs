@@ -123,7 +123,7 @@ impl Tool for SaveMemoryTool {
             .await
             .map_err(execution_failed)?;
 
-        update_memory_index(&memory_dir).await?;
+        rebuild_memory_index(&memory_dir).await?;
 
         Ok(ToolOutput::text(format!("saved memory: {slug}")))
     }
@@ -165,7 +165,7 @@ impl Tool for UpdateMemoryIndexTool {
         tokio::fs::create_dir_all(&memory_dir)
             .await
             .map_err(execution_failed)?;
-        update_memory_index(&memory_dir).await?;
+        rebuild_memory_index(&memory_dir).await?;
 
         Ok(ToolOutput::text("updated memory index"))
     }
@@ -239,7 +239,7 @@ fn memory_dir(ctx: &ToolContext<'_>) -> Result<PathBuf, ToolError> {
     Ok(runtime_tool_services(ctx)?.memory_paths.durable_dir.clone())
 }
 
-async fn update_memory_index(memory_dir: &Path) -> Result<(), ToolError> {
+async fn rebuild_memory_index(memory_dir: &Path) -> Result<(), ToolError> {
     let topics_dir = memory_dir.join("topics");
     let mut topic_paths = Vec::new();
     let mut entries = match tokio::fs::read_dir(&topics_dir).await {

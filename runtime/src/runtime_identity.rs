@@ -22,9 +22,9 @@ pub struct RuntimeIdentity {
 }
 
 impl RuntimeIdentity {
-    /// Resolve the persisted legacy fields without changing their wire schema.
-    pub fn execution_policy(&self) -> ExecutionPolicy {
-        ExecutionPolicy::from_legacy(self.max_steps, self.plan_enabled)
+    /// Project sugar fields into the typed policy without changing wire schema.
+    pub fn to_execution_policy(&self) -> ExecutionPolicy {
+        ExecutionPolicy::from_max_steps_and_plan_flag(self.max_steps, self.plan_enabled)
     }
 }
 
@@ -198,11 +198,11 @@ mod tests {
         assert_eq!(identity.max_steps, 12);
         assert!(identity.plan_enabled);
         assert_eq!(
-            identity.execution_policy().strategy,
+            identity.to_execution_policy().strategy,
             crate::execution::ExecutionStrategy::PlanReact
         );
         assert_eq!(
-            identity.execution_policy().budgets.max_step_attempts,
+            identity.to_execution_policy().budgets.max_step_attempts,
             Some(12)
         );
         assert!(identity.system_prompt_hash.starts_with("sha256:"));

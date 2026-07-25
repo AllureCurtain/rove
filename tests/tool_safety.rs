@@ -123,7 +123,7 @@ impl Tool for NestedFixtureTool {
 }
 
 #[tokio::test]
-async fn fs_write_records_diff_metadata_in_report() {
+async fn write_file_records_diff_metadata_in_report() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
     let state_store = StateStore::new(&workspace.state_dir);
@@ -172,7 +172,7 @@ async fn fs_write_records_diff_metadata_in_report() {
 }
 
 #[tokio::test]
-async fn fs_read_rejects_parent_traversal() {
+async fn read_file_rejects_parent_traversal() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
     let outside = tmp.path().parent().unwrap().join("outside-rove-test.txt");
@@ -200,7 +200,7 @@ async fn fs_read_rejects_parent_traversal() {
 }
 
 #[tokio::test]
-async fn fs_read_rejects_symlink_escape_when_supported() {
+async fn read_file_rejects_symlink_escape_when_supported() {
     let (_tmp, workspace, outside_file) = workspace_with_outside_file();
     let link = workspace.root.join("linked-outside.txt");
     if !create_file_symlink(&outside_file, &link) {
@@ -229,7 +229,7 @@ async fn fs_read_rejects_symlink_escape_when_supported() {
 }
 
 #[tokio::test]
-async fn fs_write_rejects_existing_symlink_escape_when_supported() {
+async fn write_file_rejects_existing_symlink_escape_when_supported() {
     let (_tmp, workspace, outside_file) = workspace_with_outside_file();
     let link = workspace.root.join("linked-outside.txt");
     if !create_file_symlink(&outside_file, &link) {
@@ -259,7 +259,7 @@ async fn fs_write_rejects_existing_symlink_escape_when_supported() {
 }
 
 #[tokio::test]
-async fn fs_write_still_allows_new_normal_files() {
+async fn write_file_still_allows_new_normal_files() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
     let mut registry = ToolRegistry::new();

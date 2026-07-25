@@ -21,7 +21,7 @@ test.describe("real API workbench integration", () => {
     await expect(page.getByLabel("Run details").getByText("done").first()).toBeVisible();
   });
 
-  test("approves a real fs_write tool call from the UI", async ({ page }) => {
+  test("approves a real write_file tool call from the UI", async ({ page }) => {
     await page.goto("/");
 
     const outputName = `approved-${Date.now()}.txt`;

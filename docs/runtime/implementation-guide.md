@@ -2,12 +2,10 @@
 
 This guide is for maintainers who need to understand, debug, or extend the current implementation. It describes what exists in the codebase today. Product intent and historical design rationale live in the top-level docs; the current runtime source of truth remains this `docs/runtime/` directory.
 
-The root manifest is a modular resolver-3 Cargo Workspace with
-the root `rove` compatibility package as default member and the independent
-`rove-models`, `rove-core`, and foundational `rove-runtime` packages as
-extracted lower layers. Use Workspace-wide commands for full gates. Persistent
-coordination/state services and app implementation paths still refer to the
-root package until their later extraction slices are complete.
+The root manifest is a modular resolver-3 Cargo Workspace whose default
+member is `apps/cli`, with independent packages `rove-models`, `rove-core`,
+`rove-runtime`, `rove-app-bootstrap`, `rove-cli`, `rove-api`, `rove-bench`, and
+`rove-integration-tests`. Use Workspace-wide commands for full gates.
 
 ## 1. Runtime Shape
 
@@ -59,7 +57,6 @@ Important entry points:
 | MCP transport/proxy | `runtime/src/tools/mcp_proxy.rs` |
 | Memory/context/compaction services | `runtime/src/memory/*`, `runtime/src/context.rs`, `runtime/src/compaction.rs` |
 | Tool executor and hooks | `runtime/src/executor.rs`, `runtime/src/hooks/` |
-| Transitional hook re-exports | `src/hooks/` |
 
 ## 2. Workspaces
 
@@ -131,8 +128,7 @@ Relevant code:
 
 - `runtime/src/workspace.rs`
 - `runtime/src/boundary.rs`
-- compatibility re-exports in `src/core/workspace.rs` and `src/core/boundary.rs`
-- `src/config.rs`
+- `apps/bootstrap/src/config.rs`
 
 ## 3. Configuration
 
@@ -571,7 +567,6 @@ Relevant code:
 - `core/src/types.rs`
 - `runtime/src/types.rs`
 - `runtime/src/execution.rs`
-- compatibility re-exports in `src/core/types.rs` and `src/core/execution.rs`
 
 ## 8. Stream Events
 
@@ -590,8 +585,6 @@ Current event variants:
 - `input_needed`
 - `plan_created`
 - `plan_step_started`
-- `plan_step_completed`
-- `plan_step_failed`
 - `step_result`
 - `plan_decision`
 - `plan_revised`
@@ -635,8 +628,7 @@ Workspace/path safety, runtime identity, approval/input contracts,
 context/compaction, memory, events, state services, the tool `Executor`
 pipeline, hooks, runtime-specific tool turns, planning/run coordination, and
 durable event translation live in `rove-runtime`; the normalized model turn and
-action parser live in `rove-core`. Root `src/core/*` paths remain compatibility
-re-exports. Product registry assembly and first-party
+action parser live in `rove-core`. Product registry assembly and first-party
 `AppConfig` live in product bootstrap and app shells.
 
 The high-level run flow:
@@ -702,7 +694,6 @@ Plan mutation semantics:
 Relevant code:
 
 - `runtime/src/engine.rs`
-- `src/core/engine.rs` (compatibility re-export)
 - `core/src/agent.rs`
 - `core/src/model_turn.rs`
 - `core/src/parser.rs`
@@ -897,7 +888,7 @@ schema lookup -> argument validation -> pre-tool hooks -> permission -> execute 
 
 Argument validation supports the JSON Schema subset used by built-in tools: object, array, string, number, integer, boolean, and null type checks; required fields; enum values; nested properties; array `items`, `minItems`, and `maxItems`; numeric `minimum` and `maximum`; string `minLength` and `maxLength`; and `additionalProperties: false`. Validation failures preserve `ToolError::InvalidArgs` and happen before tool execution.
 
-Filesystem tools resolve paths through `runtime/src/boundary.rs` (re-exported by `src/core/boundary.rs`). Reads canonicalize the final target; writes canonicalize existing targets or the nearest existing ancestor for new files. Both paths reject absolute paths, lexical workspace escapes, and symlink/reparse-point escapes that resolve outside the workspace.
+Filesystem tools resolve paths through `runtime/src/boundary.rs`. Reads canonicalize the final target; writes canonicalize existing targets or the nearest existing ancestor for new files. Both paths reject absolute paths, lexical workspace escapes, and symlink/reparse-point escapes that resolve outside the workspace.
 
 `write_file` returns structured mutation metadata for deterministic file writes. The metadata includes path, operation type, and a textual diff; it is exposed on `ToolCallCompleted.result.mutations` and persisted to `report.json` as `tool_mutations`. Shell commands are bounded by policy and return structured stdout/stderr/exit metadata, but shell write-sets are intentionally not inferred or snapshotted.
 
@@ -917,14 +908,9 @@ Relevant code:
 - `core/src/policy.rs`
 - `core/src/validation.rs`
 - `runtime/src/tools/`
-- `src/tools/traits.rs` and `src/tools/registry.rs` (compatibility re-exports)
-- `src/tools/{echo,fs,memory,request_input,runtime_context,shell}.rs`
-  (compatibility re-exports)
 - `runtime/src/executor.rs`
-- `src/core/executor.rs` (compatibility re-export)
 - `runtime/src/boundary.rs`
 - `runtime/src/hooks/`
-- `src/hooks/` (compatibility re-exports)
 
 ## 13. Approval And Input
 
@@ -1079,7 +1065,6 @@ Relevant code:
 - `runtime/src/memory/session.rs`
 - `runtime/src/memory/durable.rs`
 - `runtime/src/hooks/session_memory.rs`
-- `src/hooks/` (compatibility re-exports)
 - `runtime/src/tools/memory.rs`
 
 ## 17. MCP

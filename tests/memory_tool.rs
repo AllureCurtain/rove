@@ -282,7 +282,7 @@ async fn save_memory_keeps_index_within_hard_limits() {
 }
 
 #[tokio::test]
-async fn update_memory_index_rebuilds_index_from_existing_topics() {
+async fn reindex_memory_rebuilds_index_from_existing_topics() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
     let topics_dir = workspace.root.join(".rove").join("memory").join("topics");
@@ -327,7 +327,7 @@ async fn update_memory_index_rebuilds_index_from_existing_topics() {
 }
 
 #[tokio::test]
-async fn read_memory_topic_reads_only_named_topic() {
+async fn read_memory_reads_only_named_topic() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
     let topics_dir = workspace.root.join(".rove").join("memory").join("topics");
@@ -359,7 +359,7 @@ async fn read_memory_topic_reads_only_named_topic() {
 }
 
 #[tokio::test]
-async fn read_memory_topic_rejects_unsafe_name() {
+async fn read_memory_rejects_unsafe_name() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
     let mut registry = ToolRegistry::new();
