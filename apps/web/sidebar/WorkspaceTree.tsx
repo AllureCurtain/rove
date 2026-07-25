@@ -50,15 +50,27 @@ export function WorkspaceTree({
       </div>
       <div className="product-sidebar__scroll">
         {workspaces.length === 0 ? (
-          <p style={{ color: "var(--muted)", fontSize: "0.9rem", padding: "8px" }}>
-            No workspaces yet. Open a local folder or repo path.
-          </p>
+          <p className="sidebar-empty">No workspaces yet. Open a local folder or repo path.</p>
         ) : (
           workspaces.map((workspace) => {
             const sessions = sessionsByWorkspace[workspace.id] ?? [];
             const active = workspace.id === activeWorkspaceId;
+            const runningCount = sessions.filter((session) => session.status === "running").length;
+            const attentionCount = sessions.filter(
+              (session) => session.status === "needs_attention",
+            ).length;
+            const errorCount = sessions.filter((session) => session.status === "error").length;
+            const workspaceTone =
+              runningCount > 0
+                ? "running"
+                : attentionCount > 0
+                  ? "needs_attention"
+                  : errorCount > 0
+                    ? "error"
+                    : "idle";
+
             return (
-              <div className="workspace-group" key={workspace.id}>
+              <div className="workspace-group" key={workspace.id} data-tone={workspaceTone}>
                 <div className="workspace-group__row">
                   <button
                     type="button"
@@ -66,7 +78,28 @@ export function WorkspaceTree({
                     data-active={active}
                     onClick={() => onSelectWorkspace(workspace.id)}
                   >
-                    <span>{workspace.displayName}</span>
+                    <span className="workspace-group__title">
+                      <span>{workspace.displayName}</span>
+                      {runningCount > 0 ? (
+                        <span
+                          className="session-badge"
+                          data-status="running"
+                          title={`${runningCount} session${runningCount === 1 ? "" : "s"} running`}
+                        >
+                          {runningCount === 1 ? "Running" : `${runningCount} running`}
+                        </span>
+                      ) : null}
+                      {runningCount === 0 && attentionCount > 0 ? (
+                        <span className="session-badge" data-status="needs_attention">
+                          Needs attention
+                        </span>
+                      ) : null}
+                      {runningCount === 0 && attentionCount === 0 && errorCount > 0 ? (
+                        <span className="session-badge" data-status="error">
+                          Error
+                        </span>
+                      ) : null}
+                    </span>
                     <span className="workspace-group__path">{workspace.rootPath}</span>
                   </button>
                   <button
@@ -95,9 +128,16 @@ export function WorkspaceTree({
                             type="button"
                             className="session-item"
                             data-active={session.id === activeSessionId}
+                            data-status={session.status}
                             onClick={() => onSelectSession(workspace.id, session.id)}
+                            aria-label={sessionAriaLabel(session)}
                           >
-                            <span>{session.title}</span>
+                            <span className="session-item__title">{session.title}</span>
+                            {session.status !== "idle" ? (
+                              <span className="session-badge" data-status={session.status}>
+                                {sessionStatusLabel(session.status)}
+                              </span>
+                            ) : null}
                             <span
                               className="session-item__status"
                               data-status={session.status}
@@ -107,7 +147,7 @@ export function WorkspaceTree({
                         </li>
                       ))}
                     </ul>
-                    <div style={{ padding: "4px 0 8px 14px" }}>
+                    <div className="session-list__actions">
                       <button
                         type="button"
                         className="secondary"
@@ -117,6 +157,10 @@ export function WorkspaceTree({
                       </button>
                     </div>
                   </>
+                ) : runningCount > 0 ? (
+                  <p className="workspace-group__parallel" role="status">
+                    {runningCount} parallel session{runningCount === 1 ? "" : "s"} still running
+                  </p>
                 ) : null}
               </div>
             );
@@ -134,6 +178,26 @@ export function WorkspaceTree({
       ) : null}
     </aside>
   );
+}
+
+function sessionStatusLabel(status: SessionRecord["status"]): string {
+  switch (status) {
+    case "running":
+      return "Running";
+    case "needs_attention":
+      return "Attention";
+    case "error":
+      return "Error";
+    default:
+      return "Idle";
+  }
+}
+
+function sessionAriaLabel(session: SessionRecord): string {
+  if (session.status === "idle") {
+    return session.title;
+  }
+  return `${session.title}, ${sessionStatusLabel(session.status)}`;
 }
 
 function OpenWorkspaceDialog({
@@ -162,7 +226,7 @@ function OpenWorkspaceDialog({
     <div className="modal-backdrop" role="presentation">
       <form className="modal-card" onSubmit={handleSubmit} role="dialog" aria-label="Open workspace">
         <h2>Open workspace</h2>
-        <p style={{ margin: 0, color: "var(--muted)", fontSize: "0.9rem" }}>
+        <p className="modal-card__lede">
           Bind the agent to an absolute local folder or repository path. No full-disk scan.
         </p>
         <div className="field">

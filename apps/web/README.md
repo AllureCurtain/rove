@@ -1,15 +1,18 @@
 # rove Web
 
 Primary surface: the **product shell** (Workspace → Session → Run) against live
-`rove-api`. The old developer workbench is no longer the default entry.
+`rove-api`. The old developer workbench is not a second primary entry.
 
 ## Product shell (default `/`)
 
 - Empty state → open an absolute Folder/Repo path
 - Workspace tree with sessions (recents + pin, local persistence)
+- Parallel-session **running** badges in the sidebar
 - Chat transcript, tool cards, inline approvals, stop/cancel
-- Collapsible run inspector (plan / tools / approvals)
-- Settings shell with deep **Providers & Models** and **About / Runtime**
+- Collapsible run inspector with empty / loading / error / ready states
+- Settings shell with deep **Providers & Models**, **About / Runtime**, and
+  **Advanced / Developer** (Benchmark only here)
+- Light default + dark toggle via product design tokens
 - Session continue uses **hard resume only** (`resume: "latest"` under the
   opened workspace root). Soft transcript stitch is not a product path.
 
@@ -47,13 +50,12 @@ $env:ROVE_API_TOKEN = "local-secret"
 pnpm dev
 ```
 
-## Temporary workbench scaffold
+## Advanced / Developer only
 
-The previous runtime console remains available only at:
+- **Benchmark**: Settings → Advanced / Developer → Benchmark runner
+- **Legacy workbench scaffold**: `/dev/workbench` (escape hatch / migration only)
 
-`http://localhost:3000/dev/workbench`
-
-It is migration scaffolding, not a second primary product entry.
+Neither is primary product navigation.
 
 ## Providers
 
@@ -76,3 +78,18 @@ Focused product smoke (mock API):
 - inline approval
 - second turn hard resume with workspace root
 - providers test/list models without raw keys
+- theme toggle
+- inspector empty → ready after run
+- Advanced-only benchmark
+
+## Known M2 backlog (not M1)
+
+- Transcript restore after refresh (catalog persists; messages still in-memory)
+- Multi-session SSE follow when switching between parallel sessions
+- Full Settings section implementations beyond Providers / About / Advanced
+- Server-side provider profile persistence
+- Rich session export / cleanup
+- Memory management UI depth
+- Native Desktop host (Tauri)
+- Remote Gateway / device pairing
+- File-tree IDE features, diff studio, MCP hub marketplace

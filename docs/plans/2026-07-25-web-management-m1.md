@@ -289,11 +289,16 @@ Finish M1 product feel and remove temporary debt.
 
 ### F2 exit checklist
 
-- [ ] Theme toggle works and tokens cover shell/chat/settings
-- [ ] No second primary workbench homepage
-- [ ] M1 demo script passes on clean main-derived worktree
-- [ ] Known M2 backlog listed (session export, memory editor depth, server-side
+- [x] Theme toggle works and tokens cover shell/chat/settings
+- [x] No second primary workbench homepage
+- [x] M1 demo script passes on clean main-derived worktree
+- [x] Known M2 backlog listed (session export, memory editor depth, server-side
       provider profile store, etc.)
+
+F2 landed on `feature/web-m1-polish` (2026-07-25): product tokens daily-use
+complete, inspector empty/loading/error states, sidebar parallel running badges,
+Benchmark under Settings → Advanced only, `/dev/workbench` demoted to advanced
+escape hatch.
 
 ---
 
@@ -319,7 +324,12 @@ Run from a worktree after F0+F1 (F2 preferred):
 
 ## 8. Explicit M2+ backlog (not M1)
 
-- Full Settings section implementations beyond Providers/About
+Carried from F1 leftovers + later product depth (do **not** expand M1 for these):
+
+- Transcript restore after refresh (catalog persists; messages still in-memory)
+- Multi-session SSE follow when switching between parallel sessions
+- Optional split of product run-state reducer away from workbenchReducer names
+- Full Settings section implementations beyond Providers / About / Advanced
 - Server-side provider profile persistence
 - Rich session export/cleanup
 - Memory management UI depth
@@ -383,6 +393,9 @@ Do **not** pre-create F1/F2 worktrees in parallel with F0 for merge-intended wor
 
 ## changelog
 
+- 2026-07-25: F2 polish complete on `feature/web-m1-polish` — theme tokens,
+  inspector states, parallel running badges, Advanced-only Benchmark, M2 backlog
+  listed; dual primary workbench entry closed.
 - 2026-07-25: Initial sealed delivery plan with explicit serial-wave / limited-parallel
   verdict. Restored onto post-W2a `main` baseline. Implementation not started in the
   primary checkout by this document alone.

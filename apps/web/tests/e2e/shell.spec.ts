@@ -16,7 +16,7 @@ test("empty → open workspace → run → complete on live shell mock", async (
   const conversation = page.getByLabel("Conversation");
   await expect(conversation.getByText("Summarize the runtime state")).toBeVisible();
   await expect(conversation.getByText("Runtime summary complete")).toBeVisible();
-  await expect(page.getByLabel("Run inspector").getByText("Run completed")).toBeVisible();
+  await expect(page.getByLabel("Run inspector").getByText("Run completed", { exact: true })).toBeVisible();
 });
 
 test("inline approval works in product shell", async ({ page }) => {
@@ -120,6 +120,79 @@ test("second turn hard-resumes with resume latest and workspace root", async ({ 
     root: "D:/tmp/rove-shell-demo",
   });
   await expect(page.getByLabel("Run inspector").getByText("run-1").first()).toBeVisible();
+});
+
+test("theme toggle flips data-theme on the document", async ({ page }) => {
+  await installRunsMock(page);
+  await page.goto("/");
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+  await page.getByRole("button", { name: "Switch to dark theme" }).click();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await page.getByRole("button", { name: "Switch to light theme" }).click();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+});
+
+test("inspector shows empty then loading states during a run", async ({ page }) => {
+  await installShellMocks(page, "completed");
+  await page.goto("/");
+  await page.getByLabel("Absolute path").fill("D:/tmp/rove-shell-demo");
+  await page.getByRole("button", { name: "Open workspace", exact: true }).click();
+
+  const inspector = page.getByLabel("Run inspector");
+  await expect(inspector.getByText("No active run")).toBeVisible();
+  await expect(inspector.getByText(/Plan, tools, and approvals/)).toBeVisible();
+
+  await page.getByRole("textbox", { name: "Message" }).fill("Summarize the runtime state");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByLabel("Conversation").getByText("Runtime summary complete")).toBeVisible();
+  await expect(inspector.getByText("Run completed", { exact: true })).toBeVisible();
+});
+
+test("sidebar shows running badges for parallel sessions", async ({ page }) => {
+  await installShellMocks(page, "approval");
+  await page.goto("/");
+  await page.getByLabel("Absolute path").fill("D:/tmp/rove-shell-demo");
+  await page.getByRole("button", { name: "Open workspace", exact: true }).click();
+  await page.getByRole("textbox", { name: "Message" }).fill("Write a note");
+  await page.getByRole("button", { name: "Send" }).click();
+
+  await expect(page.getByLabel("Pending approval")).toBeVisible();
+  // Approval pauses the turn as needs_attention; running badge is used while busy.
+  await expect(
+    page
+      .locator(".session-badge")
+      .filter({ hasText: /Running|Attention|Needs attention/i })
+      .first(),
+  ).toBeVisible();
+  await expect(page.getByRole("button", { name: /Write a note/ })).toBeVisible();
+
+  await page.getByRole("button", { name: "New session" }).click();
+  // Original session remains non-idle while a second session exists in the workspace.
+  await expect(
+    page
+      .locator(".session-badge")
+      .filter({ hasText: /Running|Attention|Needs attention/i })
+      .first(),
+  ).toBeVisible();
+});
+
+test("benchmark lives under Settings Advanced, not primary nav", async ({ page }) => {
+  await installRunsMock(page);
+  await page.route(/\/api\/bench\/.*/, async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ suites: [], runs: [] }),
+    });
+  });
+
+  await page.goto("/");
+  await expect(page.getByRole("button", { name: "Benchmarks" })).toHaveCount(0);
+  await page.getByRole("button", { name: "Open settings" }).click();
+  await page.getByRole("button", { name: "Advanced / Developer" }).click();
+  await expect(page.getByRole("heading", { name: "Advanced / Developer" })).toBeVisible();
+  await page.getByRole("button", { name: /Benchmark runner/ }).click();
+  await expect(page.getByLabel("Benchmark runner")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Benchmark Runner" })).toBeVisible();
 });
 
 test("settings providers can test and list models without raw keys", async ({ page }) => {

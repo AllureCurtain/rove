@@ -3,6 +3,7 @@
 import { FormEvent, useMemo, useState } from "react";
 
 import { listProviderModels, testProvider } from "../api/run-controller";
+import { BenchmarkPanel } from "../components/benchmark-panel";
 import type { ProviderModelsResponse, ProviderTestResponse, ProviderType } from "../lib/rove-types";
 import {
   providerDefaultApiBase,
@@ -71,7 +72,11 @@ export function SettingsShell({
         {section === "general" ? (
           <GeneralSettings theme={theme} onThemeChange={onThemeChange} />
         ) : null}
-        {section !== "providers" && section !== "about" && section !== "general" ? (
+        {section === "advanced" ? <AdvancedSettings /> : null}
+        {section !== "providers" &&
+        section !== "about" &&
+        section !== "general" &&
+        section !== "advanced" ? (
           <PlaceholderSettings section={section} />
         ) : null}
       </div>
@@ -120,9 +125,49 @@ function PlaceholderSettings({ section }: { section: SettingsSectionId }) {
       <h1>{label}</h1>
       <p className="lede">Scaffolded for M1. Deep implementation lands in later waves.</p>
       <div className="placeholder-note">
-        This section is intentionally a placeholder. Providers & Models and About / Runtime are
-        the deep M1 settings surfaces.
+        This section is intentionally a placeholder. Providers & Models, About / Runtime, and
+        Advanced / Developer (Benchmark) are the deeper M1 settings surfaces.
       </div>
+    </div>
+  );
+}
+
+function AdvancedSettings() {
+  const [showBenchmark, setShowBenchmark] = useState(false);
+
+  return (
+    <div className="settings-panel">
+      <h1>Advanced / Developer</h1>
+      <p className="lede">
+        Escape hatches for power users. Benchmark is intentionally not primary product navigation.
+      </p>
+      <div className="settings-card">
+        <h2>Developer tools</h2>
+        <div className="advanced-links">
+          <button
+            type="button"
+            className="advanced-link-card"
+            onClick={() => setShowBenchmark((value) => !value)}
+            aria-expanded={showBenchmark}
+          >
+            Benchmark runner
+            <span>
+              Deterministic evaluation suites against the API. Hidden from primary chat IA.
+            </span>
+          </button>
+          <a className="advanced-link-card" href="/dev/workbench">
+            Legacy workbench scaffold
+            <span>
+              Temporary migration console only. Product entry remains the shell at `/`.
+            </span>
+          </a>
+        </div>
+      </div>
+      {showBenchmark ? (
+        <div className="advanced-benchmark" aria-label="Benchmark runner">
+          <BenchmarkPanel />
+        </div>
+      ) : null}
     </div>
   );
 }

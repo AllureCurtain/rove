@@ -123,6 +123,22 @@ export function ProductApp() {
     return map;
   }, [catalog]);
 
+  useEffect(() => {
+    if (!activeSession || activeSession.status === "error") {
+      return;
+    }
+    const waiting = runState.tools.some(
+      (tool) => tool.pendingApproval || tool.status === "waiting",
+    );
+    if (waiting && activeSession.status !== "needs_attention") {
+      markSession(activeSession.id, { status: "needs_attention" });
+      return;
+    }
+    if (!waiting && runState.busy && activeSession.status !== "running") {
+      markSession(activeSession.id, { status: "running" });
+    }
+  }, [activeSession, runState.busy, runState.tools]);
+
   const connectionLabel =
     connection === "ok"
       ? "API connected"
@@ -285,6 +301,9 @@ export function ProductApp() {
       }
     } catch (error) {
       dispatch({ type: "set_error", error: describeError(error) });
+      if (activeSession) {
+        markSession(activeSession.id, { status: "error" });
+      }
     } finally {
       setApprovalBusy(null);
     }
