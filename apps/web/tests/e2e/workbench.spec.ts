@@ -7,7 +7,7 @@ test("creates a job, receives SSE events, and renders completed state", async ({
 }) => {
   await installMockApi(page, "completed");
 
-  await page.goto("/");
+  await page.goto("/dev/workbench");
   await page.getByLabel("Task").fill("Summarize the runtime state");
   await page.getByRole("button", { name: "Run" }).click();
 
@@ -24,7 +24,7 @@ test("renders pending approval and submits approval through the API", async ({
 }) => {
   await installMockApi(page, "approval");
 
-  await page.goto("/");
+  await page.goto("/dev/workbench");
   await page.getByLabel("Task").fill("Write a note");
   await page.getByRole("button", { name: "Run" }).click();
 
@@ -90,7 +90,7 @@ test("starts a resume-latest job and displays resumed source identity", async ({
     });
   });
 
-  await page.goto("/");
+  await page.goto("/dev/workbench");
   await page.getByLabel("Task").fill("Continue the last run");
   await page.getByRole("button", { name: "Resume" }).click();
 
@@ -211,7 +211,7 @@ test("loads models, tests, and submits an OpenAI provider profile", async ({ pag
     });
   });
 
-  await page.goto("/");
+  await page.goto("/dev/workbench");
   await page.getByLabel("Type").selectOption("openai");
   await page.getByLabel("API base").fill("https://gateway.test/v1");
   await page.getByLabel("Key env").fill("GATEWAY_API_KEY");
@@ -311,7 +311,7 @@ test("tests and submits an OpenAI Responses provider profile", async ({ page }) 
     });
   });
 
-  await page.goto("/");
+  await page.goto("/dev/workbench");
   await page.getByLabel("Type").selectOption("openai-responses");
   await page.getByLabel("Model").fill("gpt-4.1-mini");
   await page.getByRole("button", { name: "Test" }).click();
@@ -395,7 +395,7 @@ test("submits Anthropic and Ollama provider profiles", async ({ page }) => {
     });
   });
 
-  await page.goto("/");
+  await page.goto("/dev/workbench");
   await page.getByLabel("Type").selectOption("anthropic");
   await page.getByLabel("API base").fill("https://api.anthropic.com");
   await page.getByLabel("Key env").fill("ANTHROPIC_API_KEY");

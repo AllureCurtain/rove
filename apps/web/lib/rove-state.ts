@@ -56,6 +56,8 @@ export interface WorkbenchState {
 
 export type WorkbenchAction =
   | { type: "reset" }
+  /** Clear run-scoped view state for a new turn while keeping transcript messages. */
+  | { type: "prepare_turn" }
   | { type: "append_user_message"; content: string }
   | {
       type: "job_created";
@@ -100,6 +102,27 @@ export function workbenchReducer(
   switch (action.type) {
     case "reset":
       return createWorkbenchState();
+    case "prepare_turn":
+      return {
+        ...state,
+        activeJobId: null,
+        activeRunId: null,
+        resumedFromRunId: null,
+        statusText: "Preparing turn",
+        eventCount: 0,
+        seenEventSeqs: [],
+        lastSignal: "Preparing turn",
+        busy: false,
+        error: null,
+        plan: null,
+        planDecisions: [],
+        planRevisions: [],
+        stepRecords: [],
+        tools: [],
+        // Keep a short run trace for the inspector; product chat is the transcript.
+        trace: [],
+        pendingInputs: [],
+      };
     case "append_user_message":
       return {
         ...state,

@@ -1,103 +1,78 @@
-# rove Web Workbench
+# rove Web
 
-The workbench is a standalone Next.js app that talks to the rove API through
-a server-side `/api/*` proxy route. It expects the Rust API server to expose the
-job endpoints and SSE stream.
+Primary surface: the **product shell** (Workspace → Session → Run) against live
+`rove-api`. The old developer workbench is no longer the default entry.
 
-## Run Locally
+## Product shell (default `/`)
 
-From the repository root, the simplest path is:
+- Empty state → open an absolute Folder/Repo path
+- Workspace tree with sessions (recents + pin, local persistence)
+- Chat transcript, tool cards, inline approvals, stop/cancel
+- Collapsible run inspector (plan / tools / approvals)
+- Settings shell with deep **Providers & Models** and **About / Runtime**
+- Session continue uses **hard resume only** (`resume: "latest"` under the
+  opened workspace root). Soft transcript stitch is not a product path.
+
+## Run locally
+
+From the repository root:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/dev.ps1
 ```
 
-That starts both `rove-api` and the workbench, then prints the Web and API URLs.
-
-Start the API server from the repository root:
+Or start pieces separately:
 
 ```powershell
+# API
 cargo run -p rove-api
-```
 
-Start the workbench from this directory (`apps/web`):
-
-```powershell
+# Web (from apps/web)
 pnpm install --frozen-lockfile
 pnpm dev
 ```
 
-Open `http://localhost:3000`. By default the Next.js proxy sends `/api/*` to
-`http://127.0.0.1:8787/*`.
-
-Use **Run** to start a fresh job. Use **Resume** to create a job with
-`resume: "latest"` and continue the latest resumable run; the live summary shows
-the new run id and the source run id when the API returns one.
-
-The provider selector can run against the API server's default runtime provider,
-or against a per-run profile for OpenAI, Anthropic, Ollama, or fake.
-For official APIs or relay/gateway APIs, choose **OpenAI**, set the
-API base URL, set the server environment variable name that contains the key,
-and enter the model id. Anthropic uses its native API, Ollama uses the local
-`/api/chat` surface, and fake stays deterministic. The browser never sends a raw
-key value; the Rust API reads the named environment variable server-side. Use
-**Test** to call `/providers/test` and verify model visibility before starting
-the job.
-
-To point the workbench at another API server:
+Open `http://localhost:3000`. The Next.js proxy forwards `/api/*` to
+`http://127.0.0.1:8787/*` by default.
 
 ```powershell
 $env:ROVE_API_BASE = "http://127.0.0.1:8787"
 pnpm dev
 ```
 
-To run the workbench on a non-default port:
-
-```powershell
-$env:ROVE_WEB_PORT = "3001"
-$env:ROVE_API_BASE = "http://127.0.0.1:8787"
-pnpm exec next dev --port $env:ROVE_WEB_PORT
-```
-
-To use a token-protected API, set the same token in the Rust API process and the
-Next.js server process:
+Token-protected API (server-side proxy only — never `NEXT_PUBLIC_`):
 
 ```powershell
 $env:ROVE_API_TOKEN = "local-secret"
 pnpm dev
 ```
 
-The token is injected into upstream requests by the server-side proxy. It is not
-read by browser code and should not use a `NEXT_PUBLIC_` environment name.
+## Temporary workbench scaffold
 
-## Production Build
+The previous runtime console remains available only at:
 
-```powershell
-pnpm build
-pnpm start
-```
+`http://localhost:3000/dev/workbench`
+
+It is migration scaffolding, not a second primary product entry.
+
+## Providers
+
+Provider profiles may be saved in browser local storage for M1. The browser
+stores and sends **environment variable names** (`api_key_env`) only — never
+raw keys. Settings → Providers can **Test** and **List models** via the API.
 
 ## Verification
-
-Before treating UI changes as ready, run:
 
 ```powershell
 pnpm test
 pnpm typecheck
 pnpm build
-```
-
-For browser-level E2E smoke coverage:
-
-```powershell
 pnpm test:e2e
 ```
 
-Playwright uses `PLAYWRIGHT_BASE_URL` when set, otherwise it uses
-`ROVE_WEB_PORT`, otherwise `http://127.0.0.1:13043`. By default Playwright
-starts its own Next.js server; set `PLAYWRIGHT_BASE_URL` when a script has
-already started the Web server and the test should reuse it.
+Focused product smoke (mock API):
 
-The Playwright tests start the Next.js dev server and mock the API at the browser
-boundary. They cover create job to SSE completion, pending approval submission,
-and resume-latest identity display.
+- empty → open workspace → run → complete
+- inline approval
+- second turn hard resume with workspace root
+- providers test/list models without raw keys

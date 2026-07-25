@@ -205,6 +205,8 @@ export function RoveWorkbench() {
     setProviderTestBusy(true);
     setProviderTestError(null);
     setProviderTestResult(null);
+    setProviderModelsResult(null);
+    setProviderModelsError(null);
     try {
       const result = await testProvider({
         provider,

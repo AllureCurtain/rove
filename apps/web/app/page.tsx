@@ -1,5 +1,5 @@
-import { RoveWorkbench } from "../components/rove-workbench";
+import { ProductApp } from "../shell/ProductApp";
 
 export default function Page() {
-  return <RoveWorkbench />;
+  return <ProductApp />;
 }

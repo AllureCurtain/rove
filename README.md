@@ -1,6 +1,6 @@
 # rove
 
-`rove` is a local-first, stateful agent runtime written in Rust. It provides a CLI (including an optional full-screen TUI), an HTTP API, a standalone web workbench, tool execution, resumable run state, layered memory, provider routing, and tool-based workspace retrieval.
+`rove` is a local-first, stateful agent runtime written in Rust. It provides a CLI (including an optional full-screen TUI), an HTTP API, a Web product shell (plus temporary workbench scaffold), tool execution, resumable run state, layered memory, provider routing, and tool-based workspace retrieval.
 
 The repository is a virtual Cargo Workspace. Its implemented dependency and
 product flow is:
@@ -74,15 +74,17 @@ Run a non-interactive exec prompt and exit:
 cargo run -p rove-cli -- exec --model fake "echo hello from rove"
 ```
 
-Start the local API and Web workbench together in fake-provider mode:
+Start the local API and Web product shell together in fake-provider mode:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/dev.ps1
 ```
 
-Open `http://localhost:3000`. The launcher starts `rove-api`, starts the
-Next.js workbench, prints the API/Web URLs, and stops both process trees when it
-exits. Use custom ports when the defaults are busy:
+Open `http://localhost:3000` for the product shell (Workspace → Session → Chat).
+The launcher starts `rove-api`, starts Next.js, prints the API/Web URLs, and
+stops both process trees when it exits. The previous developer workbench remains
+only at `/dev/workbench` as migration scaffolding. Use custom ports when the
+defaults are busy:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/dev.ps1 -ApiAddr 127.0.0.1:18787 -WebPort 3001
@@ -100,9 +102,9 @@ $env:OPENAI_API_KEY = "<secret>"
 powershell -ExecutionPolicy Bypass -File scripts/dev.ps1 -Provider
 ```
 
-The Web workbench can also override the provider per run. It supports runtime
-default, OpenAI, OpenAI Responses, Anthropic, Ollama, and fake
-profiles without sending raw provider keys from the browser.
+The Web shell can also override the provider per run via Settings → Providers.
+It supports runtime default, OpenAI, OpenAI Responses, Anthropic, Ollama, and
+fake profiles without sending raw provider keys from the browser.
 
 Run in an isolated standalone Task workspace:
 

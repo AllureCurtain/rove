@@ -7,7 +7,7 @@ test.describe("real API workbench integration", () => {
   test.describe.configure({ mode: "serial" });
 
   test("creates a plain fake-provider run and shows it in history", async ({ page }) => {
-    await page.goto("/");
+    await page.goto("/dev/workbench");
     const task = `local-full plain run ${Date.now()}`;
 
     await startRun(page, {
@@ -22,7 +22,7 @@ test.describe("real API workbench integration", () => {
   });
 
   test("approves a real write_file tool call from the UI", async ({ page }) => {
-    await page.goto("/");
+    await page.goto("/dev/workbench");
 
     const outputName = `approved-${Date.now()}.txt`;
     await startRun(page, {
@@ -46,7 +46,7 @@ test.describe("real API workbench integration", () => {
   });
 
   test("answers a request_input tool call from the UI", async ({ page }) => {
-    await page.goto("/");
+    await page.goto("/dev/workbench");
 
     await startRun(page, {
       task: JSON.stringify({
