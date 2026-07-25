@@ -23,7 +23,7 @@ fn workspace_path(rel: impl AsRef<Path>) -> PathBuf {
     workspace_root().join(rel)
 }
 
-const EVENTS_RS: &str = "runtime/src/events.rs";
+const EVENTS_RS: &str = "runtime/src/foundation/events.rs";
 const WEB_TYPES_TS: &str = "apps/web/lib/rove-types.ts";
 
 /// Event names returned by `StreamEvent::event_name` in source order.
@@ -32,7 +32,7 @@ fn rust_event_names() -> Vec<String> {
         .unwrap_or_else(|err| panic!("failed to read {EVENTS_RS}: {err}"));
     let fn_start = source
         .find("fn event_name")
-        .expect("runtime/src/events.rs should define fn event_name");
+        .expect("runtime/src/foundation/events.rs should define fn event_name");
     source[fn_start..]
         .lines()
         .filter_map(|line| {
@@ -113,7 +113,7 @@ fn rust_and_web_stream_event_names_match() {
         web,
         "Rust StreamEvent::event_name and Web STREAM_EVENT_NAMES drifted.\n  \
          only in Rust: {:?}\n  only in Web: {:?}\n\
-         Update apps/web/lib/rove-types.ts to match runtime/src/events.rs.",
+         Update apps/web/lib/rove-types.ts to match runtime/src/foundation/events.rs.",
         difference(&rust, &web),
         difference(&web, &rust),
     );

@@ -22,7 +22,7 @@ source summaries; resolved secret values and literal header values are omitted.
 ## Workspace
 
 Workspace detection and path-boundary enforcement are implemented in
-`runtime/src/workspace.rs` and `runtime/src/boundary.rs`.
+`runtime/src/workspace/root.rs` and `runtime/src/workspace/boundary.rs`.
 
 The runtime currently supports three workspace kinds:
 
@@ -78,7 +78,7 @@ artifact.
 ## Context And Compaction
 
 The context builder and both compaction implementations live in
-`runtime/src/context.rs` and `runtime/src/compaction.rs`. The runtime run and
+`runtime/src/context/manager.rs` and `runtime/src/context/compaction.rs`. The runtime run and
 step loops coordinate when compaction and its durable events occur.
 
 `ContextManager` supports token-aware prompt construction with soft, hard, and reserved budgets. Prompt order is:
@@ -173,7 +173,7 @@ Fallback can be configured as:
 - `provider.fallback_models`: model names using the primary provider;
 - `provider.fallback_profiles`: named target profiles.
 
-Native provider tool-use and JSON text action parsing are both supported. Native tool-use is preferred for real providers because it preserves provider IDs through `Message.tool_calls` and `tool_call_id` history. The JSON text path remains for fake and compatibility scenarios and is used only when a model turn emitted no native tool calls. Planned, unplanned, and embedded execution share the conversion in `core/src/model_turn.rs`; `runtime/src/model_turn.rs` translates its `AgentEvent` values to durable `StreamEvent` values.
+Native provider tool-use and JSON text action parsing are both supported. Native tool-use is preferred for real providers because it preserves provider IDs through `Message.tool_calls` and `tool_call_id` history. The JSON text path remains for fake and compatibility scenarios and is used only when a model turn emitted no native tool calls. Planned, unplanned, and embedded execution share the conversion in `core/src/model_turn.rs`; `runtime/src/engine/model_turn.rs` translates its `AgentEvent` values to durable `StreamEvent` values.
 
 `RoutingModelClient` can fall back before user-visible content or committed tool-use begins. It tracks provider health with a failure threshold and cooldown. For each routed candidate, `routing.retry_max_attempts`, `routing.retry_backoff_base_ms`, and `routing.retry_backoff_max_ms` control retry behavior for retryable pre-commit failures; rate-limit `retry-after` values are honored directly. Auth and context-length errors are not retried, and once text or native tool-use has committed, no retry or fallback is attempted.
 
@@ -185,8 +185,8 @@ Native provider tool-use and JSON text action parsing are both supported. Native
 projection omits them. Local built-in tool implementations and their typed
 invocation adapters live in `runtime/src/tools/`. The tool `Executor`
 pipeline, pre/post-tool plus post-run hooks (including session-summary), and the
-durable tool-turn coordinator live in `runtime/src/executor.rs`,
-`runtime/src/hooks/`, and `runtime/src/tool_turn.rs`. The existing
+durable tool-turn coordinator live in `runtime/src/tools/executor.rs`,
+`runtime/src/tools/hooks/`, and `runtime/src/engine/tool_turn.rs`. The existing
 stdio/legacy-SSE MCP proxy is implemented in `runtime/src/tools/mcp_proxy.rs`.
 CLI and API assemble tools through the same product registry builder
 (`apps/bootstrap::tool_registry` / `tool_registry_with_mcp`), which registers

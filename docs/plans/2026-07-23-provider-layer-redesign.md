@@ -667,7 +667,7 @@ Files changed:
 - `apps/bootstrap/src/{config,factory,provider}.rs`
 - `models/src/openai.rs`, `models/src/provider/client.rs`,
   `models/src/provider/protocols/openai_chat.rs`
-- `runtime/src/runtime_identity.rs`
+- `runtime/src/foundation/runtime_identity.rs`
 - `tests/{model_factory,provider_smoke,code_hygiene}.rs`
 - `apps/cli/src/cli/ui.rs`
 - `scripts/provider-integration.ps1`, `.env.integration.example`, `README.md`

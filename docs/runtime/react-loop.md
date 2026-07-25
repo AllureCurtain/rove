@@ -14,7 +14,7 @@ state/trace/artifact/SQLite/repair/resume, context/compaction,
 session/durable memory, local tools/MCP, the tool `Executor` and hooks,
 runtime-specific tool turns, planning/step coordination, durable event
 translation, and the persistent `Engine` facade.
-`runtime/src/model_turn.rs` is the synchronous translator from in-memory
+`runtime/src/engine/model_turn.rs` is the synchronous translator from in-memory
 `AgentEvent` values into durable `StreamEvent` values. The product default
 entry is `runtime::Engine` via `apps/bootstrap::build_engine`; `core::Agent`
 is embed-only. Product tool-registry assembly and first-party `AppConfig`
@@ -22,7 +22,7 @@ live in product bootstrap and app shells. Runtime tool turns
 consume the `rove-core` Tool contract and registry without placing
 Workspace, Memory, approval, or input fields on the minimal core `ToolContext`.
 
-The unplanned loop in `runtime/src/run_loop.rs` is the pure ReAct loop
+The unplanned loop in `runtime/src/engine/run_loop.rs` is the pure ReAct loop
 implemented by `run_unplanned_loop`:
 
 1. Build context with `ContextManager::build_with_checkpoint`.
@@ -33,9 +33,9 @@ implemented by `run_unplanned_loop`:
 6. Append assistant tool calls and tool results back into history.
 7. Repeat until final answer, cancellation, token limit, step limit, or error.
 
-The planned coordinator, `run_planned_loop` in `runtime/src/plan_loop.rs`,
+The planned coordinator, `run_planned_loop` in `runtime/src/engine/plan_loop.rs`,
 delegates each current plan step to the bounded runner in
-`runtime/src/step_runner.rs`:
+`runtime/src/engine/step_runner.rs`:
 
 1. Draft or resume a `TaskPlan`.
 2. Convert the current plan step into a focused user prompt.
