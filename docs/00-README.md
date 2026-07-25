@@ -10,7 +10,7 @@
 
 - **名字**: rove /roʊv/ (漫游、探索)
 - **语言**: Rust
-- **形态演进**: CLI → API → Web
+- **形态演进**: CLI → API → Web 管理端 → Desktop（Tauri，后置）
 - **位置**: `D:/Study/project/agent/rove/`
 
 ---
@@ -25,6 +25,7 @@
 | ✅ | 本地优先 MVP：CLI / API / Web / state / resume / tools / memory |
 | ✅ | Provider Layer redesign：开放协议注册、named profiles、`/providers/models` |
 | ✅ | `docs/runtime/` 与当前实现对齐 |
+| 🧭 | Agent Desktop + Web 共享 UI 已封板；Web M1 按 worktree 串行波次交付（文档先合入 `main`，实现未宣称完成） |
 | 📦 | 起步期设计、handoff、对照材料归档到 `docs/Archive/` |
 
 ---
@@ -40,7 +41,9 @@
 | design | [模块化 Workspace 架构](./design/2026-07-22-modular-workspace-architecture.md) | Implemented: `models / core / runtime / apps` 四层结构 |
 | design | [Provider Layer 重构](./design/2026-07-23-provider-layer-redesign-design.md) | Accepted/implemented provider protocol registry and profiles |
 | design | [Cleanup & naming decisions](./design/2026-07-24-cleanup-and-naming-decisions.md) | Accepted: delete legacy, provider_type/wire_protocol vocabulary, tools, W1–W3 |
+| design | [Agent Desktop + Web Shared UI](./design/2026-07-25-agent-desktop-web-ui-design.md) | Accepted/sealed: shared product UI, Web first, Tauri later, hard resume + workspace root |
 | plan | [Cleanup W1/W2/W3 delivery](./plans/2026-07-24-cleanup-w1-w2-w3.md) | Execution checklist for cleanup waves |
+| plan | [Web Management M1 delivery](./plans/2026-07-25-web-management-m1.md) | Serial worktree waves Docs → F0 foundation → F1 shell → F2 polish; Desktop queued |
 | future | [Agent Execution Lifecycle](./design/2026-07-14-agent-execution-lifecycle-design.md) | Proposed: execution strategy、StepRecord、Replanner、Finalizer |
 | future | [Agent Definition 与程序性知识](./design/2026-07-14-agent-definition-and-procedural-knowledge-design.md) | Proposed: versioned Agent profile、procedure 与 capability binding |
 | future | [MCP Streamable HTTP 与 Tool Artifacts](./design/2026-07-15-mcp-streamable-http-and-tool-artifacts-design.md) | Proposed: transport/session/result/artifact 演进 |
@@ -88,3 +91,4 @@
 - 2026-07-15:新增维护者 onboarding、根级 `AGENTS.md` 与未来设计。
 - 2026-07-22:模块化 Workspace 架构落地。
 - 2026-07-24:Provider Layer redesign 合入 main；起步期材料迁入 `docs/Archive/`，总目录改为 onboarding / runtime / Archive / 活跃 design。
+- 2026-07-25:登记 Agent Desktop + Web 共享 UI 封板设计与 Web M1 worktree 交付计划（串行 F0→F1→F2）。
