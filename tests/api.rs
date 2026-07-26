@@ -561,10 +561,17 @@ async fn product_session_resume_rejects_a_mismatched_runtime_run_identity() {
     wait_for_done(app.clone(), first.job_id.to_string()).await;
 
     let connection = rusqlite::Connection::open(folder.path().join(".rove/state.sqlite")).unwrap();
+    let mismatched_session_id = SessionId::new().to_string();
+    connection
+        .execute(
+            "INSERT INTO sessions(session_id, created_at, updated_at) VALUES (?1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+            [&mismatched_session_id],
+        )
+        .unwrap();
     connection
         .execute(
             "UPDATE runs SET session_id = ?2 WHERE run_id = ?1",
-            rusqlite::params![first.run_id.to_string(), SessionId::new().to_string()],
+            rusqlite::params![first.run_id.to_string(), mismatched_session_id],
         )
         .unwrap();
     drop(connection);

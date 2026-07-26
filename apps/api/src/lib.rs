@@ -821,15 +821,7 @@ async fn prepare_generic_job_launch(
         .as_ref()
         .map(|task_state| task_state.job_id)
         .unwrap_or_else(JobId::new);
-    let record = new_job_record(
-        state,
-        workspace,
-        config,
-        req,
-        session_id,
-        job_id,
-        resume_state,
-    );
+    let record = new_job_record(workspace, config, req, session_id, job_id, resume_state);
     let engine = match assemble_job_engine(state, &record.message, req, Arc::clone(&record)).await {
         Ok(engine) => engine,
         Err(error) => {
@@ -903,15 +895,7 @@ async fn prepare_product_job_launch(
         .as_ref()
         .map(|task_state| task_state.job_id)
         .unwrap_or_else(JobId::new);
-    let record = new_job_record(
-        state,
-        workspace,
-        config,
-        req,
-        session_id,
-        job_id,
-        resume_state,
-    );
+    let record = new_job_record(workspace, config, req, session_id, job_id, resume_state);
     let engine = match assemble_job_engine(state, &record.message, req, Arc::clone(&record)).await {
         Ok(engine) => engine,
         Err(error) => {
@@ -985,7 +969,6 @@ async fn prepare_product_job_launch(
 }
 
 fn new_job_record(
-    state: &ApiState,
     workspace: Workspace,
     config: AppConfig,
     req: &CreateJobRequest,
@@ -1013,7 +996,8 @@ fn new_job_record(
         tx,
         handle: Mutex::new(None),
         completion,
-        cancel_token: state.inner.shutdown_token.child_token(),
+        // A run owns its cancellation root so same-job continuations start cleanly.
+        cancel_token: CancellationToken::new(),
     })
 }
 
@@ -1193,16 +1177,24 @@ async fn start_job_supervisor(state: ApiState, launch: JobLaunch) {
     let recovery_record = Arc::clone(&record);
     let recovery_product_turn = product_turn.clone();
     let completion = record.completion.clone();
+    let shutdown_token = state.inner.shutdown_token.clone();
     let handle = tokio::spawn(async move {
         let _completion_guard = JobCompletionGuard::new(completion);
-        let outcome = AssertUnwindSafe(run_job_supervisor(
+        let supervisor = AssertUnwindSafe(run_job_supervisor(
             record_for_task,
             engine,
             run,
             product_turn,
         ))
-        .catch_unwind()
-        .await;
+        .catch_unwind();
+        tokio::pin!(supervisor);
+        let outcome = tokio::select! {
+            outcome = &mut supervisor => outcome,
+            _ = shutdown_token.cancelled() => {
+                recovery_record.cancel_token.cancel();
+                supervisor.await
+            }
+        };
         if outcome.is_err() {
             tracing::warn!(job_id = %recovery_record.job_id, "job supervisor panicked");
             let recovery = AssertUnwindSafe(recover_job_supervisor_panic(
