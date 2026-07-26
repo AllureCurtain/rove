@@ -11,9 +11,9 @@ export const M1_BROWSER_STORAGE_KEYS = {
 } as const;
 
 /**
- * Durable client-side pending/complete receipt state. The migration worker must
- * never delete or enumerate legacy keys and may mark this complete only after
- * validating a successful server receipt.
+ * Durable client-side pending/complete receipt state. The migration state
+ * machine must never delete or enumerate legacy keys and may mark this complete
+ * only after validating a successful server receipt.
  */
 export const M1_BROWSER_MIGRATION_STATE_KEY =
   "rove.product.migration.web-m1.v1";
