@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::SocketAddr;
 use std::panic::AssertUnwindSafe;
 use std::path::{Path as FsPath, PathBuf};
@@ -35,9 +35,9 @@ use rove_runtime::state::resume::resolve_resume_state;
 use rove_runtime::state::store::{RunHandle, StateStore};
 use rove_runtime::state::trace::TraceWriter;
 use rove_runtime::types::{
-    ApprovalDecision, ApprovalPolicy, CallId, JobId, PendingToolApproval, PendingUserInput, RunId,
-    RunStatus, SessionId, TaskState, TerminationReason, ToolApprovalProvider, ToolApprovalRequest,
-    UserInputProvider, UserInputRequest,
+    ApprovalDecision, ApprovalPolicy, CallId, JobId, Message, PendingToolApproval,
+    PendingUserInput, Role, RunId, RunStatus, SessionId, TaskState, TerminationReason,
+    ToolApprovalProvider, ToolApprovalRequest, UserInputProvider, UserInputRequest,
 };
 use rove_runtime::workspace::Workspace;
 
@@ -1143,13 +1143,77 @@ fn project_product_follow_up_state(mut state: TaskState) -> TaskState {
     state.step = 0;
     state.plan = None;
     state.step_ledger = Default::default();
+    state.history = close_product_follow_up_tool_rounds(state.history);
     if let Some(checkpoint) = state.checkpoint.as_mut() {
         checkpoint.last_step = 0;
         checkpoint.plan = None;
         checkpoint.step_ledger = Default::default();
         checkpoint.last_event_seq = None;
+        checkpoint.preserved_tail =
+            close_product_follow_up_tool_rounds(std::mem::take(&mut checkpoint.preserved_tail));
     }
     state
+}
+
+const UNKNOWN_PRODUCT_TOOL_RESULT: &str = "The previous turn ended before a durable tool result was recorded. The tool effect is unknown; verify the current state before retrying this tool call.";
+
+fn close_product_follow_up_tool_rounds(messages: Vec<Message>) -> Vec<Message> {
+    let mut closed = Vec::with_capacity(messages.len());
+    let mut pending_tool_call_ids = Vec::new();
+    let mut completed_tool_call_ids = HashSet::new();
+
+    for message in messages {
+        if message.role == Role::Tool {
+            let Some(tool_call_id) = message.tool_call_id.as_ref() else {
+                continue;
+            };
+            if pending_tool_call_ids.contains(tool_call_id)
+                && completed_tool_call_ids.insert(tool_call_id.clone())
+            {
+                closed.push(message);
+            }
+            continue;
+        }
+
+        append_missing_product_tool_results(
+            &mut closed,
+            &pending_tool_call_ids,
+            &completed_tool_call_ids,
+        );
+        pending_tool_call_ids.clear();
+        completed_tool_call_ids.clear();
+
+        if message.role == Role::Assistant && !message.tool_calls.is_empty() {
+            for tool_call in &message.tool_calls {
+                if !pending_tool_call_ids.contains(&tool_call.id) {
+                    pending_tool_call_ids.push(tool_call.id.clone());
+                }
+            }
+        }
+        closed.push(message);
+    }
+
+    append_missing_product_tool_results(
+        &mut closed,
+        &pending_tool_call_ids,
+        &completed_tool_call_ids,
+    );
+    closed
+}
+
+fn append_missing_product_tool_results(
+    messages: &mut Vec<Message>,
+    pending_tool_call_ids: &[String],
+    completed_tool_call_ids: &HashSet<String>,
+) {
+    for tool_call_id in pending_tool_call_ids {
+        if !completed_tool_call_ids.contains(tool_call_id) {
+            messages.push(Message::tool(
+                UNKNOWN_PRODUCT_TOOL_RESULT,
+                Some(tool_call_id.clone()),
+            ));
+        }
+    }
 }
 
 async fn finish_failed_product_start(
@@ -2308,6 +2372,89 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     use super::*;
+
+    fn assistant_tool_round(ids: &[&str]) -> Message {
+        Message::assistant_with_tool_calls(
+            "tool round",
+            ids.iter()
+                .map(|id| rove_runtime::types::ToolCallRef {
+                    id: (*id).to_string(),
+                    name: format!("tool_{id}"),
+                    args: serde_json::json!({ "id": id }),
+                })
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn product_follow_up_closes_only_missing_parallel_tool_results() {
+        let assistant = assistant_tool_round(&["call-a", "call-b", "call-c"]);
+        let result_b = Message::tool("durable result b", Some("call-b".to_string()));
+        let result_a = Message::tool("durable result a", Some("call-a".to_string()));
+        let next = Message::user("next turn");
+
+        let closed = close_product_follow_up_tool_rounds(vec![
+            assistant.clone(),
+            result_b.clone(),
+            result_a.clone(),
+            next.clone(),
+        ]);
+
+        assert_eq!(
+            closed,
+            vec![
+                assistant,
+                result_b,
+                result_a,
+                Message::tool(UNKNOWN_PRODUCT_TOOL_RESULT, Some("call-c".to_string())),
+                next,
+            ]
+        );
+    }
+
+    #[test]
+    fn product_follow_up_closes_an_all_missing_tool_round_at_the_tail() {
+        let assistant = assistant_tool_round(&["call-a", "call-b"]);
+
+        let closed = close_product_follow_up_tool_rounds(vec![assistant.clone()]);
+
+        assert_eq!(
+            closed,
+            vec![
+                assistant,
+                Message::tool(UNKNOWN_PRODUCT_TOOL_RESULT, Some("call-a".to_string())),
+                Message::tool(UNKNOWN_PRODUCT_TOOL_RESULT, Some("call-b".to_string())),
+            ]
+        );
+    }
+
+    #[test]
+    fn product_follow_up_preserves_a_complete_tool_round() {
+        let messages = vec![
+            assistant_tool_round(&["call-a", "call-b"]),
+            Message::tool("durable result b", Some("call-b".to_string())),
+            Message::tool("durable result a", Some("call-a".to_string())),
+            Message::assistant("round complete"),
+        ];
+
+        assert_eq!(
+            close_product_follow_up_tool_rounds(messages.clone()),
+            messages
+        );
+    }
+
+    #[test]
+    fn product_follow_up_drops_orphan_results_from_a_truncated_tail() {
+        let next = Message::user("continue after checkpoint");
+
+        let closed = close_product_follow_up_tool_rounds(vec![
+            Message::tool("orphan result", Some("truncated-call".to_string())),
+            Message::tool("legacy orphan result", None),
+            next.clone(),
+        ]);
+
+        assert_eq!(closed, vec![next]);
+    }
 
     async fn publish_terminal_event_after_barrier(
         record: &JobRecord,
