@@ -379,12 +379,10 @@ impl ApiState {
     pub(crate) fn product_transcript_reader(
         &self,
     ) -> Result<Arc<dyn ProductTranscriptReader>, ApiError> {
-        self.inner.product_transcript_reader.clone().ok_or_else(|| {
-            ApiError::not_implemented(
-                ProductErrorCode::ProductStoreUnavailable.as_str(),
-                "the C0 product transcript reader is not wired yet",
-            )
-        })
+        self.inner
+            .product_transcript_reader
+            .clone()
+            .ok_or_else(|| ProductStoreError::unavailable().into())
     }
 
     pub(crate) fn product_state_store_for_workspace(&self, workspace: &Workspace) -> StateStore {
@@ -2399,14 +2397,6 @@ impl ApiError {
         Self {
             status: StatusCode::BAD_GATEWAY,
             code: "bad_gateway",
-            message: message.into(),
-        }
-    }
-
-    pub(crate) fn not_implemented(code: &'static str, message: impl Into<String>) -> Self {
-        Self {
-            status: StatusCode::NOT_IMPLEMENTED,
-            code,
             message: message.into(),
         }
     }

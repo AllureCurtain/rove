@@ -1,7 +1,7 @@
 //! API-global product control plane.
 //!
-//! The coordinator owns this module root, public contracts, and route wiring.
-//! Store and transcript workers implement only their dedicated submodules.
+//! This module owns public contracts and routes, the SQLite ProductStore,
+//! browser migration coordination, and canonical-event transcript projection.
 
 mod contracts;
 pub(crate) mod migration;

@@ -102,6 +102,30 @@ async fn product_job_returns_service_unavailable_when_the_store_cannot_open() {
 }
 
 #[tokio::test]
+async fn product_transcript_returns_service_unavailable_when_the_store_cannot_open() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let mut config = test_config();
+    config.state.sqlite_busy_timeout_ms = 0;
+    let app = router(ApiState::new(workspace, config));
+    let product_session_id = ProductSessionId::new();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/product/sessions/{product_session_id}/transcript"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let error: serde_json::Value = decode_json(response).await;
+    assert_eq!(error["code"], "product_store_unavailable");
+}
+
+#[tokio::test]
 async fn api_exposes_openapi_json_for_all_routes() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
@@ -176,6 +200,40 @@ async fn api_exposes_openapi_json_for_all_routes() {
         .expect("POST /jobs responses");
     assert!(create_job_responses.contains_key("503"));
     assert!(!create_job_responses.contains_key("501"));
+
+    for (path, method) in [
+        ("/product/workspaces", "get"),
+        ("/product/workspaces", "post"),
+        ("/product/workspaces/{workspace_id}", "delete"),
+        ("/product/sessions", "get"),
+        ("/product/sessions", "post"),
+        ("/product/sessions/{session_id}", "patch"),
+        ("/product/sessions/{session_id}", "delete"),
+        ("/product/sessions/{session_id}/transcript", "get"),
+        ("/product/provider-profiles", "get"),
+        ("/product/provider-profiles", "post"),
+        ("/product/provider-profiles/{profile_id}", "put"),
+        ("/product/provider-profiles/{profile_id}", "delete"),
+        ("/product/preferences", "get"),
+        ("/product/preferences", "put"),
+        ("/product/migrations/m1-browser", "post"),
+    ] {
+        let responses = spec["paths"][path][method]["responses"]
+            .as_object()
+            .unwrap_or_else(|| panic!("missing OpenAPI responses for {method} {path}"));
+        assert!(
+            responses.contains_key("500"),
+            "{method} {path} must document product operation failures"
+        );
+        assert!(
+            responses.contains_key("503"),
+            "{method} {path} must document unavailable product state"
+        );
+        assert!(
+            !responses.contains_key("501"),
+            "wired product operation {method} {path} must not advertise 501"
+        );
+    }
 
     let schemas = spec["components"]["schemas"]
         .as_object()

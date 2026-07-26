@@ -66,7 +66,8 @@ enum M1MigrationPreparation {
     security(("BearerAuth" = [])),
     responses(
         (status = 200, description = "Known product workspaces", body = ProductWorkspacesResponse),
-        (status = 501, description = "ProductStore is not wired", body = ApiErrorResponse)
+        (status = 500, description = "Product store operation failed", body = ApiErrorResponse),
+        (status = 503, description = "ProductStore is unavailable", body = ApiErrorResponse)
     )
 )]
 pub(crate) async fn list_product_workspaces(
@@ -86,7 +87,8 @@ pub(crate) async fn list_product_workspaces(
         (status = 201, description = "Product workspace created", body = ProductWorkspace),
         (status = 400, description = "Invalid workspace", body = ApiErrorResponse),
         (status = 409, description = "Workspace conflicts with an existing entry", body = ApiErrorResponse),
-        (status = 501, description = "ProductStore is not wired", body = ApiErrorResponse)
+        (status = 500, description = "Product store operation failed", body = ApiErrorResponse),
+        (status = 503, description = "ProductStore is unavailable", body = ApiErrorResponse)
     )
 )]
 pub(crate) async fn create_product_workspace(
@@ -107,7 +109,8 @@ pub(crate) async fn create_product_workspace(
     responses(
         (status = 204, description = "Catalog entry deleted; workspace files are untouched"),
         (status = 404, description = "Workspace not found", body = ApiErrorResponse),
-        (status = 501, description = "ProductStore is not wired", body = ApiErrorResponse)
+        (status = 500, description = "Product store operation failed", body = ApiErrorResponse),
+        (status = 503, description = "ProductStore is unavailable", body = ApiErrorResponse)
     )
 )]
 pub(crate) async fn delete_product_workspace(
@@ -130,7 +133,8 @@ pub(crate) async fn delete_product_workspace(
     responses(
         (status = 200, description = "Product sessions in one workspace", body = ProductSessionsResponse),
         (status = 404, description = "Workspace not found", body = ApiErrorResponse),
-        (status = 501, description = "ProductStore is not wired", body = ApiErrorResponse)
+        (status = 500, description = "Product store operation failed", body = ApiErrorResponse),
+        (status = 503, description = "ProductStore is unavailable", body = ApiErrorResponse)
     )
 )]
 pub(crate) async fn list_product_sessions(
@@ -154,7 +158,8 @@ pub(crate) async fn list_product_sessions(
         (status = 201, description = "Server-owned product session created", body = ProductSession),
         (status = 400, description = "Invalid session", body = ApiErrorResponse),
         (status = 404, description = "Workspace not found", body = ApiErrorResponse),
-        (status = 501, description = "ProductStore is not wired", body = ApiErrorResponse)
+        (status = 500, description = "Product store operation failed", body = ApiErrorResponse),
+        (status = 503, description = "ProductStore is unavailable", body = ApiErrorResponse)
     )
 )]
 pub(crate) async fn create_product_session(
@@ -178,7 +183,8 @@ pub(crate) async fn create_product_session(
         (status = 400, description = "Invalid update", body = ApiErrorResponse),
         (status = 404, description = "Session not found", body = ApiErrorResponse),
         (status = 409, description = "Session has an active turn", body = ApiErrorResponse),
-        (status = 501, description = "ProductStore is not wired", body = ApiErrorResponse)
+        (status = 500, description = "Product store operation failed", body = ApiErrorResponse),
+        (status = 503, description = "ProductStore is unavailable", body = ApiErrorResponse)
     )
 )]
 pub(crate) async fn update_product_session(
@@ -204,7 +210,8 @@ pub(crate) async fn update_product_session(
         (status = 204, description = "Product session metadata deleted; runtime artifacts are untouched"),
         (status = 404, description = "Session not found", body = ApiErrorResponse),
         (status = 409, description = "Session has an active turn", body = ApiErrorResponse),
-        (status = 501, description = "ProductStore is not wired", body = ApiErrorResponse)
+        (status = 500, description = "Product store operation failed", body = ApiErrorResponse),
+        (status = 503, description = "ProductStore is unavailable", body = ApiErrorResponse)
     )
 )]
 pub(crate) async fn delete_product_session(
@@ -224,7 +231,8 @@ pub(crate) async fn delete_product_session(
     responses(
         (status = 200, description = "Canonical-event transcript projection", body = ProductTranscriptResponse),
         (status = 404, description = "Session not found", body = ApiErrorResponse),
-        (status = 501, description = "Transcript projector is not wired", body = ApiErrorResponse)
+        (status = 500, description = "Product transcript projection failed", body = ApiErrorResponse),
+        (status = 503, description = "Product transcript projector is unavailable", body = ApiErrorResponse)
     )
 )]
 pub(crate) async fn get_product_session_transcript(
@@ -245,7 +253,8 @@ pub(crate) async fn get_product_session_transcript(
     security(("BearerAuth" = [])),
     responses(
         (status = 200, description = "Persisted secret-reference-only provider profiles", body = ProductProviderProfilesResponse),
-        (status = 501, description = "ProductStore is not wired", body = ApiErrorResponse)
+        (status = 500, description = "Product store operation failed", body = ApiErrorResponse),
+        (status = 503, description = "ProductStore is unavailable", body = ApiErrorResponse)
     )
 )]
 pub(crate) async fn list_product_provider_profiles(
@@ -264,7 +273,8 @@ pub(crate) async fn list_product_provider_profiles(
     responses(
         (status = 201, description = "Provider profile created", body = ProductProviderProfile),
         (status = 400, description = "Invalid profile or secret-shaped field", body = ApiErrorResponse),
-        (status = 501, description = "ProductStore is not wired", body = ApiErrorResponse)
+        (status = 500, description = "Product store operation failed", body = ApiErrorResponse),
+        (status = 503, description = "ProductStore is unavailable", body = ApiErrorResponse)
     )
 )]
 pub(crate) async fn create_product_provider_profile(
@@ -290,7 +300,8 @@ pub(crate) async fn create_product_provider_profile(
         (status = 200, description = "Provider profile updated", body = ProductProviderProfile),
         (status = 400, description = "Invalid profile or secret-shaped field", body = ApiErrorResponse),
         (status = 404, description = "Provider profile not found", body = ApiErrorResponse),
-        (status = 501, description = "ProductStore is not wired", body = ApiErrorResponse)
+        (status = 500, description = "Product store operation failed", body = ApiErrorResponse),
+        (status = 503, description = "ProductStore is unavailable", body = ApiErrorResponse)
     )
 )]
 pub(crate) async fn update_product_provider_profile(
@@ -315,7 +326,8 @@ pub(crate) async fn update_product_provider_profile(
     responses(
         (status = 204, description = "Provider profile deleted"),
         (status = 404, description = "Provider profile not found", body = ApiErrorResponse),
-        (status = 501, description = "ProductStore is not wired", body = ApiErrorResponse)
+        (status = 500, description = "Product store operation failed", body = ApiErrorResponse),
+        (status = 503, description = "ProductStore is unavailable", body = ApiErrorResponse)
     )
 )]
 pub(crate) async fn delete_product_provider_profile(
@@ -336,7 +348,8 @@ pub(crate) async fn delete_product_provider_profile(
     security(("BearerAuth" = [])),
     responses(
         (status = 200, description = "Safe persisted product preferences", body = ProductPreferences),
-        (status = 501, description = "ProductStore is not wired", body = ApiErrorResponse)
+        (status = 500, description = "Product store operation failed", body = ApiErrorResponse),
+        (status = 503, description = "ProductStore is unavailable", body = ApiErrorResponse)
     )
 )]
 pub(crate) async fn get_product_preferences(
@@ -355,7 +368,8 @@ pub(crate) async fn get_product_preferences(
     responses(
         (status = 200, description = "Safe product preferences updated", body = ProductPreferences),
         (status = 400, description = "Invalid preference", body = ApiErrorResponse),
-        (status = 501, description = "ProductStore is not wired", body = ApiErrorResponse)
+        (status = 500, description = "Product store operation failed", body = ApiErrorResponse),
+        (status = 503, description = "ProductStore is unavailable", body = ApiErrorResponse)
     )
 )]
 pub(crate) async fn update_product_preferences(
@@ -376,9 +390,10 @@ pub(crate) async fn update_product_preferences(
     responses(
         (status = 200, description = "Migration applied or idempotently replayed", body = M1BrowserMigrationResponse),
         (status = 400, description = "Invalid, unknown, or secret-shaped migration field", body = ApiErrorResponse),
-        (status = 409, description = "Idempotency key, preference write, or active product session conflict", body = ApiErrorResponse),
+        (status = 409, description = "Idempotency key or active product session conflict", body = ApiErrorResponse),
         (status = 504, description = "Migration exceeded its bounded pre-commit preparation deadline", body = ApiErrorResponse),
-        (status = 501, description = "ProductStore is not wired", body = ApiErrorResponse)
+        (status = 500, description = "Product store operation failed", body = ApiErrorResponse),
+        (status = 503, description = "ProductStore is unavailable", body = ApiErrorResponse)
     )
 )]
 pub(crate) async fn migrate_m1_browser_state(
