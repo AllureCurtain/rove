@@ -122,8 +122,9 @@ pub(crate) async fn delete_product_workspace(
 )]
 pub(crate) async fn list_product_sessions(
     State(_state): State<ApiState>,
-    Query(_query): Query<ListProductSessionsQuery>,
+    Query(query): Query<ListProductSessionsQuery>,
 ) -> Result<Json<ProductSessionsResponse>, ApiError> {
+    let _workspace_id = query.workspace_id;
     foundation_unavailable()
 }
 
