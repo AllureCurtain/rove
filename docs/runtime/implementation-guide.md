@@ -678,6 +678,10 @@ plan/revision/attempt identity. `step_result` is the canonical terminal fact,
 `plan_decision` records the deterministic transition selected for it, and
 `plan_revised` carries an immutable child revision when remaining work is
 replaced. The older completed/failed events remain compatibility notifications.
+For a live job, SSE withholds a terminal event that is durable in SQLite until
+the live finalization barrier publishes it; replay and `Last-Event-ID` handoff
+then emit it at most once and close even when the client already acknowledged
+its sequence.
 
 `model_status` is the safe progress surface for model-side work. It can say
 that the model is thinking, has selected a tool, or that the run is waiting for
@@ -798,14 +802,14 @@ There are two modes:
 - message-count history limit;
 - token-budget history limit.
 
-Token estimates are approximate: four characters per token plus message/tool-call overhead. The context builder reports whether it crossed soft/hard budgets and whether automatic compaction is needed.
+Both modes select provider-native assistant tool calls and all matching tool results as one atomic history unit. Incomplete or orphan native rounds are excluded rather than replayed as invalid provider protocol. Token estimates are approximate: four characters per token plus message/tool-call overhead. The context builder reports whether it crossed soft/hard budgets and whether automatic compaction is needed.
 
 Checkpoint compaction has two paths:
 
 - default deterministic compaction, used when model compaction is disabled or as fallback;
 - optional model-generated compaction when `runtime.model_compaction_enabled = true`.
 
-When automatic compaction is needed and old history has been dropped from the active prompt, the engine first flushes durable-worthy notes from the soon-to-be-compacted messages into session memory and emits `memory_flushed` when notes were written. It then attempts a structured model summary behind prompt version `rove.compaction.v2`. A successful model summary emits `prompt_compacted` and records `mode = "model_generated"` with model and source-message metadata. If summary generation fails, the run continues with a deterministic structured fallback summary, degraded/circuit metadata, and the last error. After `runtime.compaction_failure_threshold` consecutive failures, model compaction is circuit-opened for that runtime and deterministic behavior remains available through normal checkpointing.
+When automatic compaction is needed and old history has been dropped from the active prompt, the engine first flushes durable-worthy notes from the soon-to-be-compacted messages into session memory and emits `memory_flushed` when notes were written. It then attempts a structured model summary behind prompt version `rove.compaction.v3`. The dropped segment is serialized as JSON inside one ordinary user data message, so assistant/tool protocol roles are not replayed and embedded text is treated as untrusted historical data. A successful model summary emits `prompt_compacted` and records `mode = "model_generated"` with model and source-message metadata. If summary generation fails, the run continues with a deterministic structured fallback summary, degraded/circuit metadata, and the last error. After `runtime.compaction_failure_threshold` consecutive failures, model compaction is circuit-opened for that runtime and deterministic behavior remains available through normal checkpointing.
 
 `RunArtifactRecorder` writes `PromptCheckpoint` with:
 

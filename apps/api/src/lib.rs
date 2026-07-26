@@ -521,26 +521,40 @@ async fn job_events(
     };
 
     let live_rx = record.tx.subscribe();
-    let existing = persisted_or_live_events(&state, &record, after).await?;
-    let status = record.status.lock().await.clone();
-    let replay_events: Vec<_> = existing
-        .into_iter()
-        .filter(|event| event.seq > after)
-        .collect();
-    let replay_high_water = replay_events.last().map(|event| event.seq).unwrap_or(after);
-    let replay = futures::stream::iter(replay_events);
-    let live = if is_terminal(&status) {
-        futures::stream::empty().boxed()
-    } else {
-        live_job_event_stream(live_rx, replay_high_water)
-    };
-    let stream = replay
-        .chain(live)
+    let (existing, status) = persisted_or_live_events(&state, &record, after).await?;
+    let stream = replay_and_live_job_event_stream(existing, status, live_rx, after)
         .filter_map(|event| futures::future::ready(sse_event(event).ok()))
         .map(Ok)
         .boxed();
 
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+}
+
+fn replay_and_live_job_event_stream(
+    existing: Vec<JobStreamEvent>,
+    status: RunStatus,
+    receiver: broadcast::Receiver<JobStreamEvent>,
+    after: u64,
+) -> futures::stream::BoxStream<'static, JobStreamEvent> {
+    let live_terminal_published = is_terminal(&status);
+    let replay_events: Vec<_> = existing
+        .into_iter()
+        .filter(|event| event.seq > after)
+        .filter(|event| {
+            live_terminal_published || !matches!(&event.event, StreamEvent::RunCompleted { .. })
+        })
+        .collect();
+    let replay_has_terminal = replay_events
+        .iter()
+        .any(|event| matches!(&event.event, StreamEvent::RunCompleted { .. }));
+    let replay_high_water = replay_events.last().map(|event| event.seq).unwrap_or(after);
+    let replay = futures::stream::iter(replay_events);
+    let live = if replay_has_terminal || live_terminal_published {
+        futures::stream::empty().boxed()
+    } else {
+        live_job_event_stream(receiver, replay_high_water)
+    };
+    replay.chain(live).boxed()
 }
 
 fn live_job_event_stream(
@@ -555,11 +569,16 @@ fn live_job_event_stream(
             }
             loop {
                 match receiver.recv().await {
-                    Ok(event) if event.seq > after => {
+                    Ok(event) => {
                         let completed = matches!(&event.event, StreamEvent::RunCompleted { .. });
-                        return Some((event, (receiver, completed)));
+                        if event.seq > after {
+                            return Some((event, (receiver, completed)));
+                        }
+                        if completed {
+                            return None;
+                        }
                     }
-                    Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
                     Err(broadcast::error::RecvError::Closed) => return None,
                 }
             }
@@ -2111,19 +2130,24 @@ async fn persisted_or_live_events(
     _state: &ApiState,
     record: &JobRecord,
     after: u64,
-) -> Result<Vec<JobStreamEvent>, ApiError> {
+) -> Result<(Vec<JobStreamEvent>, RunStatus), ApiError> {
     let state_store = state_store_for_record(record);
     let mut merged = persisted_events_for_run(&state_store, record.run_id, after)
         .await?
         .into_iter()
         .map(|event| (event.seq, event))
         .collect::<BTreeMap<_, _>>();
-    for event in record.events.lock().await.iter().cloned() {
+    // Terminal publication takes these locks in the same order. Holding the
+    // event lock through the status snapshot makes the replay/live handoff
+    // atomic with respect to a newly published terminal event.
+    let events = record.events.lock().await;
+    let status = record.status.lock().await.clone();
+    for event in events.iter().cloned() {
         if event.seq > after {
             merged.insert(event.seq, event);
         }
     }
-    Ok(merged.into_values().collect())
+    Ok((merged.into_values().collect(), status))
 }
 
 async fn persisted_events_for_run(
@@ -2626,6 +2650,64 @@ mod tests {
         assert_eq!(sender.receiver_count(), 0);
     }
 
+    #[tokio::test]
+    async fn persisted_terminal_waits_for_the_live_finalization_barrier() {
+        let (sender, receiver) = broadcast::channel(EVENT_BUFFER);
+        let terminal = JobStreamEvent {
+            seq: 1,
+            event: StreamEvent::RunCompleted {
+                reason: TerminationReason::Final,
+                output: Some("persisted first".to_string()),
+            },
+        };
+        let mut stream = replay_and_live_job_event_stream(
+            vec![terminal.clone()],
+            RunStatus::Running,
+            receiver,
+            0,
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), stream.next())
+                .await
+                .is_err(),
+            "persisted terminal must remain behind the live finalization barrier"
+        );
+        sender.send(terminal.clone()).unwrap();
+
+        assert_eq!(stream.next().await, Some(terminal));
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), stream.next())
+                .await
+                .expect("terminal replay must close promptly")
+                .is_none()
+        );
+        assert_eq!(sender.receiver_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn already_replayed_live_terminal_still_closes_the_stream() {
+        let (sender, receiver) = broadcast::channel(EVENT_BUFFER);
+        let mut stream =
+            replay_and_live_job_event_stream(Vec::new(), RunStatus::Running, receiver, 1);
+        sender
+            .send(JobStreamEvent {
+                seq: 1,
+                event: StreamEvent::RunCompleted {
+                    reason: TerminationReason::Final,
+                    output: Some("already replayed".to_string()),
+                },
+            })
+            .unwrap();
+
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), stream.next())
+                .await
+                .expect("an already replayed terminal must still close live delivery")
+                .is_none()
+        );
+        assert_eq!(sender.receiver_count(), 0);
+    }
+
     async fn test_job_record(
         temp_dir: &tempfile::TempDir,
     ) -> (ApiState, Arc<JobRecord>, StateIndex) {
@@ -2674,6 +2756,42 @@ mod tests {
             .await
             .insert(record.job_id, Arc::clone(&record));
         (state, record, state_store.index)
+    }
+
+    #[tokio::test]
+    async fn replay_snapshot_keeps_terminal_status_and_event_consistent() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let (state, record, _) = test_job_record(&temp_dir).await;
+        append_job_event(
+            &record,
+            StreamEvent::ModelStatus {
+                status: "running".to_string(),
+                message: "working".to_string(),
+            },
+        )
+        .await;
+        let terminal = append_job_event(
+            &record,
+            StreamEvent::RunCompleted {
+                reason: TerminationReason::Final,
+                output: Some("done".to_string()),
+            },
+        )
+        .await;
+
+        let (events, status) = persisted_or_live_events(&state, &record, 0).await.unwrap();
+        assert_eq!(status, RunStatus::Done);
+        assert!(matches!(
+            events.last().map(|event| &event.event),
+            Some(StreamEvent::RunCompleted { .. })
+        ));
+
+        let (events_after_terminal, status) =
+            persisted_or_live_events(&state, &record, terminal.seq)
+                .await
+                .unwrap();
+        assert!(events_after_terminal.is_empty());
+        assert_eq!(status, RunStatus::Done);
     }
 
     #[tokio::test]
