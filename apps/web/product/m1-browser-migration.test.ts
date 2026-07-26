@@ -1001,6 +1001,44 @@ describe("M1 browser migration", () => {
     expect(result.status).toBe("complete");
   });
 
+  it("accepts a durable preference write conflict issue without a source id", async () => {
+    const storage = new MemoryStorage(legacyState());
+    const conflictIssue = {
+      code: "preference_write_conflict",
+      entity: "preferences",
+    };
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, init?: RequestInit) => {
+        const body = String(init?.body ?? "");
+        return new Response(
+          JSON.stringify(
+            acknowledgementFor(body, {
+              issues: [conflictIssue],
+            }),
+          ),
+          { status: 200 },
+        );
+      },
+    );
+
+    const result = await runM1BrowserMigration({
+      storage,
+      lock: immediateMigrationLock,
+      fetch: fetchMock,
+      idGenerator: () => "migration-preference-write-conflict",
+      now: () => "2026-07-26T00:00:00.000Z",
+    });
+
+    expect(result).toMatchObject({
+      status: "complete",
+      state: {
+        acknowledgement: {
+          issues: [conflictIssue],
+        },
+      },
+    });
+  });
+
   it("preserves every legacy key after a successful C0 migration", async () => {
     const initial = legacyState();
     const storage = new MemoryStorage(initial);
