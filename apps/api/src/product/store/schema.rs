@@ -256,7 +256,7 @@ pub(super) struct ProductDatabase {
 impl ProductDatabase {
     pub(super) fn new(path: PathBuf, busy_timeout_ms: u64) -> Result<Self, ProductStoreError> {
         if path.as_os_str().is_empty()
-            || path.to_string_lossy().as_bytes().len() > super::validation::MAX_PATH_BYTES
+            || path.to_string_lossy().len() > super::validation::MAX_PATH_BYTES
             || busy_timeout_ms == 0
             || busy_timeout_ms > MAX_BUSY_TIMEOUT_MS
         {

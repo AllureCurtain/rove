@@ -9,6 +9,7 @@ mod schema;
 mod validation;
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 
@@ -26,7 +27,7 @@ use repository::ProductRepository;
 use schema::ProductDatabase;
 
 #[derive(Debug, Clone)]
-pub(crate) struct SqliteProductStore {
+struct SqliteProductStore {
     repository: ProductRepository,
 }
 
@@ -35,10 +36,7 @@ impl SqliteProductStore {
     ///
     /// API state is also constructed outside a Tokio runtime in some callers,
     /// so schema migration and conservative stale-claim recovery happen here.
-    pub(crate) fn open(
-        path: impl Into<PathBuf>,
-        busy_timeout_ms: u64,
-    ) -> Result<Self, ProductStoreError> {
+    fn open(path: impl Into<PathBuf>, busy_timeout_ms: u64) -> Result<Self, ProductStoreError> {
         let repository =
             ProductRepository::new(ProductDatabase::new(path.into(), busy_timeout_ms)?);
         repository.initialize_and_recover()?;
@@ -60,6 +58,15 @@ impl SqliteProductStore {
                 )
             })?
     }
+}
+
+/// Construct the API-global product store for coordinator-owned state wiring.
+pub(crate) fn open_product_store(
+    path: PathBuf,
+    busy_timeout_ms: u64,
+) -> Result<Arc<dyn ProductStore>, ProductStoreError> {
+    SqliteProductStore::open(path, busy_timeout_ms)
+        .map(|store| Arc::new(store) as Arc<dyn ProductStore>)
 }
 
 #[async_trait]

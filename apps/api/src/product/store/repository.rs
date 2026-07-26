@@ -2391,13 +2391,13 @@ fn apply_verified_bindings(
                 "verified migration binding would create an ordinal gap",
             ));
         }
-        if let Some(other) = find_binding_by_runtime_run(transaction, verified.runtime_run_id)? {
-            if other.product_session_id != *product_session_id || other.ordinal != verified.ordinal
-            {
-                return Err(binding_corrupt(
-                    "verified runtime run is already bound to another product session",
-                ));
-            }
+        if let Some(other) = find_binding_by_runtime_run(transaction, verified.runtime_run_id)?
+            && (other.product_session_id != *product_session_id
+                || other.ordinal != verified.ordinal)
+        {
+            return Err(binding_corrupt(
+                "verified runtime run is already bound to another product session",
+            ));
         }
         claim_runtime_ownership(
             transaction,

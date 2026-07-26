@@ -86,7 +86,7 @@ pub(super) fn validate_workspace(
     }
 
     let canonical_root_text = super::schema::path_to_utf8(&runtime_workspace.root)?.to_string();
-    if canonical_root_text.as_bytes().len() > MAX_PRODUCT_PATH_BYTES
+    if canonical_root_text.len() > MAX_PRODUCT_PATH_BYTES
         || canonical_root_text.contains('\0')
         || canonical_root_text.chars().any(char::is_control)
     {
@@ -256,10 +256,11 @@ pub(super) fn validate_migration_envelope(
             session.legacy_active_job_id.as_deref(),
             session.legacy_active_run_id.as_deref(),
             session.legacy_resumed_from_run_id.as_deref(),
-        ] {
-            if let Some(hint) = hint {
-                validate_required_text("legacy runtime hint", hint)?;
-            }
+        ]
+        .into_iter()
+        .flatten()
+        {
+            validate_required_text("legacy runtime hint", hint)?;
         }
     }
     for profile in &request.provider_profiles {
@@ -355,7 +356,7 @@ fn validate_api_base(
         return Ok(String::new());
     }
     if value.is_empty()
-        || value.as_bytes().len() > MAX_PRODUCT_API_BASE_BYTES
+        || value.len() > MAX_PRODUCT_API_BASE_BYTES
         || value.chars().any(char::is_control)
     {
         return Err(invalid("provider api_base is empty, too long, or invalid"));
@@ -399,7 +400,7 @@ fn validate_api_key_env(value: Option<&str>) -> Result<Option<String>, ProductSt
 fn validate_required_text(field: &'static str, value: &str) -> Result<String, ProductStoreError> {
     let value = value.trim();
     if value.is_empty()
-        || value.as_bytes().len() > MAX_PRODUCT_TEXT_BYTES
+        || value.len() > MAX_PRODUCT_TEXT_BYTES
         || value.chars().any(char::is_control)
     {
         return Err(invalid(format!("{field} is empty, too long, or invalid")));
@@ -408,7 +409,7 @@ fn validate_required_text(field: &'static str, value: &str) -> Result<String, Pr
 }
 
 fn validate_timestamp(field: &'static str, value: &str) -> Result<String, ProductStoreError> {
-    if value.is_empty() || value.as_bytes().len() > MAX_PRODUCT_TEXT_BYTES {
+    if value.is_empty() || value.len() > MAX_PRODUCT_TEXT_BYTES {
         return Err(invalid(format!("{field} is empty or too long")));
     }
     let parsed = DateTime::parse_from_rfc3339(value)
@@ -460,7 +461,7 @@ fn validate_unique_source_ids<'a>(
 fn validate_path_shape(path: &Path) -> Result<(), ProductStoreError> {
     let path_text = path.to_string_lossy();
     if path.as_os_str().is_empty()
-        || path_text.as_bytes().len() > MAX_PRODUCT_PATH_BYTES
+        || path_text.len() > MAX_PRODUCT_PATH_BYTES
         || path_text.contains('\0')
         || path_text.chars().any(char::is_control)
     {
