@@ -393,6 +393,45 @@ describe("product API client", () => {
         transcriptResponse({ segments: [beyondHighWater] }),
       ),
     ).toThrow(ProductApiSchemaError);
+
+    const unexplainedMissingTail = transcriptSegment() as {
+      last_event_seq: number;
+    };
+    unexplainedMissingTail.last_event_seq = 2;
+    expect(() =>
+      parseProductTranscriptResponse(
+        transcriptResponse({ segments: [unexplainedMissingTail] }),
+      ),
+    ).toThrow(ProductApiSchemaError);
+
+    expect(
+      parseProductTranscriptResponse(
+        transcriptResponse({
+          status: "partial",
+          partial_reasons: [
+            {
+              code: "missing_event_range",
+              run_ordinal: 1,
+              expected_seq: 2,
+              observed_seq: 1,
+            },
+          ],
+          segments: [unexplainedMissingTail],
+        }),
+      ).status,
+    ).toBe("partial");
+
+    expect(() =>
+      parseProductTranscriptResponse(
+        transcriptResponse({
+          status: "partial",
+          partial_reasons: [
+            { code: "runtime_run_missing", run_ordinal: 1 },
+          ],
+          segments: [unexplainedMissingTail],
+        }),
+      ),
+    ).toThrow(ProductApiSchemaError);
   });
 
   it("rejects transcript status that contradicts partial reasons", () => {

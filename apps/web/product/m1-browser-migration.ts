@@ -508,11 +508,14 @@ function parseLegacyTheme(
     return undefined;
   }
   if (isEnumValue(raw, PRODUCT_THEME_PREFERENCES)) {
-    return raw;
+    // M1 writes its default light theme on every shell mount, so this value
+    // cannot prove an explicit user preference. Preserve the durable setting.
+    return raw === "light" ? undefined : raw;
   }
   try {
     const parsed: unknown = JSON.parse(raw);
-    return expectEnum(parsed, PRODUCT_THEME_PREFERENCES, "M1 theme");
+    const theme = expectEnum(parsed, PRODUCT_THEME_PREFERENCES, "M1 theme");
+    return theme === "light" ? undefined : theme;
   } catch (error) {
     if (error instanceof M1BrowserMigrationDataError) {
       throw error;

@@ -190,6 +190,18 @@ export const PRODUCT_TRANSCRIPT_PARTIAL_REASON_CODES = [
 export type ProductTranscriptPartialReasonCode =
   (typeof PRODUCT_TRANSCRIPT_PARTIAL_REASON_CODES)[number];
 
+const PRODUCT_TRANSCRIPT_EVENT_GAP_REASON_CODES = new Set<
+  ProductTranscriptPartialReasonCode
+>([
+  "runtime_state_unavailable",
+  "runtime_identity_mismatch",
+  "missing_event_range",
+  "corrupt_event",
+  "corrupt_artifact",
+  "cleaned_history",
+  "response_limit_reached",
+]);
+
 export interface ProductTranscriptPartialReason {
   code: ProductTranscriptPartialReasonCode;
   run_ordinal?: number;
@@ -2049,6 +2061,19 @@ export function parseProductTranscriptResponse(
       schemaError(
         `${segmentPath}.observed_through_seq`,
         "at most last_event_seq",
+      );
+    }
+    if (
+      segment.observed_through_seq < segment.last_event_seq &&
+      !response.partial_reasons.some(
+        (reason) =>
+          reason.run_ordinal === segment.binding.ordinal &&
+          PRODUCT_TRANSCRIPT_EVENT_GAP_REASON_CODES.has(reason.code),
+      )
+    ) {
+      schemaError(
+        `${segmentPath}.last_event_seq`,
+        "equal to observed_through_seq or covered by a typed partial reason for this run ordinal",
       );
     }
     previousOrdinal = segment.binding.ordinal;

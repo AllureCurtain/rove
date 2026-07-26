@@ -218,6 +218,7 @@ describe("M1 browser migration", () => {
         approval: "ask",
         maxSteps: 8,
       }),
+      [M1_BROWSER_STORAGE_KEYS.theme]: "light",
     });
     const fetchMock = vi.fn();
     const idGenerator = vi.fn(() => "migration-empty-shell");
@@ -320,6 +321,7 @@ describe("M1 browser migration", () => {
         approval: "ask",
         maxSteps: 8,
       }),
+      [M1_BROWSER_STORAGE_KEYS.theme]: "light",
     });
     let postedRequest: M1BrowserMigrationRequest | undefined;
 
@@ -592,6 +594,46 @@ describe("M1 browser migration", () => {
     expect(postedBodies[1]).toBe(postedBodies[0]);
     expect(postedBodies[1]).toContain('"idempotency_key":"migration-replay"');
     expect(idGenerator).toHaveBeenCalledTimes(1);
+  });
+
+  it("exactly replays a pending request created by the required-theme client", async () => {
+    const request: M1BrowserMigrationRequest = {
+      source: "web_m1_local_storage",
+      source_schema_version: 1,
+      idempotency_key: "migration-required-theme-pending",
+      workspaces: [],
+      sessions: [],
+      provider_profiles: [],
+      safe_preferences: { theme: "light" },
+    };
+    const requestBody = JSON.stringify(request);
+    const storage = new MemoryStorage({
+      [M1_BROWSER_MIGRATION_STATE_KEY]: JSON.stringify({
+        status: "pending",
+        source_schema_version: 1,
+        idempotency_key: request.idempotency_key,
+        request,
+        request_body: requestBody,
+        created_at: "2026-07-25T00:00:00.000Z",
+      }),
+    });
+    const idGenerator = vi.fn(() => "migration-must-not-replace-pending");
+    let postedBody = "";
+
+    const result = await runM1BrowserMigration({
+      storage,
+      lock: immediateMigrationLock,
+      fetch: successfulFetch((body) => {
+        postedBody = body;
+      }),
+      idGenerator,
+      now: () => "2026-07-26T00:00:00.000Z",
+    });
+
+    expect(result.status).toBe("complete");
+    expect(postedBody).toBe(requestBody);
+    expect(postedBody).toContain('"safe_preferences":{"theme":"light"}');
+    expect(idGenerator).not.toHaveBeenCalled();
   });
 
   it.each([408, 429, 500])(
