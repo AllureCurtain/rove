@@ -1794,10 +1794,11 @@ async fn drain_job_supervisors(state: &ApiState) {
     }
     for record in records {
         let handle = record.handle.lock().await.take();
-        if let Some(handle) = handle {
-            if let Err(error) = handle.await {
-                tracing::warn!(job_id = %record.job_id, "job supervisor join failed during shutdown: {error}");
-            }
+        let Some(handle) = handle else {
+            continue;
+        };
+        if let Err(error) = handle.await {
+            tracing::warn!(job_id = %record.job_id, "job supervisor join failed during shutdown: {error}");
         }
     }
 }
