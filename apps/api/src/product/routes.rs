@@ -1,9 +1,8 @@
 //! Coordinator-owned product route surface.
 //!
-//! The foundation registers the final additive paths and schemas. Until the
-//! store and transcript workers are integrated, every handler fails closed
-//! with a stable typed error instead of falling back to browser authority or
-//! workspace-global resume.
+//! Catalog handlers delegate to the API-global product store. Migration stays
+//! fail-closed until the coordinator validates browser runtime hints against
+//! workspace-owned runtime state.
 
 use axum::Json;
 use axum::extract::rejection::JsonRejection;
@@ -23,20 +22,6 @@ pub(crate) struct ListProductSessionsQuery {
 }
 
 fn foundation_unavailable<T>() -> Result<Json<T>, ApiError> {
-    Err(ApiError::not_implemented(
-        ProductErrorCode::ProductStoreUnavailable.as_str(),
-        "the C0 product store foundation is not wired yet",
-    ))
-}
-
-fn foundation_create_unavailable<T>() -> Result<(StatusCode, Json<T>), ApiError> {
-    Err(ApiError::not_implemented(
-        ProductErrorCode::ProductStoreUnavailable.as_str(),
-        "the C0 product store foundation is not wired yet",
-    ))
-}
-
-fn foundation_delete_unavailable() -> Result<StatusCode, ApiError> {
     Err(ApiError::not_implemented(
         ProductErrorCode::ProductStoreUnavailable.as_str(),
         "the C0 product store foundation is not wired yet",
@@ -83,11 +68,12 @@ pub(crate) async fn list_product_workspaces(
     )
 )]
 pub(crate) async fn create_product_workspace(
-    State(_state): State<ApiState>,
+    State(state): State<ApiState>,
     body: Result<Json<CreateProductWorkspaceRequest>, JsonRejection>,
 ) -> Result<(StatusCode, Json<ProductWorkspace>), ApiError> {
-    let _request = product_json(body)?;
-    foundation_create_unavailable()
+    let request = product_json(body)?;
+    let workspace = state.product_store()?.create_workspace(request).await?;
+    Ok((StatusCode::CREATED, Json(workspace)))
 }
 
 #[utoipa::path(
@@ -103,10 +89,14 @@ pub(crate) async fn create_product_workspace(
     )
 )]
 pub(crate) async fn delete_product_workspace(
-    State(_state): State<ApiState>,
-    Path(_workspace_id): Path<ProductWorkspaceId>,
+    State(state): State<ApiState>,
+    Path(workspace_id): Path<ProductWorkspaceId>,
 ) -> Result<StatusCode, ApiError> {
-    foundation_delete_unavailable()
+    state
+        .product_store()?
+        .delete_workspace(&workspace_id)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[utoipa::path(
@@ -122,11 +112,14 @@ pub(crate) async fn delete_product_workspace(
     )
 )]
 pub(crate) async fn list_product_sessions(
-    State(_state): State<ApiState>,
+    State(state): State<ApiState>,
     Query(query): Query<ListProductSessionsQuery>,
 ) -> Result<Json<ProductSessionsResponse>, ApiError> {
-    let _workspace_id = query.workspace_id;
-    foundation_unavailable()
+    let sessions = state
+        .product_store()?
+        .list_sessions(&query.workspace_id)
+        .await?;
+    Ok(Json(ProductSessionsResponse { sessions }))
 }
 
 #[utoipa::path(
@@ -143,11 +136,12 @@ pub(crate) async fn list_product_sessions(
     )
 )]
 pub(crate) async fn create_product_session(
-    State(_state): State<ApiState>,
+    State(state): State<ApiState>,
     body: Result<Json<CreateProductSessionRequest>, JsonRejection>,
 ) -> Result<(StatusCode, Json<ProductSession>), ApiError> {
-    let _request = product_json(body)?;
-    foundation_create_unavailable()
+    let request = product_json(body)?;
+    let session = state.product_store()?.create_session(request).await?;
+    Ok((StatusCode::CREATED, Json(session)))
 }
 
 #[utoipa::path(
@@ -166,12 +160,16 @@ pub(crate) async fn create_product_session(
     )
 )]
 pub(crate) async fn update_product_session(
-    State(_state): State<ApiState>,
-    Path(_session_id): Path<ProductSessionId>,
+    State(state): State<ApiState>,
+    Path(session_id): Path<ProductSessionId>,
     body: Result<Json<UpdateProductSessionRequest>, JsonRejection>,
 ) -> Result<Json<ProductSession>, ApiError> {
-    let _request = product_json(body)?;
-    foundation_unavailable()
+    let request = product_json(body)?;
+    let session = state
+        .product_store()?
+        .update_session(&session_id, request)
+        .await?;
+    Ok(Json(session))
 }
 
 #[utoipa::path(
@@ -188,10 +186,11 @@ pub(crate) async fn update_product_session(
     )
 )]
 pub(crate) async fn delete_product_session(
-    State(_state): State<ApiState>,
-    Path(_session_id): Path<ProductSessionId>,
+    State(state): State<ApiState>,
+    Path(session_id): Path<ProductSessionId>,
 ) -> Result<StatusCode, ApiError> {
-    foundation_delete_unavailable()
+    state.product_store()?.delete_session(&session_id).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[utoipa::path(
@@ -228,9 +227,10 @@ pub(crate) async fn get_product_session_transcript(
     )
 )]
 pub(crate) async fn list_product_provider_profiles(
-    State(_state): State<ApiState>,
+    State(state): State<ApiState>,
 ) -> Result<Json<ProductProviderProfilesResponse>, ApiError> {
-    foundation_unavailable()
+    let provider_profiles = state.product_store()?.list_provider_profiles().await?;
+    Ok(Json(ProductProviderProfilesResponse { provider_profiles }))
 }
 
 #[utoipa::path(
@@ -246,11 +246,15 @@ pub(crate) async fn list_product_provider_profiles(
     )
 )]
 pub(crate) async fn create_product_provider_profile(
-    State(_state): State<ApiState>,
+    State(state): State<ApiState>,
     body: Result<Json<CreateProductProviderProfileRequest>, JsonRejection>,
 ) -> Result<(StatusCode, Json<ProductProviderProfile>), ApiError> {
-    let _request = product_json(body)?;
-    foundation_create_unavailable()
+    let request = product_json(body)?;
+    let profile = state
+        .product_store()?
+        .create_provider_profile(request)
+        .await?;
+    Ok((StatusCode::CREATED, Json(profile)))
 }
 
 #[utoipa::path(
@@ -268,12 +272,16 @@ pub(crate) async fn create_product_provider_profile(
     )
 )]
 pub(crate) async fn update_product_provider_profile(
-    State(_state): State<ApiState>,
-    Path(_profile_id): Path<ProductProviderProfileId>,
+    State(state): State<ApiState>,
+    Path(profile_id): Path<ProductProviderProfileId>,
     body: Result<Json<UpdateProductProviderProfileRequest>, JsonRejection>,
 ) -> Result<Json<ProductProviderProfile>, ApiError> {
-    let _request = product_json(body)?;
-    foundation_unavailable()
+    let request = product_json(body)?;
+    let profile = state
+        .product_store()?
+        .update_provider_profile(&profile_id, request)
+        .await?;
+    Ok(Json(profile))
 }
 
 #[utoipa::path(
@@ -289,10 +297,14 @@ pub(crate) async fn update_product_provider_profile(
     )
 )]
 pub(crate) async fn delete_product_provider_profile(
-    State(_state): State<ApiState>,
-    Path(_profile_id): Path<ProductProviderProfileId>,
+    State(state): State<ApiState>,
+    Path(profile_id): Path<ProductProviderProfileId>,
 ) -> Result<StatusCode, ApiError> {
-    foundation_delete_unavailable()
+    state
+        .product_store()?
+        .delete_provider_profile(&profile_id)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[utoipa::path(
@@ -306,9 +318,10 @@ pub(crate) async fn delete_product_provider_profile(
     )
 )]
 pub(crate) async fn get_product_preferences(
-    State(_state): State<ApiState>,
+    State(state): State<ApiState>,
 ) -> Result<Json<ProductPreferences>, ApiError> {
-    foundation_unavailable()
+    let preferences = state.product_store()?.get_preferences().await?;
+    Ok(Json(preferences))
 }
 
 #[utoipa::path(
@@ -324,11 +337,12 @@ pub(crate) async fn get_product_preferences(
     )
 )]
 pub(crate) async fn update_product_preferences(
-    State(_state): State<ApiState>,
+    State(state): State<ApiState>,
     body: Result<Json<UpdateProductPreferencesRequest>, JsonRejection>,
 ) -> Result<Json<ProductPreferences>, ApiError> {
-    let _request = product_json(body)?;
-    foundation_unavailable()
+    let request = product_json(body)?;
+    let preferences = state.product_store()?.update_preferences(request).await?;
+    Ok(Json(preferences))
 }
 
 #[utoipa::path(
