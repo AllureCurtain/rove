@@ -448,7 +448,8 @@ pub struct M1ProviderSelectionImport {
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct M1SafePreferencesImport {
-    pub theme: ProductThemePreference,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme: Option<ProductThemePreference>,
     #[serde(default)]
     pub source_active_workspace_id: Option<String>,
     #[serde(default)]

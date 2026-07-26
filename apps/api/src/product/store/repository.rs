@@ -2455,38 +2455,45 @@ fn migration_preferences(
     issues: &mut Vec<M1MigrationIssue>,
 ) -> Result<ValidatedPreferences, ProductStoreError> {
     let imported = &migration.request.safe_preferences;
-    let active_workspace_id = imported
-        .source_active_workspace_id
-        .as_ref()
-        .and_then(|source_id| workspace_ids.get(source_id))
-        .cloned();
-    if let Some(source_id) = imported.source_active_workspace_id.as_ref()
-        && active_workspace_id.is_none()
-    {
-        push_issue_unique(
-            issues,
-            M1MigrationIssue {
-                code: M1MigrationIssueCode::InvalidPreferenceReference,
-                entity: "active_workspace".to_string(),
-                source_id: Some(source_id.clone()),
-            },
-        )?;
+    let existing = get_preferences(transaction)?;
+    let mut active_workspace_id = existing.active_workspace_id;
+    let mut active_session_id = existing.active_session_id;
+    let mut imported_workspace_valid = None;
+
+    if let Some(source_id) = imported.source_active_workspace_id.as_ref() {
+        if let Some(workspace_id) = workspace_ids.get(source_id).cloned() {
+            if active_workspace_id.as_ref() != Some(&workspace_id) {
+                active_session_id = None;
+            }
+            active_workspace_id = Some(workspace_id);
+            imported_workspace_valid = Some(true);
+        } else {
+            imported_workspace_valid = Some(false);
+            push_issue_unique(
+                issues,
+                M1MigrationIssue {
+                    code: M1MigrationIssueCode::InvalidPreferenceReference,
+                    entity: "active_workspace".to_string(),
+                    source_id: Some(source_id.clone()),
+                },
+            )?;
+        }
     }
 
-    let mut active_session_id = imported
-        .source_active_session_id
-        .as_ref()
-        .and_then(|source_id| session_ids.get(source_id))
-        .cloned();
     if let Some(source_id) = imported.source_active_session_id.as_ref() {
-        let valid = match (&active_session_id, &active_workspace_id) {
-            (Some(session_id), Some(workspace_id)) => {
-                get_session(transaction, session_id)?.workspace_id == *workspace_id
+        let mapped_session = session_ids.get(source_id).cloned();
+        let valid_session = match (mapped_session, imported_workspace_valid) {
+            (Some(session_id), Some(true)) => {
+                let session = get_session(transaction, &session_id)?;
+                (Some(&session.workspace_id) == active_workspace_id.as_ref()).then_some(session)
             }
-            _ => false,
+            (Some(session_id), None) => Some(get_session(transaction, &session_id)?),
+            _ => None,
         };
-        if !valid {
-            active_session_id = None;
+        if let Some(session) = valid_session {
+            active_workspace_id = Some(session.workspace_id);
+            active_session_id = Some(session.id);
+        } else {
             push_issue_unique(
                 issues,
                 M1MigrationIssue {
@@ -2499,7 +2506,7 @@ fn migration_preferences(
     }
 
     let provider_selection = match imported.provider_selection.as_ref() {
-        None => None,
+        None => existing.provider_selection,
         Some(selection) => {
             let profile_id = selection
                 .source_profile_id
@@ -2517,7 +2524,7 @@ fn migration_preferences(
                         source_id: Some(source_id.clone()),
                     },
                 )?;
-                None
+                existing.provider_selection
             } else {
                 Some(validate_provider_selection(ProductProviderSelection {
                     profile_id,
@@ -2531,7 +2538,7 @@ fn migration_preferences(
 
     Ok(ValidatedPreferences {
         schema_version: 1,
-        theme: imported.theme,
+        theme: imported.theme.unwrap_or(existing.theme),
         active_workspace_id,
         active_session_id,
         provider_selection,

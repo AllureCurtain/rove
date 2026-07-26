@@ -6,8 +6,8 @@ use tempfile::TempDir;
 use crate::product::{
     CommitProductRunBinding, CreateProductSessionRequest, CreateProductWorkspaceRequest,
     M1BrowserMigrationRequest, M1BrowserMigrationSource, M1MigrationDisposition,
-    M1ProviderProfileImport, M1SafePreferencesImport, M1SessionImport, M1WorkspaceImport,
-    PreparedM1BrowserMigration, ProductApprovalPreference, ProductErrorCode,
+    M1ProviderProfileImport, M1ProviderSelectionImport, M1SafePreferencesImport, M1SessionImport,
+    M1WorkspaceImport, PreparedM1BrowserMigration, ProductApprovalPreference, ProductErrorCode,
     ProductProviderSelection, ProductProviderType, ProductStore, ProductThemePreference,
     ProductWorkspaceKind, UpdateProductPreferencesRequest,
 };
@@ -219,7 +219,7 @@ async fn migration_is_idempotent_and_normalizes_legacy_fake_base() {
             updated_at: "2026-07-26T00:00:00Z".to_string(),
         }],
         safe_preferences: M1SafePreferencesImport {
-            theme: ProductThemePreference::System,
+            theme: Some(ProductThemePreference::System),
             source_active_workspace_id: Some("ws_legacy".to_string()),
             source_active_session_id: Some("sess_legacy".to_string()),
             provider_selection: None,
@@ -247,5 +247,103 @@ async fn migration_is_idempotent_and_normalizes_legacy_fake_base() {
     assert_eq!(
         store.list_provider_profiles().await.unwrap()[0].api_base,
         ""
+    );
+}
+
+#[tokio::test]
+async fn migration_preserves_durable_preferences_for_omitted_browser_fields() {
+    let temp = TempDir::new().unwrap();
+    let store = open_store(&temp);
+    let root = temp.path().join("durable-workspace");
+    fs::create_dir_all(&root).unwrap();
+    let workspace = store
+        .create_workspace(CreateProductWorkspaceRequest {
+            root,
+            kind: ProductWorkspaceKind::Folder,
+            display_name: Some("Durable workspace".to_string()),
+            pinned: false,
+        })
+        .await
+        .unwrap();
+    let session = store
+        .create_session(CreateProductSessionRequest {
+            workspace_id: workspace.id.clone(),
+            title: Some("Durable session".to_string()),
+        })
+        .await
+        .unwrap();
+    let durable = store
+        .update_preferences(UpdateProductPreferencesRequest {
+            schema_version: 1,
+            theme: ProductThemePreference::Dark,
+            active_workspace_id: Some(workspace.id),
+            active_session_id: Some(session.id),
+            provider_selection: Some(ProductProviderSelection {
+                profile_id: None,
+                model: "fake".to_string(),
+                approval: ProductApprovalPreference::Never,
+                max_steps: 12,
+            }),
+        })
+        .await
+        .unwrap();
+    let migration = PreparedM1BrowserMigration {
+        request: M1BrowserMigrationRequest {
+            source: M1BrowserMigrationSource::WebM1LocalStorage,
+            source_schema_version: 1,
+            idempotency_key: "migration-omitted-preferences".to_string(),
+            workspaces: Vec::new(),
+            sessions: Vec::new(),
+            provider_profiles: Vec::new(),
+            safe_preferences: M1SafePreferencesImport {
+                theme: None,
+                source_active_workspace_id: None,
+                source_active_session_id: None,
+                provider_selection: None,
+            },
+        },
+        verified_run_bindings: Vec::new(),
+        issues: Vec::new(),
+    };
+
+    store.apply_m1_browser_migration(migration).await.unwrap();
+
+    let unchanged = store.get_preferences().await.unwrap();
+    assert_eq!(
+        serde_json::to_value(&unchanged).unwrap(),
+        serde_json::to_value(&durable).unwrap()
+    );
+
+    let partial = PreparedM1BrowserMigration {
+        request: M1BrowserMigrationRequest {
+            source: M1BrowserMigrationSource::WebM1LocalStorage,
+            source_schema_version: 1,
+            idempotency_key: "migration-partial-preferences".to_string(),
+            workspaces: Vec::new(),
+            sessions: Vec::new(),
+            provider_profiles: Vec::new(),
+            safe_preferences: M1SafePreferencesImport {
+                theme: Some(ProductThemePreference::System),
+                source_active_workspace_id: Some("missing-workspace".to_string()),
+                source_active_session_id: Some("missing-session".to_string()),
+                provider_selection: Some(M1ProviderSelectionImport {
+                    source_profile_id: Some("missing-profile".to_string()),
+                    model: "fake".to_string(),
+                    approval: ProductApprovalPreference::Ask,
+                    max_steps: 8,
+                }),
+            },
+        },
+        verified_run_bindings: Vec::new(),
+        issues: Vec::new(),
+    };
+
+    let acknowledgement = store.apply_m1_browser_migration(partial).await.unwrap();
+    let mut expected = durable;
+    expected.theme = ProductThemePreference::System;
+    assert_eq!(acknowledgement.issues.len(), 3);
+    assert_eq!(
+        serde_json::to_value(store.get_preferences().await.unwrap()).unwrap(),
+        serde_json::to_value(expected).unwrap()
     );
 }
