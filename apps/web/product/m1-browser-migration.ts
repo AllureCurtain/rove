@@ -42,6 +42,16 @@ export interface MigrationStorage {
   setItem(key: string, value: string): void;
 }
 
+export const M1_BROWSER_MIGRATION_LOCK_NAME =
+  "rove.product.migration.web-m1.v1";
+
+export interface M1BrowserMigrationLock {
+  runExclusive<T>(
+    name: string,
+    operation: () => Promise<T>,
+  ): Promise<T>;
+}
+
 export interface M1BrowserMigrationDependencies {
   storage: MigrationStorage;
   fetch?: typeof globalThis.fetch;
@@ -49,6 +59,8 @@ export interface M1BrowserMigrationDependencies {
   now?: () => string;
   apiPrefix?: string;
   client?: ProductApiClient;
+  /** `null` explicitly selects the fail-closed no-lock path. */
+  lock?: M1BrowserMigrationLock | null;
 }
 
 export interface PendingM1BrowserMigrationState {
@@ -78,7 +90,9 @@ export interface M1BrowserMigrationFailure {
     | "invalid_migration_state"
     | "storage_write_failed"
     | "request_failed"
-    | "invalid_acknowledgement";
+    | "invalid_acknowledgement"
+    | "lock_unavailable"
+    | "lock_failed";
   message: string;
 }
 
@@ -838,6 +852,39 @@ export function validateM1MigrationAcknowledgement(
     ["provider_profile", "product_provider_profile"],
     [],
   );
+  const preferences = pending.request.safe_preferences;
+  if (preferences.source_active_workspace_id !== undefined) {
+    validateEntityCoverage(
+      "active workspace preference",
+      [preferences.source_active_workspace_id],
+      acknowledgement.workspace_mappings,
+      acknowledgement.issues,
+      ["active_workspace"],
+      ["invalid_preference_reference"],
+    );
+  }
+  if (preferences.source_active_session_id !== undefined) {
+    validateEntityCoverage(
+      "active session preference",
+      [preferences.source_active_session_id],
+      acknowledgement.session_mappings,
+      acknowledgement.issues,
+      ["active_session"],
+      ["invalid_preference_reference"],
+    );
+  }
+  const sourceProfileId =
+    preferences.provider_selection?.source_profile_id;
+  if (sourceProfileId !== undefined) {
+    validateEntityCoverage(
+      "provider selection preference",
+      [sourceProfileId],
+      acknowledgement.provider_profile_mappings,
+      acknowledgement.issues,
+      ["provider_selection"],
+      ["invalid_preference_reference"],
+    );
+  }
   return acknowledgement;
 }
 
@@ -850,6 +897,18 @@ function defaultIdGenerator(): string {
 
 function defaultNow(): string {
   return new Date().toISOString();
+}
+
+function webLocksMigrationLock(): M1BrowserMigrationLock | null {
+  const lockManager = globalThis.navigator?.locks;
+  if (!lockManager) {
+    return null;
+  }
+  return {
+    runExclusive<T>(name: string, operation: () => Promise<T>): Promise<T> {
+      return lockManager.request(name, { mode: "exclusive" }, operation);
+    },
+  };
 }
 
 function blocked(
@@ -879,7 +938,7 @@ function requestFailure(error: unknown): M1BrowserMigrationFailure {
  * Replay-safe one-shot migration. A valid pending record always wins over a
  * fresh legacy snapshot, and a stale tab never overwrites another tab's state.
  */
-export async function runM1BrowserMigration(
+async function runM1BrowserMigrationCriticalSection(
   dependencies: M1BrowserMigrationDependencies,
 ): Promise<M1BrowserMigrationRunResult> {
   const { storage } = dependencies;
@@ -1023,5 +1082,35 @@ export async function runM1BrowserMigration(
         message: "server migration succeeded but the completion receipt was not stored",
       },
     };
+  }
+}
+
+/**
+ * The same-origin lock covers the complete migration transaction, including
+ * the network wait. Without mutual exclusion no localStorage compare-and-set
+ * exists, so the only safe fallback is to leave all state untouched.
+ */
+export async function runM1BrowserMigration(
+  dependencies: M1BrowserMigrationDependencies,
+): Promise<M1BrowserMigrationRunResult> {
+  const lock =
+    dependencies.lock === undefined
+      ? webLocksMigrationLock()
+      : dependencies.lock;
+  if (lock === null) {
+    return blocked(
+      "lock_unavailable",
+      "M1 browser migration requires same-origin exclusive locking",
+    );
+  }
+  try {
+    return await lock.runExclusive(M1_BROWSER_MIGRATION_LOCK_NAME, () =>
+      runM1BrowserMigrationCriticalSection(dependencies),
+    );
+  } catch {
+    return blocked(
+      "lock_failed",
+      "M1 browser migration could not acquire the same-origin lock",
+    );
   }
 }

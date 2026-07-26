@@ -2,7 +2,9 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   ProductApiSchemaError,
+  parseProductProviderProfileRequest,
   parseProductTranscriptResponse,
+  parseStreamEvent,
 } from "./product-api-types";
 import { createProductApiClient } from "./product-client";
 
@@ -263,5 +265,151 @@ describe("product API client", () => {
       }),
     ).rejects.toBeInstanceOf(ProductApiSchemaError);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects an API key environment reference for the fake provider", () => {
+    expect(() =>
+      parseProductProviderProfileRequest({
+        label: "Fake",
+        provider_type: "fake",
+        api_base: "",
+        api_key_env: "FAKE_API_KEY",
+      }),
+    ).toThrow(ProductApiSchemaError);
+  });
+
+  it("preserves tool success execution metadata", () => {
+    const event = parseStreamEvent({
+      type: "tool_call_completed",
+      call_id: "call-1",
+      result: {
+        call_id: "call-1",
+        output: "updated",
+        metadata: {
+          status: "partial_success",
+          error_code: "partial_write",
+          security_event_type: "workspace_mutation",
+          risk_level: "high",
+          read_only: false,
+          affected_paths: ["src/main.rs"],
+          workspace_changed: true,
+          diff_summary: ["updated src/main.rs"],
+        },
+      },
+    });
+
+    expect(event).toEqual({
+      type: "tool_call_completed",
+      call_id: "call-1",
+      result: {
+        call_id: "call-1",
+        output: "updated",
+        metadata: {
+          status: "partial_success",
+          error_code: "partial_write",
+          security_event_type: "workspace_mutation",
+          risk_level: "high",
+          read_only: false,
+          affected_paths: ["src/main.rs"],
+          workspace_changed: true,
+          diff_summary: ["updated src/main.rs"],
+        },
+      },
+    });
+  });
+
+  it("preserves tool failure execution metadata", () => {
+    const event = parseStreamEvent({
+      type: "tool_call_failed",
+      call_id: "call-2",
+      error: {
+        code: "permission_denied",
+        reason: "approval rejected",
+      },
+      metadata: {
+        status: "rejected",
+        error_code: "permission_denied",
+        security_event_type: "approval_rejected",
+        risk_level: "high",
+        read_only: false,
+        affected_paths: [],
+        workspace_changed: false,
+        diff_summary: [],
+      },
+    });
+
+    expect(event).toMatchObject({
+      type: "tool_call_failed",
+      metadata: {
+        status: "rejected",
+        error_code: "permission_denied",
+        security_event_type: "approval_rejected",
+        risk_level: "high",
+        read_only: false,
+        affected_paths: [],
+        workspace_changed: false,
+        diff_summary: [],
+      },
+    });
+  });
+
+  it("defaults omitted tool execution metadata and rejects explicit null", () => {
+    expect(
+      parseStreamEvent({
+        type: "tool_call_completed",
+        call_id: "call-default",
+        result: {
+          call_id: "call-default",
+          output: "unchanged",
+        },
+      }),
+    ).toMatchObject({
+      result: {
+        metadata: {
+          status: "ok",
+          risk_level: "low",
+          read_only: false,
+          affected_paths: [],
+          workspace_changed: false,
+          diff_summary: [],
+        },
+      },
+    });
+    expect(() =>
+      parseStreamEvent({
+        type: "tool_call_failed",
+        call_id: "call-null",
+        error: { code: "execution_failed" },
+        metadata: null,
+      }),
+    ).toThrow(ProductApiSchemaError);
+  });
+
+  it("accepts prompt metadata without a prompt cache key", () => {
+    const event = parseStreamEvent({
+      type: "prompt_built",
+      metadata: {
+        prompt_hash: "sha256:prompt",
+        stable_prefix_hash: "sha256:prefix",
+        workspace_fingerprint: "sha256:workspace",
+        tool_signature: "sha256:tools",
+        token_estimate: 42,
+        included_history_messages: 3,
+        dropped_history_messages: 1,
+      },
+    });
+
+    expect(event).toEqual({
+      type: "prompt_built",
+      metadata: {
+        prompt_hash: "sha256:prompt",
+        stable_prefix_hash: "sha256:prefix",
+        workspace_fingerprint: "sha256:workspace",
+        tool_signature: "sha256:tools",
+        token_estimate: 42,
+        included_history_messages: 3,
+        dropped_history_messages: 1,
+      },
+    });
   });
 });

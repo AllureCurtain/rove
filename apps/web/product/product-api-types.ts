@@ -1,12 +1,10 @@
 import {
   STREAM_EVENT_NAMES,
   type ExecutionBudgetUsage,
-  type JobStreamEvent,
   type PlanDecision,
   type PlanDecisionRecord,
   type PlanRevision,
   type PlanStep,
-  type PromptBuildMetadata,
   type PromptCompactionState,
   type RunStatus,
   type StepRecord,
@@ -16,7 +14,6 @@ import {
   type ToolError,
   type ToolMutation,
   type ToolMutationOperation,
-  type ToolResult,
   type Usage,
 } from "../lib/rove-types";
 
@@ -214,7 +211,7 @@ export interface ProductTranscriptRunSegment {
   run_status: RunStatus;
   observed_through_seq: number;
   last_event_seq: number;
-  events: JobStreamEvent[];
+  events: ProductJobStreamEvent[];
   fallback?: ProductTranscriptFallback;
 }
 
@@ -352,6 +349,73 @@ export type ProductErrorCode = (typeof PRODUCT_ERROR_CODES)[number];
 export interface ApiErrorResponse {
   code: string;
   error: string;
+}
+
+export type ProductToolExecutionStatus =
+  | "ok"
+  | "error"
+  | "rejected"
+  | "partial_success";
+
+export type ProductToolRiskLevel = "low" | "high";
+
+export interface ProductToolExecutionMetadata {
+  status: ProductToolExecutionStatus;
+  error_code?: string;
+  security_event_type?: string;
+  risk_level: ProductToolRiskLevel;
+  read_only: boolean;
+  affected_paths: string[];
+  workspace_changed: boolean;
+  diff_summary: string[];
+}
+
+export interface ProductToolResult {
+  call_id: string;
+  output: string;
+  mutations?: ToolMutation[];
+  metadata: ProductToolExecutionMetadata;
+}
+
+export interface ProductPromptBuildMetadata {
+  prompt_hash: string;
+  stable_prefix_hash: string;
+  workspace_fingerprint: string;
+  tool_signature: string;
+  token_estimate: number;
+  included_history_messages: number;
+  dropped_history_messages: number;
+  prompt_cache_key?: string;
+}
+
+type ProductUnchangedStreamEvent = Exclude<
+  StreamEvent,
+  | { type: "tool_call_completed" }
+  | { type: "tool_call_failed" }
+  | { type: "prompt_built" }
+>;
+
+export type ProductStreamEvent =
+  | ProductUnchangedStreamEvent
+  | {
+      type: "tool_call_completed";
+      call_id: string;
+      result: ProductToolResult;
+    }
+  | {
+      type: "tool_call_failed";
+      call_id: string;
+      error: ToolError;
+      metadata: ProductToolExecutionMetadata;
+    }
+  | {
+      type: "prompt_built";
+      metadata: ProductPromptBuildMetadata;
+    };
+
+export interface ProductJobStreamEvent {
+  seq: number;
+  event: ProductStreamEvent;
 }
 
 export class ProductApiSchemaError extends Error {
@@ -567,6 +631,9 @@ export function assertSafeProductProviderConfiguration(
   }
 
   if (providerType === "fake") {
+    if (apiKeyEnv !== undefined) {
+      schemaError(`${path}.api_key_env`, "absent for the fake provider");
+    }
     if (apiBase.trim() !== "") {
       schemaError(`${path}.api_base`, "empty for the fake provider");
     }
@@ -1092,11 +1159,72 @@ function parseToolMutation(value: unknown, path: string): ToolMutation {
   return mutation;
 }
 
-function parseToolResult(value: unknown, path: string): ToolResult {
+function defaultToolExecutionMetadata(): ProductToolExecutionMetadata {
+  return {
+    status: "ok",
+    risk_level: "low",
+    read_only: false,
+    affected_paths: [],
+    workspace_changed: false,
+    diff_summary: [],
+  };
+}
+
+function parseToolExecutionMetadata(
+  value: unknown,
+  path: string,
+): ProductToolExecutionMetadata {
+  if (value === undefined) {
+    return defaultToolExecutionMetadata();
+  }
   const record = expectRecord(value, path);
-  const result: ToolResult = {
+  const metadata: ProductToolExecutionMetadata = {
+    status: expectEnum(
+      record.status,
+      ["ok", "error", "rejected", "partial_success"] as const,
+      `${path}.status`,
+    ),
+    risk_level: expectEnum(
+      record.risk_level,
+      ["low", "high"] as const,
+      `${path}.risk_level`,
+    ),
+    read_only: expectBoolean(record.read_only, `${path}.read_only`),
+    affected_paths:
+      record.affected_paths === undefined
+        ? []
+        : parseStringArray(record.affected_paths, `${path}.affected_paths`),
+    workspace_changed: expectBoolean(
+      record.workspace_changed,
+      `${path}.workspace_changed`,
+    ),
+    diff_summary:
+      record.diff_summary === undefined
+        ? []
+        : parseStringArray(record.diff_summary, `${path}.diff_summary`),
+  };
+  assignOptional(
+    metadata,
+    "error_code",
+    optionalString(record, "error_code", path),
+  );
+  assignOptional(
+    metadata,
+    "security_event_type",
+    optionalString(record, "security_event_type", path),
+  );
+  return metadata;
+}
+
+function parseToolResult(value: unknown, path: string): ProductToolResult {
+  const record = expectRecord(value, path);
+  const result: ProductToolResult = {
     call_id: expectString(record.call_id, `${path}.call_id`, { nonEmpty: true }),
     output: expectString(record.output, `${path}.output`),
+    metadata: parseToolExecutionMetadata(
+      record.metadata,
+      `${path}.metadata`,
+    ),
   };
   if (record.mutations !== undefined && record.mutations !== null) {
     result.mutations = expectArray(
@@ -1434,9 +1562,9 @@ function parsePromptCompactionState(
 function parsePromptBuildMetadata(
   value: unknown,
   path: string,
-): PromptBuildMetadata {
+): ProductPromptBuildMetadata {
   const record = expectRecord(value, path);
-  return {
+  const metadata: ProductPromptBuildMetadata = {
     prompt_hash: expectString(record.prompt_hash, `${path}.prompt_hash`, {
       nonEmpty: true,
     }),
@@ -1466,15 +1594,19 @@ function parsePromptBuildMetadata(
       `${path}.dropped_history_messages`,
       { min: 0 },
     ),
-    prompt_cache_key: expectString(
-      record.prompt_cache_key,
-      `${path}.prompt_cache_key`,
-      { nonEmpty: true },
-    ),
   };
+  assignOptional(
+    metadata,
+    "prompt_cache_key",
+    optionalString(record, "prompt_cache_key", path, { nonEmpty: true }),
+  );
+  return metadata;
 }
 
-export function parseStreamEvent(value: unknown, path = "stream event"): StreamEvent {
+export function parseStreamEvent(
+  value: unknown,
+  path = "stream event",
+): ProductStreamEvent {
   const record = expectRecord(value, path);
   const type = expectEnum(record.type, STREAM_EVENT_NAMES, `${path}.type`);
   switch (type) {
@@ -1494,7 +1626,7 @@ export function parseStreamEvent(value: unknown, path = "stream event"): StreamE
         message: expectString(record.message, `${path}.message`),
       };
     case "llm_message": {
-      const event: Extract<StreamEvent, { type: "llm_message" }> = {
+      const event: Extract<ProductStreamEvent, { type: "llm_message" }> = {
         type,
         full: expectString(record.full, `${path}.full`),
         usage: parseUsage(record.usage, `${path}.usage`),
@@ -1509,7 +1641,7 @@ export function parseStreamEvent(value: unknown, path = "stream event"): StreamE
       return event;
     }
     case "tool_call_started": {
-      const event: Extract<StreamEvent, { type: "tool_call_started" }> = {
+      const event: Extract<ProductStreamEvent, { type: "tool_call_started" }> = {
         type,
         call_id: expectId(record.call_id, `${path}.call_id`),
         name: expectString(record.name, `${path}.name`, { nonEmpty: true }),
@@ -1540,6 +1672,10 @@ export function parseStreamEvent(value: unknown, path = "stream event"): StreamE
         type,
         call_id: expectId(record.call_id, `${path}.call_id`),
         error: parseToolError(record.error, `${path}.error`),
+        metadata: parseToolExecutionMetadata(
+          record.metadata,
+          `${path}.metadata`,
+        ),
       };
     case "input_needed":
       return {
@@ -1548,7 +1684,7 @@ export function parseStreamEvent(value: unknown, path = "stream event"): StreamE
         prompt: expectString(record.prompt, `${path}.prompt`),
       };
     case "plan_created": {
-      const event: Extract<StreamEvent, { type: "plan_created" }> = {
+      const event: Extract<ProductStreamEvent, { type: "plan_created" }> = {
         type,
         plan: parseTaskPlan(record.plan, `${path}.plan`),
       };
@@ -1572,7 +1708,7 @@ export function parseStreamEvent(value: unknown, path = "stream event"): StreamE
       return event;
     }
     case "plan_step_started": {
-      const event: Extract<StreamEvent, { type: "plan_step_started" }> = {
+      const event: Extract<ProductStreamEvent, { type: "plan_step_started" }> = {
         type,
         step: parsePlanStep(record.step, `${path}.step`),
         index: expectInteger(record.index, `${path}.index`, { min: 0 }),
@@ -1613,7 +1749,7 @@ export function parseStreamEvent(value: unknown, path = "stream event"): StreamE
         revision: parsePlanRevision(record.revision, `${path}.revision`),
       };
     case "prompt_compacted": {
-      const event: Extract<StreamEvent, { type: "prompt_compacted" }> = {
+      const event: Extract<ProductStreamEvent, { type: "prompt_compacted" }> = {
         type,
         state: parsePromptCompactionState(record.state, `${path}.state`),
       };
@@ -1634,7 +1770,7 @@ export function parseStreamEvent(value: unknown, path = "stream event"): StreamE
         metadata: parsePromptBuildMetadata(record.metadata, `${path}.metadata`),
       };
     case "run_completed": {
-      const event: Extract<StreamEvent, { type: "run_completed" }> = {
+      const event: Extract<ProductStreamEvent, { type: "run_completed" }> = {
         type,
         reason: expectString(record.reason, `${path}.reason`, { nonEmpty: true }),
       };
@@ -1647,7 +1783,10 @@ export function parseStreamEvent(value: unknown, path = "stream event"): StreamE
   }
 }
 
-function parseJobStreamEvent(value: unknown, path: string): JobStreamEvent {
+function parseJobStreamEvent(
+  value: unknown,
+  path: string,
+): ProductJobStreamEvent {
   const record = expectRecord(value, path);
   return {
     seq: expectInteger(record.seq, `${path}.seq`, { min: 1 }),

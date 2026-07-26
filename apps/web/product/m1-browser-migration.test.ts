@@ -7,6 +7,7 @@ import {
 import {
   readM1BrowserMigrationState,
   runM1BrowserMigration,
+  type M1BrowserMigrationLock,
   type MigrationStorage,
 } from "./m1-browser-migration";
 import {
@@ -17,6 +18,7 @@ import {
 class MemoryStorage implements MigrationStorage {
   readonly reads: string[] = [];
   readonly writes: string[] = [];
+  readonly writtenValues: string[] = [];
   readonly removes: string[] = [];
   private readonly values = new Map<string, string>();
 
@@ -33,6 +35,7 @@ class MemoryStorage implements MigrationStorage {
 
   setItem(key: string, value: string): void {
     this.writes.push(key);
+    this.writtenValues.push(value);
     this.values.set(key, value);
   }
 
@@ -43,6 +46,33 @@ class MemoryStorage implements MigrationStorage {
 
   peek(key: string): string | null {
     return this.values.get(key) ?? null;
+  }
+}
+
+const immediateMigrationLock: M1BrowserMigrationLock = {
+  runExclusive<T>(_name: string, operation: () => Promise<T>): Promise<T> {
+    return operation();
+  },
+};
+
+class SerialMigrationLock implements M1BrowserMigrationLock {
+  private tail: Promise<void> = Promise.resolve();
+
+  async runExclusive<T>(
+    _name: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const previous = this.tail;
+    let release = (): void => undefined;
+    this.tail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
   }
 }
 
@@ -146,6 +176,31 @@ function successfulFetch(
 }
 
 describe("M1 browser migration", () => {
+  it("fails closed without same-origin locking before touching browser state", async () => {
+    const storage = new MemoryStorage(legacyState());
+    const fetchMock = vi.fn();
+    const idGenerator = vi.fn(() => "migration-without-lock");
+
+    const result = await runM1BrowserMigration({
+      storage,
+      lock: null,
+      fetch: fetchMock,
+      idGenerator,
+    });
+
+    expect(result).toEqual({
+      status: "blocked",
+      failure: {
+        code: "lock_unavailable",
+        message: "M1 browser migration requires same-origin exclusive locking",
+      },
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(idGenerator).not.toHaveBeenCalled();
+    expect(storage.reads).toEqual([]);
+    expect(storage.writes).toEqual([]);
+  });
+
   it("constructs an allowlisted body and never forwards raw secret-shaped fields", async () => {
     const storage = new MemoryStorage(
       legacyState({
@@ -159,6 +214,7 @@ describe("M1 browser migration", () => {
 
     const result = await runM1BrowserMigration({
       storage,
+      lock: immediateMigrationLock,
       fetch: successfulFetch((body) => {
         postedBody = body;
       }),
@@ -180,6 +236,7 @@ describe("M1 browser migration", () => {
     const malformedFetch = vi.fn();
     const malformedResult = await runM1BrowserMigration({
       storage: malformed,
+      lock: immediateMigrationLock,
       fetch: malformedFetch,
       idGenerator: () => "migration-malformed",
     });
@@ -195,6 +252,7 @@ describe("M1 browser migration", () => {
     const wrongRootFetch = vi.fn();
     const wrongRootResult = await runM1BrowserMigration({
       storage: wrongRoot,
+      lock: immediateMigrationLock,
       fetch: wrongRootFetch,
       idGenerator: () => "migration-wrong-root",
     });
@@ -217,6 +275,7 @@ describe("M1 browser migration", () => {
 
       const result = await runM1BrowserMigration({
         storage,
+        lock: immediateMigrationLock,
         fetch: successfulFetch((body) => {
           postedBody = body;
         }),
@@ -243,6 +302,7 @@ describe("M1 browser migration", () => {
 
     const result = await runM1BrowserMigration({
       storage,
+      lock: immediateMigrationLock,
       fetch: fetchMock,
       idGenerator: () => "migration-task-workspace",
     });
@@ -261,6 +321,7 @@ describe("M1 browser migration", () => {
 
     const result = await runM1BrowserMigration({
       storage,
+      lock: immediateMigrationLock,
       fetch: successfulFetch((body) => {
         const state = readM1BrowserMigrationState(storage);
         expect(state?.status).toBe("pending");
@@ -278,6 +339,50 @@ describe("M1 browser migration", () => {
     expect(observedPendingBody).not.toBe("");
   });
 
+  it("serializes concurrent tabs across the complete migration transaction", async () => {
+    const storage = new MemoryStorage(legacyState());
+    const lock = new SerialMigrationLock();
+    const fetchMock = successfulFetch();
+    const idGenerator = vi.fn(() => "migration-concurrent");
+
+    const [first, second] = await Promise.all([
+      runM1BrowserMigration({
+        storage,
+        lock,
+        fetch: fetchMock,
+        idGenerator,
+        now: () => "2026-07-26T00:00:00.000Z",
+      }),
+      runM1BrowserMigration({
+        storage,
+        lock,
+        fetch: fetchMock,
+        idGenerator,
+        now: () => "2026-07-26T00:00:02.000Z",
+      }),
+    ]);
+
+    expect(first.status).toBe("complete");
+    expect(second.status).toBe("complete");
+    if (first.status === "complete" && second.status === "complete") {
+      expect(first.reused).toBe(false);
+      expect(second.reused).toBe(true);
+      expect(second.state).toEqual(first.state);
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(idGenerator).toHaveBeenCalledTimes(1);
+    expect(storage.writes).toEqual([
+      M1_BROWSER_MIGRATION_STATE_KEY,
+      M1_BROWSER_MIGRATION_STATE_KEY,
+    ]);
+    expect(
+      storage.writtenValues.map((raw) =>
+        (JSON.parse(raw) as { status?: unknown }).status,
+      ),
+    ).toEqual(["pending", "complete"]);
+    expect(readM1BrowserMigrationState(storage)?.status).toBe("complete");
+  });
+
   it("replays the exact persisted body and key after a lost response", async () => {
     const storage = new MemoryStorage(legacyState());
     const postedBodies: string[] = [];
@@ -291,6 +396,7 @@ describe("M1 browser migration", () => {
 
     const first = await runM1BrowserMigration({
       storage,
+      lock: immediateMigrationLock,
       fetch: lostResponseFetch,
       idGenerator,
       now: () => "2026-07-26T00:00:00.000Z",
@@ -303,6 +409,7 @@ describe("M1 browser migration", () => {
     );
     const second = await runM1BrowserMigration({
       storage,
+      lock: immediateMigrationLock,
       fetch: successfulFetch((body) => postedBodies.push(body)),
       idGenerator,
       now: () => "2026-07-26T00:00:02.000Z",
@@ -333,6 +440,7 @@ describe("M1 browser migration", () => {
 
     const result = await runM1BrowserMigration({
       storage,
+      lock: immediateMigrationLock,
       fetch: fetchMock,
       idGenerator: () => "migration-invalid-ack",
       now: () => "2026-07-26T00:00:00.000Z",
@@ -363,6 +471,7 @@ describe("M1 browser migration", () => {
 
     const result = await runM1BrowserMigration({
       storage,
+      lock: immediateMigrationLock,
       fetch: fetchMock,
       idGenerator: () => "migration-incomplete-ack",
       now: () => "2026-07-26T00:00:00.000Z",
@@ -372,12 +481,122 @@ describe("M1 browser migration", () => {
     expect(readM1BrowserMigrationState(storage)?.status).toBe("pending");
   });
 
+  it.each([
+    {
+      name: "active workspace",
+      mutate(initial: Record<string, string>): void {
+        initial[M1_BROWSER_STORAGE_KEYS.active] = JSON.stringify({
+          workspaceId: "ws_missing",
+          sessionId: "sess_legacy",
+        });
+      },
+    },
+    {
+      name: "active session",
+      mutate(initial: Record<string, string>): void {
+        initial[M1_BROWSER_STORAGE_KEYS.active] = JSON.stringify({
+          workspaceId: "ws_legacy",
+          sessionId: "sess_missing",
+        });
+      },
+    },
+    {
+      name: "provider selection",
+      mutate(initial: Record<string, string>): void {
+        initial[M1_BROWSER_STORAGE_KEYS.providerSelection] = JSON.stringify({
+          mode: "profile",
+          profileId: "prov_missing",
+          model: "test/model",
+          approval: "ask",
+          maxSteps: 8,
+        });
+      },
+    },
+  ])(
+    "keeps pending when the $name reference has neither a mapping nor an issue",
+    async ({ mutate }) => {
+      const initial = legacyState();
+      mutate(initial);
+      const storage = new MemoryStorage(initial);
+
+      const result = await runM1BrowserMigration({
+        storage,
+        lock: immediateMigrationLock,
+        fetch: successfulFetch(),
+        idGenerator: () => "migration-invalid-preference-ack",
+        now: () => "2026-07-26T00:00:00.000Z",
+      });
+
+      expect(result.status).toBe("pending");
+      if (result.status === "pending") {
+        expect(result.failure.code).toBe("invalid_acknowledgement");
+      }
+      expect(readM1BrowserMigrationState(storage)?.status).toBe("pending");
+    },
+  );
+
+  it("accepts exact issues for preference references without mappings", async () => {
+    const initial = legacyState();
+    initial[M1_BROWSER_STORAGE_KEYS.active] = JSON.stringify({
+      workspaceId: "ws_missing",
+      sessionId: "sess_missing",
+    });
+    initial[M1_BROWSER_STORAGE_KEYS.providerSelection] = JSON.stringify({
+      mode: "profile",
+      profileId: "prov_missing",
+      model: "test/model",
+      approval: "ask",
+      maxSteps: 8,
+    });
+    const storage = new MemoryStorage(initial);
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, init?: RequestInit) => {
+        const body = String(init?.body ?? "");
+        return new Response(
+          JSON.stringify(
+            acknowledgementFor(body, {
+              issues: [
+                {
+                  code: "invalid_preference_reference",
+                  entity: "active_workspace",
+                  source_id: "ws_missing",
+                },
+                {
+                  code: "invalid_preference_reference",
+                  entity: "active_session",
+                  source_id: "sess_missing",
+                },
+                {
+                  code: "invalid_preference_reference",
+                  entity: "provider_selection",
+                  source_id: "prov_missing",
+                },
+              ],
+            }),
+          ),
+          { status: 200 },
+        );
+      },
+    );
+
+    const result = await runM1BrowserMigration({
+      storage,
+      lock: immediateMigrationLock,
+      fetch: fetchMock,
+      idGenerator: () => "migration-issued-preferences",
+      now: () => "2026-07-26T00:00:00.000Z",
+    });
+
+    expect(result.status).toBe("complete");
+  });
+
   it("preserves every legacy key after a successful C0 migration", async () => {
     const initial = legacyState();
     const storage = new MemoryStorage(initial);
 
     const result = await runM1BrowserMigration({
       storage,
+      lock: immediateMigrationLock,
       fetch: successfulFetch(),
       idGenerator: () => "migration-preserve",
       now: () => "2026-07-26T00:00:00.000Z",
