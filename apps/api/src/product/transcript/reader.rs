@@ -204,12 +204,11 @@ impl CanonicalProductTranscriptReader {
 
         let record_count = records.len();
         let mut projected = Vec::with_capacity(record_count);
-        let mut expected_seq = 1_u64;
         let mut terminal = None;
         let mut canonical_incomplete = false;
         let mut response_limited = false;
 
-        for record in records {
+        for (expected_seq, record) in (1_u64..).zip(records) {
             if record.run_id != binding.runtime_run_id {
                 push_reason(
                     reasons,
@@ -352,7 +351,6 @@ impl CanonicalProductTranscriptReader {
                 seq: record.seq,
                 event,
             });
-            expected_seq += 1;
         }
 
         let observed_through_seq = projected.last().map_or(0, |event| event.seq);
