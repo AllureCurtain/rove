@@ -1815,6 +1815,7 @@ mod tests {
     fn snapshot_maps_invalid_ulid_to_invalid_data() {
         let (_temp, index, _session_id, _job_id, run_id) = indexed_run();
         let conn = Connection::open(index.path()).unwrap();
+        conn.pragma_update(None, "foreign_keys", "OFF").unwrap();
         conn.execute(
             "UPDATE runs SET session_id = 'not-a-ulid' WHERE run_id = ?1",
             params![run_id.to_string()],
