@@ -264,7 +264,7 @@ export interface M1ProviderSelectionImport {
 }
 
 export interface M1SafePreferencesImport {
-  theme: ProductThemePreference;
+  theme?: ProductThemePreference;
   source_active_workspace_id?: string;
   source_active_session_id?: string;
   provider_selection?: M1ProviderSelectionImport;
@@ -457,7 +457,11 @@ function expectOnlyKeys(
 function expectString(
   value: unknown,
   path: string,
-  options: { nonEmpty?: boolean; maxBytes?: number } = {},
+  options: {
+    nonEmpty?: boolean;
+    maxBytes?: number;
+    noControlCharacters?: boolean;
+  } = {},
 ): string {
   if (typeof value !== "string") {
     return schemaError(path, "a string");
@@ -471,6 +475,12 @@ function expectString(
   ) {
     return schemaError(path, `at most ${options.maxBytes} UTF-8 bytes`);
   }
+  if (
+    options.noControlCharacters &&
+    /[\u0000-\u001f\u007f-\u009f]/u.test(value)
+  ) {
+    return schemaError(path, "free of control characters");
+  }
   return value;
 }
 
@@ -478,13 +488,86 @@ function optionalString(
   value: UnknownRecord,
   key: string,
   path: string,
-  options: { nonEmpty?: boolean; maxBytes?: number } = {},
+  options: {
+    nonEmpty?: boolean;
+    maxBytes?: number;
+    noControlCharacters?: boolean;
+  } = {},
 ): string | undefined {
   const candidate = value[key];
   if (candidate === undefined || candidate === null) {
     return undefined;
   }
   return expectString(candidate, `${path}.${key}`, options);
+}
+
+const RFC3339_TIMESTAMP_PATTERN =
+  /^(\d{4})-(\d{2})-(\d{2})[Tt](\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:[Zz]|[+-](\d{2}):(\d{2}))$/u;
+
+function isLeapYear(year: number): boolean {
+  return year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+}
+
+function expectRfc3339Timestamp(value: unknown, path: string): string {
+  const timestamp = expectString(value, path, {
+    nonEmpty: true,
+    maxBytes: MAX_PRODUCT_TEXT_BYTES,
+    noControlCharacters: true,
+  });
+  const match = RFC3339_TIMESTAMP_PATTERN.exec(timestamp);
+  if (match === null) {
+    return schemaError(path, "an RFC3339 timestamp");
+  }
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = Number(match[6]);
+  const offsetHour = match[7] === undefined ? 0 : Number(match[7]);
+  const offsetMinute = match[8] === undefined ? 0 : Number(match[8]);
+  const monthDays = [
+    31,
+    isLeapYear(year) ? 29 : 28,
+    31,
+    30,
+    31,
+    30,
+    31,
+    31,
+    30,
+    31,
+    30,
+    31,
+  ];
+  if (
+    month < 1 ||
+    month > 12 ||
+    day < 1 ||
+    day > monthDays[month - 1]! ||
+    hour > 23 ||
+    minute > 59 ||
+    second > 60 ||
+    offsetHour > 23 ||
+    offsetMinute > 59
+  ) {
+    return schemaError(path, "an RFC3339 timestamp");
+  }
+  return timestamp;
+}
+
+function expectM1MigrationIdempotencyKey(
+  value: unknown,
+  path: string,
+): string {
+  const key = expectString(value, path, {
+    nonEmpty: true,
+    maxBytes: MAX_MIGRATION_IDEMPOTENCY_KEY_BYTES,
+  });
+  if (!/^[A-Za-z0-9_.:-]+$/u.test(key)) {
+    return schemaError(path, "a valid migration idempotency key");
+  }
+  return key;
 }
 
 function optionalNullableString(
@@ -602,6 +685,7 @@ function expectId(value: unknown, path: string): string {
   return expectString(value, path, {
     nonEmpty: true,
     maxBytes: MAX_PRODUCT_TEXT_BYTES,
+    noControlCharacters: true,
   });
 }
 
@@ -896,6 +980,7 @@ export function parseCreateProductWorkspaceRequest(
     root: expectString(record.root, `${path}.root`, {
       nonEmpty: true,
       maxBytes: MAX_PRODUCT_PATH_BYTES,
+      noControlCharacters: true,
     }),
     kind: expectEnum(record.kind, PRODUCT_WORKSPACE_KINDS, `${path}.kind`),
   };
@@ -1880,7 +1965,7 @@ export function parseProductTranscriptResponse(
 ): ProductTranscriptResponse {
   const path = "product transcript response";
   const record = expectRecord(value, path);
-  return {
+  const response: ProductTranscriptResponse = {
     product_session_id: expectId(
       record.product_session_id,
       `${path}.product_session_id`,
@@ -1902,6 +1987,73 @@ export function parseProductTranscriptResponse(
       parseProductTranscriptRunSegment,
     ),
   };
+  if (
+    (response.status === "complete" && response.partial_reasons.length !== 0) ||
+    (response.status === "partial" && response.partial_reasons.length === 0)
+  ) {
+    schemaError(
+      `${path}.status`,
+      "consistent with whether partial_reasons is empty",
+    );
+  }
+
+  let previousOrdinal = 0;
+  for (const [segmentIndex, segment] of response.segments.entries()) {
+    const segmentPath = `${path}.segments[${segmentIndex}]`;
+    if (segment.binding.product_session_id !== response.product_session_id) {
+      schemaError(
+        `${segmentPath}.binding.product_session_id`,
+        "the transcript product_session_id",
+      );
+    }
+    if (segment.binding.ordinal <= previousOrdinal) {
+      schemaError(
+        `${segmentPath}.binding.ordinal`,
+        "strictly greater than the previous segment ordinal",
+      );
+    }
+    for (
+      let missingOrdinal = previousOrdinal + 1;
+      missingOrdinal < segment.binding.ordinal;
+      missingOrdinal += 1
+    ) {
+      if (
+        !response.partial_reasons.some(
+          (reason) => reason.run_ordinal === missingOrdinal,
+        )
+      ) {
+        schemaError(
+          `${segmentPath}.binding.ordinal`,
+          `covered by a partial reason for missing ordinal ${missingOrdinal}`,
+        );
+      }
+    }
+    for (const [eventIndex, event] of segment.events.entries()) {
+      const expectedSeq = eventIndex + 1;
+      if (event.seq !== expectedSeq) {
+        schemaError(
+          `${segmentPath}.events[${eventIndex}].seq`,
+          `the contiguous sequence ${expectedSeq}`,
+        );
+      }
+    }
+    const observedThrough =
+      segment.events[segment.events.length - 1]?.seq ?? 0;
+    if (segment.observed_through_seq !== observedThrough) {
+      schemaError(
+        `${segmentPath}.observed_through_seq`,
+        "the sequence of the final returned event",
+      );
+    }
+    if (segment.observed_through_seq > segment.last_event_seq) {
+      schemaError(
+        `${segmentPath}.observed_through_seq`,
+        "at most last_event_seq",
+      );
+    }
+    previousOrdinal = segment.binding.ordinal;
+  }
+  return response;
 }
 
 function parseM1WorkspaceImport(value: unknown, path: string): M1WorkspaceImport {
@@ -1916,17 +2068,18 @@ function parseM1WorkspaceImport(value: unknown, path: string): M1WorkspaceImport
     root: expectString(record.root, `${path}.root`, {
       nonEmpty: true,
       maxBytes: MAX_PRODUCT_PATH_BYTES,
+      noControlCharacters: true,
     }),
     kind: expectEnum(record.kind, PRODUCT_WORKSPACE_KINDS, `${path}.kind`),
     display_name: expectString(record.display_name, `${path}.display_name`, {
       nonEmpty: true,
       maxBytes: MAX_PRODUCT_TEXT_BYTES,
+      noControlCharacters: true,
     }),
     pinned: expectBoolean(record.pinned, `${path}.pinned`),
-    last_opened_at: expectString(
+    last_opened_at: expectRfc3339Timestamp(
       record.last_opened_at,
       `${path}.last_opened_at`,
-      { nonEmpty: true },
     ),
   };
 }
@@ -1955,30 +2108,44 @@ function parseM1SessionImport(value: unknown, path: string): M1SessionImport {
       `${path}.source_workspace_id`,
     ),
     title: expectString(record.title, `${path}.title`, {
+      nonEmpty: true,
       maxBytes: MAX_PRODUCT_TEXT_BYTES,
+      noControlCharacters: true,
     }),
-    created_at: expectString(record.created_at, `${path}.created_at`, {
-      nonEmpty: true,
-    }),
-    updated_at: expectString(record.updated_at, `${path}.updated_at`, {
-      nonEmpty: true,
-    }),
+    created_at: expectRfc3339Timestamp(
+      record.created_at,
+      `${path}.created_at`,
+    ),
+    updated_at: expectRfc3339Timestamp(
+      record.updated_at,
+      `${path}.updated_at`,
+    ),
   };
   assignOptional(
     session,
     "legacy_active_job_id",
-    optionalString(record, "legacy_active_job_id", path, { nonEmpty: true }),
+    optionalString(record, "legacy_active_job_id", path, {
+      nonEmpty: true,
+      maxBytes: MAX_PRODUCT_TEXT_BYTES,
+      noControlCharacters: true,
+    }),
   );
   assignOptional(
     session,
     "legacy_active_run_id",
-    optionalString(record, "legacy_active_run_id", path, { nonEmpty: true }),
+    optionalString(record, "legacy_active_run_id", path, {
+      nonEmpty: true,
+      maxBytes: MAX_PRODUCT_TEXT_BYTES,
+      noControlCharacters: true,
+    }),
   );
   assignOptional(
     session,
     "legacy_resumed_from_run_id",
     optionalString(record, "legacy_resumed_from_run_id", path, {
       nonEmpty: true,
+      maxBytes: MAX_PRODUCT_TEXT_BYTES,
+      noControlCharacters: true,
     }),
   );
   assignOptional(
@@ -2030,12 +2197,14 @@ function parseM1ProviderProfileImport(
     label: expectString(record.label, `${path}.label`, {
       nonEmpty: true,
       maxBytes: MAX_PRODUCT_TEXT_BYTES,
+      noControlCharacters: true,
     }),
     provider_type: providerType,
     api_base: apiBase,
-    updated_at: expectString(record.updated_at, `${path}.updated_at`, {
-      nonEmpty: true,
-    }),
+    updated_at: expectRfc3339Timestamp(
+      record.updated_at,
+      `${path}.updated_at`,
+    ),
   };
   assignOptional(profile, "api_key_env", apiKeyEnv);
   assignOptional(
@@ -2044,6 +2213,7 @@ function parseM1ProviderProfileImport(
     optionalString(record, "default_model", path, {
       nonEmpty: true,
       maxBytes: MAX_PRODUCT_TEXT_BYTES,
+      noControlCharacters: true,
     }),
   );
   return profile;
@@ -2063,6 +2233,7 @@ function parseM1ProviderSelectionImport(
     model: expectString(record.model, `${path}.model`, {
       nonEmpty: true,
       maxBytes: MAX_PRODUCT_TEXT_BYTES,
+      noControlCharacters: true,
     }),
     approval: expectEnum(
       record.approval,
@@ -2077,7 +2248,11 @@ function parseM1ProviderSelectionImport(
   assignOptional(
     selection,
     "source_profile_id",
-    optionalString(record, "source_profile_id", path, { nonEmpty: true }),
+    optionalString(record, "source_profile_id", path, {
+      nonEmpty: true,
+      maxBytes: MAX_PRODUCT_TEXT_BYTES,
+      noControlCharacters: true,
+    }),
   );
   return selection;
 }
@@ -2097,18 +2272,21 @@ function parseM1SafePreferencesImport(
     ],
     path,
   );
-  const preferences: M1SafePreferencesImport = {
-    theme: expectEnum(
+  const preferences: M1SafePreferencesImport = {};
+  if (record.theme !== undefined && record.theme !== null) {
+    preferences.theme = expectEnum(
       record.theme,
       PRODUCT_THEME_PREFERENCES,
       `${path}.theme`,
-    ),
-  };
+    );
+  }
   assignOptional(
     preferences,
     "source_active_workspace_id",
     optionalString(record, "source_active_workspace_id", path, {
       nonEmpty: true,
+      maxBytes: MAX_PRODUCT_TEXT_BYTES,
+      noControlCharacters: true,
     }),
   );
   assignOptional(
@@ -2116,6 +2294,8 @@ function parseM1SafePreferencesImport(
     "source_active_session_id",
     optionalString(record, "source_active_session_id", path, {
       nonEmpty: true,
+      maxBytes: MAX_PRODUCT_TEXT_BYTES,
+      noControlCharacters: true,
     }),
   );
   if (
@@ -2159,10 +2339,9 @@ export function parseM1BrowserMigrationRequest(
       `${path}.source_schema_version`,
       { min: 1 },
     ),
-    idempotency_key: expectString(
+    idempotency_key: expectM1MigrationIdempotencyKey(
       record.idempotency_key,
       `${path}.idempotency_key`,
-      { nonEmpty: true, maxBytes: MAX_MIGRATION_IDEMPOTENCY_KEY_BYTES },
     ),
     workspaces: expectArray(
       record.workspaces,

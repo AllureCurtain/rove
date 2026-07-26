@@ -40,10 +40,13 @@ import {
 export interface MigrationStorage {
   getItem(key: string): string | null;
   setItem(key: string, value: string): void;
+  removeItem(key: string): void;
 }
 
 export const M1_BROWSER_MIGRATION_LOCK_NAME =
   "rove.product.migration.web-m1.v1";
+export const DEFAULT_M1_BROWSER_MIGRATION_TIMEOUT_MS = 30_000;
+export const MAX_M1_BROWSER_MIGRATION_TIMEOUT_MS = 300_000;
 
 export interface M1BrowserMigrationLock {
   runExclusive<T>(
@@ -59,6 +62,7 @@ export interface M1BrowserMigrationDependencies {
   now?: () => string;
   apiPrefix?: string;
   client?: ProductApiClient;
+  requestTimeoutMs?: number;
   /** `null` explicitly selects the fail-closed no-lock path. */
   lock?: M1BrowserMigrationLock | null;
 }
@@ -90,6 +94,7 @@ export interface M1BrowserMigrationFailure {
     | "invalid_migration_state"
     | "storage_write_failed"
     | "request_failed"
+    | "request_rejected"
     | "invalid_acknowledgement"
     | "lock_unavailable"
     | "lock_failed";
@@ -97,6 +102,9 @@ export interface M1BrowserMigrationFailure {
 }
 
 export type M1BrowserMigrationRunResult =
+  | {
+      status: "not_needed";
+    }
   | {
       status: "complete";
       state: CompleteM1BrowserMigrationState;
@@ -106,6 +114,10 @@ export type M1BrowserMigrationRunResult =
       status: "pending";
       state: PendingM1BrowserMigrationState;
       failure: M1BrowserMigrationFailure;
+    }
+  | {
+      status: "rejected";
+      failure: M1BrowserMigrationFailure & { code: "request_rejected" };
     }
   | {
       status: "superseded";
@@ -477,15 +489,23 @@ function parseLegacyProviderSelection(
       { nonEmpty: true, maxBytes: MAX_PRODUCT_TEXT_BYTES },
     );
   }
+  if (
+    mode === "default" &&
+    selection.model === "fake" &&
+    selection.approval === "ask" &&
+    selection.max_steps === 8
+  ) {
+    return undefined;
+  }
   return selection;
 }
 
 function parseLegacyTheme(
   storage: MigrationStorage,
-): ProductThemePreference {
+): ProductThemePreference | undefined {
   const raw = storage.getItem(M1_BROWSER_STORAGE_KEYS.theme);
   if (raw === null) {
-    return "light";
+    return undefined;
   }
   if (isEnumValue(raw, PRODUCT_THEME_PREFERENCES)) {
     return raw;
@@ -537,10 +557,16 @@ function assertNoRawSecretFields(value: unknown, path = "migration request"): vo
   }
 }
 
-export function buildM1BrowserMigrationRequest(
+interface M1BrowserMigrationPayload {
+  workspaces: M1WorkspaceImport[];
+  sessions: M1SessionImport[];
+  provider_profiles: M1ProviderProfileImport[];
+  safe_preferences: M1SafePreferencesImport;
+}
+
+function buildM1BrowserMigrationPayload(
   storage: MigrationStorage,
-  idempotencyKey: string,
-): M1BrowserMigrationRequest {
+): M1BrowserMigrationPayload {
   const workspaces = parseLegacyArray(
     parseStoredJson(
       storage,
@@ -586,9 +612,11 @@ export function buildM1BrowserMigrationRequest(
   assertUniqueSourceIds(sessions, "M1 sessions");
   assertUniqueSourceIds(providerProfiles, "M1 provider profiles");
 
-  const safePreferences: M1SafePreferencesImport = {
-    theme: parseLegacyTheme(storage),
-  };
+  const safePreferences: M1SafePreferencesImport = {};
+  const theme = parseLegacyTheme(storage);
+  if (theme !== undefined) {
+    safePreferences.theme = theme;
+  }
   if (active.workspaceId !== undefined) {
     safePreferences.source_active_workspace_id = active.workspaceId;
   }
@@ -599,6 +627,18 @@ export function buildM1BrowserMigrationRequest(
     safePreferences.provider_selection = providerSelection;
   }
 
+  return {
+    workspaces,
+    sessions,
+    provider_profiles: providerProfiles,
+    safe_preferences: safePreferences,
+  };
+}
+
+function createM1BrowserMigrationRequest(
+  payload: M1BrowserMigrationPayload,
+  idempotencyKey: string,
+): M1BrowserMigrationRequest {
   const request: M1BrowserMigrationRequest = {
     source: "web_m1_local_storage",
     source_schema_version: M1_BROWSER_SOURCE_SCHEMA_VERSION,
@@ -606,13 +646,20 @@ export function buildM1BrowserMigrationRequest(
       nonEmpty: true,
       maxBytes: MAX_MIGRATION_IDEMPOTENCY_KEY_BYTES,
     }),
-    workspaces,
-    sessions,
-    provider_profiles: providerProfiles,
-    safe_preferences: safePreferences,
+    ...payload,
   };
   assertNoRawSecretFields(request);
   return parseM1BrowserMigrationRequest(request);
+}
+
+export function buildM1BrowserMigrationRequest(
+  storage: MigrationStorage,
+  idempotencyKey: string,
+): M1BrowserMigrationRequest {
+  return createM1BrowserMigrationRequest(
+    buildM1BrowserMigrationPayload(storage),
+    idempotencyKey,
+  );
 }
 
 function parseMigrationState(raw: string): M1BrowserMigrationState {
@@ -918,7 +965,17 @@ function blocked(
   return { status: "blocked", failure: { code, message } };
 }
 
+class M1BrowserMigrationTimeoutError extends Error {
+  constructor() {
+    super("M1 browser migration request timed out");
+    this.name = "M1BrowserMigrationTimeoutError";
+  }
+}
+
 function requestFailure(error: unknown): M1BrowserMigrationFailure {
+  if (error instanceof M1BrowserMigrationTimeoutError) {
+    return { code: "request_failed", message: error.message };
+  }
   if (error instanceof ProductApiError) {
     return {
       code: "request_failed",
@@ -932,6 +989,179 @@ function requestFailure(error: unknown): M1BrowserMigrationFailure {
     code: "request_failed",
     message: "M1 browser migration request failed before acknowledgement",
   };
+}
+
+function hasM1BrowserSourceState(storage: MigrationStorage): boolean {
+  return Object.values(M1_BROWSER_STORAGE_KEYS).some(
+    (key) => storage.getItem(key) !== null,
+  );
+}
+
+function isM1BrowserMigrationPayloadEmpty(
+  payload: M1BrowserMigrationPayload,
+): boolean {
+  return (
+    payload.workspaces.length === 0 &&
+    payload.sessions.length === 0 &&
+    payload.provider_profiles.length === 0 &&
+    Object.keys(payload.safe_preferences).length === 0
+  );
+}
+
+function migrationRequestTimeoutMs(configured: number | undefined): number {
+  const timeout = configured ?? DEFAULT_M1_BROWSER_MIGRATION_TIMEOUT_MS;
+  if (
+    !Number.isSafeInteger(timeout) ||
+    timeout < 1 ||
+    timeout > MAX_M1_BROWSER_MIGRATION_TIMEOUT_MS
+  ) {
+    throw new Error(
+      `M1 browser migration timeout must be between 1 and ${MAX_M1_BROWSER_MIGRATION_TIMEOUT_MS} milliseconds`,
+    );
+  }
+  return timeout;
+}
+
+async function migrateM1BrowserStateWithTimeout(
+  client: ProductApiClient,
+  pending: PendingM1BrowserMigrationState,
+  timeoutMs: number,
+): Promise<M1BrowserMigrationResponse> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      reject(new M1BrowserMigrationTimeoutError());
+      controller.abort();
+    }, timeoutMs);
+  });
+  const request = Promise.resolve().then(() =>
+    client.migrateM1BrowserState(
+      {
+        request: pending.request,
+        body: pending.request_body,
+      },
+      { signal: controller.signal },
+    ),
+  );
+  try {
+    return await Promise.race([request, timeout]);
+  } finally {
+    if (timer !== undefined) {
+      clearTimeout(timer);
+    }
+  }
+}
+
+function pendingStateMatches(
+  current: M1BrowserMigrationState | null,
+  pending: PendingM1BrowserMigrationState,
+): current is PendingM1BrowserMigrationState {
+  return (
+    current?.status === "pending" &&
+    current.idempotency_key === pending.idempotency_key &&
+    current.request_body === pending.request_body
+  );
+}
+
+function deterministicRejection(
+  error: unknown,
+): error is ProductApiError {
+  return (
+    error instanceof ProductApiError &&
+    (error.status === 400 || error.status === 409)
+  );
+}
+
+function clearDeterministicallyRejectedPending(
+  storage: MigrationStorage,
+  pending: PendingM1BrowserMigrationState,
+  error: ProductApiError,
+): M1BrowserMigrationRunResult {
+  const failure = {
+    code: "request_rejected" as const,
+    message: `${error.code}: ${error.message}`,
+  };
+  let current: M1BrowserMigrationState | null;
+  try {
+    current = readM1BrowserMigrationState(storage);
+  } catch (stateError) {
+    return {
+      status: "pending",
+      state: pending,
+      failure: {
+        code: "invalid_migration_state",
+        message:
+          stateError instanceof Error
+            ? stateError.message
+            : "pending migration state could not be verified after rejection",
+      },
+    };
+  }
+  if (current?.status === "complete") {
+    return { status: "complete", state: current, reused: true };
+  }
+  if (!pendingStateMatches(current, pending)) {
+    return blocked(
+      "request_rejected",
+      `${failure.message}; pending migration state was superseded`,
+    );
+  }
+  try {
+    storage.removeItem(M1_BROWSER_MIGRATION_STATE_KEY);
+  } catch {
+    try {
+      storage.setItem(M1_BROWSER_MIGRATION_STATE_KEY, JSON.stringify(pending));
+    } catch {
+      // The pending result below exposes that durable storage is unavailable.
+    }
+    return {
+      status: "pending",
+      state: pending,
+      failure: {
+        code: "storage_write_failed",
+        message: "migration was rejected but its pending state could not be cleared",
+      },
+    };
+  }
+  let cleared: M1BrowserMigrationState | null;
+  try {
+    cleared = readM1BrowserMigrationState(storage);
+  } catch {
+    try {
+      storage.setItem(M1_BROWSER_MIGRATION_STATE_KEY, JSON.stringify(pending));
+    } catch {
+      // The typed failure below remains authoritative when storage is unusable.
+    }
+    return {
+      status: "pending",
+      state: pending,
+      failure: {
+        code: "storage_write_failed",
+        message: "migration was rejected but clearing its pending state could not be verified",
+      },
+    };
+  }
+  if (pendingStateMatches(cleared, pending)) {
+    return {
+      status: "pending",
+      state: pending,
+      failure: {
+        code: "storage_write_failed",
+        message: "migration was rejected but its pending state was not cleared",
+      },
+    };
+  }
+  if (cleared?.status === "complete") {
+    return { status: "complete", state: cleared, reused: true };
+  }
+  if (cleared !== null) {
+    return blocked(
+      "request_rejected",
+      `${failure.message}; pending migration state was superseded while clearing`,
+    );
+  }
+  return { status: "rejected", failure };
 }
 
 /**
@@ -964,7 +1194,14 @@ async function runM1BrowserMigrationCriticalSection(
     const now = dependencies.now ?? defaultNow;
     let request: M1BrowserMigrationRequest;
     try {
-      request = buildM1BrowserMigrationRequest(storage, idGenerator());
+      if (!hasM1BrowserSourceState(storage)) {
+        return { status: "not_needed" };
+      }
+      const payload = buildM1BrowserMigrationPayload(storage);
+      if (isM1BrowserMigrationPayloadEmpty(payload)) {
+        return { status: "not_needed" };
+      }
+      request = createM1BrowserMigrationRequest(payload, idGenerator());
       pending = createPendingState(request, now());
       storage.setItem(
         M1_BROWSER_MIGRATION_STATE_KEY,
@@ -1016,12 +1253,16 @@ async function runM1BrowserMigrationCriticalSection(
 
   let acknowledgement: M1BrowserMigrationResponse;
   try {
-    const response = await client.migrateM1BrowserState({
-      request: pending.request,
-      body: pending.request_body,
-    });
+    const response = await migrateM1BrowserStateWithTimeout(
+      client,
+      pending,
+      migrationRequestTimeoutMs(dependencies.requestTimeoutMs),
+    );
     acknowledgement = validateM1MigrationAcknowledgement(pending, response);
   } catch (error) {
+    if (deterministicRejection(error)) {
+      return clearDeterministicallyRejectedPending(storage, pending, error);
+    }
     return {
       status: "pending",
       state: pending,

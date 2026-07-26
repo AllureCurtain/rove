@@ -59,6 +59,10 @@ export interface ExactM1BrowserMigrationBody {
   body: string;
 }
 
+export interface ProductApiRequestOptions {
+  signal?: AbortSignal;
+}
+
 export interface ProductApiClient {
   listWorkspaces(): Promise<ProductWorkspacesResponse>;
   createWorkspace(
@@ -88,6 +92,7 @@ export interface ProductApiClient {
   ): Promise<ProductPreferences>;
   migrateM1BrowserState(
     exact: ExactM1BrowserMigrationBody,
+    options?: ProductApiRequestOptions,
   ): Promise<M1BrowserMigrationResponse>;
 }
 
@@ -162,11 +167,16 @@ async function requestNoContent(
   }
 }
 
-function jsonRequest(method: "POST" | "PUT" | "PATCH", body: string): RequestInit {
+function jsonRequest(
+  method: "POST" | "PUT" | "PATCH",
+  body: string,
+  signal?: AbortSignal,
+): RequestInit {
   return {
     method,
     headers: { "content-type": "application/json" },
     body,
+    signal,
   };
 }
 
@@ -277,8 +287,8 @@ export function createProductApiClient(
       );
     },
 
-    getTranscript(sessionId) {
-      return requestJson(
+    async getTranscript(sessionId) {
+      const transcript = await requestJson(
         fetchImpl,
         productUrl(
           apiPrefix,
@@ -287,6 +297,12 @@ export function createProductApiClient(
         undefined,
         parseProductTranscriptResponse,
       );
+      if (transcript.product_session_id !== sessionId) {
+        throw new ProductApiSchemaError(
+          "product transcript response must match the requested product session",
+        );
+      }
+      return transcript;
     },
 
     listProviderProfiles() {
@@ -350,12 +366,12 @@ export function createProductApiClient(
       );
     },
 
-    async migrateM1BrowserState(exact) {
+    async migrateM1BrowserState(exact, options) {
       const body = canonicalM1MigrationBody(exact);
       return requestJson(
         fetchImpl,
         productUrl(apiPrefix, "/product/migrations/m1-browser"),
-        jsonRequest("POST", body),
+        jsonRequest("POST", body, options?.signal),
         parseM1BrowserMigrationResponse,
       );
     },

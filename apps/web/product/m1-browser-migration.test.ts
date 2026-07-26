@@ -13,7 +13,12 @@ import {
 import {
   parseM1BrowserMigrationRequest,
   type M1BrowserMigrationRequest,
+  type M1BrowserMigrationResponse,
 } from "./product-api-types";
+import {
+  createProductApiClient,
+  type ProductApiClient,
+} from "./product-client";
 
 class MemoryStorage implements MigrationStorage {
   readonly reads: string[] = [];
@@ -176,6 +181,61 @@ function successfulFetch(
 }
 
 describe("M1 browser migration", () => {
+  it("does nothing when no M1 source key or migration state exists", async () => {
+    const storage = new MemoryStorage();
+    const fetchMock = vi.fn();
+    const idGenerator = vi.fn(() => "migration-not-needed");
+    const now = vi.fn(() => "2026-07-26T00:00:00.000Z");
+
+    const result = await runM1BrowserMigration({
+      storage,
+      lock: immediateMigrationLock,
+      fetch: fetchMock,
+      idGenerator,
+      now,
+    });
+
+    expect(result).toEqual({ status: "not_needed" });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(idGenerator).not.toHaveBeenCalled();
+    expect(now).not.toHaveBeenCalled();
+    expect(storage.writes).toEqual([]);
+    expect(storage.peek(M1_BROWSER_MIGRATION_STATE_KEY)).toBeNull();
+  });
+
+  it("does not migrate the empty defaults written by an M1 shell mount", async () => {
+    const storage = new MemoryStorage({
+      [M1_BROWSER_STORAGE_KEYS.workspaces]: JSON.stringify([]),
+      [M1_BROWSER_STORAGE_KEYS.sessions]: JSON.stringify([]),
+      [M1_BROWSER_STORAGE_KEYS.active]: JSON.stringify({
+        workspaceId: null,
+        sessionId: null,
+      }),
+      [M1_BROWSER_STORAGE_KEYS.providerProfiles]: JSON.stringify([]),
+      [M1_BROWSER_STORAGE_KEYS.providerSelection]: JSON.stringify({
+        mode: "default",
+        model: "fake",
+        approval: "ask",
+        maxSteps: 8,
+      }),
+    });
+    const fetchMock = vi.fn();
+    const idGenerator = vi.fn(() => "migration-empty-shell");
+
+    const result = await runM1BrowserMigration({
+      storage,
+      lock: immediateMigrationLock,
+      fetch: fetchMock,
+      idGenerator,
+    });
+
+    expect(result).toEqual({ status: "not_needed" });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(idGenerator).not.toHaveBeenCalled();
+    expect(storage.writes).toEqual([]);
+    expect(storage.removes).toEqual([]);
+  });
+
   it("fails closed without same-origin locking before touching browser state", async () => {
     const storage = new MemoryStorage(legacyState());
     const fetchMock = vi.fn();
@@ -228,6 +288,61 @@ describe("M1 browser migration", () => {
     expect(postedBody).not.toContain("ignoredOldField");
   });
 
+  it("omits theme when the legacy theme key is missing", async () => {
+    const initial = legacyState();
+    delete initial[M1_BROWSER_STORAGE_KEYS.theme];
+    const storage = new MemoryStorage(initial);
+    let postedRequest: M1BrowserMigrationRequest | undefined;
+
+    const result = await runM1BrowserMigration({
+      storage,
+      lock: immediateMigrationLock,
+      fetch: successfulFetch((body) => {
+        postedRequest = parseM1BrowserMigrationRequest(JSON.parse(body));
+      }),
+      idGenerator: () => "migration-without-theme",
+      now: () => "2026-07-26T00:00:00.000Z",
+    });
+
+    expect(result.status).toBe("complete");
+    expect(postedRequest).toBeDefined();
+    expect(postedRequest?.safe_preferences).not.toHaveProperty("theme");
+  });
+
+  it("does not invent optional preferences beside workspace data and shell defaults", async () => {
+    const fullState = legacyState();
+    const storage = new MemoryStorage({
+      [M1_BROWSER_STORAGE_KEYS.workspaces]:
+        fullState[M1_BROWSER_STORAGE_KEYS.workspaces]!,
+      [M1_BROWSER_STORAGE_KEYS.providerSelection]: JSON.stringify({
+        mode: "default",
+        model: "fake",
+        approval: "ask",
+        maxSteps: 8,
+      }),
+    });
+    let postedRequest: M1BrowserMigrationRequest | undefined;
+
+    const result = await runM1BrowserMigration({
+      storage,
+      lock: immediateMigrationLock,
+      fetch: successfulFetch((body) => {
+        postedRequest = parseM1BrowserMigrationRequest(JSON.parse(body));
+      }),
+      idGenerator: () => "migration-partial-legacy-state",
+      now: () => "2026-07-26T00:00:00.000Z",
+    });
+
+    expect(result.status).toBe("complete");
+    expect(postedRequest).toMatchObject({
+      sessions: [],
+      provider_profiles: [],
+      safe_preferences: {},
+    });
+    expect(postedRequest?.workspaces).toHaveLength(1);
+    expect(Object.keys(postedRequest?.safe_preferences ?? {})).toEqual([]);
+  });
+
   it("blocks malformed JSON and wrong legacy root types without posting", async () => {
     const malformed = new MemoryStorage({
       ...legacyState(),
@@ -259,6 +374,63 @@ describe("M1 browser migration", () => {
 
     expect(wrongRootResult.status).toBe("blocked");
     expect(wrongRootFetch).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      name: "empty session title",
+      key: M1_BROWSER_STORAGE_KEYS.sessions,
+      field: "title",
+      value: "",
+    },
+    {
+      name: "session title with a control character",
+      key: M1_BROWSER_STORAGE_KEYS.sessions,
+      field: "title",
+      value: "line\nbreak",
+    },
+    {
+      name: "non-RFC3339 workspace timestamp",
+      key: M1_BROWSER_STORAGE_KEYS.workspaces,
+      field: "lastOpenedAt",
+      value: "yesterday",
+    },
+    {
+      name: "oversized session timestamp",
+      key: M1_BROWSER_STORAGE_KEYS.sessions,
+      field: "createdAt",
+      value: "x".repeat(513),
+    },
+    {
+      name: "invalid calendar date",
+      key: M1_BROWSER_STORAGE_KEYS.sessions,
+      field: "updatedAt",
+      value: "2026-02-30T00:00:00.000Z",
+    },
+    {
+      name: "non-RFC3339 provider timestamp",
+      key: M1_BROWSER_STORAGE_KEYS.providerProfiles,
+      field: "updatedAt",
+      value: "not-a-timestamp",
+    },
+  ])("rejects $name before posting", async ({ key, field, value }) => {
+    const initial = legacyState();
+    const records = JSON.parse(initial[key]!) as Array<Record<string, unknown>>;
+    records[0]![field] = value;
+    initial[key] = JSON.stringify(records);
+    const storage = new MemoryStorage(initial);
+    const fetchMock = vi.fn();
+
+    const result = await runM1BrowserMigration({
+      storage,
+      lock: immediateMigrationLock,
+      fetch: fetchMock,
+      idGenerator: () => "migration-invalid-client-data",
+    });
+
+    expect(result.status).toBe("blocked");
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(storage.peek(M1_BROWSER_MIGRATION_STATE_KEY)).toBeNull();
   });
 
   it.each(["local", ""])(
@@ -420,6 +592,203 @@ describe("M1 browser migration", () => {
     expect(postedBodies[1]).toBe(postedBodies[0]);
     expect(postedBodies[1]).toContain('"idempotency_key":"migration-replay"');
     expect(idGenerator).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([408, 429, 500])(
+    "keeps and exactly replays pending after HTTP %i",
+    async (status) => {
+      const storage = new MemoryStorage(legacyState());
+      const postedBodies: string[] = [];
+      const idGenerator = vi.fn(() => `migration-server-replay-${status}`);
+      const unavailableFetch = vi.fn(
+        async (_input: RequestInfo | URL, init?: RequestInit) => {
+          postedBodies.push(String(init?.body ?? ""));
+          return new Response(
+            JSON.stringify({
+              code: "product_store_unavailable",
+              error: "temporarily unavailable",
+            }),
+            { status },
+          );
+        },
+      );
+
+      const first = await runM1BrowserMigration({
+        storage,
+        lock: immediateMigrationLock,
+        fetch: unavailableFetch,
+        idGenerator,
+        now: () => "2026-07-26T00:00:00.000Z",
+      });
+      expect(first.status).toBe("pending");
+
+      storage.setItem(M1_BROWSER_STORAGE_KEYS.theme, "system");
+      const second = await runM1BrowserMigration({
+        storage,
+        lock: immediateMigrationLock,
+        fetch: successfulFetch((body) => postedBodies.push(body)),
+        idGenerator,
+        now: () => "2026-07-26T00:00:02.000Z",
+      });
+
+      expect(second.status).toBe("complete");
+      expect(postedBodies).toHaveLength(2);
+      expect(postedBodies[1]).toBe(postedBodies[0]);
+      expect(idGenerator).toHaveBeenCalledTimes(1);
+      expect(storage.removes).toEqual([]);
+    },
+  );
+
+  it.each([400, 409])(
+    "clears an exact pending rejected with %i and retries corrected legacy state with a new key",
+    async (status) => {
+      const initial = legacyState();
+      const storage = new MemoryStorage(initial);
+      const postedBodies: string[] = [];
+      const idGenerator = vi
+        .fn(() => "migration-unused")
+        .mockReturnValueOnce(`migration-rejected-${status}`)
+        .mockReturnValueOnce(`migration-corrected-${status}`);
+      const rejectedFetch = vi.fn(
+        async (_input: RequestInfo | URL, init?: RequestInit) => {
+          postedBodies.push(String(init?.body ?? ""));
+          return new Response(
+            JSON.stringify({
+              code:
+                status === 409
+                  ? "migration_idempotency_conflict"
+                  : "product_invalid_input",
+              error: "migration rejected",
+            }),
+            { status },
+          );
+        },
+      );
+
+      const first = await runM1BrowserMigration({
+        storage,
+        lock: immediateMigrationLock,
+        fetch: rejectedFetch,
+        idGenerator,
+        now: () => "2026-07-26T00:00:00.000Z",
+      });
+
+      expect(first.status).toBe("rejected");
+      expect(readM1BrowserMigrationState(storage)).toBeNull();
+      expect(storage.removes).toEqual([M1_BROWSER_MIGRATION_STATE_KEY]);
+      for (const [key, value] of Object.entries(initial)) {
+        expect(storage.peek(key)).toBe(value);
+      }
+
+      const sessions = JSON.parse(
+        storage.peek(M1_BROWSER_STORAGE_KEYS.sessions)!,
+      ) as Array<Record<string, unknown>>;
+      sessions[0]!.title = "Corrected migration title";
+      storage.setItem(
+        M1_BROWSER_STORAGE_KEYS.sessions,
+        JSON.stringify(sessions),
+      );
+      const second = await runM1BrowserMigration({
+        storage,
+        lock: immediateMigrationLock,
+        fetch: successfulFetch((body) => postedBodies.push(body)),
+        idGenerator,
+        now: () => "2026-07-26T00:00:02.000Z",
+      });
+
+      expect(second.status).toBe("complete");
+      expect(postedBodies).toHaveLength(2);
+      expect(postedBodies[0]).toContain(`migration-rejected-${status}`);
+      expect(postedBodies[1]).toContain(`migration-corrected-${status}`);
+      expect(postedBodies[1]).toContain("Corrected migration title");
+      expect(idGenerator).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it("keeps pending when deterministic rejection state clearing fails", async () => {
+    class FailingRemoveStorage extends MemoryStorage {
+      override removeItem(key: string): void {
+        this.removes.push(key);
+        throw new Error("storage unavailable");
+      }
+    }
+    const storage = new FailingRemoveStorage(legacyState());
+
+    const result = await runM1BrowserMigration({
+      storage,
+      lock: immediateMigrationLock,
+      fetch: vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            code: "product_invalid_input",
+            error: "migration rejected",
+          }),
+          { status: 400 },
+        ),
+      ),
+      idGenerator: () => "migration-rejected-clear-failure",
+      now: () => "2026-07-26T00:00:00.000Z",
+    });
+
+    expect(result.status).toBe("pending");
+    if (result.status === "pending") {
+      expect(result.failure.code).toBe("storage_write_failed");
+    }
+    expect(readM1BrowserMigrationState(storage)?.status).toBe("pending");
+    expect(storage.removes).toEqual([M1_BROWSER_MIGRATION_STATE_KEY]);
+  });
+
+  it("times out a hanging injected client, releases the lock, and exactly replays pending", async () => {
+    vi.useFakeTimers();
+    try {
+      const storage = new MemoryStorage(legacyState());
+      const lock = new SerialMigrationLock();
+      const idGenerator = vi.fn(() => "migration-timeout-replay");
+      let hangingBody = "";
+      const hangingClient: ProductApiClient = {
+        ...createProductApiClient({ fetch: vi.fn() }),
+        migrateM1BrowserState(exact) {
+          hangingBody = exact.body;
+          return new Promise<M1BrowserMigrationResponse>(() => undefined);
+        },
+      };
+
+      const firstPromise = runM1BrowserMigration({
+        storage,
+        lock,
+        client: hangingClient,
+        idGenerator,
+        now: () => "2026-07-26T00:00:00.000Z",
+        requestTimeoutMs: 25,
+      });
+      await vi.advanceTimersByTimeAsync(25);
+      const first = await firstPromise;
+
+      expect(first.status).toBe("pending");
+      if (first.status === "pending") {
+        expect(first.failure.message).toContain("timed out");
+      }
+      expect(vi.getTimerCount()).toBe(0);
+
+      let replayedBody = "";
+      const second = await runM1BrowserMigration({
+        storage,
+        lock,
+        fetch: successfulFetch((body) => {
+          replayedBody = body;
+        }),
+        idGenerator,
+        now: () => "2026-07-26T00:00:02.000Z",
+        requestTimeoutMs: 25,
+      });
+
+      expect(second.status).toBe("complete");
+      expect(replayedBody).toBe(hangingBody);
+      expect(idGenerator).toHaveBeenCalledTimes(1);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("keeps pending when the acknowledgement is invalid", async () => {

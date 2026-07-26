@@ -52,6 +52,49 @@ const preferences = {
   },
 };
 
+function transcriptSegment(
+  ordinal = 1,
+  productSessionId = session.id,
+): Record<string, unknown> {
+  return {
+    binding: {
+      product_session_id: productSessionId,
+      ordinal,
+      runtime_session_id: "01J00000000000000000000004",
+      runtime_job_id: "01J00000000000000000000005",
+      runtime_run_id: `01J0000000000000000000000${5 + ordinal}`,
+      bound_at: "2026-07-26T00:00:00.000Z",
+    },
+    run_status: "running",
+    observed_through_seq: 1,
+    last_event_seq: 1,
+    events: [
+      {
+        seq: 1,
+        event: {
+          type: "run_started",
+          run_id: `01J0000000000000000000000${5 + ordinal}`,
+          job_id: "01J00000000000000000000005",
+          user_message: "hello",
+        },
+      },
+    ],
+  };
+}
+
+function transcriptResponse(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    product_session_id: session.id,
+    workspace_id: workspace.id,
+    status: "complete",
+    partial_reasons: [],
+    segments: [transcriptSegment()],
+    ...overrides,
+  };
+}
+
 function jsonResponse(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), {
     status,
@@ -192,6 +235,23 @@ describe("product API client", () => {
     );
   });
 
+  it("rejects a transcript for a different requested product session", async () => {
+    const client = createProductApiClient({
+      fetch: vi.fn(async () =>
+        jsonResponse(
+          transcriptResponse({
+            product_session_id: "01J00000000000000000000099",
+            segments: [],
+          }),
+        ),
+      ),
+    });
+
+    await expect(client.getTranscript(session.id)).rejects.toBeInstanceOf(
+      ProductApiSchemaError,
+    );
+  });
+
   it("rejects zero-based transcript run ordinals and event sequences", () => {
     const transcript = {
       product_session_id: session.id,
@@ -234,6 +294,122 @@ describe("product API client", () => {
     expect(() => parseProductTranscriptResponse(transcript)).toThrow(
       ProductApiSchemaError,
     );
+  });
+
+  it("rejects transcript segments bound to another product session", () => {
+    expect(() =>
+      parseProductTranscriptResponse(
+        transcriptResponse({
+          segments: [
+            transcriptSegment(1, "01J00000000000000000000099"),
+          ],
+        }),
+      ),
+    ).toThrow(ProductApiSchemaError);
+  });
+
+  it("rejects duplicate or decreasing transcript segment ordinals", () => {
+    expect(() =>
+      parseProductTranscriptResponse(
+        transcriptResponse({
+          segments: [transcriptSegment(1), transcriptSegment(1)],
+        }),
+      ),
+    ).toThrow(ProductApiSchemaError);
+
+    expect(() =>
+      parseProductTranscriptResponse(
+        transcriptResponse({
+          status: "partial",
+          partial_reasons: [
+            { code: "runtime_run_missing", run_ordinal: 1 },
+          ],
+          segments: [transcriptSegment(2), transcriptSegment(1)],
+        }),
+      ),
+    ).toThrow(ProductApiSchemaError);
+  });
+
+  it("requires every transcript ordinal gap to have a typed partial reason", () => {
+    expect(() =>
+      parseProductTranscriptResponse(
+        transcriptResponse({
+          status: "partial",
+          partial_reasons: [
+            { code: "runtime_run_missing", run_ordinal: 3 },
+          ],
+          segments: [transcriptSegment(2)],
+        }),
+      ),
+    ).toThrow(ProductApiSchemaError);
+
+    expect(
+      parseProductTranscriptResponse(
+        transcriptResponse({
+          status: "partial",
+          partial_reasons: [
+            { code: "runtime_run_missing", run_ordinal: 1 },
+          ],
+          segments: [transcriptSegment(2)],
+        }),
+      ).segments[0]?.binding.ordinal,
+    ).toBe(2);
+  });
+
+  it("rejects non-contiguous transcript events and inconsistent watermarks", () => {
+    const nonContiguous = transcriptSegment() as {
+      events: Array<Record<string, unknown>>;
+      observed_through_seq: number;
+      last_event_seq: number;
+    };
+    nonContiguous.events.push({
+      seq: 3,
+      event: { type: "memory_flushed", notes: [] },
+    });
+    nonContiguous.observed_through_seq = 3;
+    nonContiguous.last_event_seq = 3;
+    expect(() =>
+      parseProductTranscriptResponse(
+        transcriptResponse({ segments: [nonContiguous] }),
+      ),
+    ).toThrow(ProductApiSchemaError);
+
+    const mismatchedObserved = transcriptSegment() as {
+      observed_through_seq: number;
+    };
+    mismatchedObserved.observed_through_seq = 0;
+    expect(() =>
+      parseProductTranscriptResponse(
+        transcriptResponse({ segments: [mismatchedObserved] }),
+      ),
+    ).toThrow(ProductApiSchemaError);
+
+    const beyondHighWater = transcriptSegment() as {
+      last_event_seq: number;
+    };
+    beyondHighWater.last_event_seq = 0;
+    expect(() =>
+      parseProductTranscriptResponse(
+        transcriptResponse({ segments: [beyondHighWater] }),
+      ),
+    ).toThrow(ProductApiSchemaError);
+  });
+
+  it("rejects transcript status that contradicts partial reasons", () => {
+    expect(() =>
+      parseProductTranscriptResponse(
+        transcriptResponse({
+          partial_reasons: [
+            { code: "runtime_state_unavailable", run_ordinal: 1 },
+          ],
+        }),
+      ),
+    ).toThrow(ProductApiSchemaError);
+    expect(() =>
+      parseProductTranscriptResponse(
+        transcriptResponse({ status: "partial", partial_reasons: [] }),
+      ),
+    ).toThrow(ProductApiSchemaError);
   });
 
   it("rejects provider URL credentials, query secrets, and invalid env names before fetch", async () => {
