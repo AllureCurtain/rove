@@ -420,6 +420,7 @@ impl ProductRepository {
         }
         validate_binding_integrity(&transaction, &session)?;
         let workspace = get_workspace(&transaction, &session.workspace_id)?;
+        let previous_status = session.status;
         let previous_binding = session.runtime_binding.clone();
         let claim_id = ProductTurnClaimId::new();
         let now = now_rfc3339();
@@ -453,6 +454,7 @@ impl ProductRepository {
         Ok(ProductTurnClaim {
             claim_id,
             context: ProductSessionContext { workspace, session },
+            previous_status,
             previous_binding,
         })
     }
