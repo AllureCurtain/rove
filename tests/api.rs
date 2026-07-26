@@ -21,12 +21,13 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use rove_api::{
     ApiState, CreateJobResponse, JobStateResponse, MAX_M1_BROWSER_MIGRATION_BODY_BYTES,
-    MAX_PRODUCT_TEXT_BYTES, router, serve_listener,
+    MAX_PRODUCT_TEXT_BYTES, ProductSessionId, router, serve_listener,
 };
 use rove_app_bootstrap::AppConfig;
 use rove_runtime::events::StreamEvent;
 use rove_runtime::execution::StepRecordStatus;
-use rove_runtime::types::{Role, RunStatus, TaskState};
+use rove_runtime::state::store::StateStore;
+use rove_runtime::types::{Message, Role, RunStatus, SessionId, TaskState, ToolCallRef};
 use rove_runtime::workspace::Workspace;
 use std::sync::{Arc, Mutex};
 use tokio_util::sync::CancellationToken;
@@ -74,6 +75,30 @@ fn product_store_path_uses_the_bootstrap_config_state_root() {
         state.product_store_path(),
         tmp.path().join("api-state").join("product.sqlite")
     );
+}
+
+#[tokio::test]
+async fn product_job_returns_service_unavailable_when_the_store_cannot_open() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let mut config = test_config();
+    config.state.sqlite_busy_timeout_ms = 0;
+    let app = router(ApiState::new(workspace, config));
+
+    let response = post_json(
+        &app,
+        "/jobs",
+        serde_json::json!({
+            "message": "must not start without product state",
+            "model": "fake",
+            "product_session_id": ProductSessionId::new()
+        }),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let error: serde_json::Value = decode_json(response).await;
+    assert_eq!(error["code"], "product_store_unavailable");
 }
 
 #[tokio::test]
@@ -146,6 +171,11 @@ async fn api_exposes_openapi_json_for_all_routes() {
             "missing OpenAPI operation {method} {path}"
         );
     }
+    let create_job_responses = spec["paths"]["/jobs"]["post"]["responses"]
+        .as_object()
+        .expect("POST /jobs responses");
+    assert!(create_job_responses.contains_key("503"));
+    assert!(!create_job_responses.contains_key("501"));
 
     let schemas = spec["components"]["schemas"]
         .as_object()
@@ -560,6 +590,430 @@ async fn product_migration_replays_receipt_before_runtime_artifact_inspection() 
     assert_eq!(replayed["disposition"], "already_applied");
     assert_eq!(replayed["receipt_id"], applied["receipt_id"]);
     assert_eq!(replayed["issues"], applied["issues"]);
+}
+
+#[tokio::test]
+async fn product_sessions_in_one_workspace_resume_their_own_exact_runs() {
+    let server = tempfile::TempDir::new().unwrap();
+    let folder = tempfile::TempDir::new().unwrap();
+    let mut config = test_config();
+    config.state.state_dir = "api-state".into();
+    let app = router(ApiState::new(
+        Workspace::detect(server.path()).unwrap(),
+        config,
+    ));
+    let workspace = create_product_workspace(&app, folder.path()).await;
+    let workspace_id = workspace["id"].as_str().unwrap();
+    let session_a = create_product_session(&app, workspace_id, "Session A").await;
+    let session_b = create_product_session(&app, workspace_id, "Session B").await;
+    let session_a_id = session_a["id"].as_str().unwrap();
+    let session_b_id = session_b["id"].as_str().unwrap();
+
+    let first_a = create_product_job(&app, session_a_id, "first A").await;
+    let first_a_state = wait_for_done(app.clone(), first_a.job_id.to_string()).await;
+    assert_eq!(first_a_state.status, RunStatus::Done);
+    assert_product_runtime_terminal_durable(folder.path(), &first_a, &first_a_state).await;
+    let first_b = create_product_job(&app, session_b_id, "first B").await;
+    let first_b_state = wait_for_done(app.clone(), first_b.job_id.to_string()).await;
+    assert_eq!(first_b_state.status, RunStatus::Done);
+    assert_product_runtime_terminal_durable(folder.path(), &first_b, &first_b_state).await;
+    let second_a = create_product_job(&app, session_a_id, "second A").await;
+
+    assert_eq!(second_a.job_id, first_a.job_id);
+    assert_ne!(second_a.job_id, first_b.job_id);
+    assert_eq!(second_a.resumed_from_run_id, Some(first_a.run_id));
+    assert_ne!(second_a.resumed_from_run_id, Some(first_b.run_id));
+    let second_a_state = wait_for_done(app.clone(), second_a.job_id.to_string()).await;
+    assert_eq!(second_a_state.status, RunStatus::Done);
+    assert!(
+        second_a_state.events.iter().any(|event| matches!(
+            &event.event,
+            StreamEvent::LlmMessage { full, .. } if full == "fake response: second A"
+        )),
+        "a product follow-up must execute the new user message"
+    );
+    assert_product_runtime_terminal_durable(folder.path(), &second_a, &second_a_state).await;
+
+    let transcript = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/product/sessions/{session_a_id}/transcript"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(transcript.status(), StatusCode::OK);
+    let transcript: serde_json::Value = decode_json(transcript).await;
+    assert_eq!(transcript["product_session_id"], session_a_id);
+    assert_eq!(transcript["workspace_id"], workspace_id);
+    assert_eq!(transcript["status"], "complete");
+    let segments = transcript["segments"].as_array().unwrap();
+    assert_eq!(segments.len(), 2);
+    assert_eq!(segments[0]["binding"]["ordinal"], 1);
+    assert_eq!(
+        segments[0]["binding"]["runtime_run_id"],
+        first_a.run_id.to_string()
+    );
+    assert_eq!(segments[1]["binding"]["ordinal"], 2);
+    assert_eq!(
+        segments[1]["binding"]["runtime_run_id"],
+        second_a.run_id.to_string()
+    );
+
+    let sessions = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/product/sessions?workspace_id={workspace_id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(sessions.status(), StatusCode::OK);
+    let sessions: serde_json::Value = decode_json(sessions).await;
+    let session_a = sessions["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|session| session["id"] == session_a_id)
+        .unwrap();
+    assert_eq!(session_a["status"], "idle");
+    assert_eq!(
+        session_a["runtime_binding"]["latest_run_id"],
+        second_a.run_id.to_string()
+    );
+}
+
+#[tokio::test]
+async fn product_session_resume_fails_closed_when_exact_task_state_is_missing() {
+    let server = tempfile::TempDir::new().unwrap();
+    let folder = tempfile::TempDir::new().unwrap();
+    let mut config = test_config();
+    config.state.state_dir = "api-state".into();
+    let app = router(ApiState::new(
+        Workspace::detect(server.path()).unwrap(),
+        config,
+    ));
+    let workspace = create_product_workspace(&app, folder.path()).await;
+    let workspace_id = workspace["id"].as_str().unwrap();
+    let session = create_product_session(&app, workspace_id, "Missing state").await;
+    let session_id = session["id"].as_str().unwrap();
+    let first = create_product_job(&app, session_id, "durable first turn").await;
+    wait_for_done(app.clone(), first.job_id.to_string()).await;
+
+    std::fs::remove_file(
+        folder
+            .path()
+            .join("api-state")
+            .join("runs")
+            .join(first.run_id.to_string())
+            .join("task_state.json"),
+    )
+    .unwrap();
+    let response = post_json(
+        &app,
+        "/jobs",
+        serde_json::json!({
+            "message": "must not become a disconnected turn",
+            "model": "fake",
+            "product_session_id": session_id
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let error: serde_json::Value = decode_json(response).await;
+    assert_eq!(error["code"], "product_session_runtime_state_missing");
+
+    let sessions = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/product/sessions?workspace_id={workspace_id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let sessions: serde_json::Value = decode_json(sessions).await;
+    assert_eq!(sessions["sessions"][0]["status"], "needs_attention");
+    assert_eq!(
+        sessions["sessions"][0]["runtime_binding"]["latest_run_id"],
+        first.run_id.to_string()
+    );
+}
+
+#[tokio::test]
+async fn product_session_resume_rejects_a_mismatched_runtime_run_identity() {
+    let server = tempfile::TempDir::new().unwrap();
+    let folder = tempfile::TempDir::new().unwrap();
+    let mut config = test_config();
+    config.state.state_dir = "api-state".into();
+    let app = router(ApiState::new(
+        Workspace::detect(server.path()).unwrap(),
+        config,
+    ));
+    let workspace = create_product_workspace(&app, folder.path()).await;
+    let workspace_id = workspace["id"].as_str().unwrap();
+    let session = create_product_session(&app, workspace_id, "Corrupt run identity").await;
+    let session_id = session["id"].as_str().unwrap();
+    let first = create_product_job(&app, session_id, "durable first turn").await;
+    wait_for_done(app.clone(), first.job_id.to_string()).await;
+
+    let connection = rusqlite::Connection::open(folder.path().join(".rove/state.sqlite")).unwrap();
+    let mismatched_session_id = SessionId::new().to_string();
+    connection
+        .execute(
+            "INSERT INTO sessions(session_id, created_at, updated_at) VALUES (?1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+            [&mismatched_session_id],
+        )
+        .unwrap();
+    let updated = connection
+        .execute(
+            "UPDATE runs SET session_id = ?2 WHERE run_id = ?1",
+            rusqlite::params![first.run_id.to_string(), mismatched_session_id],
+        )
+        .unwrap();
+    assert_eq!(updated, 1);
+    drop(connection);
+
+    let response = post_json(
+        &app,
+        "/jobs",
+        serde_json::json!({
+            "message": "must reject mismatched indexed run identity",
+            "model": "fake",
+            "product_session_id": session_id
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let error: serde_json::Value = decode_json(response).await;
+    assert_eq!(error["code"], "product_session_runtime_state_corrupt");
+
+    let session = get_product_session(&app, workspace_id, session_id).await;
+    assert_eq!(session["status"], "needs_attention");
+    assert_eq!(
+        session["runtime_binding"]["latest_run_id"],
+        first.run_id.to_string()
+    );
+}
+
+#[tokio::test]
+async fn product_session_resume_rejects_invalid_native_tool_call_ids() {
+    let server = tempfile::TempDir::new().unwrap();
+    let folder = tempfile::TempDir::new().unwrap();
+    let mut config = test_config();
+    config.state.state_dir = "api-state".into();
+    let app = router(ApiState::new(
+        Workspace::detect(server.path()).unwrap(),
+        config,
+    ));
+    let workspace = create_product_workspace(&app, folder.path()).await;
+    let workspace_id = workspace["id"].as_str().unwrap();
+    let session = create_product_session(&app, workspace_id, "Corrupt tool history").await;
+    let session_id = session["id"].as_str().unwrap();
+    let first = create_product_job(&app, session_id, "durable first turn").await;
+    wait_for_done(app.clone(), first.job_id.to_string()).await;
+
+    let state_store = StateStore::with_index_path(
+        &folder.path().join("api-state"),
+        folder.path().join(".rove/state.sqlite"),
+        5_000,
+    );
+    let mut task_state = state_store.load_task_state(first.run_id).await.unwrap();
+    task_state
+        .checkpoint
+        .as_mut()
+        .expect("checkpoint")
+        .preserved_tail
+        .push(Message::assistant_with_tool_calls(
+            "invalid duplicate native calls",
+            vec![
+                ToolCallRef {
+                    id: "duplicate-call".to_string(),
+                    name: "first_tool".to_string(),
+                    args: serde_json::json!({}),
+                },
+                ToolCallRef {
+                    id: "duplicate-call".to_string(),
+                    name: "second_tool".to_string(),
+                    args: serde_json::json!({}),
+                },
+            ],
+        ));
+    state_store.write_task_state(&task_state).await.unwrap();
+
+    let response = post_json(
+        &app,
+        "/jobs",
+        serde_json::json!({
+            "message": "must reject invalid provider history",
+            "model": "fake",
+            "product_session_id": session_id
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let error: serde_json::Value = decode_json(response).await;
+    assert_eq!(error["code"], "product_session_runtime_state_corrupt");
+
+    let session = get_product_session(&app, workspace_id, session_id).await;
+    assert_eq!(session["status"], "needs_attention");
+    assert_eq!(
+        session["runtime_binding"]["latest_run_id"],
+        first.run_id.to_string()
+    );
+}
+
+#[tokio::test]
+async fn product_preflight_failure_preserves_the_claimed_session_error_status() {
+    let server = tempfile::TempDir::new().unwrap();
+    let folder = tempfile::TempDir::new().unwrap();
+    let other = tempfile::TempDir::new().unwrap();
+    let mut config = test_config();
+    config.state.state_dir = "api-state".into();
+    let app = router(ApiState::new(
+        Workspace::detect(server.path()).unwrap(),
+        config,
+    ));
+    let workspace = create_product_workspace(&app, folder.path()).await;
+    let workspace_id = workspace["id"].as_str().unwrap();
+    let session = create_product_session(&app, workspace_id, "Preserve error").await;
+    let session_id = session["id"].as_str().unwrap();
+    let product_database = server.path().join("api-state/product.sqlite");
+    let connection = rusqlite::Connection::open(product_database).unwrap();
+    connection
+        .execute(
+            "UPDATE product_sessions SET status = 'error' WHERE product_session_id = ?1",
+            [session_id],
+        )
+        .unwrap();
+    drop(connection);
+
+    let response = post_json(
+        &app,
+        "/jobs",
+        serde_json::json!({
+            "message": "wrong workspace",
+            "model": "fake",
+            "product_session_id": session_id,
+            "workspace": { "kind": "folder", "root": other.path() }
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let error: serde_json::Value = decode_json(response).await;
+    assert_eq!(error["code"], "product_session_workspace_mismatch");
+
+    let session = get_product_session(&app, workspace_id, session_id).await;
+    assert_eq!(session["status"], "error");
+    assert!(session["runtime_binding"].is_null());
+}
+
+#[tokio::test]
+async fn product_cancel_releases_the_single_turn_claim_before_continuation() {
+    let server = tempfile::TempDir::new().unwrap();
+    let folder = tempfile::TempDir::new().unwrap();
+    let other = tempfile::TempDir::new().unwrap();
+    let mut config = test_config();
+    config.state.state_dir = "api-state".into();
+    let app = router(ApiState::new(
+        Workspace::detect(server.path()).unwrap(),
+        config,
+    ));
+    let workspace = create_product_workspace(&app, folder.path()).await;
+    let workspace_id = workspace["id"].as_str().unwrap();
+    let session = create_product_session(&app, workspace_id, "Cancel flow").await;
+    let session_id = session["id"].as_str().unwrap();
+    let waiting_message = serde_json::json!({
+        "tool": "request_input",
+        "args": { "prompt": "continue?" }
+    })
+    .to_string();
+    let active = post_json(
+        &app,
+        "/jobs",
+        serde_json::json!({
+            "message": waiting_message,
+            "model": "fake-raw",
+            "max_steps": 1,
+            "product_session_id": session_id
+        }),
+    )
+    .await;
+    assert_eq!(active.status(), StatusCode::OK);
+    let active: CreateJobResponse = decode_json(active).await;
+    wait_for_pending_input(app.clone(), active.job_id.to_string()).await;
+
+    let conflict = post_json(
+        &app,
+        "/jobs",
+        serde_json::json!({
+            "message": "concurrent turn",
+            "model": "fake",
+            "product_session_id": session_id
+        }),
+    )
+    .await;
+    assert_eq!(conflict.status(), StatusCode::CONFLICT);
+    let conflict: serde_json::Value = decode_json(conflict).await;
+    assert_eq!(conflict["code"], "product_session_active");
+
+    let cancel = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/jobs/{}/cancel", active.job_id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(cancel.status(), StatusCode::OK);
+    let cancelled: JobStateResponse = decode_json(cancel).await;
+    assert_eq!(cancelled.status, RunStatus::Cancelled);
+    assert_eq!(
+        cancelled
+            .events
+            .iter()
+            .filter(|event| matches!(event.event, StreamEvent::RunCompleted { .. }))
+            .count(),
+        1
+    );
+
+    let mismatch = post_json(
+        &app,
+        "/jobs",
+        serde_json::json!({
+            "message": "wrong workspace",
+            "model": "fake",
+            "product_session_id": session_id,
+            "workspace": { "kind": "folder", "root": other.path() }
+        }),
+    )
+    .await;
+    assert_eq!(mismatch.status(), StatusCode::CONFLICT);
+    let mismatch: serde_json::Value = decode_json(mismatch).await;
+    assert_eq!(mismatch["code"], "product_session_workspace_mismatch");
+    assert_eq!(
+        get_product_session(&app, workspace_id, session_id).await["status"],
+        "idle"
+    );
+
+    let resumed = create_product_job(&app, session_id, "after cancellation").await;
+    assert_eq!(resumed.job_id, active.job_id);
+    assert_eq!(resumed.resumed_from_run_id, Some(active.run_id));
+    let resumed_state = wait_for_done(app, resumed.job_id.to_string()).await;
+    assert_eq!(resumed_state.status, RunStatus::Done);
+    assert!(
+        resumed_state.events.iter().any(|event| matches!(
+            &event.event,
+            StreamEvent::LlmMessage { full, .. } if full == "fake response: after cancellation"
+        )),
+        "a cancelled product turn must not replay its terminal plan decision"
+    );
 }
 
 #[tokio::test]
@@ -4021,6 +4475,170 @@ async fn api_answers_pending_request_input_tool_call() {
     let text = String::from_utf8(body.to_vec()).unwrap();
     assert!(text.contains("event: tool_call_completed"));
     assert!(text.contains("Use main."));
+}
+
+async fn post_json(
+    app: &axum::Router,
+    uri: &str,
+    value: serde_json::Value,
+) -> axum::response::Response {
+    app.clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header(CONTENT_TYPE, "application/json")
+                .body(Body::from(value.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+}
+
+async fn decode_json<T>(response: axum::response::Response) -> T
+where
+    T: serde::de::DeserializeOwned,
+{
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    serde_json::from_slice(&body).unwrap()
+}
+
+async fn create_product_workspace(app: &axum::Router, root: &Path) -> serde_json::Value {
+    let response = post_json(
+        app,
+        "/product/workspaces",
+        serde_json::json!({
+            "root": root,
+            "kind": "folder",
+            "display_name": "Product test workspace",
+            "pinned": false
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    decode_json(response).await
+}
+
+async fn create_product_session(
+    app: &axum::Router,
+    workspace_id: &str,
+    title: &str,
+) -> serde_json::Value {
+    let response = post_json(
+        app,
+        "/product/sessions",
+        serde_json::json!({
+            "workspace_id": workspace_id,
+            "title": title
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    decode_json(response).await
+}
+
+async fn get_product_session(
+    app: &axum::Router,
+    workspace_id: &str,
+    product_session_id: &str,
+) -> serde_json::Value {
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/product/sessions?workspace_id={workspace_id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = decode_json(response).await;
+    body["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|session| session["id"] == product_session_id)
+        .cloned()
+        .expect("product session")
+}
+
+async fn assert_product_runtime_terminal_durable(
+    workspace_root: &Path,
+    created: &CreateJobResponse,
+    live_state: &JobStateResponse,
+) {
+    let state_store = StateStore::with_index_path(
+        &workspace_root.join("api-state"),
+        workspace_root.join(".rove/state.sqlite"),
+        5_000,
+    );
+    let run = state_store
+        .index
+        .run_record(created.run_id)
+        .unwrap()
+        .expect("indexed runtime run");
+    assert_eq!(run.job_id, created.job_id);
+    assert_eq!(run.run_id, created.run_id);
+    assert_eq!(run.status, "done");
+    assert!(run.task_state_path.is_some());
+    assert!(run.report_path.is_some());
+    assert!(run.last_event_seq > 0);
+    assert_eq!(
+        live_state.events.last().map(|event| event.seq),
+        Some(run.last_event_seq)
+    );
+
+    let task_state = state_store.load_task_state(created.run_id).await.unwrap();
+    assert_eq!(task_state.session_id, run.session_id);
+    assert_eq!(task_state.job_id, created.job_id);
+    assert_eq!(task_state.run_id, created.run_id);
+    assert_eq!(
+        task_state
+            .checkpoint
+            .as_ref()
+            .and_then(|checkpoint| checkpoint.last_event_seq),
+        Some(run.last_event_seq)
+    );
+    let report = state_store.load_report(created.run_id).await.unwrap();
+    assert_eq!(report.session_id, run.session_id);
+    assert_eq!(report.job_id, created.job_id);
+    assert_eq!(report.run_id, created.run_id);
+    let snapshot = state_store
+        .index
+        .run_event_snapshot_async(created.run_id, run.last_event_seq - 1, 1)
+        .await
+        .unwrap()
+        .expect("terminal event snapshot");
+    assert_eq!(snapshot.high_water_seq, run.last_event_seq);
+    assert!(matches!(
+        snapshot
+            .events
+            .last()
+            .map(|event| serde_json::from_str::<StreamEvent>(&event.event_json).unwrap()),
+        Some(StreamEvent::RunCompleted { .. })
+    ));
+}
+
+async fn create_product_job(
+    app: &axum::Router,
+    product_session_id: &str,
+    message: &str,
+) -> CreateJobResponse {
+    let response = post_json(
+        app,
+        "/jobs",
+        serde_json::json!({
+            "message": message,
+            "model": "fake",
+            "product_session_id": product_session_id
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    decode_json(response).await
 }
 
 async fn wait_for_done(app: axum::Router, job_id: String) -> JobStateResponse {

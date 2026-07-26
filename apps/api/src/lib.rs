@@ -1,5 +1,6 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::SocketAddr;
+use std::panic::AssertUnwindSafe;
 use std::path::{Path as FsPath, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -11,11 +12,10 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::middleware;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::{Json, Router};
-use futures::{Stream, StreamExt};
+use futures::{FutureExt, Stream, StreamExt};
 use serde::Deserialize;
-use tokio::sync::{Mutex, RwLock, broadcast, oneshot};
-use tokio_stream::wrappers::BroadcastStream;
-use tokio_util::sync::CancellationToken;
+use tokio::sync::{Mutex, RwLock, broadcast, oneshot, watch};
+use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use utoipa::OpenApi;
 use utoipa_axum::{router::OpenApiRouter, routes};
 use utoipa_swagger_ui::SwaggerUi;
@@ -30,13 +30,14 @@ use rove_models::health::{HealthConfig, ModelHealthStore};
 use rove_runtime::engine::Engine;
 use rove_runtime::events::StreamEvent;
 use rove_runtime::state::artifacts::RunArtifactRecorder;
-use rove_runtime::state::index::StateIndex;
+use rove_runtime::state::index::{ResumeJobClaim, RunIndexRecord, StateIndex};
 use rove_runtime::state::resume::resolve_resume_state;
-use rove_runtime::state::store::StateStore;
+use rove_runtime::state::store::{RunHandle, StateStore};
+use rove_runtime::state::trace::TraceWriter;
 use rove_runtime::types::{
-    ApprovalDecision, ApprovalPolicy, CallId, JobId, PendingToolApproval, PendingUserInput, RunId,
-    RunStatus, SessionId, TaskState, TerminationReason, ToolApprovalProvider, ToolApprovalRequest,
-    UserInputProvider, UserInputRequest,
+    ApprovalDecision, ApprovalPolicy, CallId, JobId, Message, PendingToolApproval,
+    PendingUserInput, Role, RunId, RunStatus, SessionId, TaskState, TerminationReason,
+    ToolApprovalProvider, ToolApprovalRequest, UserInputProvider, UserInputRequest,
 };
 use rove_runtime::workspace::Workspace;
 
@@ -71,6 +72,7 @@ struct ApiStateInner {
     product_store: Option<Arc<dyn ProductStore>>,
     product_transcript_reader: Option<Arc<dyn ProductTranscriptReader>>,
     shutdown_token: CancellationToken,
+    supervisors: TaskTracker,
     jobs: RwLock<HashMap<JobId, Arc<JobRecord>>>,
     model_health: Arc<ModelHealthStore>,
     rate_limit: tokio::sync::Mutex<RateLimitState>,
@@ -135,7 +137,37 @@ struct JobRecord {
     pending_inputs: Mutex<HashMap<CallId, PendingInput>>,
     tx: broadcast::Sender<JobStreamEvent>,
     handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    completion: watch::Sender<bool>,
     cancel_token: CancellationToken,
+}
+
+struct JobLaunch {
+    record: Arc<JobRecord>,
+    engine: Engine,
+    run: RunHandle,
+    product_turn: Option<ProductTurnSupervisor>,
+}
+
+#[derive(Clone)]
+struct ProductTurnSupervisor {
+    store: Arc<dyn ProductStore>,
+    claim_id: ProductTurnClaimId,
+}
+
+struct JobCompletionGuard {
+    completion: watch::Sender<bool>,
+}
+
+impl JobCompletionGuard {
+    fn new(completion: watch::Sender<bool>) -> Self {
+        Self { completion }
+    }
+}
+
+impl Drop for JobCompletionGuard {
+    fn drop(&mut self) {
+        let _ = self.completion.send_replace(true);
+    }
 }
 
 struct PendingApproval {
@@ -256,7 +288,10 @@ pub async fn serve_with_shutdown(
     let addr: SocketAddr = config.api.bind_addr.parse()?;
     let state = ApiState::with_shutdown(workspace, config, shutdown.clone());
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    serve_listener(listener, router(state), shutdown).await
+    let result = serve_listener(listener, router(state.clone()), shutdown).await;
+    state.inner.shutdown_token.cancel();
+    drain_job_supervisors(&state).await;
+    result
 }
 
 pub async fn serve_listener(
@@ -333,6 +368,7 @@ impl ApiState {
                 product_store,
                 product_transcript_reader,
                 shutdown_token,
+                supervisors: TaskTracker::new(),
                 jobs: RwLock::new(HashMap::new()),
                 model_health,
                 rate_limit: tokio::sync::Mutex::new(RateLimitState::default()),
@@ -347,12 +383,10 @@ impl ApiState {
     }
 
     pub(crate) fn product_store(&self) -> Result<Arc<dyn ProductStore>, ApiError> {
-        self.inner.product_store.clone().ok_or_else(|| {
-            ApiError::not_implemented(
-                ProductErrorCode::ProductStoreUnavailable.as_str(),
-                "the C0 product store is not wired yet",
-            )
-        })
+        self.inner
+            .product_store
+            .clone()
+            .ok_or_else(|| ProductStoreError::unavailable().into())
     }
 
     pub(crate) fn product_transcript_reader(
@@ -384,7 +418,7 @@ impl ApiState {
         (status = 200, description = "Job created", body = CreateJobResponse, content_type = "application/json"),
         (status = 400, description = "Invalid job request", body = ApiErrorResponse, content_type = "application/json"),
         (status = 409, description = "Resume or product-session conflict", body = ApiErrorResponse, content_type = "application/json"),
-        (status = 501, description = "Product-session foundation is not wired", body = ApiErrorResponse, content_type = "application/json"),
+        (status = 503, description = "Product store unavailable", body = ApiErrorResponse, content_type = "application/json"),
         (status = 500, description = "Internal runtime error", body = ApiErrorResponse, content_type = "application/json")
     )
 )]
@@ -396,90 +430,23 @@ async fn create_job(
         return Err(ApiError::bad_request("message must not be empty"));
     }
 
-    if req.product_session_id.is_some() {
-        if req.resume.is_some() {
-            return Err(ApiError::conflict_with_code(
-                ProductErrorCode::ProductSessionResumeConflict.as_str(),
-                "product-session jobs resolve resume from the server binding; omit resume",
-            ));
-        }
-        return Err(ApiError::not_implemented(
-            ProductErrorCode::ProductStoreUnavailable.as_str(),
-            "product-session job binding is not wired until the C0 workers are integrated",
+    if req.product_session_id.is_some() && req.resume.is_some() {
+        return Err(ApiError::conflict_with_code(
+            ProductErrorCode::ProductSessionResumeConflict.as_str(),
+            "product-session jobs resolve resume from the server binding; omit resume",
         ));
     }
 
-    let (workspace, config) = workspace_and_config_for_create_job(&state, &req)?;
-    let state_store = state_store_for_parts(&workspace, &config);
-    let resume_state = resolve_resume_state(&state_store, req.resume.as_deref())
-        .await
-        .map_err(|err| ApiError::bad_request(err.to_string()))?;
-    // Hard resume is fail-closed: a requested resume key that does not resolve
-    // durable task_state in the *requested* workspace must not open a silent
-    // one-shot session (product continuity rule 2A).
-    if req.resume.is_some() && resume_state.is_none() {
-        return Err(ApiError::bad_request(
-            "nothing to resume in this workspace; hard resume requires durable task_state under the requested workspace root",
-        ));
-    }
-    let session_id = resume_state
-        .as_ref()
-        .map(|task_state| task_state.session_id)
-        .unwrap_or_else(SessionId::new);
-    let job_id = resume_state
-        .as_ref()
-        .map(|task_state| task_state.job_id)
-        .unwrap_or_else(JobId::new);
-    if resume_state.is_some()
-        && let Some(record) = live_job(&state, job_id).await
-    {
-        let status = record.status.lock().await.clone();
-        if !is_terminal(&status) {
-            return Err(ApiError::conflict(
-                "cannot resume a job while its previous run is still active",
-            ));
-        }
-    }
-    let run_id = RunId::new();
-    let resumed_from_run_id = resume_state.as_ref().map(|task_state| task_state.run_id);
-    let (tx, _) = broadcast::channel(EVENT_BUFFER);
-    let record = Arc::new(JobRecord {
-        session_id,
-        job_id,
-        run_id,
-        workspace,
-        config,
-        message: req.message.clone(),
-        resumed_from_run_id,
-        resume_state,
-        status: Mutex::new(RunStatus::Init),
-        events: Mutex::new(Vec::new()),
-        pending_approvals: Mutex::new(HashMap::new()),
-        pending_inputs: Mutex::new(HashMap::new()),
-        tx,
-        handle: Mutex::new(None),
-        cancel_token: state.inner.shutdown_token.child_token(),
-    });
+    let launch = prepare_job_launch(&state, &req).await?;
+    let record = Arc::clone(&launch.record);
+    let response = CreateJobResponse {
+        job_id: record.job_id,
+        run_id: record.run_id,
+        resumed_from_run_id: record.resumed_from_run_id,
+    };
+    start_job_supervisor(state, launch).await;
 
-    state
-        .inner
-        .jobs
-        .write()
-        .await
-        .insert(job_id, record.clone());
-
-    let state_for_task = state.clone();
-    let record_for_task = record.clone();
-    let handle = tokio::spawn(async move {
-        run_job(state_for_task, record_for_task, req).await;
-    });
-    *record.handle.lock().await = Some(handle);
-
-    Ok(Json(CreateJobResponse {
-        job_id,
-        run_id,
-        resumed_from_run_id,
-    }))
+    Ok(Json(response))
 }
 
 #[utoipa::path(
@@ -588,33 +555,70 @@ async fn job_events(
     };
 
     let live_rx = record.tx.subscribe();
-    let existing = persisted_or_live_events(&state, &record, after).await?;
-    let status = record.status.lock().await.clone();
-    let replay_events: Vec<_> = existing
-        .into_iter()
-        .filter(|event| event.seq > after)
-        .collect();
-    let replay_high_water = replay_events.last().map(|event| event.seq).unwrap_or(after);
-    let replay = futures::stream::iter(replay_events);
-    let live = if is_terminal(&status) {
-        futures::stream::empty().boxed()
-    } else {
-        BroadcastStream::new(live_rx)
-            .filter_map(move |event| {
-                futures::future::ready(match event {
-                    Ok(event) if event.seq > replay_high_water => Some(event),
-                    _ => None,
-                })
-            })
-            .boxed()
-    };
-    let stream = replay
-        .chain(live)
+    let (existing, status) = persisted_or_live_events(&state, &record, after).await?;
+    let stream = replay_and_live_job_event_stream(existing, status, live_rx, after)
         .filter_map(|event| futures::future::ready(sse_event(event).ok()))
         .map(Ok)
         .boxed();
 
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+}
+
+fn replay_and_live_job_event_stream(
+    existing: Vec<JobStreamEvent>,
+    status: RunStatus,
+    receiver: broadcast::Receiver<JobStreamEvent>,
+    after: u64,
+) -> futures::stream::BoxStream<'static, JobStreamEvent> {
+    let live_terminal_published = is_terminal(&status);
+    let replay_events: Vec<_> = existing
+        .into_iter()
+        .filter(|event| event.seq > after)
+        .filter(|event| {
+            live_terminal_published || !matches!(&event.event, StreamEvent::RunCompleted { .. })
+        })
+        .collect();
+    let replay_has_terminal = replay_events
+        .iter()
+        .any(|event| matches!(&event.event, StreamEvent::RunCompleted { .. }));
+    let replay_high_water = replay_events.last().map(|event| event.seq).unwrap_or(after);
+    let replay = futures::stream::iter(replay_events);
+    let live = if replay_has_terminal || live_terminal_published {
+        futures::stream::empty().boxed()
+    } else {
+        live_job_event_stream(receiver, replay_high_water)
+    };
+    replay.chain(live).boxed()
+}
+
+fn live_job_event_stream(
+    receiver: broadcast::Receiver<JobStreamEvent>,
+    after: u64,
+) -> futures::stream::BoxStream<'static, JobStreamEvent> {
+    futures::stream::unfold(
+        (receiver, false),
+        move |(mut receiver, completed)| async move {
+            if completed {
+                return None;
+            }
+            loop {
+                match receiver.recv().await {
+                    Ok(event) => {
+                        let completed = matches!(&event.event, StreamEvent::RunCompleted { .. });
+                        if event.seq > after {
+                            return Some((event, (receiver, completed)));
+                        }
+                        if completed {
+                            return None;
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => return None,
+                }
+            }
+        },
+    )
+    .boxed()
 }
 
 #[utoipa::path(
@@ -662,6 +666,7 @@ async fn cancel_job(
     let record = find_job(&state, job_id).await?;
     let current_status = record.status.lock().await.clone();
     if is_terminal(&current_status) {
+        wait_for_job_completion(&record).await;
         return Ok(Json(job_state_response(&record).await));
     }
 
@@ -669,15 +674,7 @@ async fn cancel_job(
     let state_store = state_store_for_record(&record);
     reject_pending_approvals(&record, &state_store.index).await;
     reject_pending_inputs(&record, &state_store.index).await;
-
-    if let Some(handle) = record.handle.lock().await.take() {
-        let _ = handle.await;
-    }
-
-    let status = record.status.lock().await.clone();
-    if !is_terminal(&status) {
-        finalize_cancelled_job(&state, &record).await;
-    }
+    wait_for_job_completion(&record).await;
 
     Ok(Json(job_state_response(&record).await))
 }
@@ -843,23 +840,485 @@ async fn run_report(
     Ok(Json(report))
 }
 
-async fn run_job(state: ApiState, record: Arc<JobRecord>, req: CreateJobRequest) {
-    *record.status.lock().await = RunStatus::Running;
-    let result = run_job_inner(&state, &record, &req).await;
-    if let Err(err) = result {
-        tracing::warn!(job_id = %record.job_id, "job failed: {err}");
-        *record.status.lock().await = RunStatus::Error;
+async fn prepare_job_launch(
+    state: &ApiState,
+    req: &CreateJobRequest,
+) -> Result<JobLaunch, ApiError> {
+    match req.product_session_id.as_ref() {
+        Some(product_session_id) => {
+            prepare_product_job_launch(state, req, product_session_id).await
+        }
+        None => prepare_generic_job_launch(state, req).await,
     }
 }
 
-async fn run_job_inner(
+async fn prepare_generic_job_launch(
     state: &ApiState,
-    record: &Arc<JobRecord>,
     req: &CreateJobRequest,
-) -> anyhow::Result<()> {
-    let engine = assemble_job_engine(state, &record.message, req, record.clone()).await?;
+) -> Result<JobLaunch, ApiError> {
+    let (workspace, config) = workspace_and_config_for_create_job(state, req)?;
+    let state_store = state_store_for_parts(&workspace, &config);
+    let resume_state = resolve_resume_state(&state_store, req.resume.as_deref())
+        .await
+        .map_err(|err| ApiError::bad_request(err.to_string()))?;
+    if req.resume.is_some() && resume_state.is_none() {
+        return Err(ApiError::bad_request(
+            "nothing to resume in this workspace; hard resume requires durable task_state under the requested workspace root",
+        ));
+    }
+
+    let mut resume_claim = claim_runtime_resume(&state_store, resume_state.as_ref(), false).await?;
+    let session_id = resume_state
+        .as_ref()
+        .map(|task_state| task_state.session_id)
+        .unwrap_or_else(SessionId::new);
+    let job_id = resume_state
+        .as_ref()
+        .map(|task_state| task_state.job_id)
+        .unwrap_or_else(JobId::new);
+    let record = new_job_record(
+        state,
+        workspace,
+        config,
+        req,
+        session_id,
+        job_id,
+        resume_state,
+    );
+    let engine = match assemble_job_engine(state, &record.message, req, Arc::clone(&record)).await {
+        Ok(engine) => engine,
+        Err(error) => {
+            release_runtime_resume_claim(&state_store, resume_claim.take()).await;
+            tracing::warn!(job_id = %record.job_id, "failed to assemble job engine: {error}");
+            return Err(ApiError::internal("failed to assemble job engine"));
+        }
+    };
+    let run = match state_store.start_run(record.session_id, record.job_id, record.run_id) {
+        Ok(run) => run,
+        Err(error) => {
+            release_runtime_resume_claim(&state_store, resume_claim.take()).await;
+            return Err(ApiError::internal(error));
+        }
+    };
+
+    Ok(JobLaunch {
+        record,
+        engine,
+        run,
+        product_turn: None,
+    })
+}
+
+async fn prepare_product_job_launch(
+    state: &ApiState,
+    req: &CreateJobRequest,
+    product_session_id: &ProductSessionId,
+) -> Result<JobLaunch, ApiError> {
+    let store = state.product_store()?;
+    let claim = store.claim_session_turn(product_session_id).await?;
+    let claim_id = claim.claim_id.clone();
+    let previous_product_status = claim.previous_status;
+
+    let (workspace, config) =
+        match workspace_and_config_for_product_job(state, req, &claim.context.workspace) {
+            Ok(value) => value,
+            Err(error) => {
+                finish_failed_product_start(
+                    &store,
+                    &claim_id,
+                    previous_product_status,
+                    "workspace validation",
+                )
+                .await;
+                return Err(error);
+            }
+        };
+    let state_store = state_store_for_parts(&workspace, &config);
+    let (resume_state, mut resume_claim) = match claim.previous_binding.as_ref() {
+        Some(previous) => match load_and_claim_product_resume(&state_store, previous).await {
+            Ok((resume_state, resume_claim)) => (Some(resume_state), Some(resume_claim)),
+            Err(error) => {
+                finish_failed_product_start(
+                    &store,
+                    &claim_id,
+                    ProductSessionStatus::NeedsAttention,
+                    "exact runtime resume validation",
+                )
+                .await;
+                return Err(error);
+            }
+        },
+        None => (None, None),
+    };
+    let session_id = resume_state
+        .as_ref()
+        .map(|task_state| task_state.session_id)
+        .unwrap_or_else(SessionId::new);
+    let job_id = resume_state
+        .as_ref()
+        .map(|task_state| task_state.job_id)
+        .unwrap_or_else(JobId::new);
+    let record = new_job_record(
+        state,
+        workspace,
+        config,
+        req,
+        session_id,
+        job_id,
+        resume_state,
+    );
+    let engine = match assemble_job_engine(state, &record.message, req, Arc::clone(&record)).await {
+        Ok(engine) => engine,
+        Err(error) => {
+            release_runtime_resume_claim(&state_store, resume_claim.take()).await;
+            finish_failed_product_start(
+                &store,
+                &claim_id,
+                previous_product_status,
+                "engine assembly",
+            )
+            .await;
+            tracing::warn!(job_id = %record.job_id, "failed to assemble product job engine: {error}");
+            return Err(ApiError::internal("failed to assemble job engine"));
+        }
+    };
+    let run = match state_store.start_run(record.session_id, record.job_id, record.run_id) {
+        Ok(run) => run,
+        Err(error) => {
+            release_runtime_resume_claim(&state_store, resume_claim.take()).await;
+            finish_failed_product_start(
+                &store,
+                &claim_id,
+                ProductSessionStatus::NeedsAttention,
+                "runtime run start",
+            )
+            .await;
+            tracing::warn!(product_session_id = %product_session_id, "failed to start product runtime run: {error}");
+            return Err(ProductStoreError::new(
+                ProductErrorCode::ProductSessionRuntimeStateMissing,
+                "the product session runtime store could not start a run",
+            )
+            .into());
+        }
+    };
+    let _ = resume_claim.take();
+
+    if let Err(error) = store
+        .commit_run_binding(CommitProductRunBinding {
+            claim_id: claim_id.clone(),
+            product_session_id: product_session_id.clone(),
+            runtime_session_id: record.session_id,
+            runtime_job_id: record.job_id,
+            runtime_run_id: record.run_id,
+            resumed_from_run_id: record.resumed_from_run_id,
+        })
+        .await
+    {
+        finalize_prestarted_run(
+            &record,
+            &engine,
+            run,
+            "product run binding was not committed",
+        )
+        .await;
+        finish_failed_product_start(
+            &store,
+            &claim_id,
+            ProductSessionStatus::NeedsAttention,
+            "runtime binding commit",
+        )
+        .await;
+        return Err(error.into());
+    }
+
+    Ok(JobLaunch {
+        record,
+        engine,
+        run,
+        product_turn: Some(ProductTurnSupervisor { store, claim_id }),
+    })
+}
+
+fn new_job_record(
+    state: &ApiState,
+    workspace: Workspace,
+    config: AppConfig,
+    req: &CreateJobRequest,
+    session_id: SessionId,
+    job_id: JobId,
+    resume_state: Option<TaskState>,
+) -> Arc<JobRecord> {
+    let run_id = RunId::new();
+    let resumed_from_run_id = resume_state.as_ref().map(|task_state| task_state.run_id);
+    let (tx, _) = broadcast::channel(EVENT_BUFFER);
+    let (completion, _) = watch::channel(false);
+    Arc::new(JobRecord {
+        session_id,
+        job_id,
+        run_id,
+        workspace,
+        config,
+        message: req.message.clone(),
+        resumed_from_run_id,
+        resume_state,
+        status: Mutex::new(RunStatus::Running),
+        events: Mutex::new(Vec::new()),
+        pending_approvals: Mutex::new(HashMap::new()),
+        pending_inputs: Mutex::new(HashMap::new()),
+        tx,
+        handle: Mutex::new(None),
+        completion,
+        cancel_token: state.inner.shutdown_token.child_token(),
+    })
+}
+
+async fn claim_runtime_resume(
+    state_store: &StateStore,
+    resume_state: Option<&TaskState>,
+    product: bool,
+) -> Result<Option<ResumeJobClaim>, ApiError> {
+    let Some(resume_state) = resume_state else {
+        return Ok(None);
+    };
+    let claim = state_store
+        .index
+        .claim_job_for_resume_async(resume_state.job_id, resume_state.run_id)
+        .await
+        .map_err(ApiError::internal)?;
+    match claim {
+        Some(claim) => Ok(Some(claim)),
+        None if product => Err(ApiError::conflict_with_code(
+            ProductErrorCode::ProductSessionResumeConflict.as_str(),
+            "the product session runtime run is active, stale, or no longer the job's latest terminal run",
+        )),
+        None => Err(ApiError::conflict(
+            "cannot resume a job unless the requested run is its latest terminal run",
+        )),
+    }
+}
+
+async fn release_runtime_resume_claim(state_store: &StateStore, claim: Option<ResumeJobClaim>) {
+    let Some(claim) = claim else {
+        return;
+    };
+    match state_store
+        .index
+        .release_job_resume_claim_async(claim)
+        .await
+    {
+        Ok(true) => {}
+        Ok(false) => tracing::warn!("runtime resume claim was no longer releasable"),
+        Err(error) => tracing::warn!("failed to release runtime resume claim: {error}"),
+    }
+}
+
+async fn load_and_claim_product_resume(
+    state_store: &StateStore,
+    previous: &ProductRuntimeBinding,
+) -> Result<(TaskState, ResumeJobClaim), ApiError> {
+    let job = state_store
+        .index
+        .job_record_async(previous.latest_job_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| {
+            ApiError::from(ProductStoreError::new(
+                ProductErrorCode::ProductSessionRuntimeStateMissing,
+                "the product session runtime job is missing",
+            ))
+        })?;
+    if job.session_id != previous.runtime_session_id || job.run_id != Some(previous.latest_run_id) {
+        return Err(ProductStoreError::new(
+            ProductErrorCode::ProductSessionRuntimeStateCorrupt,
+            "the product session runtime job identity does not match its binding",
+        )
+        .into());
+    }
+    let run = load_runtime_run_record(&state_store.index, previous.latest_run_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| {
+            ApiError::from(ProductStoreError::new(
+                ProductErrorCode::ProductSessionRuntimeStateMissing,
+                "the product session runtime run is missing",
+            ))
+        })?;
+    if run.session_id != previous.runtime_session_id
+        || run.job_id != previous.latest_job_id
+        || run.run_id != previous.latest_run_id
+    {
+        return Err(ProductStoreError::new(
+            ProductErrorCode::ProductSessionRuntimeStateCorrupt,
+            "the product session runtime run identity does not match its binding",
+        )
+        .into());
+    }
+    // Loading task state may lazily repair its index projection. Validate the
+    // existing indexed identities first so product resume fails closed on drift.
+    let resume_state = state_store
+        .load_task_state(previous.latest_run_id)
+        .await
+        .map_err(|error| {
+            let code = if error.kind() == std::io::ErrorKind::NotFound {
+                ProductErrorCode::ProductSessionRuntimeStateMissing
+            } else {
+                ProductErrorCode::ProductSessionRuntimeStateCorrupt
+            };
+            ApiError::from(ProductStoreError::new(
+                code,
+                "the product session's exact runtime task state is unavailable or invalid",
+            ))
+        })?;
+    if resume_state.session_id != previous.runtime_session_id
+        || resume_state.job_id != previous.latest_job_id
+        || resume_state.run_id != previous.latest_run_id
+    {
+        return Err(ProductStoreError::new(
+            ProductErrorCode::ProductSessionRuntimeStateCorrupt,
+            "the product session runtime task-state identity does not match its binding",
+        )
+        .into());
+    }
+    let resume_state = project_product_follow_up_state(resume_state)?;
+    let Some(claim) = claim_runtime_resume(state_store, Some(&resume_state), true).await? else {
+        return Err(ApiError::internal(
+            "product resume validation did not acquire a runtime claim",
+        ));
+    };
+    Ok((resume_state, claim))
+}
+
+fn project_product_follow_up_state(mut state: TaskState) -> Result<TaskState, ApiError> {
+    // A product follow-up is a new user turn in the same durable conversation,
+    // not a replay of the previous turn's terminal execution decision.
+    state.step = 0;
+    state.plan = None;
+    state.step_ledger = Default::default();
+    state.history = close_product_follow_up_tool_rounds(state.history)?;
+    if let Some(checkpoint) = state.checkpoint.as_mut() {
+        checkpoint.last_step = 0;
+        checkpoint.plan = None;
+        checkpoint.step_ledger = Default::default();
+        checkpoint.last_event_seq = None;
+        checkpoint.preserved_tail =
+            close_product_follow_up_tool_rounds(std::mem::take(&mut checkpoint.preserved_tail))?;
+    }
+    Ok(state)
+}
+
+const UNKNOWN_PRODUCT_TOOL_RESULT: &str = "The previous turn ended before a durable tool result was recorded. The tool effect is unknown; verify the current state before retrying this tool call.";
+
+fn close_product_follow_up_tool_rounds(messages: Vec<Message>) -> Result<Vec<Message>, ApiError> {
+    let mut closed = Vec::with_capacity(messages.len());
+    let mut pending_tool_call_ids = Vec::new();
+    let mut completed_tool_call_ids = HashSet::new();
+
+    for message in messages {
+        if message.role == Role::Tool {
+            let Some(tool_call_id) = message.tool_call_id.as_ref() else {
+                append_missing_product_tool_results(
+                    &mut closed,
+                    &pending_tool_call_ids,
+                    &completed_tool_call_ids,
+                );
+                pending_tool_call_ids.clear();
+                completed_tool_call_ids.clear();
+                closed.push(message);
+                continue;
+            };
+            if tool_call_id.trim().is_empty() {
+                return Err(invalid_product_tool_history(
+                    "the product session runtime history contains an empty tool result call id",
+                ));
+            }
+            if pending_tool_call_ids.contains(tool_call_id)
+                && completed_tool_call_ids.insert(tool_call_id.clone())
+            {
+                closed.push(message);
+            }
+            continue;
+        }
+
+        append_missing_product_tool_results(
+            &mut closed,
+            &pending_tool_call_ids,
+            &completed_tool_call_ids,
+        );
+        pending_tool_call_ids.clear();
+        completed_tool_call_ids.clear();
+
+        if message.role == Role::Assistant && !message.tool_calls.is_empty() {
+            let mut round_tool_call_ids = HashSet::new();
+            for tool_call in &message.tool_calls {
+                if tool_call.id.trim().is_empty() {
+                    return Err(invalid_product_tool_history(
+                        "the product session runtime history contains an empty assistant tool call id",
+                    ));
+                }
+                if !round_tool_call_ids.insert(tool_call.id.clone()) {
+                    return Err(invalid_product_tool_history(
+                        "the product session runtime history contains duplicate assistant tool call ids",
+                    ));
+                }
+                pending_tool_call_ids.push(tool_call.id.clone());
+            }
+        }
+        closed.push(message);
+    }
+
+    append_missing_product_tool_results(
+        &mut closed,
+        &pending_tool_call_ids,
+        &completed_tool_call_ids,
+    );
+    Ok(closed)
+}
+
+fn invalid_product_tool_history(message: &'static str) -> ApiError {
+    ProductStoreError::new(ProductErrorCode::ProductSessionRuntimeStateCorrupt, message).into()
+}
+
+fn append_missing_product_tool_results(
+    messages: &mut Vec<Message>,
+    pending_tool_call_ids: &[String],
+    completed_tool_call_ids: &HashSet<String>,
+) {
+    for tool_call_id in pending_tool_call_ids {
+        if !completed_tool_call_ids.contains(tool_call_id) {
+            messages.push(Message::tool(
+                UNKNOWN_PRODUCT_TOOL_RESULT,
+                Some(tool_call_id.clone()),
+            ));
+        }
+    }
+}
+
+async fn finish_failed_product_start(
+    store: &Arc<dyn ProductStore>,
+    claim_id: &ProductTurnClaimId,
+    status: ProductSessionStatus,
+    phase: &'static str,
+) {
+    if let Err(error) = store.finish_session_turn(claim_id, status).await {
+        tracing::warn!(
+            phase = phase,
+            "failed to release product turn after start failure: {error}"
+        );
+    }
+}
+
+async fn finalize_prestarted_run(
+    record: &JobRecord,
+    engine: &Engine,
+    run: RunHandle,
+    message: &str,
+) {
     let state_store = state_store_for_record(record);
-    let run = state_store.start_run(record.session_id, record.job_id, record.run_id)?;
+    let terminal = StreamEvent::RunCompleted {
+        reason: TerminationReason::Error,
+        output: Some(message.to_string()),
+    };
+    let trace_persisted = append_trace_event(&run.trace_writer, record, &terminal);
     let mut recorder = RunArtifactRecorder::new(
         record.session_id,
         record.job_id,
@@ -868,95 +1327,389 @@ async fn run_job_inner(
         record.resume_state.as_ref(),
         Some(engine.runtime_identity()),
     );
-    let model_id = engine.model_id().to_string();
-    let workspace = engine.workspace().clone();
-    let request = run.request(record.message.clone(), record.resume_state.clone());
-    let mut stream = std::pin::pin!(engine.run_with_cancel(
-        request,
-        Some(run.trace_writer),
-        record.cancel_token.clone(),
-    ));
-    let mut completed = false;
-    let mut terminal_status = RunStatus::Error;
-    let mut terminal_event = None;
-    while let Some(event) = stream.next().await {
-        recorder.record_event(&event, &state_store).await;
-        if let StreamEvent::RunCompleted { reason, .. } = &event {
-            completed = true;
-            terminal_status = status_for_reason(reason);
-            terminal_event = Some(event);
-            continue;
-        }
-        append_job_event(record, event).await;
-    }
+    recorder.record_event(&terminal, &state_store).await;
     recorder
-        .finalize(&state_store, &workspace, &model_id, &run.run_dir)
+        .finalize(
+            &state_store,
+            engine.workspace(),
+            engine.model_id(),
+            &run.run_dir,
+        )
         .await;
-    if matches!(terminal_status, RunStatus::Cancelled | RunStatus::Error) {
-        reject_pending_approvals(record, &state_store.index).await;
-        reject_pending_inputs(record, &state_store.index).await;
+    if !trace_persisted || !runtime_terminal_is_durable(&state_store, record, &terminal).await {
+        tracing::warn!(
+            job_id = %record.job_id,
+            run_id = %record.run_id,
+            "prestarted runtime run did not reach a fully durable terminal state"
+        );
     }
-    if let Some(event) = terminal_event {
-        append_job_event(record, event).await;
-    } else if !completed {
-        *record.status.lock().await = RunStatus::Error;
-    }
-    Ok(())
 }
 
-async fn finalize_cancelled_job(_state: &ApiState, record: &Arc<JobRecord>) {
-    let cancel_event = StreamEvent::RunCompleted {
-        reason: TerminationReason::Cancelled,
-        output: None,
-    };
+async fn start_job_supervisor(state: ApiState, launch: JobLaunch) {
+    let JobLaunch {
+        record,
+        engine,
+        run,
+        product_turn,
+    } = launch;
+    let record_for_task = Arc::clone(&record);
+    let recovery_record = Arc::clone(&record);
+    let recovery_product_turn = product_turn.clone();
+    let completion = record.completion.clone();
+    let handle = state.inner.supervisors.spawn(async move {
+        let _completion_guard = JobCompletionGuard::new(completion);
+        let outcome = AssertUnwindSafe(run_job_supervisor(
+            record_for_task,
+            engine,
+            run,
+            product_turn,
+        ))
+        .catch_unwind()
+        .await;
+        if outcome.is_err() {
+            tracing::warn!(job_id = %recovery_record.job_id, "job supervisor panicked");
+            let recovery = AssertUnwindSafe(recover_job_supervisor_panic(
+                &recovery_record,
+                recovery_product_turn,
+            ))
+            .catch_unwind()
+            .await;
+            if recovery.is_err() {
+                tracing::warn!(job_id = %recovery_record.job_id, "job supervisor recovery panicked");
+                let terminal_published = {
+                    let status = recovery_record.status.lock().await;
+                    is_terminal(&status)
+                };
+                if !terminal_published {
+                    append_job_event(
+                        &recovery_record,
+                        supervisor_failure_event("job supervisor failed"),
+                    )
+                    .await;
+                }
+            }
+        }
+    });
+    *record.handle.lock().await = Some(handle);
+    state.inner.jobs.write().await.insert(record.job_id, record);
+}
 
-    let already_completed = record
-        .events
-        .lock()
-        .await
-        .iter()
-        .any(|event| matches!(event.event, StreamEvent::RunCompleted { .. }));
-    let mut events_for_recorder: Vec<_> = record
-        .events
-        .lock()
-        .await
-        .iter()
-        .map(|event| event.event.clone())
-        .collect();
-    if !already_completed {
-        events_for_recorder.push(cancel_event.clone());
-    }
-
-    let state_store = state_store_for_record(record);
-    if let Ok(trace_writer) = state_store.run_store.create_trace(&record.run_id) {
-        let _ = trace_writer.append(&cancel_event);
-    }
-
+async fn run_job_supervisor(
+    record: Arc<JobRecord>,
+    engine: Engine,
+    run: RunHandle,
+    product_turn: Option<ProductTurnSupervisor>,
+) {
+    let state_store = state_store_for_record(&record);
     let mut recorder = RunArtifactRecorder::new(
         record.session_id,
         record.job_id,
         record.run_id,
         record.message.clone(),
-        None,
-        None,
+        record.resume_state.as_ref(),
+        Some(engine.runtime_identity()),
     );
-    for event in &events_for_recorder {
-        recorder.record_event(event, &state_store).await;
-    }
-    let run_dir = state_store.run_store.run_dir(&record.run_id);
+    let stream_outcome = AssertUnwindSafe(consume_job_stream(
+        &record,
+        &engine,
+        &run,
+        &state_store,
+        &mut recorder,
+    ))
+    .catch_unwind()
+    .await;
+    let (terminal, needs_attention, stream_trace_complete) = match stream_outcome {
+        Ok(Some((terminal, trace_complete))) => (terminal, false, trace_complete),
+        Ok(None) => (
+            supervisor_failure_event("runtime stream ended without exactly one terminal event"),
+            true,
+            false,
+        ),
+        Err(_) => {
+            tracing::warn!(job_id = %record.job_id, "job runtime panicked");
+            (supervisor_failure_event("job runtime failed"), true, false)
+        }
+    };
+    let trace_persisted = append_trace_event(&run.trace_writer, &record, &terminal);
+    recorder.record_event(&terminal, &state_store).await;
     recorder
         .finalize(
             &state_store,
-            &record.workspace,
-            record.config.provider.model.as_str(),
-            &run_dir,
+            engine.workspace(),
+            engine.model_id(),
+            &run.run_dir,
         )
         .await;
-    if !already_completed {
-        append_job_event(record, cancel_event).await;
-    } else {
-        *record.status.lock().await = RunStatus::Cancelled;
+
+    let terminal_status = terminal_run_status(&terminal);
+    if matches!(terminal_status, RunStatus::Cancelled | RunStatus::Error) {
+        reject_pending_approvals(&record, &state_store.index).await;
+        reject_pending_inputs(&record, &state_store.index).await;
     }
+    let runtime_durable = stream_trace_complete
+        && trace_persisted
+        && runtime_terminal_is_durable(&state_store, &record, &terminal).await;
+    if !runtime_durable {
+        tracing::warn!(
+            job_id = %record.job_id,
+            run_id = %record.run_id,
+            "runtime terminal artifacts are incomplete"
+        );
+    }
+    finish_product_turn(product_turn, &terminal, needs_attention || !runtime_durable).await;
+    append_job_event(&record, terminal).await;
+}
+
+async fn consume_job_stream(
+    record: &JobRecord,
+    engine: &Engine,
+    run: &RunHandle,
+    state_store: &StateStore,
+    recorder: &mut RunArtifactRecorder,
+) -> Option<(StreamEvent, bool)> {
+    let request = run.request(record.message.clone(), record.resume_state.clone());
+    let mut stream =
+        std::pin::pin!(engine.run_with_cancel(request, None, record.cancel_token.clone(),));
+    let mut terminal = None;
+    let mut protocol_invalid = false;
+    let mut trace_complete = true;
+    while let Some(event) = stream.next().await {
+        if matches!(&event, StreamEvent::RunCompleted { .. }) {
+            if terminal.replace(event).is_some() {
+                protocol_invalid = true;
+            }
+            continue;
+        }
+        if terminal.is_some() {
+            protocol_invalid = true;
+            continue;
+        }
+        trace_complete &= append_trace_event(&run.trace_writer, record, &event);
+        recorder.record_event(&event, state_store).await;
+        append_job_event(record, event).await;
+    }
+    if protocol_invalid {
+        None
+    } else {
+        terminal.map(|terminal| (terminal, trace_complete))
+    }
+}
+
+async fn finish_product_turn(
+    product_turn: Option<ProductTurnSupervisor>,
+    terminal: &StreamEvent,
+    needs_attention: bool,
+) {
+    let Some(product_turn) = product_turn else {
+        return;
+    };
+    let status = if needs_attention {
+        ProductSessionStatus::NeedsAttention
+    } else {
+        match terminal_run_status(terminal) {
+            RunStatus::Error | RunStatus::Interrupted => ProductSessionStatus::Error,
+            RunStatus::Init | RunStatus::Running => ProductSessionStatus::NeedsAttention,
+            RunStatus::Done | RunStatus::Cancelled => ProductSessionStatus::Idle,
+        }
+    };
+    if let Err(error) = product_turn
+        .store
+        .finish_session_turn(&product_turn.claim_id, status)
+        .await
+    {
+        tracing::warn!("failed to finish product session turn: {error}");
+        if status != ProductSessionStatus::NeedsAttention
+            && let Err(retry_error) = product_turn
+                .store
+                .finish_session_turn(&product_turn.claim_id, ProductSessionStatus::NeedsAttention)
+                .await
+        {
+            tracing::warn!("failed to conservatively release product session turn: {retry_error}");
+        }
+    }
+}
+
+async fn recover_job_supervisor_panic(
+    record: &JobRecord,
+    product_turn: Option<ProductTurnSupervisor>,
+) {
+    let state_store = state_store_for_record(record);
+    let terminal = match load_persisted_terminal_event(&state_store.index, record.run_id).await {
+        Ok(Some(event)) => event,
+        Ok(None) => supervisor_failure_event("job supervisor failed"),
+        Err(error) => {
+            tracing::warn!(job_id = %record.job_id, "failed to inspect terminal event during supervisor recovery: {error}");
+            supervisor_failure_event("job supervisor failed")
+        }
+    };
+    reject_pending_approvals(record, &state_store.index).await;
+    reject_pending_inputs(record, &state_store.index).await;
+    let finish_outcome = AssertUnwindSafe(finish_product_turn(product_turn, &terminal, true))
+        .catch_unwind()
+        .await;
+    if finish_outcome.is_err() {
+        tracing::warn!(job_id = %record.job_id, "product turn recovery panicked");
+    }
+    let terminal_published = {
+        let status = record.status.lock().await;
+        is_terminal(&status)
+    };
+    if !terminal_published {
+        append_job_event(record, terminal).await;
+    }
+}
+
+async fn load_persisted_terminal_event(
+    index: &StateIndex,
+    run_id: RunId,
+) -> std::io::Result<Option<StreamEvent>> {
+    let Some(run) = load_runtime_run_record(index, run_id).await? else {
+        return Ok(None);
+    };
+    if run.last_event_seq == 0 {
+        return Ok(None);
+    }
+    let snapshot = index
+        .run_event_snapshot_async(run_id, run.last_event_seq.saturating_sub(1), 1)
+        .await?;
+    let Some(event) = snapshot.and_then(|snapshot| snapshot.events.into_iter().next()) else {
+        return Ok(None);
+    };
+    let event = serde_json::from_str::<StreamEvent>(&event.event_json)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    if matches!(&event, StreamEvent::RunCompleted { .. }) {
+        Ok(Some(event))
+    } else {
+        Ok(None)
+    }
+}
+
+async fn runtime_terminal_is_durable(
+    state_store: &StateStore,
+    record: &JobRecord,
+    terminal: &StreamEvent,
+) -> bool {
+    let run = match load_runtime_run_record(&state_store.index, record.run_id).await {
+        Ok(Some(run)) => run,
+        Ok(None) => return false,
+        Err(error) => {
+            tracing::warn!(job_id = %record.job_id, "failed to inspect finalized runtime run: {error}");
+            return false;
+        }
+    };
+    if run.session_id != record.session_id
+        || run.job_id != record.job_id
+        || run.run_id != record.run_id
+        || run.status != run_status_label(&terminal_run_status(terminal))
+        || run.task_state_path.is_none()
+        || run.report_path.is_none()
+        || run.last_event_seq == 0
+    {
+        return false;
+    }
+    let task_state = match state_store.load_task_state(record.run_id).await {
+        Ok(task_state) => task_state,
+        Err(error) => {
+            tracing::warn!(job_id = %record.job_id, "failed to reload finalized task state: {error}");
+            return false;
+        }
+    };
+    if task_state.session_id != record.session_id
+        || task_state.job_id != record.job_id
+        || task_state.run_id != record.run_id
+        || task_state
+            .checkpoint
+            .as_ref()
+            .and_then(|checkpoint| checkpoint.last_event_seq)
+            != Some(run.last_event_seq)
+    {
+        return false;
+    }
+    let report = match state_store.load_report(record.run_id).await {
+        Ok(report) => report,
+        Err(error) => {
+            tracing::warn!(job_id = %record.job_id, "failed to reload finalized report: {error}");
+            return false;
+        }
+    };
+    if report.session_id != record.session_id
+        || report.job_id != record.job_id
+        || report.run_id != record.run_id
+    {
+        return false;
+    }
+    let persisted = match load_persisted_terminal_event(&state_store.index, record.run_id).await {
+        Ok(Some(event)) => event,
+        Ok(None) => return false,
+        Err(error) => {
+            tracing::warn!(job_id = %record.job_id, "failed to reload finalized terminal event: {error}");
+            return false;
+        }
+    };
+    terminal_events_match(&persisted, terminal)
+        && matches!(
+            terminal,
+            StreamEvent::RunCompleted { reason, .. } if &report.termination_reason == reason
+        )
+}
+
+fn terminal_events_match(left: &StreamEvent, right: &StreamEvent) -> bool {
+    match (left, right) {
+        (
+            StreamEvent::RunCompleted {
+                reason: left_reason,
+                output: left_output,
+            },
+            StreamEvent::RunCompleted {
+                reason: right_reason,
+                output: right_output,
+            },
+        ) => left_reason == right_reason && left_output == right_output,
+        _ => false,
+    }
+}
+
+async fn load_runtime_run_record(
+    index: &StateIndex,
+    run_id: RunId,
+) -> std::io::Result<Option<RunIndexRecord>> {
+    let index = index.clone();
+    tokio::task::spawn_blocking(move || index.run_record(run_id))
+        .await
+        .map_err(std::io::Error::other)?
+}
+
+fn supervisor_failure_event(message: &str) -> StreamEvent {
+    StreamEvent::RunCompleted {
+        reason: TerminationReason::Error,
+        output: Some(message.to_string()),
+    }
+}
+
+fn terminal_run_status(event: &StreamEvent) -> RunStatus {
+    match event {
+        StreamEvent::RunCompleted { reason, .. } => status_for_reason(reason),
+        _ => RunStatus::Error,
+    }
+}
+
+fn run_status_label(status: &RunStatus) -> &'static str {
+    match status {
+        RunStatus::Init => "init",
+        RunStatus::Running => "running",
+        RunStatus::Done => "done",
+        RunStatus::Error => "error",
+        RunStatus::Cancelled => "cancelled",
+        RunStatus::Interrupted => "interrupted",
+    }
+}
+
+fn append_trace_event(trace_writer: &TraceWriter, record: &JobRecord, event: &StreamEvent) -> bool {
+    if let Err(error) = trace_writer.append(event) {
+        tracing::warn!(job_id = %record.job_id, run_id = %record.run_id, "failed to append runtime trace event: {error}");
+        return false;
+    }
+    true
 }
 
 async fn assemble_job_engine(
@@ -1019,6 +1772,90 @@ fn workspace_and_config_for_create_job(
         apply_provider_profile(&mut config, profile, req.model.as_deref())?;
     }
     Ok((workspace, config))
+}
+
+fn workspace_and_config_for_product_job(
+    state: &ApiState,
+    req: &CreateJobRequest,
+    product_workspace: &ProductWorkspace,
+) -> Result<(Workspace, AppConfig), ApiError> {
+    let workspace = open_product_workspace(product_workspace)?;
+    if let Some(requested) = req.workspace.as_ref() {
+        validate_product_workspace_hint(requested, product_workspace, &workspace)?;
+    }
+    let (workspace, mut config) = rebased_workspace_config(state, workspace)?;
+    if let Some(profile) = &req.provider {
+        apply_provider_profile(&mut config, profile, req.model.as_deref())?;
+    }
+    Ok((workspace, config))
+}
+
+fn open_product_workspace(product_workspace: &ProductWorkspace) -> Result<Workspace, ApiError> {
+    let workspace = match product_workspace.kind {
+        ProductWorkspaceKind::Folder => Workspace::open_folder(&product_workspace.canonical_root),
+        ProductWorkspaceKind::Repo => Workspace::open_repo(&product_workspace.canonical_root),
+    }
+    .map_err(|error| {
+        tracing::warn!(product_workspace_id = %product_workspace.id, "failed to open catalog workspace: {error}");
+        ApiError::from(ProductStoreError::new(
+            ProductErrorCode::ProductSessionRuntimeStateMissing,
+            "the product session workspace is unavailable",
+        ))
+    })?;
+    if workspace.root != product_workspace.canonical_root {
+        return Err(ProductStoreError::new(
+            ProductErrorCode::ProductBindingCorrupt,
+            "the product workspace canonical root no longer matches its catalog binding",
+        )
+        .into());
+    }
+    Ok(workspace)
+}
+
+fn validate_product_workspace_hint(
+    requested: &CreateJobWorkspace,
+    product_workspace: &ProductWorkspace,
+    server_workspace: &Workspace,
+) -> Result<(), ApiError> {
+    let kind_matches = matches!(
+        (requested.kind, product_workspace.kind),
+        (CreateJobWorkspaceKind::Folder, ProductWorkspaceKind::Folder)
+            | (CreateJobWorkspaceKind::Repo, ProductWorkspaceKind::Repo)
+    );
+    if !kind_matches
+        || requested.name.is_some()
+        || requested.base.is_some()
+        || requested.root.is_none()
+    {
+        return Err(ApiError::conflict_with_code(
+            ProductErrorCode::ProductSessionWorkspaceMismatch.as_str(),
+            "the client workspace hint does not match the product session workspace",
+        ));
+    }
+    let root = requested.root.as_ref().ok_or_else(|| {
+        ApiError::conflict_with_code(
+            ProductErrorCode::ProductSessionWorkspaceMismatch.as_str(),
+            "the client workspace hint does not include the product session workspace root",
+        )
+    })?;
+    let hinted_workspace = match requested.kind {
+        CreateJobWorkspaceKind::Folder => Workspace::open_folder(root),
+        CreateJobWorkspaceKind::Repo => Workspace::open_repo(root),
+        CreateJobWorkspaceKind::Task => unreachable!("task cannot match a product workspace"),
+    }
+    .map_err(|_| {
+        ApiError::conflict_with_code(
+            ProductErrorCode::ProductSessionWorkspaceMismatch.as_str(),
+            "the client workspace hint does not resolve to the product session workspace",
+        )
+    })?;
+    if hinted_workspace.root != server_workspace.root {
+        return Err(ApiError::conflict_with_code(
+            ProductErrorCode::ProductSessionWorkspaceMismatch.as_str(),
+            "the client workspace hint does not match the product session workspace",
+        ));
+    }
+    Ok(())
 }
 
 fn workspace_for_create_job(
@@ -1097,6 +1934,36 @@ fn state_store_for_parts(workspace: &Workspace, config: &AppConfig) -> StateStor
 
 async fn live_job(state: &ApiState, job_id: JobId) -> Option<Arc<JobRecord>> {
     state.inner.jobs.read().await.get(&job_id).cloned()
+}
+
+async fn wait_for_job_completion(record: &JobRecord) {
+    if record.handle.lock().await.is_none() {
+        tracing::warn!(job_id = %record.job_id, "live job has no supervisor handle");
+        return;
+    }
+    let mut completion = record.completion.subscribe();
+    while !*completion.borrow_and_update() {
+        if completion.changed().await.is_err() {
+            tracing::warn!(job_id = %record.job_id, "job completion signal closed unexpectedly");
+            return;
+        }
+    }
+}
+
+async fn drain_job_supervisors(state: &ApiState) {
+    state.inner.supervisors.close();
+    state.inner.supervisors.wait().await;
+
+    let records: Vec<_> = state.inner.jobs.read().await.values().cloned().collect();
+    for record in records {
+        let handle = record.handle.lock().await.take();
+        let Some(handle) = handle else {
+            continue;
+        };
+        if let Err(error) = handle.await {
+            tracing::warn!(job_id = %record.job_id, "job supervisor join failed during shutdown: {error}");
+        }
+    }
 }
 
 async fn find_job(state: &ApiState, job_id: JobId) -> Result<Arc<JobRecord>, ApiError> {
@@ -1297,19 +2164,24 @@ async fn persisted_or_live_events(
     _state: &ApiState,
     record: &JobRecord,
     after: u64,
-) -> Result<Vec<JobStreamEvent>, ApiError> {
+) -> Result<(Vec<JobStreamEvent>, RunStatus), ApiError> {
     let state_store = state_store_for_record(record);
     let mut merged = persisted_events_for_run(&state_store, record.run_id, after)
         .await?
         .into_iter()
         .map(|event| (event.seq, event))
         .collect::<BTreeMap<_, _>>();
-    for event in record.events.lock().await.iter().cloned() {
+    // Terminal publication takes these locks in the same order. Holding the
+    // event lock through the status snapshot makes the replay/live handoff
+    // atomic with respect to a newly published terminal event.
+    let events = record.events.lock().await;
+    let status = record.status.lock().await.clone();
+    for event in events.iter().cloned() {
         if event.seq > after {
             merged.insert(event.seq, event);
         }
     }
-    Ok(merged.into_values().collect())
+    Ok((merged.into_values().collect(), status))
 }
 
 async fn persisted_events_for_run(
@@ -1583,6 +2455,138 @@ mod tests {
 
     use super::*;
 
+    fn assistant_tool_round(ids: &[&str]) -> Message {
+        Message::assistant_with_tool_calls(
+            "tool round",
+            ids.iter()
+                .map(|id| rove_runtime::types::ToolCallRef {
+                    id: (*id).to_string(),
+                    name: format!("tool_{id}"),
+                    args: serde_json::json!({ "id": id }),
+                })
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn product_follow_up_closes_only_missing_parallel_tool_results() {
+        let assistant = assistant_tool_round(&["call-a", "call-b", "call-c"]);
+        let result_b = Message::tool("durable result b", Some("call-b".to_string()));
+        let result_a = Message::tool("durable result a", Some("call-a".to_string()));
+        let next = Message::user("next turn");
+
+        let closed = close_product_follow_up_tool_rounds(vec![
+            assistant.clone(),
+            result_b.clone(),
+            result_a.clone(),
+            next.clone(),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            closed,
+            vec![
+                assistant,
+                result_b,
+                result_a,
+                Message::tool(UNKNOWN_PRODUCT_TOOL_RESULT, Some("call-c".to_string())),
+                next,
+            ]
+        );
+    }
+
+    #[test]
+    fn product_follow_up_closes_an_all_missing_tool_round_at_the_tail() {
+        let assistant = assistant_tool_round(&["call-a", "call-b"]);
+
+        let closed = close_product_follow_up_tool_rounds(vec![assistant.clone()]).unwrap();
+
+        assert_eq!(
+            closed,
+            vec![
+                assistant,
+                Message::tool(UNKNOWN_PRODUCT_TOOL_RESULT, Some("call-a".to_string())),
+                Message::tool(UNKNOWN_PRODUCT_TOOL_RESULT, Some("call-b".to_string())),
+            ]
+        );
+    }
+
+    #[test]
+    fn product_follow_up_preserves_a_complete_tool_round() {
+        let messages = vec![
+            assistant_tool_round(&["call-a", "call-b"]),
+            Message::tool("durable result b", Some("call-b".to_string())),
+            Message::tool("durable result a", Some("call-a".to_string())),
+            Message::assistant("round complete"),
+        ];
+
+        assert_eq!(
+            close_product_follow_up_tool_rounds(messages.clone()).unwrap(),
+            messages
+        );
+    }
+
+    #[test]
+    fn product_follow_up_drops_orphan_results_from_a_truncated_tail() {
+        let next = Message::user("continue after checkpoint");
+
+        let closed = close_product_follow_up_tool_rounds(vec![
+            Message::tool("orphan result", Some("truncated-call".to_string())),
+            next.clone(),
+        ])
+        .unwrap();
+
+        assert_eq!(closed, vec![next]);
+    }
+
+    #[test]
+    fn product_follow_up_preserves_compatibility_tool_results_without_native_ids() {
+        let messages = vec![
+            Message::assistant("compatibility tool call"),
+            Message::tool("durable compatibility result", None),
+            Message::assistant("round complete"),
+        ];
+
+        assert_eq!(
+            close_product_follow_up_tool_rounds(messages.clone()).unwrap(),
+            messages
+        );
+    }
+
+    #[test]
+    fn product_follow_up_rejects_duplicate_assistant_tool_call_ids() {
+        let error = close_product_follow_up_tool_rounds(vec![assistant_tool_round(&[
+            "duplicate",
+            "duplicate",
+        ])])
+        .unwrap_err();
+
+        assert_eq!(
+            error.code,
+            ProductErrorCode::ProductSessionRuntimeStateCorrupt.as_str()
+        );
+    }
+
+    #[test]
+    fn product_follow_up_rejects_empty_native_tool_call_ids() {
+        let assistant_error =
+            close_product_follow_up_tool_rounds(vec![assistant_tool_round(&["  "])]).unwrap_err();
+        assert_eq!(
+            assistant_error.code,
+            ProductErrorCode::ProductSessionRuntimeStateCorrupt.as_str()
+        );
+
+        let result_error = close_product_follow_up_tool_rounds(vec![Message::tool(
+            "invalid native result",
+            Some(String::new()),
+        )])
+        .unwrap_err();
+        assert_eq!(
+            result_error.code,
+            ProductErrorCode::ProductSessionRuntimeStateCorrupt.as_str()
+        );
+    }
+
     async fn publish_terminal_event_after_barrier(
         record: &JobRecord,
         event: StreamEvent,
@@ -1595,6 +2599,7 @@ mod tests {
     #[tokio::test]
     async fn terminal_event_updates_live_status_after_finalization_barrier() {
         let (tx, _) = broadcast::channel(EVENT_BUFFER);
+        let (completion, _) = watch::channel(false);
         let workspace = Workspace::detect(std::env::current_dir().unwrap().as_path()).unwrap();
         let mut config = AppConfig::default();
         config.rebase_to_workspace(&workspace.root);
@@ -1613,6 +2618,7 @@ mod tests {
             pending_inputs: Mutex::new(HashMap::new()),
             tx,
             handle: Mutex::new(None),
+            completion,
             cancel_token: CancellationToken::new(),
         };
         let finalized = AtomicBool::new(false);
@@ -1636,6 +2642,114 @@ mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn completion_guard_notifies_when_a_supervisor_panics() {
+        let (completion, mut receiver) = watch::channel(false);
+        let handle = tokio::spawn(async move {
+            let _guard = JobCompletionGuard::new(completion);
+            panic!("supervisor panic fixture");
+        });
+
+        assert!(handle.await.is_err());
+        receiver.changed().await.unwrap();
+        assert!(*receiver.borrow());
+    }
+
+    #[tokio::test]
+    async fn live_job_event_stream_includes_terminal_then_closes() {
+        let (sender, receiver) = broadcast::channel(EVENT_BUFFER);
+        let mut stream = live_job_event_stream(receiver, 0);
+        sender
+            .send(JobStreamEvent {
+                seq: 1,
+                event: StreamEvent::ModelStatus {
+                    status: "running".to_string(),
+                    message: "working".to_string(),
+                },
+            })
+            .unwrap();
+        sender
+            .send(JobStreamEvent {
+                seq: 2,
+                event: StreamEvent::RunCompleted {
+                    reason: TerminationReason::Final,
+                    output: Some("done".to_string()),
+                },
+            })
+            .unwrap();
+
+        assert_eq!(stream.next().await.unwrap().seq, 1);
+        assert_eq!(stream.next().await.unwrap().seq, 2);
+        assert!(stream.next().await.is_none());
+        assert_eq!(sender.receiver_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn persisted_terminal_waits_for_the_live_finalization_barrier() {
+        let (sender, receiver) = broadcast::channel(EVENT_BUFFER);
+        let terminal = JobStreamEvent {
+            seq: 1,
+            event: StreamEvent::RunCompleted {
+                reason: TerminationReason::Final,
+                output: Some("persisted first".to_string()),
+            },
+        };
+        let mut stream = replay_and_live_job_event_stream(
+            vec![terminal.clone()],
+            RunStatus::Running,
+            receiver,
+            0,
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), stream.next())
+                .await
+                .is_err(),
+            "persisted terminal must remain behind the live finalization barrier"
+        );
+        sender.send(terminal.clone()).unwrap();
+
+        let emitted = stream.next().await.expect("terminal event");
+        assert_eq!(emitted.seq, terminal.seq);
+        assert!(matches!(
+            emitted.event,
+            StreamEvent::RunCompleted {
+                reason: TerminationReason::Final,
+                ..
+            }
+        ));
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), stream.next())
+                .await
+                .expect("terminal replay must close promptly")
+                .is_none()
+        );
+        assert_eq!(sender.receiver_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn already_replayed_live_terminal_still_closes_the_stream() {
+        let (sender, receiver) = broadcast::channel(EVENT_BUFFER);
+        let mut stream =
+            replay_and_live_job_event_stream(Vec::new(), RunStatus::Running, receiver, 1);
+        sender
+            .send(JobStreamEvent {
+                seq: 1,
+                event: StreamEvent::RunCompleted {
+                    reason: TerminationReason::Final,
+                    output: Some("already replayed".to_string()),
+                },
+            })
+            .unwrap();
+
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), stream.next())
+                .await
+                .expect("an already replayed terminal must still close live delivery")
+                .is_none()
+        );
+        assert_eq!(sender.receiver_count(), 0);
+    }
+
     async fn test_job_record(
         temp_dir: &tempfile::TempDir,
     ) -> (ApiState, Arc<JobRecord>, StateIndex) {
@@ -1646,6 +2760,7 @@ mod tests {
         workspace.ensure_state_dir().unwrap();
         let state = ApiState::new(workspace.clone(), config.clone());
         let (tx, _) = broadcast::channel(EVENT_BUFFER);
+        let (completion, _) = watch::channel(false);
         let record = Arc::new(JobRecord {
             session_id: SessionId::new(),
             job_id: JobId::new(),
@@ -1661,6 +2776,7 @@ mod tests {
             pending_inputs: Mutex::new(HashMap::new()),
             tx,
             handle: Mutex::new(None),
+            completion,
             cancel_token: CancellationToken::new(),
         });
         let state_store = state_store_for_record(&record);
@@ -1682,6 +2798,120 @@ mod tests {
             .await
             .insert(record.job_id, Arc::clone(&record));
         (state, record, state_store.index)
+    }
+
+    #[tokio::test]
+    async fn replay_snapshot_keeps_terminal_status_and_event_consistent() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let (state, record, _) = test_job_record(&temp_dir).await;
+        append_job_event(
+            &record,
+            StreamEvent::ModelStatus {
+                status: "running".to_string(),
+                message: "working".to_string(),
+            },
+        )
+        .await;
+        let terminal = append_job_event(
+            &record,
+            StreamEvent::RunCompleted {
+                reason: TerminationReason::Final,
+                output: Some("done".to_string()),
+            },
+        )
+        .await;
+
+        let (events, status) = persisted_or_live_events(&state, &record, 0).await.unwrap();
+        assert_eq!(status, RunStatus::Done);
+        assert!(matches!(
+            events.last().map(|event| &event.event),
+            Some(StreamEvent::RunCompleted { .. })
+        ));
+
+        let (events_after_terminal, status) =
+            persisted_or_live_events(&state, &record, terminal.seq)
+                .await
+                .unwrap();
+        assert!(events_after_terminal.is_empty());
+        assert_eq!(status, RunStatus::Done);
+    }
+
+    #[tokio::test]
+    async fn shutdown_drain_waits_for_a_superseded_same_job_supervisor() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let (state, first, _) = test_job_record(&temp_dir).await;
+        let (tx, _) = broadcast::channel(EVENT_BUFFER);
+        let (completion, _) = watch::channel(false);
+        let second = Arc::new(JobRecord {
+            session_id: first.session_id,
+            job_id: first.job_id,
+            run_id: RunId::new(),
+            workspace: first.workspace.clone(),
+            config: first.config.clone(),
+            message: "same job continuation".to_string(),
+            resumed_from_run_id: Some(first.run_id),
+            resume_state: None,
+            status: Mutex::new(RunStatus::Running),
+            events: Mutex::new(Vec::new()),
+            pending_approvals: Mutex::new(HashMap::new()),
+            pending_inputs: Mutex::new(HashMap::new()),
+            tx,
+            handle: Mutex::new(None),
+            completion,
+            cancel_token: state.inner.shutdown_token.child_token(),
+        });
+
+        let (release_first, first_released) = oneshot::channel::<()>();
+        let first_completion = first.completion.clone();
+        let first_handle = state.inner.supervisors.spawn(async move {
+            let _guard = JobCompletionGuard::new(first_completion);
+            let _ = first_released.await;
+        });
+        *first.handle.lock().await = Some(first_handle);
+
+        let (release_second, second_released) = oneshot::channel::<()>();
+        let second_completion = second.completion.clone();
+        let second_handle = state.inner.supervisors.spawn(async move {
+            let _guard = JobCompletionGuard::new(second_completion);
+            let _ = second_released.await;
+        });
+        *second.handle.lock().await = Some(second_handle);
+        state
+            .inner
+            .jobs
+            .write()
+            .await
+            .insert(second.job_id, Arc::clone(&second));
+
+        assert_eq!(
+            live_job(&state, first.job_id).await.unwrap().run_id,
+            second.run_id
+        );
+        let drain_state = state.clone();
+        let drain = tokio::spawn(async move {
+            drain_job_supervisors(&drain_state).await;
+        });
+        tokio::task::yield_now().await;
+        assert!(!drain.is_finished());
+
+        release_second.send(()).unwrap();
+        wait_for_job_completion(&second).await;
+        tokio::task::yield_now().await;
+        assert!(
+            !drain.is_finished(),
+            "the superseded supervisor must remain part of graceful drain"
+        );
+
+        release_first.send(()).unwrap();
+        drain.await.unwrap();
+
+        assert!(*first.completion.borrow());
+        assert!(*second.completion.borrow());
+        assert!(state.inner.supervisors.is_closed());
+        assert!(state.inner.supervisors.is_empty());
+        let first_handle = first.handle.lock().await.take().unwrap();
+        first_handle.await.unwrap();
+        assert!(second.handle.lock().await.is_none());
     }
 
     #[tokio::test]
