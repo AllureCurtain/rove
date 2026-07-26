@@ -101,7 +101,7 @@ and updates its tests and current documentation:
 
 ## 5. Current implementation boundaries
 
-As of 2026-07-25:
+As of 2026-07-26:
 
 - rove is a local-first Rust runtime with CLI, API, Web, persisted run state,
   resume, provider routing, tools, layered memory, optional future external retrieval, and
@@ -114,7 +114,8 @@ As of 2026-07-25:
   execution, state, memory, tools/MCP, planning, and the Engine facade.
   `rove-app-bootstrap` owns first-party AppConfig, provider factory, product
   registry assembly, and shared Engine assembly. Workspace retrieval is tool-based plus layered file memory; there is no built-in vector RAG.
-- `docs/runtime/` describes the implemented MVP and Web M1 product shell.
+- `docs/runtime/` describes the implemented MVP, Web M1 product shell, and the
+  implemented Web Complete C0 persistence/API foundation.
 - MCP currently supports stdio and the existing legacy SSE path. Streamable
   HTTP, negotiated sessions, rich MCP result envelopes, and Tool Artifacts are
   proposed, not implemented.
@@ -126,11 +127,17 @@ As of 2026-07-25:
   independent Finalizer, and full budget surfaces remain proposed.
 - Web M1 is implemented: explicit Folder/Repo roots, fail-closed hard resume,
   and the Workspace → Session → Chat product shell are on `main`. Web Complete
-  (API-backed product store, exact multi-session bindings, transcript restore,
-  deep routes, complete Settings, and final UI acceptance) is active future
-  work. Product-shell E2E is currently mock-backed; `local-full` real-API
-  Playwright targets `/dev/workbench`, and the provider runner's Web selectors
-  predate M1. No Tauri `apps/desktop` host exists yet.
+  C0 is also implemented: an API-global SQLite ProductStore,
+  workspace/session/profile/preferences CRUD, exact server-owned
+  product-session/runtime bindings, single-active-turn claims,
+  canonical-event transcript projection, strict/idempotent M1 migration, and
+  typed Web client/migration modules. The default Web shell still uses its M1
+  browser-authoritative catalog and workspace-scoped `resume: "latest"`;
+  wiring the C0 client into refresh restore and session routing, deep routes,
+  complete Settings, and final UI acceptance remain C1–C3 work.
+  Product-shell E2E is currently mock-backed; `local-full` real-API Playwright
+  targets `/dev/workbench`, and the provider runner's Web selectors predate M1.
+  No Tauri `apps/desktop` host exists yet.
 - This repository-level `AGENTS.md` guides maintainers and coding agents. Its
   existence does not mean the rove runtime already loads workspace
   `AGENTS.md` files into model context.

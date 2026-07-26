@@ -1,6 +1,6 @@
 # Web Complete — Local Agent Web as Daily Driver
 
-> Status: **Accepted / Active — Web M1 implemented; Web Complete C0–C3 not yet implemented**
+> Status: **Accepted / Active — Web M1 and C0 implemented; C1–C3 pending**
 >
 > Date: 2026-07-26
 >
@@ -15,8 +15,9 @@
 This document freezes the **Web Complete** milestone: finish the local Web product
 so it is a **daily-driver** agent surface, not only an M1 shell.
 
-It does **not** claim these capabilities already exist. Current implementation
-truth remains code + `docs/runtime/**` + the shipped M1 shell.
+The C0 persistence/API foundation is implemented, but Web Complete is not
+finished. Current implementation truth remains code plus `docs/runtime/**`;
+C1–C3 continue to describe future UI delivery.
 
 ---
 
@@ -69,6 +70,19 @@ fixes in Web Complete):
 - Most Settings sections remain placeholders.
 - Provider profiles live in `localStorage` only.
 - URL surface is effectively single-page (`/`), weak deep-link/refresh position.
+
+### C0 implementation progress
+
+The implementation includes the API-global ProductStore, product
+workspace/session/profile/preferences CRUD, exact server-owned
+product-session/runtime bindings, single-active-turn supervision,
+canonical-event transcript reads with typed partial reasons, strict/idempotent
+M1 migration, and typed Web client/migration modules. Migration preparation is
+deadline-bounded while the apply transaction is API-supervised and survives
+HTTP disconnect; durable preflight baselines, preference revision CAS,
+canonical runtime-store reservations, workspace containment, and no-follow
+SQLite opens protect the commit boundary. The default product shell does not
+consume those modules yet.
 
 ---
 
@@ -134,10 +148,10 @@ Client state and server IDs must round-trip through these routes.
 ### 5.1 Hard resume (non-negotiable, inherited)
 
 - First durable turn in a product session: create-job **without** resume.
-- M1 currently sends workspace-scoped `resume: "latest"`. Web Complete replaces
-  that ambiguous product behavior with a server-owned product-session binding:
-  later turns resolve the session's **exact latest runtime run** under the same
-  workspace root.
+- M1 currently sends workspace-scoped `resume: "latest"`. C0 implements the
+  replacement server-owned product-session binding:
+  later product turns resolve the session's **exact latest runtime run** under
+  the same workspace root. C1 must wire the shell to that path.
 - Client-supplied resume state cannot override or conflict with that server
   binding. Different product sessions in the same workspace keep distinct
   runtime chains.
@@ -202,9 +216,9 @@ Browser `localStorage` is **not** the long-term authority for:
 - session catalog needed for restore
 - continuity markers required for hard resume + transcript rebuild
 
-Those move to **API-backed durable storage** on the local rove-api/runtime side
-(file/SQLite/state dir under product control — exact mechanism is an implementation
-choice, sealed in the plan’s API section as it lands).
+Those move to **API-backed durable storage** on the local rove-api/runtime side.
+C0 implements the backend as API-global `<state_dir>/product.sqlite`; the
+default shell's authority switch remains C1/C2 integration work.
 
 ### 7.2 Still allowed in the browser
 
@@ -219,13 +233,17 @@ Unchanged: browser never holds or sends raw provider keys; only `api_key_env`
 ### 7.4 Migration
 
 On first Web Complete load, migrate any M1 `localStorage` profiles/catalog into
-durable storage when present; do not drop user config silently.
+durable storage when present; do not drop user config silently. C0 implements
+the strict API and replay-safe browser migration state machine. Invoking it from
+the product shell and completing the user-facing migration/recovery experience
+remain later Web waves.
 
 ---
 
 ## 8. API / platform expectations
 
-Web Complete may extend `apps/api` and thin runtime read models. Constraints:
+Web Complete C0 extends `apps/api` and adds thin Web read/client models under
+the following constraints:
 
 - Extend jobs/SSE/resume contracts; do not invent a second chat protocol.
 - Prefer additive endpoints for:
@@ -315,11 +333,15 @@ Web Complete should make that cheaper, not harder:
 
 ## changelog
 
+- 2026-07-26: Marked C0 implemented: API-global ProductStore, exact
+  product-session continuation, canonical-event transcript projection,
+  strict/idempotent supervised migration, runtime commit guards, and typed Web
+  client modules. Default-shell adoption and C1–C3 remain open.
 - 2026-07-25: Delivery coordination amended after implementation audit. The
   original serial-wave recommendation is replaced by coordinator-owned contract
   foundations plus bounded disjoint workers. Sealed exact product-session/run
   binding, canonical-event transcript projection, and API-global ProductStore;
-  Web Complete remains not implemented.
+  no implementation was claimed at that time.
 - 2026-07-26: Accepted. Web Complete sealed as next milestone; Desktop deferred.
   Scope: continuity restore, full settings usability, API-backed persistence,
   deep links; multi-worktree serial delivery defined in the plan.

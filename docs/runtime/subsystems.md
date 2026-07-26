@@ -314,13 +314,22 @@ variable name, and model id, then use Test/List Models. Browser code sends only
 the key environment variable name; raw provider keys stay in the Rust API
 server environment.
 
-Current limitations are explicit: M1 catalogs/profiles are browser-authoritative,
-the transcript is not rebuilt after refresh, routes are shallow, focused
-session reattachment is incomplete, several Settings sections are placeholders,
-and workspace-global `latest` is ambiguous across multiple product sessions in
-one workspace. The accepted Web Complete design addresses these through an
-API-global ProductStore, exact server-owned product-session/run binding, and a
-read projection over canonical events. Those contracts are not implemented yet.
+Web Complete C0 implements the backend product-control plane in
+`apps/api/src/product/`: API-global `product.sqlite`, validated
+workspace/session/profile/preferences CRUD, exact server-owned
+product-session/runtime bindings, single-active-turn claims, and transcript
+projection over canonical sequenced runtime events with typed partial reasons.
+ProductStore retains safe catalog/settings/mapping state only; canonical
+trace/task/report facts remain in each execution workspace. The C0 Web modules
+provide strict response validation, a thin product client, and a versioned,
+same-origin-locked, replay-safe M1 migration state machine that never uploads
+raw keys.
+
+The default `ProductApp` has not been wired to the C0 modules, so the visible M1
+catalogs/profiles remain browser-authoritative, the transcript is not
+rebuilt after refresh, product turns still use workspace-global `latest`, routes
+are shallow, focused session reattachment is incomplete, and several Settings
+sections are placeholders. C1–C3 own those UI and acceptance gaps.
 
 The web verification surface is:
 
