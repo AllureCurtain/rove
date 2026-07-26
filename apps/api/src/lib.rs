@@ -2674,7 +2674,15 @@ mod tests {
         );
         sender.send(terminal.clone()).unwrap();
 
-        assert_eq!(stream.next().await, Some(terminal));
+        let emitted = stream.next().await.expect("terminal event");
+        assert_eq!(emitted.seq, terminal.seq);
+        assert!(matches!(
+            emitted.event,
+            StreamEvent::RunCompleted {
+                reason: TerminationReason::Final,
+                ..
+            }
+        ));
         assert!(
             tokio::time::timeout(Duration::from_secs(1), stream.next())
                 .await
