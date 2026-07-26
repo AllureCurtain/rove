@@ -67,6 +67,8 @@ struct ApiStateInner {
     workspace: Workspace,
     config: AppConfig,
     product_store_path: PathBuf,
+    product_store: Option<Arc<dyn ProductStore>>,
+    product_transcript_reader: Option<Arc<dyn ProductTranscriptReader>>,
     shutdown_token: CancellationToken,
     jobs: RwLock<HashMap<JobId, Arc<JobRecord>>>,
     model_health: Arc<ModelHealthStore>,
@@ -78,6 +80,35 @@ struct ApiStateInner {
 struct RateLimitState {
     window_started_at: Option<Instant>,
     requests_in_window: u32,
+}
+
+#[derive(Clone)]
+struct ApiProductRuntimeStateResolver {
+    config: AppConfig,
+}
+
+impl ProductRuntimeStateResolver for ApiProductRuntimeStateResolver {
+    fn state_store_for(
+        &self,
+        product_workspace: &ProductWorkspace,
+    ) -> Result<StateStore, ProductStoreError> {
+        let mut workspace = match product_workspace.kind {
+            ProductWorkspaceKind::Folder => {
+                Workspace::open_folder(&product_workspace.canonical_root)
+            }
+            ProductWorkspaceKind::Repo => Workspace::open_repo(&product_workspace.canonical_root),
+        }
+        .map_err(|err| {
+            ProductStoreError::new(
+                ProductErrorCode::ProductSessionRuntimeStateMissing,
+                format!("product workspace runtime state is unavailable: {err}"),
+            )
+        })?;
+        let mut config = self.config.clone();
+        config.rebase_to_workspace(&workspace.root);
+        workspace.state_dir = config.state_dir();
+        Ok(state_store_for_parts(&workspace, &config))
+    }
 }
 
 struct JobRecord {
@@ -237,6 +268,32 @@ impl ApiState {
             tracing::warn!("failed to mark stale API jobs interrupted: {err}");
         }
         let product_store_path = config.state_dir().join("product.sqlite");
+        let product_store = match product::store::open_product_store(
+            product_store_path.clone(),
+            config.state.sqlite_busy_timeout_ms,
+        ) {
+            Ok(store) => Some(store),
+            Err(err) => {
+                tracing::warn!("product store is unavailable: {err}");
+                None
+            }
+        };
+        let product_transcript_reader = product_store.as_ref().and_then(|store| {
+            let runtime_state_resolver: Arc<dyn ProductRuntimeStateResolver> =
+                Arc::new(ApiProductRuntimeStateResolver {
+                    config: config.clone(),
+                });
+            match product::transcript::open_product_transcript_reader(
+                Arc::clone(store),
+                runtime_state_resolver,
+            ) {
+                Ok(reader) => Some(reader),
+                Err(err) => {
+                    tracing::warn!("product transcript reader is unavailable: {err}");
+                    None
+                }
+            }
+        });
         let model_health = Arc::new(ModelHealthStore::new(HealthConfig {
             failure_threshold: config.routing.failure_threshold,
             open_cooldown: Duration::from_millis(config.routing.open_cooldown_ms),
@@ -246,6 +303,8 @@ impl ApiState {
                 workspace,
                 config,
                 product_store_path,
+                product_store,
+                product_transcript_reader,
                 shutdown_token,
                 jobs: RwLock::new(HashMap::new()),
                 model_health,
@@ -258,6 +317,26 @@ impl ApiState {
     /// Stable API-global ProductStore location. Requests cannot override it.
     pub fn product_store_path(&self) -> &FsPath {
         &self.inner.product_store_path
+    }
+
+    pub(crate) fn product_store(&self) -> Result<Arc<dyn ProductStore>, ApiError> {
+        self.inner.product_store.clone().ok_or_else(|| {
+            ApiError::not_implemented(
+                ProductErrorCode::ProductStoreUnavailable.as_str(),
+                "the C0 product store is not wired yet",
+            )
+        })
+    }
+
+    pub(crate) fn product_transcript_reader(
+        &self,
+    ) -> Result<Arc<dyn ProductTranscriptReader>, ApiError> {
+        self.inner.product_transcript_reader.clone().ok_or_else(|| {
+            ApiError::not_implemented(
+                ProductErrorCode::ProductStoreUnavailable.as_str(),
+                "the C0 product transcript reader is not wired yet",
+            )
+        })
     }
 }
 
