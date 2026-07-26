@@ -21,13 +21,6 @@ pub(crate) struct ListProductSessionsQuery {
     pub workspace_id: ProductWorkspaceId,
 }
 
-fn foundation_unavailable<T>() -> Result<Json<T>, ApiError> {
-    Err(ApiError::not_implemented(
-        ProductErrorCode::ProductStoreUnavailable.as_str(),
-        "the C0 product store foundation is not wired yet",
-    ))
-}
-
 fn product_json<T>(body: Result<Json<T>, JsonRejection>) -> Result<T, ApiError> {
     body.map(|Json(value)| value).map_err(|_| {
         ApiError::bad_request_with_code(
@@ -355,13 +348,23 @@ pub(crate) async fn update_product_preferences(
         (status = 200, description = "Migration applied or idempotently replayed", body = M1BrowserMigrationResponse),
         (status = 400, description = "Invalid, unknown, or secret-shaped migration field", body = ApiErrorResponse),
         (status = 409, description = "Idempotency key was reused with a different sanitized payload", body = ApiErrorResponse),
+        (status = 504, description = "Migration exceeded its bounded execution deadline", body = ApiErrorResponse),
         (status = 501, description = "ProductStore is not wired", body = ApiErrorResponse)
     )
 )]
 pub(crate) async fn migrate_m1_browser_state(
-    State(_state): State<ApiState>,
+    State(state): State<ApiState>,
     body: Result<Json<M1BrowserMigrationRequest>, JsonRejection>,
 ) -> Result<Json<M1BrowserMigrationResponse>, ApiError> {
-    let _request = product_json(body)?;
-    foundation_unavailable()
+    let request = product_json(body)?;
+    let store = state.product_store()?;
+    if let Some(receipt) = store.preflight_m1_browser_migration(&request).await? {
+        return Ok(Json(receipt));
+    }
+    let migration = super::migration::prepare_m1_browser_migration(request, |workspace| {
+        state.product_state_store_for_workspace(workspace)
+    })
+    .await?;
+    let response = store.apply_m1_browser_migration(migration).await?;
+    Ok(Json(response))
 }

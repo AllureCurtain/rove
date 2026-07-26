@@ -8,8 +8,9 @@ use crate::product::{
     M1BrowserMigrationRequest, M1BrowserMigrationSource, M1MigrationDisposition,
     M1ProviderProfileImport, M1ProviderSelectionImport, M1SafePreferencesImport, M1SessionImport,
     M1WorkspaceImport, PreparedM1BrowserMigration, ProductApprovalPreference, ProductErrorCode,
-    ProductProviderSelection, ProductProviderType, ProductStore, ProductThemePreference,
-    ProductWorkspaceKind, UpdateProductPreferencesRequest,
+    ProductProviderSelection, ProductProviderType, ProductSessionStatus, ProductStore,
+    ProductThemePreference, ProductWorkspaceKind, UpdateProductPreferencesRequest,
+    VerifiedM1SessionRunBinding,
 };
 
 use super::SqliteProductStore;
@@ -231,14 +232,31 @@ async fn migration_is_idempotent_and_normalizes_legacy_fake_base() {
         issues: Vec::new(),
     };
 
+    assert!(
+        store
+            .preflight_m1_browser_migration(&migration.request)
+            .await
+            .unwrap()
+            .is_none()
+    );
     let applied = store
         .apply_m1_browser_migration(migration.clone())
         .await
         .unwrap();
+    let preflight_replay = store
+        .preflight_m1_browser_migration(&migration.request)
+        .await
+        .unwrap()
+        .unwrap();
     let replayed = store.apply_m1_browser_migration(migration).await.unwrap();
 
     assert_eq!(applied.disposition, M1MigrationDisposition::Applied);
+    assert_eq!(
+        preflight_replay.disposition,
+        M1MigrationDisposition::AlreadyApplied
+    );
     assert_eq!(replayed.disposition, M1MigrationDisposition::AlreadyApplied);
+    assert_eq!(applied.receipt_id, preflight_replay.receipt_id);
     assert_eq!(applied.receipt_id, replayed.receipt_id);
     assert_eq!(applied.workspace_mappings.len(), 1);
     assert_eq!(applied.session_mappings.len(), 1);
@@ -346,4 +364,134 @@ async fn migration_preserves_durable_preferences_for_omitted_browser_fields() {
         serde_json::to_value(store.get_preferences().await.unwrap()).unwrap(),
         serde_json::to_value(expected).unwrap()
     );
+}
+
+#[tokio::test]
+async fn migrated_session_needing_attention_cannot_claim_a_fresh_turn() {
+    let temp = TempDir::new().unwrap();
+    let store = open_store(&temp);
+    let root = temp.path().join("unbound-workspace");
+    fs::create_dir_all(&root).unwrap();
+    let acknowledgement = store
+        .apply_m1_browser_migration(PreparedM1BrowserMigration {
+            request: M1BrowserMigrationRequest {
+                source: M1BrowserMigrationSource::WebM1LocalStorage,
+                source_schema_version: 1,
+                idempotency_key: "migration-unbound-session".to_string(),
+                workspaces: vec![M1WorkspaceImport {
+                    source_id: "workspace-unbound".to_string(),
+                    root,
+                    kind: ProductWorkspaceKind::Folder,
+                    display_name: "Unbound workspace".to_string(),
+                    pinned: false,
+                    last_opened_at: "2026-07-26T00:00:00Z".to_string(),
+                }],
+                sessions: vec![M1SessionImport {
+                    source_id: "session-unbound".to_string(),
+                    source_workspace_id: "workspace-unbound".to_string(),
+                    title: "Unbound session".to_string(),
+                    created_at: "2026-07-26T00:00:00Z".to_string(),
+                    updated_at: "2026-07-26T00:00:00Z".to_string(),
+                    legacy_active_job_id: None,
+                    legacy_active_run_id: None,
+                    legacy_resumed_from_run_id: None,
+                    legacy_has_durable_turn: true,
+                }],
+                provider_profiles: Vec::new(),
+                safe_preferences: M1SafePreferencesImport {
+                    theme: None,
+                    source_active_workspace_id: None,
+                    source_active_session_id: None,
+                    provider_selection: None,
+                },
+            },
+            verified_run_bindings: Vec::new(),
+            issues: Vec::new(),
+        })
+        .await
+        .unwrap();
+    let session_id = acknowledgement.session_mappings[0]
+        .product_session_id
+        .clone();
+
+    let error = store.claim_session_turn(&session_id).await.unwrap_err();
+
+    assert_eq!(
+        error.code,
+        ProductErrorCode::ProductSessionRuntimeStateMissing
+    );
+    assert_eq!(
+        store
+            .get_session_context(&session_id)
+            .await
+            .unwrap()
+            .session
+            .status,
+        ProductSessionStatus::NeedsAttention
+    );
+}
+
+#[tokio::test]
+async fn migration_rechecks_verified_workspace_seal_before_apply() {
+    let temp = TempDir::new().unwrap();
+    let store = open_store(&temp);
+    let verified_root = temp.path().join("verified-workspace");
+    let changed_root = temp.path().join("changed-workspace");
+    fs::create_dir_all(&verified_root).unwrap();
+    fs::create_dir_all(&changed_root).unwrap();
+    let runtime_session_id = SessionId::new();
+    let runtime_job_id = JobId::new();
+    let runtime_run_id = RunId::new();
+    let request = M1BrowserMigrationRequest {
+        source: M1BrowserMigrationSource::WebM1LocalStorage,
+        source_schema_version: 1,
+        idempotency_key: "migration-workspace-seal".to_string(),
+        workspaces: vec![M1WorkspaceImport {
+            source_id: "workspace-seal".to_string(),
+            root: changed_root,
+            kind: ProductWorkspaceKind::Folder,
+            display_name: "Changed workspace".to_string(),
+            pinned: false,
+            last_opened_at: "2026-07-26T00:00:00Z".to_string(),
+        }],
+        sessions: vec![M1SessionImport {
+            source_id: "session-seal".to_string(),
+            source_workspace_id: "workspace-seal".to_string(),
+            title: "Changed session".to_string(),
+            created_at: "2026-07-26T00:00:00Z".to_string(),
+            updated_at: "2026-07-26T00:00:00Z".to_string(),
+            legacy_active_job_id: Some(runtime_job_id.to_string()),
+            legacy_active_run_id: Some(runtime_run_id.to_string()),
+            legacy_resumed_from_run_id: None,
+            legacy_has_durable_turn: true,
+        }],
+        provider_profiles: Vec::new(),
+        safe_preferences: M1SafePreferencesImport {
+            theme: None,
+            source_active_workspace_id: None,
+            source_active_session_id: None,
+            provider_selection: None,
+        },
+    };
+
+    let error = store
+        .apply_m1_browser_migration(PreparedM1BrowserMigration {
+            request,
+            verified_run_bindings: vec![VerifiedM1SessionRunBinding {
+                source_session_id: "session-seal".to_string(),
+                ordinal: 1,
+                runtime_session_id,
+                runtime_job_id,
+                runtime_run_id,
+                resumed_from_run_id: None,
+                verified_workspace_root: fs::canonicalize(verified_root).unwrap(),
+                verified_workspace_kind: ProductWorkspaceKind::Folder,
+            }],
+            issues: Vec::new(),
+        })
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.code, ProductErrorCode::ProductBindingCorrupt);
+    assert!(store.list_workspaces().await.unwrap().is_empty());
 }

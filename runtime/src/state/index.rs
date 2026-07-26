@@ -3,17 +3,21 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use chrono::{DateTime, FixedOffset, Utc};
-use rusqlite::{Connection, ErrorCode, OptionalExtension, params};
+use rusqlite::{Connection, ErrorCode, OpenFlags, OptionalExtension, params};
 
 use crate::events::StreamEvent;
 use crate::types::{JobId, RunId, SessionId, TaskState};
 use rove_core::CallId;
 
-const CURRENT_SCHEMA_VERSION: i64 = 1;
+const CURRENT_SCHEMA_VERSION: i64 = 2;
 const DEFAULT_BUSY_TIMEOUT_MS: u64 = 5_000;
 const MAX_SNAPSHOT_EVENTS: usize = 2_000;
 const MAX_SNAPSHOT_EVENT_JSON_BYTES: usize = 1_048_576;
 const MAX_SNAPSHOT_EVENT_JSON_TOTAL_BYTES: usize = 16 * 1_048_576;
+const RUNS_BY_JOB_INDEX: &str = "idx_runs_job_started";
+const MAX_INSPECTION_RUNTIME_ID_BYTES: i64 = 64;
+const MAX_INSPECTION_STATUS_BYTES: i64 = 64;
+const MAX_INSPECTION_PATH_BYTES: i64 = 64 * 1_024;
 
 const MIGRATION_001: &str = r#"
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -135,6 +139,16 @@ CREATE INDEX IF NOT EXISTS idx_events_run_seq
     ON events(run_id, seq);
 "#;
 
+const MIGRATION_002: &str = r#"
+CREATE INDEX IF NOT EXISTS idx_runs_job_started
+    ON runs(job_id, started_at ASC, run_id ASC);
+"#;
+
+const MIGRATIONS: &[(i64, &str, &str)] = &[
+    (1, "runtime_state_index", MIGRATION_001),
+    (2, "runs_by_job_index", MIGRATION_002),
+];
+
 #[derive(Debug, Clone)]
 pub struct StateIndex {
     db_path: Arc<PathBuf>,
@@ -179,6 +193,41 @@ pub struct RunIndexRecord {
     pub task_state_path: Option<PathBuf>,
     pub report_path: Option<PathBuf>,
     pub last_event_seq: u64,
+}
+
+/// One bounded, logically read-only view of an exact job/run pair.
+///
+/// This snapshot is intended for callers that must inspect existing runtime
+/// state without creating a missing database, applying migrations, or changing
+/// SQLite schema or journal settings. SQLite may still coordinate a WAL reader
+/// through an existing `-shm` sidecar; the main database and WAL are never
+/// opened for writes. `job_runs_truncated` is set when more matching runs exist
+/// than the requested bounded prefix can represent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JobRunInspectionSnapshot {
+    pub job: Option<JobRunInspectionJob>,
+    pub run: Option<JobRunInspectionRun>,
+    pub job_run_ids: Vec<RunId>,
+    pub job_runs_truncated: bool,
+    pub task_state_path: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JobRunInspectionJob {
+    pub job_id: JobId,
+    pub session_id: SessionId,
+    pub status: String,
+    pub run_id: Option<RunId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JobRunInspectionRun {
+    pub run_id: RunId,
+    pub session_id: SessionId,
+    pub job_id: JobId,
+    pub status: String,
+    pub run_dir: PathBuf,
+    pub task_state_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -728,6 +777,221 @@ impl StateIndex {
             records.push(row.map_err(io_other)?);
         }
         Ok(records)
+    }
+
+    pub async fn inspect_job_run_read_only_async(
+        &self,
+        job_id: JobId,
+        run_id: RunId,
+        run_limit: usize,
+    ) -> std::io::Result<JobRunInspectionSnapshot> {
+        let index = self.clone();
+        tokio::task::spawn_blocking(move || {
+            index.inspect_job_run_read_only(job_id, run_id, run_limit)
+        })
+        .await
+        .map_err(std::io::Error::other)?
+    }
+
+    pub fn inspect_job_run_read_only(
+        &self,
+        job_id: JobId,
+        run_id: RunId,
+        run_limit: usize,
+    ) -> std::io::Result<JobRunInspectionSnapshot> {
+        const MAX_INSPECTION_JOB_RUNS: usize = 2_000;
+
+        let mut connection = self.connect_read_only()?;
+        let transaction = connection.transaction().map_err(io_other)?;
+        ensure_current_schema_for_read_only_inspection(&transaction)?;
+        ensure_runs_by_job_index(&transaction)?;
+        let job_metadata = transaction
+            .query_row(
+                r#"
+                SELECT typeof(job_id), length(CAST(job_id AS BLOB)),
+                       typeof(session_id), length(CAST(session_id AS BLOB)),
+                       typeof(status), length(CAST(status AS BLOB)),
+                       typeof(run_id), length(CAST(run_id AS BLOB))
+                FROM jobs
+                WHERE job_id = ?1
+                "#,
+                params![job_id.to_string()],
+                |row| inspection_metadata_from_row(row, 4),
+            )
+            .optional()
+            .map_err(io_other)?;
+        if let Some(metadata) = job_metadata.as_ref() {
+            validate_inspection_metadata(
+                metadata,
+                &[
+                    ("jobs.job_id", MAX_INSPECTION_RUNTIME_ID_BYTES, false),
+                    ("jobs.session_id", MAX_INSPECTION_RUNTIME_ID_BYTES, false),
+                    ("jobs.status", MAX_INSPECTION_STATUS_BYTES, false),
+                    ("jobs.run_id", MAX_INSPECTION_RUNTIME_ID_BYTES, true),
+                ],
+            )?;
+        }
+        let job = if job_metadata.is_some() {
+            transaction
+                .query_row(
+                    r#"
+                    SELECT job_id, session_id, status, run_id
+                    FROM jobs
+                    WHERE job_id = ?1
+                    "#,
+                    params![job_id.to_string()],
+                    inspection_job_from_row,
+                )
+                .optional()
+                .map_err(io_other)?
+        } else {
+            None
+        };
+
+        let run_metadata = transaction
+            .query_row(
+                r#"
+                SELECT typeof(run_id), length(CAST(run_id AS BLOB)),
+                       typeof(session_id), length(CAST(session_id AS BLOB)),
+                       typeof(job_id), length(CAST(job_id AS BLOB)),
+                       typeof(status), length(CAST(status AS BLOB)),
+                       typeof(run_dir), length(CAST(run_dir AS BLOB)),
+                       typeof(task_state_path), length(CAST(task_state_path AS BLOB))
+                FROM runs
+                WHERE run_id = ?1
+                "#,
+                params![run_id.to_string()],
+                |row| inspection_metadata_from_row(row, 6),
+            )
+            .optional()
+            .map_err(io_other)?;
+        if let Some(metadata) = run_metadata.as_ref() {
+            validate_inspection_metadata(
+                metadata,
+                &[
+                    ("runs.run_id", MAX_INSPECTION_RUNTIME_ID_BYTES, false),
+                    ("runs.session_id", MAX_INSPECTION_RUNTIME_ID_BYTES, false),
+                    ("runs.job_id", MAX_INSPECTION_RUNTIME_ID_BYTES, false),
+                    ("runs.status", MAX_INSPECTION_STATUS_BYTES, false),
+                    ("runs.run_dir", MAX_INSPECTION_PATH_BYTES, false),
+                    ("runs.task_state_path", MAX_INSPECTION_PATH_BYTES, true),
+                ],
+            )?;
+        }
+        let run = if run_metadata.is_some() {
+            transaction
+                .query_row(
+                    r#"
+                    SELECT run_id, session_id, job_id, status, run_dir, task_state_path
+                    FROM runs
+                    WHERE run_id = ?1
+                    "#,
+                    params![run_id.to_string()],
+                    inspection_run_from_row,
+                )
+                .optional()
+                .map_err(io_other)?
+        } else {
+            None
+        };
+
+        let task_state_path_metadata = transaction
+            .query_row(
+                r#"
+                SELECT typeof(path), length(CAST(path AS BLOB))
+                FROM task_states
+                WHERE run_id = ?1
+                "#,
+                params![run_id.to_string()],
+                |row| inspection_metadata_from_row(row, 1),
+            )
+            .optional()
+            .map_err(io_other)?;
+        if let Some(metadata) = task_state_path_metadata.as_ref() {
+            validate_inspection_metadata(
+                metadata,
+                &[("task_states.path", MAX_INSPECTION_PATH_BYTES, false)],
+            )?;
+        }
+        let task_state_path = if task_state_path_metadata.is_some() {
+            transaction
+                .query_row(
+                    "SELECT path FROM task_states WHERE run_id = ?1",
+                    params![run_id.to_string()],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .map(|path| path.map(PathBuf::from))
+                .map_err(io_other)?
+        } else {
+            None
+        };
+
+        let bounded_limit = run_limit.clamp(1, MAX_INSPECTION_JOB_RUNS);
+        let query_limit = i64::try_from(bounded_limit.saturating_add(1))
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
+        let job_run_metadata = {
+            let mut statement = transaction
+                .prepare(
+                    r#"
+                    SELECT typeof(run_id), length(CAST(run_id AS BLOB))
+                    FROM runs INDEXED BY idx_runs_job_started
+                    WHERE job_id = ?1
+                    ORDER BY started_at ASC, run_id ASC
+                    LIMIT ?2
+                    "#,
+                )
+                .map_err(io_other)?;
+            let rows = statement
+                .query_map(params![job_id.to_string(), query_limit], |row| {
+                    inspection_metadata_from_row(row, 1)
+                })
+                .map_err(io_other)?;
+            let mut records = Vec::with_capacity(bounded_limit.saturating_add(1));
+            for row in rows {
+                records.push(row.map_err(io_other)?);
+            }
+            records
+        };
+        for metadata in &job_run_metadata {
+            validate_inspection_metadata(
+                metadata,
+                &[("runs.run_id", MAX_INSPECTION_RUNTIME_ID_BYTES, false)],
+            )?;
+        }
+        let mut job_run_ids = {
+            let mut statement = transaction
+                .prepare(
+                    r#"
+                    SELECT run_id
+                    FROM runs INDEXED BY idx_runs_job_started
+                    WHERE job_id = ?1
+                    ORDER BY started_at ASC, run_id ASC
+                    LIMIT ?2
+                    "#,
+                )
+                .map_err(io_other)?;
+            let rows = statement
+                .query_map(params![job_id.to_string(), query_limit], |row| {
+                    run_id_from_row(row, 0)
+                })
+                .map_err(io_other)?;
+            let mut records = Vec::with_capacity(bounded_limit.saturating_add(1));
+            for row in rows {
+                records.push(row.map_err(io_other)?);
+            }
+            records
+        };
+        let job_runs_truncated = job_run_ids.len() > bounded_limit;
+        job_run_ids.truncate(bounded_limit);
+        transaction.commit().map_err(io_other)?;
+        Ok(JobRunInspectionSnapshot {
+            job,
+            run,
+            job_run_ids,
+            job_runs_truncated,
+            task_state_path,
+        })
     }
 
     pub async fn task_state_path_async(&self, run_id: RunId) -> std::io::Result<Option<PathBuf>> {
@@ -1405,6 +1669,40 @@ impl StateIndex {
         Ok(conn)
     }
 
+    fn connect_read_only(&self) -> std::io::Result<Connection> {
+        let metadata = match std::fs::metadata(self.db_path.as_ref()) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("state index not found at {}", self.db_path.display()),
+                ));
+            }
+            Err(error) => return Err(error),
+        };
+        if !metadata.is_file() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "state index is not a regular file at {}",
+                    self.db_path.display()
+                ),
+            ));
+        }
+        let connection = Connection::open_with_flags(
+            self.db_path.as_ref(),
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .map_err(io_other)?;
+        connection
+            .busy_timeout(Duration::from_millis(self.busy_timeout_ms))
+            .map_err(io_other)?;
+        connection
+            .pragma_update(None, "query_only", "ON")
+            .map_err(io_other)?;
+        Ok(connection)
+    }
+
     fn mark_pending_status(
         &self,
         table: &str,
@@ -1453,21 +1751,125 @@ fn apply_migrations(conn: &Connection) -> std::io::Result<()> {
         "#,
     )
     .map_err(io_other)?;
-    let applied: Option<i64> = conn
-        .query_row(
-            "SELECT version FROM schema_migrations WHERE version = ?1",
-            params![CURRENT_SCHEMA_VERSION],
-            |row| row.get(0),
-        )
-        .optional()
+    let newest: Option<i64> = conn
+        .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
+            row.get(0)
+        })
         .map_err(io_other)?;
-    if applied.is_none() {
-        conn.execute_batch(MIGRATION_001).map_err(io_other)?;
+    if newest.is_some_and(|version| version > CURRENT_SCHEMA_VERSION) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "state index schema is newer than this runtime",
+        ));
+    }
+    for (version, name, sql) in MIGRATIONS {
+        let applied: Option<i64> = conn
+            .query_row(
+                "SELECT version FROM schema_migrations WHERE version = ?1",
+                params![version],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(io_other)?;
+        if applied.is_some() {
+            continue;
+        }
+        conn.execute_batch(sql).map_err(io_other)?;
         conn.execute(
-            "INSERT OR IGNORE INTO schema_migrations(version, name, applied_at) VALUES (?1, ?2, ?3)",
-            params![CURRENT_SCHEMA_VERSION, "runtime_state_index", now_rfc3339()],
+            "INSERT INTO schema_migrations(version, name, applied_at) VALUES (?1, ?2, ?3)",
+            params![version, name, now_rfc3339()],
         )
         .map_err(io_other)?;
+    }
+    Ok(())
+}
+
+fn ensure_runs_by_job_index(connection: &Connection) -> std::io::Result<()> {
+    let mut index_list = connection
+        .prepare("PRAGMA index_list('runs')")
+        .map_err(io_other)?;
+    let rows = index_list
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, i64>(4)?,
+            ))
+        })
+        .map_err(io_other)?;
+    let index_shape = rows
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(io_other)?
+        .into_iter()
+        .find(|(name, _, _, _)| name == RUNS_BY_JOB_INDEX);
+    if index_shape
+        .as_ref()
+        .map(|(_, unique, origin, partial)| (*unique, origin.as_str(), *partial))
+        != Some((0, "c", 0))
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "state index has an unsafe bounded runs-by-job lookup index",
+        ));
+    }
+
+    let pragma = format!("PRAGMA index_xinfo('{RUNS_BY_JOB_INDEX}')");
+    let mut statement = connection.prepare(&pragma).map_err(io_other)?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, i64>(5)?,
+            ))
+        })
+        .map_err(io_other)?;
+    let columns = rows
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(io_other)?
+        .into_iter()
+        .filter_map(|(name, descending, collation, key)| {
+            (key == 1).then_some((name, descending, collation))
+        })
+        .collect::<Vec<_>>();
+    if columns
+        != [
+            (Some("job_id".to_string()), 0, "BINARY".to_string()),
+            (Some("started_at".to_string()), 0, "BINARY".to_string()),
+            (Some("run_id".to_string()), 0, "BINARY".to_string()),
+        ]
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "state index has an invalid bounded runs-by-job lookup index shape",
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_current_schema_for_read_only_inspection(connection: &Connection) -> std::io::Result<()> {
+    let mut statement = connection
+        .prepare("SELECT version, name FROM schema_migrations ORDER BY version ASC")
+        .map_err(io_other)?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(io_other)?;
+    let applied = rows.collect::<Result<Vec<_>, _>>().map_err(io_other)?;
+    let is_current = applied.len() == MIGRATIONS.len()
+        && applied.iter().zip(MIGRATIONS.iter()).all(
+            |((actual_version, actual_name), (version, name, _))| {
+                *actual_version == *version && actual_name.as_str() == *name
+            },
+        );
+    if !is_current {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "state index schema is not the exact version required for read-only inspection",
+        ));
     }
     Ok(())
 }
@@ -1593,6 +1995,76 @@ fn task_state_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TaskS
     Ok(TaskStateIndexRecord {
         run_id: run_id_from_row(row, 0)?,
         path: PathBuf::from(row.get::<_, String>(1)?),
+    })
+}
+
+#[derive(Debug)]
+struct InspectionValueMetadata {
+    storage_class: String,
+    byte_len: Option<i64>,
+}
+
+fn inspection_metadata_from_row(
+    row: &rusqlite::Row<'_>,
+    value_count: usize,
+) -> rusqlite::Result<Vec<InspectionValueMetadata>> {
+    (0..value_count)
+        .map(|index| {
+            Ok(InspectionValueMetadata {
+                storage_class: row.get(index * 2)?,
+                byte_len: row.get(index * 2 + 1)?,
+            })
+        })
+        .collect()
+}
+
+fn validate_inspection_metadata(
+    metadata: &[InspectionValueMetadata],
+    fields: &[(&'static str, i64, bool)],
+) -> std::io::Result<()> {
+    if metadata.len() != fields.len() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "state index inspection metadata shape is invalid",
+        ));
+    }
+    for (value, (field, maximum, nullable)) in metadata.iter().zip(fields) {
+        let valid = match (value.storage_class.as_str(), value.byte_len) {
+            ("null", None) => *nullable,
+            ("text", Some(length)) => length > 0 && length <= *maximum,
+            _ => false,
+        };
+        if !valid {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("state index field {field} has an invalid type or length"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn inspection_job_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<JobRunInspectionJob> {
+    let run_id = row
+        .get::<_, Option<String>>(3)?
+        .map(|value| parse_run_id_at(3, value))
+        .transpose()?;
+    Ok(JobRunInspectionJob {
+        job_id: job_id_from_row(row, 0)?,
+        session_id: session_id_from_row(row, 1)?,
+        status: row.get(2)?,
+        run_id,
+    })
+}
+
+fn inspection_run_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<JobRunInspectionRun> {
+    Ok(JobRunInspectionRun {
+        run_id: run_id_from_row(row, 0)?,
+        session_id: session_id_from_row(row, 1)?,
+        job_id: job_id_from_row(row, 2)?,
+        status: row.get(3)?,
+        run_dir: PathBuf::from(row.get::<_, String>(4)?),
+        task_state_path: row.get::<_, Option<String>>(5)?.map(PathBuf::from),
     })
 }
 
@@ -1843,6 +2315,193 @@ mod tests {
     }
 
     #[test]
+    fn read_only_job_run_inspection_does_not_create_missing_state() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let missing_state = temp.path().join("missing").join("state");
+        let index = StateIndex::new(&missing_state);
+
+        let error = index
+            .inspect_job_run_read_only(JobId::new(), RunId::new(), 1)
+            .unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+        assert!(!missing_state.exists());
+    }
+
+    #[test]
+    fn read_only_job_run_inspection_rejects_non_file_state_index() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let db_directory = temp.path().join("state.sqlite");
+        std::fs::create_dir(&db_directory).unwrap();
+        let index = StateIndex::with_path(temp.path(), db_directory, DEFAULT_BUSY_TIMEOUT_MS);
+
+        let error = index
+            .inspect_job_run_read_only(JobId::new(), RunId::new(), 1)
+            .unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn read_only_job_run_inspection_rejects_oversized_text_before_materializing_it() {
+        let (_temp, index, _session_id, job_id, run_id) = indexed_run();
+        let connection = Connection::open(index.path()).unwrap();
+        connection
+            .execute(
+                "UPDATE runs SET run_dir = CAST(zeroblob(?1) AS TEXT) WHERE run_id = ?2",
+                params![MAX_INSPECTION_PATH_BYTES + 1, run_id.to_string()],
+            )
+            .unwrap();
+        drop(connection);
+
+        let error = index
+            .inspect_job_run_read_only(job_id, run_id, 1)
+            .unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn state_index_upgrade_installs_bounded_runs_by_job_index() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let index = StateIndex::new(temp.path());
+        let connection = Connection::open(index.path()).unwrap();
+        connection.execute_batch(MIGRATION_001).unwrap();
+        connection
+            .execute(
+                "INSERT INTO schema_migrations(version, name, applied_at) VALUES (1, 'runtime_state_index', ?1)",
+                params![now_rfc3339()],
+            )
+            .unwrap();
+        drop(connection);
+
+        index.initialize().unwrap();
+
+        let connection = Connection::open(index.path()).unwrap();
+        ensure_runs_by_job_index(&connection).unwrap();
+        let newest: i64 = connection
+            .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(newest, CURRENT_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn read_only_job_run_inspection_does_not_migrate_an_old_index() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let index = StateIndex::new(temp.path());
+        let connection = Connection::open(index.path()).unwrap();
+        connection.execute_batch(MIGRATION_001).unwrap();
+        connection
+            .execute(
+                "INSERT INTO schema_migrations(version, name, applied_at) VALUES (1, 'runtime_state_index', ?1)",
+                params![now_rfc3339()],
+            )
+            .unwrap();
+        drop(connection);
+
+        let error = index
+            .inspect_job_run_read_only(JobId::new(), RunId::new(), 1)
+            .unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        let connection = Connection::open(index.path()).unwrap();
+        let newest: i64 = connection
+            .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(newest, 1);
+        let present: Option<String> = connection
+            .query_row(
+                "SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?1",
+                params![RUNS_BY_JOB_INDEX],
+                |row| row.get(0),
+            )
+            .optional()
+            .unwrap();
+        assert!(present.is_none());
+    }
+
+    #[test]
+    fn read_only_job_run_inspection_rejects_a_partial_lookalike_index() {
+        let (_temp, index, _session_id, job_id, run_id) = indexed_run();
+        let connection = Connection::open(index.path()).unwrap();
+        connection
+            .execute(&format!("DROP INDEX {RUNS_BY_JOB_INDEX}"), [])
+            .unwrap();
+        connection
+            .execute(
+                &format!(
+                    "CREATE INDEX {RUNS_BY_JOB_INDEX} ON runs(job_id, started_at, run_id) WHERE status = 'done'"
+                ),
+                [],
+            )
+            .unwrap();
+        drop(connection);
+
+        let error = index
+            .inspect_job_run_read_only(job_id, run_id, 1)
+            .unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn read_only_job_run_inspection_preserves_main_database_and_schema() {
+        let (_temp, index, _session_id, job_id, run_id) = indexed_run();
+        let schema_before = sqlite_schema_snapshot(index.path());
+        let metadata_before = std::fs::metadata(index.path()).unwrap();
+        let files_before = sibling_file_names(index.path());
+
+        index.inspect_job_run_read_only(job_id, run_id, 1).unwrap();
+
+        let metadata_after = std::fs::metadata(index.path()).unwrap();
+        let files_after = sibling_file_names(index.path());
+        assert_eq!(metadata_before.len(), metadata_after.len());
+        assert_eq!(
+            metadata_before.modified().unwrap(),
+            metadata_after.modified().unwrap()
+        );
+        assert_eq!(schema_before, sqlite_schema_snapshot(index.path()));
+        let allowed_shm = format!(
+            "{}-shm",
+            index.path().file_name().unwrap().to_string_lossy()
+        );
+        assert!(
+            files_after
+                .difference(&files_before)
+                .all(|name| name == &allowed_shm),
+            "a read-only WAL reader may coordinate through -shm only"
+        );
+    }
+
+    #[test]
+    fn read_only_job_run_inspection_reports_a_truncated_prefix() {
+        let (temp, index, session_id, job_id, first_run_id) = indexed_run();
+        let second_run_id = RunId::new();
+        index
+            .record_run_started(
+                session_id,
+                job_id,
+                second_run_id,
+                &temp.path().join("second-run"),
+                &temp.path().join("second-trace.jsonl"),
+            )
+            .unwrap();
+
+        let snapshot = index
+            .inspect_job_run_read_only(job_id, second_run_id, 1)
+            .unwrap();
+
+        assert_eq!(snapshot.job.unwrap().run_id, Some(second_run_id));
+        assert_eq!(snapshot.run.unwrap().run_id, second_run_id);
+        assert_eq!(snapshot.job_run_ids, vec![first_run_id]);
+        assert!(snapshot.job_runs_truncated);
+    }
+
+    #[test]
     fn sqlite_corruption_maps_to_invalid_data() {
         let error = rusqlite::Error::SqliteFailure(
             rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CORRUPT),
@@ -1850,5 +2509,24 @@ mod tests {
         );
 
         assert_eq!(io_other(error).kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    fn sqlite_schema_snapshot(path: &Path) -> Vec<(String, String, String)> {
+        let connection =
+            Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        let mut statement = connection
+            .prepare("SELECT type, name, COALESCE(sql, '') FROM sqlite_master ORDER BY type, name")
+            .unwrap();
+        let rows = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap();
+        rows.collect::<Result<Vec<_>, _>>().unwrap()
+    }
+
+    fn sibling_file_names(path: &Path) -> std::collections::BTreeSet<String> {
+        std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect()
     }
 }

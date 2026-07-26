@@ -4,6 +4,7 @@
 //! Store and transcript workers implement only their dedicated submodules.
 
 mod contracts;
+pub(crate) mod migration;
 pub(crate) mod routes;
 pub(crate) mod store;
 pub(crate) mod transcript;

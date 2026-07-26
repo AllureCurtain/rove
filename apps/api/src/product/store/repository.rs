@@ -415,6 +415,12 @@ impl ProductRepository {
         if session.status == ProductSessionStatus::Archived {
             return Err(invalid("archived product sessions cannot start a turn"));
         }
+        if session.status == ProductSessionStatus::NeedsAttention {
+            return Err(ProductStoreError::new(
+                ProductErrorCode::ProductSessionRuntimeStateMissing,
+                "product session requires runtime recovery before starting a turn",
+            ));
+        }
         if has_active_claim_for_session(&transaction, session_id)? {
             return Err(session_active("product session already has an active turn"));
         }
@@ -437,7 +443,8 @@ impl ProductRepository {
                 r#"
                 UPDATE product_sessions
                 SET status = 'running', updated_at = ?2
-                WHERE product_session_id = ?1 AND status != 'archived'
+                WHERE product_session_id = ?1
+                  AND status NOT IN ('archived', 'needs_attention')
                 "#,
                 params![session_id.to_string(), now],
             )
@@ -699,6 +706,22 @@ impl ProductRepository {
         migration: PreparedM1BrowserMigration,
     ) -> Result<M1BrowserMigrationResponse, ProductStoreError> {
         apply_migration(&self.database, migration)
+    }
+
+    pub(super) fn preflight_m1_browser_migration(
+        &self,
+        request: &crate::product::M1BrowserMigrationRequest,
+    ) -> Result<Option<M1BrowserMigrationResponse>, ProductStoreError> {
+        validate_migration_envelope(request, &[])?;
+        let digest = m1_browser_migration_digest(request)
+            .map_err(|_| invalid("browser migration request could not be normalized"))?;
+        let connection = self.database.connect()?;
+        replay_receipt(
+            &connection,
+            request.source_schema_version,
+            &request.idempotency_key,
+            &digest,
+        )
     }
 }
 
@@ -1703,7 +1726,19 @@ fn apply_migration(
             .verified_run_bindings
             .iter()
             .any(|binding| binding.source_session_id.as_str() == source_session_id.as_str());
-        if (imported.has_runtime_hint || imported.legacy_has_durable_turn) && !has_verified {
+        let mut has_runtime_issue = issues.iter().any(|issue| {
+            issue.source_id.as_deref() == Some(source_session_id.as_str())
+                && matches!(
+                    issue.code,
+                    M1MigrationIssueCode::InvalidRuntimeHint
+                        | M1MigrationIssueCode::AmbiguousRuntimeBinding
+                        | M1MigrationIssueCode::RuntimeBindingNotFound
+                )
+        });
+        if (imported.has_runtime_hint || imported.legacy_has_durable_turn)
+            && !has_verified
+            && !has_runtime_issue
+        {
             let code = if imported.invalid_runtime_hint {
                 M1MigrationIssueCode::InvalidRuntimeHint
             } else {
@@ -1717,16 +1752,9 @@ fn apply_migration(
                     source_id: Some(source_session_id.clone()),
                 },
             )?;
+            has_runtime_issue = true;
         }
-        if issues.iter().any(|issue| {
-            issue.source_id.as_deref() == Some(source_session_id.as_str())
-                && matches!(
-                    issue.code,
-                    M1MigrationIssueCode::InvalidRuntimeHint
-                        | M1MigrationIssueCode::AmbiguousRuntimeBinding
-                        | M1MigrationIssueCode::RuntimeBindingNotFound
-                )
-        }) {
+        if has_runtime_issue {
             mark_session_needs_attention(
                 &transaction,
                 session_ids
@@ -1908,12 +1936,33 @@ fn prepare_migration_data(
         });
     }
 
-    let request_session_ids = migration
-        .request
-        .sessions
+    let request_session_ids = sessions
         .iter()
         .map(|session| session.source_id.as_str())
         .collect::<HashSet<_>>();
+    let workspace_seals = workspaces
+        .iter()
+        .filter_map(|imported| {
+            imported.workspace.as_ref().map(|workspace| {
+                (
+                    imported.source_id.as_str(),
+                    (
+                        PathBuf::from(&workspace.canonical_root_text),
+                        workspace.kind,
+                    ),
+                )
+            })
+        })
+        .collect::<HashMap<_, _>>();
+    let session_workspace_sources = sessions
+        .iter()
+        .map(|session| {
+            (
+                session.source_id.as_str(),
+                session.source_workspace_id.as_str(),
+            )
+        })
+        .collect::<HashMap<_, _>>();
     let mut verified_bindings: HashMap<String, Vec<VerifiedM1SessionRunBinding>> = HashMap::new();
     let mut runtime_runs = HashSet::new();
     for binding in &migration.verified_run_bindings {
@@ -1922,6 +1971,19 @@ fn prepare_migration_data(
         if !request_session_ids.contains(source_session_id.as_str()) {
             return Err(invalid(
                 "verified runtime binding references an unknown source session",
+            ));
+        }
+        let source_workspace_id = session_workspace_sources
+            .get(source_session_id.as_str())
+            .ok_or_else(|| binding_corrupt("verified migration session has no workspace"))?;
+        let (canonical_root, kind) = workspace_seals
+            .get(*source_workspace_id)
+            .ok_or_else(|| binding_corrupt("verified migration workspace is no longer valid"))?;
+        if canonical_root != &binding.verified_workspace_root
+            || kind != &binding.verified_workspace_kind
+        {
+            return Err(binding_corrupt(
+                "verified migration workspace changed before apply",
             ));
         }
         if !runtime_runs.insert(binding.runtime_run_id) {

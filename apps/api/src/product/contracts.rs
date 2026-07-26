@@ -27,6 +27,7 @@ pub const MAX_PRODUCT_TEXT_BYTES: usize = 512;
 pub const MAX_PRODUCT_API_BASE_BYTES: usize = 2_048;
 pub const MAX_PRODUCT_PATH_BYTES: usize = 32_768;
 pub const MAX_MIGRATION_IDEMPOTENCY_KEY_BYTES: usize = 128;
+pub const MAX_M1_BROWSER_MIGRATION_BODY_BYTES: usize = 64 * 1_048_576;
 
 macro_rules! product_id {
     ($name:ident, $description:literal) => {
@@ -570,6 +571,8 @@ pub struct VerifiedM1SessionRunBinding {
     pub runtime_job_id: JobId,
     pub runtime_run_id: RunId,
     pub resumed_from_run_id: Option<RunId>,
+    pub(crate) verified_workspace_root: PathBuf,
+    pub(crate) verified_workspace_kind: ProductWorkspaceKind,
 }
 
 /// Sanitized migration plus server-side runtime validation results. The store
@@ -719,6 +722,12 @@ pub trait ProductStore: Send + Sync {
         &self,
         request: UpdateProductPreferencesRequest,
     ) -> Result<ProductPreferences, ProductStoreError>;
+    /// Validate the sanitized request and replay an existing receipt before
+    /// callers inspect runtime artifacts that may have since been cleaned.
+    async fn preflight_m1_browser_migration(
+        &self,
+        request: &M1BrowserMigrationRequest,
+    ) -> Result<Option<M1BrowserMigrationResponse>, ProductStoreError>;
     async fn apply_m1_browser_migration(
         &self,
         migration: PreparedM1BrowserMigration,

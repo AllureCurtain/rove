@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use axum::extract::Query;
+use axum::extract::{DefaultBodyLimit, Query};
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::middleware;
@@ -57,6 +57,7 @@ use provider::{
 };
 
 const EVENT_BUFFER: usize = 256;
+const PRODUCT_MIGRATION_DEADLINE: Duration = Duration::from_secs(30);
 
 #[derive(Clone)]
 pub struct ApiState {
@@ -87,12 +88,23 @@ struct ApiProductRuntimeStateResolver {
     config: AppConfig,
 }
 
+impl ApiProductRuntimeStateResolver {
+    fn state_store_for_workspace(&self, mut workspace: Workspace) -> StateStore {
+        let mut config = self.config.clone();
+        config.source_summary.workspace_root = workspace.root.clone();
+        config.source_summary.project_config_path = workspace.root.join(".rove/config.toml");
+        config.source_summary.project_config_loaded = false;
+        workspace.state_dir = config.state_dir();
+        state_store_for_parts(&workspace, &config)
+    }
+}
+
 impl ProductRuntimeStateResolver for ApiProductRuntimeStateResolver {
     fn state_store_for(
         &self,
         product_workspace: &ProductWorkspace,
     ) -> Result<StateStore, ProductStoreError> {
-        let mut workspace = match product_workspace.kind {
+        let workspace = match product_workspace.kind {
             ProductWorkspaceKind::Folder => {
                 Workspace::open_folder(&product_workspace.canonical_root)
             }
@@ -104,10 +116,7 @@ impl ProductRuntimeStateResolver for ApiProductRuntimeStateResolver {
                 format!("product workspace runtime state is unavailable: {err}"),
             )
         })?;
-        let mut config = self.config.clone();
-        config.rebase_to_workspace(&workspace.root);
-        workspace.state_dir = config.state_dir();
-        Ok(state_store_for_parts(&workspace, &config))
+        Ok(self.state_store_for_workspace(workspace))
     }
 }
 
@@ -150,6 +159,10 @@ struct RunsQuery {
 }
 
 pub fn router(state: ApiState) -> Router {
+    let migration_router: OpenApiRouter<ApiState> = OpenApiRouter::new()
+        .routes(routes!(product::routes::migrate_m1_browser_state))
+        .route_layer(DefaultBodyLimit::max(MAX_M1_BROWSER_MIGRATION_BODY_BYTES))
+        .route_layer(middleware::from_fn(product_migration_deadline));
     let (api_router, api) = OpenApiRouter::with_openapi(docs::ApiDoc::openapi())
         .routes(routes!(list_provider_models))
         .routes(routes!(test_provider))
@@ -167,7 +180,7 @@ pub fn router(state: ApiState) -> Router {
         .routes(routes!(product::routes::delete_product_provider_profile))
         .routes(routes!(product::routes::get_product_preferences))
         .routes(routes!(product::routes::update_product_preferences))
-        .routes(routes!(product::routes::migrate_m1_browser_state))
+        .merge(migration_router)
         .routes(routes!(create_job))
         .routes(routes!(job_events))
         .routes(routes!(job_state))
@@ -193,6 +206,20 @@ pub fn router(state: ApiState) -> Router {
         .split_for_parts();
 
     api_router.merge(SwaggerUi::new("/swagger-ui").url("/api/openapi.json", api))
+}
+
+async fn product_migration_deadline(
+    request: axum::extract::Request,
+    next: middleware::Next,
+) -> axum::response::Response {
+    match tokio::time::timeout(PRODUCT_MIGRATION_DEADLINE, next.run(request)).await {
+        Ok(response) => response,
+        Err(_) => axum::response::IntoResponse::into_response(ApiError {
+            status: StatusCode::GATEWAY_TIMEOUT,
+            code: ProductErrorCode::ProductStorageFailure.as_str(),
+            message: "browser migration exceeded its execution deadline".to_string(),
+        }),
+    }
 }
 
 pub async fn serve(addr: Option<SocketAddr>, cwd: PathBuf) -> anyhow::Result<()> {
@@ -337,6 +364,13 @@ impl ApiState {
                 "the C0 product transcript reader is not wired yet",
             )
         })
+    }
+
+    pub(crate) fn product_state_store_for_workspace(&self, workspace: &Workspace) -> StateStore {
+        ApiProductRuntimeStateResolver {
+            config: self.inner.config.clone(),
+        }
+        .state_store_for_workspace(workspace.clone())
     }
 }
 
