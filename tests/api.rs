@@ -432,6 +432,13 @@ async fn product_sessions_in_one_workspace_resume_their_own_exact_runs() {
     assert_ne!(second_a.resumed_from_run_id, Some(first_b.run_id));
     let second_a_state = wait_for_done(app.clone(), second_a.job_id.to_string()).await;
     assert_eq!(second_a_state.status, RunStatus::Done);
+    assert!(
+        second_a_state.events.iter().any(|event| matches!(
+            &event.event,
+            StreamEvent::LlmMessage { full, .. } if full == "fake response: second A"
+        )),
+        "a product follow-up must execute the new user message"
+    );
     assert_product_runtime_terminal_durable(folder.path(), &second_a, &second_a_state).await;
 
     let transcript = app
@@ -568,12 +575,13 @@ async fn product_session_resume_rejects_a_mismatched_runtime_run_identity() {
             [&mismatched_session_id],
         )
         .unwrap();
-    connection
+    let updated = connection
         .execute(
             "UPDATE runs SET session_id = ?2 WHERE run_id = ?1",
             rusqlite::params![first.run_id.to_string(), mismatched_session_id],
         )
         .unwrap();
+    assert_eq!(updated, 1);
     drop(connection);
 
     let response = post_json(
@@ -737,9 +745,14 @@ async fn product_cancel_releases_the_single_turn_claim_before_continuation() {
     let resumed = create_product_job(&app, session_id, "after cancellation").await;
     assert_eq!(resumed.job_id, active.job_id);
     assert_eq!(resumed.resumed_from_run_id, Some(active.run_id));
-    assert_eq!(
-        wait_for_done(app, resumed.job_id.to_string()).await.status,
-        RunStatus::Done
+    let resumed_state = wait_for_done(app, resumed.job_id.to_string()).await;
+    assert_eq!(resumed_state.status, RunStatus::Done);
+    assert!(
+        resumed_state.events.iter().any(|event| matches!(
+            &event.event,
+            StreamEvent::LlmMessage { full, .. } if full == "fake response: after cancellation"
+        )),
+        "a cancelled product turn must not replay its terminal plan decision"
     );
 }
 

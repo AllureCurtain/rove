@@ -15,7 +15,7 @@ use axum::{Json, Router};
 use futures::{FutureExt, Stream, StreamExt};
 use serde::Deserialize;
 use tokio::sync::{Mutex, RwLock, broadcast, oneshot, watch};
-use tokio_util::sync::CancellationToken;
+use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use utoipa::OpenApi;
 use utoipa_axum::{router::OpenApiRouter, routes};
 use utoipa_swagger_ui::SwaggerUi;
@@ -71,6 +71,7 @@ struct ApiStateInner {
     product_store: Option<Arc<dyn ProductStore>>,
     product_transcript_reader: Option<Arc<dyn ProductTranscriptReader>>,
     shutdown_token: CancellationToken,
+    supervisors: TaskTracker,
     jobs: RwLock<HashMap<JobId, Arc<JobRecord>>>,
     model_health: Arc<ModelHealthStore>,
     rate_limit: tokio::sync::Mutex<RateLimitState>,
@@ -340,6 +341,7 @@ impl ApiState {
                 product_store,
                 product_transcript_reader,
                 shutdown_token,
+                supervisors: TaskTracker::new(),
                 jobs: RwLock::new(HashMap::new()),
                 model_health,
                 rate_limit: tokio::sync::Mutex::new(RateLimitState::default()),
@@ -821,7 +823,15 @@ async fn prepare_generic_job_launch(
         .as_ref()
         .map(|task_state| task_state.job_id)
         .unwrap_or_else(JobId::new);
-    let record = new_job_record(workspace, config, req, session_id, job_id, resume_state);
+    let record = new_job_record(
+        state,
+        workspace,
+        config,
+        req,
+        session_id,
+        job_id,
+        resume_state,
+    );
     let engine = match assemble_job_engine(state, &record.message, req, Arc::clone(&record)).await {
         Ok(engine) => engine,
         Err(error) => {
@@ -873,7 +883,10 @@ async fn prepare_product_job_launch(
     let state_store = state_store_for_parts(&workspace, &config);
     let (resume_state, mut resume_claim) = match claim.previous_binding.as_ref() {
         Some(previous) => match load_and_claim_product_resume(&state_store, previous).await {
-            Ok(value) => (Some(value.0), Some(value.1)),
+            Ok((resume_state, resume_claim)) => (
+                Some(project_product_follow_up_state(resume_state)),
+                Some(resume_claim),
+            ),
             Err(error) => {
                 finish_failed_product_start(
                     &store,
@@ -895,7 +908,15 @@ async fn prepare_product_job_launch(
         .as_ref()
         .map(|task_state| task_state.job_id)
         .unwrap_or_else(JobId::new);
-    let record = new_job_record(workspace, config, req, session_id, job_id, resume_state);
+    let record = new_job_record(
+        state,
+        workspace,
+        config,
+        req,
+        session_id,
+        job_id,
+        resume_state,
+    );
     let engine = match assemble_job_engine(state, &record.message, req, Arc::clone(&record)).await {
         Ok(engine) => engine,
         Err(error) => {
@@ -969,6 +990,7 @@ async fn prepare_product_job_launch(
 }
 
 fn new_job_record(
+    state: &ApiState,
     workspace: Workspace,
     config: AppConfig,
     req: &CreateJobRequest,
@@ -996,8 +1018,7 @@ fn new_job_record(
         tx,
         handle: Mutex::new(None),
         completion,
-        // A run owns its cancellation root so same-job continuations start cleanly.
-        cancel_token: CancellationToken::new(),
+        cancel_token: state.inner.shutdown_token.child_token(),
     })
 }
 
@@ -1045,30 +1066,6 @@ async fn load_and_claim_product_resume(
     state_store: &StateStore,
     previous: &ProductRuntimeBinding,
 ) -> Result<(TaskState, ResumeJobClaim), ApiError> {
-    let resume_state = state_store
-        .load_task_state(previous.latest_run_id)
-        .await
-        .map_err(|error| {
-            let code = if error.kind() == std::io::ErrorKind::NotFound {
-                ProductErrorCode::ProductSessionRuntimeStateMissing
-            } else {
-                ProductErrorCode::ProductSessionRuntimeStateCorrupt
-            };
-            ApiError::from(ProductStoreError::new(
-                code,
-                "the product session's exact runtime task state is unavailable or invalid",
-            ))
-        })?;
-    if resume_state.session_id != previous.runtime_session_id
-        || resume_state.job_id != previous.latest_job_id
-        || resume_state.run_id != previous.latest_run_id
-    {
-        return Err(ProductStoreError::new(
-            ProductErrorCode::ProductSessionRuntimeStateCorrupt,
-            "the product session runtime task-state identity does not match its binding",
-        )
-        .into());
-    }
     let job = state_store
         .index
         .job_record_async(previous.latest_job_id)
@@ -1106,12 +1103,53 @@ async fn load_and_claim_product_resume(
         )
         .into());
     }
+    // Loading task state may lazily repair its index projection. Validate the
+    // existing indexed identities first so product resume fails closed on drift.
+    let resume_state = state_store
+        .load_task_state(previous.latest_run_id)
+        .await
+        .map_err(|error| {
+            let code = if error.kind() == std::io::ErrorKind::NotFound {
+                ProductErrorCode::ProductSessionRuntimeStateMissing
+            } else {
+                ProductErrorCode::ProductSessionRuntimeStateCorrupt
+            };
+            ApiError::from(ProductStoreError::new(
+                code,
+                "the product session's exact runtime task state is unavailable or invalid",
+            ))
+        })?;
+    if resume_state.session_id != previous.runtime_session_id
+        || resume_state.job_id != previous.latest_job_id
+        || resume_state.run_id != previous.latest_run_id
+    {
+        return Err(ProductStoreError::new(
+            ProductErrorCode::ProductSessionRuntimeStateCorrupt,
+            "the product session runtime task-state identity does not match its binding",
+        )
+        .into());
+    }
     let Some(claim) = claim_runtime_resume(state_store, Some(&resume_state), true).await? else {
         return Err(ApiError::internal(
             "product resume validation did not acquire a runtime claim",
         ));
     };
     Ok((resume_state, claim))
+}
+
+fn project_product_follow_up_state(mut state: TaskState) -> TaskState {
+    // A product follow-up is a new user turn in the same durable conversation,
+    // not a replay of the previous turn's terminal execution decision.
+    state.step = 0;
+    state.plan = None;
+    state.step_ledger = Default::default();
+    if let Some(checkpoint) = state.checkpoint.as_mut() {
+        checkpoint.last_step = 0;
+        checkpoint.plan = None;
+        checkpoint.step_ledger = Default::default();
+        checkpoint.last_event_seq = None;
+    }
+    state
 }
 
 async fn finish_failed_product_start(
@@ -1177,24 +1215,16 @@ async fn start_job_supervisor(state: ApiState, launch: JobLaunch) {
     let recovery_record = Arc::clone(&record);
     let recovery_product_turn = product_turn.clone();
     let completion = record.completion.clone();
-    let shutdown_token = state.inner.shutdown_token.clone();
-    let handle = tokio::spawn(async move {
+    let handle = state.inner.supervisors.spawn(async move {
         let _completion_guard = JobCompletionGuard::new(completion);
-        let supervisor = AssertUnwindSafe(run_job_supervisor(
+        let outcome = AssertUnwindSafe(run_job_supervisor(
             record_for_task,
             engine,
             run,
             product_turn,
         ))
-        .catch_unwind();
-        tokio::pin!(supervisor);
-        let outcome = tokio::select! {
-            outcome = &mut supervisor => outcome,
-            _ = shutdown_token.cancelled() => {
-                recovery_record.cancel_token.cancel();
-                supervisor.await
-            }
-        };
+        .catch_unwind()
+        .await;
         if outcome.is_err() {
             tracing::warn!(job_id = %recovery_record.job_id, "job supervisor panicked");
             let recovery = AssertUnwindSafe(recover_job_supervisor_panic(
@@ -1780,10 +1810,10 @@ async fn wait_for_job_completion(record: &JobRecord) {
 }
 
 async fn drain_job_supervisors(state: &ApiState) {
+    state.inner.supervisors.close();
+    state.inner.supervisors.wait().await;
+
     let records: Vec<_> = state.inner.jobs.read().await.values().cloned().collect();
-    for record in &records {
-        wait_for_job_completion(record).await;
-    }
     for record in records {
         let handle = record.handle.lock().await.take();
         let Some(handle) = handle else {
@@ -2427,22 +2457,81 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn shutdown_drain_waits_for_and_joins_supervisors() {
+    async fn shutdown_drain_waits_for_a_superseded_same_job_supervisor() {
         let temp_dir = tempfile::TempDir::new().unwrap();
-        let (state, record, _) = test_job_record(&temp_dir).await;
-        let cancel = record.cancel_token.clone();
-        let completion = record.completion.clone();
-        let handle = tokio::spawn(async move {
-            let _guard = JobCompletionGuard::new(completion);
-            cancel.cancelled().await;
+        let (state, first, _) = test_job_record(&temp_dir).await;
+        let (tx, _) = broadcast::channel(EVENT_BUFFER);
+        let (completion, _) = watch::channel(false);
+        let second = Arc::new(JobRecord {
+            session_id: first.session_id,
+            job_id: first.job_id,
+            run_id: RunId::new(),
+            workspace: first.workspace.clone(),
+            config: first.config.clone(),
+            message: "same job continuation".to_string(),
+            resumed_from_run_id: Some(first.run_id),
+            resume_state: None,
+            status: Mutex::new(RunStatus::Running),
+            events: Mutex::new(Vec::new()),
+            pending_approvals: Mutex::new(HashMap::new()),
+            pending_inputs: Mutex::new(HashMap::new()),
+            tx,
+            handle: Mutex::new(None),
+            completion,
+            cancel_token: state.inner.shutdown_token.child_token(),
         });
-        *record.handle.lock().await = Some(handle);
 
-        record.cancel_token.cancel();
-        drain_job_supervisors(&state).await;
+        let (release_first, first_released) = oneshot::channel::<()>();
+        let first_completion = first.completion.clone();
+        let first_handle = state.inner.supervisors.spawn(async move {
+            let _guard = JobCompletionGuard::new(first_completion);
+            let _ = first_released.await;
+        });
+        *first.handle.lock().await = Some(first_handle);
 
-        assert!(*record.completion.borrow());
-        assert!(record.handle.lock().await.is_none());
+        let (release_second, second_released) = oneshot::channel::<()>();
+        let second_completion = second.completion.clone();
+        let second_handle = state.inner.supervisors.spawn(async move {
+            let _guard = JobCompletionGuard::new(second_completion);
+            let _ = second_released.await;
+        });
+        *second.handle.lock().await = Some(second_handle);
+        state
+            .inner
+            .jobs
+            .write()
+            .await
+            .insert(second.job_id, Arc::clone(&second));
+
+        assert_eq!(
+            live_job(&state, first.job_id).await.unwrap().run_id,
+            second.run_id
+        );
+        let drain_state = state.clone();
+        let drain = tokio::spawn(async move {
+            drain_job_supervisors(&drain_state).await;
+        });
+        tokio::task::yield_now().await;
+        assert!(!drain.is_finished());
+
+        release_second.send(()).unwrap();
+        wait_for_job_completion(&second).await;
+        tokio::task::yield_now().await;
+        assert!(
+            !drain.is_finished(),
+            "the superseded supervisor must remain part of graceful drain"
+        );
+
+        release_first.send(()).unwrap();
+        drain.await.unwrap();
+
+        assert!(*first.completion.borrow());
+        assert!(*second.completion.borrow());
+        assert!(state.inner.supervisors.is_closed());
+        assert!(state.inner.supervisors.is_empty());
+        let first_handle = first.handle.lock().await.take().unwrap();
+        first_handle.await.unwrap();
+        assert!(second.handle.lock().await.is_none());
     }
 
     #[tokio::test]
