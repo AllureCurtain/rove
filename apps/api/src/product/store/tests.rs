@@ -1,5 +1,6 @@
 use std::{fs, path::PathBuf};
 
+use chrono::{Duration, TimeZone, Utc};
 use rove_runtime::types::{JobId, RunId, SessionId};
 use rusqlite::{Connection, params};
 use tempfile::TempDir;
@@ -16,6 +17,7 @@ use crate::product::{
 };
 
 use super::SqliteProductStore;
+use super::repository::{now_rfc3339, remove_expired_migration_preparations_at};
 
 fn open_store(temp: &TempDir) -> SqliteProductStore {
     SqliteProductStore::open(temp.path().join("product.sqlite"), 5_000).unwrap()
@@ -713,6 +715,106 @@ async fn migration_preflight_rejects_same_key_with_different_uncommitted_payload
     );
 }
 
+#[test]
+fn migration_preparation_ttl_removes_the_boundary_and_invalid_timestamps() {
+    let temp = TempDir::new().unwrap();
+    let _store = open_store(&temp);
+    let connection = Connection::open(temp.path().join("product.sqlite")).unwrap();
+    let now = Utc.with_ymd_and_hms(2026, 7, 27, 0, 0, 0).unwrap();
+    let at_boundary = (now - Duration::hours(24)).to_rfc3339();
+    let inside_boundary = (now - Duration::hours(24) + Duration::seconds(1)).to_rfc3339();
+    for (key, created_at) in [
+        ("ttl-boundary", at_boundary.as_str()),
+        ("ttl-inside", inside_boundary.as_str()),
+        ("ttl-invalid", "not-a-timestamp"),
+    ] {
+        connection
+            .execute(
+                r#"
+                INSERT INTO product_migration_preparations(
+                    source, source_schema_version, idempotency_key, request_digest,
+                    preferences_requested, preferences_revision, created_at
+                ) VALUES ('web_m1_local_storage', 1, ?1, ?2, 0, NULL, ?3)
+                "#,
+                params![key, format!("digest-{key}"), created_at],
+            )
+            .unwrap();
+    }
+
+    let removed = remove_expired_migration_preparations_at(&connection, now).unwrap();
+    let remaining: String = connection
+        .query_row(
+            "SELECT idempotency_key FROM product_migration_preparations",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+
+    assert_eq!(removed, 2);
+    assert_eq!(remaining, "ttl-inside");
+}
+
+#[test]
+fn expired_migration_preparations_are_removed_when_store_reopens() {
+    let temp = TempDir::new().unwrap();
+    let store = open_store(&temp);
+    Connection::open(temp.path().join("product.sqlite"))
+        .unwrap()
+        .execute(
+            r#"
+            INSERT INTO product_migration_preparations(
+                source, source_schema_version, idempotency_key, request_digest,
+                preferences_requested, preferences_revision, created_at
+            ) VALUES ('web_m1_local_storage', 1, 'expired-on-open', 'digest', 0, NULL,
+                      '2000-01-01T00:00:00Z')
+            "#,
+            [],
+        )
+        .unwrap();
+    drop(store);
+
+    let _reopened = open_store(&temp);
+
+    assert_eq!(raw_migration_preparation_count(&temp), 0);
+}
+
+#[tokio::test]
+async fn expired_migration_key_can_prepare_a_different_payload() {
+    let temp = TempDir::new().unwrap();
+    let store = open_store(&temp);
+    let first = preference_migration_request(
+        "expired-preparation-key",
+        M1SafePreferencesImport {
+            theme: Some(ProductThemePreference::Light),
+            source_active_workspace_id: None,
+            source_active_session_id: None,
+            provider_selection: None,
+        },
+    );
+    preflight_baseline(&store, &first).await;
+    Connection::open(temp.path().join("product.sqlite"))
+        .unwrap()
+        .execute(
+            "UPDATE product_migration_preparations SET created_at = '2000-01-01T00:00:00Z'",
+            [],
+        )
+        .unwrap();
+    let different = preference_migration_request(
+        "expired-preparation-key",
+        M1SafePreferencesImport {
+            theme: Some(ProductThemePreference::Dark),
+            source_active_workspace_id: None,
+            source_active_session_id: None,
+            provider_selection: None,
+        },
+    );
+
+    let baseline = preflight_baseline(&store, &different).await;
+
+    assert_eq!(baseline, M1PreferencesBaseline::Revision(0));
+    assert_eq!(raw_migration_preparation_count(&temp), 1);
+}
+
 #[tokio::test]
 async fn migration_preparations_are_bounded() {
     let temp = TempDir::new().unwrap();
@@ -731,7 +833,7 @@ async fn migration_preparations_are_bounded() {
                 params![
                     format!("bounded-preparation-{ordinal}"),
                     format!("digest-{ordinal}"),
-                    "2026-07-26T00:00:00Z",
+                    now_rfc3339(),
                 ],
             )
             .unwrap();
@@ -754,6 +856,45 @@ async fn migration_preparations_are_bounded() {
 
     assert_eq!(error.code, ProductErrorCode::ProductInvalidInput);
     assert_eq!(raw_migration_preparation_count(&temp), 4_096);
+}
+
+#[tokio::test]
+async fn expired_migration_preparations_do_not_exhaust_the_limit() {
+    let temp = TempDir::new().unwrap();
+    let store = open_store(&temp);
+    let mut connection = Connection::open(temp.path().join("product.sqlite")).unwrap();
+    let transaction = connection.transaction().unwrap();
+    for ordinal in 0..4_096 {
+        transaction
+            .execute(
+                r#"
+                INSERT INTO product_migration_preparations(
+                    source, source_schema_version, idempotency_key, request_digest,
+                    preferences_requested, preferences_revision, created_at
+                ) VALUES ('web_m1_local_storage', 1, ?1, ?2, 0, NULL,
+                          '2000-01-01T00:00:00Z')
+                "#,
+                params![
+                    format!("expired-bounded-preparation-{ordinal}"),
+                    format!("expired-digest-{ordinal}"),
+                ],
+            )
+            .unwrap();
+    }
+    transaction.commit().unwrap();
+    let request = preference_migration_request(
+        "preparation-after-expired-capacity",
+        M1SafePreferencesImport {
+            theme: None,
+            source_active_workspace_id: None,
+            source_active_session_id: None,
+            provider_selection: None,
+        },
+    );
+
+    preflight_baseline(&store, &request).await;
+
+    assert_eq!(raw_migration_preparation_count(&temp), 1);
 }
 
 #[tokio::test]

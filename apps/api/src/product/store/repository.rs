@@ -34,6 +34,7 @@ use super::validation::{
 };
 
 const MIGRATION_SOURCE_WEB_M1: &str = "web_m1_local_storage";
+const MIGRATION_PREPARATION_TTL_SECS: i64 = 24 * 60 * 60;
 
 #[derive(Debug, Clone)]
 pub(super) struct ProductRepository {
@@ -47,7 +48,16 @@ impl ProductRepository {
 
     pub(super) fn initialize_and_recover(&self) -> Result<u64, ProductStoreError> {
         self.database.initialize()?;
+        self.remove_expired_migration_preparations()?;
         self.recover_stale_turn_claims()
+    }
+
+    fn remove_expired_migration_preparations(&self) -> Result<u64, ProductStoreError> {
+        let mut connection = self.database.connect()?;
+        let transaction = immediate_transaction(&mut connection)?;
+        let removed = remove_expired_migration_preparations_at(&transaction, Utc::now())?;
+        transaction.commit().map_err(storage_error)?;
+        Ok(removed)
     }
 
     pub(super) fn recover_stale_turn_claims(&self) -> Result<u64, ProductStoreError> {
@@ -723,6 +733,7 @@ impl ProductRepository {
             .map_err(|_| invalid("browser migration request could not be normalized"))?;
         let mut connection = self.database.connect()?;
         let transaction = immediate_transaction(&mut connection)?;
+        remove_expired_migration_preparations_at(&transaction, Utc::now())?;
         if let Some(response) = replay_receipt(
             &transaction,
             request.source_schema_version,
@@ -784,6 +795,31 @@ impl ProductRepository {
         transaction.commit().map_err(storage_error)?;
         Ok(M1BrowserMigrationPreflight::Prepare(baseline))
     }
+}
+
+pub(super) fn remove_expired_migration_preparations_at(
+    connection: &Connection,
+    now: chrono::DateTime<Utc>,
+) -> Result<u64, ProductStoreError> {
+    let cutoff = (now - chrono::Duration::seconds(MIGRATION_PREPARATION_TTL_SECS))
+        .to_rfc3339_opts(SecondsFormat::Millis, true);
+    let removed = connection
+        .execute(
+            r#"
+            DELETE FROM product_migration_preparations
+            WHERE rowid IN (
+                SELECT rowid
+                FROM product_migration_preparations
+                WHERE julianday(created_at) IS NULL
+                   OR julianday(created_at) <= julianday(?1)
+                ORDER BY created_at ASC, rowid ASC
+                LIMIT ?2
+            )
+            "#,
+            params![cutoff, limit_i64(MAX_MIGRATION_PREPARATIONS)?],
+        )
+        .map_err(storage_error)?;
+    u64::try_from(removed).map_err(storage_error)
 }
 
 #[derive(Debug)]
