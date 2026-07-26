@@ -18,6 +18,7 @@ const RUNS_BY_JOB_INDEX: &str = "idx_runs_job_started";
 const MAX_INSPECTION_RUNTIME_ID_BYTES: i64 = 64;
 const MAX_INSPECTION_STATUS_BYTES: i64 = 64;
 const MAX_INSPECTION_PATH_BYTES: i64 = 64 * 1_024;
+const MAX_EXTERNAL_COMMIT_JOB_RUNS: usize = 256;
 
 const MIGRATION_001: &str = r#"
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -230,6 +231,24 @@ pub struct JobRunInspectionRun {
     pub task_state_path: Option<PathBuf>,
 }
 
+/// A short-lived SQLite write reservation for exact terminal job/run pairs.
+///
+/// The guard does not mutate runtime rows. Holding the `BEGIN IMMEDIATE`
+/// transaction prevents a concurrent run start or resume from changing the
+/// validated identities while another local database commits their mapping.
+/// Dropping the guard rolls the reservation back, including on process unwind.
+pub struct ExternalJobRunCommitGuard {
+    connection: Option<Connection>,
+}
+
+impl Drop for ExternalJobRunCommitGuard {
+    fn drop(&mut self) {
+        if let Some(connection) = self.connection.take() {
+            let _ = connection.execute_batch("ROLLBACK");
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReportIndexRecord {
     pub run_id: RunId,
@@ -303,6 +322,10 @@ impl StateIndex {
 
     pub fn path(&self) -> &Path {
         &self.db_path
+    }
+
+    pub fn busy_timeout_ms(&self) -> u64 {
+        self.busy_timeout_ms
     }
 
     pub fn initialize(&self) -> std::io::Result<()> {
@@ -791,6 +814,81 @@ impl StateIndex {
         })
         .await
         .map_err(std::io::Error::other)?
+    }
+
+    /// Reserve one runtime database while an external local store commits
+    /// mappings for the supplied exact job/run pairs.
+    ///
+    /// Eligibility is evaluated after the write reservation is acquired and
+    /// preserves input order. A pair is eligible only when it is still the
+    /// job's latest terminal run, the run is terminal, both identities share a
+    /// session, and an indexed bounded lookup finds no other run for the job.
+    pub async fn guard_job_runs_for_external_commit_async(
+        &self,
+        expected: Vec<(JobId, RunId)>,
+    ) -> std::io::Result<(Vec<bool>, ExternalJobRunCommitGuard)> {
+        let index = self.clone();
+        tokio::task::spawn_blocking(move || index.guard_job_runs_for_external_commit(&expected))
+            .await
+            .map_err(std::io::Error::other)?
+    }
+
+    pub fn guard_job_runs_for_external_commit(
+        &self,
+        expected: &[(JobId, RunId)],
+    ) -> std::io::Result<(Vec<bool>, ExternalJobRunCommitGuard)> {
+        if expected.is_empty() || expected.len() > MAX_EXTERNAL_COMMIT_JOB_RUNS {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "external commit guard requires a bounded non-empty job/run set",
+            ));
+        }
+
+        let connection = self.connect_existing_write_guard()?;
+        connection
+            .execute_batch("BEGIN IMMEDIATE")
+            .map_err(io_other)?;
+        ensure_current_schema_for_read_only_inspection(&connection)?;
+        ensure_runs_by_job_index(&connection)?;
+        let eligibility = expected
+            .iter()
+            .map(|(job_id, run_id)| {
+                connection
+                    .query_row(
+                        r#"
+                        SELECT EXISTS (
+                            SELECT 1
+                            FROM jobs
+                            JOIN runs
+                              ON runs.run_id = jobs.run_id
+                             AND runs.job_id = jobs.job_id
+                             AND runs.session_id = jobs.session_id
+                            WHERE jobs.job_id = ?1
+                              AND jobs.run_id = ?2
+                              AND jobs.status IN ('done', 'error', 'cancelled', 'interrupted')
+                              AND runs.status IN ('done', 'error', 'cancelled', 'interrupted')
+                              AND NOT EXISTS (
+                                  SELECT 1
+                                  FROM runs AS job_runs INDEXED BY idx_runs_job_started
+                                  WHERE job_runs.job_id = jobs.job_id
+                                    AND job_runs.run_id <> jobs.run_id
+                                  LIMIT 1
+                              )
+                        )
+                        "#,
+                        params![job_id.to_string(), run_id.to_string()],
+                        |row| row.get::<_, bool>(0),
+                    )
+                    .map_err(io_other)
+            })
+            .collect::<std::io::Result<Vec<_>>>()?;
+
+        Ok((
+            eligibility,
+            ExternalJobRunCommitGuard {
+                connection: Some(connection),
+            },
+        ))
     }
 
     pub fn inspect_job_run_read_only(
@@ -1703,6 +1801,39 @@ impl StateIndex {
         Ok(connection)
     }
 
+    fn connect_existing_write_guard(&self) -> std::io::Result<Connection> {
+        let metadata = match std::fs::symlink_metadata(self.db_path.as_ref()) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("state index not found at {}", self.db_path.display()),
+                ));
+            }
+            Err(error) => return Err(error),
+        };
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "state index is not a regular file at {}",
+                    self.db_path.display()
+                ),
+            ));
+        }
+        let connection = Connection::open_with_flags(
+            self.db_path.as_ref(),
+            OpenFlags::SQLITE_OPEN_READ_WRITE
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX
+                | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+        )
+        .map_err(io_other)?;
+        connection
+            .busy_timeout(Duration::from_millis(self.busy_timeout_ms))
+            .map_err(io_other)?;
+        Ok(connection)
+    }
+
     fn mark_pending_status(
         &self,
         table: &str,
@@ -2221,6 +2352,16 @@ fn io_other(err: rusqlite::Error) -> std::io::Error {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    fn create_directory_symlink(target: &Path, link: &Path) -> bool {
+        std::os::unix::fs::symlink(target, link).is_ok()
+    }
+
+    #[cfg(windows)]
+    fn create_directory_symlink(target: &Path, link: &Path) -> bool {
+        std::os::windows::fs::symlink_dir(target, link).is_ok()
+    }
+
     fn indexed_run() -> (tempfile::TempDir, StateIndex, SessionId, JobId, RunId) {
         let temp = tempfile::TempDir::new().unwrap();
         let index = StateIndex::new(temp.path());
@@ -2238,6 +2379,106 @@ mod tests {
             )
             .unwrap();
         (temp, index, session_id, job_id, run_id)
+    }
+
+    #[test]
+    fn external_commit_guard_rechecks_the_singleton_latest_run() {
+        let (temp, index, session_id, job_id, first_run_id) = indexed_run();
+        index
+            .record_report(
+                first_run_id,
+                &temp.path().join("first-report.json"),
+                "success",
+                "final",
+            )
+            .unwrap();
+        let second_run_id = RunId::new();
+        index
+            .record_run_started(
+                session_id,
+                job_id,
+                second_run_id,
+                &temp.path().join("second-run"),
+                &temp.path().join("second-trace.jsonl"),
+            )
+            .unwrap();
+        index
+            .record_report(
+                second_run_id,
+                &temp.path().join("second-report.json"),
+                "success",
+                "final",
+            )
+            .unwrap();
+
+        let (eligible, _guard) = index
+            .guard_job_runs_for_external_commit(&[(job_id, first_run_id)])
+            .unwrap();
+
+        assert_eq!(eligible, vec![false]);
+    }
+
+    #[test]
+    fn external_commit_guard_does_not_create_missing_runtime_state() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let database = temp.path().join("missing.sqlite");
+        let index = StateIndex::with_path(temp.path(), database.clone(), 1);
+
+        let error = index
+            .guard_job_runs_for_external_commit(&[(JobId::new(), RunId::new())])
+            .err()
+            .expect("missing runtime state must fail closed");
+
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+        assert!(!database.exists());
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn external_commit_guard_rejects_a_symlinked_database_parent() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let target_dir = temp.path().join("target");
+        std::fs::create_dir_all(&target_dir).unwrap();
+        let target_index = StateIndex::new(&target_dir);
+        target_index.initialize().unwrap();
+        let linked_dir = temp.path().join("linked");
+        if !create_directory_symlink(&target_dir, &linked_dir) {
+            return;
+        }
+        let linked_index = StateIndex::with_path(
+            &linked_dir,
+            linked_dir.join("state.sqlite"),
+            DEFAULT_BUSY_TIMEOUT_MS,
+        );
+
+        let error = linked_index
+            .guard_job_runs_for_external_commit(&[(JobId::new(), RunId::new())])
+            .err()
+            .expect("external commit guard must not follow a symlinked parent");
+
+        assert_ne!(error.kind(), std::io::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn external_commit_guard_blocks_resume_until_it_is_dropped() {
+        let (temp, index, _session_id, job_id, run_id) = indexed_run();
+        index
+            .record_report(run_id, &temp.path().join("report.json"), "success", "final")
+            .unwrap();
+        let (eligible, guard) = index
+            .guard_job_runs_for_external_commit(&[(job_id, run_id)])
+            .unwrap();
+        assert_eq!(eligible, vec![true]);
+
+        let contender = StateIndex::with_path(temp.path(), index.path().to_path_buf(), 1);
+        assert!(contender.claim_job_for_resume(job_id, run_id).is_err());
+
+        drop(guard);
+        let claim = contender
+            .claim_job_for_resume(job_id, run_id)
+            .unwrap()
+            .expect("terminal run should become resumable after guard release");
+        assert!(contender.release_job_resume_claim(&claim).unwrap());
     }
 
     #[test]

@@ -514,6 +514,7 @@ pub enum M1MigrationIssueCode {
     AmbiguousRuntimeBinding,
     RuntimeBindingNotFound,
     InvalidPreferenceReference,
+    PreferenceWriteConflict,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -564,7 +565,7 @@ pub struct CommitProductRunBinding {
 /// Runtime identity validated by the coordinator before a browser migration
 /// enters the ProductStore transaction. Browser hints never construct this
 /// type directly.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifiedM1SessionRunBinding {
     pub source_session_id: String,
     pub ordinal: u64,
@@ -576,6 +577,23 @@ pub struct VerifiedM1SessionRunBinding {
     pub(crate) verified_workspace_kind: ProductWorkspaceKind,
 }
 
+/// Server-owned compare-and-set token captured before runtime migration
+/// inspection. It is intentionally absent from the browser request digest.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum M1PreferencesBaseline {
+    NotRequested,
+    Revision(u64),
+}
+
+/// Result of the atomic migration receipt/preferences preflight read.
+#[doc(hidden)]
+#[derive(Debug, Clone)]
+pub enum M1BrowserMigrationPreflight {
+    Replay(M1BrowserMigrationResponse),
+    Prepare(M1PreferencesBaseline),
+}
+
 /// Sanitized migration plus server-side runtime validation results. The store
 /// commits entity mappings, verified bindings, issues, and receipt atomically.
 #[derive(Debug, Clone)]
@@ -583,6 +601,7 @@ pub struct PreparedM1BrowserMigration {
     pub request: M1BrowserMigrationRequest,
     pub verified_run_bindings: Vec<VerifiedM1SessionRunBinding>,
     pub issues: Vec<M1MigrationIssue>,
+    pub(crate) preferences_baseline: M1PreferencesBaseline,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -728,7 +747,7 @@ pub trait ProductStore: Send + Sync {
     async fn preflight_m1_browser_migration(
         &self,
         request: &M1BrowserMigrationRequest,
-    ) -> Result<Option<M1BrowserMigrationResponse>, ProductStoreError>;
+    ) -> Result<M1BrowserMigrationPreflight, ProductStoreError>;
     async fn apply_m1_browser_migration(
         &self,
         migration: PreparedM1BrowserMigration,

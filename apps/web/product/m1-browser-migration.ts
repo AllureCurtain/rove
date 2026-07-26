@@ -1072,7 +1072,8 @@ function deterministicRejection(
 ): error is ProductApiError {
   return (
     error instanceof ProductApiError &&
-    (error.status === 400 || error.status === 409)
+    (error.status === 400 ||
+      (error.status === 409 && error.code !== "product_session_active"))
   );
 }
 

@@ -58,7 +58,7 @@ use provider::{
 };
 
 const EVENT_BUFFER: usize = 256;
-const PRODUCT_MIGRATION_DEADLINE: Duration = Duration::from_secs(30);
+pub(crate) const PRODUCT_MIGRATION_PREPARATION_DEADLINE: Duration = Duration::from_secs(30);
 
 #[derive(Clone)]
 pub struct ApiState {
@@ -72,6 +72,7 @@ struct ApiStateInner {
     product_store: Option<Arc<dyn ProductStore>>,
     product_transcript_reader: Option<Arc<dyn ProductTranscriptReader>>,
     shutdown_token: CancellationToken,
+    job_starts: TaskTracker,
     supervisors: TaskTracker,
     jobs: RwLock<HashMap<JobId, Arc<JobRecord>>>,
     model_health: Arc<ModelHealthStore>,
@@ -193,8 +194,7 @@ struct RunsQuery {
 pub fn router(state: ApiState) -> Router {
     let migration_router: OpenApiRouter<ApiState> = OpenApiRouter::new()
         .routes(routes!(product::routes::migrate_m1_browser_state))
-        .route_layer(DefaultBodyLimit::max(MAX_M1_BROWSER_MIGRATION_BODY_BYTES))
-        .route_layer(middleware::from_fn(product_migration_deadline));
+        .route_layer(DefaultBodyLimit::max(MAX_M1_BROWSER_MIGRATION_BODY_BYTES));
     let (api_router, api) = OpenApiRouter::with_openapi(docs::ApiDoc::openapi())
         .routes(routes!(list_provider_models))
         .routes(routes!(test_provider))
@@ -238,20 +238,6 @@ pub fn router(state: ApiState) -> Router {
         .split_for_parts();
 
     api_router.merge(SwaggerUi::new("/swagger-ui").url("/api/openapi.json", api))
-}
-
-async fn product_migration_deadline(
-    request: axum::extract::Request,
-    next: middleware::Next,
-) -> axum::response::Response {
-    match tokio::time::timeout(PRODUCT_MIGRATION_DEADLINE, next.run(request)).await {
-        Ok(response) => response,
-        Err(_) => axum::response::IntoResponse::into_response(ApiError {
-            status: StatusCode::GATEWAY_TIMEOUT,
-            code: ProductErrorCode::ProductStorageFailure.as_str(),
-            message: "browser migration exceeded its execution deadline".to_string(),
-        }),
-    }
 }
 
 pub async fn serve(addr: Option<SocketAddr>, cwd: PathBuf) -> anyhow::Result<()> {
@@ -368,6 +354,7 @@ impl ApiState {
                 product_store,
                 product_transcript_reader,
                 shutdown_token,
+                job_starts: TaskTracker::new(),
                 supervisors: TaskTracker::new(),
                 jobs: RwLock::new(HashMap::new()),
                 model_health,
@@ -437,6 +424,30 @@ async fn create_job(
         ));
     }
 
+    let response = start_tracked_job(state, req)
+        .await
+        .map_err(|_| ApiError::internal("job start task did not complete"))??;
+
+    Ok(Json(response))
+}
+
+fn start_tracked_job(
+    state: ApiState,
+    req: CreateJobRequest,
+) -> oneshot::Receiver<Result<CreateJobResponse, ApiError>> {
+    let (response_tx, response_rx) = oneshot::channel();
+    let job_starts = state.inner.job_starts.clone();
+    drop(job_starts.spawn(async move {
+        let result = prepare_and_start_job(state, req).await;
+        let _ = response_tx.send(result);
+    }));
+    response_rx
+}
+
+async fn prepare_and_start_job(
+    state: ApiState,
+    req: CreateJobRequest,
+) -> Result<CreateJobResponse, ApiError> {
     let launch = prepare_job_launch(&state, &req).await?;
     let record = Arc::clone(&launch.record);
     let response = CreateJobResponse {
@@ -446,7 +457,7 @@ async fn create_job(
     };
     start_job_supervisor(state, launch).await;
 
-    Ok(Json(response))
+    Ok(response)
 }
 
 #[utoipa::path(
@@ -1951,6 +1962,8 @@ async fn wait_for_job_completion(record: &JobRecord) {
 }
 
 async fn drain_job_supervisors(state: &ApiState) {
+    state.inner.job_starts.close();
+    state.inner.job_starts.wait().await;
     state.inner.supervisors.close();
     state.inner.supervisors.wait().await;
 
@@ -2393,6 +2406,17 @@ impl ApiError {
     pub(crate) fn not_implemented(code: &'static str, message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::NOT_IMPLEMENTED,
+            code,
+            message: message.into(),
+        }
+    }
+
+    pub(crate) fn gateway_timeout_with_code(
+        code: &'static str,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            status: StatusCode::GATEWAY_TIMEOUT,
             code,
             message: message.into(),
         }
@@ -2907,11 +2931,139 @@ mod tests {
 
         assert!(*first.completion.borrow());
         assert!(*second.completion.borrow());
+        assert!(state.inner.job_starts.is_closed());
+        assert!(state.inner.job_starts.is_empty());
         assert!(state.inner.supervisors.is_closed());
         assert!(state.inner.supervisors.is_empty());
         let first_handle = first.handle.lock().await.take().unwrap();
         first_handle.await.unwrap();
         assert!(second.handle.lock().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn dropped_job_start_waiter_does_not_cancel_a_blocked_product_claim() {
+        let server = tempfile::TempDir::new().unwrap();
+        let workspace_root = server.path().join("product-workspace");
+        std::fs::create_dir_all(&workspace_root).unwrap();
+        let workspace = Workspace::detect(server.path()).unwrap();
+        let mut config = AppConfig::default();
+        config.state.state_dir = PathBuf::from("api-state");
+        config.state.sqlite_busy_timeout_ms = 5_000;
+        let state = ApiState::new(workspace, config);
+        let store = state.product_store().unwrap();
+        let product_workspace = store
+            .create_workspace(CreateProductWorkspaceRequest {
+                root: workspace_root,
+                kind: ProductWorkspaceKind::Folder,
+                display_name: Some("Tracked start".to_string()),
+                pinned: false,
+            })
+            .await
+            .unwrap();
+        let product_session = store
+            .create_session(CreateProductSessionRequest {
+                workspace_id: product_workspace.id.clone(),
+                title: Some("Disconnect during claim".to_string()),
+            })
+            .await
+            .unwrap();
+
+        let blocker = rusqlite::Connection::open(state.product_store_path()).unwrap();
+        blocker.execute_batch("BEGIN IMMEDIATE").unwrap();
+        let response = start_tracked_job(
+            state.clone(),
+            CreateJobRequest {
+                message: "finish after the response waiter disconnects".to_string(),
+                model: Some("fake".to_string()),
+                max_steps: Some(1),
+                approval: None,
+                resume: None,
+                workspace: None,
+                provider: None,
+                product_session_id: Some(product_session.id.clone()),
+            },
+        );
+        assert_eq!(state.inner.job_starts.len(), 1);
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        drop(response);
+        assert_eq!(
+            state.inner.job_starts.len(),
+            1,
+            "dropping the HTTP response waiter must not cancel the owned start task"
+        );
+
+        blocker.execute_batch("ROLLBACK").unwrap();
+        drop(blocker);
+        tokio::time::timeout(Duration::from_secs(5), drain_job_supervisors(&state))
+            .await
+            .expect("tracked job start and supervisor should drain after the database unlock");
+
+        let sessions = store.list_sessions(&product_workspace.id).await.unwrap();
+        let session = sessions
+            .into_iter()
+            .find(|session| session.id == product_session.id)
+            .expect("product session");
+        assert_eq!(session.status, ProductSessionStatus::Idle);
+        assert!(session.runtime_binding.is_some());
+        assert_eq!(
+            store
+                .list_run_bindings(&product_session.id)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        let claim = store.claim_session_turn(&product_session.id).await.unwrap();
+        store
+            .finish_session_turn(&claim.claim_id, claim.previous_status)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn shutdown_drains_job_starts_before_supervisors() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let workspace = Workspace::detect(temp_dir.path()).unwrap();
+        let state = ApiState::new(workspace, AppConfig::default());
+        let supervisors = state.inner.supervisors.clone();
+        let (start_entered_tx, start_entered_rx) = oneshot::channel();
+        let (release_start_tx, release_start_rx) = oneshot::channel();
+        let (supervisor_entered_tx, supervisor_entered_rx) = oneshot::channel();
+        let (release_supervisor_tx, release_supervisor_rx) = oneshot::channel();
+        drop(state.inner.job_starts.spawn(async move {
+            let _ = start_entered_tx.send(());
+            let _ = release_start_rx.await;
+            drop(supervisors.spawn(async move {
+                let _ = supervisor_entered_tx.send(());
+                let _ = release_supervisor_rx.await;
+            }));
+        }));
+        start_entered_rx.await.unwrap();
+
+        let drain_state = state.clone();
+        let drain = tokio::spawn(async move {
+            drain_job_supervisors(&drain_state).await;
+        });
+        tokio::task::yield_now().await;
+        assert!(state.inner.job_starts.is_closed());
+        assert!(!state.inner.supervisors.is_closed());
+        assert!(!drain.is_finished());
+
+        release_start_tx.send(()).unwrap();
+        supervisor_entered_rx.await.unwrap();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !state.inner.supervisors.is_closed() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("supervisor tracker should close after all job starts drain");
+        assert!(!drain.is_finished());
+
+        release_supervisor_tx.send(()).unwrap();
+        drain.await.unwrap();
+        assert!(state.inner.job_starts.is_empty());
+        assert!(state.inner.supervisors.is_empty());
     }
 
     #[tokio::test]

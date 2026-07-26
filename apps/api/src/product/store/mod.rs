@@ -15,11 +15,11 @@ use async_trait::async_trait;
 
 use crate::product::{
     CommitProductRunBinding, CreateProductProviderProfileRequest, CreateProductSessionRequest,
-    CreateProductWorkspaceRequest, M1BrowserMigrationRequest, M1BrowserMigrationResponse,
-    PreparedM1BrowserMigration, ProductErrorCode, ProductPreferences, ProductProviderProfile,
-    ProductProviderProfileId, ProductSession, ProductSessionContext, ProductSessionId,
-    ProductSessionRunBinding, ProductSessionStatus, ProductStore, ProductStoreError,
-    ProductTurnClaim, ProductTurnClaimId, ProductWorkspace, ProductWorkspaceId,
+    CreateProductWorkspaceRequest, M1BrowserMigrationPreflight, M1BrowserMigrationRequest,
+    M1BrowserMigrationResponse, PreparedM1BrowserMigration, ProductErrorCode, ProductPreferences,
+    ProductProviderProfile, ProductProviderProfileId, ProductSession, ProductSessionContext,
+    ProductSessionId, ProductSessionRunBinding, ProductSessionStatus, ProductStore,
+    ProductStoreError, ProductTurnClaim, ProductTurnClaimId, ProductWorkspace, ProductWorkspaceId,
     UpdateProductPreferencesRequest, UpdateProductProviderProfileRequest,
     UpdateProductSessionRequest,
 };
@@ -226,7 +226,7 @@ impl ProductStore for SqliteProductStore {
     async fn preflight_m1_browser_migration(
         &self,
         request: &M1BrowserMigrationRequest,
-    ) -> Result<Option<M1BrowserMigrationResponse>, ProductStoreError> {
+    ) -> Result<M1BrowserMigrationPreflight, ProductStoreError> {
         let request = request.clone();
         self.blocking(move |repository| repository.preflight_m1_browser_migration(&request))
             .await

@@ -5,30 +5,57 @@
 //! run and an exact, workspace-consistent task-state snapshot. Multi-run chains
 //! remain ambiguous until the runtime persists an explicit predecessor.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::fmt;
 use std::io::ErrorKind;
+use std::ops::Deref;
 use std::path::{Path, PathBuf};
 
-use rove_runtime::state::index::JobRunInspectionSnapshot;
+use rove_runtime::state::index::{ExternalJobRunCommitGuard, JobRunInspectionSnapshot, StateIndex};
 use rove_runtime::state::store::{StateStore, validate_task_state_schema};
 use rove_runtime::types::{JobId, RunId, TaskState};
 use rove_runtime::workspace::{Workspace, WorkspaceKind};
 use tokio::io::AsyncReadExt;
 
 use super::{
-    M1BrowserMigrationRequest, M1MigrationIssue, M1MigrationIssueCode, M1SessionImport,
-    M1WorkspaceImport, PreparedM1BrowserMigration, ProductErrorCode, ProductStoreError,
-    ProductWorkspaceKind, VerifiedM1SessionRunBinding,
+    M1BrowserMigrationRequest, M1MigrationIssue, M1MigrationIssueCode, M1PreferencesBaseline,
+    M1SessionImport, M1WorkspaceImport, PreparedM1BrowserMigration, ProductErrorCode,
+    ProductStoreError, ProductWorkspaceKind, VerifiedM1SessionRunBinding,
 };
 
 const MAX_MIGRATION_RUNTIME_INSPECTIONS: usize = 256;
 const MAX_MIGRATION_TASK_STATE_BYTES: u64 = 16 * 1_048_576;
 const MAX_MIGRATION_TASK_STATE_TOTAL_BYTES: u64 = 64 * 1_048_576;
 
+pub(crate) struct GuardedM1BrowserMigration {
+    pub(crate) migration: PreparedM1BrowserMigration,
+    pub(crate) runtime_guards: Vec<ExternalJobRunCommitGuard>,
+}
+
+impl fmt::Debug for GuardedM1BrowserMigration {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("GuardedM1BrowserMigration")
+            .field("migration", &self.migration)
+            .field("runtime_guard_count", &self.runtime_guards.len())
+            .finish()
+    }
+}
+
+impl Deref for GuardedM1BrowserMigration {
+    type Target = PreparedM1BrowserMigration;
+
+    fn deref(&self) -> &Self::Target {
+        &self.migration
+    }
+}
+
 pub(crate) async fn prepare_m1_browser_migration<F>(
     request: M1BrowserMigrationRequest,
+    preferences_baseline: M1PreferencesBaseline,
+    allow_external_paths: bool,
     mut state_store_for: F,
-) -> Result<PreparedM1BrowserMigration, ProductStoreError>
+) -> Result<GuardedM1BrowserMigration, ProductStoreError>
 where
     F: FnMut(&Workspace) -> StateStore,
 {
@@ -80,11 +107,15 @@ where
     }
 
     let mut candidates = Vec::new();
-    let mut read_budget = MigrationReadBudget::new();
     for candidate in hint_candidates {
         let state_store = state_store_for(&candidate.workspace);
-        let snapshot = match state_store
-            .index
+        let (_, inspection_index) = canonical_runtime_index(
+            &candidate.workspace,
+            &state_store.index,
+            allow_external_paths,
+        )
+        .await?;
+        let snapshot = match inspection_index
             .inspect_job_run_read_only_async(candidate.hint.job_id, candidate.hint.run_id, 1)
             .await
         {
@@ -99,16 +130,13 @@ where
             }
             Err(_) => return Err(runtime_storage_error()),
         };
-        match verify_singleton_binding(
-            &candidate.session,
+        match verify_singleton_snapshot(
+            &candidate.session.source_id,
             candidate.hint,
             &candidate.workspace,
             &state_store,
             snapshot,
-            &mut read_budget,
-        )
-        .await
-        {
+        ) {
             Ok(binding) => candidates.push(binding),
             Err(BindingVerificationError::Issue(code)) => {
                 push_runtime_issue(&mut issues, &candidate.session, code);
@@ -119,10 +147,21 @@ where
     }
 
     reject_contested_runtime_identities(&mut candidates, &mut issues);
-    Ok(PreparedM1BrowserMigration {
-        request,
-        verified_run_bindings: candidates,
-        issues,
+    let (verified_run_bindings, runtime_guards) = guard_and_verify_runtime_bindings(
+        candidates,
+        &mut issues,
+        allow_external_paths,
+        &mut state_store_for,
+    )
+    .await?;
+    Ok(GuardedM1BrowserMigration {
+        migration: PreparedM1BrowserMigration {
+            request,
+            verified_run_bindings,
+            issues,
+            preferences_baseline,
+        },
+        runtime_guards,
     })
 }
 
@@ -258,6 +297,215 @@ async fn runtime_workspace_for_import(import: &M1WorkspaceImport) -> Option<Work
     })
 }
 
+async fn guard_and_verify_runtime_bindings<F>(
+    candidates: Vec<VerifiedM1SessionRunBinding>,
+    issues: &mut Vec<M1MigrationIssue>,
+    allow_external_paths: bool,
+    state_store_for: &mut F,
+) -> Result<
+    (
+        Vec<VerifiedM1SessionRunBinding>,
+        Vec<ExternalJobRunCommitGuard>,
+    ),
+    ProductStoreError,
+>
+where
+    F: FnMut(&Workspace) -> StateStore,
+{
+    if candidates.is_empty() {
+        return Ok((Vec::new(), Vec::new()));
+    }
+
+    let mut groups: BTreeMap<PathBuf, (StateIndex, Vec<usize>)> = BTreeMap::new();
+    let mut guarded_indices = vec![None; candidates.len()];
+    for (index, binding) in candidates.iter().enumerate() {
+        let workspace = workspace_for_verified_binding(binding);
+        let state_store = state_store_for(&workspace);
+        let (index_path, guarded_index) =
+            canonical_runtime_index(&workspace, &state_store.index, allow_external_paths).await?;
+        guarded_indices[index] = Some(guarded_index.clone());
+        groups
+            .entry(index_path)
+            .and_modify(|(_, indices)| indices.push(index))
+            .or_insert_with(|| (guarded_index, vec![index]));
+    }
+
+    let mut eligible = vec![false; candidates.len()];
+    let mut guard_paths = vec![None; candidates.len()];
+    let mut runtime_guards = Vec::with_capacity(groups.len());
+    for (index_path, (guarded_index, indices)) in groups {
+        let expected = indices
+            .iter()
+            .map(|index| {
+                let binding = &candidates[*index];
+                (binding.runtime_job_id, binding.runtime_run_id)
+            })
+            .collect();
+        let (group_eligible, guard) = guarded_index
+            .guard_job_runs_for_external_commit_async(expected)
+            .await
+            .map_err(|_| runtime_storage_error())?;
+        if group_eligible.len() != indices.len() {
+            return Err(runtime_storage_error());
+        }
+        for (index, is_eligible) in indices.into_iter().zip(group_eligible) {
+            eligible[index] = is_eligible;
+            guard_paths[index] = Some(index_path.clone());
+        }
+        runtime_guards.push((index_path, guard));
+    }
+
+    let mut verified = Vec::with_capacity(candidates.len());
+    let mut retained_guard_paths = BTreeSet::new();
+    let mut read_budget = MigrationReadBudget::new();
+    for (index, candidate) in candidates.into_iter().enumerate() {
+        if !eligible[index] {
+            push_verified_runtime_issue(
+                issues,
+                &candidate,
+                M1MigrationIssueCode::AmbiguousRuntimeBinding,
+            );
+            continue;
+        }
+
+        let workspace = workspace_for_verified_binding(&candidate);
+        let state_store = state_store_for(&workspace);
+        let guarded_index = guarded_indices[index]
+            .as_ref()
+            .ok_or_else(runtime_storage_error)?;
+        let snapshot = match guarded_index
+            .inspect_job_run_read_only_async(candidate.runtime_job_id, candidate.runtime_run_id, 1)
+            .await
+        {
+            Ok(snapshot) => snapshot,
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                push_verified_runtime_issue(
+                    issues,
+                    &candidate,
+                    M1MigrationIssueCode::RuntimeBindingNotFound,
+                );
+                continue;
+            }
+            Err(_) => return Err(runtime_storage_error()),
+        };
+        let reverified = match verify_singleton_snapshot(
+            &candidate.source_session_id,
+            ExactRuntimeHint {
+                job_id: candidate.runtime_job_id,
+                run_id: candidate.runtime_run_id,
+            },
+            &workspace,
+            &state_store,
+            snapshot,
+        ) {
+            Ok(binding) if binding == candidate => binding,
+            Ok(_) => {
+                push_verified_runtime_issue(
+                    issues,
+                    &candidate,
+                    M1MigrationIssueCode::AmbiguousRuntimeBinding,
+                );
+                continue;
+            }
+            Err(BindingVerificationError::Issue(code)) => {
+                push_verified_runtime_issue(issues, &candidate, code);
+                continue;
+            }
+            Err(BindingVerificationError::Storage) => return Err(runtime_storage_error()),
+            Err(BindingVerificationError::Limit) => {
+                return Err(runtime_inspection_limit_error());
+            }
+        };
+        match verify_singleton_artifacts(
+            &reverified,
+            &workspace,
+            &state_store,
+            allow_external_paths,
+            &mut read_budget,
+        )
+        .await
+        {
+            Ok(()) => {
+                retained_guard_paths.insert(
+                    guard_paths[index]
+                        .clone()
+                        .ok_or_else(runtime_storage_error)?,
+                );
+                verified.push(reverified);
+            }
+            Err(BindingVerificationError::Issue(code)) => {
+                push_verified_runtime_issue(issues, &candidate, code);
+            }
+            Err(BindingVerificationError::Storage) => return Err(runtime_storage_error()),
+            Err(BindingVerificationError::Limit) => {
+                return Err(runtime_inspection_limit_error());
+            }
+        }
+    }
+
+    let runtime_guards = runtime_guards
+        .into_iter()
+        .filter_map(|(path, guard)| retained_guard_paths.contains(&path).then_some(guard))
+        .collect();
+
+    Ok((verified, runtime_guards))
+}
+
+async fn canonical_runtime_index(
+    workspace: &Workspace,
+    index: &StateIndex,
+    allow_external_paths: bool,
+) -> Result<(PathBuf, StateIndex), ProductStoreError> {
+    let canonical_workspace_root = tokio::fs::canonicalize(&workspace.root)
+        .await
+        .map_err(|_| runtime_storage_error())?;
+    let canonical_index_path = tokio::fs::canonicalize(index.path())
+        .await
+        .map_err(|_| runtime_storage_error())?;
+    if !runtime_path_uses_local_disk_namespace(&canonical_workspace_root)
+        || !runtime_path_uses_local_disk_namespace(&canonical_index_path)
+        || (!allow_external_paths && !canonical_index_path.starts_with(&canonical_workspace_root))
+    {
+        return Err(runtime_storage_error());
+    }
+    let canonical_state_dir = canonical_index_path
+        .parent()
+        .ok_or_else(runtime_storage_error)?;
+    let guarded_index = StateIndex::with_path(
+        canonical_state_dir,
+        canonical_index_path.clone(),
+        index.busy_timeout_ms(),
+    );
+    Ok((canonical_index_path, guarded_index))
+}
+
+fn workspace_for_verified_binding(binding: &VerifiedM1SessionRunBinding) -> Workspace {
+    let kind = match binding.verified_workspace_kind {
+        ProductWorkspaceKind::Folder => WorkspaceKind::Folder,
+        ProductWorkspaceKind::Repo => WorkspaceKind::Repo,
+    };
+    Workspace {
+        root: binding.verified_workspace_root.clone(),
+        state_dir: binding.verified_workspace_root.join(".rove"),
+        kind,
+    }
+}
+
+fn push_verified_runtime_issue(
+    issues: &mut Vec<M1MigrationIssue>,
+    binding: &VerifiedM1SessionRunBinding,
+    code: M1MigrationIssueCode,
+) {
+    push_issue_unique(
+        issues,
+        M1MigrationIssue {
+            code,
+            entity: "session_runtime_binding".to_string(),
+            source_id: Some(binding.source_session_id.clone()),
+        },
+    );
+}
+
 fn migration_import_root_is_local(path: &Path) -> bool {
     if !path.is_absolute() {
         return false;
@@ -277,13 +525,12 @@ fn migration_import_root_is_local(path: &Path) -> bool {
     }
 }
 
-async fn verify_singleton_binding(
-    session: &M1SessionImport,
+fn verify_singleton_snapshot(
+    source_session_id: &str,
     hint: ExactRuntimeHint,
     workspace: &Workspace,
     state_store: &StateStore,
     snapshot: JobRunInspectionSnapshot,
-    read_budget: &mut MigrationReadBudget,
 ) -> Result<VerifiedM1SessionRunBinding, BindingVerificationError> {
     let job = snapshot
         .job
@@ -324,6 +571,34 @@ async fn verify_singleton_binding(
     {
         return Err(M1MigrationIssueCode::InvalidRuntimeHint.into());
     }
+
+    let verified_workspace_kind = match workspace.kind {
+        WorkspaceKind::Folder => ProductWorkspaceKind::Folder,
+        WorkspaceKind::Repo => ProductWorkspaceKind::Repo,
+        WorkspaceKind::Task => return Err(M1MigrationIssueCode::InvalidRuntimeHint.into()),
+    };
+
+    Ok(VerifiedM1SessionRunBinding {
+        source_session_id: source_session_id.to_string(),
+        ordinal: 1,
+        runtime_session_id: job.session_id,
+        runtime_job_id: hint.job_id,
+        runtime_run_id: hint.run_id,
+        resumed_from_run_id: None,
+        verified_workspace_root: workspace.root.clone(),
+        verified_workspace_kind,
+    })
+}
+
+async fn verify_singleton_artifacts(
+    binding: &VerifiedM1SessionRunBinding,
+    workspace: &Workspace,
+    state_store: &StateStore,
+    allow_external_paths: bool,
+    read_budget: &mut MigrationReadBudget,
+) -> Result<(), BindingVerificationError> {
+    let expected_run_dir = state_store.run_store.run_dir(&binding.runtime_run_id);
+    let expected_task_state_path = expected_run_dir.join("task_state.json");
     let expected_runs_dir = expected_run_dir
         .parent()
         .ok_or(M1MigrationIssueCode::InvalidRuntimeHint)?;
@@ -339,6 +614,7 @@ async fn verify_singleton_binding(
         || !runtime_path_uses_local_disk_namespace(&canonical_runs_dir)
         || !runtime_path_uses_local_disk_namespace(&canonical_run_dir)
         || !runtime_path_uses_local_disk_namespace(&canonical_task_state_path)
+        || (!allow_external_paths && !canonical_state_dir.starts_with(&workspace.root))
         || canonical_runs_dir.parent() != Some(canonical_state_dir.as_path())
         || canonical_run_dir.parent() != Some(canonical_runs_dir.as_path())
         || canonical_task_state_path.parent() != Some(canonical_run_dir.as_path())
@@ -346,30 +622,14 @@ async fn verify_singleton_binding(
         return Err(M1MigrationIssueCode::InvalidRuntimeHint.into());
     }
     let task_state = read_task_state(&canonical_task_state_path, read_budget).await?;
-    if task_state.session_id != job.session_id
-        || task_state.job_id != hint.job_id
-        || task_state.run_id != hint.run_id
+    if task_state.session_id != binding.runtime_session_id
+        || task_state.job_id != binding.runtime_job_id
+        || task_state.run_id != binding.runtime_run_id
         || !task_state_matches_workspace(&task_state, workspace)
     {
         return Err(M1MigrationIssueCode::InvalidRuntimeHint.into());
     }
-
-    let verified_workspace_kind = match workspace.kind {
-        WorkspaceKind::Folder => ProductWorkspaceKind::Folder,
-        WorkspaceKind::Repo => ProductWorkspaceKind::Repo,
-        WorkspaceKind::Task => return Err(M1MigrationIssueCode::InvalidRuntimeHint.into()),
-    };
-
-    Ok(VerifiedM1SessionRunBinding {
-        source_session_id: session.source_id.clone(),
-        ordinal: 1,
-        runtime_session_id: job.session_id,
-        runtime_job_id: hint.job_id,
-        runtime_run_id: hint.run_id,
-        resumed_from_run_id: None,
-        verified_workspace_root: workspace.root.clone(),
-        verified_workspace_kind,
-    })
+    Ok(())
 }
 
 fn is_terminal_runtime_status(status: &str) -> bool {
@@ -594,9 +854,12 @@ mod tests {
         let fixture = RuntimeFixture::new().await;
         let request = fixture.request(vec![fixture.session_import("legacy-session")]);
 
-        let prepared = prepare_m1_browser_migration(request, |workspace| {
-            StateStore::new(&workspace.state_dir)
-        })
+        let prepared = prepare_m1_browser_migration(
+            request,
+            M1PreferencesBaseline::Revision(0),
+            false,
+            |workspace| StateStore::new(&workspace.state_dir),
+        )
         .await
         .unwrap();
 
@@ -624,9 +887,12 @@ mod tests {
             fixture.session_import("legacy-session-b"),
         ]);
 
-        let prepared = prepare_m1_browser_migration(request, |_| {
-            panic!("duplicate runtime hints must be rejected before state inspection")
-        })
+        let prepared = prepare_m1_browser_migration(
+            request,
+            M1PreferencesBaseline::Revision(0),
+            false,
+            |_| panic!("duplicate runtime hints must be rejected before state inspection"),
+        )
         .await
         .unwrap();
 
@@ -653,9 +919,12 @@ mod tests {
         session.legacy_resumed_from_run_id = Some(RunId::new().to_string());
         let request = fixture.request(vec![session]);
 
-        let prepared = prepare_m1_browser_migration(request, |_| {
-            panic!("ambiguous predecessor hints must not inspect runtime state")
-        })
+        let prepared = prepare_m1_browser_migration(
+            request,
+            M1PreferencesBaseline::Revision(0),
+            false,
+            |_| panic!("ambiguous predecessor hints must not inspect runtime state"),
+        )
         .await
         .unwrap();
 
@@ -675,9 +944,12 @@ mod tests {
             .await;
         let request = fixture.request(vec![fixture.session_import("legacy-session")]);
 
-        let prepared = prepare_m1_browser_migration(request, |workspace| {
-            StateStore::new(&workspace.state_dir)
-        })
+        let prepared = prepare_m1_browser_migration(
+            request,
+            M1PreferencesBaseline::Revision(0),
+            false,
+            |workspace| StateStore::new(&workspace.state_dir),
+        )
         .await
         .unwrap();
 
@@ -690,6 +962,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn invalid_post_guard_artifact_releases_unused_runtime_reservation() {
+        let fixture = RuntimeFixture::new().await;
+        fixture
+            .rewrite_task_state(|state| state.schema_version += 1)
+            .await;
+        let candidate = VerifiedM1SessionRunBinding {
+            source_session_id: "legacy-session".to_string(),
+            ordinal: 1,
+            runtime_session_id: fixture.session_id,
+            runtime_job_id: fixture.job_id,
+            runtime_run_id: fixture.run_id,
+            resumed_from_run_id: None,
+            verified_workspace_root: fixture.workspace_root.clone(),
+            verified_workspace_kind: ProductWorkspaceKind::Folder,
+        };
+        let mut issues = Vec::new();
+        let mut state_store_for = |workspace: &Workspace| StateStore::new(&workspace.state_dir);
+
+        let (verified, guards) = guard_and_verify_runtime_bindings(
+            vec![candidate],
+            &mut issues,
+            false,
+            &mut state_store_for,
+        )
+        .await
+        .unwrap();
+
+        assert!(verified.is_empty());
+        assert!(guards.is_empty());
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].code, M1MigrationIssueCode::InvalidRuntimeHint);
+    }
+
+    #[tokio::test]
     async fn task_state_identity_mismatch_rejects_runtime_binding() {
         let fixture = RuntimeFixture::new().await;
         fixture
@@ -697,9 +1003,12 @@ mod tests {
             .await;
         let request = fixture.request(vec![fixture.session_import("legacy-session")]);
 
-        let prepared = prepare_m1_browser_migration(request, |workspace| {
-            StateStore::new(&workspace.state_dir)
-        })
+        let prepared = prepare_m1_browser_migration(
+            request,
+            M1PreferencesBaseline::Revision(0),
+            false,
+            |workspace| StateStore::new(&workspace.state_dir),
+        )
         .await
         .unwrap();
 
@@ -716,9 +1025,12 @@ mod tests {
         fixture.tamper_run_dir(r"\\migration.invalid\share\run");
         let request = fixture.request(vec![fixture.session_import("legacy-session")]);
 
-        let prepared = prepare_m1_browser_migration(request, |workspace| {
-            StateStore::new(&workspace.state_dir)
-        })
+        let prepared = prepare_m1_browser_migration(
+            request,
+            M1PreferencesBaseline::Revision(0),
+            false,
+            |workspace| StateStore::new(&workspace.state_dir),
+        )
         .await
         .unwrap();
 
@@ -727,6 +1039,34 @@ mod tests {
             prepared.issues[0].code,
             M1MigrationIssueCode::InvalidRuntimeHint
         );
+    }
+
+    #[cfg(any(unix, windows))]
+    #[tokio::test]
+    async fn canonical_runtime_index_rejects_state_database_symlink_escape() {
+        let workspace_temp = TempDir::new().unwrap();
+        let outside_temp = TempDir::new().unwrap();
+        let workspace = Workspace::open_folder(workspace_temp.path()).unwrap();
+        std::fs::create_dir_all(&workspace.state_dir).unwrap();
+        let outside_index_path = outside_temp.path().join("state.sqlite");
+        std::fs::write(&outside_index_path, b"outside").unwrap();
+        let linked_index_path = workspace.state_dir.join("state.sqlite");
+        if !create_file_symlink(&outside_index_path, &linked_index_path) {
+            return;
+        }
+        let index = StateIndex::with_path(&workspace.state_dir, linked_index_path, 37);
+
+        let error = canonical_runtime_index(&workspace, &index, false)
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.code, ProductErrorCode::ProductStorageFailure);
+        let (canonical_path, external_index) = canonical_runtime_index(&workspace, &index, true)
+            .await
+            .unwrap();
+        assert_eq!(canonical_path, outside_index_path.canonicalize().unwrap());
+        assert_eq!(external_index.path(), canonical_path);
+        assert_eq!(external_index.busy_timeout_ms(), 37);
     }
 
     #[cfg(unix)]
@@ -745,9 +1085,12 @@ mod tests {
         symlink(&escaped_run_dir, &expected_run_dir).unwrap();
         let request = fixture.request(vec![fixture.session_import("legacy-session")]);
 
-        let prepared = prepare_m1_browser_migration(request, |workspace| {
-            StateStore::new(&workspace.state_dir)
-        })
+        let prepared = prepare_m1_browser_migration(
+            request,
+            M1PreferencesBaseline::Revision(0),
+            false,
+            |workspace| StateStore::new(&workspace.state_dir),
+        )
         .await
         .unwrap();
 
@@ -771,9 +1114,12 @@ mod tests {
             .collect();
         let request = fixture.request(sessions);
 
-        let error = prepare_m1_browser_migration(request, |_| {
-            panic!("over-budget migrations must fail before state inspection")
-        })
+        let error = prepare_m1_browser_migration(
+            request,
+            M1PreferencesBaseline::Revision(0),
+            false,
+            |_| panic!("over-budget migrations must fail before state inspection"),
+        )
         .await
         .unwrap_err();
 
@@ -827,6 +1173,16 @@ mod tests {
             BindingVerificationError::Issue(M1MigrationIssueCode::InvalidRuntimeHint)
         ));
         assert_eq!(budget.remaining, MAX_MIGRATION_TASK_STATE_TOTAL_BYTES);
+    }
+
+    #[cfg(unix)]
+    fn create_file_symlink(target: &Path, link: &Path) -> bool {
+        std::os::unix::fs::symlink(target, link).is_ok()
+    }
+
+    #[cfg(windows)]
+    fn create_file_symlink(target: &Path, link: &Path) -> bool {
+        std::os::windows::fs::symlink_file(target, link).is_ok()
     }
 
     struct RuntimeFixture {

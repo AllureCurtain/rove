@@ -681,6 +681,66 @@ describe("M1 browser migration", () => {
     },
   );
 
+  it("keeps and exactly replays pending after an active-session conflict", async () => {
+    const storage = new MemoryStorage(legacyState());
+    const postedBodies: string[] = [];
+    const idGenerator = vi.fn(() => "migration-active-session-replay");
+    const activeSessionFetch = vi.fn(
+      async (_input: RequestInfo | URL, init?: RequestInit) => {
+        postedBodies.push(String(init?.body ?? ""));
+        return new Response(
+          JSON.stringify({
+            code: "product_session_active",
+            error: "product session has an active turn",
+          }),
+          { status: 409 },
+        );
+      },
+    );
+
+    const first = await runM1BrowserMigration({
+      storage,
+      lock: immediateMigrationLock,
+      fetch: activeSessionFetch,
+      idGenerator,
+      now: () => "2026-07-26T00:00:00.000Z",
+    });
+    expect(first.status).toBe("pending");
+    if (first.status !== "pending") {
+      throw new Error("active-session conflict must preserve pending state");
+    }
+    expect(first.failure.code).toBe("request_failed");
+    expect(first.state.idempotency_key).toBe("migration-active-session-replay");
+    expect(first.state.request_body).toBe(postedBodies[0]);
+    expect(
+      readM1BrowserMigrationState(storage),
+    ).toEqual(first.state);
+
+    const sessions = JSON.parse(
+      storage.peek(M1_BROWSER_STORAGE_KEYS.sessions)!,
+    ) as Array<Record<string, unknown>>;
+    sessions[0]!.title = "Changed after active-session conflict";
+    storage.setItem(
+      M1_BROWSER_STORAGE_KEYS.sessions,
+      JSON.stringify(sessions),
+    );
+    const second = await runM1BrowserMigration({
+      storage,
+      lock: immediateMigrationLock,
+      fetch: successfulFetch((body) => postedBodies.push(body)),
+      idGenerator,
+      now: () => "2026-07-26T00:00:02.000Z",
+    });
+
+    expect(second.status).toBe("complete");
+    expect(postedBodies).toHaveLength(2);
+    expect(postedBodies[1]).toBe(postedBodies[0]);
+    expect(postedBodies[1]).toContain("Migration test");
+    expect(postedBodies[1]).not.toContain("Changed after active-session conflict");
+    expect(idGenerator).toHaveBeenCalledTimes(1);
+    expect(storage.removes).toEqual([]);
+  });
+
   it.each([400, 409])(
     "clears an exact pending rejected with %i and retries corrected legacy state with a new key",
     async (status) => {
