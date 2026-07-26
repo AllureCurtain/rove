@@ -1,9 +1,10 @@
 # Runtime Documentation
 
 This directory is the authoritative current-state documentation surface. It
-summarizes the implemented runtime, API, Web M1 product shell, and remaining
-gaps. Future Web Complete and Desktop contracts remain under `docs/design/` and
-`docs/plans/` until their code and tests land.
+summarizes the implemented runtime, API, Web M1 product shell, the Web Complete
+C0 persistence/API foundation, and remaining gaps. Web Complete C1–C3 and Desktop
+contracts remain under `docs/design/` and `docs/plans/` until their code and
+tests land.
 
 New maintainers should start with [`docs/ONBOARDING.md`](../ONBOARDING.md), then use this directory for current subsystem truth.
 
@@ -40,7 +41,15 @@ The Web product line is tracked separately:
 - M1 product-shell browser coverage is mock-backed. The gated `local-full`
   real-API suite targets advanced `/dev/workbench`; live-API acceptance of `/`
   remains Web Complete C3 work.
-- Web Complete C0–C3 is active but not implemented; follow
+- Web Complete C0 is implemented: the API owns `product.sqlite`, product
+  workspace/session/profile/preferences CRUD, exact product-session/runtime
+  bindings, a canonical-event transcript read projection, and
+  strict/idempotent M1 migration. Migration preparation is deadline-bounded;
+  the supervised apply phase survives an HTTP disconnect, uses a durable
+  preflight baseline and preference revision CAS, and reserves canonical
+  workspace runtime databases before committing verified bindings. Typed Web
+  client and migration modules are present, but the default M1 shell does not
+  consume them yet. C1–C3 are active future work; follow
   [`docs/design/2026-07-26-web-complete-design.md`](../design/2026-07-26-web-complete-design.md)
   and the
   [`Web → Desktop coordinator plan`](../plans/2026-07-25-web-desktop-master-delivery.md).

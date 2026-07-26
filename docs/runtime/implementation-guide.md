@@ -2,6 +2,10 @@
 
 This guide is for maintainers who need to understand, debug, or extend the current implementation. It describes what exists in the codebase today. Product intent and historical design rationale live in the top-level docs; the current runtime source of truth remains this `docs/runtime/` directory.
 
+> Web status note (2026-07-26): Web Complete C0 is implemented. The default Web
+> shell has not yet been wired to the C0 client modules; C1–C3 remain future
+> work.
+
 The root manifest is a modular resolver-3 Cargo Workspace whose default
 member is `apps/cli`, with independent packages `rove-models`, `rove-core`,
 `rove-runtime`, `rove-app-bootstrap`, `rove-cli`, `rove-api`, `rove-bench`, and
@@ -478,7 +482,9 @@ The API binary is thin. `src/bin/rove-api.rs` parses an optional bind address an
 4. Creates `ApiState`.
 5. Initializes the SQLite index.
 6. Marks stale `init` or `running` jobs as `interrupted`.
-7. Binds the TCP listener and serves the router.
+7. Opens the API-global `<state_dir>/product.sqlite`, applies its schema, and
+   conservatively recovers stale product-turn claims.
+8. Binds the TCP listener and serves the router.
 
 Routes:
 
@@ -494,6 +500,12 @@ Routes:
 | `GET /runs/{run_id}/report` | Read the indexed `report.json` artifact for a run |
 | `POST /providers/models` | List models for a validated per-request provider profile |
 | `POST /providers/test` | Validate provider connectivity/model presence without returning secrets |
+| `GET/POST /product/workspaces`, `DELETE /product/workspaces/{workspace_id}` | List, create, or remove product workspace catalog entries without deleting workspace files |
+| `GET/POST /product/sessions`, `PATCH/DELETE /product/sessions/{session_id}` | List, create, rename/archive, or remove server-owned product sessions |
+| `GET /product/sessions/{session_id}/transcript` | Project ordered canonical run events with complete/partial status and typed reasons |
+| `GET/POST /product/provider-profiles`, `PUT/DELETE /product/provider-profiles/{profile_id}` | Manage secret-reference-only provider profiles |
+| `GET/PUT /product/preferences` | Read or update the bounded safe product preference set |
+| `POST /product/migrations/m1-browser` | Validate and atomically apply or replay an idempotent M1 browser import |
 
 API jobs have two state layers:
 
@@ -501,12 +513,22 @@ API jobs have two state layers:
 - durable state in SQLite and `.rove/runs/<run_id>/`.
 
 `POST /jobs` accepts `message`, optional `model`, `max_steps`, `approval`,
-optional provider profile, optional `resume`, and optional `workspace`.
+optional provider profile, optional `resume`, optional `workspace`, and optional
+`product_session_id`.
 Per-job workspaces support Task (`name`/optional `base`) and explicit Folder or
 Repo (`root`) shapes described in §2. Folder/Repo roots become the real
 execution, state, tool, shell, and memory boundary; they do not fall back to the
 API process workspace.
 `resume` follows the CLI semantics: omit it for a fresh session/job, use `"latest"` for the newest task snapshot, or pass a run id to load that exact snapshot. A resumed API job keeps the loaded `session_id` and `job_id`, creates a new `run_id`, and passes the loaded `TaskState` into `RunRequest` and artifact recording.
+
+When `product_session_id` is present, the server owns continuity. It validates
+the product session's workspace, rejects a simultaneous client `resume`, claims
+the session's single active turn, and starts fresh only when no runtime binding
+exists. Later turns load the exact bound `latest_run_id`; missing, corrupt, or
+mismatched state fails closed instead of falling back to workspace-global
+`latest`. A successful launch records an immutable ordered run binding, and the
+supervisor persists the terminal product-session status before releasing the
+claim. Different product sessions may run concurrently.
 
 After restart, historical job state and SSE events can be read from SQLite.
 Pending approvals and pending inputs follow Policy A: requests are persisted
@@ -520,6 +542,31 @@ that attempt, and terminates with `RunStatus::Error` rather than risking a
 duplicate external side effect.
 
 Historical run discovery is read-only. `/runs` returns recent run identity, status, last indexed event sequence, and report availability from SQLite. `/runs/{run_id}/report` uses the indexed report row to load `report.json`; it does not expose arbitrary filesystem paths.
+
+Product state is separate from runtime run state. ProductStore owns safe
+catalog/settings/mapping data in API-global `product.sqlite`; canonical events,
+task snapshots, and reports remain in the selected execution workspace. The
+transcript endpoint walks the product session's ordered run bindings and reads
+canonical indexed events from those workspace stores. Missing or inconsistent
+facts produce typed partial reasons rather than a silently complete response.
+
+The M1 migration route uses strict unknown-field rejection, bounded bodies,
+server-side workspace/runtime validation, idempotency receipts, and one SQLite
+transaction for the accepted import. A 30-second deadline covers only
+pre-commit preparation. Accepted apply work runs under an API-owned supervisor,
+so HTTP disconnect does not cancel a commit. The ProductStore persists the
+first preflight preference revision baseline per idempotency key, reuses it on
+retry, applies preferences with revision CAS, and atomically replaces the
+preparation with a success receipt. A source-mapped product session with an
+active turn returns typed `product_session_active`; the Web retains the exact
+pending key and body for retry.
+
+Before a verified runtime binding is committed, all runtime SQLite paths are
+canonicalized, sorted, and reserved with `BEGIN IMMEDIATE`. External commit
+guards require canonical runtime database and artifact paths to remain inside
+the canonical workspace when external paths are disabled, and open SQLite with
+`SQLITE_OPEN_NOFOLLOW`; symlinked parent paths fail closed. Read-only runtime
+verification uses the same workspace boundary before opening a database.
 
 Relevant code:
 
@@ -553,7 +600,7 @@ General owns theme, Advanced owns Benchmark, and several other sections remain
 explicit placeholders. `/dev/workbench` retains the old developer surface as an
 advanced escape hatch only.
 
-The product shell:
+The current M1 product shell:
 
 1. Opens an absolute Folder or Repo path and stores the M1 catalog in browser
    storage.
@@ -569,14 +616,19 @@ The product shell:
 6. Sends only provider type/base/model/key-environment references; raw provider
    keys never enter browser requests.
 
-Current M1 limits are product-significant: transcript messages are in-memory
-and disappear on refresh; workspace/session catalogs and provider profiles are
-browser-authoritative; routes are effectively single-page; background session
-SSE reattachment is incomplete; and several Settings sections are placeholders.
-Workspace-scoped `latest` can also select the wrong chain when multiple product
-sessions share a workspace. Web Complete C0 therefore plans a server-owned exact
-product-session/run binding, API-global ProductStore, and a canonical-event
-transcript read projection before continuity UI work.
+Web Complete C0 adds `apps/web/product/` with strict response
+validation, a thin client for all product CRUD/transcript/migration routes, and
+a same-origin-locking, replay-safe M1 migration state machine. It also adds
+`product_session_id` to the shared create-job request type. These modules are
+not yet invoked by `ProductApp`.
+
+Current UI limits are therefore still product-significant: transcript messages
+disappear on refresh; the visible workspace/session catalog and provider
+Settings remain browser-authoritative; routes are effectively single-page;
+background session SSE reattachment is incomplete; and several Settings
+sections are placeholders. C1 must switch turns and restore to the C0 exact
+product-session/transcript path. C2 must move the corresponding Settings
+authority to the C0 APIs. C3 owns final migration UX and acceptance evidence.
 
 Relevant code:
 
@@ -678,6 +730,10 @@ plan/revision/attempt identity. `step_result` is the canonical terminal fact,
 `plan_decision` records the deterministic transition selected for it, and
 `plan_revised` carries an immutable child revision when remaining work is
 replaced. The older completed/failed events remain compatibility notifications.
+For a live job, SSE withholds a terminal event that is durable in SQLite until
+the live finalization barrier publishes it; replay and `Last-Event-ID` handoff
+then emit it at most once and close even when the client already acknowledged
+its sequence.
 
 `model_status` is the safe progress surface for model-side work. It can say
 that the model is thinking, has selected a tool, or that the run is waiting for
@@ -798,14 +854,14 @@ There are two modes:
 - message-count history limit;
 - token-budget history limit.
 
-Token estimates are approximate: four characters per token plus message/tool-call overhead. The context builder reports whether it crossed soft/hard budgets and whether automatic compaction is needed.
+Both modes select provider-native assistant tool calls and all matching tool results as one atomic history unit. Incomplete or orphan native rounds are excluded rather than replayed as invalid provider protocol. Token estimates are approximate: four characters per token plus message/tool-call overhead. The context builder reports whether it crossed soft/hard budgets and whether automatic compaction is needed.
 
 Checkpoint compaction has two paths:
 
 - default deterministic compaction, used when model compaction is disabled or as fallback;
 - optional model-generated compaction when `runtime.model_compaction_enabled = true`.
 
-When automatic compaction is needed and old history has been dropped from the active prompt, the engine first flushes durable-worthy notes from the soon-to-be-compacted messages into session memory and emits `memory_flushed` when notes were written. It then attempts a structured model summary behind prompt version `rove.compaction.v2`. A successful model summary emits `prompt_compacted` and records `mode = "model_generated"` with model and source-message metadata. If summary generation fails, the run continues with a deterministic structured fallback summary, degraded/circuit metadata, and the last error. After `runtime.compaction_failure_threshold` consecutive failures, model compaction is circuit-opened for that runtime and deterministic behavior remains available through normal checkpointing.
+When automatic compaction is needed and old history has been dropped from the active prompt, the engine first flushes durable-worthy notes from the soon-to-be-compacted messages into session memory and emits `memory_flushed` when notes were written. It then attempts a structured model summary behind prompt version `rove.compaction.v3`. The dropped segment is serialized as JSON inside one ordinary user data message, so assistant/tool protocol roles are not replayed and embedded text is treated as untrusted historical data. A successful model summary emits `prompt_compacted` and records `mode = "model_generated"` with model and source-message metadata. If summary generation fails, the run continues with a deterministic structured fallback summary, degraded/circuit metadata, and the last error. After `runtime.compaction_failure_threshold` consecutive failures, model compaction is circuit-opened for that runtime and deterministic behavior remains available through normal checkpointing.
 
 `RunArtifactRecorder` writes `PromptCheckpoint` with:
 
@@ -1116,6 +1172,23 @@ Relevant code:
 - `runtime/src/state/store.rs`
 - `apps/cli/src/cli/state.rs`
 
+### ProductStore
+
+Web Complete C0 adds a separate API-global SQLite database at
+`<configured state_dir>/product.sqlite`. It owns:
+
+- known Folder/Repo product workspaces;
+- server-owned product sessions and one active-turn claim per session;
+- immutable ordered runtime session/job/run bindings;
+- secret-reference-only provider profiles;
+- safe product preferences;
+- schema versions, durable M1 migration preparations, and migration
+  receipts/mappings/issues.
+
+It intentionally does not copy canonical runtime event payloads, task state, or
+reports. Those facts remain in each execution workspace's `StateStore` and are
+read on demand by the transcript projector.
+
 ## 16. Memory
 
 Memory has three layers:
@@ -1407,10 +1480,12 @@ These are implementation-level issues to keep in mind before extending the syste
    not a proof that arbitrary provider text contains no secrets. New display
    fields must remain typed, bounded, and covered by negative tests.
 
-5. Web M1 does not restore transcripts after refresh, keep product catalogs or
-   provider profiles in an API-backed authority, provide durable deep routes,
-   or disambiguate workspace-global `resume: "latest"` across multiple product
-   sessions. These are Web Complete C0–C3 gaps, not implemented behavior.
+5. Web Complete C0's ProductStore, exact product-session continuation,
+   transcript projection, browser migration state machine, and typed client are
+   implemented. The default M1 shell does not call them yet, so refresh restore,
+   API-authoritative UI catalogs and profiles, durable routes, and session
+   switching remain C1/C2 work. Final migration UX and live product-shell
+   acceptance remain C3 work.
 
 6. Browser evidence is split by route. The default product shell has
    mock-backed `shell.spec.ts` coverage. The deterministic `local-full` runner
@@ -1437,3 +1512,7 @@ cd apps/web; pnpm typecheck
 cd apps/web; pnpm build
 git diff --check
 ```
+
+C0 includes focused ProductStore, product-route, exact-session resume,
+transcript, migration, stream-finalization, job-start lifecycle, runtime commit
+guard, and Web client tests.

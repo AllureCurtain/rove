@@ -1,6 +1,6 @@
 # Web Complete Delivery Plan
 
-> Status: **Active — P0 reconciled; C0 coordinator foundation next**
+> Status: **Active — C0 complete; C1–C3 pending**
 >
 > Decisions:
 > [`../design/2026-07-26-web-complete-design.md`](../design/2026-07-26-web-complete-design.md)
@@ -73,9 +73,12 @@ and merges them into the named integration branch, then owns the PR to `main`.
 | Settings runtime worker | `.worktrees/web-settings-runtime` | `feature/web-settings-runtime` | Tools/Approvals, Memory, Keyboard, Advanced, About |
 | **C3** | `.worktrees/web-complete-polish` | `feature/web-complete-polish` | Edge states, migration polish, full acceptance script green |
 
-The coordinator creates C0 worker worktrees only after the C0 foundation commit,
-all from the same SHA. Later worktrees are created only after their respective
-foundation is on the integration branch or `main`.
+The C0 workers were created from the sealed foundation and their store,
+transcript, and Web client implementations were integrated with
+coordinator-owned route/job/migration/stream wiring and commit-boundary
+hardening. C0 passed aggregate Rust/Web CI and entered `main` only through the
+integration PR. Later worktrees are created only after their respective
+dependency is on `main`.
 
 ### After each merge
 
@@ -123,14 +126,30 @@ Make durable product state authoritative on the API/runtime side.
 
 #### C0 exit checklist
 
-- [ ] Provider profiles survive browser storage clear while API process/state remains
-- [ ] Session list/detail needed by UI can be loaded from API
-- [ ] Transcript rebuild endpoint/payload returns ordered visible items or explicit partial flag
-- [ ] Two product sessions in one workspace resume their own exact runtime runs
-- [ ] Hard resume remains fail-closed for missing/mismatched runtime state
-- [ ] ProductStore does not duplicate canonical trace/task/report event truth
-- [ ] Browser migration is versioned/idempotent and rejects raw-key fields
-- [ ] Tests green; docs for new API surfaces updated
+- [x] Provider profiles survive browser storage clear while API process/state remains
+- [x] Session list/detail needed by UI can be loaded from API
+- [x] Transcript rebuild endpoint/payload returns ordered canonical events or an explicit partial status/reason
+- [x] Two product sessions in one workspace resume their own exact runtime runs
+- [x] Hard resume remains fail-closed for missing/mismatched runtime state
+- [x] ProductStore does not duplicate canonical trace/task/report event truth
+- [x] Browser migration is versioned/idempotent and rejects raw-key fields
+- [x] Focused store, route, transcript, exact-resume, migration, stream, and Web client coverage exists on the implementation branches
+- [x] Final aggregate contract/security review, current-state docs PR, integration CI, and integration PR to `main`
+
+The final review closed the cancellation and commit-boundary questions:
+
+- the 30-second migration deadline covers preparation only;
+- accepted apply work runs in an API-owned supervisor and survives handler
+  disconnect;
+- ProductStore persists and reuses the first preflight preference baseline,
+  applies preferences with revision CAS, and removes the preparation atomically
+  with a success receipt;
+- a source-mapped active session returns typed `product_session_active`, while
+  the Web retains the exact pending key/body for retry;
+- runtime SQLite paths are canonicalized, sorted, reserved, bounded to the
+  workspace when external paths are disabled, and opened with no-follow guards;
+- `POST /jobs` preparation runs in an owned task tracker, and shutdown drains
+  starts before supervisors and handles.
 
 #### C0 likely touch surfaces
 
@@ -273,25 +292,26 @@ C0–C2 on `main`.
 
 ---
 
-## 4. API sketch (contract direction, refine in C0)
+## 4. Implemented C0 API surface
 
-C0 should prefer additive REST shapes (names indicative, not frozen until PR):
+C0 uses these additive REST shapes:
 
 ```text
 GET    /product/workspaces
 POST   /product/workspaces
-DELETE /product/workspaces/{id}
+DELETE /product/workspaces/{workspace_id}
 
 GET    /product/sessions?workspace_id=
 POST   /product/sessions
-PATCH  /product/sessions/{id}
-DELETE /product/sessions/{id}
+PATCH  /product/sessions/{session_id}
+DELETE /product/sessions/{session_id}
 
-GET    /product/sessions/{id}/transcript   # rebuild payload + partial flag
+GET    /product/sessions/{session_id}/transcript   # complete/partial + typed reasons
 
 GET    /product/provider-profiles
-PUT    /product/provider-profiles/{id}
-DELETE /product/provider-profiles/{id}
+POST   /product/provider-profiles
+PUT    /product/provider-profiles/{profile_id}
+DELETE /product/provider-profiles/{profile_id}
 
 GET/PUT /product/preferences               # theme + safe UI prefs if durable
 POST   /product/migrations/m1-browser      # versioned/idempotent sanitized import
@@ -353,32 +373,13 @@ When a wave merges:
 
 ---
 
-## 7. Ready-to-start commands
+## 7. Current coordinator handoff
 
-### After the P0 PR is on `main`
-
-```powershell
-cd D:\Study\project\agent\rove
-git status --short
-git pull --ff-only
-cd .worktrees/web-complete-persistence
-git status --short
-git merge --ff-only main
-```
-
-### Next-session opener (C0)
-
-```text
-继续 rove Web Complete 的 C0 persistence/API foundation。
-工作目录必须是 D:\Study\project\agent\rove\.worktrees\web-complete-persistence
-分支 feature/web-complete-persistence。
-先完成 coordinator-owned C0 契约 foundation：API-global ProductStore、server-owned product session → exact runtime run mapping、canonical-event transcript projection、versioned localStorage migration contracts；不要先开 worker，不要做完整 Settings UI，不要做 Desktop。
-权威文档：
-- docs/design/2026-07-26-web-complete-design.md
-- docs/plans/2026-07-26-web-complete.md §C0
-- docs/plans/2026-07-25-web-desktop-master-delivery.md §4–§5
-保持 hard resume fail-closed；禁止 workspace-global latest 串错 Session，禁止软拼接续聊。
-```
+C0 is complete. Do not reopen its worker branches or re-run the migration from
+browser authority inside `ProductApp` as an ad hoc extension. Any C1/C2 work
+must start from current `main`, preserve exact product-session hard resume, and
+use the implemented ProductStore/transcript/client contracts. No C1, C2, C3,
+or Desktop implementation was started as part of the C0 closeout.
 
 ---
 
@@ -394,6 +395,17 @@ git merge --ff-only main
 
 ## changelog
 
+- 2026-07-26: Completed C0 after aggregate contract/security review. Migration
+  preparation/apply ownership, durable baselines and preference CAS,
+  active-session retry, canonical runtime reservations/path guards, and owned
+  job-start shutdown order are covered by focused tests. Current docs and
+  aggregate Rust/Web CI were integrated through the C0 PR path; no C1–C3 or
+  Desktop work was started.
+- 2026-07-26: Sealed the coordinator-owned C0 public foundation on the
+  integration branch: server-owned product IDs and store traits, product
+  route/OpenAPI shapes, typed transcript/partial and strict migration DTOs,
+  bounded runtime event snapshots, and fail-closed `product_session_id` entry.
+  Worker implementations and integration remain open.
 - 2026-07-26: Completed P0 reconciliation. Corrected route-scoped browser
   evidence, made the existing C0 worktree update command idempotent, and aligned
   C2 with the coordinator foundation plus post-C1 Settings worker split.

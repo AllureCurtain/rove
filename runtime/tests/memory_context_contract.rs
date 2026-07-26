@@ -42,7 +42,7 @@ fn runtime_context_preserves_authority_order_and_compaction_contract() {
     );
     assert_eq!(built.included_history_messages, 1);
     assert_eq!(built.dropped_history_messages, 1);
-    assert_eq!(COMPACTION_PROMPT_VERSION, "rove.compaction.v2");
+    assert_eq!(COMPACTION_PROMPT_VERSION, "rove.compaction.v3");
     assert_eq!(
         StructuredSummary::parse("Goal: continue migration").goal,
         "continue migration"

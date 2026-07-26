@@ -2,7 +2,7 @@
 
 Status: MVP reached for the local-first single-user runtime.
 Date: 2026-05-30
-Last interface update: 2026-07-25 (Web M1 product shell and advanced Workbench boundary).
+Last interface update: 2026-07-26 (Web Complete C0 persistence/API foundation).
 
 ## Definition
 
@@ -25,6 +25,11 @@ This MVP is not a SaaS product, browser automation runtime, desktop automation r
   chat/SSE, inline tool approval/input/cancel, Inspector state, and provider
   controls. The advanced `/dev/workbench` retains direct resume/history/report
   workflows from the historical M6 surface.
+- Web Complete C0 product-control foundation:
+  API-global SQLite workspace/session/profile/preferences state, exact
+  product-session/runtime bindings, canonical-event transcript reads,
+  strict/idempotent M1 browser migration, and typed Web client/migration
+  modules.
 - Core engine with planned and unplanned loops sharing model turns, tool turns, context checkpoints, and history writeback.
 - Local state under `.rove/` with trace, task state, report, and SQLite index.
 - Folder, Repo, and Task workspaces.
@@ -32,11 +37,13 @@ This MVP is not a SaaS product, browser automation runtime, desktop automation r
 - Provider abstraction for OpenAI, OpenAI Responses, Anthropic, Ollama, and fake providers.
 - Deterministic no-network benchmarks and default test coverage.
 
-The product shell is not yet Web Complete: refresh does not rebuild its
-transcript, product catalogs/profiles are browser-authoritative, and
-workspace-scoped `resume: "latest"` cannot safely distinguish multiple product
-sessions in one workspace. Its browser suite is mock-backed; the current gated
-real-API Playwright suite targets `/dev/workbench`.
+The product shell is not yet Web Complete. Although the C0 backend and thin Web
+client foundation exist, the default shell still uses browser-authoritative M1
+catalogs/profiles, does not rebuild its transcript
+after refresh, and still sends workspace-scoped `resume: "latest"`. C1 must wire
+the shell to the exact product-session path and restore projection. Its browser
+suite is mock-backed; the current gated real-API Playwright suite targets
+`/dev/workbench`.
 
 ## Out of scope
 

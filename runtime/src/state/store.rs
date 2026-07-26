@@ -9,7 +9,7 @@ use super::report::RunReport;
 use super::trace::RunStore;
 use super::trace::TraceWriter;
 
-const TASK_STATE_SCHEMA_VERSION: u32 = 1;
+pub const TASK_STATE_SCHEMA_VERSION: u32 = 1;
 
 /// Top-level state store.
 ///
@@ -486,7 +486,8 @@ async fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     tokio::fs::rename(tmp_path, path).await
 }
 
-fn validate_task_state_schema(state: &TaskState) -> std::io::Result<()> {
+/// Reject task-state artifacts that this runtime cannot safely resume.
+pub fn validate_task_state_schema(state: &TaskState) -> std::io::Result<()> {
     if state.schema_version != TASK_STATE_SCHEMA_VERSION {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,

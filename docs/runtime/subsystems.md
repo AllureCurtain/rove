@@ -103,7 +103,7 @@ the enclosing task-state projection and canonical trace. The event sequence
 matches the SQLite high-water mark for the run. Resume prefers this checkpoint
 over replaying full audit history.
 
-Default compaction is deterministic and artifact-based. Optional model-generated compaction can be enabled through `runtime.model_compaction_enabled`; when old history is dropped from the active prompt, the runtime first flushes durable-worthy notes from the compacted segment into session memory, then asks the current model to produce a structured resume summary using prompt version `rove.compaction.v2`. Failures do not block the run: rove writes a deterministic structured fallback summary, records degraded metadata and the last error, and opens a circuit after `runtime.compaction_failure_threshold` consecutive failures.
+History limits preserve provider-native assistant tool calls and their matching results as atomic units; an incomplete or orphan native round is excluded from the active provider prompt. Default compaction is deterministic and artifact-based. Optional model-generated compaction can be enabled through `runtime.model_compaction_enabled`; when old history is dropped from the active prompt, the runtime first flushes durable-worthy notes from the compacted segment into session memory, then serializes that segment as JSON in one ordinary user data message and asks the current model to produce a structured resume summary using prompt version `rove.compaction.v3`. Original tool protocol roles are not replayed to the compaction provider, and embedded text is marked as untrusted historical data. Failures do not block the run: rove writes a deterministic structured fallback summary, records degraded metadata and the last error, and opens a circuit after `runtime.compaction_failure_threshold` consecutive failures.
 
 ## Provider And Routing
 
@@ -314,13 +314,22 @@ variable name, and model id, then use Test/List Models. Browser code sends only
 the key environment variable name; raw provider keys stay in the Rust API
 server environment.
 
-Current limitations are explicit: M1 catalogs/profiles are browser-authoritative,
-the transcript is not rebuilt after refresh, routes are shallow, focused
-session reattachment is incomplete, several Settings sections are placeholders,
-and workspace-global `latest` is ambiguous across multiple product sessions in
-one workspace. The accepted Web Complete design addresses these through an
-API-global ProductStore, exact server-owned product-session/run binding, and a
-read projection over canonical events. Those contracts are not implemented yet.
+Web Complete C0 implements the backend product-control plane in
+`apps/api/src/product/`: API-global `product.sqlite`, validated
+workspace/session/profile/preferences CRUD, exact server-owned
+product-session/runtime bindings, single-active-turn claims, and transcript
+projection over canonical sequenced runtime events with typed partial reasons.
+ProductStore retains safe catalog/settings/mapping state only; canonical
+trace/task/report facts remain in each execution workspace. The C0 Web modules
+provide strict response validation, a thin product client, and a versioned,
+same-origin-locked, replay-safe M1 migration state machine that never uploads
+raw keys.
+
+The default `ProductApp` has not been wired to the C0 modules, so the visible M1
+catalogs/profiles remain browser-authoritative, the transcript is not
+rebuilt after refresh, product turns still use workspace-global `latest`, routes
+are shallow, focused session reattachment is incomplete, and several Settings
+sections are placeholders. C1–C3 own those UI and acceptance gaps.
 
 The web verification surface is:
 

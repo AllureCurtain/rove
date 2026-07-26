@@ -297,6 +297,8 @@ export interface CreateJobRequest {
   resume?: ResumeMode;
   workspace?: CreateJobWorkspace;
   provider?: ProviderProfile;
+  /** Server-owned product session; the API resolves its exact runtime run. */
+  product_session_id?: string;
 }
 
 /**

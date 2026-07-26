@@ -15,6 +15,16 @@ use rove_runtime::types::{
     ApprovalDecision, ApprovalPolicy, CallId, JobId, RunId, RunStatus, SessionId,
 };
 
+use crate::product::ProductSessionId;
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ApiErrorResponse {
+    /// Stable machine-readable error code.
+    pub code: String,
+    /// Human-readable safe error summary.
+    pub error: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct PendingApprovalResponse {
     #[schema(value_type = String, format = "ulid")]
@@ -42,6 +52,10 @@ pub struct CreateJobRequest {
     pub resume: Option<String>,
     pub workspace: Option<CreateJobWorkspace>,
     pub provider: Option<ProviderProfileRequest>,
+    /// Optional server-owned product session. When present, the server resolves
+    /// its exact runtime run binding; product callers must not use `latest`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub product_session_id: Option<ProductSessionId>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -100,7 +114,7 @@ pub struct CreateJobWorkspace {
     pub root: Option<PathBuf>,
 }
 
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum CreateJobWorkspaceKind {
     /// Plain local directory execution root.

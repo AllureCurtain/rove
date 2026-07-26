@@ -192,6 +192,24 @@ impl Default for RunId {
     }
 }
 
+macro_rules! impl_runtime_id_from_str {
+    ($id:ident) => {
+        impl std::str::FromStr for $id {
+            type Err = String;
+
+            fn from_str(value: &str) -> Result<Self, Self::Err> {
+                Ulid::from_string(value)
+                    .map(Self)
+                    .map_err(|error| error.to_string())
+            }
+        }
+    };
+}
+
+impl_runtime_id_from_str!(SessionId);
+impl_runtime_id_from_str!(JobId);
+impl_runtime_id_from_str!(RunId);
+
 impl std::fmt::Display for SessionId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)

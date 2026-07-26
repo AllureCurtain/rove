@@ -40,6 +40,12 @@ External embedding
 StateStore
     -> .rove/runs/<run_id>/*
     -> .rove/state.sqlite
+
+API product control plane
+    -> <api state_dir>/product.sqlite
+    -> product workspace/session/profile/preferences catalog
+    -> exact product-session -> runtime session/job/run bindings
+    -> transcript read projection over per-workspace StateStore events
 ```
 
 Product shells assemble and run `rove-runtime::Engine`. `rove-core::Agent` is
@@ -80,6 +86,28 @@ cannot supply trustworthy interaction events fail closed.
    active attempt into task state, stores bounded lifecycle metadata in the
    prompt checkpoint, and includes the lifecycle projections in the report.
 7. The API adds a live job registry for active handles and reads SQLite for persisted job state and SSE replay after restart.
+8. The API also opens one application-global ProductStore at
+   `<configured state_dir>/product.sqlite`. Product routes own catalog,
+   preferences, migration receipts, active-turn claims, and exact runtime
+   bindings there; canonical events and run artifacts remain in each selected
+   execution workspace.
+
+For a C0 product turn, `POST /jobs.product_session_id` resolves the server-owned
+workspace and exact prior runtime identity, claims one active turn, and launches
+the job through an API-owned start task and supervisor. Shutdown closes and
+drains start tasks before supervisors and job handles. A transcript request
+walks the product session's immutable ordered bindings and reads canonical
+events from the corresponding workspace StateStores; unavailable or
+inconsistent facts are reported as typed partial reasons.
+
+The M1 browser migration has two boundaries. Preparation is limited to 30
+seconds and validates/canonicalizes eligible referenced workspaces and runtime
+facts.
+Once accepted, apply runs under an API-owned supervisor and is not cancelled by
+an HTTP disconnect. ProductStore persists the first preference revision
+baseline for the idempotency key and consumes it atomically with the receipt;
+runtime stores are canonicalized, sorted, and reserved before verified bindings
+are committed.
 
 ## Boundary Rules
 
@@ -114,6 +142,13 @@ cannot supply trustworthy interaction events fail closed.
   synchronous translation in `runtime/src/engine/model_turn.rs`. Only `StreamEvent` is
   persisted or exposed by apps.
 - Files remain the readable source artifacts; SQLite is the query/replay index.
+- ProductStore is API-global product-control state, not another event store. It
+  may retain product IDs, safe settings, mappings, claims, migration
+  preparations, and receipts, but it does not copy canonical trace/task/report
+  truth.
+- Verified migration bindings use canonical workspace-contained runtime
+  database/artifact paths when external paths are disabled. SQLite guards use
+  no-follow opens and reject symlinked parent paths before read or reservation.
 - A `step_result` trace event is the append-only terminal fact. The task-state
   ledger and report records are projections and must not overwrite prior
   attempts during replanning.
@@ -126,8 +161,11 @@ cannot supply trustworthy interaction events fail closed.
 ## State Artifacts
 
 ```text
-.rove/
-  state.sqlite
+<configured API state_dir>/
+  product.sqlite                 # API-global product-control state
+
+<execution workspace>/.rove/
+  state.sqlite                   # canonical runtime query/replay index
   runs/<run_id>/trace.jsonl
   runs/<run_id>/task_state.json  # plan cursor + lifecycle projections
   runs/<run_id>/report.json      # aggregate + records/decisions/revisions

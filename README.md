@@ -17,18 +17,21 @@ apps/cli / apps/api / apps/bench
 
 ## Current MVP
 
-As of 2026-07-25, the modular Workspace migration, Provider Layer redesign,
-cleanup W1–W3, and Web M1 are on `main`. rove has reached its local-first MVP:
-CLI, API, Web product shell,
+As of 2026-07-26, the modular Workspace migration, Provider Layer redesign,
+cleanup W1–W3, Web M1, and Web Complete C0 are on `main`. rove has reached its
+local-first MVP: CLI, API, Web product shell,
 streaming events, bounded tool execution, persisted state, resume, deterministic
 benchmarks, and current runtime docs are all present. The exact boundary is
 documented in [docs/runtime/mvp-definition.md](docs/runtime/mvp-definition.md).
 
-Web Complete is the active product milestone: durable product sessions and
-profiles, transcript restore, deep routes, complete Settings, and final UI
-acceptance. A Tauri Desktop host, Browser/Desktop automation workspaces, hosted
-multi-user identity, distributed rate limiting, and optional external semantic
-retrieval are outside the implemented MVP.
+Web Complete is the active product milestone. C0 implements the API-global
+product store, exact product-session/runtime binding, canonical-event
+transcript reads, strict browser migration, and typed Web client modules. The
+default product shell has not yet been switched to those modules. Refresh
+restore, deep routes, complete Settings, and final UI acceptance remain C1–C3
+work. A Tauri Desktop host, Browser/Desktop automation workspaces, hosted multi-user identity,
+distributed rate limiting, and optional external semantic retrieval are outside
+the implemented MVP.
 
 ## Quick Start
 
@@ -164,7 +167,7 @@ bearer token server-side and does not expose it to browser JavaScript.
 | Area | Path | Purpose |
 |---|---|---|
 | CLI / TUI | `apps/cli/` | Rich terminal REPL, full-screen TUI, exec, config dump, and sessions. |
-| API | `apps/api/` | HTTP job lifecycle, SSE event streaming, approvals, inputs, cancellation, and provider inventory/test. |
+| API | `apps/api/` | HTTP job lifecycle, SSE event streaming, approvals, inputs, cancellation, provider inventory/test, and C0 product-control APIs. |
 | Benchmarks | `apps/bench/`, `benchmarks/` | Deterministic no-network benchmark tasks with artifact-path reports. |
 | Bootstrap | `apps/bootstrap/` | First-party AppConfig, provider factory, product registry, shared Engine assembly. |
 | Web | `apps/web/` | Next.js product shell that consumes the API and SSE job stream; `/dev/workbench` is advanced-only. |
