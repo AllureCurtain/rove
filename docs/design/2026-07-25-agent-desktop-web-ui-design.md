@@ -1,6 +1,6 @@
 # Agent Desktop + Web Shared UI
 
-> Status: **Partially implemented — Web M1 on `main`; Web Complete and Desktop pending**
+> Status: **Partially implemented — Web M1 and Web Complete C0 implemented; C1–C3 and Desktop pending**
 >
 > Date: 2026-07-25
 >
@@ -11,8 +11,9 @@
 
 This document freezes the product, information architecture, visual baseline, and
 engineering constraints for rove's **shared product UI**, hosted first as a Web
-management app and later as a Tauri desktop shell. The Web M1 shell is now on
-`main`; the Web Complete and Desktop portions remain future delivery.
+management app and later as a Tauri desktop shell. The Web M1 shell and Web
+Complete C0 persistence/API foundation are implemented, while C1–C3 and Desktop
+remain future delivery.
 
 It does **not** claim Web Complete or Desktop already exists. Current runtime
 truth remains `docs/runtime/**` and the code.
@@ -193,8 +194,8 @@ These facts shape M1 engineering:
 |------|-------------|
 | API already has jobs, SSE, approvals, inputs, cancel, runs, provider test/models | Chat main path can integrate against live API immediately |
 | `CreateJobRequest.workspace` now supports explicit Folder/Repo/Task binding | Opened M1 paths are real execution roots, not cosmetic catalog entries |
-| Hard resume is workspace-store scoped and M1 uses `resume: "latest"` | Web Complete must bind each product session to its exact runtime run to avoid cross-session ambiguity |
-| Runtime `Session` remains thin (`SessionId` centered) | Durable product catalog, transcript projection, and exact mapping are still C0 work |
+| Hard resume is workspace-store scoped and M1 uses `resume: "latest"` | C0 adds exact server-owned product-session/run binding; C1 must switch the shell to it |
+| Runtime `Session` remains thin (`SessionId` centered) | C0 keeps product catalog/mapping in API-global ProductStore and derives transcripts from canonical workspace runtime events |
 | `RunSummary` already carries `session_id` / `job_id` / `run_id` | Useful mapping anchors exist |
 | Current `apps/web` defaults to the sealed product shell | Keep the IA; `/dev/workbench` remains an advanced escape hatch only |
 
@@ -297,6 +298,10 @@ Do not do now:
 
 ## changelog
 
+- 2026-07-26: Marked Web Complete C0 implemented. API-global product state,
+  exact product-session/runtime binding, transcript projection, strict browser
+  migration, and typed Web client modules are present; the default shell wiring
+  remains C1/C2 work.
 - 2026-07-25: Reconciled status after M1 landed. Marked the shared design
   partially implemented, updated the Folder/Repo and product-shell facts, and
   recorded exact product-session binding as Web Complete C0 work.

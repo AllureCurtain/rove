@@ -12,13 +12,26 @@ this file is the current proof map.
 | M3 | Built-in vector/RAG indexing | Removed / out of scope for local-first product | Default builds and workspace tests do not depend on lancedb/arrow | Removed |
 | M4 | MCP tools register as first-class tools for CLI/API, expose annotations as tool metadata, and have bounded stdio transport plus opt-in real server smoke coverage. | Met | `cargo test --test mcp`; optional real server smoke: `$env:ROVE_MCP_FILESYSTEM_SMOKE="1"; cargo test --test mcp mcp_official_filesystem_server_smoke_when_enabled -- --exact --nocapture` | Closed by phases 3, 9 |
 | M5 | HTTP API can create jobs, stream/replay SSE events, cancel jobs, resolve approval/input requests, persist historical state, and enforce token/CORS/rate-limit controls. | Met | `cargo test --test api`; focused: `cargo test --test api api_creates_job_streams_events_and_reports_state -- --exact`; `cargo test --test api api_accepts_matching_bearer_token -- --exact` | Closed by phases 3, 5 |
-| M6 | Standalone Web surface consumes the API/SSE stream, supports approval/input/cancel/resume flows, token proxying, and browser E2E coverage. | Met for the historical advanced Workbench; the default M1 product shell is implemented with Web Complete gaps still open | `cd apps/web; pnpm test`; `cd apps/web; pnpm typecheck`; `cd apps/web; pnpm build`; optional browser check: `cd apps/web; pnpm test:e2e` | Historical M6 closed by phases 3, 8; full live-API product-shell acceptance belongs to Web Complete C3 |
+| M6 | Standalone Web surface consumes the API/SSE stream, supports approval/input/cancel/resume flows, token proxying, and browser E2E coverage. | Met for the historical advanced Workbench; the default M1 product shell and C0 API/client foundation are implemented, with C1–C3 UI gaps still open | `cd apps/web; pnpm test`; `cd apps/web; pnpm typecheck`; `cd apps/web; pnpm build`; optional browser check: `cd apps/web; pnpm test:e2e` | Historical M6 closed by phases 3, 8; full live-API product-shell acceptance belongs to Web Complete C3 |
 
 Evidence boundary: `apps/web/tests/e2e/shell.spec.ts` covers the default `/`
 product shell with browser-boundary mocks. The gated real-API suite
 `apps/web/tests/e2e/real-api.spec.ts` opens `/dev/workbench`, so its three tests
-prove the advanced Workbench/API lifecycle rather than refresh continuity,
-exact product-session binding, or full live-API acceptance of the product shell.
+prove the advanced Workbench/API lifecycle rather than C1 refresh continuity or
+full live-API acceptance of the product shell.
+
+## Web Complete C0
+
+| C0 contract | Current status | Test evidence surface |
+|---|---|---|
+| API-global ProductStore CRUD and safe preferences | Implemented | `apps/api/src/product/store/tests.rs`; product route coverage in `tests/api.rs` |
+| Exact product-session/runtime binding and fail-closed continuation | Implemented | `product_sessions_in_one_workspace_resume_their_own_exact_runs` and product resume/cancel tests in `tests/api.rs` |
+| Canonical-event transcript projection with typed partial reasons | Implemented | transcript module tests and product transcript assertions in `tests/api.rs` |
+| Strict/idempotent M1 migration and typed Web client | Implemented, not wired into the default shell | `apps/web/product/product-client.test.ts`, `apps/web/product/m1-browser-migration.test.ts`, and migration tests in `tests/api.rs` |
+| Migration preparation/apply lifecycle | Implemented: preparation has a 30-second deadline; apply is supervised, survives handler disconnect, and persists/reuses its baseline | migration lifecycle tests in `apps/api/src/product/migration.rs` and migration/store coverage in `apps/api/src/product/store/tests.rs` |
+| Concurrent preference and active-session safety | Implemented: revision CAS preserves newer preferences; a source-mapped active session returns typed `product_session_active` and the Web keeps the exact retry payload | preference/active-session migration tests in `apps/api/src/product/store/tests.rs` and `apps/web/product/m1-browser-migration.test.ts` |
+| Runtime binding commit safety | Implemented: canonical sorted runtime reservations, workspace containment, `SQLITE_OPEN_NOFOLLOW`, and symlink-parent rejection | external commit-guard tests in `runtime/src/state/index.rs` and migration tests in `tests/api.rs` |
+| Product job-start shutdown ownership | Implemented: owned start tasks drain before job supervisors and handles | lifecycle tests in `apps/api/src/lib.rs` |
 
 Cross-cutting default gate:
 

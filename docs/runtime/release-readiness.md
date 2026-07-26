@@ -12,6 +12,10 @@ Included:
 - Local HTTP API with jobs, SSE, approvals, inputs, cancel, resume, and history.
 - Standalone Web M1 product shell at `/`, plus the advanced
   `/dev/workbench`, backed by the local API.
+- Web Complete C0 product-control APIs, API-global ProductStore, exact product
+  session/runtime binding, canonical-event transcript reads, one-time M1
+  browser migration, and typed Web client modules. The default shell adoption
+  remains C1/C2 work.
 - Local state under `.rove/`.
 - Folder, Repo, and Task workspaces.
 - Built-in tools, MCP proxy, memory tools, fake provider, OpenAI /
@@ -58,6 +62,29 @@ Acceptance:
 - no generated runtime state, logs, screenshots, SQLite files, or secrets appear
   in `git status --short`;
 - any `apps/web/next-env.d.ts` churn from Next.js is inspected before commit.
+
+## Web Complete C0 Evidence
+
+C0 release evidence must include the default Rust and Web CI gates plus focused
+coverage for these contracts:
+
+- ProductStore workspace/session/profile/preferences CRUD, schema migration,
+  monotonic preference revisions, and bounded durable migration preparations;
+- exact product-session resume, single-active-turn ownership, terminal release,
+  stream finalization/replay, and shutdown drain order;
+- ordered canonical-event transcript projection with typed partial reasons;
+- strict/idempotent M1 migration, exact retry payload preservation for
+  `product_session_active`, and preference conflict reporting;
+- a preparation-only 30-second deadline and API-supervised apply that survives
+  HTTP disconnect;
+- canonical sorted runtime-store reservation, workspace containment,
+  `SQLITE_OPEN_NOFOLLOW`, and symlink-parent rejection;
+- strict Web response validation and a replay-safe same-origin migration state
+  machine that never uploads raw keys.
+
+C0 does not by itself prove refresh restore, deep routes, API-authoritative
+visible catalogs/settings, or full live-API acceptance of `/`; those remain
+C1–C3 release gates.
 
 For release claims that include real-terminal TUI behavior, run the opt-in Unix
 PTY smoke separately:
@@ -281,6 +308,15 @@ Current local-first posture:
   `ROVE_API_UNSAFE_REMOTE_WITHOUT_AUTH=true` is explicitly set.
 - The Web proxy injects `ROVE_API_TOKEN` server-side and does not expose it to
   browser JavaScript.
+- Product migration rejects unknown/unbounded fields and raw-key-shaped data,
+  validates workspace/runtime paths before commit, and retains only safe
+  preference/profile references in API-global `product.sqlite`.
+- Product migration apply and product job starts are API-owned tasks: client
+  disconnect cannot silently cancel an accepted commit or leave an untracked
+  active-turn claim, and shutdown drains their owners in dependency order.
+- Runtime databases used by verified product bindings are canonicalized,
+  workspace-contained when external paths are disabled, and opened with
+  no-follow guards.
 - Filesystem tools reject traversal and symlink/reparse escapes outside the
   workspace.
 - Shell execution has timeout, output-size, environment-inheritance, denylist,

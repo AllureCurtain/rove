@@ -2,7 +2,7 @@
 
 > Status: **Current Maintainer Guide**
 >
-> Last reviewed: 2026-07-25. This guide explains the repository as it exists
+> Last reviewed: 2026-07-26. This guide explains the repository as it exists
 > today. For exact subsystem contracts and implementation status, follow
 > [`docs/runtime/`](runtime/README.md). Documents marked
 > `Proposed / Not Implemented` describe future work.
@@ -409,9 +409,15 @@ Built-in vector RAG has been removed. Workspace context comes from tools and lay
 `apps/web/` is a standalone Next.js application. It consumes the API and SSE
 rather than embedding a second runtime. The default route is the M1 product
 shell (Workspace → Session → Chat + Inspector); `/dev/workbench` is an
-advanced-only migration escape hatch. Web Complete persistence, refresh
-restore, exact multi-session runtime binding, deep routes, and full Settings
-remain active work.
+advanced-only migration escape hatch.
+
+Web Complete C0 adds an API-global SQLite
+ProductStore, product workspace/session/profile/preferences CRUD, exact
+server-owned product-session/runtime bindings, one active turn per product
+session, canonical-event transcript reads with typed partial reasons, strict
+M1 browser migration, and typed Web client/migration modules. The default shell
+does not consume those modules yet, so refresh restore, session routing/deep
+links, complete Settings, and final product acceptance remain C1–C3 work.
 
 From `apps/web/`:
 
@@ -597,9 +603,10 @@ documents remain proposed/not implemented.
 ### Active product delivery
 
 - [Agent Desktop + Web shared UI](design/2026-07-25-agent-desktop-web-ui-design.md)
-  — Web M1 implemented; Web Complete and Desktop pending.
+  — Web M1 and C0 are implemented; C1–C3 and Desktop remain pending.
 - [Web Complete design](design/2026-07-26-web-complete-design.md) and
-  [delivery plan](plans/2026-07-26-web-complete.md) — active C0–C3 milestone.
+  [delivery plan](plans/2026-07-26-web-complete.md) — C0 is complete; C1–C3
+  remain the active milestone work.
 - [Web → Desktop coordinator plan](plans/2026-07-25-web-desktop-master-delivery.md)
   — worktree ownership, PR authority, exact product-session binding, and
   Desktop D0 gate.
@@ -630,7 +637,8 @@ Use them for rationale, not as current API/runtime truth when they disagree with
 ## 20. Known boundary reminders
 
 - Browser/Desktop automation workspace specs are future. The Web M1 product
-  shell exists; a Tauri Desktop product host does not.
+  shell and C0 persistence/API foundation exist; a Tauri Desktop product host
+  does not.
 - Hosted multi-user identity and distributed rate limiting are outside the MVP.
 - Built-in vector RAG is not provided.
 - Real provider/MCP tests are gated.

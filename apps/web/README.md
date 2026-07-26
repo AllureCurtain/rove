@@ -16,6 +16,18 @@ Primary surface: the **product shell** (Workspace → Session → Run) against l
 - Session continue uses **hard resume only** (`resume: "latest"` under the
   opened workspace root). Soft transcript stitch is not a product path.
 
+## C0 product client foundation
+
+`apps/web/product/` now contains strict product API response validation, a thin
+client for workspace/session/profile/preferences/transcript endpoints, and a
+versioned replay-safe M1 browser migration state machine. `CreateJobRequest`
+also accepts the server-owned `product_session_id` path implemented by the Rust
+API.
+
+This C0 foundation is implemented but is not wired into the default
+`ProductApp`. Until C1/C2 integration, the visible shell continues to use its
+M1 browser catalog and workspace-scoped `resume: "latest"` behavior.
+
 ## Run locally
 
 From the repository root:
@@ -59,9 +71,11 @@ Neither is primary product navigation.
 
 ## Providers
 
-Provider profiles may be saved in browser local storage for M1. The browser
-stores and sends **environment variable names** (`api_key_env`) only — never
-raw keys. Settings → Providers can **Test** and **List models** via the API.
+Provider profiles are still saved in browser local storage by the M1 Settings
+surface. C0 adds durable API CRUD and a typed Web client, but Settings has not
+switched authority yet. The browser stores and sends **environment variable
+names** (`api_key_env`) only — never raw keys.
+Settings → Providers can **Test** and **List models** via the API.
 
 ## Verification
 
@@ -87,7 +101,7 @@ Focused product smoke (mock API):
 - Transcript restore after refresh (catalog persists; messages still in-memory)
 - Multi-session SSE follow when switching between parallel sessions
 - Full Settings section implementations beyond Providers / About / Advanced
-- Server-side provider profile persistence
+- Wire Providers and the product catalog to the C0 server-side persistence APIs
 - Rich session export / cleanup
 - Memory management UI depth
 - Native Desktop host (Tauri)

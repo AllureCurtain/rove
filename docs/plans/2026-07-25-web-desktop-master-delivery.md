@@ -1,12 +1,14 @@
 # Web → Desktop Master Delivery Plan
 
-> Status: **Active coordinator plan — P0 merged; C0 public foundation sealed, workers next**
+> Status: **Active coordinator plan — C0 complete; C1–C3 and Desktop pending**
 >
 > Coordinator: the primary conversation working from the repository `main`
 > checkout. Worker conversations implement bounded branches only; they do not
 > merge integration branches or `main`.
 >
-> Baseline audited: `main` at `b244104`.
+> Original product-scope baseline: `b244104`.
+>
+> C0 status: implemented and verified through the integration PR path.
 >
 > Product decisions:
 > [`../design/2026-07-25-agent-desktop-web-ui-design.md`](../design/2026-07-25-agent-desktop-web-ui-design.md)
@@ -20,7 +22,8 @@ This is the coordinator-level source for delivery order, worktree ownership,
 parallel boundaries, PR authority, and the handoff from Web Complete to a future
 Tauri Desktop milestone. It does not replace current runtime truth in
 `docs/runtime/**`, and it does not claim that Web Complete or Desktop is already
-implemented.
+implemented. Web Complete C0 is complete; C1–C3 and Desktop remain future
+delivery.
 
 ---
 
@@ -68,19 +71,43 @@ shared UI is complete enough to host without forking the product.
 | Web M1 F1 | `ecfabbd` | Product shell on the live API |
 | Web M1 F2 | `93a724c` | Theme, Inspector states, running badges, Advanced-only benchmark |
 | Web Complete seal | `b244104` | Accepted C0–C3 product scope |
+| P0 reconciliation | `6e32720` | Current-state/product-plan alignment and C0 worktree contract |
+| Web Complete C0 | Current code and CI | Product persistence/API foundation and typed Web client |
 
 The default Web route is the product shell. `/dev/workbench` is an advanced
 escape hatch, not a second product line.
 
-### 2.2 Web gaps still open
+### 2.2 Implemented C0 foundation
 
-- refresh does not rebuild the active session transcript;
-- product Workspace/Session catalogs and provider profiles still treat browser
-  storage as authority;
-- `resume: "latest"` is workspace-scoped and is ambiguous when one workspace
-  contains multiple product sessions;
+C0 assembles the worker and coordinator work into one verified foundation:
+
+- API-global SQLite ProductStore with workspace/session/profile/preferences
+  CRUD and migration receipts;
+- exact server-owned product-session/runtime bindings and one active turn per
+  product session;
+- canonical-event transcript projection with typed partial reasons;
+- strict/idempotent M1 migration plus typed Web client/migration modules;
+- product job supervision, terminal persistence, and SSE finalization/replay
+  ordering;
+- a preparation-only migration deadline followed by supervised apply that is
+  not cancelled by an HTTP disconnect;
+- durable migration baselines, preference revision CAS, and typed
+  `product_session_active` retry behavior;
+- canonical runtime database reservations, workspace containment, no-follow
+  SQLite opens, and symlink-parent rejection;
+- API-owned product job-start tasks drained before supervisors and job handles
+  during shutdown.
+
+### 2.3 Web gaps still open
+
+- the default shell does not call the C0 transcript endpoint, so refresh does
+  not rebuild the active session transcript;
+- the default shell still treats browser Workspace/Session catalogs and
+  provider profiles as authority even though C0 APIs/client modules now exist;
+- the default shell still sends workspace-scoped `resume: "latest"`; C1 must
+  switch it to C0's exact product-session path;
 - switching sessions does not fully reattach/rebuild the correct running state;
-- durable workspace/session/settings routes do not exist;
+- durable deep browser routes for workspace/session/settings state do not exist;
 - several Settings sections are placeholder-only;
 - loading/empty/partial/error/recovery states, keyboard/focus behavior,
   reduced-motion behavior, and responsive layout need a completion pass;
@@ -89,7 +116,7 @@ escape hatch, not a second product line.
   step also still uses pre-M1 selectors;
 - there is no committed high-fidelity screenshot baseline for final acceptance.
 
-### 2.3 Desktop is not implementation-ready
+### 2.4 Desktop is not implementation-ready
 
 There is no `apps/desktop`, Tauri dependency, `src-tauri`, packaging pipeline, or
 sealed D0 plan. The accepted direction is only:
@@ -330,13 +357,13 @@ The coordinator first updates the integration branch to the P0-merged `main`,
 implements the public foundation and commits it, then creates all three worker
 worktrees from that exact commit.
 
-The sealed foundation fixes the server-owned product IDs, API-global
+The sealed foundation fixed the server-owned product IDs, API-global
 `product.sqlite` location, ProductStore/turn-claim contracts, bounded runtime
 run-event snapshots, transcript/partial DTOs, strict M1 migration DTOs, product
 route/OpenAPI surface, and the fail-closed `POST /jobs.product_session_id`
-entry. The registered product handlers intentionally return typed `501` until
-the worker implementations are reviewed and wired by the coordinator; this is
-not C0 completion.
+entry. Store, transcript, Web client, migration, route/job lifecycle, stream
+safety, commit-boundary hardening, and focused tests are implemented. The
+handlers are wired rather than intentional `501` placeholders.
 
 ### 5.2 Worker ownership
 
@@ -357,12 +384,12 @@ files, manifests, runtime events, or current runtime docs in this wave.
 The coordinator reviews and merges in this order unless dependency evidence
 requires a recorded change:
 
-1. ProductStore worker PR;
-2. transcript worker PR;
-3. Web client worker PR;
-4. coordinator wiring, API/OpenAPI/integration tests, security review, and
-   current runtime documentation;
-5. integration PR from `feature/web-complete-persistence` to `main`.
+- [x] ProductStore worker PR
+- [x] Transcript worker PR
+- [x] Web client worker PR
+- [x] Coordinator aggregate wiring/API/OpenAPI review, cancellation hardening,
+  integration CI, and current runtime documentation
+- [x] Integration PR from `feature/web-complete-persistence` to `main`
 
 ---
 
@@ -507,10 +534,15 @@ and documented packaging/security behavior.
 
 ## changelog
 
+- 2026-07-26: Completed Web Complete C0. Store, transcript, Web client, product
+  job lifecycle, migration, stream safety, commit-boundary hardening, current
+  docs, and aggregate Rust/Web CI are integrated through the coordinator-owned
+  PR path. C1–C3 and Desktop were not started.
 - 2026-07-26: Sealed the coordinator-owned C0 public foundation on the
-  integration branch. Reserved disjoint store, transcript, and Web client
-  implementation lanes; no SQLite ProductStore, transcript projector, browser
-  migration state machine, or product job wiring is claimed complete yet.
+  integration branch. At that foundation point, the plan reserved disjoint
+  store, transcript, and Web client implementation lanes; it did not yet claim
+  a complete SQLite ProductStore, transcript projector, browser migration state
+  machine, or product job wiring.
 - 2026-07-26: Completed P0 reconciliation. Distinguished mock product-shell
   browser coverage from `/dev/workbench` real-API evidence, recorded the stale
   provider-runner Web step as C3 work, and removed obsolete current-state RAG
