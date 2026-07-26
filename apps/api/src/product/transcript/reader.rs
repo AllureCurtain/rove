@@ -20,9 +20,9 @@ use crate::types::JobStreamEvent;
 
 use super::validation::{
     binding_prefix_len, is_live_status, is_returnable_runtime_error, latest_binding_matches,
-    parse_run_status, push_reason, reason_for_binding, report_identity_matches,
-    run_identity_matches, runtime_chain_prefix_len, runtime_read_reason,
-    terminal_consistency_issue, truncate_utf8, validated_report_status,
+    parse_run_status, push_reason, reason_for_binding, report_fallback_allowed,
+    report_identity_matches, run_identity_matches, runtime_chain_prefix_len, runtime_read_reason,
+    terminal_consistency_issue, terminal_status_for_reason, truncate_utf8, validated_report_status,
 };
 
 const CATALOG_SNAPSHOT_ATTEMPTS: usize = 3;
@@ -404,7 +404,11 @@ impl CanonicalProductTranscriptReader {
             canonical_incomplete = true;
         }
 
-        let fallback = if canonical_incomplete && !response_limited {
+        let fallback = if report_fallback_allowed(
+            canonical_incomplete,
+            response_limited,
+            terminal.is_some(),
+        ) {
             self.load_report_fallback(
                 workspace,
                 state_store,

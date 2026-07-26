@@ -172,7 +172,7 @@ pub(super) fn parse_run_status(value: &str) -> Option<RunStatus> {
     }
 }
 
-fn terminal_status_for_reason(reason: &TerminationReason) -> RunStatus {
+pub(super) fn terminal_status_for_reason(reason: &TerminationReason) -> RunStatus {
     match reason {
         TerminationReason::Final
         | TerminationReason::StepLimit
@@ -192,6 +192,14 @@ fn requires_terminal_event(status: &RunStatus) -> bool {
 
 pub(super) fn is_live_status(status: &RunStatus) -> bool {
     matches!(status, RunStatus::Init | RunStatus::Running)
+}
+
+pub(super) fn report_fallback_allowed(
+    canonical_incomplete: bool,
+    response_limited: bool,
+    terminal_observed: bool,
+) -> bool {
+    canonical_incomplete && !response_limited && !terminal_observed
 }
 
 pub(super) struct TerminalConsistencyIssue {
@@ -442,5 +450,18 @@ mod tests {
         );
         assert_eq!(issue.expected_seq, None);
         assert_eq!(issue.observed_seq, None);
+    }
+
+    #[test]
+    fn terminal_status_mismatch_disables_report_fallback() {
+        let terminal = (4, RunStatus::Done);
+        let issue = terminal_consistency_issue(&RunStatus::Error, Some(&terminal), 4)
+            .expect("terminal and indexed status mismatch must remain partial");
+
+        assert_eq!(
+            issue.code,
+            ProductTranscriptPartialReasonCode::CorruptArtifact
+        );
+        assert!(!report_fallback_allowed(true, false, true));
     }
 }
