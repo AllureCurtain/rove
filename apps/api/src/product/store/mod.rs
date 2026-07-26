@@ -65,8 +65,7 @@ pub(crate) fn open_product_store(
     path: PathBuf,
     busy_timeout_ms: u64,
 ) -> Result<Arc<dyn ProductStore>, ProductStoreError> {
-    SqliteProductStore::open(path, busy_timeout_ms)
-        .map(|store| Arc::new(store) as Arc<dyn ProductStore>)
+    Ok(Arc::new(SqliteProductStore::open(path, busy_timeout_ms)?))
 }
 
 #[async_trait]

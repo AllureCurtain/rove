@@ -63,9 +63,10 @@ fn product_json<T>(body: Result<Json<T>, JsonRejection>) -> Result<T, ApiError> 
     )
 )]
 pub(crate) async fn list_product_workspaces(
-    State(_state): State<ApiState>,
+    State(state): State<ApiState>,
 ) -> Result<Json<ProductWorkspacesResponse>, ApiError> {
-    foundation_unavailable()
+    let workspaces = state.product_store()?.list_workspaces().await?;
+    Ok(Json(ProductWorkspacesResponse { workspaces }))
 }
 
 #[utoipa::path(
@@ -122,8 +123,9 @@ pub(crate) async fn delete_product_workspace(
 )]
 pub(crate) async fn list_product_sessions(
     State(_state): State<ApiState>,
-    Query(_query): Query<ListProductSessionsQuery>,
+    Query(query): Query<ListProductSessionsQuery>,
 ) -> Result<Json<ProductSessionsResponse>, ApiError> {
+    let _workspace_id = query.workspace_id;
     foundation_unavailable()
 }
 
@@ -205,10 +207,14 @@ pub(crate) async fn delete_product_session(
     )
 )]
 pub(crate) async fn get_product_session_transcript(
-    State(_state): State<ApiState>,
-    Path(_session_id): Path<ProductSessionId>,
+    State(state): State<ApiState>,
+    Path(session_id): Path<ProductSessionId>,
 ) -> Result<Json<ProductTranscriptResponse>, ApiError> {
-    foundation_unavailable()
+    let transcript = state
+        .product_transcript_reader()?
+        .read_transcript(&session_id)
+        .await?;
+    Ok(Json(transcript))
 }
 
 #[utoipa::path(
