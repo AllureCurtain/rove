@@ -10,9 +10,15 @@ use super::{
     ProductRuntimeStateResolver, ProductStore, ProductStoreError, ProductTranscriptReader,
 };
 
+mod reader;
+mod validation;
+
 pub(crate) fn open_product_transcript_reader(
-    _store: Arc<dyn ProductStore>,
-    _runtime_state_resolver: Arc<dyn ProductRuntimeStateResolver>,
+    store: Arc<dyn ProductStore>,
+    runtime_state_resolver: Arc<dyn ProductRuntimeStateResolver>,
 ) -> Result<Arc<dyn ProductTranscriptReader>, ProductStoreError> {
-    Err(ProductStoreError::unavailable())
+    Ok(Arc::new(reader::CanonicalProductTranscriptReader::new(
+        store,
+        runtime_state_resolver,
+    )))
 }

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use chrono::{DateTime, FixedOffset, Utc};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, ErrorCode, OptionalExtension, params};
 
 use crate::events::StreamEvent;
 use crate::types::{JobId, RunId, SessionId, TaskState};
@@ -11,6 +11,9 @@ use rove_core::CallId;
 
 const CURRENT_SCHEMA_VERSION: i64 = 1;
 const DEFAULT_BUSY_TIMEOUT_MS: u64 = 5_000;
+const MAX_SNAPSHOT_EVENTS: usize = 2_000;
+const MAX_SNAPSHOT_EVENT_JSON_BYTES: usize = 1_048_576;
+const MAX_SNAPSHOT_EVENT_JSON_TOTAL_BYTES: usize = 16 * 1_048_576;
 
 const MIGRATION_001: &str = r#"
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -212,6 +215,7 @@ pub struct EventIndexRecord {
 ///
 /// `high_water_seq` and `events` are read in the same SQLite transaction so a
 /// transcript projection does not report a false gap while a live run appends.
+/// Payload text is materialized only after a byte-bounded prefix is selected.
 /// The embedded `run.last_event_seq` remains available to detect a stale run
 /// counter left by older interrupted writes.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -220,6 +224,15 @@ pub struct RunEventSnapshot {
     pub high_water_seq: u64,
     pub events: Vec<EventIndexRecord>,
     pub has_more: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EventSnapshotMetadata {
+    run_id: RunId,
+    seq: u64,
+    event_name_storage_class: String,
+    event_json_storage_class: String,
+    event_json_bytes: usize,
 }
 
 impl StateIndex {
@@ -1095,8 +1108,6 @@ impl StateIndex {
         after_seq: u64,
         limit: usize,
     ) -> std::io::Result<Option<RunEventSnapshot>> {
-        const MAX_SNAPSHOT_EVENTS: usize = 2_000;
-
         let mut conn = self.connect()?;
         let transaction = conn.transaction().map_err(io_other)?;
         let run = transaction
@@ -1124,13 +1135,73 @@ impl StateIndex {
                 |row| row.get(0),
             )
             .map_err(io_other)?;
-        let indexed_high_water = indexed_high_water_sql.unwrap_or_default().max(0) as u64;
+        let indexed_high_water = indexed_high_water_sql
+            .map(|value| {
+                u64::try_from(value).map_err(|_| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "event sequence high-water mark is negative",
+                    )
+                })
+            })
+            .transpose()?
+            .unwrap_or_default();
         let high_water_seq = run.last_event_seq.max(indexed_high_water);
         let bounded_limit = limit.clamp(1, MAX_SNAPSHOT_EVENTS);
-        let query_limit = i64::try_from(bounded_limit + 1).map_err(std::io::Error::other)?;
-        let after_seq_sql = i64::try_from(after_seq).map_err(std::io::Error::other)?;
-        let high_water_sql = i64::try_from(high_water_seq).map_err(std::io::Error::other)?;
-        let mut records = {
+        let query_limit = i64::try_from(bounded_limit + 1)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
+        let after_seq_sql = i64::try_from(after_seq)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
+        let high_water_sql = i64::try_from(high_water_seq)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
+        let metadata = {
+            let mut statement = transaction
+                .prepare(
+                    r#"
+                    SELECT run_id, seq, typeof(event_name), typeof(event_json),
+                           length(CAST(event_json AS BLOB))
+                    FROM events
+                    WHERE run_id = ?1 AND seq > ?2 AND seq <= ?3
+                    ORDER BY seq ASC
+                    LIMIT ?4
+                    "#,
+                )
+                .map_err(io_other)?;
+            let rows = statement
+                .query_map(
+                    params![
+                        run_id.to_string(),
+                        after_seq_sql,
+                        high_water_sql,
+                        query_limit
+                    ],
+                    event_snapshot_metadata_from_row,
+                )
+                .map_err(io_other)?;
+            let mut metadata = Vec::new();
+            for row in rows {
+                metadata.push(row.map_err(io_other)?);
+            }
+            metadata
+        };
+        if metadata.iter().any(|record| {
+            record.run_id != run_id
+                || record.event_name_storage_class != "text"
+                || record.event_json_storage_class != "text"
+        }) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "event snapshot contains an invalid identity or column storage class",
+            ));
+        }
+
+        let prefix_len = bounded_snapshot_prefix_len(&metadata, bounded_limit);
+        let has_more = metadata.len() > prefix_len;
+        let records = if prefix_len == 0 {
+            Vec::new()
+        } else {
+            let payload_limit = i64::try_from(prefix_len)
+                .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
             let mut statement = transaction
                 .prepare(
                     r#"
@@ -1148,19 +1219,29 @@ impl StateIndex {
                         run_id.to_string(),
                         after_seq_sql,
                         high_water_sql,
-                        query_limit
+                        payload_limit
                     ],
                     event_record_from_row,
                 )
                 .map_err(io_other)?;
-            let mut records = Vec::new();
+            let mut records = Vec::with_capacity(prefix_len);
             for row in rows {
                 records.push(row.map_err(io_other)?);
             }
             records
         };
-        let has_more = records.len() > bounded_limit;
-        records.truncate(bounded_limit);
+        if records.len() != prefix_len
+            || records.iter().zip(metadata.iter()).any(|(record, size)| {
+                record.run_id != size.run_id
+                    || record.seq != size.seq
+                    || record.event_json.len() != size.event_json_bytes
+            })
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "event snapshot payload changed during its read transaction",
+            ));
+        }
         transaction.commit().map_err(io_other)?;
 
         Ok(Some(RunEventSnapshot {
@@ -1539,7 +1620,7 @@ fn run_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RunIndexReco
         trace_path: PathBuf::from(row.get::<_, String>(5)?),
         task_state_path: row.get::<_, Option<String>>(6)?.map(PathBuf::from),
         report_path: row.get::<_, Option<String>>(7)?.map(PathBuf::from),
-        last_event_seq: row.get::<_, i64>(8)?.max(0) as u64,
+        last_event_seq: nonnegative_u64_from_row(row, 8)?,
     })
 }
 
@@ -1555,10 +1636,49 @@ fn report_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ReportInd
 fn event_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<EventIndexRecord> {
     Ok(EventIndexRecord {
         run_id: run_id_from_row(row, 0)?,
-        seq: row.get::<_, i64>(1)?.max(0) as u64,
+        seq: nonnegative_u64_from_row(row, 1)?,
         event_name: row.get(2)?,
         event_json: row.get(3)?,
     })
+}
+
+fn event_snapshot_metadata_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<EventSnapshotMetadata> {
+    let event_json_bytes = row.get::<_, i64>(4)?;
+    Ok(EventSnapshotMetadata {
+        run_id: run_id_from_row(row, 0)?,
+        seq: nonnegative_u64_from_row(row, 1)?,
+        event_name_storage_class: row.get(2)?,
+        event_json_storage_class: row.get(3)?,
+        event_json_bytes: usize::try_from(event_json_bytes)
+            .map_err(|_| rusqlite::Error::IntegralValueOutOfRange(4, event_json_bytes))?,
+    })
+}
+
+fn bounded_snapshot_prefix_len(metadata: &[EventSnapshotMetadata], event_limit: usize) -> usize {
+    let candidate_count = metadata.len().min(event_limit);
+    let mut total_bytes = 0_usize;
+    metadata[..candidate_count]
+        .iter()
+        .position(|record| {
+            if record.event_json_bytes > MAX_SNAPSHOT_EVENT_JSON_BYTES {
+                return true;
+            }
+            match total_bytes.checked_add(record.event_json_bytes) {
+                Some(next_total) if next_total <= MAX_SNAPSHOT_EVENT_JSON_TOTAL_BYTES => {
+                    total_bytes = next_total;
+                    false
+                }
+                _ => true,
+            }
+        })
+        .unwrap_or(candidate_count)
+}
+
+fn nonnegative_u64_from_row(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<u64> {
+    let value = row.get::<_, i64>(index)?;
+    u64::try_from(value).map_err(|_| rusqlite::Error::IntegralValueOutOfRange(index, value))
 }
 
 fn session_id_from_row(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<SessionId> {
@@ -1602,5 +1722,133 @@ fn system_time_millis(value: SystemTime) -> i64 {
 }
 
 fn io_other(err: rusqlite::Error) -> std::io::Error {
-    std::io::Error::other(err)
+    let invalid_data = matches!(
+        &err,
+        rusqlite::Error::FromSqlConversionFailure(..)
+            | rusqlite::Error::IntegralValueOutOfRange(..)
+            | rusqlite::Error::Utf8Error(..)
+            | rusqlite::Error::InvalidColumnIndex(..)
+            | rusqlite::Error::InvalidColumnName(..)
+            | rusqlite::Error::InvalidColumnType(..)
+    ) || matches!(
+        &err,
+        rusqlite::Error::SqliteFailure(error, _)
+            if matches!(
+                error.code,
+                ErrorCode::DatabaseCorrupt | ErrorCode::NotADatabase | ErrorCode::TypeMismatch
+            )
+    );
+    if invalid_data {
+        std::io::Error::new(std::io::ErrorKind::InvalidData, err)
+    } else {
+        std::io::Error::other(err)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn indexed_run() -> (tempfile::TempDir, StateIndex, SessionId, JobId, RunId) {
+        let temp = tempfile::TempDir::new().unwrap();
+        let index = StateIndex::new(temp.path());
+        index.initialize().unwrap();
+        let session_id = SessionId::new();
+        let job_id = JobId::new();
+        let run_id = RunId::new();
+        index
+            .record_run_started(
+                session_id,
+                job_id,
+                run_id,
+                &temp.path().join("run"),
+                &temp.path().join("trace.jsonl"),
+            )
+            .unwrap();
+        (temp, index, session_id, job_id, run_id)
+    }
+
+    #[test]
+    fn snapshot_returns_safe_prefix_before_oversized_event() {
+        let (_temp, index, _session_id, job_id, run_id) = indexed_run();
+        let event = StreamEvent::RunStarted {
+            run_id,
+            job_id,
+            user_message: "bounded snapshot".to_string(),
+        };
+        index.append_event(run_id, 1, &event, "{}").unwrap();
+        index
+            .append_event(
+                run_id,
+                2,
+                &event,
+                &"x".repeat(MAX_SNAPSHOT_EVENT_JSON_BYTES + 1),
+            )
+            .unwrap();
+        index.append_event(run_id, 3, &event, "{}").unwrap();
+
+        let snapshot = index.run_event_snapshot(run_id, 0, 10).unwrap().unwrap();
+
+        assert_eq!(snapshot.events.len(), 1);
+        assert_eq!(snapshot.events[0].seq, 1);
+        assert_eq!(snapshot.high_water_seq, 3);
+        assert!(snapshot.has_more);
+    }
+
+    #[test]
+    fn snapshot_prefix_enforces_total_payload_limit() {
+        let run_id = RunId::new();
+        let metadata = (1..=17)
+            .map(|seq| EventSnapshotMetadata {
+                run_id,
+                seq,
+                event_name_storage_class: "text".to_string(),
+                event_json_storage_class: "text".to_string(),
+                event_json_bytes: MAX_SNAPSHOT_EVENT_JSON_BYTES,
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(bounded_snapshot_prefix_len(&metadata, 17), 16);
+    }
+
+    #[test]
+    fn snapshot_maps_invalid_ulid_to_invalid_data() {
+        let (_temp, index, _session_id, _job_id, run_id) = indexed_run();
+        let conn = Connection::open(index.path()).unwrap();
+        conn.pragma_update(None, "foreign_keys", "OFF").unwrap();
+        conn.execute(
+            "UPDATE runs SET session_id = 'not-a-ulid' WHERE run_id = ?1",
+            params![run_id.to_string()],
+        )
+        .unwrap();
+
+        let error = index.run_event_snapshot(run_id, 0, 10).unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn snapshot_maps_invalid_column_type_to_invalid_data() {
+        let (_temp, index, _session_id, _job_id, run_id) = indexed_run();
+        let conn = Connection::open(index.path()).unwrap();
+        conn.execute(
+            "UPDATE runs SET last_event_seq = 'invalid' WHERE run_id = ?1",
+            params![run_id.to_string()],
+        )
+        .unwrap();
+
+        let error = index.run_event_snapshot(run_id, 0, 10).unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn sqlite_corruption_maps_to_invalid_data() {
+        let error = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CORRUPT),
+            None,
+        );
+
+        assert_eq!(io_other(error).kind(), std::io::ErrorKind::InvalidData);
+    }
 }
