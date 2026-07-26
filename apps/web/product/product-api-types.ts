@@ -321,6 +321,7 @@ export const M1_MIGRATION_ISSUE_CODES = [
   "ambiguous_runtime_binding",
   "runtime_binding_not_found",
   "invalid_preference_reference",
+  "preference_write_conflict",
 ] as const;
 export type M1MigrationIssueCode =
   (typeof M1_MIGRATION_ISSUE_CODES)[number];

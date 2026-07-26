@@ -27,6 +27,7 @@ pub const MAX_PRODUCT_TEXT_BYTES: usize = 512;
 pub const MAX_PRODUCT_API_BASE_BYTES: usize = 2_048;
 pub const MAX_PRODUCT_PATH_BYTES: usize = 32_768;
 pub const MAX_MIGRATION_IDEMPOTENCY_KEY_BYTES: usize = 128;
+pub const MAX_M1_BROWSER_MIGRATION_BODY_BYTES: usize = 64 * 1_048_576;
 
 macro_rules! product_id {
     ($name:ident, $description:literal) => {
@@ -513,6 +514,7 @@ pub enum M1MigrationIssueCode {
     AmbiguousRuntimeBinding,
     RuntimeBindingNotFound,
     InvalidPreferenceReference,
+    PreferenceWriteConflict,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -563,7 +565,7 @@ pub struct CommitProductRunBinding {
 /// Runtime identity validated by the coordinator before a browser migration
 /// enters the ProductStore transaction. Browser hints never construct this
 /// type directly.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifiedM1SessionRunBinding {
     pub source_session_id: String,
     pub ordinal: u64,
@@ -571,6 +573,25 @@ pub struct VerifiedM1SessionRunBinding {
     pub runtime_job_id: JobId,
     pub runtime_run_id: RunId,
     pub resumed_from_run_id: Option<RunId>,
+    pub(crate) verified_workspace_root: PathBuf,
+    pub(crate) verified_workspace_kind: ProductWorkspaceKind,
+}
+
+/// Server-owned compare-and-set token captured before runtime migration
+/// inspection. It is intentionally absent from the browser request digest.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum M1PreferencesBaseline {
+    NotRequested,
+    Revision(u64),
+}
+
+/// Result of the atomic migration receipt/preferences preflight read.
+#[doc(hidden)]
+#[derive(Debug, Clone)]
+pub enum M1BrowserMigrationPreflight {
+    Replay(M1BrowserMigrationResponse),
+    Prepare(M1PreferencesBaseline),
 }
 
 /// Sanitized migration plus server-side runtime validation results. The store
@@ -580,6 +601,7 @@ pub struct PreparedM1BrowserMigration {
     pub request: M1BrowserMigrationRequest,
     pub verified_run_bindings: Vec<VerifiedM1SessionRunBinding>,
     pub issues: Vec<M1MigrationIssue>,
+    pub(crate) preferences_baseline: M1PreferencesBaseline,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -720,6 +742,12 @@ pub trait ProductStore: Send + Sync {
         &self,
         request: UpdateProductPreferencesRequest,
     ) -> Result<ProductPreferences, ProductStoreError>;
+    /// Validate the sanitized request and replay an existing receipt before
+    /// callers inspect runtime artifacts that may have since been cleaned.
+    async fn preflight_m1_browser_migration(
+        &self,
+        request: &M1BrowserMigrationRequest,
+    ) -> Result<M1BrowserMigrationPreflight, ProductStoreError>;
     async fn apply_m1_browser_migration(
         &self,
         migration: PreparedM1BrowserMigration,

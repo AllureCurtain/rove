@@ -475,6 +475,19 @@ fn validate_path_input(path: &Path) -> Result<(), ProductStoreError> {
     if !path.is_absolute() {
         return Err(invalid("workspace root must be absolute"));
     }
+    #[cfg(windows)]
+    {
+        use std::path::{Component, Prefix};
+
+        if !matches!(
+            path.components().next(),
+            Some(Component::Prefix(prefix)) if matches!(prefix.kind(), Prefix::Disk(_))
+        ) {
+            return Err(invalid(
+                "workspace root must use a local drive path, not a UNC or device namespace",
+            ));
+        }
+    }
     Ok(())
 }
 

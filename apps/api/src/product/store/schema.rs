@@ -6,7 +6,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 use crate::product::{ProductErrorCode, ProductStoreError};
 
-const CURRENT_SCHEMA_VERSION: i64 = 1;
+const CURRENT_SCHEMA_VERSION: i64 = 3;
 const MAX_BUSY_TIMEOUT_MS: u64 = 120_000;
 
 const MIGRATION_001: &str = r#"
@@ -247,6 +247,32 @@ CREATE INDEX idx_product_provider_profiles_list
     ON product_provider_profiles(label COLLATE NOCASE, profile_id ASC);
 "#;
 
+const MIGRATION_002: &str = r#"
+ALTER TABLE product_preferences
+ADD COLUMN revision INTEGER NOT NULL DEFAULT 0
+CHECK(typeof(revision) = 'integer' AND revision >= 0);
+"#;
+
+const MIGRATION_003: &str = r#"
+CREATE TABLE product_migration_preparations (
+    source TEXT NOT NULL,
+    source_schema_version INTEGER NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    request_digest TEXT NOT NULL,
+    preferences_requested INTEGER NOT NULL CHECK(preferences_requested IN (0, 1)),
+    preferences_revision INTEGER,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(source, source_schema_version, idempotency_key),
+    CHECK(
+        (preferences_requested = 0 AND preferences_revision IS NULL)
+        OR
+        (preferences_requested = 1
+            AND typeof(preferences_revision) = 'integer'
+            AND preferences_revision >= 0)
+    )
+);
+"#;
+
 #[derive(Debug, Clone)]
 pub(super) struct ProductDatabase {
     path: Arc<PathBuf>,
@@ -336,22 +362,36 @@ fn apply_migrations(connection: &mut Connection) -> Result<(), ProductStoreError
             "product store schema is newer than this API",
         ));
     }
-
-    let applied = connection
-        .query_row(
-            "SELECT version FROM product_schema_migrations WHERE version = ?1",
-            params![CURRENT_SCHEMA_VERSION],
-            |row| row.get::<_, i64>(0),
-        )
-        .optional()
-        .map_err(|_| database_error(true))?;
-    if applied.is_some() {
+    if newest == Some(CURRENT_SCHEMA_VERSION) {
         return Ok(());
     }
 
+    apply_migration_001(connection)?;
+    apply_migration_002(connection)?;
+    apply_migration_003(connection)?;
+    Ok(())
+}
+
+fn migration_is_applied(connection: &Connection, version: i64) -> Result<bool, ProductStoreError> {
+    connection
+        .query_row(
+            "SELECT version FROM product_schema_migrations WHERE version = ?1",
+            params![version],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .map(|version| version.is_some())
+        .map_err(|_| database_error(true))
+}
+
+fn apply_migration_001(connection: &mut Connection) -> Result<(), ProductStoreError> {
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|_| database_error(true))?;
+    if migration_is_applied(&transaction, 1)? {
+        transaction.commit().map_err(|_| database_error(true))?;
+        return Ok(());
+    }
     transaction
         .execute_batch(MIGRATION_001)
         .map_err(|_| database_error(true))?;
@@ -365,7 +405,57 @@ fn apply_migrations(connection: &mut Connection) -> Result<(), ProductStoreError
     transaction
         .execute(
             "INSERT INTO product_schema_migrations(version, name, applied_at) VALUES (?1, ?2, ?3)",
-            params![CURRENT_SCHEMA_VERSION, "product_store_v1", now],
+            params![1, "product_store_v1", now],
+        )
+        .map_err(|_| database_error(true))?;
+    transaction.commit().map_err(|_| database_error(true))?;
+    Ok(())
+}
+
+fn apply_migration_002(connection: &mut Connection) -> Result<(), ProductStoreError> {
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|_| database_error(true))?;
+    if migration_is_applied(&transaction, 2)? {
+        transaction.commit().map_err(|_| database_error(true))?;
+        return Ok(());
+    }
+    transaction
+        .execute_batch(MIGRATION_002)
+        .map_err(|_| database_error(true))?;
+    transaction
+        .execute(
+            "INSERT INTO product_schema_migrations(version, name, applied_at) VALUES (?1, ?2, ?3)",
+            params![
+                2,
+                "product_preferences_revision",
+                super::repository::now_rfc3339()
+            ],
+        )
+        .map_err(|_| database_error(true))?;
+    transaction.commit().map_err(|_| database_error(true))?;
+    Ok(())
+}
+
+fn apply_migration_003(connection: &mut Connection) -> Result<(), ProductStoreError> {
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|_| database_error(true))?;
+    if migration_is_applied(&transaction, 3)? {
+        transaction.commit().map_err(|_| database_error(true))?;
+        return Ok(());
+    }
+    transaction
+        .execute_batch(MIGRATION_003)
+        .map_err(|_| database_error(true))?;
+    transaction
+        .execute(
+            "INSERT INTO product_schema_migrations(version, name, applied_at) VALUES (?1, ?2, ?3)",
+            params![
+                3,
+                "product_migration_preparations",
+                super::repository::now_rfc3339()
+            ],
         )
         .map_err(|_| database_error(true))?;
     transaction.commit().map_err(|_| database_error(true))?;
@@ -397,4 +487,92 @@ pub(super) fn path_to_utf8(path: &Path) -> Result<&str, ProductStoreError> {
             "workspace root must be valid UTF-8",
         )
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use tempfile::TempDir;
+
+    use super::*;
+
+    #[test]
+    fn schema_v1_preferences_upgrade_preserves_values_and_starts_revision_at_zero() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("product.sqlite");
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                r#"
+                CREATE TABLE product_schema_migrations (
+                    version INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    applied_at TEXT NOT NULL
+                );
+                CREATE TABLE product_preferences (
+                    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+                    schema_version INTEGER NOT NULL,
+                    theme TEXT NOT NULL,
+                    active_workspace_id TEXT,
+                    active_session_id TEXT,
+                    provider_profile_id TEXT,
+                    provider_model TEXT,
+                    provider_approval TEXT,
+                    provider_max_steps INTEGER,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                INSERT INTO product_schema_migrations(version, name, applied_at)
+                VALUES (1, 'product_store_v1', '2026-07-26T00:00:00Z');
+                INSERT INTO product_preferences(
+                    singleton, schema_version, theme, provider_model,
+                    provider_approval, provider_max_steps, created_at, updated_at
+                ) VALUES (
+                    1, 1, 'dark', 'fake', 'never', 12,
+                    '2026-07-26T00:00:00Z', '2026-07-26T00:00:00Z'
+                );
+                "#,
+            )
+            .unwrap();
+        drop(connection);
+
+        let database = ProductDatabase::new(path, 5_000).unwrap();
+        database.initialize().unwrap();
+        let connection = database.connect().unwrap();
+        let row = connection
+            .query_row(
+                "SELECT theme, provider_model, provider_approval, provider_max_steps, revision FROM product_preferences WHERE singleton = 1",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, i64>(4)?,
+                    ))
+                },
+            )
+            .unwrap();
+
+        assert_eq!(
+            row,
+            (
+                "dark".to_string(),
+                "fake".to_string(),
+                "never".to_string(),
+                12,
+                0
+            )
+        );
+        assert!(migration_is_applied(&connection, 2).unwrap());
+        assert!(migration_is_applied(&connection, 3).unwrap());
+        let preparations_table: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_schema WHERE type = 'table' AND name = 'product_migration_preparations'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(preparations_table, 1);
+    }
 }

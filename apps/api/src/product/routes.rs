@@ -4,9 +4,12 @@
 //! fail-closed until the coordinator validates browser runtime hints against
 //! workspace-owned runtime state.
 
+use std::future::Future;
+use std::time::Duration;
+
 use axum::Json;
 use axum::extract::rejection::JsonRejection;
-use axum::extract::{Path, Query, State};
+use axum::extract::{FromRequest, Path, Query, Request, State};
 use axum::http::StatusCode;
 use serde::Deserialize;
 use utoipa::IntoParams;
@@ -21,13 +24,6 @@ pub(crate) struct ListProductSessionsQuery {
     pub workspace_id: ProductWorkspaceId,
 }
 
-fn foundation_unavailable<T>() -> Result<Json<T>, ApiError> {
-    Err(ApiError::not_implemented(
-        ProductErrorCode::ProductStoreUnavailable.as_str(),
-        "the C0 product store foundation is not wired yet",
-    ))
-}
-
 fn product_json<T>(body: Result<Json<T>, JsonRejection>) -> Result<T, ApiError> {
     body.map(|Json(value)| value).map_err(|_| {
         ApiError::bad_request_with_code(
@@ -35,6 +31,32 @@ fn product_json<T>(body: Result<Json<T>, JsonRejection>) -> Result<T, ApiError> 
             "invalid or unknown field in product request body",
         )
     })
+}
+
+async fn complete_after_bounded_migration_preparation<P, T, Prepare, Apply, ApplyFuture>(
+    deadline: Duration,
+    prepare: Prepare,
+    apply: Apply,
+) -> Result<T, ApiError>
+where
+    Prepare: Future<Output = Result<P, ApiError>>,
+    Apply: FnOnce(P) -> ApplyFuture,
+    ApplyFuture: Future<Output = Result<T, ApiError>>,
+{
+    let prepared = tokio::time::timeout(deadline, prepare)
+        .await
+        .map_err(|_| {
+            ApiError::gateway_timeout_with_code(
+                ProductErrorCode::ProductStorageFailure.as_str(),
+                "browser migration exceeded its preparation deadline before commit",
+            )
+        })??;
+    apply(prepared).await
+}
+
+enum M1MigrationPreparation {
+    Replay(M1BrowserMigrationResponse),
+    Apply(super::migration::GuardedM1BrowserMigration),
 }
 
 #[utoipa::path(
@@ -354,14 +376,108 @@ pub(crate) async fn update_product_preferences(
     responses(
         (status = 200, description = "Migration applied or idempotently replayed", body = M1BrowserMigrationResponse),
         (status = 400, description = "Invalid, unknown, or secret-shaped migration field", body = ApiErrorResponse),
-        (status = 409, description = "Idempotency key was reused with a different sanitized payload", body = ApiErrorResponse),
+        (status = 409, description = "Idempotency key, preference write, or active product session conflict", body = ApiErrorResponse),
+        (status = 504, description = "Migration exceeded its bounded pre-commit preparation deadline", body = ApiErrorResponse),
         (status = 501, description = "ProductStore is not wired", body = ApiErrorResponse)
     )
 )]
 pub(crate) async fn migrate_m1_browser_state(
-    State(_state): State<ApiState>,
-    body: Result<Json<M1BrowserMigrationRequest>, JsonRejection>,
+    State(state): State<ApiState>,
+    request: Request,
 ) -> Result<Json<M1BrowserMigrationResponse>, ApiError> {
-    let _request = product_json(body)?;
-    foundation_unavailable()
+    let store = state.product_store()?;
+    let preparation_store = store.clone();
+    let preparation_state = state.clone();
+    let allow_external_paths = state.inner.config.state.allow_external_paths;
+    let supervisors = state.inner.supervisors.clone();
+
+    complete_after_bounded_migration_preparation(
+        crate::PRODUCT_MIGRATION_PREPARATION_DEADLINE,
+        async move {
+            let request =
+                product_json(Json::<M1BrowserMigrationRequest>::from_request(request, &()).await)?;
+            let preferences_baseline = match preparation_store
+                .preflight_m1_browser_migration(&request)
+                .await?
+            {
+                M1BrowserMigrationPreflight::Replay(receipt) => {
+                    return Ok(M1MigrationPreparation::Replay(receipt));
+                }
+                M1BrowserMigrationPreflight::Prepare(baseline) => baseline,
+            };
+            let migration = super::migration::prepare_m1_browser_migration(
+                request,
+                preferences_baseline,
+                allow_external_paths,
+                |workspace| preparation_state.product_state_store_for_workspace(workspace),
+            )
+            .await?;
+            Ok(M1MigrationPreparation::Apply(migration))
+        },
+        move |prepared| async move {
+            match prepared {
+                M1MigrationPreparation::Replay(receipt) => Ok(Json(receipt)),
+                M1MigrationPreparation::Apply(guarded) => {
+                    let handle = supervisors.spawn(async move {
+                        let runtime_guards = guarded.runtime_guards;
+                        let result = store.apply_m1_browser_migration(guarded.migration).await;
+                        drop(runtime_guards);
+                        result
+                    });
+                    let response = handle.await.map_err(|_| {
+                        ApiError::from(ProductStoreError::new(
+                            ProductErrorCode::ProductStorageFailure,
+                            "browser migration commit supervisor did not complete",
+                        ))
+                    })??;
+                    Ok(Json(response))
+                }
+            }
+        },
+    )
+    .await
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn preparation_deadline_does_not_cancel_apply() {
+        let value = complete_after_bounded_migration_preparation(
+            Duration::from_millis(1),
+            async { Ok::<_, ApiError>(7) },
+            |value| async move {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                Ok::<_, ApiError>(value)
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(value, 7);
+    }
+
+    #[tokio::test]
+    async fn preparation_timeout_never_starts_apply() {
+        let apply_started = Arc::new(AtomicBool::new(false));
+        let apply_observer = apply_started.clone();
+        let result: Result<(), ApiError> = complete_after_bounded_migration_preparation(
+            Duration::from_millis(1),
+            std::future::pending::<Result<(), ApiError>>(),
+            move |_| async move {
+                apply_observer.store(true, Ordering::SeqCst);
+                Ok(())
+            },
+        )
+        .await;
+
+        let error = result.expect_err("preparation must time out");
+        assert_eq!(error.status, StatusCode::GATEWAY_TIMEOUT);
+        assert_eq!(error.code, ProductErrorCode::ProductStorageFailure.as_str());
+        assert!(!apply_started.load(Ordering::SeqCst));
+    }
 }

@@ -10,11 +10,12 @@ use rove_runtime::types::{JobId, RunId, SessionId};
 
 use crate::product::{
     CommitProductRunBinding, CreateProductProviderProfileRequest, CreateProductSessionRequest,
-    CreateProductWorkspaceRequest, M1BrowserMigrationResponse, M1MigrationDisposition,
-    M1MigrationIssue, M1MigrationIssueCode, M1ProviderProfileIdMapping, M1SessionIdMapping,
-    M1WorkspaceIdMapping, MAX_PRODUCT_PROVIDER_PROFILES, MAX_PRODUCT_SESSIONS,
-    MAX_PRODUCT_WORKSPACES, PreparedM1BrowserMigration, ProductApprovalPreference,
-    ProductErrorCode, ProductMigrationReceiptId, ProductPreferences, ProductProviderProfile,
+    CreateProductWorkspaceRequest, M1BrowserMigrationPreflight, M1BrowserMigrationResponse,
+    M1MigrationDisposition, M1MigrationIssue, M1MigrationIssueCode, M1PreferencesBaseline,
+    M1ProviderProfileIdMapping, M1SessionIdMapping, M1WorkspaceIdMapping,
+    MAX_PRODUCT_PROVIDER_PROFILES, MAX_PRODUCT_SESSIONS, MAX_PRODUCT_WORKSPACES,
+    PreparedM1BrowserMigration, ProductApprovalPreference, ProductErrorCode,
+    ProductMigrationReceiptId, ProductPreferences, ProductProviderProfile,
     ProductProviderProfileId, ProductProviderSelection, ProductProviderType, ProductRuntimeBinding,
     ProductSession, ProductSessionContext, ProductSessionId, ProductSessionRunBinding,
     ProductSessionStatus, ProductStoreError, ProductThemePreference, ProductTurnClaim,
@@ -199,7 +200,8 @@ impl ProductRepository {
             .execute(
                 r#"
                 UPDATE product_preferences
-                SET active_workspace_id = NULL, active_session_id = NULL, updated_at = ?2
+                SET active_workspace_id = NULL, active_session_id = NULL,
+                    updated_at = ?2, revision = revision + 1
                 WHERE singleton = 1 AND (
                     active_workspace_id = ?1 OR active_session_id IN (
                         SELECT product_session_id FROM product_sessions WHERE workspace_id = ?1
@@ -361,7 +363,8 @@ impl ProductRepository {
             .execute(
                 r#"
                 UPDATE product_preferences
-                SET active_session_id = NULL, updated_at = ?2
+                SET active_session_id = NULL, updated_at = ?2,
+                    revision = revision + 1
                 WHERE singleton = 1 AND active_session_id = ?1
                 "#,
                 params![session_id.to_string(), now_rfc3339()],
@@ -415,6 +418,12 @@ impl ProductRepository {
         if session.status == ProductSessionStatus::Archived {
             return Err(invalid("archived product sessions cannot start a turn"));
         }
+        if session.status == ProductSessionStatus::NeedsAttention {
+            return Err(ProductStoreError::new(
+                ProductErrorCode::ProductSessionRuntimeStateMissing,
+                "product session requires runtime recovery before starting a turn",
+            ));
+        }
         if has_active_claim_for_session(&transaction, session_id)? {
             return Err(session_active("product session already has an active turn"));
         }
@@ -438,7 +447,8 @@ impl ProductRepository {
                 r#"
                 UPDATE product_sessions
                 SET status = 'running', updated_at = ?2
-                WHERE product_session_id = ?1 AND status != 'archived'
+                WHERE product_session_id = ?1
+                  AND status NOT IN ('archived', 'needs_attention')
                 "#,
                 params![session_id.to_string(), now],
             )
@@ -655,7 +665,8 @@ impl ProductRepository {
                 r#"
                 UPDATE product_preferences
                 SET provider_profile_id = NULL, provider_model = NULL,
-                    provider_approval = NULL, provider_max_steps = NULL, updated_at = ?2
+                    provider_approval = NULL, provider_max_steps = NULL,
+                    updated_at = ?2, revision = revision + 1
                 WHERE singleton = 1 AND provider_profile_id = ?1
                 "#,
                 params![profile_id.to_string(), now_rfc3339()],
@@ -701,6 +712,77 @@ impl ProductRepository {
         migration: PreparedM1BrowserMigration,
     ) -> Result<M1BrowserMigrationResponse, ProductStoreError> {
         apply_migration(&self.database, migration)
+    }
+
+    pub(super) fn preflight_m1_browser_migration(
+        &self,
+        request: &crate::product::M1BrowserMigrationRequest,
+    ) -> Result<M1BrowserMigrationPreflight, ProductStoreError> {
+        validate_migration_envelope(request, &[])?;
+        let digest = m1_browser_migration_digest(request)
+            .map_err(|_| invalid("browser migration request could not be normalized"))?;
+        let mut connection = self.database.connect()?;
+        let transaction = immediate_transaction(&mut connection)?;
+        if let Some(response) = replay_receipt(
+            &transaction,
+            request.source_schema_version,
+            &request.idempotency_key,
+            &digest,
+        )? {
+            transaction.commit().map_err(storage_error)?;
+            return Ok(M1BrowserMigrationPreflight::Replay(response));
+        }
+
+        if let Some(preparation) = migration_preparation(
+            &transaction,
+            request.source_schema_version,
+            &request.idempotency_key,
+        )? {
+            if preparation.request_digest != digest {
+                return Err(migration_idempotency_conflict(
+                    "migration idempotency key is already preparing a different payload",
+                ));
+            }
+            validate_preparation_baseline(request, preparation.preferences_baseline)?;
+            transaction.commit().map_err(storage_error)?;
+            return Ok(M1BrowserMigrationPreflight::Prepare(
+                preparation.preferences_baseline,
+            ));
+        }
+
+        enforce_table_limit(
+            &transaction,
+            "product_migration_preparations",
+            MAX_MIGRATION_PREPARATIONS,
+            "browser migration preparation limit reached",
+        )?;
+        let baseline = if migration_requests_preferences(request) {
+            M1PreferencesBaseline::Revision(preferences_revision(&transaction)?)
+        } else {
+            M1PreferencesBaseline::NotRequested
+        };
+        let (preferences_requested, preferences_revision) = baseline_to_db(baseline)?;
+        transaction
+            .execute(
+                r#"
+                INSERT INTO product_migration_preparations(
+                    source, source_schema_version, idempotency_key, request_digest,
+                    preferences_requested, preferences_revision, created_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                "#,
+                params![
+                    MIGRATION_SOURCE_WEB_M1,
+                    i64::from(request.source_schema_version),
+                    request.idempotency_key,
+                    digest,
+                    preferences_requested,
+                    preferences_revision,
+                    now_rfc3339(),
+                ],
+            )
+            .map_err(storage_error)?;
+        transaction.commit().map_err(storage_error)?;
+        Ok(M1BrowserMigrationPreflight::Prepare(baseline))
     }
 }
 
@@ -1456,6 +1538,19 @@ fn get_preferences(connection: &Connection) -> Result<ProductPreferences, Produc
     Ok(preferences)
 }
 
+fn preferences_revision(connection: &Connection) -> Result<u64, ProductStoreError> {
+    let revision = connection
+        .query_row(
+            "SELECT revision FROM product_preferences WHERE singleton = 1",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .map_err(storage_error)?
+        .ok_or_else(|| storage_error("product preferences row is missing"))?;
+    u64::try_from(revision).map_err(storage_error)
+}
+
 fn validate_preference_references(
     connection: &Connection,
     preferences: &ValidatedPreferences,
@@ -1500,7 +1595,8 @@ fn write_preferences(
             UPDATE product_preferences
             SET schema_version = ?1, theme = ?2, active_workspace_id = ?3,
                 active_session_id = ?4, provider_profile_id = ?5, provider_model = ?6,
-                provider_approval = ?7, provider_max_steps = ?8, updated_at = ?9
+                provider_approval = ?7, provider_max_steps = ?8, updated_at = ?9,
+                revision = revision + 1
             WHERE singleton = 1
             "#,
             params![
@@ -1528,9 +1624,78 @@ fn write_preferences(
     Ok(())
 }
 
+fn write_preferences_at_revision(
+    transaction: &Transaction<'_>,
+    preferences: &ValidatedPreferences,
+    expected_revision: u64,
+) -> Result<bool, ProductStoreError> {
+    let (profile_id, model, approval, max_steps) = match &preferences.provider_selection {
+        Some(selection) => (
+            profile_id_string(selection.profile_id.as_ref()),
+            Some(selection.model.clone()),
+            Some(approval_to_db(selection.approval)),
+            Some(i64::from(selection.max_steps)),
+        ),
+        None => (None, None, None, None),
+    };
+    let updated = transaction
+        .execute(
+            r#"
+            UPDATE product_preferences
+            SET schema_version = ?1, theme = ?2, active_workspace_id = ?3,
+                active_session_id = ?4, provider_profile_id = ?5, provider_model = ?6,
+                provider_approval = ?7, provider_max_steps = ?8, updated_at = ?9,
+                revision = revision + 1
+            WHERE singleton = 1 AND revision = ?10
+            "#,
+            params![
+                i64::from(preferences.schema_version),
+                theme_to_db(preferences.theme),
+                preferences
+                    .active_workspace_id
+                    .as_ref()
+                    .map(ToString::to_string),
+                preferences
+                    .active_session_id
+                    .as_ref()
+                    .map(ToString::to_string),
+                profile_id,
+                model,
+                approval,
+                max_steps,
+                now_rfc3339(),
+                i64::try_from(expected_revision).map_err(storage_error)?,
+            ],
+        )
+        .map_err(storage_error)?;
+    match updated {
+        1 => Ok(true),
+        0 if preferences_row_exists(transaction)? => Ok(false),
+        0 => Err(storage_error("product preferences row is missing")),
+        _ => Err(storage_error("product preferences singleton is corrupt")),
+    }
+}
+
+fn preferences_row_exists(connection: &Connection) -> Result<bool, ProductStoreError> {
+    connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM product_preferences WHERE singleton = 1)",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(storage_error)
+}
+
+const MAX_MIGRATION_PREPARATIONS: usize = 4_096;
 const MAX_MIGRATION_RECEIPTS: usize = 4_096;
 const MAX_MIGRATION_ISSUES: usize = 4_096;
 const MAX_MIGRATION_BINDINGS: usize = 10_000;
+
+#[derive(Debug)]
+struct DurableMigrationPreparation {
+    request_digest: String,
+    preferences_baseline: M1PreferencesBaseline,
+}
 
 #[derive(Debug)]
 struct PreparedWorkspaceImport {
@@ -1605,6 +1770,7 @@ fn apply_migration(
         transaction.commit().map_err(storage_error)?;
         return Ok(response);
     }
+    validate_durable_migration_preparation(&transaction, &migration, &digest)?;
     enforce_table_limit(
         &transaction,
         "product_migration_receipts",
@@ -1705,7 +1871,19 @@ fn apply_migration(
             .verified_run_bindings
             .iter()
             .any(|binding| binding.source_session_id.as_str() == source_session_id.as_str());
-        if (imported.has_runtime_hint || imported.legacy_has_durable_turn) && !has_verified {
+        let mut has_runtime_issue = issues.iter().any(|issue| {
+            issue.source_id.as_deref() == Some(source_session_id.as_str())
+                && matches!(
+                    issue.code,
+                    M1MigrationIssueCode::InvalidRuntimeHint
+                        | M1MigrationIssueCode::AmbiguousRuntimeBinding
+                        | M1MigrationIssueCode::RuntimeBindingNotFound
+                )
+        });
+        if (imported.has_runtime_hint || imported.legacy_has_durable_turn)
+            && !has_verified
+            && !has_runtime_issue
+        {
             let code = if imported.invalid_runtime_hint {
                 M1MigrationIssueCode::InvalidRuntimeHint
             } else {
@@ -1719,16 +1897,9 @@ fn apply_migration(
                     source_id: Some(source_session_id.clone()),
                 },
             )?;
+            has_runtime_issue = true;
         }
-        if issues.iter().any(|issue| {
-            issue.source_id.as_deref() == Some(source_session_id.as_str())
-                && matches!(
-                    issue.code,
-                    M1MigrationIssueCode::InvalidRuntimeHint
-                        | M1MigrationIssueCode::AmbiguousRuntimeBinding
-                        | M1MigrationIssueCode::RuntimeBindingNotFound
-                )
-        }) {
+        if has_runtime_issue {
             mark_session_needs_attention(
                 &transaction,
                 session_ids
@@ -1738,16 +1909,29 @@ fn apply_migration(
         }
     }
 
-    let preferences = migration_preferences(
-        &migration,
-        &workspace_ids,
-        &session_ids,
-        &profile_ids,
-        &transaction,
-        &mut issues,
-    )?;
-    validate_preference_references(&transaction, &preferences)?;
-    write_preferences(&transaction, &preferences)?;
+    if let M1PreferencesBaseline::Revision(expected_revision) = migration.preferences_baseline {
+        let current_preferences = get_preferences(&transaction)?;
+        let preferences = migration_preferences(
+            &migration,
+            &workspace_ids,
+            &session_ids,
+            &profile_ids,
+            &transaction,
+            current_preferences,
+            &mut issues,
+        )?;
+        validate_preference_references(&transaction, &preferences)?;
+        if !write_preferences_at_revision(&transaction, &preferences, expected_revision)? {
+            push_issue_unique(
+                &mut issues,
+                M1MigrationIssue {
+                    code: M1MigrationIssueCode::PreferenceWriteConflict,
+                    entity: "preferences".to_string(),
+                    source_id: None,
+                },
+            )?;
+        }
+    }
 
     if issues.len() > MAX_MIGRATION_ISSUES {
         return Err(invalid("browser migration issue limit reached"));
@@ -1814,6 +1998,24 @@ fn apply_migration(
     if updated != 1 {
         return Err(storage_error("migration receipt disappeared before commit"));
     }
+    let deleted = transaction
+        .execute(
+            r#"
+            DELETE FROM product_migration_preparations
+            WHERE source = ?1 AND source_schema_version = ?2 AND idempotency_key = ?3
+            "#,
+            params![
+                MIGRATION_SOURCE_WEB_M1,
+                i64::from(source_schema_version),
+                migration.request.idempotency_key,
+            ],
+        )
+        .map_err(storage_error)?;
+    if deleted != 1 {
+        return Err(storage_error(
+            "migration preparation disappeared before commit",
+        ));
+    }
     transaction.commit().map_err(storage_error)?;
     Ok(response)
 }
@@ -1853,6 +2055,72 @@ fn replay_receipt(
         .map_err(storage_error)?;
     response.disposition = M1MigrationDisposition::AlreadyApplied;
     Ok(Some(response))
+}
+
+fn migration_preparation(
+    connection: &Connection,
+    source_schema_version: u32,
+    idempotency_key: &str,
+) -> Result<Option<DurableMigrationPreparation>, ProductStoreError> {
+    let preparation = connection
+        .query_row(
+            r#"
+            SELECT request_digest, preferences_requested, preferences_revision
+            FROM product_migration_preparations
+            WHERE source = ?1 AND source_schema_version = ?2 AND idempotency_key = ?3
+            "#,
+            params![
+                MIGRATION_SOURCE_WEB_M1,
+                i64::from(source_schema_version),
+                idempotency_key,
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Option<i64>>(2)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(storage_error)?;
+    let Some((request_digest, preferences_requested, preferences_revision)) = preparation else {
+        return Ok(None);
+    };
+    let preferences_baseline = baseline_from_db(preferences_requested, preferences_revision)?;
+    Ok(Some(DurableMigrationPreparation {
+        request_digest,
+        preferences_baseline,
+    }))
+}
+
+fn validate_durable_migration_preparation(
+    transaction: &Transaction<'_>,
+    migration: &PreparedM1BrowserMigration,
+    digest: &str,
+) -> Result<(), ProductStoreError> {
+    validate_preparation_baseline(&migration.request, migration.preferences_baseline)?;
+    let preparation = migration_preparation(
+        transaction,
+        migration.request.source_schema_version,
+        &migration.request.idempotency_key,
+    )?
+    .ok_or_else(|| storage_error("prepared browser migration preflight is missing"))?;
+    if preparation.request_digest != digest {
+        return Err(migration_idempotency_conflict(
+            "migration idempotency key is already preparing a different payload",
+        ));
+    }
+    if preparation.preferences_baseline != migration.preferences_baseline {
+        return Err(storage_error(
+            "prepared browser migration preferences baseline does not match durable preflight",
+        ));
+    }
+    Ok(())
+}
+
+fn migration_idempotency_conflict(message: &'static str) -> ProductStoreError {
+    ProductStoreError::new(ProductErrorCode::MigrationIdempotencyConflict, message)
 }
 
 fn prepare_migration_data(
@@ -1910,12 +2178,33 @@ fn prepare_migration_data(
         });
     }
 
-    let request_session_ids = migration
-        .request
-        .sessions
+    let request_session_ids = sessions
         .iter()
         .map(|session| session.source_id.as_str())
         .collect::<HashSet<_>>();
+    let workspace_seals = workspaces
+        .iter()
+        .filter_map(|imported| {
+            imported.workspace.as_ref().map(|workspace| {
+                (
+                    imported.source_id.as_str(),
+                    (
+                        PathBuf::from(&workspace.canonical_root_text),
+                        workspace.kind,
+                    ),
+                )
+            })
+        })
+        .collect::<HashMap<_, _>>();
+    let session_workspace_sources = sessions
+        .iter()
+        .map(|session| {
+            (
+                session.source_id.as_str(),
+                session.source_workspace_id.as_str(),
+            )
+        })
+        .collect::<HashMap<_, _>>();
     let mut verified_bindings: HashMap<String, Vec<VerifiedM1SessionRunBinding>> = HashMap::new();
     let mut runtime_runs = HashSet::new();
     for binding in &migration.verified_run_bindings {
@@ -1924,6 +2213,19 @@ fn prepare_migration_data(
         if !request_session_ids.contains(source_session_id.as_str()) {
             return Err(invalid(
                 "verified runtime binding references an unknown source session",
+            ));
+        }
+        let source_workspace_id = session_workspace_sources
+            .get(source_session_id.as_str())
+            .ok_or_else(|| binding_corrupt("verified migration session has no workspace"))?;
+        let (canonical_root, kind) = workspace_seals
+            .get(*source_workspace_id)
+            .ok_or_else(|| binding_corrupt("verified migration workspace is no longer valid"))?;
+        if canonical_root != &binding.verified_workspace_root
+            || kind != &binding.verified_workspace_kind
+        {
+            return Err(binding_corrupt(
+                "verified migration workspace changed before apply",
             ));
         }
         if !runtime_runs.insert(binding.runtime_run_id) {
@@ -2180,6 +2482,11 @@ fn migrate_session(
             return Err(ProductStoreError::new(
                 ProductErrorCode::MigrationIdempotencyConflict,
                 "session source_id resolves to a different workspace",
+            ));
+        }
+        if has_active_claim_for_session(transaction, &session_id)? {
+            return Err(session_active(
+                "a source-mapped product session has an active turn",
             ));
         }
         transaction
@@ -2454,10 +2761,10 @@ fn migration_preferences(
     session_ids: &HashMap<String, ProductSessionId>,
     profile_ids: &HashMap<String, ProductProviderProfileId>,
     transaction: &Transaction<'_>,
+    existing: ProductPreferences,
     issues: &mut Vec<M1MigrationIssue>,
 ) -> Result<ValidatedPreferences, ProductStoreError> {
     let imported = &migration.request.safe_preferences;
-    let existing = get_preferences(transaction)?;
     let mut active_workspace_id = existing.active_workspace_id;
     let mut active_session_id = existing.active_session_id;
     let mut imported_workspace_valid = None;
@@ -2545,6 +2852,57 @@ fn migration_preferences(
         active_session_id,
         provider_selection,
     })
+}
+
+fn migration_requests_preferences(request: &crate::product::M1BrowserMigrationRequest) -> bool {
+    let preferences = &request.safe_preferences;
+    preferences.theme.is_some()
+        || preferences.source_active_workspace_id.is_some()
+        || preferences.source_active_session_id.is_some()
+        || preferences.provider_selection.is_some()
+}
+
+fn validate_preparation_baseline(
+    request: &crate::product::M1BrowserMigrationRequest,
+    baseline: M1PreferencesBaseline,
+) -> Result<(), ProductStoreError> {
+    let consistent = matches!(
+        (migration_requests_preferences(request), baseline),
+        (false, M1PreferencesBaseline::NotRequested) | (true, M1PreferencesBaseline::Revision(_))
+    );
+    if consistent {
+        Ok(())
+    } else {
+        Err(storage_error(
+            "prepared browser migration preferences baseline is inconsistent",
+        ))
+    }
+}
+
+fn baseline_to_db(
+    baseline: M1PreferencesBaseline,
+) -> Result<(i64, Option<i64>), ProductStoreError> {
+    match baseline {
+        M1PreferencesBaseline::NotRequested => Ok((0, None)),
+        M1PreferencesBaseline::Revision(revision) => {
+            Ok((1, Some(i64::try_from(revision).map_err(storage_error)?)))
+        }
+    }
+}
+
+fn baseline_from_db(
+    preferences_requested: i64,
+    preferences_revision: Option<i64>,
+) -> Result<M1PreferencesBaseline, ProductStoreError> {
+    match (preferences_requested, preferences_revision) {
+        (0, None) => Ok(M1PreferencesBaseline::NotRequested),
+        (1, Some(revision)) => Ok(M1PreferencesBaseline::Revision(
+            u64::try_from(revision).map_err(storage_error)?,
+        )),
+        _ => Err(storage_error(
+            "persisted browser migration preferences baseline is invalid",
+        )),
+    }
 }
 
 fn persist_receipt_mappings(
@@ -2694,6 +3052,7 @@ fn enforce_table_limit(
         "product_workspaces" => "SELECT COUNT(*) FROM product_workspaces",
         "product_sessions" => "SELECT COUNT(*) FROM product_sessions",
         "product_provider_profiles" => "SELECT COUNT(*) FROM product_provider_profiles",
+        "product_migration_preparations" => "SELECT COUNT(*) FROM product_migration_preparations",
         "product_migration_receipts" => "SELECT COUNT(*) FROM product_migration_receipts",
         "product_migration_workspace_sources" => {
             "SELECT COUNT(*) FROM product_migration_workspace_sources"
@@ -2852,6 +3211,7 @@ fn migration_issue_code_to_db(code: M1MigrationIssueCode) -> &'static str {
         M1MigrationIssueCode::AmbiguousRuntimeBinding => "ambiguous_runtime_binding",
         M1MigrationIssueCode::RuntimeBindingNotFound => "runtime_binding_not_found",
         M1MigrationIssueCode::InvalidPreferenceReference => "invalid_preference_reference",
+        M1MigrationIssueCode::PreferenceWriteConflict => "preference_write_conflict",
     }
 }
 

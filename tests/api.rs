@@ -20,7 +20,8 @@ use axum::http::{HeaderMap, Request, StatusCode, header::AUTHORIZATION, header::
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use rove_api::{
-    ApiState, CreateJobResponse, JobStateResponse, ProductSessionId, router, serve_listener,
+    ApiState, CreateJobResponse, JobStateResponse, MAX_M1_BROWSER_MIGRATION_BODY_BYTES,
+    MAX_PRODUCT_TEXT_BYTES, ProductSessionId, router, serve_listener,
 };
 use rove_app_bootstrap::AppConfig;
 use rove_runtime::events::StreamEvent;
@@ -397,6 +398,198 @@ async fn product_migration_rejects_unknown_secret_fields_before_store_access() {
     let error: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(error["code"], "product_invalid_input");
     assert!(!String::from_utf8_lossy(&body).contains("must-not-cross-the-boundary"));
+}
+
+#[tokio::test]
+async fn product_migration_accepts_a_legal_body_larger_than_axum_default() {
+    const SESSION_COUNT: usize = 1_500;
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let app = router(ApiState::new(workspace.clone(), test_config()));
+    let workspace_source_id = format!(
+        "workspace-{}",
+        "w".repeat(MAX_PRODUCT_TEXT_BYTES - "workspace-".len())
+    );
+    let title = "t".repeat(MAX_PRODUCT_TEXT_BYTES);
+    let sessions = (0..SESSION_COUNT)
+        .map(|index| {
+            let prefix = format!("session-{index:04}-");
+            let source_id = format!(
+                "{prefix}{}",
+                "s".repeat(MAX_PRODUCT_TEXT_BYTES - prefix.len())
+            );
+            serde_json::json!({
+                "source_id": source_id,
+                "source_workspace_id": workspace_source_id,
+                "title": title,
+                "created_at": "2026-07-26T00:00:00Z",
+                "updated_at": "2026-07-26T00:00:00Z"
+            })
+        })
+        .collect::<Vec<_>>();
+    let payload = serde_json::to_vec(&serde_json::json!({
+        "source": "web_m1_local_storage",
+        "source_schema_version": 1,
+        "idempotency_key": "migration-over-default-body-limit",
+        "workspaces": [{
+            "source_id": workspace_source_id,
+            "root": workspace.root,
+            "kind": "folder",
+            "display_name": "Large legal migration",
+            "pinned": false,
+            "last_opened_at": "2026-07-26T00:00:00Z"
+        }],
+        "sessions": sessions,
+        "provider_profiles": [],
+        "safe_preferences": {}
+    }))
+    .unwrap();
+    assert!(payload.len() > 2 * 1_048_576);
+    assert!(payload.len() < MAX_M1_BROWSER_MIGRATION_BODY_BYTES);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/product/migrations/m1-browser")
+                .header(CONTENT_TYPE, "application/json")
+                .body(Body::from(payload))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let receipt: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(receipt["disposition"], "applied");
+    assert_eq!(
+        receipt["session_mappings"].as_array().unwrap().len(),
+        SESSION_COUNT
+    );
+}
+
+#[tokio::test]
+async fn product_migration_rejects_a_body_above_its_route_limit() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let app = router(ApiState::new(workspace, test_config()));
+    let payload = vec![b' '; MAX_M1_BROWSER_MIGRATION_BODY_BYTES + 1];
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/product/migrations/m1-browser")
+                .header(CONTENT_TYPE, "application/json")
+                .body(Body::from(payload))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let error: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(error["code"], "product_invalid_input");
+}
+
+#[tokio::test]
+async fn product_migration_replays_receipt_before_runtime_artifact_inspection() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let app = router(ApiState::new(workspace.clone(), test_config()));
+    let create = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/jobs")
+                .header(CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    r#"{"message":"migration singleton","model":"fake"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(create.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let created: CreateJobResponse = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        wait_for_done(app.clone(), created.job_id.to_string())
+            .await
+            .status,
+        RunStatus::Done
+    );
+
+    let payload = serde_json::json!({
+        "source": "web_m1_local_storage",
+        "source_schema_version": 1,
+        "idempotency_key": "migration-receipt-before-artifacts",
+        "workspaces": [{
+            "source_id": "legacy-workspace",
+            "root": workspace.root,
+            "kind": "folder",
+            "display_name": "Legacy workspace",
+            "pinned": false,
+            "last_opened_at": "2026-07-26T00:00:00Z"
+        }],
+        "sessions": [{
+            "source_id": "legacy-session",
+            "source_workspace_id": "legacy-workspace",
+            "title": "Legacy session",
+            "created_at": "2026-07-26T00:00:00Z",
+            "updated_at": "2026-07-26T00:00:00Z",
+            "legacy_active_job_id": created.job_id,
+            "legacy_active_run_id": created.run_id,
+            "legacy_has_durable_turn": true
+        }],
+        "provider_profiles": [],
+        "safe_preferences": {}
+    });
+    let migrate = |app: Router, payload: serde_json::Value| async move {
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/product/migrations/m1-browser")
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(Body::from(payload.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        serde_json::from_slice::<serde_json::Value>(&body).unwrap()
+    };
+
+    let applied = migrate(app.clone(), payload.clone()).await;
+    assert_eq!(applied["disposition"], "applied");
+    assert_eq!(applied["issues"], serde_json::json!([]));
+    std::fs::remove_file(
+        workspace
+            .state_dir
+            .join("runs")
+            .join(created.run_id.to_string())
+            .join("task_state.json"),
+    )
+    .unwrap();
+
+    let replayed = migrate(app, payload).await;
+    assert_eq!(replayed["disposition"], "already_applied");
+    assert_eq!(replayed["receipt_id"], applied["receipt_id"]);
+    assert_eq!(replayed["issues"], applied["issues"]);
 }
 
 #[tokio::test]
