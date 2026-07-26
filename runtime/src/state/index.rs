@@ -208,6 +208,20 @@ pub struct EventIndexRecord {
     pub event_json: String,
 }
 
+/// One bounded, internally consistent read of a run and its indexed events.
+///
+/// `high_water_seq` and `events` are read in the same SQLite transaction so a
+/// transcript projection does not report a false gap while a live run appends.
+/// The embedded `run.last_event_seq` remains available to detect a stale run
+/// counter left by older interrupted writes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunEventSnapshot {
+    pub run: RunIndexRecord,
+    pub high_water_seq: u64,
+    pub events: Vec<EventIndexRecord>,
+    pub has_more: bool,
+}
+
 impl StateIndex {
     pub fn new(state_dir: &Path) -> Self {
         Self::with_path(
@@ -661,6 +675,48 @@ impl StateIndex {
         Ok(records)
     }
 
+    pub async fn run_records_for_job_async(
+        &self,
+        job_id: JobId,
+        limit: usize,
+    ) -> std::io::Result<Vec<RunIndexRecord>> {
+        let index = self.clone();
+        tokio::task::spawn_blocking(move || index.run_records_for_job(job_id, limit))
+            .await
+            .map_err(std::io::Error::other)?
+    }
+
+    pub fn run_records_for_job(
+        &self,
+        job_id: JobId,
+        limit: usize,
+    ) -> std::io::Result<Vec<RunIndexRecord>> {
+        const MAX_JOB_RUNS: usize = 2_000;
+
+        let conn = self.connect()?;
+        let limit = limit.clamp(1, MAX_JOB_RUNS) as i64;
+        let mut statement = conn
+            .prepare(
+                r#"
+                SELECT run_id, session_id, job_id, status, run_dir, trace_path,
+                       task_state_path, report_path, last_event_seq
+                FROM runs
+                WHERE job_id = ?1
+                ORDER BY started_at ASC, run_id ASC
+                LIMIT ?2
+                "#,
+            )
+            .map_err(io_other)?;
+        let rows = statement
+            .query_map(params![job_id.to_string(), limit], run_record_from_row)
+            .map_err(io_other)?;
+        let mut records = Vec::new();
+        for row in rows {
+            records.push(row.map_err(io_other)?);
+        }
+        Ok(records)
+    }
+
     pub async fn task_state_path_async(&self, run_id: RunId) -> std::io::Result<Option<PathBuf>> {
         let index = self.clone();
         tokio::task::spawn_blocking(move || index.task_state_path(run_id))
@@ -708,6 +764,18 @@ impl StateIndex {
     ) -> std::io::Result<Vec<EventIndexRecord>> {
         let index = self.clone();
         tokio::task::spawn_blocking(move || index.event_records(run_id))
+            .await
+            .map_err(std::io::Error::other)?
+    }
+
+    pub async fn run_event_snapshot_async(
+        &self,
+        run_id: RunId,
+        after_seq: u64,
+        limit: usize,
+    ) -> std::io::Result<Option<RunEventSnapshot>> {
+        let index = self.clone();
+        tokio::task::spawn_blocking(move || index.run_event_snapshot(run_id, after_seq, limit))
             .await
             .map_err(std::io::Error::other)?
     }
@@ -1021,6 +1089,88 @@ impl StateIndex {
         Ok(records)
     }
 
+    pub fn run_event_snapshot(
+        &self,
+        run_id: RunId,
+        after_seq: u64,
+        limit: usize,
+    ) -> std::io::Result<Option<RunEventSnapshot>> {
+        const MAX_SNAPSHOT_EVENTS: usize = 2_000;
+
+        let mut conn = self.connect()?;
+        let transaction = conn.transaction().map_err(io_other)?;
+        let run = transaction
+            .query_row(
+                r#"
+                SELECT run_id, session_id, job_id, status, run_dir, trace_path,
+                       task_state_path, report_path, last_event_seq
+                FROM runs
+                WHERE run_id = ?1
+                "#,
+                params![run_id.to_string()],
+                run_record_from_row,
+            )
+            .optional()
+            .map_err(io_other)?;
+        let Some(run) = run else {
+            transaction.commit().map_err(io_other)?;
+            return Ok(None);
+        };
+
+        let indexed_high_water_sql: Option<i64> = transaction
+            .query_row(
+                "SELECT MAX(seq) FROM events WHERE run_id = ?1",
+                params![run_id.to_string()],
+                |row| row.get(0),
+            )
+            .map_err(io_other)?;
+        let indexed_high_water = indexed_high_water_sql.unwrap_or_default().max(0) as u64;
+        let high_water_seq = run.last_event_seq.max(indexed_high_water);
+        let bounded_limit = limit.clamp(1, MAX_SNAPSHOT_EVENTS);
+        let query_limit = i64::try_from(bounded_limit + 1).map_err(std::io::Error::other)?;
+        let after_seq_sql = i64::try_from(after_seq).map_err(std::io::Error::other)?;
+        let high_water_sql = i64::try_from(high_water_seq).map_err(std::io::Error::other)?;
+        let mut records = {
+            let mut statement = transaction
+                .prepare(
+                    r#"
+                    SELECT run_id, seq, event_name, event_json
+                    FROM events
+                    WHERE run_id = ?1 AND seq > ?2 AND seq <= ?3
+                    ORDER BY seq ASC
+                    LIMIT ?4
+                    "#,
+                )
+                .map_err(io_other)?;
+            let rows = statement
+                .query_map(
+                    params![
+                        run_id.to_string(),
+                        after_seq_sql,
+                        high_water_sql,
+                        query_limit
+                    ],
+                    event_record_from_row,
+                )
+                .map_err(io_other)?;
+            let mut records = Vec::new();
+            for row in rows {
+                records.push(row.map_err(io_other)?);
+            }
+            records
+        };
+        let has_more = records.len() > bounded_limit;
+        records.truncate(bounded_limit);
+        transaction.commit().map_err(io_other)?;
+
+        Ok(Some(RunEventSnapshot {
+            run,
+            high_water_seq,
+            events: records,
+            has_more,
+        }))
+    }
+
     pub fn last_event_seq(&self, run_id: RunId) -> std::io::Result<u64> {
         let conn = self.connect()?;
         let seq: Option<i64> = conn
@@ -1041,38 +1191,43 @@ impl StateIndex {
         event: &StreamEvent,
         event_json: &str,
     ) -> std::io::Result<()> {
-        let conn = self.connect()?;
+        let mut conn = self.connect()?;
+        let transaction = conn.transaction().map_err(io_other)?;
         let now = now_rfc3339();
-        conn.execute(
-            r#"
+        transaction
+            .execute(
+                r#"
             INSERT OR IGNORE INTO events(run_id, seq, event_name, event_json, created_at)
             VALUES (?1, ?2, ?3, ?4, ?5)
             "#,
-            params![
-                run_id.to_string(),
-                seq as i64,
-                event.event_name(),
-                event_json,
-                now,
-            ],
-        )
-        .map_err(io_other)?;
-        conn.execute(
-            r#"
+                params![
+                    run_id.to_string(),
+                    seq as i64,
+                    event.event_name(),
+                    event_json,
+                    now,
+                ],
+            )
+            .map_err(io_other)?;
+        transaction
+            .execute(
+                r#"
             INSERT INTO event_offsets(run_id, last_seq, updated_at)
             VALUES (?1, ?2, ?3)
             ON CONFLICT(run_id) DO UPDATE SET
                 last_seq = MAX(last_seq, excluded.last_seq),
                 updated_at = excluded.updated_at
             "#,
-            params![run_id.to_string(), seq as i64, now],
-        )
-        .map_err(io_other)?;
-        conn.execute(
-            "UPDATE runs SET last_event_seq = MAX(last_event_seq, ?2), updated_at = ?3 WHERE run_id = ?1",
-            params![run_id.to_string(), seq as i64, now],
-        )
-        .map_err(io_other)?;
+                params![run_id.to_string(), seq as i64, now],
+            )
+            .map_err(io_other)?;
+        transaction
+            .execute(
+                "UPDATE runs SET last_event_seq = MAX(last_event_seq, ?2), updated_at = ?3 WHERE run_id = ?1",
+                params![run_id.to_string(), seq as i64, now],
+            )
+            .map_err(io_other)?;
+        transaction.commit().map_err(io_other)?;
         Ok(())
     }
 

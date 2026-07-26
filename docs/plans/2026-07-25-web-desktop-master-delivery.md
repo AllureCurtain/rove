@@ -1,6 +1,6 @@
 # Web → Desktop Master Delivery Plan
 
-> Status: **Active coordinator plan — P0 reconciled; C0 foundation next**
+> Status: **Active coordinator plan — P0 merged; C0 public foundation sealed, workers next**
 >
 > Coordinator: the primary conversation working from the repository `main`
 > checkout. Worker conversations implement bounded branches only; they do not
@@ -330,6 +330,14 @@ The coordinator first updates the integration branch to the P0-merged `main`,
 implements the public foundation and commits it, then creates all three worker
 worktrees from that exact commit.
 
+The sealed foundation fixes the server-owned product IDs, API-global
+`product.sqlite` location, ProductStore/turn-claim contracts, bounded runtime
+run-event snapshots, transcript/partial DTOs, strict M1 migration DTOs, product
+route/OpenAPI surface, and the fail-closed `POST /jobs.product_session_id`
+entry. The registered product handlers intentionally return typed `501` until
+the worker implementations are reviewed and wired by the coordinator; this is
+not C0 completion.
+
 ### 5.2 Worker ownership
 
 The final startup prompts will contain an exact commit and file list. Intended
@@ -499,6 +507,10 @@ and documented packaging/security behavior.
 
 ## changelog
 
+- 2026-07-26: Sealed the coordinator-owned C0 public foundation on the
+  integration branch. Reserved disjoint store, transcript, and Web client
+  implementation lanes; no SQLite ProductStore, transcript projector, browser
+  migration state machine, or product job wiring is claimed complete yet.
 - 2026-07-26: Completed P0 reconciliation. Distinguished mock product-shell
   browser coverage from `/dev/workbench` real-API evidence, recorded the stale
   provider-runner Web step as C3 work, and removed obsolete current-state RAG

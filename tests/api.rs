@@ -58,6 +58,21 @@ async fn api_does_not_serve_embedded_web_ui_anymore() {
     assert_eq!(app_js.status(), StatusCode::NOT_FOUND);
 }
 
+#[test]
+fn product_store_path_uses_the_bootstrap_config_state_root() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let mut config = test_config();
+    config.state.state_dir = PathBuf::from("api-state");
+
+    let state = ApiState::new(workspace, config);
+
+    assert_eq!(
+        state.product_store_path(),
+        tmp.path().join("api-state").join("product.sqlite")
+    );
+}
+
 #[tokio::test]
 async fn api_exposes_openapi_json_for_all_routes() {
     let tmp = tempfile::TempDir::new().unwrap();
@@ -92,6 +107,21 @@ async fn api_exposes_openapi_json_for_all_routes() {
     let paths = spec["paths"].as_object().expect("paths object");
     for (path, method) in [
         ("/providers/test", "post"),
+        ("/product/workspaces", "get"),
+        ("/product/workspaces", "post"),
+        ("/product/workspaces/{workspace_id}", "delete"),
+        ("/product/sessions", "get"),
+        ("/product/sessions", "post"),
+        ("/product/sessions/{session_id}", "patch"),
+        ("/product/sessions/{session_id}", "delete"),
+        ("/product/sessions/{session_id}/transcript", "get"),
+        ("/product/provider-profiles", "get"),
+        ("/product/provider-profiles", "post"),
+        ("/product/provider-profiles/{profile_id}", "put"),
+        ("/product/provider-profiles/{profile_id}", "delete"),
+        ("/product/preferences", "get"),
+        ("/product/preferences", "put"),
+        ("/product/migrations/m1-browser", "post"),
         ("/jobs", "post"),
         ("/jobs/{job_id}/events", "get"),
         ("/jobs/{job_id}/state", "get"),
@@ -124,6 +154,11 @@ async fn api_exposes_openapi_json_for_all_routes() {
         "CreateJobWorkspaceKind",
         "JobStateResponse",
         "ListRunsResponse",
+        "M1BrowserMigrationRequest",
+        "M1BrowserMigrationResponse",
+        "ProductSession",
+        "ProductTranscriptResponse",
+        "ProductWorkspace",
         "ProviderProfileRequest",
         "ProviderTestRequest",
         "ProviderTestResponse",
@@ -161,6 +196,26 @@ async fn api_exposes_openapi_json_for_all_routes() {
     assert!(
         workspace_text.contains("root"),
         "OpenAPI CreateJobWorkspace should document root: {workspace_text}"
+    );
+
+    let create_job_schema = schemas
+        .get("CreateJobRequest")
+        .expect("CreateJobRequest schema");
+    assert!(
+        create_job_schema["properties"]
+            .get("product_session_id")
+            .is_some(),
+        "CreateJobRequest should expose the additive product session id"
+    );
+    assert!(
+        !create_job_schema["required"]
+            .as_array()
+            .is_some_and(|required| {
+                required
+                    .iter()
+                    .any(|field| field.as_str() == Some("product_session_id"))
+            }),
+        "legacy create-job callers must not be required to send product_session_id"
     );
 
     assert!(
@@ -266,6 +321,50 @@ async fn api_exposes_swagger_ui() {
         text.contains("/api/openapi.json"),
         "Swagger UI initializer should reference the OpenAPI spec: {text}"
     );
+}
+
+#[tokio::test]
+async fn product_migration_rejects_unknown_secret_fields_before_store_access() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let app = router(ApiState::new(workspace, test_config()));
+    let payload = serde_json::json!({
+        "source": "web_m1_local_storage",
+        "source_schema_version": 1,
+        "idempotency_key": "migration-secret-rejection",
+        "workspaces": [],
+        "sessions": [],
+        "provider_profiles": [{
+            "source_id": "prov_legacy",
+            "label": "unsafe",
+            "provider_type": "openai",
+            "api_base": "https://api.openai.com/v1",
+            "api_key_env": "OPENAI_API_KEY",
+            "api_key": "must-not-cross-the-boundary",
+            "updated_at": "2026-07-26T00:00:00Z"
+        }],
+        "safe_preferences": { "theme": "system" }
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/product/migrations/m1-browser")
+                .header(CONTENT_TYPE, "application/json")
+                .body(Body::from(payload.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let error: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(error["code"], "product_invalid_input");
+    assert!(!String::from_utf8_lossy(&body).contains("must-not-cross-the-boundary"));
 }
 
 #[tokio::test]

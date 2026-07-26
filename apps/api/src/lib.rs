@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path as FsPath, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -43,11 +43,13 @@ use rove_runtime::workspace::Workspace;
 mod benchmark;
 mod debug;
 mod docs;
+mod product;
 mod provider;
 mod security;
 mod types;
 
 use benchmark::BenchState;
+pub use product::*;
 pub use types::*;
 
 use provider::{
@@ -64,6 +66,7 @@ pub struct ApiState {
 struct ApiStateInner {
     workspace: Workspace,
     config: AppConfig,
+    product_store_path: PathBuf,
     shutdown_token: CancellationToken,
     jobs: RwLock<HashMap<JobId, Arc<JobRecord>>>,
     model_health: Arc<ModelHealthStore>,
@@ -119,6 +122,21 @@ pub fn router(state: ApiState) -> Router {
     let (api_router, api) = OpenApiRouter::with_openapi(docs::ApiDoc::openapi())
         .routes(routes!(list_provider_models))
         .routes(routes!(test_provider))
+        .routes(routes!(product::routes::list_product_workspaces))
+        .routes(routes!(product::routes::create_product_workspace))
+        .routes(routes!(product::routes::delete_product_workspace))
+        .routes(routes!(product::routes::list_product_sessions))
+        .routes(routes!(product::routes::create_product_session))
+        .routes(routes!(product::routes::update_product_session))
+        .routes(routes!(product::routes::delete_product_session))
+        .routes(routes!(product::routes::get_product_session_transcript))
+        .routes(routes!(product::routes::list_product_provider_profiles))
+        .routes(routes!(product::routes::create_product_provider_profile))
+        .routes(routes!(product::routes::update_product_provider_profile))
+        .routes(routes!(product::routes::delete_product_provider_profile))
+        .routes(routes!(product::routes::get_product_preferences))
+        .routes(routes!(product::routes::update_product_preferences))
+        .routes(routes!(product::routes::migrate_m1_browser_state))
         .routes(routes!(create_job))
         .routes(routes!(job_events))
         .routes(routes!(job_state))
@@ -218,6 +236,7 @@ impl ApiState {
         if let Err(err) = state_store.index.mark_running_jobs_interrupted() {
             tracing::warn!("failed to mark stale API jobs interrupted: {err}");
         }
+        let product_store_path = config.state_dir().join("product.sqlite");
         let model_health = Arc::new(ModelHealthStore::new(HealthConfig {
             failure_threshold: config.routing.failure_threshold,
             open_cooldown: Duration::from_millis(config.routing.open_cooldown_ms),
@@ -226,6 +245,7 @@ impl ApiState {
             inner: Arc::new(ApiStateInner {
                 workspace,
                 config,
+                product_store_path,
                 shutdown_token,
                 jobs: RwLock::new(HashMap::new()),
                 model_health,
@@ -233,6 +253,11 @@ impl ApiState {
                 bench_runs: Arc::new(BenchState::default()),
             }),
         }
+    }
+
+    /// Stable API-global ProductStore location. Requests cannot override it.
+    pub fn product_store_path(&self) -> &FsPath {
+        &self.inner.product_store_path
     }
 }
 
@@ -244,9 +269,10 @@ impl ApiState {
     request_body = CreateJobRequest,
     responses(
         (status = 200, description = "Job created", body = CreateJobResponse, content_type = "application/json"),
-        (status = 400, description = "Invalid job request", body = serde_json::Value, content_type = "application/json"),
-        (status = 409, description = "Requested resume target is still active", body = serde_json::Value, content_type = "application/json"),
-        (status = 500, description = "Internal runtime error", body = serde_json::Value, content_type = "application/json")
+        (status = 400, description = "Invalid job request", body = ApiErrorResponse, content_type = "application/json"),
+        (status = 409, description = "Resume or product-session conflict", body = ApiErrorResponse, content_type = "application/json"),
+        (status = 501, description = "Product-session foundation is not wired", body = ApiErrorResponse, content_type = "application/json"),
+        (status = 500, description = "Internal runtime error", body = ApiErrorResponse, content_type = "application/json")
     )
 )]
 async fn create_job(
@@ -255,6 +281,19 @@ async fn create_job(
 ) -> Result<Json<CreateJobResponse>, ApiError> {
     if req.message.trim().is_empty() {
         return Err(ApiError::bad_request("message must not be empty"));
+    }
+
+    if req.product_session_id.is_some() {
+        if req.resume.is_some() {
+            return Err(ApiError::conflict_with_code(
+                ProductErrorCode::ProductSessionResumeConflict.as_str(),
+                "product-session jobs resolve resume from the server binding; omit resume",
+            ));
+        }
+        return Err(ApiError::not_implemented(
+            ProductErrorCode::ProductStoreUnavailable.as_str(),
+            "product-session job binding is not wired until the C0 workers are integrated",
+        ));
     }
 
     let (workspace, config) = workspace_and_config_for_create_job(&state, &req)?;
@@ -1311,8 +1350,9 @@ fn run_status_from_index(status: &str) -> RunStatus {
 }
 
 #[derive(Debug)]
-struct ApiError {
+pub(crate) struct ApiError {
     status: StatusCode,
+    code: &'static str,
     message: String,
 }
 
@@ -1320,6 +1360,15 @@ impl ApiError {
     fn bad_request(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::BAD_REQUEST,
+            code: "bad_request",
+            message: message.into(),
+        }
+    }
+
+    pub(crate) fn bad_request_with_code(code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            code,
             message: message.into(),
         }
     }
@@ -1327,6 +1376,7 @@ impl ApiError {
     fn not_found(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::NOT_FOUND,
+            code: "not_found",
             message: message.into(),
         }
     }
@@ -1334,6 +1384,15 @@ impl ApiError {
     fn conflict(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::CONFLICT,
+            code: "conflict",
+            message: message.into(),
+        }
+    }
+
+    fn conflict_with_code(code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::CONFLICT,
+            code,
             message: message.into(),
         }
     }
@@ -1341,6 +1400,15 @@ impl ApiError {
     fn bad_gateway(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::BAD_GATEWAY,
+            code: "bad_gateway",
+            message: message.into(),
+        }
+    }
+
+    pub(crate) fn not_implemented(code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::NOT_IMPLEMENTED,
+            code,
             message: message.into(),
         }
     }
@@ -1348,7 +1416,37 @@ impl ApiError {
     fn internal(err: impl std::fmt::Display) -> Self {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
+            code: "internal_error",
             message: err.to_string(),
+        }
+    }
+}
+
+impl From<ProductStoreError> for ApiError {
+    fn from(error: ProductStoreError) -> Self {
+        let status = match error.code {
+            ProductErrorCode::ProductNotFound => StatusCode::NOT_FOUND,
+            ProductErrorCode::ProductInvalidInput => StatusCode::BAD_REQUEST,
+            ProductErrorCode::ProductStoreUnavailable => StatusCode::SERVICE_UNAVAILABLE,
+            ProductErrorCode::ProductStorageFailure => StatusCode::INTERNAL_SERVER_ERROR,
+            ProductErrorCode::ProductSessionActive
+            | ProductErrorCode::ProductSessionWorkspaceMismatch
+            | ProductErrorCode::ProductSessionResumeConflict
+            | ProductErrorCode::ProductSessionRuntimeStateMissing
+            | ProductErrorCode::ProductSessionRuntimeStateCorrupt
+            | ProductErrorCode::ProductBindingCorrupt
+            | ProductErrorCode::MigrationIdempotencyConflict => StatusCode::CONFLICT,
+        };
+        let message = if error.code == ProductErrorCode::ProductStorageFailure {
+            tracing::warn!("product store operation failed: {error}");
+            "product store operation failed".to_string()
+        } else {
+            error.message
+        };
+        Self {
+            status,
+            code: error.code.as_str(),
+            message,
         }
     }
 }
@@ -1357,9 +1455,10 @@ impl axum::response::IntoResponse for ApiError {
     fn into_response(self) -> axum::response::Response {
         (
             self.status,
-            Json(serde_json::json!({
-                "error": self.message,
-            })),
+            Json(ApiErrorResponse {
+                code: self.code.to_string(),
+                error: self.message,
+            }),
         )
             .into_response()
     }

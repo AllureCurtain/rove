@@ -1,6 +1,6 @@
 # Web Complete Delivery Plan
 
-> Status: **Active — P0 reconciled; C0 coordinator foundation next**
+> Status: **Active — P0 merged; C0 public foundation sealed, workers next**
 >
 > Decisions:
 > [`../design/2026-07-26-web-complete-design.md`](../design/2026-07-26-web-complete-design.md)
@@ -76,6 +76,12 @@ and merges them into the named integration branch, then owns the PR to `main`.
 The coordinator creates C0 worker worktrees only after the C0 foundation commit,
 all from the same SHA. Later worktrees are created only after their respective
 foundation is on the integration branch or `main`.
+
+The C0 foundation now fixes the public Rust/API/OpenAPI contracts and disjoint
+worker module boundaries. Product routes and product-session jobs remain
+fail-closed with a typed `501` until the bounded implementations are reviewed
+and coordinator wiring is complete; the foundation alone does not satisfy the
+C0 exit checklist.
 
 ### After each merge
 
@@ -394,6 +400,11 @@ git merge --ff-only main
 
 ## changelog
 
+- 2026-07-26: Sealed the coordinator-owned C0 public foundation on the
+  integration branch: server-owned product IDs and store traits, product
+  route/OpenAPI shapes, typed transcript/partial and strict migration DTOs,
+  bounded runtime event snapshots, and fail-closed `product_session_id` entry.
+  Worker implementations and integration remain open.
 - 2026-07-26: Completed P0 reconciliation. Corrected route-scoped browser
   evidence, made the existing C0 worktree update command idempotent, and aligned
   C2 with the coordinator foundation plus post-C1 Settings worker split.
