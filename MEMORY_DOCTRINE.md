@@ -82,8 +82,10 @@ preserve these flush blocks instead of overwriting them.
 system -> durable memory -> session memory -> compact summary -> recent history tail -> current user message
 ```
 
-History can be limited by message count or token budget. Token estimates are
-approximate and provider-neutral.
+History can be limited by message count or token budget. Native assistant tool
+calls and their matching results are selected as one atomic history unit, so a
+history-limit boundary does not create an orphan or partial native tool round.
+Token estimates are approximate and provider-neutral.
 
 Prompt metadata includes:
 
@@ -103,7 +105,7 @@ Automatic compaction is considered when the context builder drops old history
 or crosses the configured soft budget. Model-generated compaction is optional
 and controlled by `runtime.model_compaction_enabled`.
 
-The active compaction prompt version is `rove.compaction.v2`. It asks for a
+The active compaction prompt version is `rove.compaction.v3`. It asks for a
 structured summary with seven fields:
 
 - goal
@@ -113,6 +115,11 @@ structured summary with seven fields:
 - modified files
 - tool results
 - risks
+
+For optional model-generated compaction, the dropped segment is serialized as
+JSON inside one ordinary user data message. Original assistant/tool roles and
+tool-call IDs are not replayed as protocol messages, and embedded text is
+explicitly treated as untrusted historical data.
 
 If the model summary succeeds, the parsed structure is rendered back into a
 prompt-friendly compact summary and recorded as `model_generated`. If the model

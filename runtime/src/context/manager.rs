@@ -1,5 +1,8 @@
+use std::collections::HashSet;
+use std::ops::Range;
+
 use crate::prompt_metadata::{PromptBuildMetadata, prompt_hash, stable_hash};
-use rove_models::Message;
+use rove_models::{Message, Role};
 
 pub use crate::prompt_metadata::{estimate_message_tokens, estimate_messages_tokens};
 
@@ -183,11 +186,16 @@ impl ContextManager {
             messages.push(compact_summary_message(summary));
         }
 
-        let start = if history.len() > max_history {
-            history.len() - max_history
-        } else {
-            0
-        };
+        let mut start = history.len();
+        let mut included_history_messages = 0;
+        for unit in replay_safe_history_suffix_units(history).iter().rev() {
+            let unit_messages = unit.end - unit.start;
+            if included_history_messages + unit_messages > max_history {
+                break;
+            }
+            included_history_messages += unit_messages;
+            start = unit.start;
+        }
         messages.extend_from_slice(&history[start..]);
         messages.push(Message::user(user_message));
 
@@ -195,14 +203,14 @@ impl ContextManager {
         let metadata = self.build_metadata(
             &messages,
             token_estimate,
-            history.len().saturating_sub(start),
+            included_history_messages,
             start,
             stable_prefix_hash,
         );
         ContextBuild {
             messages,
             token_estimate,
-            included_history_messages: history.len().saturating_sub(start),
+            included_history_messages,
             dropped_history_messages: start,
             over_hard_limit: false,
             auto_compaction_needed: start > 0,
@@ -230,22 +238,21 @@ impl ContextManager {
             estimate_messages_tokens(&prefix) + estimate_message_tokens(&current_user);
         let target_limit = prompt_target_limit(budget, required_tokens);
 
-        let mut selected_history = Vec::new();
+        let mut start = history.len();
         let mut selected_tokens = 0;
         let mut included_history_messages = 0;
-        for message in history.iter().rev() {
-            let message_tokens = estimate_message_tokens(message);
-            if required_tokens + selected_tokens + message_tokens > target_limit {
+        for unit in replay_safe_history_suffix_units(history).iter().rev() {
+            let unit_tokens = estimate_messages_tokens(&history[unit.clone()]);
+            if required_tokens + selected_tokens + unit_tokens > target_limit {
                 break;
             }
-            selected_tokens += message_tokens;
-            included_history_messages += 1;
-            selected_history.push(message.clone());
+            selected_tokens += unit_tokens;
+            included_history_messages += unit.end - unit.start;
+            start = unit.start;
         }
-        selected_history.reverse();
 
         let mut messages = prefix;
-        messages.extend(selected_history);
+        messages.extend_from_slice(&history[start..]);
         messages.push(current_user);
 
         let token_estimate = estimate_messages_tokens(&messages);
@@ -257,9 +264,9 @@ impl ContextManager {
             >= budget
                 .soft_limit_tokens
                 .saturating_sub(budget.reserved_tokens)
-            || history.len().saturating_sub(included_history_messages) > 0;
+            || start > 0;
 
-        let dropped_history_messages = history.len().saturating_sub(included_history_messages);
+        let dropped_history_messages = start;
         let metadata = self.build_metadata(
             &messages,
             token_estimate,
@@ -322,6 +329,61 @@ impl ContextManager {
     }
 }
 
+fn replay_safe_history_suffix_units(history: &[Message]) -> Vec<Range<usize>> {
+    let mut units = Vec::new();
+    let mut index = 0;
+
+    while index < history.len() {
+        let message = &history[index];
+        if message.role == Role::Assistant && !message.tool_calls.is_empty() {
+            let start = index;
+            index += 1;
+
+            let mut result_ids = HashSet::new();
+            let mut valid_results = true;
+            while index < history.len()
+                && history[index].role == Role::Tool
+                && history[index].tool_call_id.is_some()
+            {
+                let result_id = history[index].tool_call_id.as_deref().unwrap_or_default();
+                valid_results &=
+                    !result_id.trim().is_empty() && result_ids.insert(result_id.to_string());
+                index += 1;
+            }
+
+            let mut call_ids = HashSet::new();
+            let valid_calls = message
+                .tool_calls
+                .iter()
+                .all(|call| !call.id.trim().is_empty() && call_ids.insert(call.id.clone()));
+            if valid_calls && valid_results && call_ids == result_ids {
+                units.push(start..index);
+            }
+            continue;
+        }
+
+        if message.role == Role::Tool && message.tool_call_id.is_some() {
+            index += 1;
+            continue;
+        }
+
+        units.push(index..index + 1);
+        index += 1;
+    }
+
+    let mut suffix = Vec::new();
+    let mut expected_end = history.len();
+    for unit in units.into_iter().rev() {
+        if unit.end != expected_end {
+            break;
+        }
+        expected_end = unit.start;
+        suffix.push(unit);
+    }
+    suffix.reverse();
+    suffix
+}
+
 pub fn session_summary_message(summary: &str) -> Message {
     Message::system(format!("Session summary: {summary}"))
 }
@@ -349,6 +411,28 @@ mod tests {
     use super::*;
     use rove_models::ToolCallRef;
 
+    fn parallel_native_tool_round() -> Vec<Message> {
+        vec![
+            Message::assistant_with_tool_calls(
+                "parallel tools",
+                vec![
+                    ToolCallRef {
+                        id: "call-a".to_string(),
+                        name: "tool_a".to_string(),
+                        args: serde_json::json!({}),
+                    },
+                    ToolCallRef {
+                        id: "call-b".to_string(),
+                        name: "tool_b".to_string(),
+                        args: serde_json::json!({}),
+                    },
+                ],
+            ),
+            Message::tool("result a", Some("call-a".to_string())),
+            Message::tool("result b", Some("call-b".to_string())),
+        ]
+    }
+
     #[test]
     fn estimate_message_tokens_counts_structured_tool_calls() {
         let plain = Message::assistant("");
@@ -364,6 +448,112 @@ mod tests {
         );
 
         assert!(estimate_message_tokens(&with_tool_call) > estimate_message_tokens(&plain));
+    }
+
+    #[test]
+    fn message_count_history_limit_keeps_native_tool_rounds_atomic() {
+        let round = parallel_native_tool_round();
+        let mut history = vec![Message::user("older")];
+        history.extend(round.clone());
+
+        let too_small = ContextManager::with_max_history("system".to_string(), 2)
+            .build_with_checkpoint("current", &[], None, &history);
+        assert_eq!(too_small.included_history_messages, 0);
+        assert_eq!(too_small.dropped_history_messages, history.len());
+        assert_eq!(
+            too_small.messages,
+            vec![Message::system("system"), Message::user("current")]
+        );
+
+        let exact = ContextManager::with_max_history("system".to_string(), round.len())
+            .build_with_checkpoint("current", &[], None, &history);
+        assert_eq!(exact.included_history_messages, round.len());
+        assert_eq!(exact.dropped_history_messages, 1);
+        assert_eq!(&exact.messages[1..=round.len()], round.as_slice());
+    }
+
+    #[test]
+    fn token_history_limit_keeps_native_tool_rounds_atomic() {
+        let round = parallel_native_tool_round();
+        let required_tokens =
+            estimate_messages_tokens(&[Message::system("system"), Message::user("current")]);
+        let partial_round_limit = required_tokens + estimate_messages_tokens(&round[1..]);
+        let too_small = ContextManager::with_token_budget(
+            "system".to_string(),
+            ContextBudget {
+                soft_limit_tokens: partial_round_limit,
+                hard_limit_tokens: partial_round_limit,
+                reserved_tokens: 0,
+            },
+        )
+        .build_with_checkpoint("current", &[], None, &round);
+        assert_eq!(too_small.included_history_messages, 0);
+        assert_eq!(too_small.dropped_history_messages, round.len());
+        assert!(
+            too_small
+                .messages
+                .iter()
+                .all(|message| { message.role != Role::Tool && message.tool_calls.is_empty() })
+        );
+
+        let complete_round_limit = required_tokens + estimate_messages_tokens(&round);
+        let exact = ContextManager::with_token_budget(
+            "system".to_string(),
+            ContextBudget {
+                soft_limit_tokens: complete_round_limit,
+                hard_limit_tokens: complete_round_limit,
+                reserved_tokens: 0,
+            },
+        )
+        .build_with_checkpoint("current", &[], None, &round);
+        assert_eq!(exact.included_history_messages, round.len());
+        assert_eq!(&exact.messages[1..=round.len()], round.as_slice());
+    }
+
+    #[test]
+    fn history_selection_drops_an_incomplete_native_tool_round() {
+        let mut incomplete = parallel_native_tool_round();
+        incomplete.pop();
+
+        let built = ContextManager::with_max_history("system".to_string(), 20)
+            .build_with_checkpoint("current", &[], None, &incomplete);
+
+        assert_eq!(built.included_history_messages, 0);
+        assert_eq!(built.dropped_history_messages, incomplete.len());
+        assert_eq!(
+            built.messages,
+            vec![Message::system("system"), Message::user("current")]
+        );
+    }
+
+    #[test]
+    fn history_selection_preserves_compatibility_tool_results_without_ids() {
+        let compatibility_result = Message::tool("compatibility result", None);
+        let history = vec![
+            Message::assistant("compatibility call"),
+            compatibility_result.clone(),
+        ];
+
+        let built = ContextManager::with_max_history("system".to_string(), 1)
+            .build_with_checkpoint("current", &[], None, &history);
+
+        assert_eq!(built.included_history_messages, 1);
+        assert_eq!(built.dropped_history_messages, 1);
+        assert_eq!(built.messages[1], compatibility_result);
+    }
+
+    #[test]
+    fn history_selection_keeps_a_safe_suffix_after_an_invalid_round() {
+        let mut history = parallel_native_tool_round();
+        history.pop();
+        history.push(Message::assistant("safe suffix"));
+
+        let built = ContextManager::with_max_history("system".to_string(), 20)
+            .build_with_checkpoint("current", &[], None, &history);
+
+        assert_eq!(built.included_history_messages, 1);
+        assert_eq!(built.dropped_history_messages, history.len() - 1);
+        assert_eq!(built.messages[1], Message::assistant("safe suffix"));
     }
 
     #[test]
