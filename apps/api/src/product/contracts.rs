@@ -546,6 +546,7 @@ pub struct ProductSessionContext {
 pub struct ProductTurnClaim {
     pub claim_id: ProductTurnClaimId,
     pub context: ProductSessionContext,
+    pub previous_status: ProductSessionStatus,
     pub previous_binding: Option<ProductRuntimeBinding>,
 }
 
