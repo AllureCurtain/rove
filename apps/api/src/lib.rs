@@ -883,10 +883,7 @@ async fn prepare_product_job_launch(
     let state_store = state_store_for_parts(&workspace, &config);
     let (resume_state, mut resume_claim) = match claim.previous_binding.as_ref() {
         Some(previous) => match load_and_claim_product_resume(&state_store, previous).await {
-            Ok((resume_state, resume_claim)) => (
-                Some(project_product_follow_up_state(resume_state)),
-                Some(resume_claim),
-            ),
+            Ok((resume_state, resume_claim)) => (Some(resume_state), Some(resume_claim)),
             Err(error) => {
                 finish_failed_product_start(
                     &store,
@@ -1129,6 +1126,7 @@ async fn load_and_claim_product_resume(
         )
         .into());
     }
+    let resume_state = project_product_follow_up_state(resume_state)?;
     let Some(claim) = claim_runtime_resume(state_store, Some(&resume_state), true).await? else {
         return Err(ApiError::internal(
             "product resume validation did not acquire a runtime claim",
@@ -1137,27 +1135,27 @@ async fn load_and_claim_product_resume(
     Ok((resume_state, claim))
 }
 
-fn project_product_follow_up_state(mut state: TaskState) -> TaskState {
+fn project_product_follow_up_state(mut state: TaskState) -> Result<TaskState, ApiError> {
     // A product follow-up is a new user turn in the same durable conversation,
     // not a replay of the previous turn's terminal execution decision.
     state.step = 0;
     state.plan = None;
     state.step_ledger = Default::default();
-    state.history = close_product_follow_up_tool_rounds(state.history);
+    state.history = close_product_follow_up_tool_rounds(state.history)?;
     if let Some(checkpoint) = state.checkpoint.as_mut() {
         checkpoint.last_step = 0;
         checkpoint.plan = None;
         checkpoint.step_ledger = Default::default();
         checkpoint.last_event_seq = None;
         checkpoint.preserved_tail =
-            close_product_follow_up_tool_rounds(std::mem::take(&mut checkpoint.preserved_tail));
+            close_product_follow_up_tool_rounds(std::mem::take(&mut checkpoint.preserved_tail))?;
     }
-    state
+    Ok(state)
 }
 
 const UNKNOWN_PRODUCT_TOOL_RESULT: &str = "The previous turn ended before a durable tool result was recorded. The tool effect is unknown; verify the current state before retrying this tool call.";
 
-fn close_product_follow_up_tool_rounds(messages: Vec<Message>) -> Vec<Message> {
+fn close_product_follow_up_tool_rounds(messages: Vec<Message>) -> Result<Vec<Message>, ApiError> {
     let mut closed = Vec::with_capacity(messages.len());
     let mut pending_tool_call_ids = Vec::new();
     let mut completed_tool_call_ids = HashSet::new();
@@ -1165,8 +1163,21 @@ fn close_product_follow_up_tool_rounds(messages: Vec<Message>) -> Vec<Message> {
     for message in messages {
         if message.role == Role::Tool {
             let Some(tool_call_id) = message.tool_call_id.as_ref() else {
+                append_missing_product_tool_results(
+                    &mut closed,
+                    &pending_tool_call_ids,
+                    &completed_tool_call_ids,
+                );
+                pending_tool_call_ids.clear();
+                completed_tool_call_ids.clear();
+                closed.push(message);
                 continue;
             };
+            if tool_call_id.trim().is_empty() {
+                return Err(invalid_product_tool_history(
+                    "the product session runtime history contains an empty tool result call id",
+                ));
+            }
             if pending_tool_call_ids.contains(tool_call_id)
                 && completed_tool_call_ids.insert(tool_call_id.clone())
             {
@@ -1184,10 +1195,19 @@ fn close_product_follow_up_tool_rounds(messages: Vec<Message>) -> Vec<Message> {
         completed_tool_call_ids.clear();
 
         if message.role == Role::Assistant && !message.tool_calls.is_empty() {
+            let mut round_tool_call_ids = HashSet::new();
             for tool_call in &message.tool_calls {
-                if !pending_tool_call_ids.contains(&tool_call.id) {
-                    pending_tool_call_ids.push(tool_call.id.clone());
+                if tool_call.id.trim().is_empty() {
+                    return Err(invalid_product_tool_history(
+                        "the product session runtime history contains an empty assistant tool call id",
+                    ));
                 }
+                if !round_tool_call_ids.insert(tool_call.id.clone()) {
+                    return Err(invalid_product_tool_history(
+                        "the product session runtime history contains duplicate assistant tool call ids",
+                    ));
+                }
+                pending_tool_call_ids.push(tool_call.id.clone());
             }
         }
         closed.push(message);
@@ -1198,7 +1218,11 @@ fn close_product_follow_up_tool_rounds(messages: Vec<Message>) -> Vec<Message> {
         &pending_tool_call_ids,
         &completed_tool_call_ids,
     );
-    closed
+    Ok(closed)
+}
+
+fn invalid_product_tool_history(message: &'static str) -> ApiError {
+    ProductStoreError::new(ProductErrorCode::ProductSessionRuntimeStateCorrupt, message).into()
 }
 
 fn append_missing_product_tool_results(
@@ -2398,7 +2422,8 @@ mod tests {
             result_b.clone(),
             result_a.clone(),
             next.clone(),
-        ]);
+        ])
+        .unwrap();
 
         assert_eq!(
             closed,
@@ -2416,7 +2441,7 @@ mod tests {
     fn product_follow_up_closes_an_all_missing_tool_round_at_the_tail() {
         let assistant = assistant_tool_round(&["call-a", "call-b"]);
 
-        let closed = close_product_follow_up_tool_rounds(vec![assistant.clone()]);
+        let closed = close_product_follow_up_tool_rounds(vec![assistant.clone()]).unwrap();
 
         assert_eq!(
             closed,
@@ -2438,7 +2463,7 @@ mod tests {
         ];
 
         assert_eq!(
-            close_product_follow_up_tool_rounds(messages.clone()),
+            close_product_follow_up_tool_rounds(messages.clone()).unwrap(),
             messages
         );
     }
@@ -2449,11 +2474,59 @@ mod tests {
 
         let closed = close_product_follow_up_tool_rounds(vec![
             Message::tool("orphan result", Some("truncated-call".to_string())),
-            Message::tool("legacy orphan result", None),
             next.clone(),
-        ]);
+        ])
+        .unwrap();
 
         assert_eq!(closed, vec![next]);
+    }
+
+    #[test]
+    fn product_follow_up_preserves_compatibility_tool_results_without_native_ids() {
+        let messages = vec![
+            Message::assistant("compatibility tool call"),
+            Message::tool("durable compatibility result", None),
+            Message::assistant("round complete"),
+        ];
+
+        assert_eq!(
+            close_product_follow_up_tool_rounds(messages.clone()).unwrap(),
+            messages
+        );
+    }
+
+    #[test]
+    fn product_follow_up_rejects_duplicate_assistant_tool_call_ids() {
+        let error = close_product_follow_up_tool_rounds(vec![assistant_tool_round(&[
+            "duplicate",
+            "duplicate",
+        ])])
+        .unwrap_err();
+
+        assert_eq!(
+            error.code,
+            ProductErrorCode::ProductSessionRuntimeStateCorrupt.as_str()
+        );
+    }
+
+    #[test]
+    fn product_follow_up_rejects_empty_native_tool_call_ids() {
+        let assistant_error =
+            close_product_follow_up_tool_rounds(vec![assistant_tool_round(&["  "])]).unwrap_err();
+        assert_eq!(
+            assistant_error.code,
+            ProductErrorCode::ProductSessionRuntimeStateCorrupt.as_str()
+        );
+
+        let result_error = close_product_follow_up_tool_rounds(vec![Message::tool(
+            "invalid native result",
+            Some(String::new()),
+        )])
+        .unwrap_err();
+        assert_eq!(
+            result_error.code,
+            ProductErrorCode::ProductSessionRuntimeStateCorrupt.as_str()
+        );
     }
 
     async fn publish_terminal_event_after_barrier(

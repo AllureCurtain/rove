@@ -26,7 +26,7 @@ use rove_app_bootstrap::AppConfig;
 use rove_runtime::events::StreamEvent;
 use rove_runtime::execution::StepRecordStatus;
 use rove_runtime::state::store::StateStore;
-use rove_runtime::types::{Role, RunStatus, SessionId, TaskState};
+use rove_runtime::types::{Message, Role, RunStatus, SessionId, TaskState, ToolCallRef};
 use rove_runtime::workspace::Workspace;
 use std::sync::{Arc, Mutex};
 use tokio_util::sync::CancellationToken;
@@ -589,6 +589,73 @@ async fn product_session_resume_rejects_a_mismatched_runtime_run_identity() {
         "/jobs",
         serde_json::json!({
             "message": "must reject mismatched indexed run identity",
+            "model": "fake",
+            "product_session_id": session_id
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let error: serde_json::Value = decode_json(response).await;
+    assert_eq!(error["code"], "product_session_runtime_state_corrupt");
+
+    let session = get_product_session(&app, workspace_id, session_id).await;
+    assert_eq!(session["status"], "needs_attention");
+    assert_eq!(
+        session["runtime_binding"]["latest_run_id"],
+        first.run_id.to_string()
+    );
+}
+
+#[tokio::test]
+async fn product_session_resume_rejects_invalid_native_tool_call_ids() {
+    let server = tempfile::TempDir::new().unwrap();
+    let folder = tempfile::TempDir::new().unwrap();
+    let mut config = test_config();
+    config.state.state_dir = "api-state".into();
+    let app = router(ApiState::new(
+        Workspace::detect(server.path()).unwrap(),
+        config,
+    ));
+    let workspace = create_product_workspace(&app, folder.path()).await;
+    let workspace_id = workspace["id"].as_str().unwrap();
+    let session = create_product_session(&app, workspace_id, "Corrupt tool history").await;
+    let session_id = session["id"].as_str().unwrap();
+    let first = create_product_job(&app, session_id, "durable first turn").await;
+    wait_for_done(app.clone(), first.job_id.to_string()).await;
+
+    let state_store = StateStore::with_index_path(
+        &folder.path().join("api-state"),
+        folder.path().join(".rove/state.sqlite"),
+        5_000,
+    );
+    let mut task_state = state_store.load_task_state(first.run_id).await.unwrap();
+    task_state
+        .checkpoint
+        .as_mut()
+        .expect("checkpoint")
+        .preserved_tail
+        .push(Message::assistant_with_tool_calls(
+            "invalid duplicate native calls",
+            vec![
+                ToolCallRef {
+                    id: "duplicate-call".to_string(),
+                    name: "first_tool".to_string(),
+                    args: serde_json::json!({}),
+                },
+                ToolCallRef {
+                    id: "duplicate-call".to_string(),
+                    name: "second_tool".to_string(),
+                    args: serde_json::json!({}),
+                },
+            ],
+        ));
+    state_store.write_task_state(&task_state).await.unwrap();
+
+    let response = post_json(
+        &app,
+        "/jobs",
+        serde_json::json!({
+            "message": "must reject invalid provider history",
             "model": "fake",
             "product_session_id": session_id
         }),
