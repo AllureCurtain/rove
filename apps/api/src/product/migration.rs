@@ -642,13 +642,13 @@ fn runtime_record_path_matches(candidate: &Path, expected: &Path) -> bool {
         && candidate == expected
 }
 
-fn runtime_path_uses_local_disk_namespace(path: &Path) -> bool {
+fn runtime_path_uses_local_disk_namespace(_path: &Path) -> bool {
     #[cfg(windows)]
     {
         use std::path::{Component, Prefix};
 
         return matches!(
-            path.components().next(),
+            _path.components().next(),
             Some(Component::Prefix(prefix))
                 if matches!(prefix.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_))
         );
