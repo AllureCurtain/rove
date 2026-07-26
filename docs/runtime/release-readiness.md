@@ -70,6 +70,8 @@ coverage for these contracts:
 
 - ProductStore workspace/session/profile/preferences CRUD, schema migration,
   monotonic preference revisions, and bounded durable migration preparations;
+- runtime-aligned product OpenAPI failures (`500` operation failure and `503`
+  unavailable), with no wired operation advertising `501`;
 - exact product-session resume, single-active-turn ownership, terminal release,
   stream finalization/replay, and shutdown drain order;
 - ordered canonical-event transcript projection with typed partial reasons;

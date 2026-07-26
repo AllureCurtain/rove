@@ -24,7 +24,7 @@ full live-API acceptance of the product shell.
 
 | C0 contract | Current status | Test evidence surface |
 |---|---|---|
-| API-global ProductStore CRUD and safe preferences | Implemented | `apps/api/src/product/store/tests.rs`; product route coverage in `tests/api.rs` |
+| API-global ProductStore CRUD and safe preferences | Implemented; wired operations document actual `500`/`503` failures and never advertise foundation-era `501` | `apps/api/src/product/store/tests.rs`; product route and OpenAPI coverage in `tests/api.rs` |
 | Exact product-session/runtime binding and fail-closed continuation | Implemented | `product_sessions_in_one_workspace_resume_their_own_exact_runs` and product resume/cancel tests in `tests/api.rs` |
 | Canonical-event transcript projection with typed partial reasons | Implemented | transcript module tests and product transcript assertions in `tests/api.rs` |
 | Strict/idempotent M1 migration and typed Web client | Implemented, not wired into the default shell | `apps/web/product/product-client.test.ts`, `apps/web/product/m1-browser-migration.test.ts`, and migration tests in `tests/api.rs` |
