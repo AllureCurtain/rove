@@ -21,7 +21,26 @@ import {
 class FakeEventSource {
   onerror: ((event: Event) => void) | null = null;
   readonly close = vi.fn();
-  readonly addEventListener = vi.fn();
+  readonly listeners = new Map<string, EventListener[]>();
+  readonly addEventListener = vi.fn(
+    (name: string, listener: EventListenerOrEventListenerObject) => {
+      const eventListener =
+        typeof listener === "function"
+          ? listener
+          : (event: Event) => listener.handleEvent(event);
+      this.listeners.set(name, [...(this.listeners.get(name) ?? []), eventListener]);
+    },
+  );
+
+  emit(name: string, data: unknown, lastEventId: string) {
+    const event = {
+      data: JSON.stringify(data),
+      lastEventId,
+    } as MessageEvent<string>;
+    for (const listener of this.listeners.get(name) ?? []) {
+      listener(event);
+    }
+  }
 }
 
 beforeEach(() => {
@@ -81,6 +100,68 @@ describe("run controller focus generation", () => {
     await expect(attach).rejects.toBeInstanceOf(RunControllerInactiveError);
     expect(dispatch).not.toHaveBeenCalled();
     expect(client.openJobStream).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps one live observation after cancellation fails", async () => {
+    const source = new FakeEventSource();
+    client.openJobStream.mockReturnValue(source);
+    client.createJob.mockResolvedValue({
+      job_id: "job-1",
+      run_id: "run-1",
+      resumed_from_run_id: null,
+    });
+    client.cancelJob.mockRejectedValue(new Error("cancel request failed"));
+    const dispatch = vi.fn();
+    const controller = createRunController(dispatch);
+
+    await controller.start({
+      message: "hello",
+      product_session_id: "session-1",
+    });
+    const listenerCount = source.addEventListener.mock.calls.length;
+
+    await expect(controller.cancel("job-1")).rejects.toThrow(
+      "cancel request failed",
+    );
+    expect(source.close).not.toHaveBeenCalled();
+    expect(source.addEventListener).toHaveBeenCalledTimes(listenerCount);
+
+    source.emit("llm_chunk", { type: "llm_chunk", delta: "still observed" }, "2");
+    expect(
+      dispatch.mock.calls.filter(
+        ([action]) => action.type === "stream_event" && action.seq === 2,
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("closes the observation after cancellation reaches a terminal state", async () => {
+    const source = new FakeEventSource();
+    client.openJobStream.mockReturnValue(source);
+    client.createJob.mockResolvedValue({
+      job_id: "job-1",
+      run_id: "run-1",
+      resumed_from_run_id: null,
+    });
+    client.cancelJob.mockResolvedValue({
+      job_id: "job-1",
+      run_id: "run-1",
+      status: "cancelled",
+      event_count: 1,
+      events: [],
+      pending_approvals: [],
+      pending_inputs: [],
+    });
+    const onTerminal = vi.fn();
+    const controller = createRunController(vi.fn(), { onTerminal });
+
+    await controller.start({
+      message: "hello",
+      product_session_id: "session-1",
+    });
+    await controller.cancel("job-1");
+
+    expect(source.close).toHaveBeenCalledTimes(1);
+    expect(onTerminal).toHaveBeenCalledTimes(1);
   });
 });
 

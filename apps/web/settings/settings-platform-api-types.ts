@@ -219,6 +219,16 @@ export function validateProductMemorySlug(slug: string): string {
   return expectMemorySlug(slug, "product memory topic slug");
 }
 
+export function validateProductMemoryWorkspaceId(
+  workspaceId: ProductWorkspaceId,
+): ProductWorkspaceId {
+  return expectString(workspaceId, "product memory workspace id", {
+    nonEmpty: true,
+    maxBytes: MAX_PRODUCT_TEXT_BYTES,
+    noControls: true,
+  });
+}
+
 export function parseProductMemoryTopic(
   value: unknown,
   path = "product memory topic",

@@ -9,7 +9,10 @@ import {
   describeTranscriptPartialReason,
   projectProductTranscript,
 } from "./transcript-projection";
-import { workbenchReducer } from "../lib/rove-state";
+import {
+  selectTranscriptTimeline,
+  workbenchReducer,
+} from "../lib/rove-state";
 
 describe("product transcript projection", () => {
   it("replays each run ordinal through the canonical reducer despite repeated seqs", () => {
@@ -90,6 +93,28 @@ describe("product transcript projection", () => {
     expect(
       state.historicalTools.map((tool) => [tool.id, tool.name, tool.status]),
     ).toEqual([["call-1", "read_file", "done"]]);
+    const timeline = selectTranscriptTimeline(state);
+    expect(timeline.map((group) => [group.runOrdinal, group.runId])).toEqual([
+      [1, "run-1"],
+      [2, "run-2"],
+    ]);
+    expect(
+      timeline.map((group) =>
+        group.items.map((item) => {
+          switch (item.kind) {
+            case "message":
+              return item.message.content;
+            case "tool":
+              return item.tool.id;
+            case "input":
+              return item.input.id;
+          }
+        }),
+      ),
+    ).toEqual([
+      ["Use read_file", "call-1", "Done"],
+      ["Use list_files", "call-2", "Done"],
+    ]);
   });
 
   it("keeps the latest running segment ready for focused reattachment", () => {

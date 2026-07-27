@@ -418,6 +418,18 @@ impl AppConfig {
         }
     }
 
+    /// Resolve durable memory only when it remains inside the current workspace.
+    ///
+    /// Product control surfaces use this stricter path even when the process is
+    /// configured to allow other explicitly external runtime paths.
+    pub fn workspace_bounded_durable_memory_dir(&self) -> anyhow::Result<PathBuf> {
+        let resolved = self.normalized_workspace_path(&self.memory.durable_dir);
+        if !resolved.starts_with(&self.source_summary.workspace_root) {
+            anyhow::bail!("memory.durable_dir resolves outside the selected workspace");
+        }
+        Ok(resolved)
+    }
+
     pub fn rebase_to_workspace(&mut self, workspace_root: impl AsRef<Path>) {
         let workspace_root = workspace_root
             .as_ref()
@@ -593,17 +605,21 @@ impl AppConfig {
     }
 
     fn validate_workspace_path(&self, name: &str, path: &Path) -> anyhow::Result<()> {
-        let resolved = if path.is_absolute() {
-            normalize_path(path)
-        } else {
-            normalize_path(self.source_summary.workspace_root.join(path))
-        };
+        let resolved = self.normalized_workspace_path(path);
         if !resolved.starts_with(&self.source_summary.workspace_root) {
             anyhow::bail!(
                 "{name} resolves outside the workspace; set state.allow_external_paths=true to allow it"
             );
         }
         Ok(())
+    }
+
+    fn normalized_workspace_path(&self, path: &Path) -> PathBuf {
+        if path.is_absolute() {
+            normalize_path(path)
+        } else {
+            normalize_path(self.source_summary.workspace_root.join(path))
+        }
     }
 }
 
@@ -1476,6 +1492,35 @@ system_prompt_path = "../outside/prompt.md"
         assert!(
             err.to_string()
                 .contains("runtime.system_prompt_path resolves outside the workspace")
+        );
+    }
+
+    #[test]
+    fn product_memory_boundary_remains_strict_when_external_paths_are_enabled() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let workspace = tmp.path().join("workspace");
+        let outside = tmp.path().join("outside-memory");
+        let inside = workspace.join(".rove/memory");
+        std::fs::create_dir_all(&inside).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+
+        let mut config = AppConfig::default();
+        config.rebase_to_workspace(&workspace);
+        config.state.allow_external_paths = true;
+        config.memory.durable_dir = outside;
+        config.validate().unwrap();
+
+        let error = config.workspace_bounded_durable_memory_dir().unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("memory.durable_dir resolves outside the selected workspace")
+        );
+
+        config.memory.durable_dir = inside.clone();
+        assert_eq!(
+            config.workspace_bounded_durable_memory_dir().unwrap(),
+            inside.canonicalize().unwrap()
         );
     }
 }

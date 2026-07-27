@@ -19,6 +19,7 @@ import type { SettingsPlatformClient } from "./settings-platform-client";
 
 export interface MemorySettingsProps {
   client: SettingsPlatformClient;
+  workspaceId: string;
 }
 
 const mutedTextStyle: CSSProperties = {
@@ -51,7 +52,7 @@ function metadataValue(value: string | undefined): string {
   return value?.trim() || "Not recorded";
 }
 
-export function MemorySettings({ client }: MemorySettingsProps) {
+export function MemorySettings({ client, workspaceId }: MemorySettingsProps) {
   const [state, dispatch] = useReducer(
     memorySettingsReducer,
     undefined,
@@ -99,7 +100,7 @@ export function MemorySettings({ client }: MemorySettingsProps) {
     dispatch({ type: "list_load_started" });
 
     try {
-      const response = await client.listMemoryTopics({
+      const response = await client.listMemoryTopics(workspaceId, {
         signal: controller.signal,
       });
       if (
@@ -129,7 +130,7 @@ export function MemorySettings({ client }: MemorySettingsProps) {
         listAbortRef.current = null;
       }
     }
-  }, [client]);
+  }, [client, workspaceId]);
 
   useEffect(() => {
     void refreshTopics();
@@ -151,7 +152,7 @@ export function MemorySettings({ client }: MemorySettingsProps) {
     dispatch({ type: "detail_request_started", slug });
 
     void client
-      .getMemoryTopic(slug, { signal: controller.signal })
+      .getMemoryTopic(workspaceId, slug, { signal: controller.signal })
       .then((detail) => {
         if (
           !mountedRef.current ||
@@ -185,7 +186,7 @@ export function MemorySettings({ client }: MemorySettingsProps) {
     return () => {
       controller.abort();
     };
-  }, [client, state.detailRequestVersion, state.selectedSlug]);
+  }, [client, state.detailRequestVersion, state.selectedSlug, workspaceId]);
 
   async function confirmDelete(): Promise<void> {
     const slug = state.pendingDeleteSlug;
@@ -212,7 +213,9 @@ export function MemorySettings({ client }: MemorySettingsProps) {
     dispatch({ type: "delete_started", slug });
 
     try {
-      await client.deleteMemoryTopic(slug, { signal: controller.signal });
+      await client.deleteMemoryTopic(workspaceId, slug, {
+        signal: controller.signal,
+      });
       if (
         !mountedRef.current ||
         controller.signal.aborted ||

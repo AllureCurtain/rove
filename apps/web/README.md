@@ -8,8 +8,9 @@ Primary surface: the **product shell** (Workspace → Session → Run) against l
 - Empty state → open an absolute Folder/Repo path
 - API-backed workspace tree with durable sessions, recents, and pin state
 - Parallel-session **running** badges in the sidebar
-- Refresh-restored chat transcript with explicit partial/error/retry states,
-  tool cards, inline approvals, and stop/cancel
+- Refresh-restored canonical-order chat transcript with explicit
+  partial/error/retry states, interleaved tool cards, inline approvals/input,
+  and stop/cancel
 - Collapsible run inspector with empty / loading / error / ready states
 - Durable `/w/:workspaceId/s/:sessionId` and `/settings/:section` routes
 - A fail-closed M1 browser migration gate that runs before product catalog reads,
@@ -51,10 +52,25 @@ repeat the notice. Legacy workspace/session deep routes are rewritten through
 validated server mappings while preserving query and fragment state.
 
 C2 adds revision-CAS preference writes, the default approval policy used by
-product jobs, bounded durable-memory and runtime-health clients, and complete
+product jobs, bounded workspace-scoped durable-memory and runtime-health clients, and complete
 Settings routes. Workspace pin/remove, session rename/delete/safe catalog
 export, provider edit/update, Memory read/delete, and four keyboard shortcuts
 operate without browser-local catalog authority.
+
+Memory requests carry the active server-owned product workspace ID; the browser
+does not send a memory path. The API resolves that catalog entry to its
+canonical runtime Memory scope. Unknown or cross-workspace topic operations
+fail closed, and deleting an absent topic returns a typed 404. The product
+Memory API is stricter than general runtime external-path policy: a durable
+directory outside the selected workspace returns a typed conflict rather than
+exposing a shared or neighboring workspace directory.
+
+The transcript uses the same canonical reducer for restore and live events. A
+stable run/sequence presentation index interleaves assistant messages, tools,
+approvals, and input prompts; replayed sequences do not duplicate entries.
+Submitted/closed input prompts remain read-only and never retain the answer. A
+failed cancel request keeps the existing event stream observed until a terminal
+state or an explicit focus change closes it.
 
 C3 completes narrow-layout reflow, mobile Inspector containment, accessible
 dialogs and dynamic run status, higher-contrast focus treatment, reduced-motion

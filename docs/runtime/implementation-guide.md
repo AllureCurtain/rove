@@ -550,6 +550,24 @@ transcript endpoint walks the product session's ordered run bindings and reads
 canonical indexed events from those workspace stores. Missing or inconsistent
 facts produce typed partial reasons rather than a silently complete response.
 
+Product Memory operations are workspace-scoped. `GET
+/product/memory/topics`, `GET /product/memory/topics/{slug}`, and `DELETE
+/product/memory/topics/{slug}` require a `workspace_id` query parameter. The
+identifier is resolved through ProductStore; the server opens the stored
+canonical Folder/Repo root and uses the same workspace config rebase path as a
+product job before resolving `memory.durable_dir`. The product Memory surface
+then applies a stricter boundary than general runtime configuration: the
+resolved durable directory must remain inside that selected workspace even when
+`state.allow_external_paths=true`. An external or rebased cross-workspace
+directory fails with typed `product_memory_conflict`; requests cannot supply a
+memory path. An unknown workspace returns typed `product_not_found`; a topic
+that is absent from the selected workspace, including one that exists in a
+different workspace, returns typed `product_memory_not_found`. DELETE still
+repairs a stale selected-workspace index entry. It returns `204` whenever the
+selected-workspace topic file was physically deleted, including a valid
+unindexed file; when no topic file was deleted, stale-index-only cleanup and a
+fully absent topic both return typed `404`.
+
 The M1 migration route uses strict unknown-field rejection, bounded bodies,
 server-side workspace/runtime validation, idempotency receipts, and one SQLite
 transaction for the accepted import. A 30-second deadline covers only
@@ -612,8 +630,13 @@ The current product shell:
    and `/settings/:section` against server IDs. Invalid or mismatched deep links
    show a typed route failure rather than flashing another session.
 4. Reads the selected session's canonical transcript, projects messages,
-   tools, approvals, inputs, and run identity, and preserves explicit
-   `complete`, `partial`, and retryable error restore states.
+   tools, approvals, inputs, and run identity through one reducer-owned ordered
+   presentation index, and preserves explicit `complete`, `partial`, and
+   retryable error restore states. Restored run ordinals and canonical event
+   sequences determine display order; reconnect replay of a seen sequence does
+   not add another entry. Tools and interaction requests remain interleaved
+   with the assistant turns that produced them. Handled input requests remain
+   as read-only history without retaining the submitted answer.
 5. Sends each turn with its absolute Folder/Repo workspace plus
    `product_session_id`, omitting client `resume`; the Rust API resolves exact
    product-session continuation and fails closed on binding errors.
@@ -621,9 +644,11 @@ The current product shell:
    through the shared reducer/controller, and fetches job state on stream errors.
    Background running/attention state is refreshed through bounded session-list
    polling.
-7. Calls approval, input, and cancel endpoints when required. Switching sessions
-   closes the old controller, restores the selected transcript, and reattaches
-   its live binding when applicable.
+7. Calls approval, input, and cancel endpoints when required. A failed cancel
+   request keeps the existing focused SSE observation; only a confirmed
+   terminal response closes it. Switching sessions closes the old controller,
+   restores the selected transcript, and reattaches its live binding when
+   applicable.
 8. Loads/creates/updates/deletes provider profiles and persists profile/model selection
    through product APIs. Browser requests contain only provider
    type/base/model/key-environment references; raw keys never enter browser
@@ -646,7 +671,8 @@ restores canonical history plus an explicit uncertain state that requires a
 reload before another send.
 
 C2 also adds revision-CAS preference writes, a server-owned default approval
-policy used when a turn omits explicit approval, bounded Memory/runtime clients,
+policy used when a turn omits explicit approval, bounded workspace-scoped
+Memory/runtime clients,
 durable catalog actions, safe session metadata export, and wired `/`,
 `Mod+Shift+Enter`, `Mod+,`, and `Mod+.` shortcuts. C3 completes migration UX,
 responsive and narrow layouts, visible focus and keyboard behavior,

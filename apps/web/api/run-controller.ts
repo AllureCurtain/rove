@@ -198,15 +198,12 @@ export function createRunController(
     async cancel(jobId) {
       const expectedGeneration = generation;
       dispatch({ type: "set_status", statusText: "Cancelling run" });
-      try {
-        const jobState = await cancelJob(jobId);
-        assertCurrent(expectedGeneration);
-        dispatch({ type: "job_state_synced", state: jobState });
-        if (isTerminalStatus(jobState.status)) {
-          options.onTerminal?.();
-        }
-      } finally {
+      const jobState = await cancelJob(jobId);
+      assertCurrent(expectedGeneration);
+      dispatch({ type: "job_state_synced", state: jobState });
+      if (isTerminalStatus(jobState.status)) {
         closeStream();
+        options.onTerminal?.();
       }
     },
 

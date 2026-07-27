@@ -21,6 +21,8 @@ export interface ChatMessage {
 
 export interface ToolCallView {
   id: string;
+  /** Stable run-qualified identity used by the ordered transcript projection. */
+  timelineId?: string;
   name: string;
   status: "running" | "waiting" | "done" | "error";
   details: string;
@@ -34,9 +36,56 @@ export interface TraceEntry {
   detail: string;
 }
 
+export type TranscriptTimelineEntryKind = "message" | "tool" | "input";
+
+/**
+ * Stable presentation index over canonical reducer state. Event payloads remain
+ * owned by messages/tools/inputs; this index only records their canonical order.
+ */
+export interface TranscriptTimelineEntry {
+  id: string;
+  kind: TranscriptTimelineEntryKind;
+  entityId: string;
+  runId: string | null;
+  runOrdinal: number | null;
+  eventSeq: number | null;
+}
+
+export interface TranscriptInputView {
+  id: string;
+  timelineId: string;
+  prompt: string;
+  status: "waiting" | "submitted" | "closed";
+}
+
+export type TranscriptTimelineItem =
+  | {
+      entry: TranscriptTimelineEntry;
+      kind: "message";
+      message: ChatMessage;
+    }
+  | {
+      entry: TranscriptTimelineEntry;
+      kind: "tool";
+      tool: ToolCallView;
+    }
+  | {
+      entry: TranscriptTimelineEntry;
+      kind: "input";
+      input: TranscriptInputView;
+    };
+
+export interface TranscriptRunGroup {
+  id: string;
+  runId: string | null;
+  runOrdinal: number | null;
+  items: TranscriptTimelineItem[];
+}
+
 export interface WorkbenchState {
   activeJobId: string | null;
   activeRunId: string | null;
+  activeRunOrdinal: number | null;
   resumedFromRunId: string | null;
   statusText: string;
   eventCount: number;
@@ -45,6 +94,7 @@ export interface WorkbenchState {
   busy: boolean;
   error: string | null;
   messages: ChatMessage[];
+  timeline: TranscriptTimelineEntry[];
   /** Optimistic user bubble awaiting its canonical run_started identity. */
   pendingUserMessageId: string | null;
   /** Run identities whose canonical user bubble has already been projected. */
@@ -58,6 +108,7 @@ export interface WorkbenchState {
   tools: ToolCallView[];
   trace: TraceEntry[];
   pendingInputs: PendingInput[];
+  transcriptInputs: TranscriptInputView[];
 }
 
 export type WorkbenchAction =
@@ -73,6 +124,13 @@ export type WorkbenchAction =
       jobId: string;
       runId: string;
       resumedFromRunId?: string | null;
+      runOrdinal?: number | null;
+    }
+  | {
+      type: "append_report_fallback";
+      runId: string;
+      runOrdinal?: number | null;
+      content: string;
     }
   | { type: "set_busy"; busy: boolean }
   | { type: "set_status"; statusText: string }
@@ -86,6 +144,7 @@ export function createWorkbenchState(): WorkbenchState {
   return {
     activeJobId: null,
     activeRunId: null,
+    activeRunOrdinal: null,
     resumedFromRunId: null,
     statusText: "No active run",
     eventCount: 0,
@@ -94,6 +153,7 @@ export function createWorkbenchState(): WorkbenchState {
     busy: false,
     error: null,
     messages: [],
+    timeline: [],
     pendingUserMessageId: null,
     seenUserMessageRunIds: [],
     plan: null,
@@ -104,7 +164,105 @@ export function createWorkbenchState(): WorkbenchState {
     tools: [],
     trace: [],
     pendingInputs: [],
+    transcriptInputs: [],
   };
+}
+
+export function selectTranscriptTimeline(
+  state: WorkbenchState,
+): TranscriptRunGroup[] {
+  const messages = new Map(state.messages.map((message) => [message.id, message]));
+  const tools = new Map<string, ToolCallView>();
+  for (const tool of [...state.historicalTools, ...state.tools]) {
+    tools.set(tool.timelineId ?? tool.id, tool);
+  }
+  const inputs = new Map(
+    state.transcriptInputs.map((input) => [input.timelineId, input]),
+  );
+  const groups: TranscriptRunGroup[] = [];
+
+  const orderedTimeline = state.timeline
+    .map((entry, originalIndex) => ({ entry, originalIndex }))
+    .sort(compareTimelineEntries)
+    .map(({ entry }) => entry);
+
+  for (const entry of orderedTimeline) {
+    let item: TranscriptTimelineItem | null = null;
+    switch (entry.kind) {
+      case "message": {
+        const message = messages.get(entry.entityId);
+        if (message) {
+          item = { entry, kind: "message", message };
+        }
+        break;
+      }
+      case "tool": {
+        const tool = tools.get(entry.entityId);
+        if (tool) {
+          item = { entry, kind: "tool", tool };
+        }
+        break;
+      }
+      case "input": {
+        const input = inputs.get(entry.entityId);
+        if (input) {
+          item = { entry, kind: "input", input };
+        }
+        break;
+      }
+    }
+    if (!item) {
+      continue;
+    }
+
+    const groupId = entry.runId
+      ? `run:${entry.runId}`
+      : entry.runOrdinal
+        ? `ordinal:${entry.runOrdinal}`
+        : "run:unbound";
+    const lastGroup = groups.at(-1);
+    if (lastGroup?.id === groupId) {
+      lastGroup.items.push(item);
+    } else {
+      groups.push({
+        id: groupId,
+        runId: entry.runId,
+        runOrdinal: entry.runOrdinal,
+        items: [item],
+      });
+    }
+  }
+
+  return groups;
+}
+
+function compareTimelineEntries(
+  left: { entry: TranscriptTimelineEntry; originalIndex: number },
+  right: { entry: TranscriptTimelineEntry; originalIndex: number },
+): number {
+  const leftEntry = left.entry;
+  const rightEntry = right.entry;
+  if (
+    leftEntry.runOrdinal !== null &&
+    rightEntry.runOrdinal !== null &&
+    leftEntry.runOrdinal !== rightEntry.runOrdinal
+  ) {
+    return leftEntry.runOrdinal - rightEntry.runOrdinal;
+  }
+  const sameRun =
+    (leftEntry.runId !== null && leftEntry.runId === rightEntry.runId) ||
+    (leftEntry.runOrdinal !== null &&
+      leftEntry.runOrdinal === rightEntry.runOrdinal);
+  if (sameRun && leftEntry.eventSeq !== rightEntry.eventSeq) {
+    if (leftEntry.eventSeq === null) {
+      return 1;
+    }
+    if (rightEntry.eventSeq === null) {
+      return -1;
+    }
+    return leftEntry.eventSeq - rightEntry.eventSeq;
+  }
+  return left.originalIndex - right.originalIndex;
 }
 
 export function workbenchReducer(
@@ -140,6 +298,13 @@ export function workbenchReducer(
       };
     case "append_user_message": {
       const userMessageId = crypto.randomUUID();
+      const timelineEntry = transcriptTimelineEntry(
+        state,
+        "message",
+        userMessageId,
+        undefined,
+        `optimistic:${userMessageId}`,
+      );
       return {
         ...state,
         messages: [
@@ -151,6 +316,7 @@ export function workbenchReducer(
             status: "final",
           },
         ],
+        timeline: appendTimelineEntry(state.timeline, timelineEntry),
         pendingUserMessageId: userMessageId,
       };
     }
@@ -159,12 +325,43 @@ export function workbenchReducer(
         ...state,
         activeJobId: action.jobId,
         activeRunId: action.runId,
+        activeRunOrdinal: action.runOrdinal ?? null,
         resumedFromRunId: action.resumedFromRunId ?? null,
         busy: true,
         statusText: "Streaming run events",
         lastSignal: action.resumedFromRunId ? "Resumed run" : "Job created",
         error: null,
       };
+    case "append_report_fallback": {
+      const messageId = `fallback-${action.runId}`;
+      if (state.messages.some((message) => message.id === messageId)) {
+        return state;
+      }
+      const entry = transcriptTimelineEntry(
+        {
+          ...state,
+          activeRunId: action.runId,
+          activeRunOrdinal: action.runOrdinal ?? null,
+        },
+        "message",
+        messageId,
+        undefined,
+        `run:${action.runId}:fallback`,
+      );
+      return {
+        ...state,
+        messages: [
+          ...state.messages,
+          {
+            id: messageId,
+            role: "assistant",
+            content: `Report summary: ${action.content}`,
+            status: "final",
+          },
+        ],
+        timeline: appendTimelineEntry(state.timeline, entry),
+      };
+    }
     case "set_busy":
       return {
         ...state,
@@ -203,6 +400,11 @@ export function workbenchReducer(
         pendingInputs: state.pendingInputs.filter(
           (input) => input.input_id !== action.inputId,
         ),
+        transcriptInputs: state.transcriptInputs.map((input) =>
+          input.id === action.inputId && input.status === "waiting"
+            ? { ...input, status: "submitted" as const }
+            : input,
+        ),
       };
     case "job_state_synced":
       return applyJobState(state, action.state);
@@ -220,6 +422,7 @@ function prepareRunScopedState(
     ...state,
     activeJobId: null,
     activeRunId: null,
+    activeRunOrdinal: null,
     resumedFromRunId: null,
     statusText,
     eventCount: 0,
@@ -249,7 +452,108 @@ function prepareRunScopedState(
     // Keep a short run trace for the inspector; product chat is the transcript.
     trace: [],
     pendingInputs: [],
+    transcriptInputs: state.transcriptInputs.map((input) =>
+      input.status === "waiting"
+        ? { ...input, status: "closed" as const }
+        : input,
+    ),
   };
+}
+
+function runScopeId(state: WorkbenchState): string {
+  if (state.activeRunId) {
+    return `run:${state.activeRunId}`;
+  }
+  if (state.activeJobId) {
+    return `job:${state.activeJobId}`;
+  }
+  return "unbound";
+}
+
+function transcriptTimelineEntry(
+  state: WorkbenchState,
+  kind: TranscriptTimelineEntryKind,
+  entityId: string,
+  eventSeq?: number,
+  explicitId?: string,
+): TranscriptTimelineEntry {
+  const sequenceIdentity = eventSeq === undefined ? "unsequenced" : String(eventSeq);
+  return {
+    id:
+      explicitId ??
+      `${runScopeId(state)}:${kind}:${sequenceIdentity}:${entityId}`,
+    kind,
+    entityId,
+    runId: state.activeRunId,
+    runOrdinal: state.activeRunOrdinal,
+    eventSeq: eventSeq ?? null,
+  };
+}
+
+function canonicalTimelineEntry(
+  kind: TranscriptTimelineEntryKind,
+  entityId: string,
+  runId: string | null,
+  runOrdinal: number | null,
+  eventSeq: number | undefined,
+  factIdentity: string,
+): TranscriptTimelineEntry {
+  const scope = runId ? `run:${runId}` : "run:unbound";
+  const sequenceIdentity = eventSeq === undefined ? "unsequenced" : String(eventSeq);
+  return {
+    id: `${scope}:${kind}:${sequenceIdentity}:${factIdentity}`,
+    kind,
+    entityId,
+    runId,
+    runOrdinal,
+    eventSeq: eventSeq ?? null,
+  };
+}
+
+function appendTimelineEntry(
+  timeline: TranscriptTimelineEntry[],
+  entry: TranscriptTimelineEntry,
+): TranscriptTimelineEntry[] {
+  const existing = timeline.find(
+    (candidate) =>
+      candidate.id === entry.id ||
+      (candidate.kind === entry.kind && candidate.entityId === entry.entityId),
+  );
+  return existing ? timeline : [...timeline, entry];
+}
+
+function bindTimelineEntry(
+  timeline: TranscriptTimelineEntry[],
+  entry: TranscriptTimelineEntry,
+): TranscriptTimelineEntry[] {
+  const index = timeline.findIndex(
+    (candidate) =>
+      candidate.id === entry.id ||
+      (candidate.kind === entry.kind && candidate.entityId === entry.entityId),
+  );
+  if (index === -1) {
+    return [...timeline, entry];
+  }
+  const existing = timeline[index]!;
+  if (
+    entry.eventSeq === null ||
+    (existing.eventSeq !== null && existing.eventSeq <= entry.eventSeq)
+  ) {
+    return timeline;
+  }
+  return [
+    ...timeline.slice(0, index),
+    entry,
+    ...timeline.slice(index + 1),
+  ];
+}
+
+function toolTimelineEntityId(state: WorkbenchState, callId: string): string {
+  return `${runScopeId(state)}:tool:${callId}`;
+}
+
+function inputTimelineEntityId(state: WorkbenchState, inputId: string): string {
+  return `${runScopeId(state)}:input:${inputId}`;
 }
 
 function applyJobState(
@@ -270,9 +574,42 @@ function applyJobState(
   );
   const busy = jobState.status === "init" || jobState.status === "running";
   const terminalDetail = statusDetail(jobState.status);
+  const jobScopedState = {
+    ...hydrated,
+    activeJobId: jobState.job_id,
+    activeRunId: jobState.run_id,
+  };
+  const tools = syncPendingApprovals(
+    hydrated.tools,
+    jobState.pending_approvals,
+    jobScopedState,
+    busy ? undefined : terminalDetail,
+  );
+  const pendingInputs = jobState.pending_inputs;
+  const transcriptInputs = syncTranscriptInputs(
+    hydrated.transcriptInputs,
+    jobState.pending_inputs,
+    jobScopedState,
+  );
+  let timeline = hydrated.timeline;
+  for (const tool of tools) {
+    if (!tool.timelineId) {
+      continue;
+    }
+    timeline = appendTimelineEntry(
+      timeline,
+      transcriptTimelineEntry(jobScopedState, "tool", tool.timelineId),
+    );
+  }
+  for (const input of transcriptInputs) {
+    timeline = appendTimelineEntry(
+      timeline,
+      transcriptTimelineEntry(jobScopedState, "input", input.timelineId),
+    );
+  }
 
   return {
-    ...hydrated,
+    ...jobScopedState,
     activeJobId: jobState.job_id,
     activeRunId: jobState.run_id,
     resumedFromRunId: jobState.resumed_from_run_id ?? hydrated.resumedFromRunId,
@@ -281,18 +618,17 @@ function applyJobState(
     error: jobState.status === "error" ? (state.error ?? "Run failed") : state.error,
     statusText: statusText(jobState.status),
     lastSignal: "Job state synced",
-    pendingInputs: jobState.pending_inputs,
-    tools: syncPendingApprovals(
-      hydrated.tools,
-      jobState.pending_approvals,
-      busy ? undefined : terminalDetail,
-    ),
+    pendingInputs,
+    transcriptInputs,
+    tools,
+    timeline,
   };
 }
 
 function syncPendingApprovals(
   tools: ToolCallView[],
   pendingApprovals: PendingApproval[],
+  state: WorkbenchState,
   terminalDetail?: string,
 ): ToolCallView[] {
   const pendingById = new Map(
@@ -302,7 +638,7 @@ function syncPendingApprovals(
   const synced = tools.map((tool) => {
     const pending = pendingById.get(tool.id);
     if (pending) {
-      return toolFromPendingApproval(pending, tool);
+      return toolFromPendingApproval(pending, state, tool);
     }
     if (tool.pendingApproval && terminalDetail) {
       return {
@@ -324,23 +660,55 @@ function syncPendingApprovals(
   });
   const inserted = pendingApprovals
     .filter((approval) => !existingIds.has(approval.call_id))
-    .map((approval) => toolFromPendingApproval(approval));
+    .map((approval) => toolFromPendingApproval(approval, state));
   return [...inserted, ...synced];
 }
 
 function toolFromPendingApproval(
   pendingApproval: PendingApproval,
+  state: WorkbenchState,
   existing?: ToolCallView,
 ): ToolCallView {
   return {
     ...existing,
     id: pendingApproval.call_id,
+    timelineId:
+      existing?.timelineId ?? toolTimelineEntityId(state, pendingApproval.call_id),
     name: pendingApproval.name,
     status: "waiting",
     details: pendingApproval.reason,
     reason: pendingApproval.reason,
     pendingApproval,
   };
+}
+
+function syncTranscriptInputs(
+  existing: TranscriptInputView[],
+  pending: PendingInput[],
+  state: WorkbenchState,
+): TranscriptInputView[] {
+  const pendingById = new Map(pending.map((input) => [input.input_id, input]));
+  const synced = existing.map((input) => {
+    const current = pendingById.get(input.id);
+    if (current) {
+      return { ...input, prompt: current.prompt, status: "waiting" as const };
+    }
+    return input.status === "waiting"
+      ? { ...input, status: "closed" as const }
+      : input;
+  });
+  const existingIds = new Set(existing.map((input) => input.id));
+  return [
+    ...synced,
+    ...pending
+      .filter((input) => !existingIds.has(input.input_id))
+      .map((input) => ({
+        id: input.input_id,
+        timelineId: inputTimelineEntityId(state, input.input_id),
+        prompt: input.prompt,
+        status: "waiting" as const,
+      })),
+  ];
 }
 
 function statusText(status: JobStateResponse["status"]): string {
@@ -399,6 +767,24 @@ function applyStreamEvent(
       const runStartedAlreadySeen = state.seenUserMessageRunIds.includes(
         event.run_id,
       );
+      const userProjection = runStartedAlreadySeen
+        ? null
+        : applyCanonicalUserMessage(
+            state.messages,
+            event.user_message,
+            state.pendingUserMessageId,
+            event.run_id,
+          );
+      const userTimelineEntry = userProjection
+        ? canonicalTimelineEntry(
+            "message",
+            userProjection.messageId,
+            event.run_id,
+            state.activeRunOrdinal,
+            seq,
+            "user",
+          )
+        : null;
       return {
         ...next,
         activeJobId: event.job_id,
@@ -408,11 +794,10 @@ function applyStreamEvent(
         statusText: "Run started",
         messages: runStartedAlreadySeen
           ? state.messages
-          : applyCanonicalUserMessage(
-              state.messages,
-              event.user_message,
-              state.pendingUserMessageId,
-            ),
+          : userProjection!.messages,
+        timeline: userTimelineEntry
+          ? bindTimelineEntry(state.timeline, userTimelineEntry)
+          : state.timeline,
         pendingUserMessageId: null,
         seenUserMessageRunIds: runStartedAlreadySeen
           ? state.seenUserMessageRunIds
@@ -420,42 +805,98 @@ function applyStreamEvent(
         trace: prependTrace(state.trace, event.type, `${event.user_message}`),
       };
     }
-    case "llm_chunk":
+    case "llm_chunk": {
+      const projection = appendAssistantDelta(
+        state.messages,
+        event.delta,
+        state.activeRunId,
+        seq ?? next.eventCount,
+      );
       return {
         ...next,
-        messages: appendAssistantDelta(state.messages, event.delta),
+        messages: projection.messages,
+        timeline: projection.created
+          ? appendTimelineEntry(
+              state.timeline,
+              canonicalTimelineEntry(
+                "message",
+                projection.messageId,
+                state.activeRunId,
+                state.activeRunOrdinal,
+                seq,
+                "assistant",
+              ),
+            )
+          : state.timeline,
       };
+    }
     case "model_status":
       return {
         ...next,
         statusText: event.message,
         trace: prependTrace(state.trace, event.type, event.message),
       };
-    case "llm_message":
+    case "llm_message": {
+      const projection = finalizeAssistantMessage(
+        state.messages,
+        event.full,
+        state.activeRunId,
+        seq ?? next.eventCount,
+      );
       return {
         ...next,
-        messages: finalizeAssistantMessage(state.messages, event.full),
+        messages: projection.messages,
+        timeline: projection.created
+          ? appendTimelineEntry(
+              state.timeline,
+              canonicalTimelineEntry(
+                "message",
+                projection.messageId,
+                state.activeRunId,
+                state.activeRunOrdinal,
+                seq,
+                "assistant",
+              ),
+            )
+          : state.timeline,
       };
-    case "tool_call_started":
+    }
+    case "tool_call_started": {
+      const timelineId = toolTimelineEntityId(state, event.call_id);
       return {
         ...next,
         tools: upsertTool(state.tools, {
           id: event.call_id,
+          timelineId,
           name: event.name,
           status: "running",
           details: formatValue(event.args),
         }),
+        timeline: bindTimelineEntry(
+          state.timeline,
+          canonicalTimelineEntry(
+            "tool",
+            timelineId,
+            state.activeRunId,
+            state.activeRunOrdinal,
+            seq,
+            event.call_id,
+          ),
+        ),
         trace: prependTrace(
           state.trace,
           event.type,
           `${event.name} ${formatValue(event.args)}`,
         ),
       };
-    case "tool_call_approval_needed":
+    }
+    case "tool_call_approval_needed": {
+      const timelineId = toolTimelineEntityId(state, event.call_id);
       return {
         ...next,
         tools: upsertTool(state.tools, {
           id: event.call_id,
+          timelineId,
           name: event.name,
           status: "waiting",
           details: event.reason,
@@ -467,51 +908,110 @@ function applyStreamEvent(
             reason: event.reason,
           },
         }),
+        timeline: bindTimelineEntry(
+          state.timeline,
+          canonicalTimelineEntry(
+            "tool",
+            timelineId,
+            state.activeRunId,
+            state.activeRunOrdinal,
+            seq,
+            event.call_id,
+          ),
+        ),
         trace: prependTrace(
           state.trace,
           event.type,
           `${event.name} ${event.reason}`,
         ),
       };
-    case "tool_call_completed":
+    }
+    case "tool_call_completed": {
+      const timelineId = toolTimelineEntityId(state, event.call_id);
       return {
         ...next,
         tools: upsertTool(state.tools, {
           id: event.call_id,
+          timelineId,
           name: findToolName(state.tools, event.result.call_id),
           status: "done",
           details: event.result.output,
         }),
+        timeline: bindTimelineEntry(
+          state.timeline,
+          canonicalTimelineEntry(
+            "tool",
+            timelineId,
+            state.activeRunId,
+            state.activeRunOrdinal,
+            seq,
+            event.call_id,
+          ),
+        ),
         trace: prependTrace(
           state.trace,
           event.type,
           truncate(event.result.output, 220),
         ),
       };
-    case "tool_call_failed":
+    }
+    case "tool_call_failed": {
+      const timelineId = toolTimelineEntityId(state, event.call_id);
       return {
         ...next,
         tools: upsertTool(state.tools, {
           id: event.call_id,
+          timelineId,
           name: findToolName(state.tools, event.call_id),
           status: "error",
           details: formatToolError(event.error),
         }),
+        timeline: bindTimelineEntry(
+          state.timeline,
+          canonicalTimelineEntry(
+            "tool",
+            timelineId,
+            state.activeRunId,
+            state.activeRunOrdinal,
+            seq,
+            event.call_id,
+          ),
+        ),
         trace: prependTrace(
           state.trace,
           event.type,
           formatToolError(event.error),
         ),
       };
-    case "input_needed":
+    }
+    case "input_needed": {
+      const timelineId = inputTimelineEntityId(state, event.input_id);
       return {
         ...next,
         pendingInputs: [
           ...state.pendingInputs.filter((input) => input.input_id !== event.input_id),
           { input_id: event.input_id, prompt: event.prompt },
         ],
+        transcriptInputs: upsertTranscriptInput(state.transcriptInputs, {
+          id: event.input_id,
+          timelineId,
+          prompt: event.prompt,
+          status: "waiting",
+        }),
+        timeline: bindTimelineEntry(
+          state.timeline,
+          canonicalTimelineEntry(
+            "input",
+            timelineId,
+            state.activeRunId,
+            state.activeRunOrdinal,
+            seq,
+            event.input_id,
+          ),
+        ),
         trace: prependTrace(state.trace, event.type, event.prompt),
       };
+    }
     case "plan_created":
       return {
         ...next,
@@ -629,19 +1129,45 @@ function applyStreamEvent(
           formatPromptBuildMetadata(event.metadata),
         ),
       };
-    case "run_completed":
+    case "run_completed": {
+      const projection = finalizeRunMessage(
+        state.messages,
+        event.output,
+        state.activeRunId,
+        seq ?? next.eventCount,
+      );
       return {
         ...next,
         busy: false,
         statusText: `Run completed: ${event.reason}`,
         lastSignal: `Run completed`,
-        messages: finalizeRunMessage(state.messages, event.output),
+        messages: projection.messages,
+        timeline: projection.created
+          ? appendTimelineEntry(
+              state.timeline,
+              canonicalTimelineEntry(
+                "message",
+                projection.messageId,
+                state.activeRunId,
+                state.activeRunOrdinal,
+                seq,
+                "assistant",
+              ),
+            )
+          : state.timeline,
+        pendingInputs: [],
+        transcriptInputs: state.transcriptInputs.map((input) =>
+          input.status === "waiting"
+            ? { ...input, status: "closed" as const }
+            : input,
+        ),
         trace: prependTrace(
           state.trace,
           event.type,
           event.output ? truncate(event.output, 220) : event.reason,
         ),
       };
+    }
     default:
       return next;
   }
@@ -672,110 +1198,181 @@ function appendPlanRevision(revisions: PlanRevision[], revision: PlanRevision): 
     : [...revisions, revision];
 }
 
+interface MessageProjection {
+  messages: ChatMessage[];
+  messageId: string;
+  created: boolean;
+}
+
 function applyCanonicalUserMessage(
   messages: ChatMessage[],
   content: string,
   pendingUserMessageId: string | null,
-): ChatMessage[] {
+  runId: string,
+): MessageProjection {
   if (
     pendingUserMessageId &&
     messages.some((message) => message.id === pendingUserMessageId)
   ) {
-    return messages.map((message) =>
-      message.id === pendingUserMessageId
-        ? { ...message, content, status: "final" as const }
-        : message,
-    );
+    return {
+      messages: messages.map((message) =>
+        message.id === pendingUserMessageId
+          ? { ...message, content, status: "final" as const }
+          : message,
+      ),
+      messageId: pendingUserMessageId,
+      created: false,
+    };
   }
-  return [
-    ...messages,
-    {
-      id: crypto.randomUUID(),
-      role: "user",
-      content,
-      status: "final",
-    },
-  ];
+  const messageId = `message:${runId}:user`;
+  return {
+    messages: [
+      ...messages,
+      {
+        id: messageId,
+        role: "user",
+        content,
+        status: "final",
+      },
+    ],
+    messageId,
+    created: true,
+  };
 }
 
-function appendAssistantDelta(messages: ChatMessage[], delta: string): ChatMessage[] {
+function appendAssistantDelta(
+  messages: ChatMessage[],
+  delta: string,
+  runId: string | null,
+  eventIdentity: number,
+): MessageProjection {
   if (delta.length === 0) {
-    return messages;
+    return {
+      messages,
+      messageId: messages.at(-1)?.id ?? "",
+      created: false,
+    };
   }
   const last = messages[messages.length - 1];
   if (last?.role === "assistant" && last.status === "streaming") {
-    return [
-      ...messages.slice(0, -1),
-      {
-        ...last,
-        content: last.content + delta,
-      },
-    ];
+    return {
+      messages: [
+        ...messages.slice(0, -1),
+        {
+          ...last,
+          content: last.content + delta,
+        },
+      ],
+      messageId: last.id,
+      created: false,
+    };
   }
-  return [
-    ...messages,
-    {
-      id: crypto.randomUUID(),
-      role: "assistant",
-      content: delta,
-      status: "streaming",
-    },
-  ];
+  const messageId = assistantMessageId(runId, eventIdentity);
+  return {
+    messages: [
+      ...messages,
+      {
+        id: messageId,
+        role: "assistant",
+        content: delta,
+        status: "streaming",
+      },
+    ],
+    messageId,
+    created: true,
+  };
 }
 
 function finalizeAssistantMessage(
   messages: ChatMessage[],
   full: string,
-): ChatMessage[] {
+  runId: string | null,
+  eventIdentity: number,
+): MessageProjection {
   const last = messages[messages.length - 1];
   if (last?.role === "assistant" && last.status === "streaming") {
-    return [
-      ...messages.slice(0, -1),
+    return {
+      messages: [
+        ...messages.slice(0, -1),
+        {
+          ...last,
+          content: full,
+          status: "final",
+        },
+      ],
+      messageId: last.id,
+      created: false,
+    };
+  }
+  const messageId = assistantMessageId(runId, eventIdentity);
+  return {
+    messages: [
+      ...messages,
       {
-        ...last,
+        id: messageId,
+        role: "assistant",
         content: full,
         status: "final",
       },
-    ];
-  }
-  return [
-    ...messages,
-    {
-      id: crypto.randomUUID(),
-      role: "assistant",
-      content: full,
-      status: "final",
-    },
-  ];
+    ],
+    messageId,
+    created: true,
+  };
 }
 
 function finalizeRunMessage(
   messages: ChatMessage[],
   output: string | null | undefined,
-): ChatMessage[] {
+  runId: string | null,
+  eventIdentity: number,
+): MessageProjection {
   if (!output) {
-    return messages;
+    return {
+      messages,
+      messageId: messages.at(-1)?.id ?? "",
+      created: false,
+    };
   }
   const last = messages[messages.length - 1];
-  if (last?.role === "assistant") {
-    return [
-      ...messages.slice(0, -1),
+  if (last?.role === "assistant" && last.status === "streaming") {
+    return {
+      messages: [
+        ...messages.slice(0, -1),
+        {
+          ...last,
+          content: output,
+          status: "final",
+        },
+      ],
+      messageId: last.id,
+      created: false,
+    };
+  }
+  if (last?.role === "assistant" && last.content === output) {
+    return {
+      messages,
+      messageId: last.id,
+      created: false,
+    };
+  }
+  const messageId = assistantMessageId(runId, eventIdentity);
+  return {
+    messages: [
+      ...messages,
       {
-        ...last,
+        id: messageId,
+        role: "assistant",
         content: output,
         status: "final",
       },
-    ];
-  }
-  return [
-    ...messages,
-    {
-      id: crypto.randomUUID(),
-      role: "assistant",
-      content: output,
-      status: "final",
-    },
-  ];
+    ],
+    messageId,
+    created: true,
+  };
+}
+
+function assistantMessageId(runId: string | null, eventIdentity: number): string {
+  return `message:${runId ?? "unbound"}:assistant:${eventIdentity}`;
 }
 
 function prependTrace(trace: TraceEntry[], label: string, detail: string): TraceEntry[] {
@@ -806,6 +1403,21 @@ function upsertTool(
       name: next.name || current.name,
     },
     ...tools.slice(index + 1),
+  ];
+}
+
+function upsertTranscriptInput(
+  inputs: TranscriptInputView[],
+  next: TranscriptInputView,
+): TranscriptInputView[] {
+  const index = inputs.findIndex((input) => input.timelineId === next.timelineId);
+  if (index === -1) {
+    return [...inputs, next];
+  }
+  return [
+    ...inputs.slice(0, index),
+    { ...inputs[index]!, ...next },
+    ...inputs.slice(index + 1),
   ];
 }
 

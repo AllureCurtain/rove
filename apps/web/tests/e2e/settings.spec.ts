@@ -22,8 +22,9 @@ test("all nine settings sections expose a usable surface", async ({ page }) => {
   await expect(page.getByRole("heading", { name: "Known workspaces" })).toBeVisible();
 
   await page.getByRole("button", { name: "Memory", exact: true }).click();
-  await expect(page.getByText("No durable memory topics are available.")).toBeVisible();
-  await expect(page.getByRole("button", { name: "Refresh", exact: true })).toBeVisible();
+  await expect(
+    page.getByText("Select a workspace to inspect its durable memory."),
+  ).toBeVisible();
 
   await page.getByRole("button", { name: "Sessions", exact: true }).click();
   await expect(page.getByRole("heading", { name: "No sessions" })).toBeVisible();
@@ -210,6 +211,8 @@ test("memory management, runtime health, and critical shortcuts are live", async
   await page.getByRole("button", { name: "Confirm delete" }).click();
   await expect(page.getByText("No durable memory topics are available.")).toBeVisible();
   expect(api.memoryTopics["project-conventions"]).toBeUndefined();
+  expect(api.memoryWorkspaceRequests).not.toHaveLength(0);
+  expect(new Set(api.memoryWorkspaceRequests)).toEqual(new Set([workspace.id]));
 
   await page.getByRole("button", { name: "About / Runtime", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Resume health" })).toBeVisible();
@@ -233,6 +236,19 @@ test("memory management, runtime health, and critical shortcuts are live", async
 
   await page.keyboard.press("Control+,");
   await expect(page).toHaveURL(/\/settings\/general$/u);
+});
+
+test("memory settings is explicit and does not query without a workspace", async ({
+  page,
+}) => {
+  const api = await installMockProductApi(page);
+
+  await page.goto("/settings/memory");
+
+  await expect(
+    page.getByText("Select a workspace to inspect its durable memory."),
+  ).toBeVisible();
+  expect(api.memoryWorkspaceRequests).toEqual([]);
 });
 
 test.describe("mobile settings", () => {

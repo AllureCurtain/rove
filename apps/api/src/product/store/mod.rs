@@ -81,6 +81,15 @@ impl ProductStore for SqliteProductStore {
             .await
     }
 
+    async fn get_workspace(
+        &self,
+        workspace_id: &ProductWorkspaceId,
+    ) -> Result<ProductWorkspace, ProductStoreError> {
+        let workspace_id = workspace_id.clone();
+        self.blocking(move |repository| repository.get_workspace(&workspace_id))
+            .await
+    }
+
     async fn create_workspace(
         &self,
         request: CreateProductWorkspaceRequest,

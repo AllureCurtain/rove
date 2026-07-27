@@ -40,12 +40,21 @@ export function projectProductTranscript(
       jobId: segment.binding.runtime_job_id,
       runId: segment.binding.runtime_run_id,
       resumedFromRunId: segment.binding.resumed_from_run_id ?? null,
+      runOrdinal: segment.binding.ordinal,
     });
     for (const stored of segment.events) {
       state = workbenchReducer(state, {
         type: "stream_event",
         event: toWorkbenchStreamEvent(stored.event),
         seq: stored.seq,
+      });
+    }
+    if (segment.fallback?.summary) {
+      state = workbenchReducer(state, {
+        type: "append_report_fallback",
+        runId: segment.binding.runtime_run_id,
+        runOrdinal: segment.binding.ordinal,
+        content: segment.fallback.summary,
       });
     }
     state = settleRestoredSegment(state, segment);
@@ -123,17 +132,6 @@ function settleRestoredSegment(
   segment: ProductTranscriptRunSegment,
 ): WorkbenchState {
   const busy = segment.run_status === "init" || segment.run_status === "running";
-  const fallbackMessages = segment.fallback?.summary
-      ? [
-          ...state.messages,
-          {
-            id: `fallback-${segment.binding.runtime_run_id}`,
-            role: "assistant" as const,
-            content: `Report summary: ${segment.fallback.summary}`,
-            status: "final" as const,
-          },
-        ]
-      : state.messages;
   const tools = busy
     ? state.tools
     : state.tools.map((tool) => ({
@@ -152,9 +150,14 @@ function settleRestoredSegment(
     statusText: restoredStatusText(segment.run_status),
     tools,
     pendingInputs: busy ? state.pendingInputs : [],
-    messages: busy
-      ? fallbackMessages
-      : finalizeRestoredMessages(fallbackMessages),
+    transcriptInputs: busy
+      ? state.transcriptInputs
+      : state.transcriptInputs.map((input) =>
+          input.status === "waiting"
+            ? { ...input, status: "closed" as const }
+            : input,
+        ),
+    messages: busy ? state.messages : finalizeRestoredMessages(state.messages),
   };
 }
 

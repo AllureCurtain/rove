@@ -12,6 +12,7 @@ import {
   parseProductRuntimeInfo,
   parseSettingsPreferencesUpdateRequest,
   validateProductMemorySlug,
+  validateProductMemoryWorkspaceId,
   type ProductMemoryTopicContentResponse,
   type ProductMemoryTopicsResponse,
   type ProductRuntimeInfo,
@@ -33,13 +34,16 @@ export interface SettingsPlatformRequestOptions {
 
 export interface SettingsPlatformClient {
   listMemoryTopics(
+    workspaceId: string,
     options?: SettingsPlatformRequestOptions,
   ): Promise<ProductMemoryTopicsResponse>;
   getMemoryTopic(
+    workspaceId: string,
     slug: string,
     options?: SettingsPlatformRequestOptions,
   ): Promise<ProductMemoryTopicContentResponse>;
   deleteMemoryTopic(
+    workspaceId: string,
     slug: string,
     options?: SettingsPlatformRequestOptions,
   ): Promise<void>;
@@ -70,6 +74,12 @@ function normalizeApiPrefix(prefix: string): string {
 
 function productUrl(prefix: string, path: string): string {
   return `${prefix}${path}`;
+}
+
+function memoryWorkspaceQuery(workspaceId: string): string {
+  return `workspace_id=${encodeURIComponent(
+    validateProductMemoryWorkspaceId(workspaceId),
+  )}`;
 }
 
 async function readBoundedText(response: Response): Promise<string> {
@@ -206,21 +216,26 @@ export function createSettingsPlatformClient(
   };
 
   return {
-    listMemoryTopics(requestOptions) {
+    listMemoryTopics(workspaceId, requestOptions) {
       return requestJson(
         fetchImpl,
-        productUrl(apiPrefix, "/product/memory/topics"),
+        productUrl(
+          apiPrefix,
+          `/product/memory/topics?${memoryWorkspaceQuery(workspaceId)}`,
+        ),
         getRequest(requestOptions?.signal),
         parseProductMemoryTopicsResponse,
       );
     },
 
-    async getMemoryTopic(slug, requestOptions) {
+    async getMemoryTopic(workspaceId, slug, requestOptions) {
       const response = await requestJson(
         fetchImpl,
         productUrl(
           apiPrefix,
-          `/product/memory/topics/${encodeURIComponent(validateProductMemorySlug(slug))}`,
+          `/product/memory/topics/${encodeURIComponent(
+            validateProductMemorySlug(slug),
+          )}?${memoryWorkspaceQuery(workspaceId)}`,
         ),
         getRequest(requestOptions?.signal),
         parseProductMemoryTopicContentResponse,
@@ -233,12 +248,14 @@ export function createSettingsPlatformClient(
       return response;
     },
 
-    deleteMemoryTopic(slug, requestOptions) {
+    deleteMemoryTopic(workspaceId, slug, requestOptions) {
       return requestNoContent(
         fetchImpl,
         productUrl(
           apiPrefix,
-          `/product/memory/topics/${encodeURIComponent(validateProductMemorySlug(slug))}`,
+          `/product/memory/topics/${encodeURIComponent(
+            validateProductMemorySlug(slug),
+          )}?${memoryWorkspaceQuery(workspaceId)}`,
         ),
         requestOptions?.signal,
       );

@@ -3,17 +3,18 @@
 import { CheckIcon, Cross2Icon } from "@radix-ui/react-icons";
 import { FormEvent, useEffect, useRef, useState } from "react";
 
-import type { ChatMessage, ToolCallView } from "../lib/rove-state";
-import type { PendingInput } from "../lib/rove-types";
+import type {
+  ToolCallView,
+  TranscriptRunGroup,
+  TranscriptTimelineItem,
+} from "../lib/rove-state";
 import {
   describeTranscriptPartialReason,
   type TranscriptRestoreState,
 } from "../state/transcript-projection";
 
 export function Transcript({
-  messages,
-  tools,
-  pendingInputs,
+  timeline,
   approvalBusy,
   inputBusy,
   restoreState,
@@ -22,9 +23,7 @@ export function Transcript({
   onApproval,
   onInputSubmit,
 }: {
-  messages: ChatMessage[];
-  tools: ToolCallView[];
-  pendingInputs: PendingInput[];
+  timeline: TranscriptRunGroup[];
   approvalBusy: string | null;
   inputBusy: string | null;
   restoreState: TranscriptRestoreState;
@@ -33,10 +32,7 @@ export function Transcript({
   onApproval: (tool: ToolCallView, decision: "approve" | "reject") => void;
   onInputSubmit: (inputId: string, answer: string) => void;
 }) {
-  const waitingTools = tools.filter((tool) => tool.status === "waiting" || tool.pendingApproval);
-  const terminalTools = tools.filter(
-    (tool) => tool.status !== "waiting" && !tool.pendingApproval,
-  );
+  const itemCount = timeline.reduce((total, group) => total + group.items.length, 0);
 
   return (
     <div
@@ -51,44 +47,88 @@ export function Transcript({
         onRetry={onRetryRestore}
         onStartNewSession={onStartNewSession}
       />
-      {messages.length === 0 &&
+      {itemCount === 0 &&
       (restoreState.status === "complete" || restoreState.status === "idle") ? (
         <p style={{ color: "var(--muted)", margin: 0 }}>
           Send a message to start a run in this session.
         </p>
       ) : null}
-      {messages.map((message) => (
-        <article
-          key={message.id}
-          className="chat-bubble"
-          data-role={message.role}
-          data-status={message.status}
+      {timeline.map((group) => (
+        <section
+          key={group.id}
+          className="transcript-run"
+          data-run-id={group.runId ?? undefined}
+          data-run-ordinal={group.runOrdinal ?? undefined}
         >
-          {message.content}
-        </article>
-      ))}
-      {waitingTools.map((tool) => (
-        <ApprovalCard
-          key={`approval-${tool.id}`}
-          tool={tool}
-          busy={approvalBusy === tool.id}
-          onApproval={onApproval}
-        />
-      ))}
-      {pendingInputs.map((input) => (
-        <InputCard
-          key={input.input_id}
-          inputId={input.input_id}
-          prompt={input.prompt}
-          busy={inputBusy === input.input_id}
-          onSubmit={onInputSubmit}
-        />
-      ))}
-      {terminalTools.map((tool) => (
-        <ToolCard key={`tool-${tool.id}`} tool={tool} />
+          {group.items.map((item) => (
+            <TranscriptItem
+              key={item.entry.id}
+              item={item}
+              approvalBusy={approvalBusy}
+              inputBusy={inputBusy}
+              onApproval={onApproval}
+              onInputSubmit={onInputSubmit}
+            />
+          ))}
+        </section>
       ))}
     </div>
   );
+}
+
+function TranscriptItem({
+  item,
+  approvalBusy,
+  inputBusy,
+  onApproval,
+  onInputSubmit,
+}: {
+  item: TranscriptTimelineItem;
+  approvalBusy: string | null;
+  inputBusy: string | null;
+  onApproval: (tool: ToolCallView, decision: "approve" | "reject") => void;
+  onInputSubmit: (inputId: string, answer: string) => void;
+}) {
+  switch (item.kind) {
+    case "message":
+      return (
+        <article
+          className="chat-bubble"
+          data-role={item.message.role}
+          data-status={item.message.status}
+        >
+          {item.message.content}
+        </article>
+      );
+    case "tool":
+      return item.tool.status === "waiting" || item.tool.pendingApproval ? (
+        <ApprovalCard
+          tool={item.tool}
+          busy={approvalBusy === item.tool.id}
+          onApproval={onApproval}
+        />
+      ) : (
+        <ToolCard tool={item.tool} />
+      );
+    case "input":
+      return item.input.status === "waiting" ? (
+        <InputCard
+          inputId={item.input.id}
+          prompt={item.input.prompt}
+          busy={inputBusy === item.input.id}
+          onSubmit={onInputSubmit}
+        />
+      ) : (
+        <article className="input-card" data-status={item.input.status} role="status">
+          <div>
+            <strong>
+              {item.input.status === "submitted" ? "Input submitted" : "Input closed"}
+            </strong>
+            <p style={{ margin: "6px 0 0" }}>{item.input.prompt}</p>
+          </div>
+        </article>
+      );
+  }
 }
 
 function RestoreNotice({

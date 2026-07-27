@@ -779,6 +779,10 @@ pub trait ProductStore: Send + Sync {
     async fn recover_stale_turn_claims(&self) -> Result<u64, ProductStoreError>;
 
     async fn list_workspaces(&self) -> Result<Vec<ProductWorkspace>, ProductStoreError>;
+    async fn get_workspace(
+        &self,
+        workspace_id: &ProductWorkspaceId,
+    ) -> Result<ProductWorkspace, ProductStoreError>;
     async fn create_workspace(
         &self,
         request: CreateProductWorkspaceRequest,

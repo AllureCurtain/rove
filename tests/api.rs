@@ -21,7 +21,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use rove_api::{
     ApiState, CreateJobResponse, JobStateResponse, MAX_M1_BROWSER_MIGRATION_BODY_BYTES,
-    MAX_PRODUCT_TEXT_BYTES, ProductSessionId, router, serve_listener,
+    MAX_PRODUCT_TEXT_BYTES, ProductSessionId, ProductWorkspaceId, router, serve_listener,
 };
 use rove_app_bootstrap::AppConfig;
 use rove_runtime::events::StreamEvent;
@@ -389,7 +389,7 @@ async fn active_product_sessions_reject_archive_session_delete_and_workspace_del
 }
 
 #[tokio::test]
-async fn product_memory_routes_are_bounded_redacted_and_idempotent() {
+async fn product_memory_routes_are_workspace_scoped_bounded_and_redacted() {
     let server = tempfile::TempDir::new().unwrap();
     let mut config = test_config();
     config.memory.durable_dir = "platform-memory".into();
@@ -397,13 +397,17 @@ async fn product_memory_routes_are_bounded_redacted_and_idempotent() {
         Workspace::detect(server.path()).unwrap(),
         config,
     ));
+    let workspace = create_product_workspace(&app, server.path()).await;
+    let workspace_id = workspace["id"].as_str().unwrap();
     let memory_dir = server.path().join("platform-memory");
 
     let empty = app
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/product/memory/topics")
+                .uri(format!(
+                    "/product/memory/topics?workspace_id={workspace_id}"
+                ))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -430,7 +434,9 @@ async fn product_memory_routes_are_bounded_redacted_and_idempotent() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/product/memory/topics")
+                .uri(format!(
+                    "/product/memory/topics?workspace_id={workspace_id}"
+                ))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -446,7 +452,9 @@ async fn product_memory_routes_are_bounded_redacted_and_idempotent() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/product/memory/topics/private-source")
+                .uri(format!(
+                    "/product/memory/topics/private-source?workspace_id={workspace_id}"
+                ))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -470,7 +478,9 @@ async fn product_memory_routes_are_bounded_redacted_and_idempotent() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/product/memory/topics/private-source")
+                .uri(format!(
+                    "/product/memory/topics/private-source?workspace_id={workspace_id}"
+                ))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -489,7 +499,9 @@ async fn product_memory_routes_are_bounded_redacted_and_idempotent() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/product/memory/topics/bad--slug")
+                .uri(format!(
+                    "/product/memory/topics/bad--slug?workspace_id={workspace_id}"
+                ))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -504,7 +516,9 @@ async fn product_memory_routes_are_bounded_redacted_and_idempotent() {
         .oneshot(
             Request::builder()
                 .method("DELETE")
-                .uri("/product/memory/topics/private-source")
+                .uri(format!(
+                    "/product/memory/topics/private-source?workspace_id={workspace_id}"
+                ))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -518,20 +532,22 @@ async fn product_memory_routes_are_bounded_redacted_and_idempotent() {
         "# rove Memory\n\n- [Private Source](topics/private-source.md) - stale\n",
     )
     .unwrap();
-    for _ in 0..2 {
-        let retry = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("DELETE")
-                    .uri("/product/memory/topics/private-source")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(retry.status(), StatusCode::NO_CONTENT);
-    }
+    let retry = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!(
+                    "/product/memory/topics/private-source?workspace_id={workspace_id}"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(retry.status(), StatusCode::NOT_FOUND);
+    let retry: serde_json::Value = decode_json(retry).await;
+    assert_eq!(retry["code"], "product_memory_not_found");
     assert!(
         !std::fs::read_to_string(memory_dir.join("MEMORY.md"))
             .unwrap()
@@ -542,7 +558,9 @@ async fn product_memory_routes_are_bounded_redacted_and_idempotent() {
     let corrupt = app
         .oneshot(
             Request::builder()
-                .uri("/product/memory/topics")
+                .uri(format!(
+                    "/product/memory/topics?workspace_id={workspace_id}"
+                ))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -554,6 +572,249 @@ async fn product_memory_routes_are_bounded_redacted_and_idempotent() {
 }
 
 #[tokio::test]
+async fn product_memory_delete_succeeds_for_an_unindexed_topic_file() {
+    let server = tempfile::TempDir::new().unwrap();
+    let mut config = test_config();
+    config.memory.durable_dir = "platform-memory".into();
+    let app = router(ApiState::new(
+        Workspace::detect(server.path()).unwrap(),
+        config,
+    ));
+    let workspace = create_product_workspace(&app, server.path()).await;
+    let workspace_id = workspace["id"].as_str().unwrap();
+    let memory_dir = server.path().join("platform-memory");
+    std::fs::create_dir_all(memory_dir.join("topics")).unwrap();
+    std::fs::write(memory_dir.join("MEMORY.md"), "# rove Memory\n").unwrap();
+    let topic_path = memory_dir.join("topics/unindexed.md");
+    std::fs::write(&topic_path, "Unindexed selected-workspace topic").unwrap();
+
+    let listed = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/product/memory/topics?workspace_id={workspace_id}"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(listed.status(), StatusCode::OK);
+    let listed: serde_json::Value = decode_json(listed).await;
+    assert_eq!(listed["topics"], serde_json::json!([]));
+
+    let deleted = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!(
+                    "/product/memory/topics/unindexed?workspace_id={workspace_id}"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(deleted.status(), StatusCode::NO_CONTENT);
+    assert!(!topic_path.exists());
+}
+
+#[tokio::test]
+async fn product_memory_routes_fail_closed_across_product_workspaces() {
+    let server = tempfile::TempDir::new().unwrap();
+    let workspace_a_root = server.path().join("workspace-a");
+    let workspace_b_root = server.path().join("workspace-b");
+    std::fs::create_dir_all(&workspace_a_root).unwrap();
+    std::fs::create_dir_all(&workspace_b_root).unwrap();
+    let mut config = test_config();
+    config.memory.durable_dir = "platform-memory".into();
+    let app = router(ApiState::new(
+        Workspace::detect(server.path()).unwrap(),
+        config,
+    ));
+    let workspace_a = create_product_workspace(&app, &workspace_a_root).await;
+    let workspace_b = create_product_workspace(&app, &workspace_b_root).await;
+    let workspace_a_id = workspace_a["id"].as_str().unwrap();
+    let workspace_b_id = workspace_b["id"].as_str().unwrap();
+    let memory_a = workspace_a_root.join("platform-memory");
+    let memory_b = workspace_b_root.join("platform-memory");
+    write_product_memory_topic(&memory_a, "only-a", "Only A", "workspace A body");
+    write_product_memory_topic(&memory_b, "only-b", "Only B", "workspace B body");
+
+    let missing_query = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/product/memory/topics")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(missing_query.status(), StatusCode::BAD_REQUEST);
+    let missing_query: serde_json::Value = decode_json(missing_query).await;
+    assert_eq!(missing_query["code"], "product_invalid_input");
+
+    let unknown_workspace_id = ProductWorkspaceId::new();
+    let unknown = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/product/memory/topics?workspace_id={unknown_workspace_id}"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
+    let unknown: serde_json::Value = decode_json(unknown).await;
+    assert_eq!(unknown["code"], "product_not_found");
+
+    let listed_a = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/product/memory/topics?workspace_id={workspace_a_id}"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(listed_a.status(), StatusCode::OK);
+    let listed_a: serde_json::Value = decode_json(listed_a).await;
+    assert_eq!(listed_a["topics"][0]["slug"], "only-a");
+
+    let listed_b = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/product/memory/topics?workspace_id={workspace_b_id}"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(listed_b.status(), StatusCode::OK);
+    let listed_b: serde_json::Value = decode_json(listed_b).await;
+    assert_eq!(listed_b["topics"][0]["slug"], "only-b");
+
+    let mismatched_read = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/product/memory/topics/only-b?workspace_id={workspace_a_id}"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(mismatched_read.status(), StatusCode::NOT_FOUND);
+    let mismatched_read: serde_json::Value = decode_json(mismatched_read).await;
+    assert_eq!(mismatched_read["code"], "product_memory_not_found");
+
+    let mismatched_delete = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!(
+                    "/product/memory/topics/only-b?workspace_id={workspace_a_id}"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(mismatched_delete.status(), StatusCode::NOT_FOUND);
+    let mismatched_delete: serde_json::Value = decode_json(mismatched_delete).await;
+    assert_eq!(mismatched_delete["code"], "product_memory_not_found");
+    assert!(memory_b.join("topics/only-b.md").exists());
+}
+
+#[tokio::test]
+async fn product_memory_routes_reject_an_absolute_dir_outside_the_selected_workspace() {
+    let server = tempfile::TempDir::new().unwrap();
+    let workspace_a_root = server.path().join("workspace-a");
+    let workspace_b_root = server.path().join("workspace-b");
+    std::fs::create_dir_all(&workspace_a_root).unwrap();
+    std::fs::create_dir_all(&workspace_b_root).unwrap();
+    let memory_a = workspace_a_root.join("platform-memory");
+    write_product_memory_topic(&memory_a, "only-a", "Only A", "workspace A body");
+
+    let mut config = test_config();
+    config.rebase_to_workspace(server.path());
+    config.memory.durable_dir = memory_a.clone();
+    assert_eq!(
+        config.workspace_bounded_durable_memory_dir().unwrap(),
+        memory_a.canonicalize().unwrap()
+    );
+    let app = router(ApiState::new(
+        Workspace::detect(server.path()).unwrap(),
+        config,
+    ));
+    let workspace_a = create_product_workspace(&app, &workspace_a_root).await;
+    let workspace_b = create_product_workspace(&app, &workspace_b_root).await;
+    let workspace_a_id = workspace_a["id"].as_str().unwrap();
+    let workspace_b_id = workspace_b["id"].as_str().unwrap();
+
+    let selected = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/product/memory/topics?workspace_id={workspace_a_id}"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(selected.status(), StatusCode::OK);
+
+    for (method, uri) in [
+        (
+            "GET",
+            format!("/product/memory/topics?workspace_id={workspace_b_id}"),
+        ),
+        (
+            "GET",
+            format!("/product/memory/topics/only-a?workspace_id={workspace_b_id}"),
+        ),
+        (
+            "DELETE",
+            format!("/product/memory/topics/only-a?workspace_id={workspace_b_id}"),
+        ),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let error: serde_json::Value = decode_json(response).await;
+        assert_eq!(error["code"], "product_memory_conflict");
+        assert!(!error.to_string().contains(&memory_a.display().to_string()));
+    }
+
+    assert!(memory_a.join("topics/only-a.md").exists());
+}
+
+#[tokio::test]
 async fn product_memory_routes_reject_topic_and_index_symlinks_when_supported() {
     let server = tempfile::TempDir::new().unwrap();
     let mut config = test_config();
@@ -562,6 +823,8 @@ async fn product_memory_routes_reject_topic_and_index_symlinks_when_supported() 
         Workspace::detect(server.path()).unwrap(),
         config,
     ));
+    let workspace = create_product_workspace(&app, server.path()).await;
+    let workspace_id = workspace["id"].as_str().unwrap();
     let memory_dir = server.path().join("platform-memory");
     std::fs::create_dir_all(memory_dir.join("topics")).unwrap();
     std::fs::write(
@@ -580,7 +843,9 @@ async fn product_memory_routes_reject_topic_and_index_symlinks_when_supported() 
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/product/memory/topics/linked")
+                .uri(format!(
+                    "/product/memory/topics/linked?workspace_id={workspace_id}"
+                ))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -601,7 +866,9 @@ async fn product_memory_routes_reject_topic_and_index_symlinks_when_supported() 
     let linked_index = app
         .oneshot(
             Request::builder()
-                .uri("/product/memory/topics")
+                .uri(format!(
+                    "/product/memory/topics?workspace_id={workspace_id}"
+                ))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -888,6 +1155,25 @@ async fn api_exposes_openapi_json_for_all_routes() {
     assert!(memory_responses.contains_key("400"));
     assert!(memory_responses.contains_key("404"));
     assert!(memory_responses.contains_key("409"));
+    for (path, method) in [
+        ("/product/memory/topics", "get"),
+        ("/product/memory/topics/{slug}", "get"),
+        ("/product/memory/topics/{slug}", "delete"),
+    ] {
+        let parameters = spec["paths"][path][method]["parameters"]
+            .as_array()
+            .unwrap_or_else(|| panic!("missing OpenAPI parameters for {method} {path}"));
+        let workspace_id = parameters
+            .iter()
+            .find(|parameter| parameter["name"] == "workspace_id" && parameter["in"] == "query")
+            .unwrap_or_else(|| panic!("missing workspace_id query for {method} {path}"));
+        assert_eq!(workspace_id["required"], true);
+        let responses = spec["paths"][path][method]["responses"]
+            .as_object()
+            .expect("product memory responses");
+        assert!(responses.contains_key("404"));
+        assert!(responses.contains_key("503"));
+    }
     let runtime_schema = schemas
         .get("ProductRuntimeInfo")
         .expect("ProductRuntimeInfo schema")
@@ -5193,6 +5479,22 @@ where
         .await
         .unwrap();
     serde_json::from_slice(&body).unwrap()
+}
+
+fn write_product_memory_topic(memory_dir: &Path, slug: &str, title: &str, body: &str) {
+    std::fs::create_dir_all(memory_dir.join("topics")).unwrap();
+    std::fs::write(
+        memory_dir.join("MEMORY.md"),
+        format!("# rove Memory\n\n- [{title}](topics/{slug}.md) - project memory\n"),
+    )
+    .unwrap();
+    std::fs::write(
+        memory_dir.join("topics").join(format!("{slug}.md")),
+        format!(
+            "---\ntitle: {title}\ntype: project\nscope: project\nconfidence: 0.9\n---\n{body}\n"
+        ),
+    )
+    .unwrap();
 }
 
 async fn create_product_workspace(app: &axum::Router, root: &Path) -> serde_json::Value {
