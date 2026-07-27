@@ -1,4 +1,5 @@
-use std::io::ErrorKind;
+use std::fs::{self, File, OpenOptions};
+use std::io::{ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
@@ -6,6 +7,10 @@ use chrono::Utc;
 use serde_json::Value;
 
 use crate::memory::durable::{MemoryScope, MemoryType, parse_frontmatter};
+use crate::memory::management::{
+    checked_topic_file, is_valid_memory_topic_slug, management_guard,
+    recover_interrupted_index_replacement, write_memory_index_unlocked,
+};
 use crate::tools::runtime_context::runtime_tool_services;
 use rove_core::ToolDescriptor;
 use rove_core::{Tool, ToolContext, ToolError, ToolOutput};
@@ -13,6 +18,9 @@ use rove_core::{Tool, ToolContext, ToolError, ToolOutput};
 const MAX_MEMORY_INDEX_LINES: usize = 200;
 const MAX_MEMORY_INDEX_BYTES: usize = 25_000;
 const MAX_TOPIC_SLUG_BYTES: usize = 80;
+const MAX_TOPIC_METADATA_BYTES: usize = 8 * 1_024;
+const MAX_MEMORY_DIRECTORY_ENTRIES: usize = 4_096;
+const MAX_INDEX_METADATA_BYTES: usize = 512;
 
 /// Save a durable memory topic under the workspace state directory.
 pub struct SaveMemoryTool;
@@ -97,33 +105,25 @@ impl Tool for SaveMemoryTool {
             .clamp(0.0, 1.0);
 
         let memory_dir = memory_dir(ctx)?;
-        let topics_dir = memory_dir.join("topics");
-        tokio::fs::create_dir_all(&topics_dir)
-            .await
-            .map_err(execution_failed)?;
-
-        let topic_path = topics_dir.join(format!("{slug}.md"));
         let now = Utc::now().to_rfc3339();
-        let created_at = match tokio::fs::read_to_string(&topic_path).await {
-            Ok(existing) => parse_frontmatter(&existing)
-                .get("created_at")
-                .cloned()
-                .unwrap_or_else(|| now.clone()),
-            Err(err) if err.kind() == ErrorKind::NotFound => now.clone(),
-            Err(err) => return Err(execution_failed(err)),
-        };
-
-        let topic_document = format!(
-            "---\ntitle: {title}\ntype: {}\nscope: {}\nsource: llm_tool\nconfidence: {:.2}\ncreated_at: {created_at}\nupdated_at: {now}\n---\n\n{content}\n",
-            memory_type.as_str(),
-            scope.as_str(),
-            confidence,
-        );
-        tokio::fs::write(&topic_path, topic_document)
-            .await
-            .map_err(execution_failed)?;
-
-        rebuild_memory_index(&memory_dir).await?;
+        let saved_slug = slug.clone();
+        tokio::task::spawn_blocking(move || {
+            save_memory_topic_sync(
+                &memory_dir,
+                MemoryTopicWrite {
+                    slug: &saved_slug,
+                    title: &title,
+                    memory_type,
+                    scope,
+                    confidence,
+                    now: &now,
+                    content: &content,
+                },
+            )
+        })
+        .await
+        .map_err(memory_task_failed)?
+        .map_err(execution_failed)?;
 
         Ok(ToolOutput::text(format!("saved memory: {slug}")))
     }
@@ -240,48 +240,177 @@ fn memory_dir(ctx: &ToolContext<'_>) -> Result<PathBuf, ToolError> {
 }
 
 async fn rebuild_memory_index(memory_dir: &Path) -> Result<(), ToolError> {
+    let memory_dir = memory_dir.to_path_buf();
+    tokio::task::spawn_blocking(move || rebuild_memory_index_sync(&memory_dir))
+        .await
+        .map_err(memory_task_failed)?
+        .map_err(execution_failed)
+}
+
+struct MemoryTopicWrite<'a> {
+    slug: &'a str,
+    title: &'a str,
+    memory_type: MemoryType,
+    scope: MemoryScope,
+    confidence: f32,
+    now: &'a str,
+    content: &'a str,
+}
+
+fn save_memory_topic_sync(memory_dir: &Path, topic: MemoryTopicWrite<'_>) -> std::io::Result<()> {
+    let _guard = management_guard()?;
+    let topics_dir = memory_dir.join("topics");
+    fs::create_dir_all(&topics_dir)?;
+    recover_interrupted_index_replacement(memory_dir)?;
+
+    let topics_metadata = fs::symlink_metadata(&topics_dir)?;
+    if topics_metadata.file_type().is_symlink() || !topics_metadata.is_dir() {
+        return Err(std::io::Error::new(
+            ErrorKind::PermissionDenied,
+            "memory topics location must be a regular directory",
+        ));
+    }
+    let canonical_memory = fs::canonicalize(memory_dir)?;
+    let canonical_topics = fs::canonicalize(&topics_dir)?;
+    if canonical_topics.parent() != Some(canonical_memory.as_path()) {
+        return Err(std::io::Error::new(
+            ErrorKind::PermissionDenied,
+            "memory topics directory escapes the configured memory directory",
+        ));
+    }
+
+    let existing_topic = checked_topic_file(memory_dir, topic.slug)?;
+    let created_at = existing_topic
+        .as_deref()
+        .map(read_topic_metadata_prefix)
+        .transpose()?
+        .and_then(|existing| parse_frontmatter(&existing).get("created_at").cloned())
+        .unwrap_or_else(|| topic.now.to_string());
+    let topic_document = format!(
+        "---\ntitle: {}\ntype: {}\nscope: {}\nsource: llm_tool\nconfidence: {:.2}\ncreated_at: {created_at}\nupdated_at: {}\n---\n\n{}\n",
+        topic.title,
+        topic.memory_type.as_str(),
+        topic.scope.as_str(),
+        topic.confidence,
+        topic.now,
+        topic.content,
+    );
+
+    match existing_topic {
+        Some(topic_path) => {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .truncate(true)
+                .open(topic_path)?;
+            file.write_all(topic_document.as_bytes())?;
+            file.sync_all()?;
+        }
+        None => {
+            let topic_path = canonical_topics.join(format!("{}.md", topic.slug));
+            let mut file = OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(topic_path)?;
+            file.write_all(topic_document.as_bytes())?;
+            file.sync_all()?;
+        }
+    }
+
+    rebuild_memory_index_unlocked(memory_dir)
+}
+
+fn rebuild_memory_index_sync(memory_dir: &Path) -> std::io::Result<()> {
+    let _guard = management_guard()?;
+    fs::create_dir_all(memory_dir)?;
+    recover_interrupted_index_replacement(memory_dir)?;
+    rebuild_memory_index_unlocked(memory_dir)
+}
+
+fn rebuild_memory_index_unlocked(memory_dir: &Path) -> std::io::Result<()> {
     let topics_dir = memory_dir.join("topics");
     let mut topic_paths = Vec::new();
-    let mut entries = match tokio::fs::read_dir(&topics_dir).await {
+    let entries = match fs::read_dir(&topics_dir) {
         Ok(entries) => entries,
         Err(err) if err.kind() == ErrorKind::NotFound => {
-            tokio::fs::write(memory_dir.join("MEMORY.md"), "# rove Memory\n\n")
-                .await
-                .map_err(execution_failed)?;
-            return Ok(());
+            return write_memory_index_unlocked(memory_dir, b"# rove Memory\n\n".to_vec());
         }
-        Err(err) => return Err(execution_failed(err)),
+        Err(err) => return Err(err),
     };
+    let topics_metadata = fs::symlink_metadata(&topics_dir)?;
+    if topics_metadata.file_type().is_symlink() || !topics_metadata.is_dir() {
+        return Err(std::io::Error::new(
+            ErrorKind::PermissionDenied,
+            "memory topics location must be a regular directory",
+        ));
+    }
+    let canonical_memory = fs::canonicalize(memory_dir)?;
+    let canonical_topics = fs::canonicalize(&topics_dir)?;
+    if canonical_topics.parent() != Some(canonical_memory.as_path()) {
+        return Err(std::io::Error::new(
+            ErrorKind::PermissionDenied,
+            "memory topics directory escapes the configured memory directory",
+        ));
+    }
 
-    while let Some(entry) = entries.next_entry().await.map_err(execution_failed)? {
+    for (entry_index, entry) in entries.enumerate() {
+        if entry_index >= MAX_MEMORY_DIRECTORY_ENTRIES {
+            return Err(std::io::Error::new(
+                ErrorKind::InvalidData,
+                "memory topics directory exceeds its supported size",
+            ));
+        }
+        let entry = entry?;
         let path = entry.path();
         if path.extension().and_then(|ext| ext.to_str()) == Some("md") {
-            topic_paths.push(path);
+            let file_type = entry.file_type()?;
+            if file_type.is_symlink() || !file_type.is_file() {
+                return Err(std::io::Error::new(
+                    ErrorKind::PermissionDenied,
+                    "memory topic must be a regular file",
+                ));
+            }
+            let canonical_path = fs::canonicalize(path)?;
+            if canonical_path.parent() != Some(canonical_topics.as_path()) {
+                return Err(std::io::Error::new(
+                    ErrorKind::PermissionDenied,
+                    "memory topic escapes the configured topics directory",
+                ));
+            }
+            topic_paths.push(canonical_path);
         }
     }
     topic_paths.sort();
 
     let mut index_entries = Vec::new();
     for path in topic_paths {
-        let content = tokio::fs::read_to_string(&path)
-            .await
-            .map_err(execution_failed)?;
+        let content = read_topic_metadata_prefix(&path)?;
         let Some(slug) = path.file_stem().and_then(|stem| stem.to_str()) else {
             continue;
         };
+        if !is_valid_memory_topic_slug(slug) {
+            return Err(std::io::Error::new(
+                ErrorKind::InvalidData,
+                "memory topic filename is unsafe",
+            ));
+        }
         let fm = parse_frontmatter(&content);
-        let title = fm
-            .get("title")
-            .cloned()
-            .unwrap_or_else(|| slug.replace('-', " "));
+        let title = bounded_index_metadata(
+            &fm.get("title")
+                .cloned()
+                .unwrap_or_else(|| slug.replace('-', " ")),
+        );
         let memory_type = fm
             .get("type")
-            .cloned()
-            .unwrap_or_else(|| "reference".to_string());
+            .and_then(|value| MemoryType::parse(value))
+            .unwrap_or(MemoryType::Reference)
+            .as_str()
+            .to_string();
         let scope = fm
             .get("scope")
-            .cloned()
-            .unwrap_or_else(|| "project".to_string());
+            .map(|value| MemoryScope::parse(value))
+            .unwrap_or_default()
+            .as_str()
+            .to_string();
         index_entries.push(IndexEntry {
             slug: slug.to_string(),
             title,
@@ -291,9 +420,7 @@ async fn rebuild_memory_index(memory_dir: &Path) -> Result<(), ToolError> {
     }
 
     let index = build_memory_index(index_entries);
-    tokio::fs::write(memory_dir.join("MEMORY.md"), index)
-        .await
-        .map_err(execution_failed)
+    write_memory_index_unlocked(memory_dir, index.into_bytes())
 }
 
 fn build_memory_index(entries: Vec<IndexEntry>) -> String {
@@ -312,6 +439,56 @@ fn build_memory_index(entries: Vec<IndexEntry>) -> String {
         index.push_str(&line);
     }
     index
+}
+
+fn read_topic_metadata_prefix(path: &Path) -> std::io::Result<String> {
+    let read_limit = MAX_TOPIC_METADATA_BYTES.saturating_add(4);
+    let mut bytes = Vec::with_capacity(MAX_TOPIC_METADATA_BYTES);
+    File::open(path)?
+        .take(u64::try_from(read_limit).unwrap_or(u64::MAX))
+        .read_to_end(&mut bytes)?;
+    let truncated = bytes.len() > MAX_TOPIC_METADATA_BYTES;
+    if truncated {
+        bytes.truncate(MAX_TOPIC_METADATA_BYTES);
+    }
+    match String::from_utf8(bytes) {
+        Ok(content) => Ok(content),
+        Err(error) if truncated && error.utf8_error().error_len().is_none() => {
+            let valid_up_to = error.utf8_error().valid_up_to();
+            String::from_utf8(error.into_bytes()[..valid_up_to].to_vec()).map_err(|_| {
+                std::io::Error::new(ErrorKind::InvalidData, "memory topic is not valid UTF-8")
+            })
+        }
+        Err(_) => Err(std::io::Error::new(
+            ErrorKind::InvalidData,
+            "memory topic is not valid UTF-8",
+        )),
+    }
+}
+
+fn bounded_index_metadata(value: &str) -> String {
+    let sanitized = value
+        .chars()
+        .map(|character| {
+            if character.is_control() || matches!(character, '[' | ']') {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect::<String>();
+    if sanitized.len() <= MAX_INDEX_METADATA_BYTES {
+        return sanitized;
+    }
+    let mut end = 0;
+    for (index, character) in sanitized.char_indices() {
+        let next = index + character.len_utf8();
+        if next > MAX_INDEX_METADATA_BYTES {
+            break;
+        }
+        end = next;
+    }
+    sanitized[..end].to_string()
 }
 
 fn required_string<'a>(args: &'a Value, field: &str) -> Result<&'a str, ToolError> {
@@ -346,7 +523,9 @@ fn normalize_topic(raw: &str) -> Result<String, ToolError> {
                 slug.push('-');
             }
             for lower_ch in ch.to_lowercase() {
-                slug.push(lower_ch);
+                if lower_ch.is_alphanumeric() {
+                    slug.push(lower_ch);
+                }
             }
             pending_dash = false;
         } else if matches!(ch, ' ' | '-' | '_') {
@@ -455,5 +634,92 @@ fn unsafe_topic_error() -> ToolError {
 fn execution_failed(err: std::io::Error) -> ToolError {
     ToolError::ExecutionFailed {
         reason: err.to_string(),
+    }
+}
+
+fn memory_task_failed(_error: tokio::task::JoinError) -> ToolError {
+    execution_failed(std::io::Error::other(
+        "memory filesystem task did not complete",
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    use super::*;
+    use crate::memory::management::delete_memory_topic_for_product_sync;
+
+    #[test]
+    fn normalized_topic_stays_valid_after_unicode_lowercase_expansion() {
+        let slug = normalize_topic("\u{130}").unwrap();
+
+        assert_eq!(slug, "i");
+        assert!(is_valid_memory_topic_slug(&slug));
+    }
+
+    #[test]
+    fn bounded_index_metadata_cannot_forge_a_topic_link() {
+        let title = bounded_index_metadata("Visible](topics/forged.md)");
+
+        assert!(!title.contains("](topics/"));
+    }
+
+    #[test]
+    fn save_reindex_and_product_delete_share_the_mutation_guard() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let memory_dir = temp.path().join("memory");
+        let guard = management_guard().unwrap();
+        let (started_tx, started_rx) = mpsc::channel();
+
+        let save_dir = memory_dir.clone();
+        let save_started = started_tx.clone();
+        let save = std::thread::spawn(move || {
+            save_started.send(()).unwrap();
+            save_memory_topic_sync(
+                &save_dir,
+                MemoryTopicWrite {
+                    slug: "shared-guard",
+                    title: "Shared Guard",
+                    memory_type: MemoryType::Project,
+                    scope: MemoryScope::Project,
+                    confidence: 0.7,
+                    now: "2026-07-27T00:00:00Z",
+                    content: "writers serialize through one guard",
+                },
+            )
+        });
+
+        let reindex_dir = memory_dir.clone();
+        let reindex_started = started_tx.clone();
+        let reindex = std::thread::spawn(move || {
+            reindex_started.send(()).unwrap();
+            rebuild_memory_index_sync(&reindex_dir)
+        });
+
+        let delete_dir = memory_dir;
+        let delete_started = started_tx;
+        let delete = std::thread::spawn(move || {
+            delete_started.send(()).unwrap();
+            delete_memory_topic_for_product_sync(&delete_dir, "shared-guard").map(|_| ())
+        });
+
+        for _ in 0..3 {
+            started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        }
+        std::thread::sleep(Duration::from_millis(50));
+        let completed_while_locked =
+            save.is_finished() || reindex.is_finished() || delete.is_finished();
+        drop(guard);
+
+        let save_result = save.join().unwrap();
+        let reindex_result = reindex.join().unwrap();
+        let delete_result = delete.join().unwrap();
+
+        assert!(!completed_while_locked);
+        save_result.unwrap();
+        reindex_result.unwrap();
+        delete_result.unwrap();
     }
 }
