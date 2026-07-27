@@ -118,7 +118,9 @@ export interface ProductProviderSelection {
 
 export interface ProductPreferences {
   schema_version: number;
+  revision: number;
   theme: ProductThemePreference;
+  default_approval_policy: ProductApprovalPreference;
   active_workspace_id?: ProductWorkspaceId;
   active_session_id?: ProductSessionId;
   provider_selection?: ProductProviderSelection;
@@ -154,7 +156,9 @@ export type UpdateProductProviderProfileRequest =
 
 export interface UpdateProductPreferencesRequest {
   schema_version: number;
+  expected_revision?: number;
   theme: ProductThemePreference;
+  default_approval_policy?: ProductApprovalPreference;
   active_workspace_id?: ProductWorkspaceId;
   active_session_id?: ProductSessionId;
   provider_selection?: ProductProviderSelection;
@@ -354,6 +358,10 @@ export const PRODUCT_ERROR_CODES = [
   "product_session_runtime_state_missing",
   "product_session_runtime_state_corrupt",
   "product_binding_corrupt",
+  "product_revision_conflict",
+  "product_memory_invalid_slug",
+  "product_memory_not_found",
+  "product_memory_conflict",
   "migration_idempotency_conflict",
   "product_storage_failure",
 ] as const;
@@ -949,16 +957,35 @@ export function parseProductPreferences(
   path = "product preferences",
 ): ProductPreferences {
   const record = expectRecord(value, path);
+  expectOnlyKeys(
+    record,
+    [
+      "schema_version",
+      "revision",
+      "theme",
+      "default_approval_policy",
+      "active_workspace_id",
+      "active_session_id",
+      "provider_selection",
+    ],
+    path,
+  );
   const preferences: ProductPreferences = {
     schema_version: expectInteger(
       record.schema_version,
       `${path}.schema_version`,
       { min: 1 },
     ),
+    revision: expectInteger(record.revision, `${path}.revision`, { min: 0 }),
     theme: expectEnum(
       record.theme,
       PRODUCT_THEME_PREFERENCES,
       `${path}.theme`,
+    ),
+    default_approval_policy: expectEnum(
+      record.default_approval_policy,
+      PRODUCT_APPROVAL_PREFERENCES,
+      `${path}.default_approval_policy`,
     ),
   };
   assignOptional(
@@ -978,6 +1005,7 @@ export function parseProductPreferences(
     preferences.provider_selection = parseProductProviderSelection(
       record.provider_selection,
       `${path}.provider_selection`,
+      true,
     );
   }
   return preferences;
@@ -1107,7 +1135,9 @@ export function parseUpdateProductPreferencesRequest(
     record,
     [
       "schema_version",
+      "expected_revision",
       "theme",
+      "default_approval_policy",
       "active_workspace_id",
       "active_session_id",
       "provider_selection",
@@ -1126,6 +1156,21 @@ export function parseUpdateProductPreferencesRequest(
       `${path}.theme`,
     ),
   };
+  assignOptional(
+    request,
+    "expected_revision",
+    optionalInteger(record, "expected_revision", path, { min: 0 }),
+  );
+  if (
+    record.default_approval_policy !== undefined &&
+    record.default_approval_policy !== null
+  ) {
+    request.default_approval_policy = expectEnum(
+      record.default_approval_policy,
+      PRODUCT_APPROVAL_PREFERENCES,
+      `${path}.default_approval_policy`,
+    );
+  }
   assignOptional(
     request,
     "active_workspace_id",

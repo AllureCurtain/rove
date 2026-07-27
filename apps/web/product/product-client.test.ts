@@ -2,8 +2,11 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   ProductApiSchemaError,
+  PRODUCT_ERROR_CODES,
+  parseProductPreferences,
   parseProductProviderProfileRequest,
   parseProductTranscriptResponse,
+  parseUpdateProductPreferencesRequest,
   parseStreamEvent,
 } from "./product-api-types";
 import { createProductApiClient } from "./product-client";
@@ -41,7 +44,9 @@ const providerProfile = {
 
 const preferences = {
   schema_version: 1,
+  revision: 3,
   theme: "dark",
+  default_approval_policy: "ask",
   active_workspace_id: workspace.id,
   active_session_id: session.id,
   provider_selection: {
@@ -194,7 +199,9 @@ describe("product API client", () => {
     await client.getPreferences();
     await client.updatePreferences({
       schema_version: 1,
+      expected_revision: 3,
       theme: "dark",
+      default_approval_policy: "ask",
       active_workspace_id: workspace.id,
       active_session_id: session.id,
       provider_selection: {
@@ -232,6 +239,44 @@ describe("product API client", () => {
 
     await expect(client.listWorkspaces()).rejects.toBeInstanceOf(
       ProductApiSchemaError,
+    );
+  });
+
+  it("parses revisioned preferences strictly while retaining legacy write compatibility", () => {
+    expect(parseProductPreferences(preferences)).toEqual(preferences);
+    expect(() =>
+      parseProductPreferences({ ...preferences, revision: undefined }),
+    ).toThrow(ProductApiSchemaError);
+    expect(() =>
+      parseProductPreferences({ ...preferences, unexpected: true }),
+    ).toThrow(ProductApiSchemaError);
+
+    expect(
+      parseUpdateProductPreferencesRequest({
+        schema_version: 1,
+        theme: "system",
+      }),
+    ).toEqual({ schema_version: 1, theme: "system" });
+    expect(
+      parseUpdateProductPreferencesRequest({
+        schema_version: 1,
+        expected_revision: 3,
+        theme: "dark",
+        default_approval_policy: "never",
+      }),
+    ).toEqual({
+      schema_version: 1,
+      expected_revision: 3,
+      theme: "dark",
+      default_approval_policy: "never",
+    });
+    expect(PRODUCT_ERROR_CODES).toEqual(
+      expect.arrayContaining([
+        "product_revision_conflict",
+        "product_memory_invalid_slug",
+        "product_memory_not_found",
+        "product_memory_conflict",
+      ]),
     );
   });
 
