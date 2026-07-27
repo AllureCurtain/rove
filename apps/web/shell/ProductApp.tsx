@@ -1,362 +1,193 @@
 "use client";
 
-import { useEffect, useMemo, useReducer, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 
-import { createRunController, describeError } from "../api/run-controller";
 import { Composer } from "../chat/Composer";
 import { Transcript } from "../chat/Transcript";
 import { RunInspector } from "../inspector/RunInspector";
-import {
-  createWorkbenchState,
-  workbenchReducer,
-  type ToolCallView,
-} from "../lib/rove-state";
-import { applyDocumentTheme, webPlatform } from "../platform/web";
 import { SettingsShell } from "../settings/SettingsShell";
-import type { SettingsSectionId } from "../settings/sections";
-import { TopBar } from "../shell/TopBar";
 import { EmptyState } from "../sidebar/EmptyState";
 import { WorkspaceTree } from "../sidebar/WorkspaceTree";
 import {
-  createSession,
-  ensureActiveSession,
   findSession,
   findWorkspace,
-  loadProductCatalog,
-  openWorkspace,
-  removeWorkspace,
-  saveProductCatalog,
-  selectSession,
-  selectWorkspace,
   sessionsForWorkspace,
   sortedWorkspaces,
-  togglePinWorkspace,
-  updateSession,
-  type ProductCatalog,
 } from "../state/product-catalog";
-import type { WorkspaceKind } from "../state/product-types";
+import { useProductRouteSync } from "../state/use-product-route-sync";
 import {
-  loadProviderProfiles,
-  loadProviderSelection,
-  saveProviderProfiles,
-  saveProviderSelection,
-} from "../state/provider-store";
-import type {
-  ActiveProviderSelection,
-  ProviderProfileRecord,
-} from "../state/product-types";
-import { buildTurnJobRequest, isHardResumeError } from "../state/turn-request";
-
-type ViewMode = "chat" | "settings";
+  type ProductBootState,
+  useServerProductState,
+} from "../state/use-server-product-state";
+import { useSessionContinuity } from "../state/use-session-continuity";
+import type { WorkspaceKind } from "../state/product-types";
+import { TopBar } from "./TopBar";
 
 export function ProductApp() {
-  const [catalog, setCatalog] = useState<ProductCatalog>(() => loadProductCatalog());
-  const [profiles, setProfiles] = useState<ProviderProfileRecord[]>(() =>
-    loadProviderProfiles(),
-  );
-  const [selection, setSelection] = useState<ActiveProviderSelection>(() =>
-    loadProviderSelection(),
-  );
-  const [theme, setTheme] = useState<"light" | "dark">(() =>
-    webPlatform.resolveTheme(webPlatform.getThemePreference()),
-  );
-  const [view, setView] = useState<ViewMode>("chat");
-  const [settingsSection, setSettingsSection] = useState<SettingsSectionId>("providers");
+  const server = useServerProductState();
   const [inspectorCollapsed, setInspectorCollapsed] = useState(false);
-  const [connection, setConnection] = useState<"unknown" | "ok" | "error">("unknown");
-  const [approvalBusy, setApprovalBusy] = useState<string | null>(null);
-  const [inputBusy, setInputBusy] = useState<string | null>(null);
-  const [runState, dispatch] = useReducer(
-    workbenchReducer,
-    undefined,
-    createWorkbenchState,
+  const activeWorkspace = findWorkspace(
+    server.catalog,
+    server.catalog.active.workspaceId,
   );
-  const controllerRef = useRef<ReturnType<typeof createRunController> | null>(null);
-  const catalogRef = useRef(catalog);
-
-  useEffect(() => {
-    catalogRef.current = catalog;
-    saveProductCatalog(catalog);
-  }, [catalog]);
-
-  useEffect(() => {
-    saveProviderProfiles(profiles);
-  }, [profiles]);
-
-  useEffect(() => {
-    saveProviderSelection(selection);
-  }, [selection]);
-
-  useEffect(() => {
-    applyDocumentTheme(theme);
-    webPlatform.setThemePreference(theme);
-  }, [theme]);
-
-  useEffect(() => {
-    let cancelled = false;
-    void fetch("/api/runs?limit=1")
-      .then((response) => {
-        if (cancelled) {
-          return;
-        }
-        setConnection(response.ok ? "ok" : "error");
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setConnection("error");
-        }
-      });
-    return () => {
-      cancelled = true;
-      controllerRef.current?.close();
-    };
-  }, []);
-
-  const activeWorkspace = findWorkspace(catalog, catalog.active.workspaceId);
-  const activeSession = findSession(catalog, catalog.active.sessionId);
-  const workspaces = sortedWorkspaces(catalog);
+  const activeSession = findSession(
+    server.catalog,
+    server.catalog.active.sessionId,
+  );
+  const continuity = useSessionContinuity({
+    productClient: server.productClient,
+    catalogRef: server.catalogRef,
+    activeSession,
+    selection: server.selection,
+    profiles: server.profiles,
+    markSession: server.markSession,
+    refreshSessionStatuses: server.refreshSessionStatuses,
+    updateSessionTitle: server.updateSessionTitle,
+    setConnection: server.setConnection,
+  });
+  const routing = useProductRouteSync({
+    ready: server.bootState.status === "ready",
+    catalog: server.catalog,
+    preferences: server.preferences,
+    selectCatalogRoute: server.selectCatalogRoute,
+    persistActiveRoute: server.persistActiveRoute,
+    focusSession: continuity.focusSession,
+    prepareSession: continuity.prepareSession,
+    leaveSession: continuity.leaveSession,
+  });
+  const workspaces = sortedWorkspaces(server.catalog);
   const sessionsByWorkspace = useMemo(() => {
     const map: Record<string, ReturnType<typeof sessionsForWorkspace>> = {};
-    for (const workspace of catalog.workspaces) {
-      map[workspace.id] = sessionsForWorkspace(catalog, workspace.id);
+    for (const workspace of server.catalog.workspaces) {
+      map[workspace.id] = sessionsForWorkspace(server.catalog, workspace.id);
     }
     return map;
-  }, [catalog]);
-
-  useEffect(() => {
-    if (!activeSession || activeSession.status === "error") {
-      return;
-    }
-    const waiting = runState.tools.some(
-      (tool) => tool.pendingApproval || tool.status === "waiting",
-    );
-    if (waiting && activeSession.status !== "needs_attention") {
-      markSession(activeSession.id, { status: "needs_attention" });
-      return;
-    }
-    if (!waiting && runState.busy && activeSession.status !== "running") {
-      markSession(activeSession.id, { status: "running" });
-    }
-  }, [activeSession, runState.busy, runState.tools]);
+  }, [server.catalog]);
 
   const connectionLabel =
-    connection === "ok"
+    server.connection === "ok"
       ? "API connected"
-      : connection === "error"
+      : server.connection === "error"
         ? "API unreachable"
-        : "Checking API…";
+        : "Checking API...";
   const connectionTone =
-    connection === "ok" ? "ok" : connection === "error" ? "error" : "idle";
-
-  function patchCatalog(updater: (current: ProductCatalog) => ProductCatalog) {
-    setCatalog((current) => {
-      const next = updater(current);
-      catalogRef.current = next;
-      return next;
-    });
-  }
-
-  function handleOpenWorkspace(path: string, kind: WorkspaceKind) {
-    try {
-      patchCatalog((current) => {
-        const opened = openWorkspace(current, path, kind);
-        const withSession = ensureActiveSession(opened, opened.active.workspaceId!);
-        return withSession;
-      });
-      dispatch({ type: "reset" });
-      setView("chat");
-    } catch (error) {
-      dispatch({ type: "set_error", error: describeError(error) });
-    }
-  }
-
-  function handleSelectWorkspace(workspaceId: string) {
-    controllerRef.current?.close();
-    patchCatalog((current) => ensureActiveSession(selectWorkspace(current, workspaceId), workspaceId));
-    dispatch({ type: "reset" });
-  }
-
-  function handleSelectSession(workspaceId: string, sessionId: string) {
-    controllerRef.current?.close();
-    patchCatalog((current) => selectSession(current, workspaceId, sessionId));
-    dispatch({ type: "reset" });
-  }
-
-  function handleNewSession(workspaceId: string) {
-    controllerRef.current?.close();
-    patchCatalog((current) => createSession(current, workspaceId));
-    dispatch({ type: "reset" });
-  }
-
-  function markSession(
-    sessionId: string,
-    patch: Parameters<typeof updateSession>[2],
-  ) {
-    patchCatalog((current) => updateSession(current, sessionId, patch));
-  }
-
-  async function handleSend(message: string) {
-    const workspace = findWorkspace(catalogRef.current, catalogRef.current.active.workspaceId);
-    const session = findSession(catalogRef.current, catalogRef.current.active.sessionId);
-    if (!workspace || !session) {
-      dispatch({ type: "set_error", error: "Open a workspace and session first." });
-      return;
-    }
-
-    controllerRef.current?.close();
-    // Keep transcript across turns; clear only run-scoped inspector state.
-    dispatch({ type: "prepare_turn" });
-    dispatch({ type: "append_user_message", content: message });
-    dispatch({ type: "set_status", statusText: "Submitting job" });
-
-    const request = buildTurnJobRequest({
-      message,
-      workspace,
-      session,
-      selection,
-      profiles,
-    });
-
-    const controller = createRunController(dispatch, {
-      onTerminal: () => {
-        const latest = findSession(catalogRef.current, session.id);
-        if (!latest) {
-          return;
-        }
-        // A finished turn under this workspace is durable for hard resume.
-        markSession(session.id, {
-          status: "idle",
-          hasDurableTurn: true,
-        });
-      },
-    });
-    controllerRef.current = controller;
-
-    markSession(session.id, {
-      status: "running",
-      title: session.title === "New session" ? truncateTitle(message) : session.title,
-    });
-
-    try {
-      const started = await controller.start(request);
-      markSession(session.id, {
-        activeJobId: started.jobId,
-        activeRunId: started.runId,
-        resumedFromRunId: started.resumedFromRunId,
-        // First successful create under resume path still counts once terminal;
-        // keep running until terminal callback.
-        status: "running",
-      });
-      if (session.hasDurableTurn && !started.resumedFromRunId) {
-        // API accepted resume:latest but did not report a source run — still OK if
-        // runtime bound state; surface soft notice only when body implies fresh.
-        // Hard failures throw below.
-      }
-      setConnection("ok");
-    } catch (error) {
-      const messageText = describeError(error);
-      const hard = session.hasDurableTurn || isHardResumeError(messageText);
-      dispatch({
-        type: "set_error",
-        error: hard
-          ? `Hard resume failed: ${messageText}. Do not continue as a disconnected one-shot. Fix runtime state or start a new session.`
-          : messageText,
-      });
-      markSession(session.id, { status: "error" });
-      setConnection(
-        messageText.toLowerCase().includes("fetch") || messageText.toLowerCase().includes("network")
-          ? "error"
-          : connection === "ok"
-            ? "ok"
-            : connection,
-      );
-    }
-  }
-
-  async function handleCancel() {
-    if (!runState.activeJobId) {
-      return;
-    }
-    try {
-      await controllerRef.current?.cancel(runState.activeJobId);
-      if (activeSession) {
-        markSession(activeSession.id, { status: "idle" });
-      }
-    } catch (error) {
-      dispatch({ type: "set_error", error: describeError(error) });
-    }
-  }
-
-  async function handleApproval(tool: ToolCallView, decision: "approve" | "reject") {
-    if (!runState.activeJobId || !tool.pendingApproval) {
-      return;
-    }
-    setApprovalBusy(tool.id);
-    try {
-      await controllerRef.current?.approve(runState.activeJobId, tool.id, decision);
-      if (activeSession) {
-        markSession(activeSession.id, {
-          status: decision === "reject" ? "idle" : "running",
-        });
-      }
-    } catch (error) {
-      dispatch({ type: "set_error", error: describeError(error) });
-      if (activeSession) {
-        markSession(activeSession.id, { status: "error" });
-      }
-    } finally {
-      setApprovalBusy(null);
-    }
-  }
-
-  async function handleInputSubmit(inputId: string, answer: string) {
-    if (!runState.activeJobId) {
-      return;
-    }
-    setInputBusy(inputId);
-    try {
-      await controllerRef.current?.answer(runState.activeJobId, inputId, answer);
-    } catch (error) {
-      dispatch({ type: "set_error", error: describeError(error) });
-    } finally {
-      setInputBusy(null);
-    }
-  }
-
-  const busy = runState.busy;
+    server.connection === "ok"
+      ? "ok"
+      : server.connection === "error"
+        ? "error"
+        : "idle";
+  const busy = continuity.runState.busy;
+  const awaitingInitialRestore =
+    routing.route.kind === "session" &&
+    activeSession?.id === routing.route.sessionId &&
+    continuity.restoreState.status === "idle";
+  const transcriptRestoreState = awaitingInitialRestore
+    ? ({ status: "loading", sessionId: activeSession.id } as const)
+    : continuity.restoreState;
+  const composerDisabled =
+    awaitingInitialRestore ||
+    continuity.restoreState.status === "loading" ||
+    continuity.restoreState.status === "error" ||
+    activeSession?.status === "running" ||
+    activeSession?.status === "needs_attention" ||
+    routing.routeError !== null;
   const resumeLabel = activeSession?.hasDurableTurn
-    ? "next turn: hard resume (latest)"
-    : "first turn: fresh job";
+    ? "continuity: exact product session"
+    : "first turn: server-bound session";
+
+  async function handleOpenWorkspace(path: string, kind: WorkspaceKind) {
+    const activeBefore = { ...server.catalogRef.current.active };
+    const navigationIntent = routing.captureNavigationIntent();
+    const target = await server.openWorkspace(path, kind);
+    const activeNow = server.catalogRef.current.active;
+    if (
+      target &&
+      routing.isNavigationIntentCurrent(navigationIntent) &&
+      activeNow.workspaceId === activeBefore.workspaceId &&
+      activeNow.sessionId === activeBefore.sessionId
+    ) {
+      routing.navigateSession(target.workspaceId, target.sessionId);
+    }
+  }
+
+  async function handleNewSession(workspaceId: string) {
+    const activeBefore = { ...server.catalogRef.current.active };
+    const navigationIntent = routing.captureNavigationIntent();
+    const session = await server.createSession(workspaceId);
+    const activeNow = server.catalogRef.current.active;
+    if (
+      session &&
+      routing.isNavigationIntentCurrent(navigationIntent) &&
+      activeNow.workspaceId === activeBefore.workspaceId &&
+      activeNow.sessionId === activeBefore.sessionId
+    ) {
+      routing.navigateSession(workspaceId, session.id);
+    }
+  }
+
+  async function handleRemoveWorkspace(workspaceId: string) {
+    const navigationIntent = routing.captureNavigationIntent();
+    if (
+      (await server.removeWorkspace(workspaceId)) &&
+      routing.isNavigationIntentCurrent(navigationIntent)
+    ) {
+      continuity.leaveSession();
+      routing.returnHome();
+    }
+  }
+
+  if (server.bootState.status !== "ready") {
+    return (
+      <div className="product-root">
+        <TopBar
+          connectionLabel={connectionLabel}
+          connectionTone={connectionTone}
+          theme={server.theme}
+          onToggleTheme={() =>
+            server.changeTheme(server.theme === "dark" ? "light" : "dark")
+          }
+          onOpenSettings={() => routing.openSettings("general")}
+          showSettingsBack={false}
+          onBackToChat={routing.returnHome}
+        />
+        <BootStateView
+          state={server.bootState}
+          onRetry={() => void server.reload()}
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="product-root">
       <TopBar
         connectionLabel={connectionLabel}
         connectionTone={
-          busy ? "working" : runState.error ? "error" : connectionTone
+          busy ? "working" : continuity.runState.error ? "error" : connectionTone
         }
-        theme={theme}
-        onToggleTheme={() => setTheme((current) => (current === "dark" ? "light" : "dark"))}
-        onOpenSettings={() => {
-          setSettingsSection("providers");
-          setView("settings");
-        }}
-        showSettingsBack={view === "settings"}
-        onBackToChat={() => setView("chat")}
+        theme={server.theme}
+        onToggleTheme={() =>
+          server.changeTheme(server.theme === "dark" ? "light" : "dark")
+        }
+        onOpenSettings={() => routing.openSettings("providers")}
+        showSettingsBack={routing.viewSettings}
+        onBackToChat={routing.backToChat}
       />
 
-      {view === "settings" ? (
+      {routing.viewSettings ? (
         <div className="product-body" data-settings="true">
           <SettingsShell
-            section={settingsSection}
-            onSectionChange={setSettingsSection}
-            profiles={profiles}
-            selection={selection}
-            onProfilesChange={setProfiles}
-            onSelectionChange={setSelection}
+            section={routing.settingsSection}
+            onSectionChange={routing.openSettings}
+            profiles={server.profiles}
+            selection={server.selection}
+            onCreateProfile={server.createProviderProfile}
+            onDeleteProfile={server.deleteProviderProfile}
+            onSelectionChange={server.changeSelection}
             connectionLabel={connectionLabel}
-            theme={theme}
-            onThemeChange={setTheme}
+            theme={server.theme}
+            onThemeChange={server.changeTheme}
+            error={server.catalogError}
           />
         </div>
       ) : (
@@ -364,30 +195,43 @@ export function ProductApp() {
           <WorkspaceTree
             workspaces={workspaces}
             sessionsByWorkspace={sessionsByWorkspace}
-            activeWorkspaceId={catalog.active.workspaceId}
-            activeSessionId={catalog.active.sessionId}
-            onOpenWorkspace={handleOpenWorkspace}
-            onSelectWorkspace={handleSelectWorkspace}
-            onSelectSession={handleSelectSession}
-            onNewSession={handleNewSession}
-            onTogglePin={(workspaceId) =>
-              patchCatalog((current) => togglePinWorkspace(current, workspaceId))
-            }
+            activeWorkspaceId={server.catalog.active.workspaceId}
+            activeSessionId={server.catalog.active.sessionId}
+            mutationBusy={server.catalogMutationBusy}
+            onOpenWorkspace={(path, kind) => void handleOpenWorkspace(path, kind)}
+            onSelectWorkspace={routing.navigateWorkspace}
+            onSelectSession={routing.navigateSession}
+            onNewSession={(workspaceId) => void handleNewSession(workspaceId)}
+            onTogglePin={(workspaceId) => void server.togglePin(workspaceId)}
             onRemoveWorkspace={(workspaceId) =>
-              patchCatalog((current) => removeWorkspace(current, workspaceId))
+              void handleRemoveWorkspace(workspaceId)
             }
           />
 
           <main className="product-main">
-            {!activeWorkspace || !activeSession ? (
+            {server.catalogError ? (
+              <div className="shell-alert" role="alert">
+                {server.catalogError}
+              </div>
+            ) : null}
+            {routing.routeError ? (
+              <RouteErrorView
+                error={routing.routeError}
+                onReturn={routing.returnHome}
+              />
+            ) : routing.routePending ? (
+              <RouteLoadingView />
+            ) : !activeWorkspace ? (
               <EmptyState
                 recents={workspaces.slice(0, 6)}
-                onOpenWorkspace={handleOpenWorkspace}
-                onOpenRecent={(workspaceId) => handleSelectWorkspace(workspaceId)}
-                onOpenProviders={() => {
-                  setSettingsSection("providers");
-                  setView("settings");
-                }}
+                onOpenWorkspace={(path, kind) => void handleOpenWorkspace(path, kind)}
+                onOpenRecent={routing.navigateWorkspace}
+                onOpenProviders={() => routing.openSettings("providers")}
+              />
+            ) : !activeSession ? (
+              <WorkspaceSessionEmpty
+                workspaceName={activeWorkspace.displayName}
+                onNewSession={() => void handleNewSession(activeWorkspace.id)}
               />
             ) : (
               <div className="chat-pane">
@@ -395,7 +239,7 @@ export function ProductApp() {
                   <div>
                     <h1>{activeSession.title}</h1>
                     <p>
-                      {activeWorkspace.displayName} · {activeWorkspace.rootPath}
+                      {activeWorkspace.displayName} / {activeWorkspace.rootPath}
                     </p>
                   </div>
                   <button
@@ -407,32 +251,45 @@ export function ProductApp() {
                   </button>
                 </div>
                 <Transcript
-                  messages={runState.messages}
-                  tools={runState.tools}
-                  pendingInputs={runState.pendingInputs}
-                  approvalBusy={approvalBusy}
-                  inputBusy={inputBusy}
-                  onApproval={handleApproval}
-                  onInputSubmit={handleInputSubmit}
+                  messages={continuity.runState.messages}
+                  tools={[
+                    ...continuity.runState.tools,
+                    ...continuity.runState.historicalTools,
+                  ]}
+                  pendingInputs={continuity.runState.pendingInputs}
+                  approvalBusy={continuity.approvalBusy}
+                  inputBusy={continuity.inputBusy}
+                  restoreState={transcriptRestoreState}
+                  onRetryRestore={() =>
+                    continuity.retryRestore(activeWorkspace.id, activeSession.id)
+                  }
+                  onStartNewSession={() =>
+                    void handleNewSession(activeWorkspace.id)
+                  }
+                  onApproval={continuity.approve}
+                  onInputSubmit={continuity.answer}
                 />
                 <Composer
-                  disabled={false}
+                  disabled={composerDisabled}
                   busy={busy}
-                  modelLabel={`model ${selection.model || "default"}`}
+                  modelLabel={`model ${server.selection.model || "default"}`}
                   resumeLabel={resumeLabel}
-                  error={runState.error}
-                  onSend={handleSend}
-                  onCancel={handleCancel}
+                  error={continuity.runState.error}
+                  onSend={continuity.send}
+                  onCancel={() => void continuity.cancel()}
                 />
               </div>
             )}
           </main>
 
-          {activeWorkspace && activeSession ? (
+          {activeWorkspace &&
+          activeSession &&
+          !routing.routeError &&
+          !routing.routePending ? (
             <RunInspector
               collapsed={inspectorCollapsed}
               onToggle={() => setInspectorCollapsed((value) => !value)}
-              runState={runState}
+              runState={continuity.runState}
             />
           ) : (
             <div />
@@ -443,7 +300,69 @@ export function ProductApp() {
   );
 }
 
-function truncateTitle(message: string): string {
-  const compact = message.replace(/\s+/g, " ").trim();
-  return compact.length <= 42 ? compact : `${compact.slice(0, 42)}…`;
+function BootStateView({
+  state,
+  onRetry,
+}: {
+  state: Exclude<ProductBootState, { status: "ready" }>;
+  onRetry: () => void;
+}) {
+  return (
+    <main className="boot-state" role={state.status === "error" ? "alert" : "status"}>
+      <h1>
+        {state.status === "loading"
+          ? "Loading product state"
+          : "Product state unavailable"}
+      </h1>
+      <p>
+        {state.status === "loading"
+          ? "Reading server workspaces, sessions, and preferences."
+          : state.error}
+      </p>
+      {state.status === "error" ? (
+        <button type="button" onClick={onRetry}>
+          Retry
+        </button>
+      ) : null}
+    </main>
+  );
+}
+
+function RouteLoadingView() {
+  return (
+    <section className="route-state" role="status">
+      <h1>Opening product route</h1>
+      <p>Matching the server catalog to this workspace and session.</p>
+    </section>
+  );
+}
+
+function RouteErrorView({ error, onReturn }: { error: string; onReturn: () => void }) {
+  return (
+    <section className="route-state" role="alert">
+      <h1>Route unavailable</h1>
+      <p>{error}</p>
+      <button type="button" onClick={onReturn}>
+        Return to product home
+      </button>
+    </section>
+  );
+}
+
+function WorkspaceSessionEmpty({
+  workspaceName,
+  onNewSession,
+}: {
+  workspaceName: string;
+  onNewSession: () => void;
+}) {
+  return (
+    <section className="route-state">
+      <h1>{workspaceName}</h1>
+      <p>This workspace has no active sessions.</p>
+      <button type="button" onClick={onNewSession}>
+        New session
+      </button>
+    </section>
+  );
 }

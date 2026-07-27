@@ -1,6 +1,6 @@
 # Web → Desktop Master Delivery Plan
 
-> Status: **Active coordinator plan — C0 complete; C1–C3 and Desktop pending**
+> Status: **Active coordinator plan — C0–C1 complete; C2–C3 and Desktop pending**
 >
 > Coordinator: the primary conversation working from the repository `main`
 > checkout. Worker conversations implement bounded branches only; they do not
@@ -9,6 +9,10 @@
 > Original product-scope baseline: `b244104`.
 >
 > C0 status: implemented and verified through the integration PR path.
+>
+> C1 status: implemented in the continuity worktree; Web unit, type, build, and
+> mock-backed continuity browser gates pass. Integration into `main` remains a
+> coordinator action.
 >
 > Product decisions:
 > [`../design/2026-07-25-agent-desktop-web-ui-design.md`](../design/2026-07-25-agent-desktop-web-ui-design.md)
@@ -22,7 +26,7 @@ This is the coordinator-level source for delivery order, worktree ownership,
 parallel boundaries, PR authority, and the handoff from Web Complete to a future
 Tauri Desktop milestone. It does not replace current runtime truth in
 `docs/runtime/**`, and it does not claim that Web Complete or Desktop is already
-implemented. Web Complete C0 is complete; C1–C3 and Desktop remain future
+implemented. Web Complete C0–C1 are complete; C2–C3 and Desktop remain future
 delivery.
 
 ---
@@ -50,16 +54,16 @@ App:      Workspace/session rail | Chat | collapsible Inspector
 Settings: full page with its own section navigation
 ```
 
-The remaining Web work is continuity, durable product state, usable Settings,
-deep routing, session observation, recovery states, accessibility, responsive
-behavior, and a final visual/acceptance seal. Desktop starts only after this
-shared UI is complete enough to host without forking the product.
+The remaining Web work is usable Settings, browser migration UX, recovery-state
+polish, accessibility, responsive behavior, and a final visual/live-API
+acceptance seal. Desktop starts only after this shared UI is complete enough to
+host without forking the product.
 
 ---
 
 ## 2. Audited baseline
 
-### 2.1 Implemented on `main`
+### 2.1 Implemented baseline and verified C1 worktree
 
 | Delivery | Evidence | Result |
 |---|---|---|
@@ -73,6 +77,7 @@ shared UI is complete enough to host without forking the product.
 | Web Complete seal | `b244104` | Accepted C0–C3 product scope |
 | P0 reconciliation | `6e32720` | Current-state/product-plan alignment and C0 worktree contract |
 | Web Complete C0 | Current code and CI | Product persistence/API foundation and typed Web client |
+| Web Complete C1 | Continuity worktree and Web gates | API-authoritative shell, deep routes, transcript restore, and exact-session observation |
 
 The default Web route is the product shell. `/dev/workbench` is an advanced
 escape hatch, not a second product line.
@@ -98,23 +103,28 @@ C0 assembles the worker and coordinator work into one verified foundation:
 - API-owned product job-start tasks drained before supervisors and job handles
   during shutdown.
 
-### 2.3 Web gaps still open
+### 2.3 Implemented C1 continuity and remaining Web gaps
 
-- the default shell does not call the C0 transcript endpoint, so refresh does
-  not rebuild the active session transcript;
-- the default shell still treats browser Workspace/Session catalogs and
-  provider profiles as authority even though C0 APIs/client modules now exist;
-- the default shell still sends workspace-scoped `resume: "latest"`; C1 must
-  switch it to C0's exact product-session path;
-- switching sessions does not fully reattach/rebuild the correct running state;
-- durable deep browser routes for workspace/session/settings state do not exist;
-- several Settings sections are placeholder-only;
-- loading/empty/partial/error/recovery states, keyboard/focus behavior,
-  reduced-motion behavior, and responsive layout need a completion pass;
-- the default product shell has mock-backed browser coverage, while the current
-  three-case real-API suite targets `/dev/workbench`; the provider runner's Web
-  step also still uses pre-M1 selectors;
-- there is no committed high-fidelity screenshot baseline for final acceptance.
+C1 connects the default product shell to the C0 API-authoritative workspace,
+session, preference, provider-profile, and transcript contracts. It adds durable
+workspace/session and Settings routes, refresh restore with explicit
+partial/error/retry states, exact `product_session_id` turns without a client
+resume guess, focused SSE reattachment, background status polling, and bounded
+binding reconciliation after an ambiguous job start without duplicate
+submission.
+
+The remaining gaps are:
+
+- several Settings sections are placeholder-only, and provider edit/update is
+  still C2 work;
+- the implemented M1 migration module is not yet invoked by the product shell,
+  so migration/retry UX remains C3 work;
+- recovery-state polish, keyboard/focus and reduced-motion behavior, responsive
+  layout, and high-fidelity screenshot baselines still need the C3 completion
+  pass;
+- product-shell Playwright evidence remains mock-backed. The current
+  `local-full` real-API suite targets `/dev/workbench`, and the provider runner's
+  Web step still uses pre-M1 selectors.
 
 ### 2.4 Desktop is not implementation-ready
 
@@ -534,6 +544,13 @@ and documented packaging/security behavior.
 
 ## changelog
 
+- 2026-07-27: Completed Web Complete C1 continuity in its worktree. The default
+  shell now uses C0 API authority, durable deep routes, canonical transcript
+  restore, exact product-session turns, focused SSE reattachment, background
+  status polling, bounded no-duplicate job-start reconciliation, and persistent
+  provider profiles. `pnpm test` (14 files, 121 tests), `pnpm typecheck`,
+  `pnpm build`, and the mock-backed continuity suite (17/17) pass. C2 Settings
+  completeness and C3 migration/polish/live-API acceptance remain open.
 - 2026-07-26: Completed Web Complete C0. Store, transcript, Web client, product
   job lifecycle, migration, stream safety, commit-boundary hardening, current
   docs, and aggregate Rust/Web CI are integrated through the coordinator-owned

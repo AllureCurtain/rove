@@ -301,12 +301,13 @@ rove does not ship a built-in vector database. Agents retrieve workspace context
 
 `apps/web/` is a standalone Next.js app. Browser code talks to `/api/*`; a server-side Next.js route proxies requests to `ROVE_API_BASE` or `http://127.0.0.1:8787`. When `ROVE_API_TOKEN` is set on the Next.js server, the proxy injects `Authorization: Bearer <token>` upstream and preserves SSE response bodies for `EventSource`.
 
-The default route is the M1 product shell with Workspace/Session navigation,
-Chat, a collapsible Run Inspector, and a full-page Settings shell. Opening an
-absolute Folder/Repo path binds the subsequent job to that real workspace root.
-The first session turn is fresh; later M1 turns use fail-closed,
-workspace-scoped `resume: "latest"`. `/dev/workbench` is an advanced migration
-escape hatch, not a second primary entry.
+The default route is the Web product shell with Workspace/Session navigation,
+Chat, a collapsible Run Inspector, and a full-page Settings shell. Durable routes
+cover `/w/:workspaceId`, `/w/:workspaceId/s/:sessionId`, and
+`/settings/:section`; `/` redirects to the safe server-preferred location or an
+empty state, and invalid catalog/route combinations fail explicitly.
+`/dev/workbench` is an advanced migration escape hatch, not a second primary
+entry.
 
 Providers supports runtime default, OpenAI, OpenAI Responses, Anthropic,
 Ollama, and Fake per-run profiles. Users provide API base, key environment
@@ -325,11 +326,28 @@ provide strict response validation, a thin product client, and a versioned,
 same-origin-locked, replay-safe M1 migration state machine that never uploads
 raw keys.
 
-The default `ProductApp` has not been wired to the C0 modules, so the visible M1
-catalogs/profiles remain browser-authoritative, the transcript is not
-rebuilt after refresh, product turns still use workspace-global `latest`, routes
-are shallow, focused session reattachment is incomplete, and several Settings
-sections are placeholders. C1–C3 own those UI and acceptance gaps.
+Web Complete C1 wires the default `ProductApp` to those C0 clients. Startup
+loads the API-authoritative workspace/session catalog, preferences, and provider
+profiles. Session entry reads the canonical transcript and projects messages,
+tools, approvals, inputs, and run identity; partial history and storage failures
+remain explicit and retryable instead of becoming an empty conversation.
+Product turns include the exact `product_session_id` and omit client `resume`,
+so the server resolves the session's own latest runtime binding rather than
+workspace-global `latest`.
+
+Only the focused live job owns an `EventSource`. Switching sessions closes that
+observation, restores the selected transcript, and reattaches when its durable
+status/binding is live; running and attention badges for background sessions are
+refreshed by bounded catalog polling. A network-ambiguous `POST /jobs` is not
+retried automatically: the shell performs bounded session-binding reads,
+attaches an advanced binding when visible, or restores the canonical transcript
+and surfaces an explicit uncertain state. Provider list/create/delete and active
+selection use the API store; raw keys remain outside browser state and requests.
+
+Several Settings sections are still placeholders, provider edit/update UX is
+not complete, and the M1 browser migration state machine is not invoked by the
+default shell. C2 owns Settings completeness; C3 owns migration/polish and live
+product-shell acceptance.
 
 The web verification surface is:
 
@@ -350,7 +368,9 @@ Browser-level checks are available separately:
 pnpm test:e2e
 ```
 
-`shell.spec.ts` covers `/` with browser-boundary mocks. The gated
+`shell.spec.ts` covers core product flows and `continuity.spec.ts` covers C1
+restore, routing, reattachment, and provider persistence with browser-boundary
+mocks. The gated
 `real-api.spec.ts` used by `local-full` opens `/dev/workbench`, and the provider
 runner's optional browser step still uses pre-M1 selectors. Full live-API
 product-shell evidence is therefore a Web Complete C3 gap.

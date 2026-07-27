@@ -6,12 +6,19 @@ import {
   isAbsoluteWorkspacePath,
   loadProductCatalog,
   openWorkspace,
+  productCatalogFromApi,
+  replaceServerSessions,
   selectSession,
   sessionsForWorkspace,
   togglePinWorkspace,
   updateSession,
   type ProductCatalog,
 } from "./product-catalog";
+import type {
+  ProductPreferences,
+  ProductSession,
+  ProductWorkspace,
+} from "../product/product-api-types";
 
 function emptyCatalog(): ProductCatalog {
   return {
@@ -22,6 +29,137 @@ function emptyCatalog(): ProductCatalog {
 }
 
 describe("product catalog", () => {
+  it("maps the server catalog and preferences as the active authority", () => {
+    const workspaces: ProductWorkspace[] = [
+      {
+        id: "ws_server",
+        canonical_root: "D:/tmp/server",
+        kind: "folder",
+        display_name: "server",
+        pinned: true,
+        last_opened_at: "2026-07-26T01:00:00.000Z",
+        created_at: "2026-07-26T00:00:00.000Z",
+        updated_at: "2026-07-26T01:00:00.000Z",
+      },
+    ];
+    const sessions: ProductSession[] = [
+      {
+        id: "sess_server",
+        workspace_id: "ws_server",
+        title: "Durable session",
+        status: "running",
+        runtime_binding: {
+          ordinal: 2,
+          runtime_session_id: "runtime-session",
+          latest_job_id: "job-2",
+          latest_run_id: "run-2",
+        },
+        created_at: "2026-07-26T00:00:00.000Z",
+        updated_at: "2026-07-26T01:00:00.000Z",
+      },
+      {
+        id: "sess_archived",
+        workspace_id: "ws_server",
+        title: "Archived",
+        status: "archived",
+        created_at: "2026-07-25T00:00:00.000Z",
+        updated_at: "2026-07-25T01:00:00.000Z",
+      },
+    ];
+    const preferences: ProductPreferences = {
+      schema_version: 1,
+      theme: "dark",
+      active_workspace_id: "ws_server",
+      active_session_id: "sess_server",
+    };
+
+    const catalog = productCatalogFromApi(workspaces, sessions, preferences);
+
+    expect(catalog.active).toEqual({
+      workspaceId: "ws_server",
+      sessionId: "sess_server",
+    });
+    expect(catalog.sessions).toHaveLength(1);
+    expect(catalog.sessions[0]).toMatchObject({
+      status: "running",
+      activeJobId: "job-2",
+      activeRunId: "run-2",
+      runtimeOrdinal: 2,
+      hasDurableTurn: true,
+    });
+  });
+
+  it("refreshes durable session statuses without changing valid focus", () => {
+    const catalog: ProductCatalog = {
+      workspaces: [
+        {
+          id: "ws_server",
+          rootPath: "/tmp/server",
+          kind: "folder",
+          displayName: "server",
+          pinned: false,
+          lastOpenedAt: "2026-07-26T00:00:00.000Z",
+        },
+      ],
+      sessions: [],
+      active: { workspaceId: "ws_server", sessionId: "sess_server" },
+    };
+    const refreshed = replaceServerSessions(catalog, ["ws_server"], [
+      {
+        id: "sess_server",
+        workspace_id: "ws_server",
+        title: "Observed",
+        status: "needs_attention",
+        runtime_binding: {
+          ordinal: 1,
+          runtime_session_id: "runtime-session",
+          latest_job_id: "job-1",
+          latest_run_id: "run-1",
+        },
+        created_at: "2026-07-26T00:00:00.000Z",
+        updated_at: "2026-07-26T01:00:00.000Z",
+      },
+    ]);
+
+    expect(refreshed.active.sessionId).toBe("sess_server");
+    expect(refreshed.sessions[0]?.status).toBe("needs_attention");
+  });
+
+  it("treats an empty workspace session list as authoritative", () => {
+    const catalog: ProductCatalog = {
+      workspaces: [
+        {
+          id: "ws_server",
+          rootPath: "/tmp/server",
+          kind: "folder",
+          displayName: "server",
+          pinned: false,
+          lastOpenedAt: "2026-07-26T00:00:00.000Z",
+        },
+      ],
+      sessions: [
+        {
+          id: "stale-session",
+          workspaceId: "ws_server",
+          title: "Stale",
+          status: "running",
+          createdAt: "2026-07-26T00:00:00.000Z",
+          updatedAt: "2026-07-26T00:00:00.000Z",
+          hasDurableTurn: true,
+        },
+      ],
+      active: { workspaceId: "ws_server", sessionId: "stale-session" },
+    };
+
+    const refreshed = replaceServerSessions(catalog, ["ws_server"], []);
+
+    expect(refreshed.sessions).toEqual([]);
+    expect(refreshed.active).toEqual({
+      workspaceId: "ws_server",
+      sessionId: null,
+    });
+  });
+
   it("rejects non-absolute workspace paths", () => {
     expect(isAbsoluteWorkspacePath("relative/path")).toBe(false);
     expect(isAbsoluteWorkspacePath("D:\\\\Study\\\\rove")).toBe(true);

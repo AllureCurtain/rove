@@ -1,4 +1,9 @@
 import type { CreateJobWorkspaceKind, ProviderProfile, ProviderType } from "../lib/rove-types";
+import type {
+  ProductProviderProfile,
+  ProductSession,
+  ProductWorkspace,
+} from "../product/product-api-types";
 
 export type WorkspaceKind = CreateJobWorkspaceKind;
 
@@ -24,9 +29,10 @@ export interface SessionRecord {
   activeJobId?: string | null;
   activeRunId?: string | null;
   resumedFromRunId?: string | null;
+  runtimeOrdinal?: number | null;
   /**
    * True once this product session has completed at least one durable turn
-   * under its workspace root. Subsequent turns must hard-resume (`resume: "latest"`).
+   * under its workspace root. The server uses this binding for exact resume.
    */
   hasDurableTurn: boolean;
 }
@@ -40,6 +46,8 @@ export interface ProviderProfileRecord {
   defaultModel?: string;
   updatedAt: string;
 }
+
+export type ProviderProfileInput = Omit<ProviderProfileRecord, "id" | "updatedAt">;
 
 export interface ActiveProviderSelection {
   mode: "default" | "profile";
@@ -63,6 +71,47 @@ export function toApiProviderProfile(
     name: record.label || undefined,
     api_base: record.apiBase,
     api_key_env: record.apiKeyEnv,
+  };
+}
+
+export function fromProductWorkspace(workspace: ProductWorkspace): WorkspaceRecord {
+  return {
+    id: workspace.id,
+    rootPath: workspace.canonical_root,
+    kind: workspace.kind,
+    displayName: workspace.display_name,
+    pinned: workspace.pinned,
+    lastOpenedAt: workspace.last_opened_at,
+  };
+}
+
+export function fromProductSession(session: ProductSession): SessionRecord {
+  return {
+    id: session.id,
+    workspaceId: session.workspace_id,
+    title: session.title,
+    createdAt: session.created_at,
+    updatedAt: session.updated_at,
+    status: session.status === "archived" ? "idle" : session.status,
+    activeJobId: session.runtime_binding?.latest_job_id ?? null,
+    activeRunId: session.runtime_binding?.latest_run_id ?? null,
+    resumedFromRunId: null,
+    runtimeOrdinal: session.runtime_binding?.ordinal ?? null,
+    hasDurableTurn: session.runtime_binding !== undefined,
+  };
+}
+
+export function fromProductProviderProfile(
+  profile: ProductProviderProfile,
+): ProviderProfileRecord {
+  return {
+    id: profile.id,
+    label: profile.label,
+    providerType: profile.provider_type,
+    apiBase: profile.api_base,
+    apiKeyEnv: profile.api_key_env,
+    defaultModel: profile.default_model,
+    updatedAt: profile.updated_at,
   };
 }
 

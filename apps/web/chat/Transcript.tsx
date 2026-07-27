@@ -5,6 +5,10 @@ import { FormEvent, useState } from "react";
 
 import type { ChatMessage, ToolCallView } from "../lib/rove-state";
 import type { PendingInput } from "../lib/rove-types";
+import {
+  describeTranscriptPartialReason,
+  type TranscriptRestoreState,
+} from "../state/transcript-projection";
 
 export function Transcript({
   messages,
@@ -12,6 +16,9 @@ export function Transcript({
   pendingInputs,
   approvalBusy,
   inputBusy,
+  restoreState,
+  onRetryRestore,
+  onStartNewSession,
   onApproval,
   onInputSubmit,
 }: {
@@ -20,15 +27,26 @@ export function Transcript({
   pendingInputs: PendingInput[];
   approvalBusy: string | null;
   inputBusy: string | null;
+  restoreState: TranscriptRestoreState;
+  onRetryRestore: () => void;
+  onStartNewSession: () => void;
   onApproval: (tool: ToolCallView, decision: "approve" | "reject") => void;
   onInputSubmit: (inputId: string, answer: string) => void;
 }) {
   const waitingTools = tools.filter((tool) => tool.status === "waiting" || tool.pendingApproval);
-  const recentTools = tools.filter((tool) => tool.status !== "waiting" && !tool.pendingApproval).slice(0, 8);
+  const terminalTools = tools.filter(
+    (tool) => tool.status !== "waiting" && !tool.pendingApproval,
+  );
 
   return (
     <div className="chat-transcript" aria-label="Conversation">
-      {messages.length === 0 ? (
+      <RestoreNotice
+        state={restoreState}
+        onRetry={onRetryRestore}
+        onStartNewSession={onStartNewSession}
+      />
+      {messages.length === 0 &&
+      (restoreState.status === "complete" || restoreState.status === "idle") ? (
         <p style={{ color: "var(--muted)", margin: 0 }}>
           Send a message to start a run in this session.
         </p>
@@ -60,10 +78,70 @@ export function Transcript({
           onSubmit={onInputSubmit}
         />
       ))}
-      {recentTools.map((tool) => (
+      {terminalTools.map((tool) => (
         <ToolCard key={`tool-${tool.id}`} tool={tool} />
       ))}
     </div>
+  );
+}
+
+function RestoreNotice({
+  state,
+  onRetry,
+  onStartNewSession,
+}: {
+  state: TranscriptRestoreState;
+  onRetry: () => void;
+  onStartNewSession: () => void;
+}) {
+  if (state.status === "idle" || state.status === "complete") {
+    return null;
+  }
+  if (state.status === "loading") {
+    return (
+      <section className="restore-notice" data-tone="loading" role="status">
+        <strong>Restoring conversation</strong>
+        <span>Reading canonical run events for this session.</span>
+      </section>
+    );
+  }
+  if (state.status === "partial") {
+    return (
+      <section className="restore-notice" data-tone="partial" role="status">
+        <strong>Partial conversation history</strong>
+        <span>Available canonical events are shown. Some durable history could not be rebuilt.</span>
+        <ul>
+          {state.reasons.map((reason, index) => (
+            <li key={`${reason.code}-${reason.run_ordinal ?? "session"}-${index}`}>
+              {describeTranscriptPartialReason(reason)}
+            </li>
+          ))}
+        </ul>
+        <div className="field-actions">
+          <button type="button" className="secondary" onClick={onRetry}>
+            Retry restore
+          </button>
+          <button type="button" className="secondary" onClick={onStartNewSession}>
+            New session
+          </button>
+        </div>
+      </section>
+    );
+  }
+  return (
+    <section className="restore-notice" data-tone="error" role="alert">
+      <strong>Conversation restore failed</strong>
+      <span>{state.error}</span>
+      <span>No empty history has been substituted for the failed read.</span>
+      <div className="field-actions">
+        <button type="button" onClick={onRetry}>
+          Retry restore
+        </button>
+        <button type="button" className="secondary" onClick={onStartNewSession}>
+          New session
+        </button>
+      </div>
+    </section>
   );
 }
 

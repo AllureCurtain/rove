@@ -1,8 +1,10 @@
 # Web Complete — Local Agent Web as Daily Driver
 
-> Status: **Accepted / Active — Web M1 and C0 implemented; C1–C3 pending**
+> Status: **Accepted / Active — Web M1 and C0–C1 implemented; C2–C3 pending**
 >
 > Date: 2026-07-26
+>
+> Updated: 2026-07-27
 >
 > Baseline: `main` after Web M1 (F0–F2) @ `93a724c` family.
 >
@@ -15,9 +17,9 @@
 This document freezes the **Web Complete** milestone: finish the local Web product
 so it is a **daily-driver** agent surface, not only an M1 shell.
 
-The C0 persistence/API foundation is implemented, but Web Complete is not
-finished. Current implementation truth remains code plus `docs/runtime/**`;
-C1–C3 continue to describe future UI delivery.
+The C0 persistence/API foundation and C1 continuity UI are implemented, but Web
+Complete is not finished. Current implementation truth remains code plus
+`docs/runtime/**`; C2–C3 continue to describe future UI delivery.
 
 ---
 
@@ -35,8 +37,8 @@ C1–C3 continue to describe future UI delivery.
 ### Why Web Complete before Desktop
 
 - M1 already delivered the shell, hard resume, and workspace-root execution.
-- Remaining gaps (refresh transcript loss, shallow Settings, browser-only profiles)
-  hurt daily use more than missing an installable shell.
+- The remaining C2/C3 gaps (shallow Settings, migration/polish, and missing live
+  product-shell acceptance) hurt daily use more than a missing installable shell.
 - Completing Web first means Desktop later hosts a stronger shared UI.
 
 ### Anti-goals
@@ -81,8 +83,23 @@ M1 migration, and typed Web client/migration modules. Migration preparation is
 deadline-bounded while the apply transaction is API-supervised and survives
 HTTP disconnect; durable preflight baselines, preference revision CAS,
 canonical runtime-store reservations, workspace containment, and no-follow
-SQLite opens protect the commit boundary. The default product shell does not
-consume those modules yet.
+  SQLite opens protect the commit boundary.
+
+### C1 implementation progress
+
+The default product shell now consumes the C0 workspace/session/preferences,
+provider-profile, and transcript clients. It implements durable workspace,
+session, and Settings routes; canonical transcript restore with explicit
+partial/error/retry states; exact `product_session_id` turns without client
+`resume`; focused live-job SSE reattachment; and durable background status
+polling. Network-ambiguous job starts use bounded binding reconciliation and do
+not automatically repeat the mutation. Provider profiles and their active
+selection are API-authoritative.
+
+This closes the C1 continuity and authority-switch portion of the M1 leftovers.
+Most Settings sections, provider edit/update UX, product-shell invocation of the
+M1 migration module, final polish, and live-API product-shell evidence remain
+C2–C3 work.
 
 ---
 
@@ -148,10 +165,11 @@ Client state and server IDs must round-trip through these routes.
 ### 5.1 Hard resume (non-negotiable, inherited)
 
 - First durable turn in a product session: create-job **without** resume.
-- M1 currently sends workspace-scoped `resume: "latest"`. C0 implements the
-  replacement server-owned product-session binding:
+- M1 sent workspace-scoped `resume: "latest"`. C0 implements the replacement
+  server-owned product-session binding, and C1 wires the shell to it:
   later product turns resolve the session's **exact latest runtime run** under
-  the same workspace root. C1 must wire the shell to that path.
+  the same workspace root. The shell sends `product_session_id` and omits the
+  lower-level client `resume` field.
 - Client-supplied resume state cannot override or conflict with that server
   binding. Different product sessions in the same workspace keep distinct
   runtime chains.
@@ -187,7 +205,10 @@ That keeps developer continuity but fails daily-driver UX.
 
 ## 6. Settings completeness
 
-All nine sections leave “empty placeholder only” status.
+C1 makes General theme/safe preferences and Provider list/create/delete plus
+active selection API-backed. C2 must still bring all nine sections to the full
+Web Complete bar below; several remain placeholder-only and Provider
+edit/update UX is incomplete.
 
 | Section | Web Complete bar |
 |---------|------------------|
@@ -217,8 +238,9 @@ Browser `localStorage` is **not** the long-term authority for:
 - continuity markers required for hard resume + transcript rebuild
 
 Those move to **API-backed durable storage** on the local rove-api/runtime side.
-C0 implements the backend as API-global `<state_dir>/product.sqlite`; the
-default shell's authority switch remains C1/C2 integration work.
+C0 implements the backend as API-global `<state_dir>/product.sqlite`; C1 makes
+that store authoritative for the default shell's catalog, safe preferences, and
+provider profiles.
 
 ### 7.2 Still allowed in the browser
 
@@ -333,10 +355,16 @@ Web Complete should make that cheaper, not harder:
 
 ## changelog
 
+- 2026-07-27: Marked C1 implemented: API-authoritative product state, canonical
+  transcript restore with explicit partial/error handling, durable deep routes,
+  exact product-session turns, focused reattachment/background status polling,
+  provider persistence, and bounded ambiguous-start reconciliation. Evidence is
+  mock-backed at the browser boundary; C2 Settings and C3 live-API acceptance
+  remain open.
 - 2026-07-26: Marked C0 implemented: API-global ProductStore, exact
   product-session continuation, canonical-event transcript projection,
   strict/idempotent supervised migration, runtime commit guards, and typed Web
-  client modules. Default-shell adoption and C1–C3 remain open.
+  client modules. Default-shell adoption was completed by C1; C2–C3 remain open.
 - 2026-07-25: Delivery coordination amended after implementation audit. The
   original serial-wave recommendation is replaced by coordinator-owned contract
   foundations plus bounded disjoint workers. Sealed exact product-session/run

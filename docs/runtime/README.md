@@ -2,9 +2,9 @@
 
 This directory is the authoritative current-state documentation surface. It
 summarizes the implemented runtime, API, Web M1 product shell, the Web Complete
-C0 persistence/API foundation, and remaining gaps. Web Complete C1–C3 and Desktop
-contracts remain under `docs/design/` and `docs/plans/` until their code and
-tests land.
+C0 persistence/API foundation, the C1 continuity UI, and remaining gaps. Web
+Complete C2–C3 and Desktop contracts remain under `docs/design/` and
+`docs/plans/` until their code and tests land.
 
 New maintainers should start with [`docs/ONBOARDING.md`](../ONBOARDING.md), then use this directory for current subsystem truth.
 
@@ -38,7 +38,7 @@ The Web product line is tracked separately:
 
 - Web M1 is implemented; its ledger is
   [`docs/plans/2026-07-25-web-management-m1.md`](../plans/2026-07-25-web-management-m1.md).
-- M1 product-shell browser coverage is mock-backed. The gated `local-full`
+- Product-shell browser coverage is mock-backed. The gated `local-full`
   real-API suite targets advanced `/dev/workbench`; live-API acceptance of `/`
   remains Web Complete C3 work.
 - Web Complete C0 is implemented: the API owns `product.sqlite`, product
@@ -48,8 +48,16 @@ The Web product line is tracked separately:
   the supervised apply phase survives an HTTP disconnect, uses a durable
   preflight baseline and preference revision CAS, and reserves canonical
   workspace runtime databases before committing verified bindings. Typed Web
-  client and migration modules are present, but the default M1 shell does not
-  consume them yet. C1–C3 are active future work; follow
+  client and migration modules are present.
+- Web Complete C1 is implemented: the default `ProductApp` consumes the C0
+  workspace/session/preferences/profile/transcript client, restores canonical
+  history with explicit partial/error/retry states, uses durable workspace,
+  session, and Settings routes, sends exact `product_session_id` turns, and
+  reattaches only the focused live job while polling durable background status.
+  Ambiguous job-start responses use bounded binding reconciliation and never
+  trigger an automatic duplicate submission. Provider profiles and selection
+  are API-authoritative. C2 Settings completeness and C3 migration/polish/live
+  API acceptance remain active work; follow
   [`docs/design/2026-07-26-web-complete-design.md`](../design/2026-07-26-web-complete-design.md)
   and the
   [`Web → Desktop coordinator plan`](../plans/2026-07-25-web-desktop-master-delivery.md).
