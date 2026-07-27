@@ -122,8 +122,8 @@ C3 release evidence additionally includes:
 - an updated provider runner that correlates browser-returned job/run IDs with
   the exact report and product transcript instead of guessing a latest run.
 
-The C3 stacked implementation passed the three `local-full` real-API browser
-cases. Its stacked PRs have not landed on `main`. The external-provider browser
+The integrated C3 implementation on `main` passed the three `local-full`
+real-API browser cases after merge. The external-provider browser
 gate was not run and must not be claimed from deterministic fake-provider
 evidence.
 

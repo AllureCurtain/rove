@@ -1,6 +1,6 @@
 # Agent Desktop + Web Shared UI
 
-> Status: **Partially implemented — Web M1 and Web Complete C0–C3 implemented; integration and Desktop pending**
+> Status: **Partially implemented — Web M1 and Web Complete C0–C3 are on main; Desktop pending**
 >
 > Date: 2026-07-25
 >
@@ -13,11 +13,11 @@ This document freezes the product, information architecture, visual baseline, an
 engineering constraints for rove's **shared product UI**, hosted first as a Web
 management app and later as a Tauri desktop shell. The Web M1 shell and Web
 Complete C0–C3 persistence, continuity, Settings, migration, polish, and local
-acceptance are implemented and verified on the stacked Web branch. Coordinator
-integration into `main` and the Tauri Desktop host remain future delivery.
+acceptance are implemented and verified on `main`. The Tauri Desktop host
+remains future delivery.
 
-It does **not** claim the stacked Web Complete PRs have landed on `main`, or that
-Desktop exists. Current runtime truth remains `docs/runtime/**` and the code.
+It does **not** claim that Desktop exists. Current runtime truth remains
+`docs/runtime/**` and the code.
 
 ---
 
@@ -302,6 +302,10 @@ Do not do now:
 
 ## changelog
 
+- 2026-07-27: Integrated Web Complete C1–C3 through PRs #24, #25, and #26.
+  Merge commits `db8f970`, `abbd7d6`, and `e3c2403` are on `main`; the
+  post-merge Rust, Web, mock Playwright, and three-scenario `local-full` gates
+  passed. Desktop D0 was not started and historical worktrees were retained.
 - 2026-07-27: Marked Web Complete C0–C3 implemented and locally verified on the
   stacked branch. The default shell now runs fail-closed migration before
   catalog boot, retains durable deep routes, completes visual/accessibility

@@ -1,6 +1,6 @@
 # Web Complete Delivery Plan
 
-> Status: **Active integration — C0–C3 implemented and locally verified; coordinator merge pending**
+> Status: **Completed — C0–C3 integrated and verified on main**
 >
 > Decisions:
 > [`../design/2026-07-26-web-complete-design.md`](../design/2026-07-26-web-complete-design.md)
@@ -81,9 +81,8 @@ hardening. C0 passed aggregate Rust/Web CI and entered `main` only through the
 integration PR. C1 then wired the default shell to those contracts. Its Web
 gates pass: `pnpm test` (14 files, 121 tests), `pnpm typecheck`, `pnpm build`,
 and the mock-backed continuity Playwright suite (17/17). C2 and C3 were then
-implemented in dependency order as a stacked branch chain. Their implementation
-and local gates are verified, but the coordinator has not yet integrated that
-stack into `main`.
+implemented in dependency order as a stacked branch chain and integrated into
+`main` through PRs #25 and #26 after C1 landed through PR #24.
 
 ### After each merge
 
@@ -299,13 +298,12 @@ C0 plus the ordered C1–C2 stacked integration chain.
    retain bounded advanced-surface coverage.
 6. Remove leftover M1-only assumptions in copy.
 
-Implementation status: complete and locally verified in
-`.worktrees/web-complete-polish`. The default product shell runs the fail-closed
+Implementation status: complete and verified on `main`. The default product
+shell runs the fail-closed
 migration gate before catalog boot, reuses the exact idempotency key and body on
 retry, preserves mapped deep routes, and includes the responsive,
 keyboard/focus, live-status, reduced-motion, theme, and visual polish required
-by the C3 seal. This is not a claim that the stacked PR chain has landed on
-`main`.
+by the C3 seal.
 
 #### C3 exit checklist
 
@@ -315,9 +313,9 @@ by the C3 seal. This is not a claim that the stacked PR chain has landed on
 - [x] Live-API Playwright evidence exercises `/`, not only `/dev/workbench`
 - [x] `pnpm test`, `typecheck`, `build`, and focused e2e are green
 - [x] No Desktop/Gateway implementation scope was introduced
-- [ ] External-provider gate has not been run; no external-provider evidence is
-      claimed
-- [ ] Coordinator review and ordered integration of the stacked PR chain into
+- [x] External-provider validation is explicitly optional; it was not run and
+      no external-provider evidence is claimed
+- [x] Coordinator review and ordered integration of the stacked PR chain into
       `main`
 
 ---
@@ -365,7 +363,7 @@ restore.
 
 ## 5. Web Complete acceptance script
 
-Run on a clean main-derived tree with `rove-api` + Web. The C3 worktree passed
+Run on a clean `main` tree with `rove-api` + Web. The post-merge tree passed
 this local acceptance path with the fake provider. `local-full` reported all
 three real-API Playwright scenarios passing: live M1 migration, default-shell
 exact continuity/refresh/tools/cancellation/Settings, and the bounded advanced
@@ -407,14 +405,13 @@ When a wave merges:
 
 ---
 
-## 7. Current coordinator handoff
+## 7. Completion handoff
 
-C0–C3 implementation and local verification are complete. Do not reopen their
-worker branches or reintroduce browser authority/workspace-global `latest`
-inside `ProductApp`. The coordinator must review and integrate the stacked chain
-in dependency order, preserve the passing local gates, and update merge-specific
-status only after the PRs land. The optional external-provider gate remains
-unrun. Desktop is still deferred.
+C0–C3 implementation, ordered coordinator integration, and post-merge local
+verification are complete. Do not reintroduce browser authority or
+workspace-global `latest` inside `ProductApp`. The optional external-provider
+gate remains unrun. Desktop D0 is still deferred and was not started; historical
+worktrees were intentionally retained.
 
 ---
 
@@ -430,6 +427,12 @@ unrun. Desktop is still deferred.
 
 ## changelog
 
+- 2026-07-27: Integrated the stacked delivery chain in dependency order. PR #24
+  merged C1 as `db8f970`, PR #25 merged C2 as `abbd7d6`, and PR #26 merged C3
+  as `e3c2403`. The post-merge Rust/Web gates, mock Playwright suite (44 passed,
+  3 opt-in skipped), and `local-full` real-API suite (3/3) passed. Desktop D0
+  was not started, external-provider validation was not run, and historical
+  worktrees were retained.
 - 2026-07-27: Completed C3 implementation and local acceptance in the stacked
   polish worktree. Product boot now runs fail-closed M1 migration before catalog
   reads; mapped deep routes, responsive layouts, focus/keyboard and live-status

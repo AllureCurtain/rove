@@ -255,8 +255,8 @@ provider profile, product workspace, and product session, persists the exact
 selection, and navigates to that session in the default shell. It captures
 `job_id`, `run_id`, and `resumed_from_run_id` from the browser's
 `POST /api/jobs` response and verifies that exact report and transcript binding;
-it does not guess a latest run by sorting IDs. This path is implemented on the
-C3 stacked branch but has not been executed against an external provider.
+it does not guess a latest run by sorting IDs. This path is implemented in the
+integrated C3 code but has not been executed against an external provider.
 
 Fast provider/API-only OpenAI gate:
 

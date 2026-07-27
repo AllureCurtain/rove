@@ -139,16 +139,13 @@ Focused product smoke (mock API):
   focus containment/restoration, and server-confirmed dark-theme reload
 
 The `local-full` gate also runs `real-api.spec.ts` against a live local
-`rove-api`. The latest C3 worktree run passed all three scenarios: live M1
+`rove-api`. The post-merge `main` run passed all three scenarios: live M1
 migration, exact cross-session continuation/refresh/tools/cancellation/Settings,
 and the bounded `/dev/workbench` smoke. The external-provider gate remains
 opt-in and was not run for this evidence.
 
 ## Remaining delivery work
 
-- Coordinator review and ordered integration of the stacked C1–C3 PR chain into
-  `main`; the implementation and local verification described above are not a
-  claim that the stack has already landed
 - Optional external-provider gate execution when credentials and external
   service availability are intentionally in scope
 - Optional transcript-rich export, bulk cleanup, and deeper Memory organization

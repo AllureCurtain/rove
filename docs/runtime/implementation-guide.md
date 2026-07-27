@@ -2,10 +2,9 @@
 
 This guide is for maintainers who need to understand, debug, or extend the current implementation. It describes what exists in the codebase today. Product intent and historical design rationale live in the top-level docs; the current runtime source of truth remains this `docs/runtime/` directory.
 
-> Web status note (2026-07-27): Web Complete C0-C3 is implemented and verified
-> on the stacked delivery branch. Deterministic `local-full` passed all three
-> live-API browser cases; the stacked PRs have not landed on `main`, and the
-> external-provider browser gate was not run.
+> Web status note (2026-07-27): Web Complete C0-C3 is implemented on `main`
+> through PRs #24–#26. Deterministic `local-full` passed all three live-API
+> browser cases after merge; the external-provider browser gate was not run.
 
 The root manifest is a modular resolver-3 Cargo Workspace whose default
 member is `apps/cli`, with independent packages `rove-models`, `rove-core`,
