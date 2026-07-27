@@ -17,10 +17,10 @@ use crate::product::{
     CommitProductRunBinding, CreateProductProviderProfileRequest, CreateProductSessionRequest,
     CreateProductWorkspaceRequest, M1BrowserMigrationPreflight, M1BrowserMigrationRequest,
     M1BrowserMigrationResponse, PreparedM1BrowserMigration, ProductErrorCode, ProductPreferences,
-    ProductProviderProfile, ProductProviderProfileId, ProductSession, ProductSessionContext,
-    ProductSessionId, ProductSessionRunBinding, ProductSessionStatus, ProductStore,
-    ProductStoreError, ProductTurnClaim, ProductTurnClaimId, ProductWorkspace, ProductWorkspaceId,
-    UpdateProductPreferencesRequest, UpdateProductProviderProfileRequest,
+    ProductProviderProfile, ProductProviderProfileId, ProductResumeHealth, ProductSession,
+    ProductSessionContext, ProductSessionId, ProductSessionRunBinding, ProductSessionStatus,
+    ProductStore, ProductStoreError, ProductTurnClaim, ProductTurnClaimId, ProductWorkspace,
+    ProductWorkspaceId, UpdateProductPreferencesRequest, UpdateProductProviderProfileRequest,
     UpdateProductSessionRequest,
 };
 
@@ -220,6 +220,11 @@ impl ProductStore for SqliteProductStore {
         request: UpdateProductPreferencesRequest,
     ) -> Result<ProductPreferences, ProductStoreError> {
         self.blocking(move |repository| repository.update_preferences(request))
+            .await
+    }
+
+    async fn get_resume_health(&self) -> Result<ProductResumeHealth, ProductStoreError> {
+        self.blocking(|repository| repository.get_resume_health())
             .await
     }
 

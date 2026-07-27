@@ -253,7 +253,9 @@ async fn provider_max_steps_is_bounded_at_4096() {
     let store = open_store(&temp);
     let preferences = |max_steps| UpdateProductPreferencesRequest {
         schema_version: 1,
+        expected_revision: None,
         theme: ProductThemePreference::System,
+        default_approval_policy: None,
         active_workspace_id: None,
         active_session_id: None,
         provider_selection: Some(ProductProviderSelection {
@@ -271,6 +273,69 @@ async fn provider_max_steps_is_bounded_at_4096() {
         .unwrap_err();
 
     assert_eq!(error.code, ProductErrorCode::ProductInvalidInput);
+}
+
+#[tokio::test]
+async fn preference_updates_support_legacy_writes_and_revision_cas() {
+    let temp = TempDir::new().unwrap();
+    let store = open_store(&temp);
+    let initial = store.get_preferences().await.unwrap();
+    assert_eq!(initial.revision, 0);
+    assert_eq!(
+        initial.default_approval_policy,
+        ProductApprovalPreference::Ask
+    );
+
+    let legacy = store
+        .update_preferences(UpdateProductPreferencesRequest {
+            schema_version: 1,
+            expected_revision: None,
+            theme: ProductThemePreference::Dark,
+            default_approval_policy: None,
+            active_workspace_id: None,
+            active_session_id: None,
+            provider_selection: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(legacy.revision, 1);
+    assert_eq!(
+        legacy.default_approval_policy,
+        ProductApprovalPreference::Ask
+    );
+
+    let updated = store
+        .update_preferences(UpdateProductPreferencesRequest {
+            schema_version: 1,
+            expected_revision: Some(legacy.revision),
+            theme: ProductThemePreference::Light,
+            default_approval_policy: Some(ProductApprovalPreference::Never),
+            active_workspace_id: None,
+            active_session_id: None,
+            provider_selection: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(updated.revision, 2);
+    assert_eq!(
+        updated.default_approval_policy,
+        ProductApprovalPreference::Never
+    );
+
+    let error = store
+        .update_preferences(UpdateProductPreferencesRequest {
+            schema_version: 1,
+            expected_revision: Some(legacy.revision),
+            theme: ProductThemePreference::System,
+            default_approval_policy: Some(ProductApprovalPreference::Auto),
+            active_workspace_id: None,
+            active_session_id: None,
+            provider_selection: None,
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, ProductErrorCode::ProductRevisionConflict);
+    assert_eq!(store.get_preferences().await.unwrap().revision, 2);
 }
 
 #[tokio::test]
@@ -516,7 +581,9 @@ async fn migration_preserves_durable_preferences_for_omitted_browser_fields() {
     let durable = store
         .update_preferences(UpdateProductPreferencesRequest {
             schema_version: 1,
+            expected_revision: None,
             theme: ProductThemePreference::Dark,
+            default_approval_policy: None,
             active_workspace_id: Some(workspace.id),
             active_session_id: Some(session.id),
             provider_selection: Some(ProductProviderSelection {
@@ -587,6 +654,7 @@ async fn migration_preserves_durable_preferences_for_omitted_browser_fields() {
 
     let acknowledgement = store.apply_m1_browser_migration(partial).await.unwrap();
     let mut expected = durable;
+    expected.revision += 1;
     expected.theme = ProductThemePreference::System;
     assert_eq!(acknowledgement.issues.len(), 3);
     assert_eq!(
@@ -621,7 +689,9 @@ async fn migration_preserves_preferences_saved_after_preflight_and_replays_befor
     let durable = store
         .update_preferences(UpdateProductPreferencesRequest {
             schema_version: 1,
+            expected_revision: None,
             theme: ProductThemePreference::System,
+            default_approval_policy: None,
             active_workspace_id: None,
             active_session_id: None,
             provider_selection: None,
@@ -654,7 +724,9 @@ async fn migration_preserves_preferences_saved_after_preflight_and_replays_befor
     let newest = store
         .update_preferences(UpdateProductPreferencesRequest {
             schema_version: 1,
+            expected_revision: None,
             theme: ProductThemePreference::Dark,
+            default_approval_policy: None,
             active_workspace_id: None,
             active_session_id: None,
             provider_selection: None,
@@ -980,7 +1052,9 @@ async fn migration_without_preferences_never_touches_newer_preference_metadata()
     store
         .update_preferences(UpdateProductPreferencesRequest {
             schema_version: 1,
+            expected_revision: None,
             theme: ProductThemePreference::Dark,
+            default_approval_policy: None,
             active_workspace_id: None,
             active_session_id: None,
             provider_selection: None,
@@ -1019,7 +1093,9 @@ async fn preference_reference_cleanup_paths_increment_revision() {
     store
         .update_preferences(UpdateProductPreferencesRequest {
             schema_version: 1,
+            expected_revision: None,
             theme: ProductThemePreference::System,
+            default_approval_policy: None,
             active_workspace_id: Some(workspace.id.clone()),
             active_session_id: Some(session.id.clone()),
             provider_selection: Some(selection.clone()),
@@ -1041,7 +1117,9 @@ async fn preference_reference_cleanup_paths_increment_revision() {
     store
         .update_preferences(UpdateProductPreferencesRequest {
             schema_version: 1,
+            expected_revision: None,
             theme: ProductThemePreference::System,
+            default_approval_policy: None,
             active_workspace_id: Some(workspace.id.clone()),
             active_session_id: Some(replacement.id),
             provider_selection: Some(selection),

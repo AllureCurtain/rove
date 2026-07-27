@@ -16,12 +16,13 @@ use crate::product::{
     MAX_PRODUCT_PROVIDER_PROFILES, MAX_PRODUCT_SESSIONS, MAX_PRODUCT_WORKSPACES,
     PreparedM1BrowserMigration, ProductApprovalPreference, ProductErrorCode,
     ProductMigrationReceiptId, ProductPreferences, ProductProviderProfile,
-    ProductProviderProfileId, ProductProviderSelection, ProductProviderType, ProductRuntimeBinding,
-    ProductSession, ProductSessionContext, ProductSessionId, ProductSessionRunBinding,
-    ProductSessionStatus, ProductStoreError, ProductThemePreference, ProductTurnClaim,
-    ProductTurnClaimId, ProductWorkspace, ProductWorkspaceId, ProductWorkspaceKind,
-    UpdateProductPreferencesRequest, UpdateProductProviderProfileRequest,
-    UpdateProductSessionRequest, VerifiedM1SessionRunBinding, m1_browser_migration_digest,
+    ProductProviderProfileId, ProductProviderSelection, ProductProviderType, ProductResumeHealth,
+    ProductResumeHealthStatus, ProductRuntimeBinding, ProductSession, ProductSessionContext,
+    ProductSessionId, ProductSessionRunBinding, ProductSessionStatus, ProductStoreError,
+    ProductThemePreference, ProductTurnClaim, ProductTurnClaimId, ProductWorkspace,
+    ProductWorkspaceId, ProductWorkspaceKind, UpdateProductPreferencesRequest,
+    UpdateProductProviderProfileRequest, UpdateProductSessionRequest, VerifiedM1SessionRunBinding,
+    m1_browser_migration_digest,
 };
 
 use super::schema::{ProductDatabase, storage_error};
@@ -703,6 +704,46 @@ impl ProductRepository {
         Ok(preferences)
     }
 
+    pub(super) fn get_resume_health(&self) -> Result<ProductResumeHealth, ProductStoreError> {
+        let connection = self.database.connect()?;
+        let counts = connection
+            .query_row(
+                r#"
+                SELECT
+                    (SELECT COUNT(*) FROM product_workspaces),
+                    COUNT(*),
+                    COALESCE(SUM(CASE WHEN latest_run_id IS NOT NULL THEN 1 ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN status = 'needs_attention' THEN 1 ELSE 0 END), 0)
+                FROM product_sessions
+                "#,
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, i64>(4)?,
+                    ))
+                },
+            )
+            .map_err(storage_error)?;
+        let needs_attention_session_count = u64::try_from(counts.4).map_err(storage_error)?;
+        Ok(ProductResumeHealth {
+            status: if needs_attention_session_count == 0 {
+                ProductResumeHealthStatus::Healthy
+            } else {
+                ProductResumeHealthStatus::NeedsAttention
+            },
+            workspace_count: u64::try_from(counts.0).map_err(storage_error)?,
+            session_count: u64::try_from(counts.1).map_err(storage_error)?,
+            bound_session_count: u64::try_from(counts.2).map_err(storage_error)?,
+            running_session_count: u64::try_from(counts.3).map_err(storage_error)?,
+            needs_attention_session_count,
+        })
+    }
+
     pub(super) fn update_preferences(
         &self,
         request: UpdateProductPreferencesRequest,
@@ -711,7 +752,17 @@ impl ProductRepository {
         let mut connection = self.database.connect()?;
         let transaction = immediate_transaction(&mut connection)?;
         validate_preference_references(&transaction, &preferences)?;
-        write_preferences(&transaction, &preferences)?;
+        match preferences.expected_revision {
+            Some(expected_revision) => {
+                if !write_preferences_at_revision(&transaction, &preferences, expected_revision)? {
+                    return Err(ProductStoreError::new(
+                        ProductErrorCode::ProductRevisionConflict,
+                        "product preferences changed since they were read",
+                    ));
+                }
+            }
+            None => write_preferences(&transaction, &preferences)?,
+        }
         let updated = get_preferences(&transaction)?;
         transaction.commit().map_err(storage_error)?;
         Ok(updated)
@@ -1492,7 +1543,8 @@ fn get_preferences(connection: &Connection) -> Result<ProductPreferences, Produc
     let raw = connection
         .query_row(
             r#"
-            SELECT schema_version, theme, active_workspace_id, active_session_id,
+            SELECT schema_version, revision, theme, default_approval_policy,
+                   active_workspace_id, active_session_id,
                    provider_profile_id, provider_model, provider_approval,
                    provider_max_steps
             FROM product_preferences WHERE singleton = 1
@@ -1501,13 +1553,15 @@ fn get_preferences(connection: &Connection) -> Result<ProductPreferences, Produc
             |row| {
                 Ok((
                     row.get::<_, i64>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
                     row.get::<_, Option<String>>(4)?,
                     row.get::<_, Option<String>>(5)?,
                     row.get::<_, Option<String>>(6)?,
-                    row.get::<_, Option<i64>>(7)?,
+                    row.get::<_, Option<String>>(7)?,
+                    row.get::<_, Option<String>>(8)?,
+                    row.get::<_, Option<i64>>(9)?,
                 ))
             },
         )
@@ -1520,15 +1574,16 @@ fn get_preferences(connection: &Connection) -> Result<ProductPreferences, Produc
             "persisted product preferences schema is unsupported",
         ));
     }
+    let revision = u64::try_from(raw.1).map_err(storage_error)?;
     let active_workspace_id = raw
-        .2
+        .4
         .map(|value| parse_product_id(&value, "active workspace id"))
         .transpose()?;
     let active_session_id = raw
-        .3
+        .5
         .map(|value| parse_product_id(&value, "active session id"))
         .transpose()?;
-    let provider_selection = match (raw.4, raw.5, raw.6, raw.7) {
+    let provider_selection = match (raw.6, raw.7, raw.8, raw.9) {
         (None, None, None, None) => None,
         (profile_id, Some(model), Some(approval), Some(max_steps)) => Some(
             validate_provider_selection(ProductProviderSelection {
@@ -1545,7 +1600,9 @@ fn get_preferences(connection: &Connection) -> Result<ProductPreferences, Produc
     };
     let preferences = ProductPreferences {
         schema_version,
-        theme: theme_from_db(&raw.1)?,
+        revision,
+        theme: theme_from_db(&raw.2)?,
+        default_approval_policy: approval_from_db(&raw.3)?,
         active_workspace_id,
         active_session_id,
         provider_selection,
@@ -1631,7 +1688,9 @@ fn write_preferences(
             UPDATE product_preferences
             SET schema_version = ?1, theme = ?2, active_workspace_id = ?3,
                 active_session_id = ?4, provider_profile_id = ?5, provider_model = ?6,
-                provider_approval = ?7, provider_max_steps = ?8, updated_at = ?9,
+                provider_approval = ?7, provider_max_steps = ?8,
+                default_approval_policy = COALESCE(?9, default_approval_policy),
+                updated_at = ?10,
                 revision = revision + 1
             WHERE singleton = 1
             "#,
@@ -1650,6 +1709,7 @@ fn write_preferences(
                 model,
                 approval,
                 max_steps,
+                preferences.default_approval_policy.map(approval_to_db),
                 now_rfc3339(),
             ],
         )
@@ -1680,9 +1740,11 @@ fn write_preferences_at_revision(
             UPDATE product_preferences
             SET schema_version = ?1, theme = ?2, active_workspace_id = ?3,
                 active_session_id = ?4, provider_profile_id = ?5, provider_model = ?6,
-                provider_approval = ?7, provider_max_steps = ?8, updated_at = ?9,
+                provider_approval = ?7, provider_max_steps = ?8,
+                default_approval_policy = COALESCE(?9, default_approval_policy),
+                updated_at = ?10,
                 revision = revision + 1
-            WHERE singleton = 1 AND revision = ?10
+            WHERE singleton = 1 AND revision = ?11
             "#,
             params![
                 i64::from(preferences.schema_version),
@@ -1699,6 +1761,7 @@ fn write_preferences_at_revision(
                 model,
                 approval,
                 max_steps,
+                preferences.default_approval_policy.map(approval_to_db),
                 now_rfc3339(),
                 i64::try_from(expected_revision).map_err(storage_error)?,
             ],
@@ -2883,7 +2946,9 @@ fn migration_preferences(
 
     Ok(ValidatedPreferences {
         schema_version: 1,
+        expected_revision: None,
         theme: imported.theme.unwrap_or(existing.theme),
+        default_approval_policy: Some(existing.default_approval_policy),
         active_workspace_id,
         active_session_id,
         provider_selection,

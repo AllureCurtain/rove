@@ -109,6 +109,7 @@ pub(crate) async fn create_product_workspace(
     responses(
         (status = 204, description = "Catalog entry deleted; workspace files are untouched"),
         (status = 404, description = "Workspace not found", body = ApiErrorResponse),
+        (status = 409, description = "Workspace has a session with an active turn", body = ApiErrorResponse),
         (status = 500, description = "Product store operation failed", body = ApiErrorResponse),
         (status = 503, description = "ProductStore is unavailable", body = ApiErrorResponse)
     )
@@ -368,6 +369,7 @@ pub(crate) async fn get_product_preferences(
     responses(
         (status = 200, description = "Safe product preferences updated", body = ProductPreferences),
         (status = 400, description = "Invalid preference", body = ApiErrorResponse),
+        (status = 409, description = "Preference revision conflict", body = ApiErrorResponse),
         (status = 500, description = "Product store operation failed", body = ApiErrorResponse),
         (status = 503, description = "ProductStore is unavailable", body = ApiErrorResponse)
     )

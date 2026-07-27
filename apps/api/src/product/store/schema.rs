@@ -6,7 +6,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 use crate::product::{ProductErrorCode, ProductStoreError};
 
-const CURRENT_SCHEMA_VERSION: i64 = 3;
+const CURRENT_SCHEMA_VERSION: i64 = 4;
 const MAX_BUSY_TIMEOUT_MS: u64 = 120_000;
 
 const MIGRATION_001: &str = r#"
@@ -273,6 +273,12 @@ CREATE TABLE product_migration_preparations (
 );
 "#;
 
+const MIGRATION_004: &str = r#"
+ALTER TABLE product_preferences
+ADD COLUMN default_approval_policy TEXT NOT NULL DEFAULT 'ask'
+CHECK(default_approval_policy IN ('ask', 'auto', 'never'));
+"#;
+
 #[derive(Debug, Clone)]
 pub(super) struct ProductDatabase {
     path: Arc<PathBuf>,
@@ -369,6 +375,7 @@ fn apply_migrations(connection: &mut Connection) -> Result<(), ProductStoreError
     apply_migration_001(connection)?;
     apply_migration_002(connection)?;
     apply_migration_003(connection)?;
+    apply_migration_004(connection)?;
     Ok(())
 }
 
@@ -462,6 +469,31 @@ fn apply_migration_003(connection: &mut Connection) -> Result<(), ProductStoreEr
     Ok(())
 }
 
+fn apply_migration_004(connection: &mut Connection) -> Result<(), ProductStoreError> {
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|_| database_error(true))?;
+    if migration_is_applied(&transaction, 4)? {
+        transaction.commit().map_err(|_| database_error(true))?;
+        return Ok(());
+    }
+    transaction
+        .execute_batch(MIGRATION_004)
+        .map_err(|_| database_error(true))?;
+    transaction
+        .execute(
+            "INSERT INTO product_schema_migrations(version, name, applied_at) VALUES (?1, ?2, ?3)",
+            params![
+                4,
+                "product_default_approval_policy",
+                super::repository::now_rfc3339()
+            ],
+        )
+        .map_err(|_| database_error(true))?;
+    transaction.commit().map_err(|_| database_error(true))?;
+    Ok(())
+}
+
 fn database_error(startup: bool) -> ProductStoreError {
     if startup {
         ProductStoreError::new(
@@ -540,7 +572,7 @@ mod tests {
         let connection = database.connect().unwrap();
         let row = connection
             .query_row(
-                "SELECT theme, provider_model, provider_approval, provider_max_steps, revision FROM product_preferences WHERE singleton = 1",
+                "SELECT theme, provider_model, provider_approval, provider_max_steps, revision, default_approval_policy FROM product_preferences WHERE singleton = 1",
                 [],
                 |row| {
                     Ok((
@@ -549,6 +581,7 @@ mod tests {
                         row.get::<_, String>(2)?,
                         row.get::<_, i64>(3)?,
                         row.get::<_, i64>(4)?,
+                        row.get::<_, String>(5)?,
                     ))
                 },
             )
@@ -561,11 +594,13 @@ mod tests {
                 "fake".to_string(),
                 "never".to_string(),
                 12,
-                0
+                0,
+                "ask".to_string()
             )
         );
         assert!(migration_is_applied(&connection, 2).unwrap());
         assert!(migration_is_applied(&connection, 3).unwrap());
+        assert!(migration_is_applied(&connection, 4).unwrap());
         let preparations_table: i64 = connection
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_schema WHERE type = 'table' AND name = 'product_migration_preparations'",

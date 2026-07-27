@@ -10,10 +10,10 @@ use crate::product::{
     M1_BROWSER_SOURCE_SCHEMA_VERSION, M1BrowserMigrationRequest, M1MigrationIssue,
     MAX_MIGRATION_IDEMPOTENCY_KEY_BYTES, MAX_PRODUCT_API_BASE_BYTES, MAX_PRODUCT_PATH_BYTES,
     MAX_PRODUCT_PROVIDER_PROFILES, MAX_PRODUCT_SESSIONS, MAX_PRODUCT_TEXT_BYTES,
-    MAX_PRODUCT_WORKSPACES, ProductErrorCode, ProductProviderProfileId, ProductProviderSelection,
-    ProductProviderType, ProductSessionId, ProductStoreError, ProductThemePreference,
-    ProductWorkspaceId, ProductWorkspaceKind, UpdateProductPreferencesRequest,
-    UpdateProductProviderProfileRequest,
+    MAX_PRODUCT_WORKSPACES, ProductApprovalPreference, ProductErrorCode, ProductProviderProfileId,
+    ProductProviderSelection, ProductProviderType, ProductSessionId, ProductStoreError,
+    ProductThemePreference, ProductWorkspaceId, ProductWorkspaceKind,
+    UpdateProductPreferencesRequest, UpdateProductProviderProfileRequest,
 };
 
 pub(super) const MAX_PATH_BYTES: usize = MAX_PRODUCT_PATH_BYTES;
@@ -43,7 +43,9 @@ pub(super) struct ValidatedProviderProfile {
 #[derive(Debug, Clone)]
 pub(super) struct ValidatedPreferences {
     pub schema_version: u32,
+    pub expected_revision: Option<u64>,
     pub theme: ProductThemePreference,
+    pub default_approval_policy: Option<ProductApprovalPreference>,
     pub active_workspace_id: Option<ProductWorkspaceId>,
     pub active_session_id: Option<ProductSessionId>,
     pub provider_selection: Option<ProductProviderSelection>,
@@ -178,13 +180,23 @@ pub(super) fn validate_preferences(
     if request.active_session_id.is_some() && request.active_workspace_id.is_none() {
         return Err(invalid("active_session_id requires an active_workspace_id"));
     }
+    if request
+        .expected_revision
+        .is_some_and(|revision| revision > i64::MAX as u64)
+    {
+        return Err(invalid(
+            "expected preference revision is outside the supported range",
+        ));
+    }
     let provider_selection = request
         .provider_selection
         .map(validate_provider_selection)
         .transpose()?;
     Ok(ValidatedPreferences {
         schema_version: request.schema_version,
+        expected_revision: request.expected_revision,
         theme: request.theme,
+        default_approval_policy: request.default_approval_policy,
         active_workspace_id: request.active_workspace_id,
         active_session_id: request.active_session_id,
         provider_selection,
@@ -481,7 +493,8 @@ fn validate_path_input(path: &Path) -> Result<(), ProductStoreError> {
 
         if !matches!(
             path.components().next(),
-            Some(Component::Prefix(prefix)) if matches!(prefix.kind(), Prefix::Disk(_))
+            Some(Component::Prefix(prefix))
+                if matches!(prefix.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_))
         ) {
             return Err(invalid(
                 "workspace root must use a local drive path, not a UNC or device namespace",

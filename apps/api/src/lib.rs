@@ -212,6 +212,10 @@ pub fn router(state: ApiState) -> Router {
         .routes(routes!(product::routes::delete_product_provider_profile))
         .routes(routes!(product::routes::get_product_preferences))
         .routes(routes!(product::routes::update_product_preferences))
+        .routes(routes!(product::platform::list_product_memory_topics))
+        .routes(routes!(product::platform::get_product_memory_topic))
+        .routes(routes!(product::platform::delete_product_memory_topic))
+        .routes(routes!(product::platform::get_product_runtime_info))
         .merge(migration_router)
         .routes(routes!(create_job))
         .routes(routes!(job_events))
@@ -855,15 +859,36 @@ async fn prepare_job_launch(
 ) -> Result<JobLaunch, ApiError> {
     match req.product_session_id.as_ref() {
         Some(product_session_id) => {
-            prepare_product_job_launch(state, req, product_session_id).await
+            let approval_policy = resolve_product_job_approval_policy(state, req).await?;
+            prepare_product_job_launch(state, req, product_session_id, approval_policy).await
         }
-        None => prepare_generic_job_launch(state, req).await,
+        None => {
+            let approval_policy = req.approval.unwrap_or(ApprovalPolicy::Ask);
+            prepare_generic_job_launch(state, req, approval_policy).await
+        }
     }
+}
+
+async fn resolve_product_job_approval_policy(
+    state: &ApiState,
+    req: &CreateJobRequest,
+) -> Result<ApprovalPolicy, ApiError> {
+    if let Some(explicit) = req.approval {
+        return Ok(explicit);
+    }
+    let store = state.product_store()?;
+    let preference = store.get_preferences().await?.default_approval_policy;
+    Ok(match preference {
+        ProductApprovalPreference::Ask => ApprovalPolicy::Ask,
+        ProductApprovalPreference::Auto => ApprovalPolicy::Auto,
+        ProductApprovalPreference::Never => ApprovalPolicy::Never,
+    })
 }
 
 async fn prepare_generic_job_launch(
     state: &ApiState,
     req: &CreateJobRequest,
+    approval_policy: ApprovalPolicy,
 ) -> Result<JobLaunch, ApiError> {
     let (workspace, config) = workspace_and_config_for_create_job(state, req)?;
     let state_store = state_store_for_parts(&workspace, &config);
@@ -894,7 +919,15 @@ async fn prepare_generic_job_launch(
         job_id,
         resume_state,
     );
-    let engine = match assemble_job_engine(state, &record.message, req, Arc::clone(&record)).await {
+    let engine = match assemble_job_engine(
+        state,
+        &record.message,
+        req,
+        Arc::clone(&record),
+        approval_policy,
+    )
+    .await
+    {
         Ok(engine) => engine,
         Err(error) => {
             release_runtime_resume_claim(&state_store, resume_claim.take()).await;
@@ -922,6 +955,7 @@ async fn prepare_product_job_launch(
     state: &ApiState,
     req: &CreateJobRequest,
     product_session_id: &ProductSessionId,
+    approval_policy: ApprovalPolicy,
 ) -> Result<JobLaunch, ApiError> {
     let store = state.product_store()?;
     let claim = store.claim_session_turn(product_session_id).await?;
@@ -976,7 +1010,15 @@ async fn prepare_product_job_launch(
         job_id,
         resume_state,
     );
-    let engine = match assemble_job_engine(state, &record.message, req, Arc::clone(&record)).await {
+    let engine = match assemble_job_engine(
+        state,
+        &record.message,
+        req,
+        Arc::clone(&record),
+        approval_policy,
+    )
+    .await
+    {
         Ok(engine) => engine,
         Err(error) => {
             release_runtime_resume_claim(&state_store, resume_claim.take()).await;
@@ -1726,6 +1768,7 @@ async fn assemble_job_engine(
     message: &str,
     req: &CreateJobRequest,
     record: Arc<JobRecord>,
+    approval_policy: ApprovalPolicy,
 ) -> anyhow::Result<Engine> {
     let config = &record.config;
     let model_id = req
@@ -1740,7 +1783,6 @@ async fn assemble_job_engine(
 
     let workspace = record.workspace.clone();
     let state_store = state_store_for_record(&record);
-    let approval_policy = req.approval.unwrap_or(ApprovalPolicy::Ask);
     let input_provider: Arc<dyn UserInputProvider> = Arc::new(ApiInputProvider {
         record: record.clone(),
         index: state_store.index.clone(),
@@ -2377,6 +2419,14 @@ impl ApiError {
         }
     }
 
+    pub(crate) fn not_found_with_code(code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::NOT_FOUND,
+            code,
+            message: message.into(),
+        }
+    }
+
     fn conflict(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::CONFLICT,
@@ -2424,8 +2474,12 @@ impl ApiError {
 impl From<ProductStoreError> for ApiError {
     fn from(error: ProductStoreError) -> Self {
         let status = match error.code {
-            ProductErrorCode::ProductNotFound => StatusCode::NOT_FOUND,
-            ProductErrorCode::ProductInvalidInput => StatusCode::BAD_REQUEST,
+            ProductErrorCode::ProductNotFound | ProductErrorCode::ProductMemoryNotFound => {
+                StatusCode::NOT_FOUND
+            }
+            ProductErrorCode::ProductInvalidInput | ProductErrorCode::ProductMemoryInvalidSlug => {
+                StatusCode::BAD_REQUEST
+            }
             ProductErrorCode::ProductStoreUnavailable => StatusCode::SERVICE_UNAVAILABLE,
             ProductErrorCode::ProductStorageFailure => StatusCode::INTERNAL_SERVER_ERROR,
             ProductErrorCode::ProductSessionActive
@@ -2434,6 +2488,8 @@ impl From<ProductStoreError> for ApiError {
             | ProductErrorCode::ProductSessionRuntimeStateMissing
             | ProductErrorCode::ProductSessionRuntimeStateCorrupt
             | ProductErrorCode::ProductBindingCorrupt
+            | ProductErrorCode::ProductRevisionConflict
+            | ProductErrorCode::ProductMemoryConflict
             | ProductErrorCode::MigrationIdempotencyConflict => StatusCode::CONFLICT,
         };
         let message = if error.code == ProductErrorCode::ProductStorageFailure {
