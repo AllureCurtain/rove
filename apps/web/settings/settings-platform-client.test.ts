@@ -166,17 +166,22 @@ describe("settings platform client", () => {
           method,
           body: typeof init?.body === "string" ? init.body : undefined,
         });
-        if (url === "/api/product/memory/topics" && method === "GET") {
+        if (
+          url === "/api/product/memory/topics?workspace_id=workspace-1" &&
+          method === "GET"
+        ) {
           return jsonResponse({ topics: [topic], total: 1 });
         }
         if (
-          url === "/api/product/memory/topics/project-conventions" &&
+          url ===
+            "/api/product/memory/topics/project-conventions?workspace_id=workspace-1" &&
           method === "GET"
         ) {
           return jsonResponse({ topic, content: "Durable fact.\n", truncated: false });
         }
         if (
-          url === "/api/product/memory/topics/project-conventions" &&
+          url ===
+            "/api/product/memory/topics/project-conventions?workspace_id=workspace-1" &&
           method === "DELETE"
         ) {
           return new Response(null, { status: 204 });
@@ -211,9 +216,9 @@ describe("settings platform client", () => {
     );
     const client = createSettingsPlatformClient({ fetch: fetchMock });
 
-    await client.listMemoryTopics();
-    await client.getMemoryTopic("project-conventions");
-    await client.deleteMemoryTopic("project-conventions");
+    await client.listMemoryTopics("workspace-1");
+    await client.getMemoryTopic("workspace-1", "project-conventions");
+    await client.deleteMemoryTopic("workspace-1", "project-conventions");
     await client.getRuntimeInfo();
     const current = await client.getPreferences();
     const updated = await client.updateDefaultApprovalPolicy(current, "never");
@@ -221,9 +226,9 @@ describe("settings platform client", () => {
     expect(updated.default_approval_policy).toBe("never");
     expect(updated.provider_selection?.approval).toBe("never");
     expect(calls.map(({ url, method }) => `${method} ${url}`)).toEqual([
-      "GET /api/product/memory/topics",
-      "GET /api/product/memory/topics/project-conventions",
-      "DELETE /api/product/memory/topics/project-conventions",
+      "GET /api/product/memory/topics?workspace_id=workspace-1",
+      "GET /api/product/memory/topics/project-conventions?workspace_id=workspace-1",
+      "DELETE /api/product/memory/topics/project-conventions?workspace_id=workspace-1",
       "GET /api/product/runtime",
       "GET /api/product/preferences",
       "PUT /api/product/preferences",
@@ -249,7 +254,10 @@ describe("settings platform client", () => {
     await expect(client.updatePreferences(missingCas)).rejects.toBeInstanceOf(
       ProductApiSchemaError,
     );
-    await expect(client.getMemoryTopic("../private")).rejects.toBeInstanceOf(
+    await expect(
+      client.getMemoryTopic("workspace-1", "../private"),
+    ).rejects.toBeInstanceOf(ProductApiSchemaError);
+    expect(() => client.listMemoryTopics("\u0000workspace")).toThrow(
       ProductApiSchemaError,
     );
     expect(fetchMock).not.toHaveBeenCalled();

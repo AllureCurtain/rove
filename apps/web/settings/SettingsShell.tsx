@@ -160,7 +160,22 @@ export function SettingsShell(props: SettingsShellProps) {
             onRemoveWorkspace={onRemoveWorkspace}
           />
         ) : null}
-        {section === "memory" ? <MemorySettings client={settingsClient} /> : null}
+        {section === "memory" ? (
+          activeWorkspaceId ? (
+            <MemorySettings
+              key={activeWorkspaceId}
+              client={settingsClient}
+              workspaceId={activeWorkspaceId}
+            />
+          ) : (
+            <section className="settings-section" aria-labelledby="memory-heading">
+              <h2 id="memory-heading">Memory</h2>
+              <p className="placeholder-note">
+                Select a workspace to inspect its durable memory.
+              </p>
+            </section>
+          )
+        ) : null}
         {section === "sessions" ? (
           <SessionsSettings
             workspaces={workspaces}

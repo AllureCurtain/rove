@@ -680,6 +680,10 @@ textarea:focus {
   align-content: start;
 }
 
+.transcript-run {
+  display: contents;
+}
+
 .restore-notice {
   display: grid;
   gap: 8px;

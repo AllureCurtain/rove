@@ -83,6 +83,7 @@ export interface MockProductApiState {
   transcripts: Record<string, MockTranscript>;
   providerProfiles: MockProviderProfile[];
   memoryTopics: Record<string, ProductMemoryTopicContentResponse>;
+  memoryWorkspaceRequests: Array<string | null>;
   jobs: Array<Record<string, unknown>>;
   jobStarts: Array<{
     job_id: string;
@@ -135,6 +136,7 @@ export async function installMockProductApi(
     transcripts: structuredClone(options.transcripts ?? {}),
     providerProfiles: structuredClone(options.providerProfiles ?? []),
     memoryTopics: structuredClone(options.memoryTopics ?? {}),
+    memoryWorkspaceRequests: [],
     jobs: [],
     jobStarts: [],
     eventConnections: [],
@@ -483,6 +485,15 @@ export async function installMockProductApi(
       return json(route, state.preferences);
     }
     if (path === "/product/memory/topics" && method === "GET") {
+      const workspaceId = url.searchParams.get("workspace_id");
+      state.memoryWorkspaceRequests.push(workspaceId);
+      if (!state.workspaces.some((workspace) => workspace.id === workspaceId)) {
+        return json(
+          route,
+          { code: "product_not_found", error: "product workspace was not found" },
+          404,
+        );
+      }
       const topics = Object.values(state.memoryTopics).map(
         (entry) => entry.topic,
       );
@@ -492,6 +503,15 @@ export async function installMockProductApi(
       /^\/product\/memory\/topics\/([^/]+)$/u,
     );
     if (memoryTopicMatch && method === "GET") {
+      const workspaceId = url.searchParams.get("workspace_id");
+      state.memoryWorkspaceRequests.push(workspaceId);
+      if (!state.workspaces.some((workspace) => workspace.id === workspaceId)) {
+        return json(
+          route,
+          { code: "product_not_found", error: "product workspace was not found" },
+          404,
+        );
+      }
       const slug = decodeURIComponent(memoryTopicMatch[1]!);
       const topic = state.memoryTopics[slug];
       return topic
@@ -503,6 +523,15 @@ export async function installMockProductApi(
           );
     }
     if (memoryTopicMatch && method === "DELETE") {
+      const workspaceId = url.searchParams.get("workspace_id");
+      state.memoryWorkspaceRequests.push(workspaceId);
+      if (!state.workspaces.some((workspace) => workspace.id === workspaceId)) {
+        return json(
+          route,
+          { code: "product_not_found", error: "product workspace was not found" },
+          404,
+        );
+      }
       const slug = decodeURIComponent(memoryTopicMatch[1]!);
       if (!state.memoryTopics[slug]) {
         return json(

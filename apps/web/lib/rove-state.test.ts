@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { createWorkbenchState, workbenchReducer } from "./rove-state";
+import {
+  createWorkbenchState,
+  selectTranscriptTimeline,
+  workbenchReducer,
+} from "./rove-state";
 import type { PlanRevision, StreamEvent } from "./rove-types";
 
 const emptyBudgetSnapshot = {
@@ -28,6 +32,270 @@ function planRevision(overrides: Partial<PlanRevision> = {}): PlanRevision {
 }
 
 describe("workbenchReducer", () => {
+  it("keeps canonical message, approval, input, tool-result, and follow-up order", () => {
+    let state = workbenchReducer(createWorkbenchState(), {
+      type: "job_created",
+      jobId: "job-1",
+      runId: "run-1",
+    });
+    const events: Array<{ seq: number; event: StreamEvent }> = [
+      {
+        seq: 1,
+        event: {
+          type: "run_started",
+          run_id: "run-1",
+          job_id: "job-1",
+          user_message: "Inspect the workspace",
+        },
+      },
+      {
+        seq: 2,
+        event: {
+          type: "llm_message",
+          full: "I will inspect it.",
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+        },
+      },
+      {
+        seq: 3,
+        event: {
+          type: "tool_call_started",
+          call_id: "approval-call",
+          name: "write_file",
+          args: { path: "notes.txt" },
+        },
+      },
+      {
+        seq: 4,
+        event: {
+          type: "tool_call_approval_needed",
+          call_id: "approval-call",
+          name: "write_file",
+          args: { path: "notes.txt" },
+          reason: "Writing a file requires approval",
+        },
+      },
+      {
+        seq: 5,
+        event: {
+          type: "input_needed",
+          input_id: "input-1",
+          prompt: "Which format should I use?",
+        },
+      },
+      {
+        seq: 6,
+        event: {
+          type: "tool_call_started",
+          call_id: "read-call",
+          name: "read_file",
+          args: { path: "README.md" },
+        },
+      },
+      {
+        seq: 7,
+        event: {
+          type: "tool_call_completed",
+          call_id: "read-call",
+          result: {
+            call_id: "read-call",
+            output: "read complete",
+            mutations: [],
+          },
+        },
+      },
+      {
+        seq: 8,
+        event: {
+          type: "llm_message",
+          full: "The read is complete.",
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+        },
+      },
+    ];
+    for (const stored of events) {
+      state = workbenchReducer(state, { type: "stream_event", ...stored });
+    }
+
+    const group = selectTranscriptTimeline(state)[0]!;
+    expect(group.runId).toBe("run-1");
+    expect(
+      group.items.map((item) => {
+        switch (item.kind) {
+          case "message":
+            return `message:${item.message.content}`;
+          case "tool":
+            return `tool:${item.tool.id}:${item.tool.status}`;
+          case "input":
+            return `input:${item.input.id}`;
+        }
+      }),
+    ).toEqual([
+      "message:Inspect the workspace",
+      "message:I will inspect it.",
+      "tool:approval-call:waiting",
+      "input:input-1",
+      "tool:read-call:done",
+      "message:The read is complete.",
+    ]);
+    expect(group.items[2]?.entry.eventSeq).toBe(3);
+
+    const replayed = workbenchReducer(state, {
+      type: "stream_event",
+      ...events[6]!,
+    });
+    expect(replayed).toBe(state);
+    expect(selectTranscriptTimeline(replayed)[0]?.items).toHaveLength(6);
+  });
+
+  it("places distinct run completion output after intervening tool activity", () => {
+    let state = workbenchReducer(createWorkbenchState(), {
+      type: "job_created",
+      jobId: "job-1",
+      runId: "run-1",
+    });
+    const events: Array<{ seq: number; event: StreamEvent }> = [
+      {
+        seq: 1,
+        event: {
+          type: "run_started",
+          run_id: "run-1",
+          job_id: "job-1",
+          user_message: "Inspect the workspace",
+        },
+      },
+      {
+        seq: 2,
+        event: {
+          type: "llm_message",
+          full: "I will inspect it.",
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+        },
+      },
+      {
+        seq: 3,
+        event: {
+          type: "tool_call_started",
+          call_id: "read-call",
+          name: "read_file",
+          args: { path: "README.md" },
+        },
+      },
+      {
+        seq: 4,
+        event: {
+          type: "tool_call_completed",
+          call_id: "read-call",
+          result: { call_id: "read-call", output: "read complete", mutations: [] },
+        },
+      },
+      {
+        seq: 5,
+        event: {
+          type: "run_completed",
+          reason: "model_error",
+          output: "The run stopped after the read failed.",
+        },
+      },
+    ];
+    for (const stored of events) {
+      state = workbenchReducer(state, { type: "stream_event", ...stored });
+    }
+
+    const group = selectTranscriptTimeline(state)[0]!;
+    expect(
+      group.items.map((item) => {
+        switch (item.kind) {
+          case "message":
+            return `message:${item.message.content}`;
+          case "tool":
+            return `tool:${item.tool.id}`;
+          case "input":
+            return `input:${item.input.id}`;
+        }
+      }),
+    ).toEqual([
+      "message:Inspect the workspace",
+      "message:I will inspect it.",
+      "tool:read-call",
+      "message:The run stopped after the read failed.",
+    ]);
+    expect(group.items.at(-1)?.entry.eventSeq).toBe(5);
+    expect(state.messages.map((message) => message.content)).toEqual([
+      "Inspect the workspace",
+      "I will inspect it.",
+      "The run stopped after the read failed.",
+    ]);
+  });
+
+  it("sorts a recovered earlier sequence into its canonical position without replay duplicates", () => {
+    let state = workbenchReducer(createWorkbenchState(), {
+      type: "job_created",
+      jobId: "job-1",
+      runId: "run-1",
+    });
+    state = workbenchReducer(state, {
+      type: "stream_event",
+      seq: 1,
+      event: {
+        type: "run_started",
+        run_id: "run-1",
+        job_id: "job-1",
+        user_message: "Question",
+      },
+    });
+    state = workbenchReducer(state, {
+      type: "stream_event",
+      seq: 3,
+      event: {
+        type: "tool_call_started",
+        call_id: "call-1",
+        name: "read_file",
+        args: { path: "README.md" },
+      },
+    });
+    state = workbenchReducer(state, {
+      type: "stream_event",
+      seq: 4,
+      event: {
+        type: "tool_call_completed",
+        call_id: "call-1",
+        result: { call_id: "call-1", output: "done", mutations: [] },
+      },
+    });
+    const recovered = workbenchReducer(state, {
+      type: "stream_event",
+      seq: 2,
+      event: {
+        type: "llm_message",
+        full: "Earlier assistant turn",
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+      },
+    });
+
+    expect(
+      selectTranscriptTimeline(recovered)[0]?.items.map((item) => [
+        item.kind,
+        item.entry.eventSeq,
+      ]),
+    ).toEqual([
+      ["message", 1],
+      ["message", 2],
+      ["tool", 3],
+    ]);
+    const replayed = workbenchReducer(recovered, {
+      type: "stream_event",
+      seq: 2,
+      event: {
+        type: "llm_message",
+        full: "Earlier assistant turn",
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+      },
+    });
+    expect(replayed).toBe(recovered);
+    expect(selectTranscriptTimeline(replayed)[0]?.items).toHaveLength(3);
+  });
+
   it("hydrates user messages from run_started events and ignores duplicate seq values", () => {
     const runStarted = {
       type: "run_started",
@@ -668,6 +936,7 @@ describe("workbenchReducer", () => {
     expect(state.statusText).toBe("Run completed: final");
     expect(state.messages.map((message) => message.content)).toEqual([
       "summarize",
+      "summary",
       "done",
     ]);
     expect(state.tools).toEqual(
@@ -676,8 +945,13 @@ describe("workbenchReducer", () => {
         expect.objectContaining({ id: "call-2", status: "error" }),
       ]),
     );
-    expect(state.pendingInputs).toEqual([
-      { input_id: "input-1", prompt: "Continue?" },
+    expect(state.pendingInputs).toEqual([]);
+    expect(state.transcriptInputs).toEqual([
+      expect.objectContaining({
+        id: "input-1",
+        prompt: "Continue?",
+        status: "closed",
+      }),
     ]);
     expect(state.plan?.current_step).toBe(1);
     expect(state.trace.map((entry) => entry.label)).toEqual(
@@ -823,6 +1097,14 @@ describe("workbenchReducer", () => {
     });
 
     expect(submitted.pendingInputs).toHaveLength(0);
+    expect(submitted.transcriptInputs[0]).toMatchObject({
+      id: "input-1",
+      status: "submitted",
+    });
+    expect(selectTranscriptTimeline(submitted)[0]?.items[0]).toMatchObject({
+      kind: "input",
+      input: { id: "input-1", status: "submitted" },
+    });
   });
 
   it("syncs pending interactions from a job state response", () => {
@@ -869,6 +1151,46 @@ describe("workbenchReducer", () => {
         call_id: "call-1",
         reason: "destructive tool requires explicit approval",
       },
+    });
+  });
+
+  it("closes a missing pending input from a running job snapshot", () => {
+    const created = workbenchReducer(createWorkbenchState(), {
+      type: "job_created",
+      jobId: "job-1",
+      runId: "run-1",
+    });
+    const waiting = workbenchReducer(created, {
+      type: "stream_event",
+      seq: 1,
+      event: {
+        type: "input_needed",
+        input_id: "input-1",
+        prompt: "Which branch should I use?",
+      },
+    });
+
+    const synced = workbenchReducer(waiting, {
+      type: "job_state_synced",
+      state: {
+        job_id: "job-1",
+        run_id: "run-1",
+        status: "running",
+        event_count: 1,
+        events: [],
+        pending_approvals: [],
+        pending_inputs: [],
+      },
+    });
+
+    expect(synced.busy).toBe(true);
+    expect(synced.pendingInputs).toEqual([]);
+    expect(synced.transcriptInputs).toEqual([
+      expect.objectContaining({ id: "input-1", status: "closed" }),
+    ]);
+    expect(selectTranscriptTimeline(synced)[0]?.items[0]).toMatchObject({
+      kind: "input",
+      input: { id: "input-1", status: "closed" },
     });
   });
 

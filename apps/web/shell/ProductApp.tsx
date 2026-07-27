@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Composer } from "../chat/Composer";
 import { Transcript } from "../chat/Transcript";
 import { RunInspector } from "../inspector/RunInspector";
+import { selectTranscriptTimeline } from "../lib/rove-state";
 import { SettingsShell } from "../settings/SettingsShell";
 import { matchKeyboardShortcut } from "../settings/keyboard-settings-model";
 import { createSettingsPlatformClient } from "../settings/settings-platform-client";
@@ -352,12 +353,7 @@ function ServerProductApp() {
                   </button>
                 </div>
                 <Transcript
-                  messages={continuity.runState.messages}
-                  tools={[
-                    ...continuity.runState.tools,
-                    ...continuity.runState.historicalTools,
-                  ]}
-                  pendingInputs={continuity.runState.pendingInputs}
+                  timeline={selectTranscriptTimeline(continuity.runState)}
                   approvalBusy={continuity.approvalBusy}
                   inputBusy={continuity.inputBusy}
                   restoreState={transcriptRestoreState}

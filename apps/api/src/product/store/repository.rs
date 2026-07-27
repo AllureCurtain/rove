@@ -110,6 +110,14 @@ impl ProductRepository {
         Ok(workspaces)
     }
 
+    pub(super) fn get_workspace(
+        &self,
+        workspace_id: &ProductWorkspaceId,
+    ) -> Result<ProductWorkspace, ProductStoreError> {
+        let connection = self.database.connect()?;
+        get_workspace(&connection, workspace_id)
+    }
+
     pub(super) fn create_workspace(
         &self,
         request: CreateProductWorkspaceRequest,

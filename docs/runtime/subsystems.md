@@ -329,8 +329,12 @@ raw keys.
 Web Complete C1 wires the default `ProductApp` to those C0 clients. Startup
 loads the API-authoritative workspace/session catalog, preferences, and provider
 profiles. Session entry reads the canonical transcript and projects messages,
-tools, approvals, inputs, and run identity; partial history and storage failures
-remain explicit and retryable instead of becoming an empty conversation.
+tools, approvals, inputs, and run identity through the shared reducer. Its
+ordered presentation index uses run ordinal/event sequence identity, keeps
+tool and interaction cards at their canonical position, and deduplicates
+replayed event sequences. Handled input prompts remain read-only without
+persisting the answer. Partial history and storage failures remain explicit and
+retryable instead of becoming an empty conversation.
 Product turns include the exact `product_session_id` and omit client `resume`,
 so the server resolves the session's own latest runtime binding rather than
 workspace-global `latest`.
@@ -343,6 +347,8 @@ retried automatically: the shell performs bounded session-binding reads,
 attaches an advanced binding when visible, or restores the canonical transcript
 and surfaces an explicit uncertain state. Provider list/create/update/delete and active
 selection use the API store; raw keys remain outside browser state and requests.
+A failed cancel request leaves that focused observation attached, while a
+confirmed terminal cancellation closes it normally.
 
 Web Complete C2 adds revision-safe preferences and a durable default approval
 policy honored by product jobs, bounded durable-memory and runtime-health
@@ -350,6 +356,18 @@ routes, and complete Settings UI. All nine sections now have real capabilities:
 theme, provider CRUD/test/models, approval and step defaults, workspace/session
 management and safe export, Memory browse/delete, four keyboard shortcuts,
 Advanced Benchmark, and runtime/resume health.
+
+The product durable-memory routes require a server-owned `workspace_id`. They
+resolve ProductStore's canonical root through the same config rebase used by
+product jobs; browser-supplied filesystem paths are not accepted. The Web
+Memory surface always requires the rebased durable directory to remain inside
+the selected workspace, including when general runtime configuration enables
+`state.allow_external_paths`. An external or cross-workspace resolved directory
+returns typed `product_memory_conflict`; unknown workspaces and absent topics
+return typed 404 errors. DELETE returns 204 for a physically deleted
+selected-workspace file, including a valid unindexed topic. If no topic file was
+deleted, stale-index-only cleanup and a fully absent topic both return typed
+404.
 
 Web Complete C3 wraps server product state in `M1MigrationGate`. Before any
 catalog read, it checks legacy browser state and the durable migration receipt;
