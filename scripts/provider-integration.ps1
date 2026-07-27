@@ -160,12 +160,20 @@ function Stop-ProcessTree([System.Diagnostics.Process]$Process) {
     }
 }
 
+function Get-LocalApiHeaders {
+    $headers = @{}
+    if ($env:ROVE_API_TOKEN) {
+        $headers.Authorization = "Bearer $($env:ROVE_API_TOKEN)"
+    }
+    return $headers
+}
+
 function Wait-HttpOk([string]$Uri, [int]$TimeoutSeconds, [string]$Name) {
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     $lastError = $null
     while ((Get-Date) -lt $deadline) {
         try {
-            $response = Invoke-WebRequest -UseBasicParsing -Uri $Uri -TimeoutSec 3
+            $response = Invoke-WebRequest -UseBasicParsing -Uri $Uri -Headers (Get-LocalApiHeaders) -TimeoutSec 3
             if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 500) {
                 return
             }
@@ -179,10 +187,10 @@ function Wait-HttpOk([string]$Uri, [int]$TimeoutSeconds, [string]$Name) {
 
 function Invoke-Json([string]$Method, [string]$Uri, [object]$Body = $null) {
     if ($null -eq $Body) {
-        return Invoke-RestMethod -Method $Method -Uri $Uri -TimeoutSec 30
+        return Invoke-RestMethod -Method $Method -Uri $Uri -Headers (Get-LocalApiHeaders) -TimeoutSec 30
     }
     $json = $Body | ConvertTo-Json -Depth 20 -Compress
-    return Invoke-RestMethod -Method $Method -Uri $Uri -ContentType "application/json" -Body $json -TimeoutSec 30
+    return Invoke-RestMethod -Method $Method -Uri $Uri -Headers (Get-LocalApiHeaders) -ContentType "application/json" -Body $json -TimeoutSec 30
 }
 
 function Wait-JobTerminal([string]$JobId, [string]$Name, [int]$TimeoutSeconds = 180, [string]$StateArtifactName = "") {
@@ -395,6 +403,19 @@ function New-ProviderProfileBody {
     return $provider
 }
 
+function New-ProductProviderProfileBody([string]$Label) {
+    $profile = @{
+        label = $Label
+        provider_type = $Provider
+        api_base = $ApiBase
+        default_model = $Model
+    }
+    if (Provider-RequiresKey $Provider) {
+        $profile.api_key_env = $ApiKeyEnv
+    }
+    return $profile
+}
+
 function Classify-ProviderOutput([int]$ExitCode, [string]$Text) {
     if ($ExitCode -eq 0) {
         return "pass"
@@ -408,7 +429,7 @@ function Classify-ProviderOutput([int]$ExitCode, [string]$Text) {
     if ($Text -match "Provider request to .* failed|request failed|error sending request|Connect|timed out|timeout|connection|dns|NameResolution|refused|unreachable") {
         return "network/connectivity"
     }
-    if ($Text -match "did not emit an echo tool call|did not complete echo tool output|unexpected provider smoke output|tool-use|tool use") {
+    if ($Text -match "did not emit a read_file tool call|did not complete read_file tool output|unexpected provider smoke output|tool-use|tool use") {
         return "model tool-use/follow-up behavior"
     }
     if ($Text -match "panic|SQLite|database is locked|lost run_id|corrupt|missing report") {
@@ -431,7 +452,7 @@ function Invoke-ApiSmoke {
     }
     $apiProcess = $null
     try {
-        $apiProcess = Start-BackgroundCommand -Command "cargo" -Arguments @("run", "--bin", "rove-api", "--", "--addr", $ApiAddr, "-C", $WorkspaceDir) -WorkingDirectory $RepoRoot -StdoutLog (Join-Path $ArtifactsDir "provider-full-api.out.log") -StderrLog (Join-Path $ArtifactsDir "provider-full-api.err.log")
+        $apiProcess = Start-BackgroundCommand -Command "cargo" -Arguments @("run", "-p", "rove-api", "--bin", "rove-api", "--", "--addr", $ApiAddr, "-C", $WorkspaceDir) -WorkingDirectory $RepoRoot -StdoutLog (Join-Path $ArtifactsDir "provider-full-api.out.log") -StderrLog (Join-Path $ArtifactsDir "provider-full-api.err.log")
         Wait-HttpOk -Uri "$ApiBaseLocal/runs?limit=1" -TimeoutSeconds 90 -Name "rove-api"
 
         $plain = Invoke-Json -Method Post -Uri "$ApiBaseLocal/jobs" -Body @{
@@ -447,7 +468,7 @@ function Invoke-ApiSmoke {
         $plainReport | ConvertTo-Json -Depth 40 | Set-Content -LiteralPath (Join-Path $ArtifactsDir "provider-full-plain.report.json")
 
         $tool = Invoke-Json -Method Post -Uri "$ApiBaseLocal/jobs" -Body @{
-            message = "Use the echo tool exactly once with message `"rove provider api tool ok`", then reply with exactly: rove provider api done"
+            message = "Use the read_file tool exactly once to read provider-tool-fixture.txt, then reply with exactly: rove provider api done"
             model = $Model
             approval = "auto"
             max_steps = 4
@@ -465,7 +486,7 @@ function Invoke-ApiSmoke {
             throw "plain API provider run did not complete successfully"
         }
         if ($toolState.status -ne "done" -or $toolReport.status -ne "success" -or [int]$toolReport.tool_calls -lt 1 -or [int]$toolReport.tool_failures -ne 0) {
-            throw "tool API provider run did not complete successful echo tool use"
+            throw "tool API provider run did not complete successful read_file tool use"
         }
 
         @{
@@ -504,8 +525,56 @@ function Invoke-WebSmoke {
     $webProcess = $null
     try {
         Add-CorsOrigins @($WebBase, "http://localhost:$WebPort")
-        $apiProcess = Start-BackgroundCommand -Command "cargo" -Arguments @("run", "--bin", "rove-api", "--", "--addr", $ApiAddr, "-C", $WebWorkspaceDir) -WorkingDirectory $RepoRoot -StdoutLog (Join-Path $ArtifactsDir "web-provider-api.out.log") -StderrLog (Join-Path $ArtifactsDir "web-provider-api.err.log")
+        $apiProcess = Start-BackgroundCommand -Command "cargo" -Arguments @("run", "-p", "rove-api", "--bin", "rove-api", "--", "--addr", $ApiAddr, "-C", $WebWorkspaceDir) -WorkingDirectory $RepoRoot -StdoutLog (Join-Path $ArtifactsDir "web-provider-api.out.log") -StderrLog (Join-Path $ArtifactsDir "web-provider-api.err.log")
         Wait-HttpOk -Uri "$ApiBaseLocal/runs?limit=1" -TimeoutSeconds 90 -Name "rove-api"
+
+        $profileLabel = "Provider integration $Provider"
+        $profileBody = New-ProductProviderProfileBody -Label $profileLabel
+        $profileCatalog = Invoke-Json -Method Get -Uri "$ApiBaseLocal/product/provider-profiles"
+        $productProviderProfile = @($profileCatalog.provider_profiles) |
+            Where-Object { $_.label -eq $profileLabel } |
+            Select-Object -First 1
+        if ($productProviderProfile) {
+            $productProviderProfile = Invoke-Json -Method Put -Uri "$ApiBaseLocal/product/provider-profiles/$($productProviderProfile.id)" -Body $profileBody
+        } else {
+            $productProviderProfile = Invoke-Json -Method Post -Uri "$ApiBaseLocal/product/provider-profiles" -Body $profileBody
+        }
+
+        $canonicalWebWorkspace = (Resolve-Path -LiteralPath $WebWorkspaceDir).Path
+        $productWorkspace = Invoke-Json -Method Post -Uri "$ApiBaseLocal/product/workspaces" -Body @{
+            root = $canonicalWebWorkspace
+            kind = "folder"
+            display_name = "Provider integration workspace"
+            pinned = $false
+        }
+        $productSession = Invoke-Json -Method Post -Uri "$ApiBaseLocal/product/sessions" -Body @{
+            workspace_id = [string]$productWorkspace.id
+            title = "Provider browser $((Get-Date).ToString('yyyyMMdd-HHmmss'))"
+        }
+        $currentPreferences = Invoke-Json -Method Get -Uri "$ApiBaseLocal/product/preferences"
+        $productPreferences = Invoke-Json -Method Put -Uri "$ApiBaseLocal/product/preferences" -Body @{
+            schema_version = [int]$currentPreferences.schema_version
+            expected_revision = [long]$currentPreferences.revision
+            theme = [string]$currentPreferences.theme
+            default_approval_policy = "auto"
+            active_workspace_id = [string]$productWorkspace.id
+            active_session_id = [string]$productSession.id
+            provider_selection = @{
+                profile_id = [string]$productProviderProfile.id
+                model = $Model
+                approval = "auto"
+                max_steps = 4
+            }
+        }
+        if ([string]$productPreferences.provider_selection.profile_id -ne [string]$productProviderProfile.id) {
+            throw "product preferences did not persist the provider profile selection"
+        }
+        @{
+            provider_profile = $productProviderProfile
+            workspace = $productWorkspace
+            session = $productSession
+            preferences = $productPreferences
+        } | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $ArtifactsDir "web-provider-product-state.json")
 
         $env:ROVE_API_BASE = $ApiBaseLocal
         $env:ROVE_WEB_PORT = $WebPort
@@ -520,6 +589,9 @@ function Invoke-WebSmoke {
         $env:ROVE_WEB_PROVIDER = $Provider
         $env:ROVE_WEB_PROVIDER_API_BASE = $ApiBase
         $env:ROVE_WEB_PROVIDER_KEY_ENV = $ApiKeyEnv
+        $env:ROVE_WEB_PRODUCT_WORKSPACE_ID = [string]$productWorkspace.id
+        $env:ROVE_WEB_PRODUCT_SESSION_ID = [string]$productSession.id
+        $env:ROVE_WEB_PRODUCT_PROFILE_ID = [string]$productProviderProfile.id
         $nodeScript = @'
 const { chromium } = require('@playwright/test');
 const fs = require('fs');
@@ -530,24 +602,38 @@ const providerApiBase = process.env.ROVE_WEB_PROVIDER_API_BASE;
 const providerKeyEnv = process.env.ROVE_WEB_PROVIDER_KEY_ENV;
 const resultPath = process.env.ROVE_WEB_PROVIDER_RESULT;
 const screenshotPath = process.env.ROVE_WEB_PROVIDER_SCREENSHOT;
-const prompt = 'Use the echo tool exactly once with message "rove provider web ok". After the tool returns, reply only with that exact message.';
+const workspaceId = process.env.ROVE_WEB_PRODUCT_WORKSPACE_ID;
+const productSessionId = process.env.ROVE_WEB_PRODUCT_SESSION_ID;
+const profileId = process.env.ROVE_WEB_PRODUCT_PROFILE_ID;
+const prompt = 'Use the read_file tool exactly once to read provider-tool-fixture.txt. After the tool returns, reply only with: rove provider web ok';
+let browser;
 (async () => {
-  const browser = await chromium.launch();
+  browser = await chromium.launch();
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
-  await page.goto(baseURL, { waitUntil: 'networkidle' });
-  if (provider && provider !== 'default') {
-    await page.getByLabel('Provider').selectOption(provider);
-    await page.getByLabel('API base').fill(providerApiBase);
-    const keyEnv = page.getByLabel('Key env');
-    if (await keyEnv.count()) {
-      await keyEnv.fill(providerKeyEnv);
-    }
+  await page.goto(baseURL, { waitUntil: 'domcontentloaded' });
+  const expectedPath = `/w/${encodeURIComponent(workspaceId)}/s/${encodeURIComponent(productSessionId)}`;
+  await page.waitForURL((url) => url.pathname === expectedPath, { timeout: 30000 });
+  const messageBox = page.getByRole('textbox', { name: 'Message' });
+  await messageBox.waitFor({ state: 'visible', timeout: 30000 });
+  if (!(await messageBox.isEnabled())) {
+    throw new Error('product message composer did not become enabled');
   }
-  await page.getByLabel('Task').fill(prompt);
-  await page.getByLabel('Model').fill(model);
-  await page.getByLabel('Steps').fill('4');
-  await page.getByRole('button', { name: 'Run' }).click();
-  await page.getByLabel('Run summary').getByText('Run completed').first().waitFor({ timeout: 120000 });
+  await page.getByLabel('Message composer').getByText(`model ${model}`, { exact: true }).waitFor({ timeout: 30000 });
+
+  const jobResponsePromise = page.waitForResponse(
+    (response) => response.request().method() === 'POST' && new URL(response.url()).pathname === '/api/jobs',
+    { timeout: 30000 },
+  );
+  await messageBox.fill(prompt);
+  await page.getByRole('button', { name: 'Send' }).click();
+  const jobResponse = await jobResponsePromise;
+  if (!jobResponse.ok()) {
+    throw new Error(`product job creation failed with status ${jobResponse.status()}`);
+  }
+  const created = await jobResponse.json();
+  await page.getByLabel('Conversation').getByText(prompt, { exact: true }).waitFor({ timeout: 30000 });
+  await page.getByLabel('Run inspector').getByText('Run completed', { exact: true }).waitFor({ timeout: 120000 });
+  await page.getByLabel('Conversation').getByText('read_file · done').waitFor({ timeout: 30000 });
   await page.screenshot({ path: screenshotPath, fullPage: true });
   const result = {
     baseURL,
@@ -555,15 +641,25 @@ const prompt = 'Use the echo tool exactly once with message "rove provider web o
     provider,
     providerApiBase,
     providerKeyEnv: providerKeyEnv || '',
+    workspaceId,
+    productSessionId,
+    profileId,
+    jobId: created.job_id,
+    runId: created.run_id,
+    resumedFromRunId: created.resumed_from_run_id || null,
     prompt,
     title: await page.title(),
-    runSummary: await page.getByLabel('Run summary').innerText().catch(() => ''),
-    runDetails: await page.getByLabel('Run details').innerText().catch(() => ''),
-    messageStream: await page.locator('.message-stream').innerText().catch(() => ''),
+    url: page.url(),
+    conversation: await page.getByLabel('Conversation').innerText().catch(() => ''),
+    inspector: await page.getByLabel('Run inspector').innerText().catch(() => ''),
   };
   fs.writeFileSync(resultPath, JSON.stringify(result, null, 2));
   await browser.close();
+  browser = null;
 })().catch(async (err) => {
+  if (browser) {
+    await browser.close().catch(() => undefined);
+  }
   fs.writeFileSync(resultPath, JSON.stringify({ error: String(err && err.stack || err) }, null, 2));
   process.exit(1);
 });
@@ -580,14 +676,38 @@ const prompt = 'Use the echo tool exactly once with message "rove provider web o
 
         $runs = Invoke-Json -Method Get -Uri "$ApiBaseLocal/runs?limit=25"
         $runs | ConvertTo-Json -Depth 40 | Set-Content -LiteralPath (Join-Path $ArtifactsDir "web-provider-runs.json")
-        $latestRun = $runs.runs | Sort-Object run_id -Descending | Select-Object -First 1
-        if (-not $latestRun) {
-            throw "no Web provider run found"
+        $webResult = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json
+        if ($webResult.error) {
+            throw "Web provider product-shell run failed: $($webResult.error)"
         }
-        $report = Invoke-Json -Method Get -Uri "$ApiBaseLocal/runs/$($latestRun.run_id)/report"
+        if (-not $webResult.jobId -or -not $webResult.runId) {
+            throw "Web provider product-shell result did not include exact job/run ids"
+        }
+        if ($null -ne $webResult.resumedFromRunId -and [string]$webResult.resumedFromRunId -ne "") {
+            throw "first Web provider product-shell turn unexpectedly resumed another run"
+        }
+        $report = Invoke-Json -Method Get -Uri "$ApiBaseLocal/runs/$($webResult.runId)/report"
         $report | ConvertTo-Json -Depth 40 | Set-Content -LiteralPath (Join-Path $ArtifactsDir "web-provider-report.json")
         if ($report.status -ne "success" -or [int]$report.tool_calls -lt 1 -or [int]$report.tool_failures -ne 0) {
             throw "Web provider report did not record successful tool use"
+        }
+        if ([string]$report.job_id -ne [string]$webResult.jobId) {
+            throw "Web provider report job id did not match the browser-created job"
+        }
+        if ([string]$report.run_id -ne [string]$webResult.runId) {
+            throw "Web provider report run id did not match the browser-created run"
+        }
+        $transcript = Invoke-Json -Method Get -Uri "$ApiBaseLocal/product/sessions/$($productSession.id)/transcript"
+        $transcript | ConvertTo-Json -Depth 40 | Set-Content -LiteralPath (Join-Path $ArtifactsDir "web-provider-transcript.json")
+        $boundRun = @($transcript.segments) |
+            Where-Object { [string]$_.binding.runtime_run_id -eq [string]$webResult.runId } |
+            Select-Object -First 1
+        if (
+            [string]$transcript.product_session_id -ne [string]$productSession.id -or
+            -not $boundRun -or
+            [string]$boundRun.binding.runtime_job_id -ne [string]$webResult.jobId
+        ) {
+            throw "Web provider run was not durably bound to the selected product session"
         }
         return "pass"
     } finally {
@@ -612,7 +732,7 @@ function Invoke-RestartRecoveryGate([array]$CreatedJobs, [string]$StressWorkspac
         $script:StressApiProcess = $null
     }
 
-    $script:StressApiProcess = Start-BackgroundCommand -Command "cargo" -Arguments @("run", "--bin", "rove-api", "--", "--addr", $ApiAddr, "-C", $StressWorkspace) -WorkingDirectory $RepoRoot -StdoutLog (Join-Path $ArtifactsDir "stress-api-restart.out.log") -StderrLog (Join-Path $ArtifactsDir "stress-api-restart.err.log")
+    $script:StressApiProcess = Start-BackgroundCommand -Command "cargo" -Arguments @("run", "-p", "rove-api", "--bin", "rove-api", "--", "--addr", $ApiAddr, "-C", $StressWorkspace) -WorkingDirectory $RepoRoot -StdoutLog (Join-Path $ArtifactsDir "stress-api-restart.out.log") -StderrLog (Join-Path $ArtifactsDir "stress-api-restart.err.log")
     Wait-HttpOk -Uri "$ApiBaseLocal/runs?limit=1" -TimeoutSeconds $RestartRecoveryTimeoutSeconds -Name "restarted stress rove-api"
 
     $after = Invoke-Json -Method Get -Uri "$ApiBaseLocal/runs?limit=100"
@@ -714,7 +834,7 @@ function Invoke-StressGate {
     try {
         $stressWorkspace = Join-Path $IntegrationRoot "workspace-stress"
         New-Item -ItemType Directory -Force -Path $stressWorkspace | Out-Null
-        $script:StressApiProcess = Start-BackgroundCommand -Command "cargo" -Arguments @("run", "--bin", "rove-api", "--", "--addr", $ApiAddr, "-C", $stressWorkspace) -WorkingDirectory $RepoRoot -StdoutLog (Join-Path $ArtifactsDir "stress-api.out.log") -StderrLog (Join-Path $ArtifactsDir "stress-api.err.log")
+        $script:StressApiProcess = Start-BackgroundCommand -Command "cargo" -Arguments @("run", "-p", "rove-api", "--bin", "rove-api", "--", "--addr", $ApiAddr, "-C", $stressWorkspace) -WorkingDirectory $RepoRoot -StdoutLog (Join-Path $ArtifactsDir "stress-api.out.log") -StderrLog (Join-Path $ArtifactsDir "stress-api.err.log")
         Wait-HttpOk -Uri "$ApiBaseLocal/runs?limit=1" -TimeoutSeconds 90 -Name "stress rove-api"
 
         $created = @()
@@ -820,7 +940,7 @@ function Invoke-ExternalMcpGate {
         Copy-Item -LiteralPath $mcpConfigSource -Destination $mcpConfigPath -Force
         Copy-Item -LiteralPath $mcpConfigPath -Destination (Join-Path $ArtifactsDir "external-mcp-config.redacted.json") -Force
         [Environment]::SetEnvironmentVariable("ROVE_MCP_CONFIG", $mcpConfigPath, "Process")
-        $apiProcess = Start-BackgroundCommand -Command "cargo" -Arguments @("run", "--bin", "rove-api", "--", "--addr", $ApiAddr, "-C", $mcpWorkspace) -WorkingDirectory $RepoRoot -StdoutLog (Join-Path $ArtifactsDir "external-mcp-api.out.log") -StderrLog (Join-Path $ArtifactsDir "external-mcp-api.err.log")
+        $apiProcess = Start-BackgroundCommand -Command "cargo" -Arguments @("run", "-p", "rove-api", "--bin", "rove-api", "--", "--addr", $ApiAddr, "-C", $mcpWorkspace) -WorkingDirectory $RepoRoot -StdoutLog (Join-Path $ArtifactsDir "external-mcp-api.out.log") -StderrLog (Join-Path $ArtifactsDir "external-mcp-api.err.log")
         Wait-HttpOk -Uri "$ApiBaseLocal/runs?limit=1" -TimeoutSeconds 90 -Name "external MCP rove-api"
 
         $message = @{
@@ -1025,6 +1145,8 @@ if (-not $KeepState -and (Test-Path -LiteralPath $IntegrationRoot)) {
     Remove-Item -LiteralPath $IntegrationRoot -Recurse -Force
 }
 New-Item -ItemType Directory -Force -Path $WorkspaceDir, $WebWorkspaceDir, $ArtifactsDir | Out-Null
+"rove provider tool fixture" | Set-Content -LiteralPath (Join-Path $WorkspaceDir "provider-tool-fixture.txt")
+"rove provider tool fixture" | Set-Content -LiteralPath (Join-Path $WebWorkspaceDir "provider-tool-fixture.txt")
 
 $gates = New-RequestedGateStatusMap
 try {

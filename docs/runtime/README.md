@@ -1,10 +1,11 @@
 # Runtime Documentation
 
 This directory is the authoritative current-state documentation surface. It
-summarizes the implemented runtime, API, Web M1 product shell, the Web Complete
-C0 persistence/API foundation, C1 continuity UI, C2 Settings surface, and
-remaining gaps. Web Complete C3 and Desktop contracts remain under `docs/design/` and
-`docs/plans/` until their code and tests land.
+summarizes the implemented runtime, API, Web M1 product shell, and the verified
+Web Complete C0-C3 implementation. The C3 implementation and deterministic
+live-API evidence currently live on the stacked delivery branch; the stacked
+PRs have not landed on `main`. Desktop contracts remain under `docs/design/`
+and `docs/plans/` until their code and tests land.
 
 New maintainers should start with [`docs/ONBOARDING.md`](../ONBOARDING.md), then use this directory for current subsystem truth.
 
@@ -38,9 +39,13 @@ The Web product line is tracked separately:
 
 - Web M1 is implemented; its ledger is
   [`docs/plans/2026-07-25-web-management-m1.md`](../plans/2026-07-25-web-management-m1.md).
-- Product-shell browser coverage is mock-backed. The gated `local-full`
-  real-API suite targets advanced `/dev/workbench`; live-API acceptance of `/`
-  remains Web Complete C3 work.
+- Product-shell browser evidence has two explicit layers. `shell.spec.ts`,
+  `continuity.spec.ts`, `settings.spec.ts`, `migration.spec.ts`, and
+  `polish.spec.ts` use browser-boundary mocks for broad deterministic state,
+  race, recovery, and visual checks. The gated `local-full` suite runs
+  `real-api.spec.ts` against a live Rust API; its C3 run passed all three cases:
+  migration before catalog boot, exact A/B session continuity plus refresh and
+  product interactions, and a bounded advanced `/dev/workbench` smoke.
 - Web Complete C0 is implemented: the API owns `product.sqlite`, product
   workspace/session/profile/preferences CRUD, exact product-session/runtime
   bindings, a canonical-event transcript read projection, and
@@ -61,8 +66,16 @@ The Web product line is tracked separately:
   default approval policy, product jobs honor that default, bounded Memory and
   runtime-health APIs back the UI, provider profiles support complete CRUD,
   and all nine Settings sections expose tested catalog, session, memory,
-  runtime, approval, keyboard, or developer capabilities. C3 migration/polish/live
-  API acceptance remains active work; follow
+  runtime, approval, keyboard, or developer capabilities.
+- Web Complete C3 is implemented and verified on the stacked delivery branch.
+  `M1MigrationGate` runs before API-authoritative catalog boot, permits the shell
+  only after `not_needed` or verified `complete`, preserves exact retry payloads,
+  and keeps invalid or uncertain imports fail closed. C3 also completes the
+  responsive, focus, reduced-motion, and state polish and moves deterministic
+  live-API acceptance to the default `/` product shell while retaining one
+  bounded `/dev/workbench` check. The provider runner now targets an exact
+  product session and correlates the browser's returned job/run IDs, but no
+  external-provider C3 gate has been run. Follow
   [`docs/design/2026-07-26-web-complete-design.md`](../design/2026-07-26-web-complete-design.md)
   and the
   [`Web → Desktop coordinator plan`](../plans/2026-07-25-web-desktop-master-delivery.md).

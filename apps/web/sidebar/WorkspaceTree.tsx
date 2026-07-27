@@ -1,6 +1,11 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import {
+  FormEvent,
+  type KeyboardEvent,
+  useRef,
+  useState,
+} from "react";
 import {
   Cross2Icon,
   DrawingPinFilledIcon,
@@ -36,6 +41,12 @@ export function WorkspaceTree({
   onRemoveWorkspace: (workspaceId: string) => void;
 }) {
   const [openDialog, setOpenDialog] = useState(false);
+  const addWorkspaceButtonRef = useRef<HTMLButtonElement>(null);
+
+  function closeDialog() {
+    setOpenDialog(false);
+    window.requestAnimationFrame(() => addWorkspaceButtonRef.current?.focus());
+  }
 
   return (
     <aside
@@ -46,6 +57,7 @@ export function WorkspaceTree({
       <div className="product-sidebar__header">
         <h2>Workspaces</h2>
         <button
+          ref={addWorkspaceButtonRef}
           type="button"
           className="secondary icon-button"
           onClick={() => setOpenDialog(true)}
@@ -181,7 +193,7 @@ export function WorkspaceTree({
       </div>
       {openDialog ? (
         <OpenWorkspaceDialog
-          onCancel={() => setOpenDialog(false)}
+          onCancel={closeDialog}
           onOpen={(path, kind) => {
             onOpenWorkspace(path, kind);
             setOpenDialog(false);
@@ -234,10 +246,45 @@ function OpenWorkspaceDialog({
     onOpen(trimmed, kind);
   }
 
+  function handleKeyDown(event: KeyboardEvent<HTMLFormElement>) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      onCancel();
+      return;
+    }
+    if (event.key !== "Tab") {
+      return;
+    }
+    const focusable = Array.from(
+      event.currentTarget.querySelectorAll<HTMLElement>(
+        "button:not([disabled]), input:not([disabled]), select:not([disabled])",
+      ),
+    );
+    const first = focusable[0];
+    const last = focusable.at(-1);
+    if (!first || !last) {
+      return;
+    }
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
+
   return (
     <div className="modal-backdrop" role="presentation">
-      <form className="modal-card" onSubmit={handleSubmit} role="dialog" aria-label="Open workspace">
-        <h2>Open workspace</h2>
+      <form
+        className="modal-card"
+        onSubmit={handleSubmit}
+        onKeyDown={handleKeyDown}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="open-workspace-title"
+      >
+        <h2 id="open-workspace-title">Open workspace</h2>
         <p className="modal-card__lede">
           Bind the agent to an absolute local folder or repository path. No full-disk scan.
         </p>
@@ -249,6 +296,8 @@ function OpenWorkspaceDialog({
             onChange={(event) => setPath(event.target.value)}
             placeholder="D:\\Study\\project\\agent\\rove"
             autoFocus
+            aria-invalid={error ? "true" : undefined}
+            aria-describedby={error ? "workspace-path-error" : undefined}
           />
         </div>
         <div className="field">
@@ -262,7 +311,11 @@ function OpenWorkspaceDialog({
             <option value="repo">Repo</option>
           </select>
         </div>
-        {error ? <div className="chat-error">{error}</div> : null}
+        {error ? (
+          <div className="chat-error" id="workspace-path-error" role="alert">
+            {error}
+          </div>
+        ) : null}
         <div className="modal-actions">
           <button type="button" className="secondary" onClick={onCancel}>
             Cancel

@@ -23,13 +23,30 @@ import {
 } from "../state/use-server-product-state";
 import { useSessionContinuity } from "../state/use-session-continuity";
 import type { WorkspaceKind } from "../state/product-types";
+import { M1MigrationGate } from "./M1MigrationGate";
 import { TopBar } from "./TopBar";
 
 export function ProductApp() {
+  return (
+    <M1MigrationGate>
+      <ServerProductApp />
+    </M1MigrationGate>
+  );
+}
+
+function ServerProductApp() {
   const server = useServerProductState();
   const settingsClient = useMemo(() => createSettingsPlatformClient(), []);
   const composerRef = useRef<HTMLTextAreaElement>(null);
-  const [inspectorCollapsed, setInspectorCollapsed] = useState(false);
+  const [inspectorCollapsed, setInspectorCollapsed] = useState(true);
+
+  useEffect(() => {
+    const narrow = window.matchMedia("(max-width: 960px)");
+    const syncInspector = () => setInspectorCollapsed(narrow.matches);
+    syncInspector();
+    narrow.addEventListener("change", syncInspector);
+    return () => narrow.removeEventListener("change", syncInspector);
+  }, []);
   const activeWorkspace = findWorkspace(
     server.catalog,
     server.catalog.active.workspaceId,

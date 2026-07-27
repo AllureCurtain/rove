@@ -1,6 +1,6 @@
 # Web Complete Delivery Plan
 
-> Status: **Active — C0–C2 complete; C3 pending**
+> Status: **Active integration — C0–C3 implemented and locally verified; coordinator merge pending**
 >
 > Decisions:
 > [`../design/2026-07-26-web-complete-design.md`](../design/2026-07-26-web-complete-design.md)
@@ -50,7 +50,8 @@ P0 docs PR → main
   → coordinator Settings shell split
       ├─ settings catalog sections
       └─ settings runtime sections
-  → C3 polish + acceptance → main
+  → C3 polish + acceptance
+  → coordinator review/integration → main
 ```
 
 Parallel workers never merge their own PRs. The primary conversation reviews
@@ -79,8 +80,10 @@ coordinator-owned route/job/migration/stream wiring and commit-boundary
 hardening. C0 passed aggregate Rust/Web CI and entered `main` only through the
 integration PR. C1 then wired the default shell to those contracts. Its Web
 gates pass: `pnpm test` (14 files, 121 tests), `pnpm typecheck`, `pnpm build`,
-and the mock-backed continuity Playwright suite (17/17). Later worktrees are
-created only after their respective dependency is on `main`.
+and the mock-backed continuity Playwright suite (17/17). C2 and C3 were then
+implemented in dependency order as a stacked branch chain. Their implementation
+and local gates are verified, but the coordinator has not yet integrated that
+stack into `main`.
 
 ### After each merge
 
@@ -204,7 +207,8 @@ C0 on `main` (rebuild + catalog APIs).
       ambiguous job-start reconciliation, and provider persistence
 
 C1 browser evidence is intentionally mock-backed. The live `rove-api` product
-shell acceptance gate remains C3; completing C1 does not satisfy §5 by itself.
+shell acceptance gate was reserved for C3; completing C1 did not satisfy §5 by
+itself. C3 later completed that gate on the stacked branch.
 
 #### C1 likely touch surfaces
 
@@ -261,8 +265,8 @@ Delivery is split into two dependency-ordered parts:
 
 C2 is implemented by the revision-safe settings/platform API and Web client,
 the nine-section Settings shell, focused unit tests, and mock-backed
-`apps/web/tests/e2e/settings.spec.ts`. Live-API default-shell acceptance remains
-the separate C3 gate.
+`apps/web/tests/e2e/settings.spec.ts`. Live-API default-shell acceptance was the
+separate C3 gate and was completed later on the stacked branch.
 
 #### C2 likely touch surfaces
 
@@ -282,7 +286,7 @@ script on a clean tree.
 
 #### C3 depends on
 
-C0–C2 on `main`.
+C0 plus the ordered C1–C2 stacked integration chain.
 
 #### C3 in scope
 
@@ -295,13 +299,26 @@ C0–C2 on `main`.
    retain bounded advanced-surface coverage.
 6. Remove leftover M1-only assumptions in copy.
 
+Implementation status: complete and locally verified in
+`.worktrees/web-complete-polish`. The default product shell runs the fail-closed
+migration gate before catalog boot, reuses the exact idempotency key and body on
+retry, preserves mapped deep routes, and includes the responsive,
+keyboard/focus, live-status, reduced-motion, theme, and visual polish required
+by the C3 seal. This is not a claim that the stacked PR chain has landed on
+`main`.
+
 #### C3 exit checklist
 
-- [ ] Acceptance script (§5) passes
-- [ ] M1 leftovers list either fixed or explicitly reclassified with reason
-- [ ] Live-API Playwright evidence exercises `/`, not only `/dev/workbench`
-- [ ] `pnpm test`, `typecheck`, `build`, focused e2e green
-- [ ] No Desktop/Gateway scope creep merged
+- [x] Acceptance script (§5) passes through the local fake-provider real-API
+      gate plus focused deterministic Web suites
+- [x] M1 leftovers list either fixed or explicitly reclassified with reason
+- [x] Live-API Playwright evidence exercises `/`, not only `/dev/workbench`
+- [x] `pnpm test`, `typecheck`, `build`, and focused e2e are green
+- [x] No Desktop/Gateway implementation scope was introduced
+- [ ] External-provider gate has not been run; no external-provider evidence is
+      claimed
+- [ ] Coordinator review and ordered integration of the stacked PR chain into
+      `main`
 
 ---
 
@@ -348,7 +365,11 @@ restore.
 
 ## 5. Web Complete acceptance script
 
-Run on clean main-derived tree with `rove-api` + Web:
+Run on a clean main-derived tree with `rove-api` + Web. The C3 worktree passed
+this local acceptance path with the fake provider. `local-full` reported all
+three real-API Playwright scenarios passing: live M1 migration, default-shell
+exact continuity/refresh/tools/cancellation/Settings, and the bounded advanced
+`/dev/workbench` smoke. The external-provider gate was not run.
 
 1. Cold start Web; empty or last-route landing works.
 2. Open Folder workspace by absolute path; create session.
@@ -388,12 +409,12 @@ When a wave merges:
 
 ## 7. Current coordinator handoff
 
-C0 and C1 are complete. Do not reopen their worker branches or reintroduce
-browser authority/workspace-global `latest` inside `ProductApp`. C2 must update
-to post-C1 `main`, preserve exact product-session hard resume and focused
-observation, then split Settings on a coordinator-owned foundation. C3 remains
-responsible for migration/polish and live product-shell acceptance. Desktop is
-still deferred.
+C0–C3 implementation and local verification are complete. Do not reopen their
+worker branches or reintroduce browser authority/workspace-global `latest`
+inside `ProductApp`. The coordinator must review and integrate the stacked chain
+in dependency order, preserve the passing local gates, and update merge-specific
+status only after the PRs land. The optional external-provider gate remains
+unrun. Desktop is still deferred.
 
 ---
 
@@ -409,14 +430,22 @@ still deferred.
 
 ## changelog
 
+- 2026-07-27: Completed C3 implementation and local acceptance in the stacked
+  polish worktree. Product boot now runs fail-closed M1 migration before catalog
+  reads; mapped deep routes, responsive layouts, focus/keyboard and live-status
+  behavior, reduced motion, theme restore, and screenshot artifacts are covered.
+  `local-full` passed all three real-API Playwright scenarios, including the
+  bounded `/dev/workbench` smoke. External-provider validation was not run and
+  coordinator integration into `main` remains pending.
 - 2026-07-27: Completed C1 continuity integration. The default shell now uses
   API-authoritative catalog/preferences/profiles, durable workspace/session and
   Settings routes, canonical transcript restore with explicit partial/error
   states, exact `product_session_id` turns, focused SSE reattachment, background
   status polling, and bounded no-duplicate reconciliation after ambiguous job
   starts. `pnpm test` (14 files, 121 tests), `pnpm typecheck`, `pnpm build`, and
-  the mock-backed continuity Playwright suite (17/17) pass; C2 Settings
-  completeness and C3 live-API acceptance remain open.
+  the mock-backed continuity Playwright suite (17/17) pass. At that point C2
+  Settings completeness and C3 live-API acceptance remained open; both were
+  completed later on their stacked branches.
 - 2026-07-26: Completed C0 after aggregate contract/security review. Migration
   preparation/apply ownership, durable baselines and preference CAS,
   active-session retry, canonical runtime reservations/path guards, and owned

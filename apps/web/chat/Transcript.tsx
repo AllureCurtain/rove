@@ -1,7 +1,7 @@
 "use client";
 
 import { CheckIcon, Cross2Icon } from "@radix-ui/react-icons";
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 
 import type { ChatMessage, ToolCallView } from "../lib/rove-state";
 import type { PendingInput } from "../lib/rove-types";
@@ -39,7 +39,13 @@ export function Transcript({
   );
 
   return (
-    <div className="chat-transcript" aria-label="Conversation">
+    <div
+      className="chat-transcript"
+      aria-label="Conversation"
+      role="log"
+      aria-live="polite"
+      aria-relevant="additions text"
+    >
       <RestoreNotice
         state={restoreState}
         onRetry={onRetryRestore}
@@ -171,15 +177,31 @@ function ApprovalCard({
   busy: boolean;
   onApproval: (tool: ToolCallView, decision: "approve" | "reject") => void;
 }) {
+  const approvalCardRef = useRef<HTMLElement>(null);
+
+  useEffect(() => {
+    approvalCardRef.current?.focus();
+  }, []);
+
   return (
-    <article className="approval-card" aria-label="Pending approval">
+    <article
+      ref={approvalCardRef}
+      className="approval-card"
+      aria-label="Pending approval"
+      role="alert"
+      tabIndex={-1}
+    >
       <div className="approval-card__head">
         <span>Approval needed · {tool.name}</span>
       </div>
       <p style={{ margin: 0 }}>{tool.reason ?? tool.details}</p>
       {tool.pendingApproval ? <pre>{formatValue(tool.pendingApproval.args)}</pre> : null}
       <div className="field-actions">
-        <button type="button" disabled={busy} onClick={() => onApproval(tool, "approve")}>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => onApproval(tool, "approve")}
+        >
           <CheckIcon />
           Approve
         </button>
@@ -209,6 +231,11 @@ function InputCard({
   onSubmit: (inputId: string, answer: string) => void;
 }) {
   const [answer, setAnswer] = useState("");
+  const answerRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    answerRef.current?.focus();
+  }, []);
 
   function handleSubmit(event: FormEvent) {
     event.preventDefault();
@@ -220,13 +247,14 @@ function InputCard({
   }
 
   return (
-    <article className="input-card">
+    <article className="input-card" role="status" aria-live="polite">
       <div>
         <strong>Input requested</strong>
         <p style={{ margin: "6px 0 0" }}>{prompt}</p>
       </div>
       <form className="chat-composer__row" onSubmit={handleSubmit}>
         <input
+          ref={answerRef}
           type="text"
           value={answer}
           onChange={(event) => setAnswer(event.target.value)}

@@ -3,7 +3,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { describeError } from "../api/run-controller";
-import { applyDocumentTheme, webPlatform } from "../platform/web";
+import {
+  cacheServerConfirmedTheme,
+  readServerConfirmedTheme,
+} from "../platform/server-theme-cache";
+import { applyDocumentTheme } from "../platform/web";
 import type {
   ProductApprovalPreference,
   ProductPreferences,
@@ -61,7 +65,9 @@ export function useServerProductState() {
     approval: "ask",
     maxSteps: 8,
   }));
-  const [theme, setTheme] = useState<"light" | "dark">("light");
+  const [theme, setTheme] = useState<"light" | "dark">(
+    readServerConfirmedTheme,
+  );
   const [bootState, setBootState] = useState<ProductBootState>({ status: "loading" });
   const [catalogError, setCatalogError] = useState<string | null>(null);
   const [catalogMutationBusy, setCatalogMutationBusy] = useState(false);
@@ -91,7 +97,6 @@ export function useServerProductState() {
 
   useEffect(() => {
     applyDocumentTheme(theme);
-    webPlatform.setThemePreference(theme);
   }, [theme]);
 
   const patchCatalog = useCallback(
@@ -146,7 +151,9 @@ export function useServerProductState() {
           preferencesRef.current = saved;
           setPreferences(saved);
           setSelection(selectionFromPreferences(saved));
-          setTheme(resolveProductTheme(saved.theme));
+          const confirmedTheme = resolveProductTheme(saved.theme);
+          cacheServerConfirmedTheme(confirmedTheme);
+          setTheme(confirmedTheme);
           setCatalogError(null);
         })
         .catch(async (error) => {
@@ -161,7 +168,9 @@ export function useServerProductState() {
                 preferencesRef.current = current;
                 setPreferences(current);
                 setSelection(selectionFromPreferences(current));
-                setTheme(resolveProductTheme(current.theme));
+                const confirmedTheme = resolveProductTheme(current.theme);
+                cacheServerConfirmedTheme(confirmedTheme);
+                setTheme(confirmedTheme);
               }
             } catch {
               // Keep the last confirmed snapshot when conflict recovery cannot read.
@@ -173,7 +182,9 @@ export function useServerProductState() {
             setPreferences(confirmed);
             if (confirmed) {
               setSelection(selectionFromPreferences(confirmed));
-              setTheme(resolveProductTheme(confirmed.theme));
+              const confirmedTheme = resolveProductTheme(confirmed.theme);
+              cacheServerConfirmedTheme(confirmedTheme);
+              setTheme(confirmedTheme);
             }
             setCatalogError(`Could not persist preferences: ${describeError(error)}`);
           }
@@ -229,7 +240,9 @@ export function useServerProductState() {
         profileResponse.provider_profiles.map(fromProductProviderProfile),
       );
       setSelection(selectionFromPreferences(loadedPreferences));
-      setTheme(resolveProductTheme(loadedPreferences.theme));
+      const confirmedTheme = resolveProductTheme(loadedPreferences.theme);
+      cacheServerConfirmedTheme(confirmedTheme);
+      setTheme(confirmedTheme);
       setConnection("ok");
       setBootState({ status: "ready" });
     } catch (error) {

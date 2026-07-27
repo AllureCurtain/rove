@@ -31,7 +31,7 @@ export function TopBar({
       </div>
       <div className="product-topbar__meta">
         <span className="status-dot" data-tone={connectionTone === "idle" ? undefined : connectionTone} />
-        <span>{connectionLabel}</span>
+        <span className="product-topbar__connection">{connectionLabel}</span>
         <button
           type="button"
           className="ghost icon-button"

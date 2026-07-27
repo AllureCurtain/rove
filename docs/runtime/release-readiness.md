@@ -19,6 +19,8 @@ Included:
   durable deep routes, explicit complete/partial/error transcript restore,
   exact `product_session_id` turns, focused reattachment/background status,
   provider persistence, and bounded ambiguous-start reconciliation.
+- Web Complete C2 complete Settings surface and C3 migration gate, final product
+  polish, and deterministic live-API default-shell acceptance.
 - Local state under `.rove/`.
 - Folder, Repo, and Task workspaces.
 - Built-in tools, MCP proxy, memory tools, fake provider, OpenAI /
@@ -66,7 +68,7 @@ Acceptance:
   in `git status --short`;
 - any `apps/web/next-env.d.ts` churn from Next.js is inspected before commit.
 
-## Web Complete C0-C2 Evidence
+## Web Complete C0-C3 Evidence
 
 C0 release evidence must include the default Rust and Web CI gates plus focused
 coverage for these contracts:
@@ -106,9 +108,24 @@ C2 release evidence additionally includes:
   update, approval/step persistence, workspace/session mutations, Memory,
   runtime health, shortcuts, and mobile overflow.
 
-This mock-backed evidence does not prove live-API acceptance of `/`; that
-remains a C3 release gate. The M1 migration state
-machine also still requires C3 product-shell invocation and recovery UX.
+C3 release evidence additionally includes:
+
+- a default-shell migration gate that runs before product catalog reads, permits
+  only `not_needed` or verified `complete`, preserves exact pending retries, and
+  keeps invalid or uncertain state fail closed;
+- mock-backed migration, recovery, responsive, focus, keyboard, reduced-motion,
+  theme, state, and narrow-layout coverage without reclassifying injected faults
+  as live evidence;
+- deterministic `local-full` coverage against the live Rust API for migration,
+  exact interleaved A/B continuation across refresh, approval, input,
+  cancellation, Settings, deep routes, and one bounded `/dev/workbench` smoke;
+- an updated provider runner that correlates browser-returned job/run IDs with
+  the exact report and product transcript instead of guessing a latest run.
+
+The C3 stacked implementation passed the three `local-full` real-API browser
+cases. Its stacked PRs have not landed on `main`. The external-provider browser
+gate was not run and must not be claimed from deterministic fake-provider
+evidence.
 
 For release claims that include real-terminal TUI behavior, run the opt-in Unix
 PTY smoke separately:
@@ -140,24 +157,23 @@ powershell -ExecutionPolicy Bypass -File scripts/integration-smoke.ps1 `
 Acceptance:
 
 - both commands print `local-full integration smoke completed`;
-- Playwright reports 3 real API tests passed on `/dev/workbench` for each run;
+- Playwright reports all three real-API cases passed for each run: migration,
+  default product lifecycle, and bounded advanced smoke;
 - run ids from the output appear in each run's `/runs?limit=25` artifact;
-- API state files and Web assertions cover plain run, approval, input, and
-  history/detail records.
-
-These browser assertions do not visit the default product shell. Its current
-browser suite is mock-backed; complete live-API product-shell acceptance remains
-a Web Complete C3 release gap.
+- API state, exact product transcripts/reports, and Web assertions cover
+  migration, A/B continuation, refresh, approval, input, cancellation, Settings,
+  deep routes, and the bounded workbench run.
 
 ## Provider Smoke
 
 Provider smoke is required before claiming real-provider readiness. It is not
 required for deterministic local MVP operation.
 
-Prefer the generic provider runner for provider reachability, API jobs, stress
-evidence, and evidence capture across OpenAI, OpenAI Responses, Anthropic, and
-Ollama profiles. On current `main`, skip its browser step because it still uses
-pre-M1 Workbench selectors while navigating to `/`:
+Prefer the generic provider runner for provider reachability, API jobs, product
+shell evidence, stress evidence, and evidence capture across OpenAI, OpenAI
+Responses, Anthropic, and Ollama profiles. Its browser step now uses an exact
+API-backed product session and verifies the browser-returned job/run IDs against
+the matching report and product transcript:
 
 ```powershell
 $env:OPENAI_API_KEY = "<secret>"
@@ -165,8 +181,7 @@ powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
   -Provider openai `
   -ApiBase "https://api.openai.com/v1" `
   -ApiKeyEnv OPENAI_API_KEY `
-  -Model "gpt-4.1-mini" `
-  -SkipWebSmoke
+  -Model "gpt-4.1-mini"
 ```
 
 For relay or gateway APIs, replace `-ApiBase`, `-ApiKeyEnv`, and `-Model` with
@@ -184,7 +199,6 @@ powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
   -ApiBase "https://api.openai.com/v1" `
   -ApiKeyEnv OPENAI_API_KEY `
   -Model "gpt-4.1-mini" `
-  -SkipWebSmoke `
   -RunStress `
   -RunRestartRecovery
 ```
@@ -198,14 +212,12 @@ powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
   -Provider anthropic `
   -ApiBase "https://api.anthropic.com" `
   -ApiKeyEnv ANTHROPIC_API_KEY `
-  -Model "claude-3-5-haiku-latest" `
-  -SkipWebSmoke
+  -Model "claude-3-5-haiku-latest"
 
 powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
   -Provider ollama `
   -ApiBase "http://localhost:11434" `
-  -Model "llama3.2" `
-  -SkipWebSmoke
+  -Model "llama3.2"
 ```
 
 When quota allows, add `-RunStress -RunRestartRecovery` to the provider runner
@@ -261,8 +273,12 @@ Acceptance:
 - the smoke test passes, or the failure is classified as key/configuration,
   quota/rate limit, model tool-call capability, or rove runtime defect.
 - `scripts/provider-integration.ps1` writes `evidence-summary.json` for the
-  provider/API gate. Its Web result is not required or accepted until the
-  product-shell browser flow replaces the stale selectors.
+  provider/API gate;
+- when Web smoke is included, its result contains exact browser-returned
+  `job_id`/`run_id`, and the saved report and product transcript contain that
+  exact binding;
+- until such a credentialed run is performed, record the external-provider Web
+  gate as `not_run`. C3 did not execute it.
 
 ## External Tools
 

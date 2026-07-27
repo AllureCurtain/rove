@@ -1,7 +1,7 @@
 "use client";
 
 import { CheckIcon, Cross2Icon, Pencil2Icon, TrashIcon } from "@radix-ui/react-icons";
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import { listProviderModels, testProvider } from "../api/run-controller";
 import { BenchmarkPanel } from "../components/benchmark-panel";
@@ -98,6 +98,14 @@ export function SettingsShell(props: SettingsShellProps) {
     onThemeChange,
     error,
   } = props;
+  const activeSectionRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    activeSectionRef.current?.scrollIntoView({
+      block: "nearest",
+      inline: "center",
+    });
+  }, [section]);
 
   return (
     <div className="settings-shell">
@@ -105,6 +113,7 @@ export function SettingsShell(props: SettingsShellProps) {
         <h2>Settings</h2>
         {SETTINGS_SECTIONS.map((item) => (
           <button
+            ref={item.id === section ? activeSectionRef : undefined}
             key={item.id}
             type="button"
             data-active={item.id === section}

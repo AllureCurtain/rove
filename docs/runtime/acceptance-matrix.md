@@ -12,17 +12,17 @@ this file is the current proof map.
 | M3 | Built-in vector/RAG indexing | Removed / out of scope for local-first product | Default builds and workspace tests do not depend on lancedb/arrow | Removed |
 | M4 | MCP tools register as first-class tools for CLI/API, expose annotations as tool metadata, and have bounded stdio transport plus opt-in real server smoke coverage. | Met | `cargo test --test mcp`; optional real server smoke: `$env:ROVE_MCP_FILESYSTEM_SMOKE="1"; cargo test --test mcp mcp_official_filesystem_server_smoke_when_enabled -- --exact --nocapture` | Closed by phases 3, 9 |
 | M5 | HTTP API can create jobs, stream/replay SSE events, cancel jobs, resolve approval/input requests, persist historical state, and enforce token/CORS/rate-limit controls. | Met | `cargo test --test api`; focused: `cargo test --test api api_creates_job_streams_events_and_reports_state -- --exact`; `cargo test --test api api_accepts_matching_bearer_token -- --exact` | Closed by phases 3, 5 |
-| M6 | Standalone Web surface consumes the API/SSE stream, supports approval/input/cancel/resume flows, token proxying, and browser E2E coverage. | Met for the historical advanced Workbench; the default product shell plus Web Complete C0 API, C1 continuity, and C2 Settings are implemented. C3 remains open. | `cd apps/web; pnpm test`; `cd apps/web; pnpm typecheck`; `cd apps/web; pnpm build`; optional browser check: `cd apps/web; pnpm test:e2e` | Historical M6 closed by phases 3, 8; full live-API product-shell acceptance belongs to Web Complete C3 |
+| M6 | Standalone Web surface consumes the API/SSE stream, supports approval/input/cancel/resume flows, token proxying, and browser E2E coverage. | Met by the default product shell and Web Complete C0-C3 on the stacked delivery branch. | `cd apps/web; pnpm test`; `cd apps/web; pnpm typecheck`; `cd apps/web; pnpm build`; browser checks: `cd apps/web; pnpm test:e2e`; deterministic live API: `powershell -ExecutionPolicy Bypass -File scripts/integration-smoke.ps1` | Web Complete implementation verified; stacked PR integration remains pending and external-provider evidence is a separate opt-in gate |
 
-Evidence boundary: `apps/web/tests/e2e/shell.spec.ts` covers core product flows
-and `apps/web/tests/e2e/continuity.spec.ts` covers C1 refresh, routes, session
-switching, reattachment, ambiguous job starts, and provider persistence.
-`apps/web/tests/e2e/settings.spec.ts` covers C2 sections, mutations, preference
-conflicts, job policy requests, shortcuts, and mobile bounds with
-browser-boundary mocks. The gated real-API suite
-`apps/web/tests/e2e/real-api.spec.ts` opens `/dev/workbench`, so its three tests
-prove the advanced Workbench/API lifecycle rather than live-API acceptance of
-the product shell.
+Evidence boundary: `shell.spec.ts`, `continuity.spec.ts`, `settings.spec.ts`,
+`migration.spec.ts`, and `polish.spec.ts` use browser-boundary mocks for broad
+deterministic product, state-race, fault, recovery, and visual coverage. The
+gated `real-api.spec.ts` is run by `local-full` against the live Rust API. Its C3
+run passed all three cases: migration before catalog boot; exact A/B session
+continuity with refresh, approval, input, cancellation, Settings, and deep
+routes; and one bounded `/dev/workbench` direct-run smoke. The updated provider
+runner also targets the product shell and exact returned IDs, but no external
+provider C3 gate has been run.
 
 ## Web Complete C0
 
@@ -31,7 +31,7 @@ the product shell.
 | API-global ProductStore CRUD and safe preferences | Implemented; wired operations document actual `500`/`503` failures and never advertise foundation-era `501` | `apps/api/src/product/store/tests.rs`; product route and OpenAPI coverage in `tests/api.rs` |
 | Exact product-session/runtime binding and fail-closed continuation | Implemented | `product_sessions_in_one_workspace_resume_their_own_exact_runs` and product resume/cancel tests in `tests/api.rs` |
 | Canonical-event transcript projection with typed partial reasons | Implemented | transcript module tests and product transcript assertions in `tests/api.rs` |
-| Strict/idempotent M1 migration and typed Web client | Implemented; C1 uses the product client, but the migration state machine is not invoked by the default shell | `apps/web/product/product-client.test.ts`, `apps/web/product/m1-browser-migration.test.ts`, and migration tests in `tests/api.rs` |
+| Strict/idempotent M1 migration and typed Web client | Implemented; C3 invokes the migration state machine before the default shell can read the product catalog | `apps/web/product/product-client.test.ts`, `apps/web/product/m1-browser-migration.test.ts`, `apps/web/shell/M1MigrationGate.test.ts`, `apps/web/tests/e2e/migration.spec.ts`, the live migration case in `real-api.spec.ts`, and migration tests in `tests/api.rs` |
 | Migration preparation/apply lifecycle | Implemented: preparation has a 30-second deadline; apply is supervised, survives handler disconnect, and persists/reuses its baseline | migration lifecycle tests in `apps/api/src/product/migration.rs` and migration/store coverage in `apps/api/src/product/store/tests.rs` |
 | Concurrent preference and active-session safety | Implemented: revision CAS preserves newer preferences; a source-mapped active session returns typed `product_session_active` and the Web keeps the exact retry payload | preference/active-session migration tests in `apps/api/src/product/store/tests.rs` and `apps/web/product/m1-browser-migration.test.ts` |
 | Runtime binding commit safety | Implemented: canonical sorted runtime reservations, workspace containment, `SQLITE_OPEN_NOFOLLOW`, and symlink-parent rejection | external commit-guard tests in `runtime/src/state/index.rs` and migration tests in `tests/api.rs` |
@@ -39,9 +39,9 @@ the product shell.
 
 ## Web Complete C1
 
-C1 is implemented, but this does **not** mark Web Complete accepted. Its browser
-evidence is mock-backed; C2 Settings is implemented separately below and C3
-live-API acceptance is still required.
+C1 was implemented with focused and mock-backed browser evidence. C3 now adds a
+live-API cross-session continuation and refresh scenario without reclassifying
+the broader C1 race/fault-injection cases as live evidence.
 
 | C1 contract | Current status | Test evidence surface |
 |---|---|---|
@@ -62,6 +62,17 @@ live-API acceptance is still required.
 | Workspace/session management | Implemented for pin/remove, rename/delete, and bounded safe catalog export | catalog model tests and `settings.spec.ts` |
 | Memory and runtime health | Implemented with bounded list/read/delete and redacted health contracts | API/memory tests, settings client/model tests, and `settings.spec.ts` |
 | Critical keyboard shortcuts | Implemented for composer focus, new session, Settings, and Inspector | keyboard matcher tests and `settings.spec.ts` |
+
+## Web Complete C3
+
+| C3 contract | Current status | Test evidence surface |
+|---|---|---|
+| Migration before catalog authority | Implemented: only `not_needed` or verified `complete` mounts server product state; uncertain or invalid state remains fail closed | gate unit tests, `migration.spec.ts`, and the live migration case in `real-api.spec.ts` |
+| Exact live product-session continuity | Implemented and verified across interleaved A/B sessions and refresh; no workspace-global latest guess is used | product-shell lifecycle case in `real-api.spec.ts`, run by `integration-smoke.ps1` |
+| Live interactions and durable routes | Approval, input, cancellation, Settings, provider persistence, Memory/health surfaces, and deep routes are exercised against the live Rust API | product-shell lifecycle case in `real-api.spec.ts` |
+| Final product polish | Responsive bounds, visible focus, keyboard behavior, reduced motion, theme/state presentation, and migration recovery are implemented | focused Web tests plus `polish.spec.ts` and `migration.spec.ts` |
+| Advanced escape hatch | Retained as one bounded direct-run smoke, not a second primary product entry | optional workbench case in `real-api.spec.ts`, enabled by `integration-smoke.ps1` |
+| Provider browser flow | Updated to create API-backed product state and verify exact browser-returned job/run IDs in reports and transcripts | `scripts/provider-integration.ps1`; external-provider execution was not run for C3 |
 
 Cross-cutting default gate:
 

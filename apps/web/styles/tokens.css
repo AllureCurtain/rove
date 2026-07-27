@@ -32,7 +32,7 @@
   --error: #a33b32;
   --error-soft: rgba(163, 59, 50, 0.12);
 
-  --focus-ring: rgba(58, 95, 122, 0.28);
+  --focus-ring: #3a5f7a;
   --selection: rgba(58, 95, 122, 0.18);
   --overlay: rgba(20, 24, 22, 0.42);
   --scrollbar: rgba(26, 31, 28, 0.18);
@@ -82,7 +82,7 @@
   --error: #e07a72;
   --error-soft: rgba(224, 122, 114, 0.14);
 
-  --focus-ring: rgba(126, 163, 189, 0.36);
+  --focus-ring: #7ea3bd;
   --selection: rgba(126, 163, 189, 0.28);
   --overlay: rgba(6, 8, 7, 0.62);
   --scrollbar: rgba(232, 235, 232, 0.16);

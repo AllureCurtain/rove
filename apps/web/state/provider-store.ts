@@ -111,7 +111,7 @@ export function providerDefaultApiBase(type: ProviderType): string {
     case "ollama":
       return "http://localhost:11434";
     case "fake":
-      return "local";
+      return "";
     case "openai":
     case "openai-responses":
       return "https://api.openai.com/v1";

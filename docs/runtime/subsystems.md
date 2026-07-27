@@ -349,9 +349,16 @@ policy honored by product jobs, bounded durable-memory and runtime-health
 routes, and complete Settings UI. All nine sections now have real capabilities:
 theme, provider CRUD/test/models, approval and step defaults, workspace/session
 management and safe export, Memory browse/delete, four keyboard shortcuts,
-Advanced Benchmark, and runtime/resume health. The M1 browser migration state
-machine is still not invoked by the default shell; C3 owns migration/polish and
-live product-shell acceptance.
+Advanced Benchmark, and runtime/resume health.
+
+Web Complete C3 wraps server product state in `M1MigrationGate`. Before any
+catalog read, it checks legacy browser state and the durable migration receipt;
+only `not_needed` or verified `complete` mounts `useServerProductState`.
+Pending, rejected, blocked, or superseded outcomes remain explicit and fail
+closed, retries preserve the stored idempotency key and exact request body, and
+a fresh completion can remap a legacy product route through server-issued IDs.
+C3 also completes responsive, focus, keyboard, reduced-motion, theme, and
+empty/loading/error/partial/success polish.
 
 The web verification surface is:
 
@@ -372,12 +379,15 @@ Browser-level checks are available separately:
 pnpm test:e2e
 ```
 
-`shell.spec.ts` covers core product flows and `continuity.spec.ts` covers C1
-restore, routing, reattachment, and provider persistence with browser-boundary
-mocks. The gated
-`real-api.spec.ts` used by `local-full` opens `/dev/workbench`, and the provider
-runner's optional browser step still uses pre-M1 selectors. Full live-API
-product-shell evidence is therefore a Web Complete C3 gap.
+`shell.spec.ts`, `continuity.spec.ts`, `settings.spec.ts`, `migration.spec.ts`,
+and `polish.spec.ts` cover broad product behavior, fault/race injection,
+recovery, and visual states with browser-boundary mocks. The gated
+`real-api.spec.ts` used by `local-full` exercises the default `/` product shell
+against the live Rust API and retains one bounded `/dev/workbench` smoke. The C3
+run passed migration, exact A/B continuation with refresh and product
+interactions, and the bounded advanced case (3/3). The provider runner now uses
+the product shell and verifies exact browser-returned job/run IDs, but its
+external-provider Web gate was not run for C3.
 
 ## CI
 

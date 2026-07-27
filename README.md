@@ -1,6 +1,6 @@
 # rove
 
-`rove` is a local-first, stateful agent runtime written in Rust. It provides a CLI (including an optional full-screen TUI), an HTTP API, a Web product shell (plus temporary workbench scaffold), tool execution, resumable run state, layered memory, provider routing, and tool-based workspace retrieval.
+`rove` is a local-first, stateful agent runtime written in Rust. It provides a CLI (including an optional full-screen TUI), an HTTP API, a Web product shell (plus a bounded advanced workbench escape hatch), tool execution, resumable run state, layered memory, provider routing, and tool-based workspace retrieval.
 
 The repository is a virtual Cargo Workspace. Its implemented dependency and
 product flow is:
@@ -18,13 +18,15 @@ apps/cli / apps/api / apps/bench
 ## Current MVP
 
 As of 2026-07-27, the modular Workspace migration, Provider Layer redesign,
-cleanup W1–W3, Web M1, and Web Complete C0–C2 are implemented. rove has reached its
-local-first MVP: CLI, API, Web product shell,
+cleanup W1–W3, Web M1, and Web Complete C0–C3 are implemented and locally
+verified on the stacked Web Complete branch. Coordinator integration of the
+stacked PR chain into `main` remains pending. rove has reached its local-first
+MVP: CLI, API, Web product shell,
 streaming events, bounded tool execution, persisted state, resume, deterministic
 benchmarks, and current runtime docs are all present. The exact boundary is
 documented in [docs/runtime/mvp-definition.md](docs/runtime/mvp-definition.md).
 
-Web Complete is the active product milestone. C0 implements the API-global
+Web Complete implementation is complete on the stacked branch. C0 implements the API-global
 product store, exact product-session/runtime binding, canonical-event
 transcript reads, strict browser migration, and typed Web client modules. C1
 switches the default product shell to that API authority: refresh restores the
@@ -33,8 +35,15 @@ session, and Settings routes preserve place, provider profiles persist through
 the API, and focused jobs reattach without falling back to workspace-global
 `latest`. C2 completes all nine Settings sections with API-backed provider,
 approval, workspace, session, memory, runtime-health, and keyboard surfaces.
-User-facing migration polish and live-API product-shell acceptance remain C3
-work. A Tauri Desktop host, Browser/Desktop automation workspaces, hosted multi-user identity,
+C3 mounts the fail-closed M1 migration gate before catalog reads, reuses the
+exact idempotency key and payload on retry, preserves mapped deep routes,
+completes responsive and accessibility polish, captures
+representative visual evidence, and replaces the product-shell-only mock claim
+with a live local-API acceptance path. The `local-full` fake-provider gate passed
+all three real-API Playwright scenarios, including the bounded
+`/dev/workbench` smoke. The opt-in external-provider gate was not run, and no
+external-provider interoperability evidence is claimed. A Tauri Desktop host,
+Browser/Desktop automation workspaces, hosted multi-user identity,
 distributed rate limiting, and optional external semantic retrieval are outside
 the implemented MVP.
 
@@ -95,7 +104,7 @@ powershell -ExecutionPolicy Bypass -File scripts/dev.ps1
 Open `http://localhost:3000` for the product shell (Workspace → Session → Chat).
 The launcher starts `rove-api`, starts Next.js, prints the API/Web URLs, and
 stops both process trees when it exits. The previous developer workbench remains
-only at `/dev/workbench` as migration scaffolding. Use custom ports when the
+only at `/dev/workbench` as a bounded advanced escape hatch. Use custom ports when the
 defaults are busy:
 
 ```powershell
