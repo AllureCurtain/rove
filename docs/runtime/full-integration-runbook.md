@@ -2,7 +2,7 @@
 
 This runbook is the handoff document for a new session that needs to verify the complete rove call chain, Web records, real-provider access, external MCP tools, and stress/long-running behavior.
 
-Last reviewed: 2026-07-25.
+Last reviewed: 2026-07-27.
 
 ## Scope
 
@@ -10,10 +10,10 @@ Run the gates in this order:
 
 | Gate | Required | External dependency | Purpose |
 |---|---:|---|---|
-| `local-full` | Yes | No | Proves the deterministic API/runtime/tool/state chain plus the advanced `/dev/workbench` against that real API. |
+| `local-full` | Yes | No | Proves the deterministic API/runtime/tool/state chain, the default product shell against the live Rust API, and one bounded `/dev/workbench` smoke. |
 | `provider-model-inventory` | Yes before provider gates | Provider key/network, except local providers | Lists the account-visible models for an official API, relay/gateway API, or local provider. |
 | `provider-smoke` | Yes for real-provider readiness | Provider key/network, except local providers | Proves one selected model can answer and perform native tool use through the selected provider path. |
-| `provider-full` | Yes after smoke passes | Provider key/network, except local providers | Proves real provider + real API records. Its current browser step is stale after Web M1 and is not product-shell evidence. |
+| `provider-full` | Yes after smoke passes | Provider key/network, except local providers | Proves real provider + real API records and the exact product-shell job/report/transcript binding. |
 | `external-tools` | Yes after provider-full | Local mock MCP, then real filesystem MCP | Proves MCP discovery, execution, approval, failure records, and Web visibility. |
 | `stress` | Yes after all functional gates | Depends on selected provider profile | Proves repeated jobs, concurrency, restart recovery, and long-run state consistency. |
 
@@ -31,15 +31,14 @@ powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
   -Provider openai `
   -ApiBase "<provider-or-gateway-v1-base>" `
   -ApiKeyEnv OPENAI_API_KEY `
-  -Model "<model-id>" `
-  -SkipWebSmoke
+  -Model "<model-id>"
 ```
 
-Use `-SkipWebSmoke` on current `main`: the runner's browser script navigates to
-`/` but still queries the old Workbench `Task`, `Model`, and `Steps` controls.
-The inventory, direct provider, API, stress, restart, and evidence gates remain
-usable. Updating this browser step to the product-shell contract is Web Complete
-C3 work.
+The runner's Web step now creates API-backed product state, opens an exact
+product session in `/`, captures the browser's `POST /api/jobs` IDs, and verifies
+that exact report/transcript binding. Use `-SkipWebSmoke` only for an intentional
+provider/API-only diagnostic. No external-provider C3 browser gate has been run;
+the completed deterministic `local-full` gate is not a substitute for it.
 
 The external MCP and stress gates are still documented here as explicit
 execution plans. Do not treat a provider/MCP/stress failure as a regression in
@@ -58,11 +57,10 @@ Two GitHub Actions workflows automate the gates above:
   - `local-full` runs `scripts/integration-smoke.ps1` and uploads
     `local-full-artifacts`. It needs no secrets.
   - `provider-gate` runs `scripts/provider-integration.ps1` with
-    the functional provider gates by default. Its configured-secret path still
-    includes the stale Web selector step described above, so a post-M1 run is
-    not valid release evidence until that step is updated or explicitly
-    skipped. When the `run_stress` input is
-    set, it also passes `-RunStress -RunRestartRecovery -RunLongSoak` and
+    the functional provider gates by default. Its configured-secret Web path
+    now uses the exact product-session flow described above. No C3 execution of
+    that external-provider job is currently claimed. When the `run_stress` input
+    is set, it also passes `-RunStress -RunRestartRecovery -RunLongSoak` and
     uploads `provider-gate-artifacts`. It is skipped
     automatically when the provider key secret is absent, so it never fails a
     repo that has not configured a provider.
@@ -198,7 +196,8 @@ Web/API request
   -> approval/input resolution
   -> terminal run
   -> trace/report/task state persisted
-  -> /runs and advanced /dev/workbench history/detail show matching records
+  -> exact product-session transcript/report binding is verified
+  -> bounded /dev/workbench direct-run smoke remains available
 ```
 
 Scenarios covered by the runner:
@@ -211,19 +210,23 @@ Scenarios covered by the runner:
 | Rejected `write_file` | Rejection is recorded and target file is not created. |
 | `request_input` | Pending input appears, submitted answer resumes run, answer is recorded. |
 | Tool failure | Failed tool event is visible in API artifacts. |
-| Web records | Real advanced `/dev/workbench` creates/approves/answers jobs against the real API and shows run detail/history. |
+| Product migration | Safe M1 browser state migrates before catalog boot, the legacy route is remapped, and refresh does not replay the import. |
+| Product continuity | Interleaved A/B sessions resume their own exact chains across refresh; approval, input, cancellation, Settings, and deep routes work through `/`. |
+| Advanced escape hatch | One bounded `/dev/workbench` direct-run smoke completes against the same live API. |
 
 Acceptance:
 
 - command exits with code 0 and prints `local-full integration smoke completed`;
-- Playwright reports 3 real API tests passed on `/dev/workbench`;
+- Playwright reports all three real-API cases passed: migration, default product
+  lifecycle, and bounded advanced smoke;
 - artifacts are written under `%TEMP%\rove-integration\artifacts` unless `ROVE_INTEGRATION_ROOT` overrides it;
 - printed run ids are present in `GET /runs?limit=25`;
-- `api/*.state.json` and Web records agree on run ids, terminal statuses, approval/input resolution, and tool names.
+- `api/*.state.json`, product transcripts, reports, and Web assertions agree on
+  exact run identities, terminal statuses, approval/input resolution, and tool
+  names.
 
-This gate does not visit the default `/` product shell. It therefore does not
-prove product-session continuity, transcript restoration, or full live-API
-product-shell acceptance.
+The current C3 stacked implementation passed this `local-full` gate 3/3. The
+stacked PRs have not landed on `main`.
 
 ## Gate 2: `provider-model-inventory`
 
@@ -277,9 +280,9 @@ Acceptance:
 ## Gate 3: `provider-smoke`
 
 Use the generic provider runner for OpenAI endpoints, relay/gateway endpoints,
-Anthropic, and Ollama. On current `main`, run its model inventory, provider
-smoke, API provider jobs, and evidence capture while skipping the stale browser
-step:
+Anthropic, and Ollama. The following commands intentionally collect focused
+provider/API evidence with `-SkipWebSmoke`; omit that switch for the separate
+external-provider product-shell gate:
 
 ```powershell
 $env:OPENAI_API_KEY = "<secret>"
@@ -330,6 +333,10 @@ The API and Web surfaces accept `provider_type` values `openai`,
 `openai-responses`, `anthropic`, `ollama`, and `fake`. Browser code sends key
 environment-variable names only; it never sends raw key values.
 
+The browser path is implemented but was not run against an external provider in
+the C3 verification pass. Record it as `not_run`, not `pass`, until a credentialed
+run produces the Web result, exact run report, and exact product transcript.
+
 For a smoke-only manual check, use rove's OpenAI provider path
 directly:
 
@@ -362,12 +369,11 @@ Acceptance:
 
 ## Gate 4: `provider-full`
 
-This gate currently proves real provider + real API records. Prefer
-`scripts/provider-integration.ps1 -SkipWebSmoke` for OpenAI official APIs,
-relay/gateway APIs, Anthropic, and Ollama. The runner's old-selector browser
-step is a known Web M1 regression in the gate itself, not accepted product-shell
-evidence. Use the manual profile below only for diagnostics when the runner
-needs to be decomposed.
+This gate proves real provider + real API records and, when `-SkipWebSmoke` is
+omitted, the exact product-shell run/report/transcript binding. Prefer the
+generic runner for OpenAI official APIs, relay/gateway APIs, Anthropic, and
+Ollama. Use the manual profile below only for diagnostics when the runner needs
+to be decomposed. The external-provider Web portion remains unrun for C3.
 
 Prepare isolated state:
 
@@ -439,8 +445,10 @@ $tool = Invoke-RestMethod `
 
 Approval through Web:
 
-1. Open `http://localhost:3000/dev/workbench` for this historical gate.
-2. Use the selected provider/model profile.
+1. Create or select an API-backed product workspace/session, then open the
+   corresponding `/w/<workspace_id>/s/<product_session_id>` route.
+2. In Settings -> Providers, create/select the provider/model profile without
+   entering a raw key value in the browser.
 3. Submit a request asking the model to write a short file through the available file-write tool.
 4. Approve the pending `write_file` card in the Web panel.
 
@@ -467,9 +475,10 @@ Acceptance:
 
 - at least one plain real-provider run reaches terminal `done`;
 - at least one native tool-use run records `ToolCallStarted` and `ToolCallCompleted` for `echo`;
-- advanced `/dev/workbench` history shows the real-provider run ids after page
-  reload;
-- its detail/report view shows terminal status, model id, tool name, tool
+- the browser result records the exact `job_id` and `run_id` returned by
+  `POST /jobs`, without selecting a guessed latest run;
+- `/runs/{run_id}/report` and the selected product session transcript contain
+  that exact job/run binding and show terminal status, model id, tool name,
   result, and final output;
 - approval and input cards can be resolved from Web and the API state no longer reports them as pending afterward;
 - all filesystem writes remain under the isolated `$workspace`;
@@ -536,7 +545,9 @@ Acceptance:
 
 Run stress only after `local-full`, `provider-smoke`, `provider-full`, and `external-tools` pass.
 
-The provider runner owns the preferred stress evidence path:
+The provider runner owns the preferred stress evidence path. These commands use
+`-SkipWebSmoke` only because Gate 4 should already have collected the browser
+evidence once for the same provider configuration:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
@@ -702,7 +713,7 @@ When starting a fresh session, paste this request:
 ```text
 我们继续 rove 的完整集成测试。请先阅读 docs/runtime/full-integration-runbook.md、docs/runtime/integration-testing.md、docs/runtime/provider-smoke.md、.env.integration.example，以及本地 .env.integration。当前工作目录是 D:\Study\project\agent\rove。
 
-目标：按 full-integration-runbook 的顺序执行全面测试：先确认 local-full 基线，再用 .env.integration 里的 provider 配置查询模型 inventory，选择一个可用的 chat/tool 模型做 provider-smoke，然后继续 provider-full、external-tools、stress/长跑测试。当前 provider runner 先使用 -SkipWebSmoke；它的浏览器脚本还是 Web M1 之前的选择器。每一步都要保存 artifacts，核对 API /runs、/runs/{run_id}/report 和 /dev/workbench 历史/详情记录。默认 `/` 产品壳的完整 live-API 验收仍是 Web Complete C3 缺口，不要把旧 Workbench 证据误报成产品壳证据。遇到失败先定位原因并修复，再继续。
+目标：按 full-integration-runbook 的顺序执行全面测试：先确认 local-full 基线，再用 .env.integration 里的 provider 配置查询模型 inventory，选择一个可用的 chat/tool 模型做 provider-smoke，然后继续 provider-full、external-tools、stress/长跑测试。local-full 必须核对默认 `/` 产品壳的迁移、A/B 精确续跑、刷新、交互和深路由，以及单独的 bounded `/dev/workbench` smoke。provider runner 的 Web 步骤必须捕获浏览器 `POST /api/jobs` 返回的精确 job/run IDs，并核对对应 report 和 product transcript，不能按 ID 排序猜 latest。C3 尚无外部 provider Web 实跑证据，不要把未运行写成通过。每一步都要保存 artifacts；遇到失败先定位原因并修复，再继续。
 
 注意：真实 provider key 已经写在本地忽略文件 .env.integration 里；不要把 key 写入 tracked 文件或最终报告。先运行 git status，保护已有未提交改动，不要 reset 或 checkout 用户改动。
 ```

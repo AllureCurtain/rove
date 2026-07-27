@@ -2,10 +2,10 @@
 
 This guide is for maintainers who need to understand, debug, or extend the current implementation. It describes what exists in the codebase today. Product intent and historical design rationale live in the top-level docs; the current runtime source of truth remains this `docs/runtime/` directory.
 
-> Web status note (2026-07-27): Web Complete C0–C2 are implemented. The
-> default Web shell uses the C0 product clients for durable state, exact-session
-> continuity, transcript restore, deep routes, and complete Settings. C3
-> migration/polish/live-API acceptance remains future work.
+> Web status note (2026-07-27): Web Complete C0-C3 is implemented and verified
+> on the stacked delivery branch. Deterministic `local-full` passed all three
+> live-API browser cases; the stacked PRs have not landed on `main`, and the
+> external-provider browser gate was not run.
 
 The root manifest is a modular resolver-3 Cargo Workspace whose default
 member is `apps/cli`, with independent packages `rove-models`, `rove-core`,
@@ -604,25 +604,28 @@ retains the old developer surface as an advanced escape hatch only.
 
 The current product shell:
 
-1. Loads workspaces, sessions, safe preferences, and provider profiles from the
+1. Runs the replay-safe M1 migration gate before mounting product state or
+   reading the server catalog. Only `not_needed` or verified `complete` proceeds;
+   uncertain and invalid states remain explicit and fail closed.
+2. Loads workspaces, sessions, safe preferences, and provider profiles from the
    API-global ProductStore through the strict product client.
-2. Resolves `/`, `/w/:workspaceId`, `/w/:workspaceId/s/:sessionId`, `/settings`,
+3. Resolves `/`, `/w/:workspaceId`, `/w/:workspaceId/s/:sessionId`, `/settings`,
    and `/settings/:section` against server IDs. Invalid or mismatched deep links
    show a typed route failure rather than flashing another session.
-3. Reads the selected session's canonical transcript, projects messages,
+4. Reads the selected session's canonical transcript, projects messages,
    tools, approvals, inputs, and run identity, and preserves explicit
    `complete`, `partial`, and retryable error restore states.
-4. Sends each turn with its absolute Folder/Repo workspace plus
+5. Sends each turn with its absolute Folder/Repo workspace plus
    `product_session_id`, omitting client `resume`; the Rust API resolves exact
    product-session continuation and fails closed on binding errors.
-5. Opens `EventSource` only for the focused live job, applies canonical events
+6. Opens `EventSource` only for the focused live job, applies canonical events
    through the shared reducer/controller, and fetches job state on stream errors.
    Background running/attention state is refreshed through bounded session-list
    polling.
-6. Calls approval, input, and cancel endpoints when required. Switching sessions
+7. Calls approval, input, and cancel endpoints when required. Switching sessions
    closes the old controller, restores the selected transcript, and reattaches
    its live binding when applicable.
-7. Loads/creates/updates/deletes provider profiles and persists profile/model selection
+8. Loads/creates/updates/deletes provider profiles and persists profile/model selection
    through product APIs. Browser requests contain only provider
    type/base/model/key-environment references; raw keys never enter browser
    state or requests.
@@ -631,8 +634,11 @@ Web Complete C0 adds `apps/web/product/` with strict response
 validation, a thin client for all product CRUD/transcript/migration routes, and
 a same-origin-locking, replay-safe M1 migration state machine. It also adds
 `product_session_id` to the shared create-job request type. C1 invokes the
-catalog/preferences/profile/transcript portions from `ProductApp`; the browser
-migration state machine itself remains uninvoked pending C3 migration UX.
+catalog/preferences/profile/transcript portions from `ProductApp`. C3 invokes
+the migration state machine before those C1 reads, preserves exact pending
+retries, exposes typed recovery states, remaps legacy product routes after a
+verified acknowledgement, and shows a completion summary only for a migration
+completed in the current mount.
 
 If a create-job request fails at the network boundary after the API may have
 accepted it, C1 does not repeat the mutation. It performs bounded status/binding
@@ -643,13 +649,15 @@ reload before another send.
 C2 also adds revision-CAS preference writes, a server-owned default approval
 policy used when a turn omits explicit approval, bounded Memory/runtime clients,
 durable catalog actions, safe session metadata export, and wired `/`,
-`Mod+Shift+Enter`, `Mod+,`, and `Mod+.` shortcuts. Remaining UI work is C3:
-user-facing migration UX, final accessibility/screenshot polish, and live
+`Mod+Shift+Enter`, `Mod+,`, and `Mod+.` shortcuts. C3 completes migration UX,
+responsive and narrow layouts, visible focus and keyboard behavior,
+reduced-motion handling, state presentation, and deterministic live-API
 product-shell acceptance.
 
 Relevant code:
 
 - `apps/web/shell/ProductApp.tsx`
+- `apps/web/shell/M1MigrationGate.tsx`
 - `apps/web/api/run-controller.ts`
 - `apps/web/state/*`
 - `apps/web/chat/*`
@@ -672,14 +680,13 @@ pnpm build
 
 Browser-level Playwright tests live under `apps/web/tests/e2e` and run through
 `pnpm test:e2e`. They are separate from the default fast Web checks so the
-unit/type/build loop stays lightweight. `shell.spec.ts` covers core product
-flows and `continuity.spec.ts` covers C1 restore, deep routes, switching,
-focused reattachment, ambiguous job starts, and provider persistence with
-browser-boundary mocks. `workbench.spec.ts` covers the advanced surface, and
-the gated `real-api.spec.ts` opens `/dev/workbench`
-against a live Rust API. Those three real-API cases do not constitute
-live-API acceptance of the default product shell; that remains Web Complete C3
-work.
+unit/type/build loop stays lightweight. `shell.spec.ts`, `continuity.spec.ts`,
+`settings.spec.ts`, `migration.spec.ts`, and `polish.spec.ts` use
+browser-boundary mocks for broad deterministic product, fault/race, recovery,
+and visual coverage. The gated `real-api.spec.ts` runs against the live Rust API.
+Through `local-full`, its C3 run passed all three cases: migration before catalog
+boot; exact A/B continuity with refresh, approval, input, cancel, Settings, and
+deep routes; and a bounded `/dev/workbench` direct-run smoke.
 
 Real provider smoke tests are opt-in and documented in `docs/runtime/provider-smoke.md`. They are intentionally excluded from default CI because they require credentials, network access, local Ollama availability, or provider quota.
 
@@ -1504,17 +1511,17 @@ These are implementation-level issues to keep in mind before extending the syste
    implemented. C1 uses the client for API-authoritative catalogs, profiles,
    preferences, transcript restore, durable routes, focused reattachment, and
    exact product-session turns. C2 completes the Settings platform APIs and all
-   nine Settings sections. The migration module is not invoked by the shell,
-   and final migration UX plus live product-shell acceptance remain C3.
+   nine Settings sections. C3 invokes migration before catalog boot, adds
+   fail-closed recovery and final interaction polish, and verifies the default
+   product shell against the live Rust API.
 
 6. Browser evidence is split by route. The default product shell has
-   mock-backed `shell.spec.ts` coverage. The deterministic `local-full` runner
-   invokes `real-api.spec.ts`, which opens `/dev/workbench`; it proves the
-   advanced surface against the live API, not the product shell's complete
-   live-API lifecycle. The provider integration runner's browser script also
-   still looks for legacy `Task`, `Model`, and `Steps` controls while navigating
-   `/`, so that optional step is stale after Web M1 and must not be counted as
-   current product-shell evidence.
+   broad mock-backed product and fault-injection coverage. The deterministic
+   `local-full` runner invokes `real-api.spec.ts` for the default product shell
+   and one bounded advanced-surface smoke; its C3 run passed 3/3. The provider
+   integration runner now targets an exact product session, captures the
+   browser's `POST /jobs` IDs, and verifies that exact report/transcript binding,
+   but the external-provider Web gate was not run for C3.
 
 
 ## 24. Current Verification Baseline
@@ -1536,4 +1543,7 @@ C0 includes focused ProductStore, product-route, exact-session resume,
 transcript, migration, stream-finalization, job-start lifecycle, runtime commit
 guard, and Web client tests. C1 adds product-route/catalog/transcript/reducer
 unit coverage plus mock-backed `shell.spec.ts` and `continuity.spec.ts` browser
-coverage. The latter is not live-API product-shell evidence; that remains C3.
+coverage. C2 adds Settings/API coverage. C3 adds migration-gate and polish tests
+plus the deterministic `local-full` live-API product-shell suite. Mocked
+fault/race scenarios remain identified as mock evidence rather than being
+reclassified by the live run.

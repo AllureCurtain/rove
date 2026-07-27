@@ -81,7 +81,11 @@ function Wait-HttpOk([string]$Uri, [int]$TimeoutSeconds, [string]$Name) {
     $lastError = $null
     while ((Get-Date) -lt $deadline) {
         try {
-            $response = Invoke-WebRequest -UseBasicParsing -Uri $Uri -TimeoutSec 3
+            $headers = @{}
+            if ($env:ROVE_API_TOKEN -and $Uri.StartsWith("$ApiBase/")) {
+                $headers["Authorization"] = "Bearer $env:ROVE_API_TOKEN"
+            }
+            $response = Invoke-WebRequest -UseBasicParsing -Uri $Uri -Headers $headers -TimeoutSec 3
             if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 500) {
                 return
             }
@@ -317,12 +321,12 @@ try {
         Add-CorsOrigins @($WebBase, "http://localhost:$WebPort")
     }
 
-    $apiBuildArgs = @("build", "--bin", "rove-api")
+    $apiBuildArgs = @("build", "-p", "rove-api", "--bin", "rove-api")
     Push-Location $RepoRoot
     try {
         & cargo @apiBuildArgs
         if ($LASTEXITCODE -ne 0) {
-            throw "cargo build --bin rove-api failed with exit code $LASTEXITCODE"
+            throw "cargo build -p rove-api --bin rove-api failed with exit code $LASTEXITCODE"
         }
     } finally {
         Pop-Location
@@ -340,6 +344,7 @@ try {
 
     if (-not $SkipWebE2E) {
         $env:ROVE_REAL_API_E2E = "1"
+        $env:ROVE_REAL_API_WORKBENCH_SMOKE = "1"
         $env:ROVE_WEB_PORT = $WebPort
         $env:PLAYWRIGHT_BASE_URL = $WebBase
         $env:PLAYWRIGHT_HTML_REPORT = Join-Path $ArtifactsDir "playwright-report"

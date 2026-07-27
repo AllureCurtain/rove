@@ -115,8 +115,9 @@ As of 2026-07-27:
   `rove-app-bootstrap` owns first-party AppConfig, provider factory, product
   registry assembly, and shared Engine assembly. Workspace retrieval is tool-based plus layered file memory; there is no built-in vector RAG.
 - `docs/runtime/` describes the implemented MVP, Web M1 product shell, and the
-  implemented Web Complete C0 persistence/API, C1 continuity UI, and C2
-  Settings surface.
+  Web Complete C0–C3 persistence, continuity, Settings, migration, polish, and
+  local acceptance work. C1–C3 remain a stacked PR chain awaiting coordinator
+  integration into `main`.
 - MCP currently supports stdio and the existing legacy SSE path. Streamable
   HTTP, negotiated sessions, rich MCP result envelopes, and Tool Artifacts are
   proposed, not implemented.
@@ -143,10 +144,16 @@ As of 2026-07-27:
   defaults, bounded memory/runtime settings APIs, full provider CRUD, durable
   workspace/session management, real Memory and runtime health views, and four
   wired keyboard shortcuts across all nine non-placeholder Settings sections.
-  User-facing M1 migration invocation, final polish, and live-API product-shell
-  acceptance remain C3 work. Product-shell continuity and Settings E2E are mock-backed;
-  `local-full` real-API Playwright targets `/dev/workbench`, and the provider
-  runner's Web selectors predate M1. No Tauri `apps/desktop` host exists yet.
+  Web Complete C3 invokes M1 migration before product catalog reads, preserves
+  exact retry/deep-route behavior, and completes responsive, focus/keyboard,
+  live-status, reduced-motion, theme, and screenshot-evidence polish. Mocked
+  browser suites remain deterministic contract evidence, while `local-full`
+  now runs live-API migration and default-product-shell acceptance plus one
+  bounded `/dev/workbench` advanced smoke; the latest local fake-provider run
+  passed all three Playwright scenarios. The external-provider gate was not run,
+  so no external interoperability claim is made. C0–C3 implementation is
+  verified on the stacked branch, but coordinator integration into `main` is
+  pending. No Tauri `apps/desktop` host exists yet.
 - This repository-level `AGENTS.md` guides maintainers and coding agents. Its
   existence does not mean the rove runtime already loads workspace
   `AGENTS.md` files into model context.

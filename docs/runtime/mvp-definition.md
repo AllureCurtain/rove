@@ -2,7 +2,7 @@
 
 Status: MVP reached for the local-first single-user runtime.
 Date: 2026-05-30
-Last interface update: 2026-07-27 (Web Complete C2 Settings UI).
+Last interface update: 2026-07-27 (Web Complete C3 migration, polish, and live-API acceptance).
 
 ## Definition
 
@@ -41,6 +41,13 @@ This MVP is not a SaaS product, browser automation runtime, desktop automation r
   provider profile create/read/update/delete; durable workspace/session
   management; safe catalog export; and four wired keyboard shortcuts across
   all nine Settings sections.
+- Web Complete C3 completion: replay-safe M1 migration gates catalog boot and
+  exposes explicit fail-closed recovery; legacy product routes remap through the
+  verified acknowledgement; responsive, focus, keyboard, reduced-motion, and
+  product-state polish is complete; and the default shell has deterministic
+  live-API coverage for migration, exact A/B continuation, refresh,
+  approval/input/cancel, Settings, and deep routes. One bounded advanced
+  `/dev/workbench` smoke remains available.
 - Core engine with planned and unplanned loops sharing model turns, tool turns, context checkpoints, and history writeback.
 - Local state under `.rove/` with trace, task state, report, and SQLite index.
 - Folder, Repo, and Task workspaces.
@@ -48,11 +55,12 @@ This MVP is not a SaaS product, browser automation runtime, desktop automation r
 - Provider abstraction for OpenAI, OpenAI Responses, Anthropic, Ollama, and fake providers.
 - Deterministic no-network benchmarks and default test coverage.
 
-The product shell is not yet fully Web Complete. C0–C2 close persistence,
-continuity, authority, and Settings completeness, but product-shell invocation
-of the M1 migration module, final polish, and live-API acceptance remain C3
-work. Its product-shell browser suite is mock-backed; the current gated
-real-API Playwright suite targets `/dev/workbench` rather than the default shell.
+Web Complete C0-C3 is implemented and verified on the stacked delivery branch.
+Broad deterministic race, failure, migration-recovery, and visual scenarios
+remain browser-boundary mock evidence; `local-full` separately passed three
+live-API browser cases covering migration, the default product lifecycle, and a
+bounded advanced smoke. The stacked PRs have not landed on `main`, and no
+external-provider C3 browser gate has been run.
 
 ## Out of scope
 

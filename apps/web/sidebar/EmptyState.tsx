@@ -46,6 +46,8 @@ export function EmptyState({
               value={path}
               onChange={(event) => setPath(event.target.value)}
               placeholder="D:\\path\\to\\project"
+              aria-invalid={error ? "true" : undefined}
+              aria-describedby={error ? "empty-workspace-error" : undefined}
             />
           </div>
           <div className="field">
@@ -59,7 +61,11 @@ export function EmptyState({
               <option value="repo">Repo</option>
             </select>
           </div>
-          {error ? <div className="chat-error">{error}</div> : null}
+          {error ? (
+            <div className="chat-error" id="empty-workspace-error" role="alert">
+              {error}
+            </div>
+          ) : null}
           <div className="empty-state__actions">
             <button type="submit">Open workspace</button>
             <button type="button" className="secondary" onClick={onOpenProviders}>

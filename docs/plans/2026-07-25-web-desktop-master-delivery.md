@@ -1,6 +1,6 @@
 # Web → Desktop Master Delivery Plan
 
-> Status: **Active coordinator plan — C0–C1 complete; C2–C3 and Desktop pending**
+> Status: **Active coordinator plan — C0–C3 implemented/verified; integration and Desktop pending**
 >
 > Coordinator: the primary conversation working from the repository `main`
 > checkout. Worker conversations implement bounded branches only; they do not
@@ -10,9 +10,10 @@
 >
 > C0 status: implemented and verified through the integration PR path.
 >
-> C1 status: implemented in the continuity worktree; Web unit, type, build, and
-> mock-backed continuity browser gates pass. Integration into `main` remains a
-> coordinator action.
+> C1–C3 status: implemented and locally verified as an ordered stacked branch
+> chain. The local fake-provider `local-full` real-API suite passes 3/3.
+> Integration into `main` remains a coordinator action; the external-provider
+> gate was not run.
 >
 > Product decisions:
 > [`../design/2026-07-25-agent-desktop-web-ui-design.md`](../design/2026-07-25-agent-desktop-web-ui-design.md)
@@ -25,9 +26,9 @@
 This is the coordinator-level source for delivery order, worktree ownership,
 parallel boundaries, PR authority, and the handoff from Web Complete to a future
 Tauri Desktop milestone. It does not replace current runtime truth in
-`docs/runtime/**`, and it does not claim that Web Complete or Desktop is already
-implemented. Web Complete C0–C1 are complete; C2–C3 and Desktop remain future
-delivery.
+`docs/runtime/**`. Web Complete C0–C3 implementation and local acceptance are
+complete on the stacked branch, but this plan does not claim that chain has
+landed on `main` or that Desktop exists.
 
 ---
 
@@ -39,7 +40,8 @@ The product sequence is:
 P0 documentation and contract reconciliation
   → Web C0 product persistence/session foundation
   → Web C1 continuity + C2 settings/platform work
-  → Web C3 UI completion and acceptance
+  → Web C3 UI completion and acceptance (verified stacked branch)
+  → coordinator review/integration
   → Web Complete on main
   → Desktop D0 design and bootstrap contract
   → Desktop implementation and packaging
@@ -54,16 +56,18 @@ App:      Workspace/session rail | Chat | collapsible Inspector
 Settings: full page with its own section navigation
 ```
 
-The remaining Web work is usable Settings, browser migration UX, recovery-state
-polish, accessibility, responsive behavior, and a final visual/live-API
-acceptance seal. Desktop starts only after this shared UI is complete enough to
-host without forking the product.
+The Web implementation work through Settings, migration/recovery,
+accessibility, responsive behavior, and visual/live-API acceptance is complete
+on the stacked branch. Remaining Web delivery work is coordinator review and
+ordered integration into `main`, plus optional external-provider validation
+when credentials are deliberately in scope. Desktop starts only after this
+shared UI is integrated without forking the product.
 
 ---
 
 ## 2. Audited baseline
 
-### 2.1 Implemented baseline and verified C1 worktree
+### 2.1 Implemented baseline and verified Web Complete stack
 
 | Delivery | Evidence | Result |
 |---|---|---|
@@ -78,6 +82,8 @@ host without forking the product.
 | P0 reconciliation | `6e32720` | Current-state/product-plan alignment and C0 worktree contract |
 | Web Complete C0 | Current code and CI | Product persistence/API foundation and typed Web client |
 | Web Complete C1 | Continuity worktree and Web gates | API-authoritative shell, deep routes, transcript restore, and exact-session observation |
+| Web Complete C2 | Settings worktree and Web gates | Complete API-backed Settings, provider, catalog, memory, runtime, and keyboard surfaces |
+| Web Complete C3 | Polish worktree and local acceptance | Migration-gated boot, deep-route preservation, visual/accessibility polish, and live local-API product-shell evidence |
 
 The default Web route is the product shell. `/dev/workbench` is an advanced
 escape hatch, not a second product line.
@@ -103,7 +109,7 @@ C0 assembles the worker and coordinator work into one verified foundation:
 - API-owned product job-start tasks drained before supervisors and job handles
   during shutdown.
 
-### 2.3 Implemented C1 continuity and remaining Web gaps
+### 2.3 Implemented C1–C3 product shell and remaining integration gap
 
 C1 connects the default product shell to the C0 API-authoritative workspace,
 session, preference, provider-profile, and transcript contracts. It adds durable
@@ -111,20 +117,18 @@ workspace/session and Settings routes, refresh restore with explicit
 partial/error/retry states, exact `product_session_id` turns without a client
 resume guess, focused SSE reattachment, background status polling, and bounded
 binding reconciliation after an ambiguous job start without duplicate
-submission.
+submission. C2 completes every Settings section and its API-backed management
+surfaces. C3 runs the fail-closed browser migration gate before catalog boot,
+reuses the exact idempotency key and body on retry, preserves validated
+deep-route mappings, and completes responsive layout, keyboard/focus,
+live-status, reduced-motion, theme, and visual polish.
 
-The remaining gaps are:
-
-- several Settings sections are placeholder-only, and provider edit/update is
-  still C2 work;
-- the implemented M1 migration module is not yet invoked by the product shell,
-  so migration/retry UX remains C3 work;
-- recovery-state polish, keyboard/focus and reduced-motion behavior, responsive
-  layout, and high-fidelity screenshot baselines still need the C3 completion
-  pass;
-- product-shell Playwright evidence remains mock-backed. The current
-  `local-full` real-API suite targets `/dev/workbench`, and the provider runner's
-  Web step still uses pre-M1 selectors.
+The deterministic Web suites cover these contracts. `local-full` now exercises
+live M1 migration and the default `/` shell across exact A/B continuation,
+refresh, tools, cancellation, Settings, and deep routes, while retaining one
+bounded `/dev/workbench` smoke; its latest local fake-provider run passed all
+three Playwright scenarios. Remaining gaps are coordinator integration of the
+stacked chain and the explicitly unrun external-provider gate.
 
 ### 2.4 Desktop is not implementation-ready
 
@@ -453,6 +457,11 @@ C3 is integrated after all functional lanes. It owns:
 The existing information architecture and single harbor/ink accent remain
 sealed. C3 improves craft and identity; it does not start another redesign.
 
+These C3 implementation items and local acceptance gates are complete in the
+polish worktree. They become integrated Web Complete truth on `main` only after
+the coordinator reviews and merges the stacked chain. No external-provider run
+is included in the current evidence.
+
 ---
 
 ## 7. Desktop D0 gate
@@ -544,13 +553,20 @@ and documented packaging/security behavior.
 
 ## changelog
 
+- 2026-07-27: Completed C2–C3 implementation and local verification on the
+  ordered stacked branch chain. C3 adds migration-gated product boot,
+  deep-route-safe recovery, responsive/accessibility/theme/visual polish, and a
+  three-scenario passing `local-full` real-API suite covering the default shell
+  plus a bounded advanced workbench smoke. External-provider validation was not
+  run; coordinator integration and Desktop remain pending.
 - 2026-07-27: Completed Web Complete C1 continuity in its worktree. The default
   shell now uses C0 API authority, durable deep routes, canonical transcript
   restore, exact product-session turns, focused SSE reattachment, background
   status polling, bounded no-duplicate job-start reconciliation, and persistent
   provider profiles. `pnpm test` (14 files, 121 tests), `pnpm typecheck`,
-  `pnpm build`, and the mock-backed continuity suite (17/17) pass. C2 Settings
-  completeness and C3 migration/polish/live-API acceptance remain open.
+  `pnpm build`, and the mock-backed continuity suite (17/17) pass. At that point
+  C2 Settings completeness and C3 migration/polish/live-API acceptance remained
+  open; both were completed later on the stacked branch.
 - 2026-07-26: Completed Web Complete C0. Store, transcript, Web client, product
   job lifecycle, migration, stream safety, commit-boundary hardening, current
   docs, and aggregate Rust/Web CI are integrated through the coordinator-owned

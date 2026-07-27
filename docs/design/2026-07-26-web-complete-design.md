@@ -1,6 +1,6 @@
 # Web Complete — Local Agent Web as Daily Driver
 
-> Status: **Accepted / Active — Web M1 and C0–C2 implemented; C3 pending**
+> Status: **Implemented and locally verified — C0–C3 stacked; coordinator integration pending**
 >
 > Date: 2026-07-26
 >
@@ -17,9 +17,11 @@
 This document freezes the **Web Complete** milestone: finish the local Web product
 so it is a **daily-driver** agent surface, not only an M1 shell.
 
-The C0 persistence/API foundation, C1 continuity UI, and C2 Settings are implemented, but Web
-Complete is not finished. Current implementation truth remains code plus
-`docs/runtime/**`; C3 continues to describe future UI delivery.
+The C0 persistence/API foundation, C1 continuity UI, C2 Settings, and C3
+migration/polish/live-API acceptance are implemented and locally verified on
+the stacked Web Complete branch. Current implementation truth remains code plus
+`docs/runtime/**`. The stacked PR chain has not landed on `main`; ordered
+coordinator integration remains the final Web Complete delivery action.
 
 ---
 
@@ -37,8 +39,8 @@ Complete is not finished. Current implementation truth remains code plus
 ### Why Web Complete before Desktop
 
 - M1 already delivered the shell, hard resume, and workspace-root execution.
-- The remaining C2/C3 gaps (shallow Settings, migration/polish, and missing live
-  product-shell acceptance) hurt daily use more than a missing installable shell.
+- Completing Settings, migration/recovery, responsive/accessibility polish, and
+  live product-shell acceptance before Desktop produced a stronger shared UI.
 - Completing Web first means Desktop later hosts a stronger shared UI.
 
 ### Anti-goals
@@ -99,8 +101,10 @@ selection are API-authoritative.
 This closes the C1 continuity and authority-switch portion of the M1 leftovers.
 C2 subsequently completed every Settings section, provider edit/update,
 revision-safe approval defaults, catalog and Memory management, runtime health,
-and critical shortcuts. Product-shell invocation of the M1 migration module,
-final polish, and live-API product-shell evidence remain C3 work.
+and critical shortcuts. C3 subsequently completed product-shell invocation of
+the M1 migration module, final polish, and live local-API product-shell
+evidence on the stacked branch. Coordinator integration into `main` remains
+pending.
 
 ---
 
@@ -256,9 +260,12 @@ Unchanged: browser never holds or sends raw provider keys; only `api_key_env`
 
 On first Web Complete load, migrate any M1 `localStorage` profiles/catalog into
 durable storage when present; do not drop user config silently. C0 implements
-the strict API and replay-safe browser migration state machine. Invoking it from
-the product shell and completing the user-facing migration/recovery experience
-remain later Web waves.
+the strict API and replay-safe browser migration state machine. C3 invokes that
+state machine before mounting API-authoritative product catalog reads. Pending,
+rejected, blocked, and superseded outcomes fail closed; retries preserve the
+exact idempotency key and body; only a newly completed migration shows a success
+summary; and validated workspace/session mappings rewrite legacy deep routes
+without dropping query or fragment state.
 
 ---
 
@@ -308,6 +315,11 @@ Web Complete adds:
 - restore/partial/error empty-states that meet the same craft bar
 - settings forms with full interaction states (loading/empty/error/success)
 - deep-link landings that do not flash the wrong shell
+- 390px/320px product-shell reflow with a bounded mobile Inspector and composer
+- visible high-contrast focus, contained/restored dialog focus, dynamic status
+  semantics, and editable-safe shortcuts
+- reduced-motion behavior, server-confirmed theme bootstrap, active Settings-tab
+  visibility, and representative light/dark/narrow screenshot artifacts
 
 ---
 
@@ -326,14 +338,21 @@ Web Complete adds:
 
 ## 11. Acceptance mindset
 
-Web Complete is accepted when the **acceptance script in the plan** passes on a
-clean main-derived worktree against live `rove-api`, including:
+The Web Complete implementation acceptance script passes on the clean
+main-derived C3 worktree against a live local `rove-api`, including:
 
 - cold open → work → refresh → transcript present
 - second turn hard resume after restore
 - settings sections usable
 - provider profiles survive browser storage clear **if API store remains**
 - deep links restore place
+
+The `local-full` fake-provider run passed all three real-API Playwright
+scenarios: M1 migration, default-shell continuity/refresh/tools/cancellation/
+Settings, and the bounded advanced `/dev/workbench` smoke. The external-provider
+gate was not run, so this is local runtime/API evidence rather than external
+provider interoperability evidence. Web Complete is not recorded as landed on
+`main` until the coordinator reviews and integrates the stacked PR chain.
 
 ---
 
@@ -355,21 +374,27 @@ Web Complete should make that cheaper, not harder:
 
 ## changelog
 
+- 2026-07-27: Completed and locally verified C3 on the stacked Web Complete
+  branch. The default shell now gates catalog boot on fail-closed M1 migration,
+  preserves mapped deep routes, completes responsive/accessibility/theme and
+  visual polish, and passes the three-scenario `local-full` live-API suite. The
+  external-provider gate was not run; coordinator integration into `main`
+  remains pending, and Desktop remains deferred.
 - 2026-07-27: Marked C2 implemented: all nine Settings sections are usable;
   provider CRUD, approval/step preferences, workspace/session management,
   Memory, runtime health, shortcuts, and mobile bounds have focused and
-  mock-backed browser evidence. C3 remains open.
+  mock-backed browser evidence. C3 was completed later on its stacked branch.
 - 2026-07-27: Marked C1 implemented: API-authoritative product state, canonical
   transcript restore with explicit partial/error handling, durable deep routes,
   exact product-session turns, focused reattachment/background status polling,
   provider persistence, and bounded ambiguous-start reconciliation. Evidence is
-  mock-backed at the browser boundary; C2 was completed later and C3 live-API
-  acceptance remains open.
+  mock-backed at the browser boundary; C2 and C3, including C3 live local-API
+  acceptance, were completed later on their stacked branches.
 - 2026-07-26: Marked C0 implemented: API-global ProductStore, exact
   product-session continuation, canonical-event transcript projection,
   strict/idempotent supervised migration, runtime commit guards, and typed Web
   client modules. Default-shell adoption was completed by C1; C2 was completed
-  later and C3 remains open.
+  later, followed by C3 on its stacked branch.
 - 2026-07-25: Delivery coordination amended after implementation audit. The
   original serial-wave recommendation is replaced by coordinator-owned contract
   foundations plus bounded disjoint workers. Sealed exact product-session/run

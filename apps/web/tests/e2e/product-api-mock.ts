@@ -3,6 +3,11 @@ import type { Page, Route } from "@playwright/test";
 import type {
   ProductMemoryTopicContentResponse,
 } from "../../settings/settings-platform-api-types";
+import type {
+  M1BrowserMigrationRequest,
+  M1BrowserMigrationResponse,
+  M1MigrationIssue,
+} from "../../product/product-api-types";
 
 const NOW = "2026-07-26T00:00:00.000Z";
 
@@ -68,6 +73,8 @@ export interface MockProductApiOptions {
   workspaceDeleteDelayMs?: number;
   preferenceUpdateFailures?: number;
   preferenceUpdateDelayMs?: number;
+  migrationFailures?: number;
+  migrationIssues?: M1MigrationIssue[];
 }
 
 export interface MockProductApiState {
@@ -90,6 +97,9 @@ export interface MockProductApiState {
   sessionCreateRequests: number;
   preferenceUpdateRequests: number;
   remainingPreferenceUpdateFailures: number;
+  migrationRequestBodies: string[];
+  remainingMigrationFailures: number;
+  initialStateReadRequests: number;
 }
 
 interface MockJob {
@@ -144,12 +154,20 @@ export async function installMockProductApi(
     sessionCreateRequests: 0,
     preferenceUpdateRequests: 0,
     remainingPreferenceUpdateFailures: options.preferenceUpdateFailures ?? 0,
+    migrationRequestBodies: [],
+    remainingMigrationFailures: options.migrationFailures ?? 0,
+    initialStateReadRequests: 0,
   };
   const jobs = new Map<string, MockJob>();
   const delayedSessionVisibility = new Map<string, DelayedSessionVisibility>();
   let workspaceCounter = state.workspaces.length;
   let sessionCounter = state.sessions.length;
   let providerProfileCounter = state.providerProfiles.length;
+  let migrationReceiptCounter = 0;
+  const migratedWorkspaceIds = new Map<string, string>();
+  const migratedSessionIds = new Map<string, string>();
+  const migratedProfileIds = new Map<string, string>();
+  const migrationReceipts = new Map<string, M1BrowserMigrationResponse>();
 
   await page.route(/\/api\/product(?:\/.*)?(?:\?.*)?$/, async (route) => {
     const request = route.request();
@@ -157,7 +175,133 @@ export async function installMockProductApi(
     const path = url.pathname.replace(/^\/api/u, "");
     const method = request.method();
 
+    if (path === "/product/migrations/m1-browser" && method === "POST") {
+      const rawBody = request.postData() ?? "";
+      state.migrationRequestBodies.push(rawBody);
+      if (state.remainingMigrationFailures > 0) {
+        state.remainingMigrationFailures -= 1;
+        return json(
+          route,
+          { code: "product_store_unavailable", error: "migration temporarily unavailable" },
+          503,
+        );
+      }
+      const body = request.postDataJSON() as M1BrowserMigrationRequest;
+      const existing = migrationReceipts.get(body.idempotency_key);
+      if (existing) {
+        return json(route, { ...existing, disposition: "already_applied" });
+      }
+
+      const workspaceMappings = body.workspaces.map((workspace) => {
+        let workspaceId = migratedWorkspaceIds.get(workspace.source_id);
+        if (!workspaceId) {
+          workspaceCounter += 1;
+          workspaceId = `workspace-${workspaceCounter}`;
+          migratedWorkspaceIds.set(workspace.source_id, workspaceId);
+          state.workspaces.unshift({
+            id: workspaceId,
+            canonical_root: workspace.root,
+            kind: workspace.kind,
+            display_name: workspace.display_name,
+            pinned: workspace.pinned,
+            last_opened_at: workspace.last_opened_at,
+            created_at: NOW,
+            updated_at: NOW,
+          });
+        }
+        return { source_id: workspace.source_id, workspace_id: workspaceId };
+      });
+      const sessionMappings = body.sessions.flatMap((session) => {
+        const workspaceId = migratedWorkspaceIds.get(session.source_workspace_id);
+        if (!workspaceId) {
+          return [];
+        }
+        let sessionId = migratedSessionIds.get(session.source_id);
+        if (!sessionId) {
+          sessionCounter += 1;
+          sessionId = `session-${sessionCounter}`;
+          migratedSessionIds.set(session.source_id, sessionId);
+          const imported = createMockSession(sessionId, workspaceId, session.title);
+          imported.created_at = session.created_at;
+          imported.updated_at = session.updated_at;
+          state.sessions.unshift(imported);
+          state.transcripts[sessionId] = emptyTranscript(imported);
+        }
+        return [{ source_id: session.source_id, product_session_id: sessionId }];
+      });
+      const providerProfileMappings = body.provider_profiles.map((profile) => {
+        let profileId = migratedProfileIds.get(profile.source_id);
+        if (!profileId) {
+          providerProfileCounter += 1;
+          profileId = `provider-${providerProfileCounter}`;
+          migratedProfileIds.set(profile.source_id, profileId);
+          state.providerProfiles.unshift({
+            id: profileId,
+            label: profile.label,
+            provider_type: profile.provider_type,
+            api_base: profile.api_base,
+            created_at: NOW,
+            updated_at: profile.updated_at,
+            ...(profile.api_key_env ? { api_key_env: profile.api_key_env } : {}),
+            ...(profile.default_model ? { default_model: profile.default_model } : {}),
+          });
+        }
+        return { source_id: profile.source_id, provider_profile_id: profileId };
+      });
+
+      const importedSelection = body.safe_preferences.provider_selection;
+      const mappedProfileId = importedSelection?.source_profile_id
+        ? migratedProfileIds.get(importedSelection.source_profile_id)
+        : undefined;
+      state.preferences = {
+        ...state.preferences,
+        revision: Number(state.preferences.revision) + 1,
+        ...(body.safe_preferences.theme
+          ? { theme: body.safe_preferences.theme }
+          : {}),
+        ...(body.safe_preferences.source_active_workspace_id
+          ? {
+              active_workspace_id: migratedWorkspaceIds.get(
+                body.safe_preferences.source_active_workspace_id,
+              ),
+            }
+          : {}),
+        ...(body.safe_preferences.source_active_session_id
+          ? {
+              active_session_id: migratedSessionIds.get(
+                body.safe_preferences.source_active_session_id,
+              ),
+            }
+          : {}),
+        ...(importedSelection
+          ? {
+              provider_selection: {
+                ...(mappedProfileId ? { profile_id: mappedProfileId } : {}),
+                model: importedSelection.model,
+                approval: importedSelection.approval,
+                max_steps: importedSelection.max_steps,
+              },
+            }
+          : {}),
+      };
+      migrationReceiptCounter += 1;
+      const acknowledgement: M1BrowserMigrationResponse = {
+        source_schema_version: body.source_schema_version,
+        idempotency_key: body.idempotency_key,
+        receipt_id: `01J00000000000000000000${String(90 + migrationReceiptCounter).padStart(2, "0")}`,
+        disposition: "applied",
+        workspace_mappings: workspaceMappings,
+        session_mappings: sessionMappings,
+        provider_profile_mappings: providerProfileMappings,
+        issues: options.migrationIssues ?? [],
+        applied_at: NOW,
+      };
+      migrationReceipts.set(body.idempotency_key, acknowledgement);
+      return json(route, acknowledgement);
+    }
+
     if (path === "/product/workspaces" && method === "GET") {
+      state.initialStateReadRequests += 1;
       return json(route, { workspaces: state.workspaces });
     }
     if (path === "/product/workspaces" && method === "POST") {
@@ -288,6 +432,7 @@ export async function installMockProductApi(
       return route.fulfill({ status: 204, body: "" });
     }
     if (path === "/product/preferences" && method === "GET") {
+      state.initialStateReadRequests += 1;
       return json(route, state.preferences);
     }
     if (path === "/product/preferences" && method === "PUT") {
@@ -392,6 +537,7 @@ export async function installMockProductApi(
       });
     }
     if (path === "/product/provider-profiles" && method === "GET") {
+      state.initialStateReadRequests += 1;
       return json(route, { provider_profiles: state.providerProfiles });
     }
     if (path === "/product/provider-profiles" && method === "POST") {

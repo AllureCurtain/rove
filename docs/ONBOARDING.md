@@ -408,8 +408,8 @@ Built-in vector RAG has been removed. Workspace context comes from tools and lay
 
 `apps/web/` is a standalone Next.js application. It consumes the API and SSE
 rather than embedding a second runtime. The default product surface is the
-Workspace → Session → Chat + Inspector shell; `/dev/workbench` is an
-advanced-only migration escape hatch.
+Workspace → Session → Chat + Inspector shell; `/dev/workbench` is a bounded
+advanced-only escape hatch.
 
 Web Complete C0 adds an API-global SQLite
 ProductStore, product workspace/session/profile/preferences CRUD, exact
@@ -423,8 +423,12 @@ restore states, focused live-job reattachment, background status polling, and
 bounded no-duplicate reconciliation after ambiguous job starts. C2 completes
 Settings: every section has a real surface, provider CRUD
 and approval defaults are durable, workspace/session and memory management use
-the API, runtime health is live, and four documented shortcuts are wired.
-Product-shell migration UX and final live-API acceptance remain C3 work.
+the API, runtime health is live, and four documented shortcuts are wired. C3
+runs the fail-closed M1 migration gate before any product catalog read, preserves
+mapped deep routes and exact retry payloads, and completes the responsive,
+keyboard/focus, live-status, reduced-motion, theme, and screenshot-evidence
+polish for the default shell. C0–C3 are implemented and locally verified on the
+stacked Web Complete branch; coordinator integration into `main` is pending.
 
 From `apps/web/`:
 
@@ -445,12 +449,15 @@ when changing browser-visible job, SSE, approval, input, cancellation, resume,
 or proxy behavior. Follow the environment gates in
 [`runtime/integration-testing.md`](runtime/integration-testing.md).
 
-Current evidence is route-scoped: `shell.spec.ts` covers core product flows,
-`continuity.spec.ts` covers C1 continuity, and `settings.spec.ts` covers C2
-Settings behavior with mocked API boundaries, while the
-gated `real-api.spec.ts` used by `local-full` opens
-`/dev/workbench`. Full live-API product-shell acceptance is Web Complete C3
-work, not an already-passing M1 gate.
+Current browser evidence remains explicit about its boundary: `shell.spec.ts`,
+`continuity.spec.ts`, `settings.spec.ts`, `migration.spec.ts`, and
+`polish.spec.ts` provide deterministic mocked-API coverage. The gated
+`real-api.spec.ts` used by `local-full` now exercises live M1 migration and the
+default `/` product shell across exact A/B continuation, refresh, tools,
+cancellation, Settings, and deep routes; it retains one bounded
+`/dev/workbench` advanced smoke. The latest local fake-provider run passed all
+three real-API scenarios. The external-provider gate was not run and this is
+not external-provider interoperability evidence.
 
 Keep provider/API tokens server-side. Browser JavaScript must not receive raw
 provider secrets.
@@ -612,10 +619,11 @@ documents remain proposed/not implemented.
 ### Active product delivery
 
 - [Agent Desktop + Web shared UI](design/2026-07-25-agent-desktop-web-ui-design.md)
-  — Web M1 and C0–C2 are implemented; C3 and Desktop remain pending.
+  — Web M1 and C0–C3 are implemented and locally verified on the stacked
+  branch; coordinator integration and Desktop remain pending.
 - [Web Complete design](design/2026-07-26-web-complete-design.md) and
-  [delivery plan](plans/2026-07-26-web-complete.md) — C0–C2 are complete; C3
-  remains the active milestone work.
+  [delivery plan](plans/2026-07-26-web-complete.md) — C0–C3 implementation and
+  local acceptance are complete; ordered coordinator integration remains.
 - [Web → Desktop coordinator plan](plans/2026-07-25-web-desktop-master-delivery.md)
   — worktree ownership, PR authority, exact product-session binding, and
   Desktop D0 gate.
@@ -646,8 +654,8 @@ Use them for rationale, not as current API/runtime truth when they disagree with
 ## 20. Known boundary reminders
 
 - Browser/Desktop automation workspace specs are future. The Web product shell
-  and C0–C2 persistence/continuity/Settings implementation exist; a Tauri Desktop
-  product host does not.
+  and C0–C3 persistence/continuity/Settings/migration/polish implementation
+  exist on the stacked branch; a Tauri Desktop product host does not.
 - Hosted multi-user identity and distributed rate limiting are outside the MVP.
 - Built-in vector RAG is not provided.
 - Real provider/MCP tests are gated.

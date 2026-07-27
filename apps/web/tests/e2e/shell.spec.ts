@@ -38,6 +38,8 @@ test("inline approval works in product shell", async ({ page }) => {
 
   const approval = page.getByLabel("Pending approval");
   await expect(approval).toBeVisible();
+  await expect(approval).toBeFocused();
+  await expect(approval.getByRole("button", { name: "Approve" })).not.toBeFocused();
   await expect(
     approval.getByText("destructive tool requires explicit approval"),
   ).toBeVisible();

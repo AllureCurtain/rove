@@ -353,7 +353,7 @@ fn local_full_runner_builds_rove_api_before_starting_service() {
         .expect("scripts/integration-smoke.ps1 should exist");
 
     let build_args_index = script
-        .find("$apiBuildArgs = @(\"build\", \"--bin\", \"rove-api\")")
+        .find("$apiBuildArgs = @(\"build\", \"-p\", \"rove-api\", \"--bin\", \"rove-api\")")
         .expect("local-full runner should build rove-api explicitly");
     let build_location_index = script
         .find("Push-Location $RepoRoot")
@@ -434,6 +434,19 @@ fn provider_integration_runner_keeps_ollama_keyless_after_env_import() {
 }
 
 #[test]
+fn provider_integration_runner_checks_exact_web_report_identity() {
+    let script = std::fs::read_to_string(workspace_path("scripts/provider-integration.ps1"))
+        .expect("scripts/provider-integration.ps1 should exist");
+
+    assert!(script.contains("[string]$report.job_id -ne [string]$webResult.jobId"));
+    assert!(script.contains("[string]$report.run_id -ne [string]$webResult.runId"));
+    assert!(script.contains("[string]$_.binding.runtime_run_id -eq [string]$webResult.runId"));
+    assert!(
+        script.contains("[string]$boundRun.binding.runtime_job_id -ne [string]$webResult.jobId")
+    );
+}
+
+#[test]
 fn provider_integration_runner_reuses_gate_classification_artifacts() {
     let script = std::fs::read_to_string(workspace_path("scripts/provider-integration.ps1"))
         .expect("scripts/provider-integration.ps1 should exist");
@@ -452,11 +465,11 @@ fn provider_integration_runner_classifies_transport_failures_before_tool_fields(
 
     assert!(script.contains("error sending request"));
     assert!(script.contains("request failed"));
-    assert!(script.contains("did not emit an echo tool call"));
+    assert!(script.contains("did not emit a read_file tool call"));
     assert!(!script.contains("tool_call|tool call"));
 
     let network_index = script.find("error sending request").unwrap();
-    let tool_index = script.find("did not emit an echo tool call").unwrap();
+    let tool_index = script.find("did not emit a read_file tool call").unwrap();
     assert!(
         network_index < tool_index,
         "network/transport failures must be classified before tool-use wording"
@@ -473,7 +486,7 @@ fn provider_integration_runner_does_not_match_status_codes_inside_paths() {
         "provider classification must not match bare status-code substrings inside paths or hashes"
     );
     assert!(script.contains("\\b(401|403)\\b"));
-    assert!(script.contains("did not emit an echo tool call"));
+    assert!(script.contains("did not emit a read_file tool call"));
 }
 
 #[test]
@@ -481,7 +494,7 @@ fn provider_integration_runner_classifies_tool_assertions_before_panic_text() {
     let script = std::fs::read_to_string(workspace_path("scripts/provider-integration.ps1"))
         .expect("scripts/provider-integration.ps1 should exist");
 
-    let tool_index = script.find("did not emit an echo tool call").unwrap();
+    let tool_index = script.find("did not emit a read_file tool call").unwrap();
     let panic_index = script.find("panic|SQLite").unwrap();
     assert!(
         tool_index < panic_index,

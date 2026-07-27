@@ -12,15 +12,21 @@ Primary surface: the **product shell** (Workspace → Session → Run) against l
   tool cards, inline approvals, and stop/cancel
 - Collapsible run inspector with empty / loading / error / ready states
 - Durable `/w/:workspaceId/s/:sessionId` and `/settings/:section` routes
+- A fail-closed M1 browser migration gate that runs before product catalog reads,
+  preserves the exact retry payload, and rewrites legacy deep routes only after
+  a validated server acknowledgement
 - Complete nine-section Settings shell with provider CRUD, approval defaults,
   workspace/session and Memory management, runtime health, keyboard shortcuts,
   and **Advanced / Developer** (Benchmark only here)
 - Light default + dark toggle via product design tokens
+- Responsive 390px/320px chat and Settings layouts, bounded mobile Inspector,
+  visible focus, modal focus containment/restoration, live status semantics,
+  reduced-motion handling, and representative light/dark screenshot artifacts
 - Session continue uses the server-owned exact `product_session_id` binding.
   The product shell omits client `resume`; soft transcript stitch and
   workspace-global `latest` are not product paths.
 
-## C0-C2 product state, continuity, and Settings
+## C0-C3 product state, continuity, migration, and polish
 
 `apps/web/product/` now contains strict product API response validation, a thin
 client for workspace/session/profile/preferences/transcript endpoints, and a
@@ -36,14 +42,24 @@ refreshed from the durable catalog. If `POST /jobs` may have committed before a
 network failure, the shell performs bounded binding checks and reattaches or
 restores the transcript without automatically submitting a duplicate turn.
 
-The replay-safe M1 browser migration module exists but is not yet invoked by
-the product shell; its user-facing migration/recovery flow remains C3 work.
+`ProductApp` now invokes the replay-safe M1 browser migration before mounting
+the server-backed product state hook. Pending, rejected, blocked, and
+superseded outcomes fail closed without substituting an empty catalog; retry
+reuses the exact durable idempotency key and body. A newly completed migration
+shows one dismissible summary, while refresh of an existing receipt does not
+repeat the notice. Legacy workspace/session deep routes are rewritten through
+validated server mappings while preserving query and fragment state.
 
 C2 adds revision-CAS preference writes, the default approval policy used by
 product jobs, bounded durable-memory and runtime-health clients, and complete
 Settings routes. Workspace pin/remove, session rename/delete/safe catalog
 export, provider edit/update, Memory read/delete, and four keyboard shortcuts
 operate without browser-local catalog authority.
+
+C3 completes narrow-layout reflow, mobile Inspector containment, accessible
+dialogs and dynamic run status, higher-contrast focus treatment, reduced-motion
+behavior, server-confirmed theme bootstrap, deep Settings-tab visibility, and
+visual evidence for representative mobile/light/dark recovery states.
 
 ## Run locally
 
@@ -82,7 +98,7 @@ pnpm dev
 ## Advanced / Developer only
 
 - **Benchmark**: Settings → Advanced / Developer → Benchmark runner
-- **Legacy workbench scaffold**: `/dev/workbench` (escape hatch / migration only)
+- **Legacy workbench scaffold**: `/dev/workbench` (bounded advanced escape hatch)
 
 Neither is primary product navigation.
 
@@ -118,12 +134,23 @@ Focused product smoke (mock API):
 - all nine Settings sections, revision-conflict rollback, provider update,
   approval/step job requests, catalog and Memory mutations, shortcuts, and
   mobile bounds
+- M1 import/retry/malformed-state/deep-route recovery before catalog boot
+- 390px and 320px reflow, reduced motion, migration-summary placement, dialog
+  focus containment/restoration, and server-confirmed dark-theme reload
 
-## Remaining Web Complete backlog
+The `local-full` gate also runs `real-api.spec.ts` against a live local
+`rove-api`. The latest C3 worktree run passed all three scenarios: live M1
+migration, exact cross-session continuation/refresh/tools/cancellation/Settings,
+and the bounded `/dev/workbench` smoke. The external-provider gate remains
+opt-in and was not run for this evidence.
 
-- Existing M1 browser-state migration invocation and recovery UX
-- Live-API Playwright coverage for the default product shell (current
-  continuity coverage is mock-backed; `local-full` targets `/dev/workbench`)
+## Remaining delivery work
+
+- Coordinator review and ordered integration of the stacked C1–C3 PR chain into
+  `main`; the implementation and local verification described above are not a
+  claim that the stack has already landed
+- Optional external-provider gate execution when credentials and external
+  service availability are intentionally in scope
 - Optional transcript-rich export, bulk cleanup, and deeper Memory organization
 - Native Desktop host (Tauri)
 - Remote Gateway / device pairing

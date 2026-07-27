@@ -42,7 +42,11 @@ export function Composer({
 
   return (
     <form className="chat-composer" onSubmit={handleSubmit} aria-label="Message composer">
-      {error ? <div className="chat-error">{error}</div> : null}
+      {error ? (
+        <div className="chat-error" id="composer-error" role="alert">
+          {error}
+        </div>
+      ) : null}
       <div className="chat-composer__meta">
         <span>{modelLabel}</span>
         <span>{resumeLabel}</span>
@@ -57,6 +61,8 @@ export function Composer({
           onChange={(event) => setMessage(event.target.value)}
           placeholder="Message the agent…"
           disabled={disabled || submitting}
+          aria-invalid={error ? "true" : undefined}
+          aria-describedby={error ? "composer-error" : undefined}
         />
         {busy ? (
           <button type="button" className="danger" onClick={onCancel} aria-label="Stop run">

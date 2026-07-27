@@ -42,7 +42,6 @@ powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
   -ApiBase "https://api.openai.com/v1" `
   -ApiKeyEnv OPENAI_API_KEY `
   -Model "gpt-4.1-mini" `
-  -SkipWebSmoke `
   -RunStress `
   -RunRestartRecovery
 ```
@@ -66,11 +65,16 @@ for deterministic local runs.
 
 The dedicated provider runner automates inventory, direct provider smoke, API
 jobs, stress/restart options, and redacted evidence for OpenAI, OpenAI
-Responses, Anthropic, and Ollama profiles. Its optional browser script predates
-the M1 shell: it navigates to `/` but still looks for the old Workbench
-`Task`/`Model`/`Steps` controls. Use `-SkipWebSmoke` on current `main`. Until Web
-Complete C3 replaces that flow, the runner is provider/API evidence rather than
-current product-shell browser evidence.
+Responses, Anthropic, and Ollama profiles. Its browser step now creates
+API-backed product state, opens the exact product session in the default shell,
+captures the browser's `POST /api/jobs` job/run IDs, and verifies those exact IDs
+in the report and product transcript. `-SkipWebSmoke` remains available for an
+intentional provider/API-only diagnostic; the current browser-flow
+implementation does not require it.
+
+The runner implementation is verified structurally on the C3 stacked branch,
+but no external-provider C3 browser gate has been run. Do not infer external
+interoperability from deterministic fake-provider `local-full` evidence.
 
 For official OpenAI APIs:
 
@@ -80,8 +84,7 @@ powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
   -Provider openai `
   -ApiBase "https://api.openai.com/v1" `
   -ApiKeyEnv OPENAI_API_KEY `
-  -Model "gpt-4.1-mini" `
-  -SkipWebSmoke
+  -Model "gpt-4.1-mini"
 ```
 
 For a relay or gateway API, set the relay base URL and choose a model visible to
@@ -93,8 +96,7 @@ powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
   -Provider openai `
   -ApiBase "https://<gateway-host>/v1" `
   -ApiKeyEnv OPENAI_API_KEY `
-  -Model "<provider/model-id>" `
-  -SkipWebSmoke
+  -Model "<provider/model-id>"
 ```
 
 For SiliconFlow, `deepseek-ai/DeepSeek-V3.2` is one tested example, not a
@@ -106,8 +108,7 @@ powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
   -Provider openai `
   -ApiBase "https://api.siliconflow.cn/v1" `
   -ApiKeyEnv SILICONFLOW_API_KEY `
-  -Model "deepseek-ai/DeepSeek-V3.2" `
-  -SkipWebSmoke
+  -Model "deepseek-ai/DeepSeek-V3.2"
 ```
 
 For Anthropic:
@@ -118,8 +119,7 @@ powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
   -Provider anthropic `
   -ApiBase "https://api.anthropic.com" `
   -ApiKeyEnv ANTHROPIC_API_KEY `
-  -Model "claude-3-5-haiku-latest" `
-  -SkipWebSmoke
+  -Model "claude-3-5-haiku-latest"
 ```
 
 For Ollama, start the local server and use a pulled model:
@@ -128,18 +128,20 @@ For Ollama, start the local server and use a pulled model:
 powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
   -Provider ollama `
   -ApiBase "http://localhost:11434" `
-  -Model "llama3.2" `
-  -SkipWebSmoke
+  -Model "llama3.2"
 ```
 
 The runner writes only non-secret artifacts: provider model inventory, selected
-model id, smoke logs, API run reports, Web screenshot/report, and
+model id, smoke logs, API run reports, the product state snapshot, Web
+screenshot/result, the exact Web run report/transcript, and
 `evidence-summary.json`. Use `-SkipModelInventory` for gateways that do not
-expose `/models`, and use `-SkipWebSmoke` or `-SkipApiSmoke` for focused
+expose `/models`, and use `-SkipWebSmoke` or `-SkipApiSmoke` only for focused
 diagnostics.
 
 Add `-RunStress` to run small sequential and concurrent provider job batches
-after the API/Web checks. Add `-RunRestartRecovery` to restart the API against
+after the API/Web checks. The examples below skip repeating the browser gate and
+assume it was already collected once for the same provider configuration. Add
+`-RunRestartRecovery` to restart the API against
 the same isolated stress workspace and verify all completed stress run ids are
 still visible. Tune counts and timeouts when quota is limited:
 
