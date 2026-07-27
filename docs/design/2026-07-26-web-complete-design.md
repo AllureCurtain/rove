@@ -1,6 +1,6 @@
 # Web Complete — Local Agent Web as Daily Driver
 
-> Status: **Implemented and locally verified — C0–C3 stacked; coordinator integration pending**
+> Status: **Implemented and verified — C0–C3 integrated on main**
 >
 > Date: 2026-07-26
 >
@@ -18,10 +18,9 @@ This document freezes the **Web Complete** milestone: finish the local Web produ
 so it is a **daily-driver** agent surface, not only an M1 shell.
 
 The C0 persistence/API foundation, C1 continuity UI, C2 Settings, and C3
-migration/polish/live-API acceptance are implemented and locally verified on
-the stacked Web Complete branch. Current implementation truth remains code plus
-`docs/runtime/**`. The stacked PR chain has not landed on `main`; ordered
-coordinator integration remains the final Web Complete delivery action.
+migration/polish/live-API acceptance are implemented and verified on `main`.
+Current implementation truth remains code plus `docs/runtime/**`. C1–C3 landed
+through the ordered coordinator PR chain #24, #25, and #26.
 
 ---
 
@@ -32,7 +31,7 @@ coordinator integration remains the final Web Complete delivery action.
 | Milestone name | **Web Complete** |
 | Goal | Web is good enough for daily primary use |
 | Relation to M1 | **Evolve** the sealed product shell; do not rebuild IA |
-| Desktop (Tauri) | **Deferred** until Web Complete lands |
+| Desktop (Tauri) | **Separate D0 milestone; not started** |
 | Remote Gateway | Still out of scope |
 | Delivery style | One sealed scope; **coordinator-owned foundations + bounded parallel worker worktrees** |
 
@@ -103,8 +102,7 @@ C2 subsequently completed every Settings section, provider edit/update,
 revision-safe approval defaults, catalog and Memory management, runtime health,
 and critical shortcuts. C3 subsequently completed product-shell invocation of
 the M1 migration module, final polish, and live local-API product-shell
-evidence on the stacked branch. Coordinator integration into `main` remains
-pending.
+evidence. The ordered C1–C3 chain is integrated on `main`.
 
 ---
 
@@ -338,8 +336,8 @@ Web Complete adds:
 
 ## 11. Acceptance mindset
 
-The Web Complete implementation acceptance script passes on the clean
-main-derived C3 worktree against a live local `rove-api`, including:
+The Web Complete implementation acceptance script passes on post-merge `main`
+against a live local `rove-api`, including:
 
 - cold open → work → refresh → transcript present
 - second turn hard resume after restore
@@ -351,8 +349,8 @@ The `local-full` fake-provider run passed all three real-API Playwright
 scenarios: M1 migration, default-shell continuity/refresh/tools/cancellation/
 Settings, and the bounded advanced `/dev/workbench` smoke. The external-provider
 gate was not run, so this is local runtime/API evidence rather than external
-provider interoperability evidence. Web Complete is not recorded as landed on
-`main` until the coordinator reviews and integrates the stacked PR chain.
+provider interoperability evidence. Web Complete is integrated on `main` at
+merge commit `e3c2403`.
 
 ---
 
@@ -374,6 +372,10 @@ Web Complete should make that cheaper, not harder:
 
 ## changelog
 
+- 2026-07-27: Integrated C1–C3 through PRs #24, #25, and #26. Merge commits
+  `db8f970`, `abbd7d6`, and `e3c2403` are on `main`; post-merge Rust, Web,
+  mock Playwright, and three-scenario `local-full` verification passed.
+  External-provider validation remains unrun and Desktop D0 was not started.
 - 2026-07-27: Completed and locally verified C3 on the stacked Web Complete
   branch. The default shell now gates catalog boot on fail-closed M1 migration,
   preserves mapped deep routes, completes responsive/accessibility/theme and

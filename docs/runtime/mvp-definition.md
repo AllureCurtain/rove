@@ -55,11 +55,11 @@ This MVP is not a SaaS product, browser automation runtime, desktop automation r
 - Provider abstraction for OpenAI, OpenAI Responses, Anthropic, Ollama, and fake providers.
 - Deterministic no-network benchmarks and default test coverage.
 
-Web Complete C0-C3 is implemented and verified on the stacked delivery branch.
+Web Complete C0-C3 is implemented and verified on `main` through PRs #24–#26.
 Broad deterministic race, failure, migration-recovery, and visual scenarios
 remain browser-boundary mock evidence; `local-full` separately passed three
 live-API browser cases covering migration, the default product lifecycle, and a
-bounded advanced smoke. The stacked PRs have not landed on `main`, and no
+bounded advanced smoke after merge. No
 external-provider C3 browser gate has been run.
 
 ## Out of scope

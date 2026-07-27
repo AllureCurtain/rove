@@ -427,8 +427,8 @@ the API, runtime health is live, and four documented shortcuts are wired. C3
 runs the fail-closed M1 migration gate before any product catalog read, preserves
 mapped deep routes and exact retry payloads, and completes the responsive,
 keyboard/focus, live-status, reduced-motion, theme, and screenshot-evidence
-polish for the default shell. C0–C3 are implemented and locally verified on the
-stacked Web Complete branch; coordinator integration into `main` is pending.
+polish for the default shell. C0–C3 are integrated on `main` through PRs
+#24–#26 and passed the post-merge deterministic gates.
 
 From `apps/web/`:
 
@@ -619,11 +619,11 @@ documents remain proposed/not implemented.
 ### Active product delivery
 
 - [Agent Desktop + Web shared UI](design/2026-07-25-agent-desktop-web-ui-design.md)
-  — Web M1 and C0–C3 are implemented and locally verified on the stacked
-  branch; coordinator integration and Desktop remain pending.
+  — Web M1 and Web Complete C0–C3 are implemented on `main`; Desktop remains
+  pending.
 - [Web Complete design](design/2026-07-26-web-complete-design.md) and
-  [delivery plan](plans/2026-07-26-web-complete.md) — C0–C3 implementation and
-  local acceptance are complete; ordered coordinator integration remains.
+  [delivery plan](plans/2026-07-26-web-complete.md) — C0–C3 implementation,
+  ordered coordinator integration, and post-merge local acceptance are complete.
 - [Web → Desktop coordinator plan](plans/2026-07-25-web-desktop-master-delivery.md)
   — worktree ownership, PR authority, exact product-session binding, and
   Desktop D0 gate.
@@ -655,7 +655,7 @@ Use them for rationale, not as current API/runtime truth when they disagree with
 
 - Browser/Desktop automation workspace specs are future. The Web product shell
   and C0–C3 persistence/continuity/Settings/migration/polish implementation
-  exist on the stacked branch; a Tauri Desktop product host does not.
+  exist on `main`; a Tauri Desktop product host does not.
 - Hosted multi-user identity and distributed rate limiting are outside the MVP.
 - Built-in vector RAG is not provided.
 - Real provider/MCP tests are gated.

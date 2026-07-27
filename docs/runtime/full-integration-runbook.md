@@ -225,8 +225,8 @@ Acceptance:
   exact run identities, terminal statuses, approval/input resolution, and tool
   names.
 
-The current C3 stacked implementation passed this `local-full` gate 3/3. The
-stacked PRs have not landed on `main`.
+The integrated C3 implementation on `main` passed this `local-full` gate 3/3
+after the ordered coordinator merge.
 
 ## Gate 2: `provider-model-inventory`
 

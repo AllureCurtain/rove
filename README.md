@@ -18,15 +18,14 @@ apps/cli / apps/api / apps/bench
 ## Current MVP
 
 As of 2026-07-27, the modular Workspace migration, Provider Layer redesign,
-cleanup W1–W3, Web M1, and Web Complete C0–C3 are implemented and locally
-verified on the stacked Web Complete branch. Coordinator integration of the
-stacked PR chain into `main` remains pending. rove has reached its local-first
-MVP: CLI, API, Web product shell,
+cleanup W1–W3, Web M1, and Web Complete C0–C3 are implemented, integrated on
+`main` through PRs #24–#26, and verified after merge. rove has reached its
+local-first MVP: CLI, API, Web product shell,
 streaming events, bounded tool execution, persisted state, resume, deterministic
 benchmarks, and current runtime docs are all present. The exact boundary is
 documented in [docs/runtime/mvp-definition.md](docs/runtime/mvp-definition.md).
 
-Web Complete implementation is complete on the stacked branch. C0 implements the API-global
+Web Complete implementation is complete on `main`. C0 implements the API-global
 product store, exact product-session/runtime binding, canonical-event
 transcript reads, strict browser migration, and typed Web client modules. C1
 switches the default product shell to that API authority: refresh restores the

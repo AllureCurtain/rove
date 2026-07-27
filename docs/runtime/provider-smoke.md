@@ -72,7 +72,7 @@ in the report and product transcript. `-SkipWebSmoke` remains available for an
 intentional provider/API-only diagnostic; the current browser-flow
 implementation does not require it.
 
-The runner implementation is verified structurally on the C3 stacked branch,
+The runner implementation is verified structurally on the integrated C3 code,
 but no external-provider C3 browser gate has been run. Do not infer external
 interoperability from deterministic fake-provider `local-full` evidence.
 

@@ -2,10 +2,10 @@
 
 This directory is the authoritative current-state documentation surface. It
 summarizes the implemented runtime, API, Web M1 product shell, and the verified
-Web Complete C0-C3 implementation. The C3 implementation and deterministic
-live-API evidence currently live on the stacked delivery branch; the stacked
-PRs have not landed on `main`. Desktop contracts remain under `docs/design/`
-and `docs/plans/` until their code and tests land.
+Web Complete C0-C3 implementation. C1-C3 are integrated on `main` through PRs
+#24-#26, and the deterministic live-API gate passed after merge. Desktop
+contracts remain under `docs/design/` and `docs/plans/` until their code and
+tests land.
 
 New maintainers should start with [`docs/ONBOARDING.md`](../ONBOARDING.md), then use this directory for current subsystem truth.
 
@@ -67,7 +67,7 @@ The Web product line is tracked separately:
   runtime-health APIs back the UI, provider profiles support complete CRUD,
   and all nine Settings sections expose tested catalog, session, memory,
   runtime, approval, keyboard, or developer capabilities.
-- Web Complete C3 is implemented and verified on the stacked delivery branch.
+- Web Complete C3 is implemented and verified on `main`.
   `M1MigrationGate` runs before API-authoritative catalog boot, permits the shell
   only after `not_needed` or verified `complete`, preserves exact retry payloads,
   and keeps invalid or uncertain imports fail closed. C3 also completes the
