@@ -10,12 +10,15 @@ Included:
 
 - CLI one-shot and REPL runs, plus the optional bounded full-screen TUI.
 - Local HTTP API with jobs, SSE, approvals, inputs, cancel, resume, and history.
-- Standalone Web M1 product shell at `/`, plus the advanced
+- Standalone Web product shell, plus the advanced
   `/dev/workbench`, backed by the local API.
 - Web Complete C0 product-control APIs, API-global ProductStore, exact product
-  session/runtime binding, canonical-event transcript reads, one-time M1
-  browser migration, and typed Web client modules. The default shell adoption
-  remains C1/C2 work.
+  session/runtime binding, canonical-event transcript reads, strict M1 browser
+  migration contracts, and typed Web client modules.
+- Web Complete C1 default-shell adoption: API-authoritative product state,
+  durable deep routes, explicit complete/partial/error transcript restore,
+  exact `product_session_id` turns, focused reattachment/background status,
+  provider persistence, and bounded ambiguous-start reconciliation.
 - Local state under `.rove/`.
 - Folder, Repo, and Task workspaces.
 - Built-in tools, MCP proxy, memory tools, fake provider, OpenAI /
@@ -63,7 +66,7 @@ Acceptance:
   in `git status --short`;
 - any `apps/web/next-env.d.ts` churn from Next.js is inspected before commit.
 
-## Web Complete C0 Evidence
+## Web Complete C0-C1 Evidence
 
 C0 release evidence must include the default Rust and Web CI gates plus focused
 coverage for these contracts:
@@ -84,9 +87,18 @@ coverage for these contracts:
 - strict Web response validation and a replay-safe same-origin migration state
   machine that never uploads raw keys.
 
-C0 does not by itself prove refresh restore, deep routes, API-authoritative
-visible catalogs/settings, or full live-API acceptance of `/`; those remain
-C1–C3 release gates.
+C1 release evidence additionally includes:
+
+- unit coverage for product routes, API catalog conversion, transcript
+  projection, reducer hydration/deduplication, and exact turn requests;
+- mock-backed Playwright coverage for refresh restore, explicit partial/error
+  recovery, deep-route landings, session-switch races, focused reattachment,
+  background attention status, API-persisted providers, and ambiguous job-start
+  responses without duplicate submission.
+
+This mock-backed evidence does not prove complete Settings or live-API
+acceptance of `/`; those remain C2–C3 release gates. The M1 migration state
+machine also still requires C3 product-shell invocation and recovery UX.
 
 For release claims that include real-terminal TUI behavior, run the opt-in Unix
 PTY smoke separately:

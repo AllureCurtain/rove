@@ -1,6 +1,6 @@
 # Web Complete Delivery Plan
 
-> Status: **Active — C0 complete; C1–C3 pending**
+> Status: **Active — C0–C1 complete; C2–C3 pending**
 >
 > Decisions:
 > [`../design/2026-07-26-web-complete-design.md`](../design/2026-07-26-web-complete-design.md)
@@ -77,8 +77,10 @@ The C0 workers were created from the sealed foundation and their store,
 transcript, and Web client implementations were integrated with
 coordinator-owned route/job/migration/stream wiring and commit-boundary
 hardening. C0 passed aggregate Rust/Web CI and entered `main` only through the
-integration PR. Later worktrees are created only after their respective
-dependency is on `main`.
+integration PR. C1 then wired the default shell to those contracts. Its Web
+gates pass: `pnpm test` (14 files, 121 tests), `pnpm typecheck`, `pnpm build`,
+and the mock-backed continuity Playwright suite (17/17). Later worktrees are
+created only after their respective dependency is on `main`.
 
 ### After each merge
 
@@ -193,11 +195,16 @@ C0 on `main` (rebuild + catalog APIs).
 
 #### C1 exit checklist
 
-- [ ] Refresh on a session URL restores bubbles (or explicit partial)
-- [ ] Second turn after restore hard-resumes successfully in e2e/integration
-- [ ] Switching sessions does not drop wrong transcript
-- [ ] Parallel running badges still accurate
-- [ ] Playwright coverage for restore + route landings
+- [x] Refresh on a session URL restores bubbles (or explicit partial/error)
+- [x] Second turn after restore uses the exact product-session binding in
+      mock-backed Playwright, backed by C0 exact-resume API integration tests
+- [x] Switching sessions does not drop or flash the wrong transcript
+- [x] Parallel running/attention badges remain accurate without background SSE
+- [x] Playwright coverage exists for restore, routes, focused reattachment,
+      ambiguous job-start reconciliation, and provider persistence
+
+C1 browser evidence is intentionally mock-backed. The live `rove-api` product
+shell acceptance gate remains C3; completing C1 does not satisfy §5 by itself.
 
 #### C1 likely touch surfaces
 
@@ -215,9 +222,10 @@ Every Settings section is usable and persists through C0 stores where required.
 
 #### C2 depends on
 
-C0 on `main`. The settings/platform API lane may run in parallel with C1 because
-it does not edit `SettingsShell`. Settings UI workers start only after C1 is
-integrated and the coordinator commits a stable Settings shell/module split.
+C0 on `main`; C1 continuity must be integrated before Settings UI workers start.
+The settings/platform API lane may have run in parallel with C1, but its branch
+must update to post-C1 `main` before the coordinator commits a stable Settings
+shell/module split.
 
 #### C2 in scope
 
@@ -233,8 +241,8 @@ Delivery is split into two dependency-ordered parts:
 
 | Section | Work |
 |---------|------|
-| General | Persist theme/preferences via durable or approved prefs API |
-| Providers | Bind fully to C0 profile APIs; remove sole-authority localStorage |
+| General | Complete usable preference controls; C1 already persists theme and safe selection/focus preferences through the API |
+| Providers | Complete edit/update and section polish; C1 already uses C0 list/create/delete plus API-backed active selection |
 | Tools & Approvals | Real controls for approval defaults / tool policy the backend honors |
 | Workspace / Paths | Manage known workspaces, path guidance, remove/pin durable |
 | Memory | Browse/read/manage using existing memory APIs; pragmatic depth |
@@ -375,11 +383,12 @@ When a wave merges:
 
 ## 7. Current coordinator handoff
 
-C0 is complete. Do not reopen its worker branches or re-run the migration from
-browser authority inside `ProductApp` as an ad hoc extension. Any C1/C2 work
-must start from current `main`, preserve exact product-session hard resume, and
-use the implemented ProductStore/transcript/client contracts. No C1, C2, C3,
-or Desktop implementation was started as part of the C0 closeout.
+C0 and C1 are complete. Do not reopen their worker branches or reintroduce
+browser authority/workspace-global `latest` inside `ProductApp`. C2 must update
+to post-C1 `main`, preserve exact product-session hard resume and focused
+observation, then split Settings on a coordinator-owned foundation. C3 remains
+responsible for migration/polish and live product-shell acceptance. Desktop is
+still deferred.
 
 ---
 
@@ -395,6 +404,14 @@ or Desktop implementation was started as part of the C0 closeout.
 
 ## changelog
 
+- 2026-07-27: Completed C1 continuity integration. The default shell now uses
+  API-authoritative catalog/preferences/profiles, durable workspace/session and
+  Settings routes, canonical transcript restore with explicit partial/error
+  states, exact `product_session_id` turns, focused SSE reattachment, background
+  status polling, and bounded no-duplicate reconciliation after ambiguous job
+  starts. `pnpm test` (14 files, 121 tests), `pnpm typecheck`, `pnpm build`, and
+  the mock-backed continuity Playwright suite (17/17) pass; C2 Settings
+  completeness and C3 live-API acceptance remain open.
 - 2026-07-26: Completed C0 after aggregate contract/security review. Migration
   preparation/apply ownership, durable baselines and preference CAS,
   active-session retry, canonical runtime reservations/path guards, and owned

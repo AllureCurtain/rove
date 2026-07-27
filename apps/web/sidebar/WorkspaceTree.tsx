@@ -15,6 +15,7 @@ export function WorkspaceTree({
   sessionsByWorkspace,
   activeWorkspaceId,
   activeSessionId,
+  mutationBusy,
   onOpenWorkspace,
   onSelectWorkspace,
   onSelectSession,
@@ -26,6 +27,7 @@ export function WorkspaceTree({
   sessionsByWorkspace: Record<string, SessionRecord[]>;
   activeWorkspaceId: string | null;
   activeSessionId: string | null;
+  mutationBusy: boolean;
   onOpenWorkspace: (path: string, kind: WorkspaceKind) => void;
   onSelectWorkspace: (workspaceId: string) => void;
   onSelectSession: (workspaceId: string, sessionId: string) => void;
@@ -36,7 +38,11 @@ export function WorkspaceTree({
   const [openDialog, setOpenDialog] = useState(false);
 
   return (
-    <aside className="product-sidebar" aria-label="Workspaces">
+    <aside
+      className="product-sidebar"
+      aria-label="Workspaces"
+      aria-busy={mutationBusy}
+    >
       <div className="product-sidebar__header">
         <h2>Workspaces</h2>
         <button
@@ -44,6 +50,7 @@ export function WorkspaceTree({
           className="secondary icon-button"
           onClick={() => setOpenDialog(true)}
           aria-label="Add workspace"
+          disabled={mutationBusy}
         >
           <PlusIcon />
         </button>
@@ -77,6 +84,7 @@ export function WorkspaceTree({
                     className="workspace-group__button"
                     data-active={active}
                     onClick={() => onSelectWorkspace(workspace.id)}
+                    disabled={mutationBusy}
                   >
                     <span className="workspace-group__title">
                       <span>{workspace.displayName}</span>
@@ -107,6 +115,7 @@ export function WorkspaceTree({
                     className="ghost icon-button"
                     aria-label={workspace.pinned ? "Unpin workspace" : "Pin workspace"}
                     onClick={() => onTogglePin(workspace.id)}
+                    disabled={mutationBusy}
                   >
                     {workspace.pinned ? <DrawingPinFilledIcon /> : <DrawingPinIcon />}
                   </button>
@@ -115,6 +124,7 @@ export function WorkspaceTree({
                     className="ghost icon-button"
                     aria-label="Remove workspace from list"
                     onClick={() => onRemoveWorkspace(workspace.id)}
+                    disabled={mutationBusy}
                   >
                     <Cross2Icon />
                   </button>
@@ -131,6 +141,7 @@ export function WorkspaceTree({
                             data-status={session.status}
                             onClick={() => onSelectSession(workspace.id, session.id)}
                             aria-label={sessionAriaLabel(session)}
+                            disabled={mutationBusy}
                           >
                             <span className="session-item__title">{session.title}</span>
                             {session.status !== "idle" ? (
@@ -152,6 +163,7 @@ export function WorkspaceTree({
                         type="button"
                         className="secondary"
                         onClick={() => onNewSession(workspace.id)}
+                        disabled={mutationBusy}
                       >
                         New session
                       </button>

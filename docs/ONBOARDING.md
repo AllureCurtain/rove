@@ -407,17 +407,22 @@ Built-in vector RAG has been removed. Workspace context comes from tools and lay
 ## 15. Web product shell
 
 `apps/web/` is a standalone Next.js application. It consumes the API and SSE
-rather than embedding a second runtime. The default route is the M1 product
-shell (Workspace → Session → Chat + Inspector); `/dev/workbench` is an
+rather than embedding a second runtime. The default product surface is the
+Workspace → Session → Chat + Inspector shell; `/dev/workbench` is an
 advanced-only migration escape hatch.
 
 Web Complete C0 adds an API-global SQLite
 ProductStore, product workspace/session/profile/preferences CRUD, exact
 server-owned product-session/runtime bindings, one active turn per product
 session, canonical-event transcript reads with typed partial reasons, strict
-M1 browser migration, and typed Web client/migration modules. The default shell
-does not consume those modules yet, so refresh restore, session routing/deep
-links, complete Settings, and final product acceptance remain C1–C3 work.
+M1 browser migration, and typed Web client/migration modules. Web Complete C1
+wires the default shell to the API-authoritative catalog, safe preferences,
+provider profiles, and transcript reads. It adds durable workspace/session and
+Settings routes, exact `product_session_id` turns, explicit partial/error/retry
+restore states, focused live-job reattachment, background status polling, and
+bounded no-duplicate reconciliation after ambiguous job starts. Complete
+Settings, product-shell migration UX, and final live-API acceptance remain
+C2–C3 work.
 
 From `apps/web/`:
 
@@ -438,8 +443,9 @@ when changing browser-visible job, SSE, approval, input, cancellation, resume,
 or proxy behavior. Follow the environment gates in
 [`runtime/integration-testing.md`](runtime/integration-testing.md).
 
-Current evidence is route-scoped: `shell.spec.ts` covers `/` with mocked API
-boundaries, while the gated `real-api.spec.ts` used by `local-full` opens
+Current evidence is route-scoped: `shell.spec.ts` covers core product flows and
+`continuity.spec.ts` covers C1 continuity with mocked API boundaries, while the
+gated `real-api.spec.ts` used by `local-full` opens
 `/dev/workbench`. Full live-API product-shell acceptance is Web Complete C3
 work, not an already-passing M1 gate.
 
@@ -603,9 +609,9 @@ documents remain proposed/not implemented.
 ### Active product delivery
 
 - [Agent Desktop + Web shared UI](design/2026-07-25-agent-desktop-web-ui-design.md)
-  — Web M1 and C0 are implemented; C1–C3 and Desktop remain pending.
+  — Web M1 and C0–C1 are implemented; C2–C3 and Desktop remain pending.
 - [Web Complete design](design/2026-07-26-web-complete-design.md) and
-  [delivery plan](plans/2026-07-26-web-complete.md) — C0 is complete; C1–C3
+  [delivery plan](plans/2026-07-26-web-complete.md) — C0–C1 are complete; C2–C3
   remain the active milestone work.
 - [Web → Desktop coordinator plan](plans/2026-07-25-web-desktop-master-delivery.md)
   — worktree ownership, PR authority, exact product-session binding, and
@@ -636,9 +642,9 @@ Use them for rationale, not as current API/runtime truth when they disagree with
 
 ## 20. Known boundary reminders
 
-- Browser/Desktop automation workspace specs are future. The Web M1 product
-  shell and C0 persistence/API foundation exist; a Tauri Desktop product host
-  does not.
+- Browser/Desktop automation workspace specs are future. The Web product shell
+  and C0–C1 persistence/continuity implementation exist; a Tauri Desktop
+  product host does not.
 - Hosted multi-user identity and distributed rate limiting are outside the MVP.
 - Built-in vector RAG is not provided.
 - Real provider/MCP tests are gated.

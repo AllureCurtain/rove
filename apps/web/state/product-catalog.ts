@@ -1,8 +1,15 @@
 import type { PlatformAdapter } from "../platform/types";
 import { webPlatform } from "../platform/web";
+import type {
+  ProductPreferences,
+  ProductSession,
+  ProductWorkspace,
+} from "../product/product-api-types";
 import { readJsonStore, writeJsonStore } from "./local-store";
 import {
   newId,
+  fromProductSession,
+  fromProductWorkspace,
   workspaceDisplayName,
   type SessionRecord,
   type SessionStatus,
@@ -30,6 +37,74 @@ function emptyCatalog(): ProductCatalog {
     workspaces: [],
     sessions: [],
     active: { workspaceId: null, sessionId: null },
+  };
+}
+
+export function productCatalogFromApi(
+  workspaces: ProductWorkspace[],
+  sessions: ProductSession[],
+  preferences: ProductPreferences,
+): ProductCatalog {
+  const workspaceRecords = workspaces.map(fromProductWorkspace);
+  const workspaceIds = new Set(workspaceRecords.map((workspace) => workspace.id));
+  const sessionRecords = sessions
+    .filter(
+      (session) =>
+        session.status !== "archived" && workspaceIds.has(session.workspace_id),
+    )
+    .map(fromProductSession);
+  const activeSession = sessionRecords.find(
+    (session) =>
+      session.id === preferences.active_session_id &&
+      session.workspaceId === preferences.active_workspace_id,
+  );
+  const activeWorkspace = workspaceRecords.find(
+    (workspace) => workspace.id === preferences.active_workspace_id,
+  );
+
+  return {
+    workspaces: workspaceRecords,
+    sessions: sessionRecords,
+    active: activeSession
+      ? {
+          workspaceId: activeSession.workspaceId,
+          sessionId: activeSession.id,
+        }
+      : {
+          workspaceId: activeWorkspace?.id ?? null,
+          sessionId: null,
+        },
+  };
+}
+
+export function replaceServerSessions(
+  catalog: ProductCatalog,
+  refreshedWorkspaceIds: string[],
+  sessions: ProductSession[],
+): ProductCatalog {
+  const workspaceIds = new Set(catalog.workspaces.map((workspace) => workspace.id));
+  const records = sessions
+    .filter(
+      (session) =>
+        session.status !== "archived" && workspaceIds.has(session.workspace_id),
+    )
+    .map(fromProductSession);
+  const refreshedWorkspaceIdSet = new Set(refreshedWorkspaceIds);
+  const nextSessions = [
+    ...catalog.sessions.filter(
+      (session) => !refreshedWorkspaceIdSet.has(session.workspaceId),
+    ),
+    ...records,
+  ];
+  const activeSessionStillExists = nextSessions.some(
+    (session) => session.id === catalog.active.sessionId,
+  );
+  return {
+    ...catalog,
+    sessions: nextSessions,
+    active: activeSessionStillExists
+      ? catalog.active
+      : { ...catalog.active, sessionId: null },
   };
 }
 

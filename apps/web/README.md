@@ -6,17 +6,20 @@ Primary surface: the **product shell** (Workspace → Session → Run) against l
 ## Product shell (default `/`)
 
 - Empty state → open an absolute Folder/Repo path
-- Workspace tree with sessions (recents + pin, local persistence)
+- API-backed workspace tree with durable sessions, recents, and pin state
 - Parallel-session **running** badges in the sidebar
-- Chat transcript, tool cards, inline approvals, stop/cancel
+- Refresh-restored chat transcript with explicit partial/error/retry states,
+  tool cards, inline approvals, and stop/cancel
 - Collapsible run inspector with empty / loading / error / ready states
+- Durable `/w/:workspaceId/s/:sessionId` and `/settings/:section` routes
 - Settings shell with deep **Providers & Models**, **About / Runtime**, and
   **Advanced / Developer** (Benchmark only here)
 - Light default + dark toggle via product design tokens
-- Session continue uses **hard resume only** (`resume: "latest"` under the
-  opened workspace root). Soft transcript stitch is not a product path.
+- Session continue uses the server-owned exact `product_session_id` binding.
+  The product shell omits client `resume`; soft transcript stitch and
+  workspace-global `latest` are not product paths.
 
-## C0 product client foundation
+## C0/C1 product state and continuity
 
 `apps/web/product/` now contains strict product API response validation, a thin
 client for workspace/session/profile/preferences/transcript endpoints, and a
@@ -24,9 +27,16 @@ versioned replay-safe M1 browser migration state machine. `CreateJobRequest`
 also accepts the server-owned `product_session_id` path implemented by the Rust
 API.
 
-This C0 foundation is implemented but is not wired into the default
-`ProductApp`. Until C1/C2 integration, the visible shell continues to use its
-M1 browser catalog and workspace-scoped `resume: "latest"` behavior.
+The default `ProductApp` now loads workspaces, sessions, safe preferences, and
+provider profiles from that client. Entering a session route projects its
+canonical event transcript; switching sessions closes the old observation and
+reattaches only the focused live job. Background running/attention badges are
+refreshed from the durable catalog. If `POST /jobs` may have committed before a
+network failure, the shell performs bounded binding checks and reattaches or
+restores the transcript without automatically submitting a duplicate turn.
+
+The replay-safe M1 browser migration module exists but is not yet invoked by
+the product shell; its user-facing migration/recovery flow remains C3 work.
 
 ## Run locally
 
@@ -71,10 +81,10 @@ Neither is primary product navigation.
 
 ## Providers
 
-Provider profiles are still saved in browser local storage by the M1 Settings
-surface. C0 adds durable API CRUD and a typed Web client, but Settings has not
-switched authority yet. The browser stores and sends **environment variable
-names** (`api_key_env`) only — never raw keys.
+Provider profiles are loaded, created, and removed through the C0 API, and the
+active profile/model selection is stored in safe API preferences. Clearing
+browser storage does not remove an API-persisted profile. The browser stores
+and sends **environment variable names** (`api_key_env`) only — never raw keys.
 Settings → Providers can **Test** and **List models** via the API.
 
 ## Verification
@@ -90,18 +100,21 @@ Focused product smoke (mock API):
 
 - empty → open workspace → run → complete
 - inline approval
-- second turn hard resume with workspace root
+- refresh restore, session switching, partial/error recovery, and deep routes
+- second turn through the exact product-session binding
+- ambiguous job-start response reconciliation without duplicate submission
+- provider save → clear browser storage → refresh restore → delete
 - providers test/list models without raw keys
 - theme toggle
 - inspector empty → ready after run
 - Advanced-only benchmark
 
-## Known M2 backlog (not M1)
+## Remaining Web Complete backlog
 
-- Transcript restore after refresh (catalog persists; messages still in-memory)
-- Multi-session SSE follow when switching between parallel sessions
 - Full Settings section implementations beyond Providers / About / Advanced
-- Wire Providers and the product catalog to the C0 server-side persistence APIs
+- Existing M1 browser-state migration invocation and recovery UX
+- Live-API Playwright coverage for the default product shell (current
+  continuity coverage is mock-backed; `local-full` targets `/dev/workbench`)
 - Rich session export / cleanup
 - Memory management UI depth
 - Native Desktop host (Tauri)

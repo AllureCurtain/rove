@@ -19,27 +19,30 @@ export interface BuildTurnRequestInput {
   profiles: ProviderProfileRecord[];
 }
 
+export class ProviderSelectionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ProviderSelectionError";
+  }
+}
+
 /**
  * Build a create-job payload for a product chat turn.
  *
- * Continuity rule (hard resume only):
- * - First durable turn in a product session: no resume field.
- * - Subsequent turns: always `resume: "latest"` under the same workspace root.
- * Soft stitch (new job without resume + frontend-only transcript) is forbidden.
+ * Product continuity is server-owned. Every product turn carries the exact
+ * product session id and must omit the lower-level client resume field.
  */
 export function buildTurnJobRequest(input: BuildTurnRequestInput): CreateJobRequest {
   const workspace = toCreateJobWorkspace(input.workspace);
   const provider = resolveProvider(input.selection, input.profiles);
-  const resume = input.session.hasDurableTurn ? ("latest" as const) : undefined;
-
   return {
     message: input.message,
     model: input.selection.model.trim() || undefined,
     max_steps: input.selection.maxSteps || undefined,
     approval: input.selection.approval,
-    resume,
     workspace,
     provider,
+    product_session_id: input.session.id,
   };
 }
 
@@ -62,16 +65,30 @@ function resolveProvider(
   profiles: ProviderProfileRecord[],
 ): ProviderProfile | undefined {
   if (selection.mode !== "profile" || !selection.profileId) {
+    if (selection.mode === "profile") {
+      throw new ProviderSelectionError(
+        "The selected provider profile is missing. Choose a provider in Settings.",
+      );
+    }
     return undefined;
   }
   const profile = profiles.find((item) => item.id === selection.profileId);
-  return profile ? toApiProviderProfile(profile) : undefined;
+  if (!profile) {
+    throw new ProviderSelectionError(
+      "The selected provider profile is no longer available. Choose another provider in Settings.",
+    );
+  }
+  return toApiProviderProfile(profile);
 }
 
 export function isHardResumeError(message: string): boolean {
   const lower = message.toLowerCase();
   return (
     lower.includes("resume") ||
+    lower.includes("product_session") ||
+    lower.includes("product session") ||
+    lower.includes("runtime state") ||
+    lower.includes("binding") ||
     lower.includes("task_state") ||
     lower.includes("no durable") ||
     lower.includes("not resumable") ||

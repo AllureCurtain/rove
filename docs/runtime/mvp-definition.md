@@ -2,7 +2,7 @@
 
 Status: MVP reached for the local-first single-user runtime.
 Date: 2026-05-30
-Last interface update: 2026-07-26 (Web Complete C0 persistence/API foundation).
+Last interface update: 2026-07-27 (Web Complete C1 continuity UI).
 
 ## Definition
 
@@ -30,6 +30,12 @@ This MVP is not a SaaS product, browser automation runtime, desktop automation r
   product-session/runtime bindings, canonical-event transcript reads,
   strict/idempotent M1 browser migration, and typed Web client/migration
   modules.
+- Web Complete C1 default-shell integration: API-authoritative catalog,
+  preferences, and provider profiles; durable workspace/session/Settings
+  routes; canonical transcript restore with explicit partial/error/retry
+  states; exact `product_session_id` turns; focused live-job reattachment;
+  background status polling; and bounded no-duplicate reconciliation after an
+  ambiguous job-start response.
 - Core engine with planned and unplanned loops sharing model turns, tool turns, context checkpoints, and history writeback.
 - Local state under `.rove/` with trace, task state, report, and SQLite index.
 - Folder, Repo, and Task workspaces.
@@ -37,13 +43,11 @@ This MVP is not a SaaS product, browser automation runtime, desktop automation r
 - Provider abstraction for OpenAI, OpenAI Responses, Anthropic, Ollama, and fake providers.
 - Deterministic no-network benchmarks and default test coverage.
 
-The product shell is not yet Web Complete. Although the C0 backend and thin Web
-client foundation exist, the default shell still uses browser-authoritative M1
-catalogs/profiles, does not rebuild its transcript
-after refresh, and still sends workspace-scoped `resume: "latest"`. C1 must wire
-the shell to the exact product-session path and restore projection. Its browser
-suite is mock-backed; the current gated real-API Playwright suite targets
-`/dev/workbench`.
+The product shell is not yet fully Web Complete. C1 closes the continuity and
+authority-switch gaps, but several Settings sections, provider edit/update UX,
+product-shell invocation of the M1 migration module, and final polish remain
+C2–C3 work. Its product-shell browser suite is mock-backed; the current gated
+real-API Playwright suite targets `/dev/workbench` rather than the default shell.
 
 ## Out of scope
 

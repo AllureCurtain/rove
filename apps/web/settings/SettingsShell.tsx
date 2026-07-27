@@ -10,11 +10,10 @@ import {
   providerDefaultKeyEnv,
   providerDisplayName,
   providerRequiresKey,
-  removeProviderProfile,
-  upsertProviderProfile,
 } from "../state/provider-store";
 import type {
   ActiveProviderSelection,
+  ProviderProfileInput,
   ProviderProfileRecord,
 } from "../state/product-types";
 import { toApiProviderProfile } from "../state/product-types";
@@ -26,21 +25,25 @@ export function SettingsShell({
   onSectionChange,
   profiles,
   selection,
-  onProfilesChange,
+  onCreateProfile,
+  onDeleteProfile,
   onSelectionChange,
   connectionLabel,
   theme,
   onThemeChange,
+  error,
 }: {
   section: SettingsSectionId;
   onSectionChange: (section: SettingsSectionId) => void;
   profiles: ProviderProfileRecord[];
   selection: ActiveProviderSelection;
-  onProfilesChange: (profiles: ProviderProfileRecord[]) => void;
+  onCreateProfile: (profile: ProviderProfileInput) => Promise<ProviderProfileRecord>;
+  onDeleteProfile: (profileId: string) => Promise<void>;
   onSelectionChange: (selection: ActiveProviderSelection) => void;
   connectionLabel: string;
   theme: "light" | "dark";
   onThemeChange: (theme: "light" | "dark") => void;
+  error: string | null;
 }) {
   return (
     <div className="settings-shell">
@@ -58,11 +61,17 @@ export function SettingsShell({
         ))}
       </nav>
       <div className="settings-content">
+        {error ? (
+          <div className="shell-alert" role="alert">
+            {error}
+          </div>
+        ) : null}
         {section === "providers" ? (
           <ProvidersSettings
             profiles={profiles}
             selection={selection}
-            onProfilesChange={onProfilesChange}
+            onCreateProfile={onCreateProfile}
+            onDeleteProfile={onDeleteProfile}
             onSelectionChange={onSelectionChange}
           />
         ) : null}
@@ -218,12 +227,14 @@ function AboutSettings({
 function ProvidersSettings({
   profiles,
   selection,
-  onProfilesChange,
+  onCreateProfile,
+  onDeleteProfile,
   onSelectionChange,
 }: {
   profiles: ProviderProfileRecord[];
   selection: ActiveProviderSelection;
-  onProfilesChange: (profiles: ProviderProfileRecord[]) => void;
+  onCreateProfile: (profile: ProviderProfileInput) => Promise<ProviderProfileRecord>;
+  onDeleteProfile: (profileId: string) => Promise<void>;
   onSelectionChange: (selection: ActiveProviderSelection) => void;
 }) {
   const [label, setLabel] = useState("Local OpenAI");
@@ -233,9 +244,12 @@ function ProvidersSettings({
   const [defaultModel, setDefaultModel] = useState("gpt-4.1-mini");
   const [testBusy, setTestBusy] = useState(false);
   const [modelsBusy, setModelsBusy] = useState(false);
+  const [saveBusy, setSaveBusy] = useState(false);
+  const [deletingProfileId, setDeletingProfileId] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<ProviderTestResponse | null>(null);
   const [modelsResult, setModelsResult] = useState<ProviderModelsResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const profileDeleteBusy = deletingProfileId !== null;
 
   const activeProfile = useMemo(
     () => profiles.find((profile) => profile.id === selection.profileId) ?? null,
@@ -262,26 +276,42 @@ function ProvidersSettings({
     setApiKeyEnv(providerDefaultKeyEnv(next));
   }
 
-  function handleSave(event: FormEvent) {
+  async function handleSave(event: FormEvent) {
     event.preventDefault();
-    const next = upsertProviderProfile(profiles, {
-      label: label.trim() || providerDisplayName(providerType),
-      providerType,
-      apiBase: apiBase.trim(),
-      apiKeyEnv: providerRequiresKey(providerType)
-        ? apiKeyEnv.trim() || providerDefaultKeyEnv(providerType)
-        : undefined,
-      defaultModel: defaultModel.trim() || undefined,
-    });
-    onProfilesChange(next);
-    const saved = next[0];
-    if (saved) {
+    setSaveBusy(true);
+    setError(null);
+    try {
+      const saved = await onCreateProfile({
+        label: label.trim() || providerDisplayName(providerType),
+        providerType,
+        apiBase: apiBase.trim(),
+        apiKeyEnv: providerRequiresKey(providerType)
+          ? apiKeyEnv.trim() || providerDefaultKeyEnv(providerType)
+          : undefined,
+        defaultModel: defaultModel.trim() || undefined,
+      });
       onSelectionChange({
         ...selection,
         mode: "profile",
         profileId: saved.id,
         model: saved.defaultModel || selection.model,
       });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSaveBusy(false);
+    }
+  }
+
+  async function handleDelete(profileId: string) {
+    setDeletingProfileId(profileId);
+    setError(null);
+    try {
+      await onDeleteProfile(profileId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDeletingProfileId(null);
     }
   }
 
@@ -325,8 +355,8 @@ function ProvidersSettings({
     <div className="settings-panel">
       <h1>Providers & Models</h1>
       <p className="lede">
-        Profiles live in local browser storage for M1. Only environment variable names are stored
-        — never raw keys.
+        Profiles are stored by the local rove API. Only environment variable names are persisted,
+        never raw keys.
       </p>
 
       <div className="settings-card">
@@ -337,6 +367,7 @@ function ProvidersSettings({
             <select
               id="provider-mode"
               value={selection.mode}
+              disabled={profileDeleteBusy}
               onChange={(event) =>
                 onSelectionChange({
                   ...selection,
@@ -357,7 +388,7 @@ function ProvidersSettings({
             <select
               id="provider-profile"
               value={selection.profileId ?? ""}
-              disabled={selection.mode !== "profile"}
+              disabled={profileDeleteBusy || selection.mode !== "profile"}
               onChange={(event) =>
                 onSelectionChange({
                   ...selection,
@@ -379,6 +410,7 @@ function ProvidersSettings({
             <input
               id="provider-model"
               value={selection.model}
+              disabled={profileDeleteBusy}
               onChange={(event) =>
                 onSelectionChange({ ...selection, model: event.target.value })
               }
@@ -390,6 +422,7 @@ function ProvidersSettings({
             <select
               id="provider-approval"
               value={selection.approval}
+              disabled={profileDeleteBusy}
               onChange={(event) =>
                 onSelectionChange({
                   ...selection,
@@ -460,7 +493,9 @@ function ProvidersSettings({
           </div>
         </div>
         <div className="field-actions">
-          <button type="submit">Save profile</button>
+          <button type="submit" disabled={saveBusy || profileDeleteBusy}>
+            {saveBusy ? "Saving…" : "Save profile"}
+          </button>
           <button type="button" className="secondary" disabled={testBusy} onClick={handleTest}>
             {testBusy ? "Testing…" : "Test"}
           </button>
@@ -508,6 +543,7 @@ function ProvidersSettings({
                   <button
                     type="button"
                     className="secondary"
+                    disabled={profileDeleteBusy}
                     onClick={() =>
                       onSelectionChange({
                         ...selection,
@@ -522,9 +558,10 @@ function ProvidersSettings({
                   <button
                     type="button"
                     className="danger"
-                    onClick={() => onProfilesChange(removeProviderProfile(profiles, profile.id))}
+                    disabled={profileDeleteBusy}
+                    onClick={() => void handleDelete(profile.id)}
                   >
-                    Remove
+                    {deletingProfileId === profile.id ? "Removing…" : "Remove"}
                   </button>
                 </div>
               </div>

@@ -34,4 +34,33 @@ describe("prepare_turn", () => {
     expect(prepared.eventCount).toBe(0);
     expect(prepared.seenEventSeqs).toEqual([]);
   });
+
+  it("can retain terminal product tool history without carrying pending work", () => {
+    const state = {
+      ...createWorkbenchState(),
+      tools: [
+        {
+          id: "call-done",
+          name: "read_file",
+          status: "done" as const,
+          details: "complete",
+        },
+        {
+          id: "call-waiting",
+          name: "write_file",
+          status: "waiting" as const,
+          details: "approval required",
+        },
+      ],
+    };
+
+    const prepared = workbenchReducer(state, {
+      type: "prepare_turn",
+      preserveTools: true,
+    });
+
+    expect(prepared.tools).toEqual([]);
+    expect(prepared.historicalTools).toEqual([state.tools[0]]);
+    expect(prepared.pendingInputs).toEqual([]);
+  });
 });

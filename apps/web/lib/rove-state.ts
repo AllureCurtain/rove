@@ -45,10 +45,16 @@ export interface WorkbenchState {
   busy: boolean;
   error: string | null;
   messages: ChatMessage[];
+  /** Optimistic user bubble awaiting its canonical run_started identity. */
+  pendingUserMessageId: string | null;
+  /** Run identities whose canonical user bubble has already been projected. */
+  seenUserMessageRunIds: string[];
   plan: TaskPlan | null;
   planDecisions: PlanDecisionRecord[];
   planRevisions: PlanRevision[];
   stepRecords: StepRecord[];
+  /** Terminal tool cards retained from earlier product-session runs. */
+  historicalTools: ToolCallView[];
   tools: ToolCallView[];
   trace: TraceEntry[];
   pendingInputs: PendingInput[];
@@ -56,8 +62,11 @@ export interface WorkbenchState {
 
 export type WorkbenchAction =
   | { type: "reset" }
-  /** Clear run-scoped view state for a new turn while keeping transcript messages. */
-  | { type: "prepare_turn" }
+  | { type: "hydrate"; state: WorkbenchState }
+  /** Clear run-scoped view state while optionally retaining terminal product tool history. */
+  | { type: "prepare_turn"; preserveTools?: boolean }
+  /** Reset stale run identity before following a different durable job. */
+  | { type: "prepare_job_attachment"; jobId: string }
   | { type: "append_user_message"; content: string }
   | {
       type: "job_created";
@@ -85,10 +94,13 @@ export function createWorkbenchState(): WorkbenchState {
     busy: false,
     error: null,
     messages: [],
+    pendingUserMessageId: null,
+    seenUserMessageRunIds: [],
     plan: null,
     planDecisions: [],
     planRevisions: [],
     stepRecords: [],
+    historicalTools: [],
     tools: [],
     trace: [],
     pendingInputs: [],
@@ -102,40 +114,46 @@ export function workbenchReducer(
   switch (action.type) {
     case "reset":
       return createWorkbenchState();
+    case "hydrate":
+      return action.state;
     case "prepare_turn":
+      return prepareRunScopedState(
+        state,
+        action.preserveTools ?? false,
+        "Preparing turn",
+      );
+    case "prepare_job_attachment":
+      if (!state.activeJobId || state.activeJobId === action.jobId) {
+        return {
+          ...state,
+          activeJobId: action.jobId,
+          statusText: "Connecting to active run",
+          lastSignal: "Connecting to active run",
+          busy: true,
+          error: null,
+        };
+      }
       return {
-        ...state,
-        activeJobId: null,
-        activeRunId: null,
-        resumedFromRunId: null,
-        statusText: "Preparing turn",
-        eventCount: 0,
-        seenEventSeqs: [],
-        lastSignal: "Preparing turn",
-        busy: false,
-        error: null,
-        plan: null,
-        planDecisions: [],
-        planRevisions: [],
-        stepRecords: [],
-        tools: [],
-        // Keep a short run trace for the inspector; product chat is the transcript.
-        trace: [],
-        pendingInputs: [],
+        ...prepareRunScopedState(state, true, "Connecting to active run"),
+        activeJobId: action.jobId,
+        busy: true,
       };
-    case "append_user_message":
+    case "append_user_message": {
+      const userMessageId = crypto.randomUUID();
       return {
         ...state,
         messages: [
           ...state.messages,
           {
-            id: crypto.randomUUID(),
+            id: userMessageId,
             role: "user",
             content: action.content,
             status: "final",
           },
         ],
+        pendingUserMessageId: userMessageId,
       };
+    }
     case "job_created":
       return {
         ...state,
@@ -191,6 +209,47 @@ export function workbenchReducer(
     case "stream_event":
       return applyStreamEvent(state, action.event, action.seq);
   }
+}
+
+function prepareRunScopedState(
+  state: WorkbenchState,
+  preserveTools: boolean,
+  statusText: string,
+): WorkbenchState {
+  return {
+    ...state,
+    activeJobId: null,
+    activeRunId: null,
+    resumedFromRunId: null,
+    statusText,
+    eventCount: 0,
+    seenEventSeqs: [],
+    lastSignal: statusText,
+    busy: false,
+    error: null,
+    messages: state.messages.map((message) =>
+      message.status === "streaming"
+        ? { ...message, status: "final" as const }
+        : message,
+    ),
+    pendingUserMessageId: null,
+    plan: null,
+    planDecisions: [],
+    planRevisions: [],
+    stepRecords: [],
+    historicalTools: preserveTools
+      ? [
+          ...state.tools.filter(
+            (tool) => tool.status === "done" || tool.status === "error",
+          ),
+          ...state.historicalTools,
+        ]
+      : [],
+    tools: [],
+    // Keep a short run trace for the inspector; product chat is the transcript.
+    trace: [],
+    pendingInputs: [],
+  };
 }
 
 function applyJobState(
@@ -336,7 +395,10 @@ function applyStreamEvent(
   };
 
   switch (event.type) {
-    case "run_started":
+    case "run_started": {
+      const runStartedAlreadySeen = state.seenUserMessageRunIds.includes(
+        event.run_id,
+      );
       return {
         ...next,
         activeJobId: event.job_id,
@@ -344,9 +406,20 @@ function applyStreamEvent(
         busy: true,
         error: null,
         statusText: "Run started",
-        messages: ensureUserMessage(state.messages, event.user_message),
+        messages: runStartedAlreadySeen
+          ? state.messages
+          : applyCanonicalUserMessage(
+              state.messages,
+              event.user_message,
+              state.pendingUserMessageId,
+            ),
+        pendingUserMessageId: null,
+        seenUserMessageRunIds: runStartedAlreadySeen
+          ? state.seenUserMessageRunIds
+          : [...state.seenUserMessageRunIds, event.run_id],
         trace: prependTrace(state.trace, event.type, `${event.user_message}`),
       };
+    }
     case "llm_chunk":
       return {
         ...next,
@@ -599,16 +672,20 @@ function appendPlanRevision(revisions: PlanRevision[], revision: PlanRevision): 
     : [...revisions, revision];
 }
 
-function ensureUserMessage(messages: ChatMessage[], content: string): ChatMessage[] {
+function applyCanonicalUserMessage(
+  messages: ChatMessage[],
+  content: string,
+  pendingUserMessageId: string | null,
+): ChatMessage[] {
   if (
-    messages.some(
-      (message) =>
-        message.role === "user" &&
-        message.content === content &&
-        message.status === "final",
-    )
+    pendingUserMessageId &&
+    messages.some((message) => message.id === pendingUserMessageId)
   ) {
-    return messages;
+    return messages.map((message) =>
+      message.id === pendingUserMessageId
+        ? { ...message, content, status: "final" as const }
+        : message,
+    );
   }
   return [
     ...messages,

@@ -12,13 +12,15 @@ this file is the current proof map.
 | M3 | Built-in vector/RAG indexing | Removed / out of scope for local-first product | Default builds and workspace tests do not depend on lancedb/arrow | Removed |
 | M4 | MCP tools register as first-class tools for CLI/API, expose annotations as tool metadata, and have bounded stdio transport plus opt-in real server smoke coverage. | Met | `cargo test --test mcp`; optional real server smoke: `$env:ROVE_MCP_FILESYSTEM_SMOKE="1"; cargo test --test mcp mcp_official_filesystem_server_smoke_when_enabled -- --exact --nocapture` | Closed by phases 3, 9 |
 | M5 | HTTP API can create jobs, stream/replay SSE events, cancel jobs, resolve approval/input requests, persist historical state, and enforce token/CORS/rate-limit controls. | Met | `cargo test --test api`; focused: `cargo test --test api api_creates_job_streams_events_and_reports_state -- --exact`; `cargo test --test api api_accepts_matching_bearer_token -- --exact` | Closed by phases 3, 5 |
-| M6 | Standalone Web surface consumes the API/SSE stream, supports approval/input/cancel/resume flows, token proxying, and browser E2E coverage. | Met for the historical advanced Workbench; the default M1 product shell and C0 API/client foundation are implemented, with C1–C3 UI gaps still open | `cd apps/web; pnpm test`; `cd apps/web; pnpm typecheck`; `cd apps/web; pnpm build`; optional browser check: `cd apps/web; pnpm test:e2e` | Historical M6 closed by phases 3, 8; full live-API product-shell acceptance belongs to Web Complete C3 |
+| M6 | Standalone Web surface consumes the API/SSE stream, supports approval/input/cancel/resume flows, token proxying, and browser E2E coverage. | Met for the historical advanced Workbench; the default product shell plus Web Complete C0 API foundation and C1 continuity UI are implemented. C2–C3 product gaps remain open. | `cd apps/web; pnpm test`; `cd apps/web; pnpm typecheck`; `cd apps/web; pnpm build`; optional browser check: `cd apps/web; pnpm test:e2e` | Historical M6 closed by phases 3, 8; full live-API product-shell acceptance belongs to Web Complete C3 |
 
-Evidence boundary: `apps/web/tests/e2e/shell.spec.ts` covers the default `/`
-product shell with browser-boundary mocks. The gated real-API suite
+Evidence boundary: `apps/web/tests/e2e/shell.spec.ts` covers core product flows
+and `apps/web/tests/e2e/continuity.spec.ts` covers C1 refresh, routes, session
+switching, reattachment, ambiguous job starts, and provider persistence with
+browser-boundary mocks. The gated real-API suite
 `apps/web/tests/e2e/real-api.spec.ts` opens `/dev/workbench`, so its three tests
-prove the advanced Workbench/API lifecycle rather than C1 refresh continuity or
-full live-API acceptance of the product shell.
+prove the advanced Workbench/API lifecycle rather than live-API acceptance of
+the product shell.
 
 ## Web Complete C0
 
@@ -27,11 +29,26 @@ full live-API acceptance of the product shell.
 | API-global ProductStore CRUD and safe preferences | Implemented; wired operations document actual `500`/`503` failures and never advertise foundation-era `501` | `apps/api/src/product/store/tests.rs`; product route and OpenAPI coverage in `tests/api.rs` |
 | Exact product-session/runtime binding and fail-closed continuation | Implemented | `product_sessions_in_one_workspace_resume_their_own_exact_runs` and product resume/cancel tests in `tests/api.rs` |
 | Canonical-event transcript projection with typed partial reasons | Implemented | transcript module tests and product transcript assertions in `tests/api.rs` |
-| Strict/idempotent M1 migration and typed Web client | Implemented, not wired into the default shell | `apps/web/product/product-client.test.ts`, `apps/web/product/m1-browser-migration.test.ts`, and migration tests in `tests/api.rs` |
+| Strict/idempotent M1 migration and typed Web client | Implemented; C1 uses the product client, but the migration state machine is not invoked by the default shell | `apps/web/product/product-client.test.ts`, `apps/web/product/m1-browser-migration.test.ts`, and migration tests in `tests/api.rs` |
 | Migration preparation/apply lifecycle | Implemented: preparation has a 30-second deadline; apply is supervised, survives handler disconnect, and persists/reuses its baseline | migration lifecycle tests in `apps/api/src/product/migration.rs` and migration/store coverage in `apps/api/src/product/store/tests.rs` |
 | Concurrent preference and active-session safety | Implemented: revision CAS preserves newer preferences; a source-mapped active session returns typed `product_session_active` and the Web keeps the exact retry payload | preference/active-session migration tests in `apps/api/src/product/store/tests.rs` and `apps/web/product/m1-browser-migration.test.ts` |
 | Runtime binding commit safety | Implemented: canonical sorted runtime reservations, workspace containment, `SQLITE_OPEN_NOFOLLOW`, and symlink-parent rejection | external commit-guard tests in `runtime/src/state/index.rs` and migration tests in `tests/api.rs` |
 | Product job-start shutdown ownership | Implemented: owned start tasks drain before job supervisors and handles | lifecycle tests in `apps/api/src/lib.rs` |
+
+## Web Complete C1
+
+C1 is implemented, but this does **not** mark Web Complete accepted. Its browser
+evidence is mock-backed; C2 Settings completion and C3 live-API acceptance are
+still required.
+
+| C1 contract | Current status | Test evidence surface |
+|---|---|---|
+| API-authoritative boot catalog, preferences, and provider profiles | Implemented in the default `ProductApp` | `apps/web/state/product-catalog.test.ts`; `apps/web/state/server-product-state.ts`; provider persistence scenario in `apps/web/tests/e2e/continuity.spec.ts` |
+| Durable workspace/session/Settings routes | Implemented with explicit invalid/mismatched route failures | `apps/web/state/product-route.test.ts`; route landing and no-wrong-session-flash scenarios in `apps/web/tests/e2e/continuity.spec.ts` |
+| Canonical transcript restore | Implemented with complete, explicit partial, error, retry, and session-switch race handling | `apps/web/state/transcript-projection.test.ts`; restore scenarios in `apps/web/tests/e2e/continuity.spec.ts` |
+| Exact continuation from the default shell | Implemented: product turns send `product_session_id` and omit client `resume` | `apps/web/state/turn-request.test.ts`; restored second-turn scenario in `apps/web/tests/e2e/continuity.spec.ts` |
+| Focused reattachment and background status | Implemented: one focused live observation plus bounded background catalog polling | focused reattachment and background attention scenarios in `apps/web/tests/e2e/continuity.spec.ts` |
+| Ambiguous `POST /jobs` response | Implemented: bounded binding reconciliation, no automatic duplicate submission, transcript fallback/explicit uncertainty | disconnect plus delayed-binding scenario in `apps/web/tests/e2e/continuity.spec.ts` |
 
 Cross-cutting default gate:
 

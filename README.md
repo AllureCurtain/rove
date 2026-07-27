@@ -17,8 +17,8 @@ apps/cli / apps/api / apps/bench
 
 ## Current MVP
 
-As of 2026-07-26, the modular Workspace migration, Provider Layer redesign,
-cleanup W1–W3, Web M1, and Web Complete C0 are on `main`. rove has reached its
+As of 2026-07-27, the modular Workspace migration, Provider Layer redesign,
+cleanup W1–W3, Web M1, and Web Complete C0–C1 are implemented. rove has reached its
 local-first MVP: CLI, API, Web product shell,
 streaming events, bounded tool execution, persisted state, resume, deterministic
 benchmarks, and current runtime docs are all present. The exact boundary is
@@ -26,10 +26,13 @@ documented in [docs/runtime/mvp-definition.md](docs/runtime/mvp-definition.md).
 
 Web Complete is the active product milestone. C0 implements the API-global
 product store, exact product-session/runtime binding, canonical-event
-transcript reads, strict browser migration, and typed Web client modules. The
-default product shell has not yet been switched to those modules. Refresh
-restore, deep routes, complete Settings, and final UI acceptance remain C1–C3
-work. A Tauri Desktop host, Browser/Desktop automation workspaces, hosted multi-user identity,
+transcript reads, strict browser migration, and typed Web client modules. C1
+switches the default product shell to that API authority: refresh restores the
+canonical transcript or an explicit partial/error state, durable workspace,
+session, and Settings routes preserve place, provider profiles persist through
+the API, and focused jobs reattach without falling back to workspace-global
+`latest`. Complete Settings, user-facing migration polish, and live-API product
+shell acceptance remain C2–C3 work. A Tauri Desktop host, Browser/Desktop automation workspaces, hosted multi-user identity,
 distributed rate limiting, and optional external semantic retrieval are outside
 the implemented MVP.
 
@@ -167,7 +170,7 @@ bearer token server-side and does not expose it to browser JavaScript.
 | Area | Path | Purpose |
 |---|---|---|
 | CLI / TUI | `apps/cli/` | Rich terminal REPL, full-screen TUI, exec, config dump, and sessions. |
-| API | `apps/api/` | HTTP job lifecycle, SSE event streaming, approvals, inputs, cancellation, provider inventory/test, and C0 product-control APIs. |
+| API | `apps/api/` | HTTP job lifecycle, SSE event streaming, approvals, inputs, cancellation, provider inventory/test, and Web Complete product-control APIs. |
 | Benchmarks | `apps/bench/`, `benchmarks/` | Deterministic no-network benchmark tasks with artifact-path reports. |
 | Bootstrap | `apps/bootstrap/` | First-party AppConfig, provider factory, product registry, shared Engine assembly. |
 | Web | `apps/web/` | Next.js product shell that consumes the API and SSE job stream; `/dev/workbench` is advanced-only. |
