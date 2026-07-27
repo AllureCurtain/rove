@@ -341,13 +341,17 @@ status/binding is live; running and attention badges for background sessions are
 refreshed by bounded catalog polling. A network-ambiguous `POST /jobs` is not
 retried automatically: the shell performs bounded session-binding reads,
 attaches an advanced binding when visible, or restores the canonical transcript
-and surfaces an explicit uncertain state. Provider list/create/delete and active
+and surfaces an explicit uncertain state. Provider list/create/update/delete and active
 selection use the API store; raw keys remain outside browser state and requests.
 
-Several Settings sections are still placeholders, provider edit/update UX is
-not complete, and the M1 browser migration state machine is not invoked by the
-default shell. C2 owns Settings completeness; C3 owns migration/polish and live
-product-shell acceptance.
+Web Complete C2 adds revision-safe preferences and a durable default approval
+policy honored by product jobs, bounded durable-memory and runtime-health
+routes, and complete Settings UI. All nine sections now have real capabilities:
+theme, provider CRUD/test/models, approval and step defaults, workspace/session
+management and safe export, Memory browse/delete, four keyboard shortcuts,
+Advanced Benchmark, and runtime/resume health. The M1 browser migration state
+machine is still not invoked by the default shell; C3 owns migration/polish and
+live product-shell acceptance.
 
 The web verification surface is:
 

@@ -1,11 +1,13 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { Composer } from "../chat/Composer";
 import { Transcript } from "../chat/Transcript";
 import { RunInspector } from "../inspector/RunInspector";
 import { SettingsShell } from "../settings/SettingsShell";
+import { matchKeyboardShortcut } from "../settings/keyboard-settings-model";
+import { createSettingsPlatformClient } from "../settings/settings-platform-client";
 import { EmptyState } from "../sidebar/EmptyState";
 import { WorkspaceTree } from "../sidebar/WorkspaceTree";
 import {
@@ -25,6 +27,8 @@ import { TopBar } from "./TopBar";
 
 export function ProductApp() {
   const server = useServerProductState();
+  const settingsClient = useMemo(() => createSettingsPlatformClient(), []);
+  const composerRef = useRef<HTMLTextAreaElement>(null);
   const [inspectorCollapsed, setInspectorCollapsed] = useState(false);
   const activeWorkspace = findWorkspace(
     server.catalog,
@@ -40,6 +44,7 @@ export function ProductApp() {
     activeSession,
     selection: server.selection,
     profiles: server.profiles,
+    useDefaultApproval: server.preferences?.provider_selection === undefined,
     markSession: server.markSession,
     refreshSessionStatuses: server.refreshSessionStatuses,
     updateSessionTitle: server.updateSessionTitle,
@@ -126,6 +131,14 @@ export function ProductApp() {
   }
 
   async function handleRemoveWorkspace(workspaceId: string) {
+    try {
+      await removeWorkspaceAndLeaveIfActive(workspaceId);
+    } catch {
+      // The state hook exposes the failure through catalogError.
+    }
+  }
+
+  async function removeWorkspaceAndLeaveIfActive(workspaceId: string) {
     const navigationIntent = routing.captureNavigationIntent();
     if (
       (await server.removeWorkspace(workspaceId)) &&
@@ -135,6 +148,56 @@ export function ProductApp() {
       routing.returnHome();
     }
   }
+
+  useEffect(() => {
+    function handleShortcut(event: KeyboardEvent) {
+      const shortcut = matchKeyboardShortcut(event);
+      if (!shortcut) {
+        return;
+      }
+
+      let handled = true;
+      switch (shortcut.action) {
+        case "focus-composer":
+          if (routing.viewSettings || composerDisabled || !composerRef.current) {
+            handled = false;
+          } else {
+            composerRef.current.focus();
+          }
+          break;
+        case "new-session":
+          if (!activeWorkspace || server.catalogMutationBusy) {
+            handled = false;
+          } else {
+            void handleNewSession(activeWorkspace.id);
+          }
+          break;
+        case "open-settings":
+          routing.openSettings("general");
+          break;
+        case "toggle-inspector":
+          if (routing.viewSettings || !activeWorkspace || !activeSession) {
+            handled = false;
+          } else {
+            setInspectorCollapsed((value) => !value);
+          }
+          break;
+      }
+
+      if (handled) {
+        event.preventDefault();
+      }
+    }
+
+    document.addEventListener("keydown", handleShortcut);
+    return () => document.removeEventListener("keydown", handleShortcut);
+  }, [
+    activeSession,
+    activeWorkspace,
+    composerDisabled,
+    routing,
+    server.catalogMutationBusy,
+  ]);
 
   if (server.bootState.status !== "ready") {
     return (
@@ -179,11 +242,30 @@ export function ProductApp() {
           <SettingsShell
             section={routing.settingsSection}
             onSectionChange={routing.openSettings}
+            settingsClient={settingsClient}
             profiles={server.profiles}
             selection={server.selection}
+            defaultApprovalPolicy={
+              server.preferences?.default_approval_policy ??
+              server.selection.approval
+            }
             onCreateProfile={server.createProviderProfile}
+            onUpdateProfile={server.updateProviderProfile}
             onDeleteProfile={server.deleteProviderProfile}
             onSelectionChange={server.changeSelection}
+            onDefaultApprovalPolicyChange={
+              server.changeDefaultApprovalPolicy
+            }
+            workspaces={server.catalog.workspaces}
+            sessions={server.catalog.sessions}
+            activeWorkspaceId={server.catalog.active.workspaceId}
+            activeSessionId={server.catalog.active.sessionId}
+            onSelectWorkspace={routing.navigateWorkspace}
+            onSelectSession={routing.navigateSession}
+            onTogglePin={server.togglePin}
+            onRemoveWorkspace={removeWorkspaceAndLeaveIfActive}
+            onRenameSession={server.updateSessionTitle}
+            onDeleteSession={server.deleteSession}
             connectionLabel={connectionLabel}
             theme={server.theme}
             onThemeChange={server.changeTheme}
@@ -202,7 +284,9 @@ export function ProductApp() {
             onSelectWorkspace={routing.navigateWorkspace}
             onSelectSession={routing.navigateSession}
             onNewSession={(workspaceId) => void handleNewSession(workspaceId)}
-            onTogglePin={(workspaceId) => void server.togglePin(workspaceId)}
+            onTogglePin={(workspaceId) =>
+              void server.togglePin(workspaceId).catch(() => undefined)
+            }
             onRemoveWorkspace={(workspaceId) =>
               void handleRemoveWorkspace(workspaceId)
             }
@@ -275,6 +359,7 @@ export function ProductApp() {
                   modelLabel={`model ${server.selection.model || "default"}`}
                   resumeLabel={resumeLabel}
                   error={continuity.runState.error}
+                  textareaRef={composerRef}
                   onSend={continuity.send}
                   onCancel={() => void continuity.cancel()}
                 />

@@ -1,5 +1,9 @@
 import type { Page, Route } from "@playwright/test";
 
+import type {
+  ProductMemoryTopicContentResponse,
+} from "../../settings/settings-platform-api-types";
+
 const NOW = "2026-07-26T00:00:00.000Z";
 
 export interface MockWorkspace {
@@ -52,6 +56,7 @@ export interface MockProductApiOptions {
   sessions?: MockSession[];
   transcripts?: Record<string, MockTranscript>;
   providerProfiles?: MockProviderProfile[];
+  memoryTopics?: Record<string, ProductMemoryTopicContentResponse>;
   activeWorkspaceId?: string;
   activeSessionId?: string;
   mode?: "completed" | "approval";
@@ -70,6 +75,7 @@ export interface MockProductApiState {
   sessions: MockSession[];
   transcripts: Record<string, MockTranscript>;
   providerProfiles: MockProviderProfile[];
+  memoryTopics: Record<string, ProductMemoryTopicContentResponse>;
   jobs: Array<Record<string, unknown>>;
   jobStarts: Array<{
     job_id: string;
@@ -118,21 +124,19 @@ export async function installMockProductApi(
     sessions: structuredClone(options.sessions ?? []),
     transcripts: structuredClone(options.transcripts ?? {}),
     providerProfiles: structuredClone(options.providerProfiles ?? []),
+    memoryTopics: structuredClone(options.memoryTopics ?? {}),
     jobs: [],
     jobStarts: [],
     eventConnections: [],
     preferences: {
       schema_version: 1,
+      revision: 0,
       theme: "light",
+      default_approval_policy: "ask",
       ...(options.activeWorkspaceId
         ? { active_workspace_id: options.activeWorkspaceId }
         : {}),
       ...(options.activeSessionId ? { active_session_id: options.activeSessionId } : {}),
-      provider_selection: {
-        model: "fake",
-        approval: "ask",
-        max_steps: 8,
-      },
     },
     transcriptFailures: { ...(options.transcriptFailures ?? {}) },
     disconnectedJobStartResponses: 0,
@@ -301,8 +305,91 @@ export async function installMockProductApi(
           503,
         );
       }
-      state.preferences = request.postDataJSON() as Record<string, unknown>;
+      const body = request.postDataJSON() as Record<string, unknown>;
+      const {
+        expected_revision: expectedRevision,
+        provider_selection: requestedSelection,
+        ...requestedPreferences
+      } = body;
+      const currentRevision = Number(state.preferences.revision);
+      if (expectedRevision !== currentRevision) {
+        return json(
+          route,
+          {
+            code: "product_revision_conflict",
+            error: "preferences revision does not match",
+          },
+          409,
+        );
+      }
+      const defaultApproval = requestedPreferences.default_approval_policy;
+      const providerSelection =
+        requestedSelection && typeof requestedSelection === "object"
+          ? {
+              ...(requestedSelection as Record<string, unknown>),
+              approval: defaultApproval,
+            }
+          : undefined;
+      state.preferences = {
+        ...requestedPreferences,
+        revision: currentRevision + 1,
+        ...(providerSelection ? { provider_selection: providerSelection } : {}),
+      };
       return json(route, state.preferences);
+    }
+    if (path === "/product/memory/topics" && method === "GET") {
+      const topics = Object.values(state.memoryTopics).map(
+        (entry) => entry.topic,
+      );
+      return json(route, { topics, total: topics.length });
+    }
+    const memoryTopicMatch = path.match(
+      /^\/product\/memory\/topics\/([^/]+)$/u,
+    );
+    if (memoryTopicMatch && method === "GET") {
+      const slug = decodeURIComponent(memoryTopicMatch[1]!);
+      const topic = state.memoryTopics[slug];
+      return topic
+        ? json(route, topic)
+        : json(
+            route,
+            { code: "product_not_found", error: "memory topic not found" },
+            404,
+          );
+    }
+    if (memoryTopicMatch && method === "DELETE") {
+      const slug = decodeURIComponent(memoryTopicMatch[1]!);
+      if (!state.memoryTopics[slug]) {
+        return json(
+          route,
+          { code: "product_not_found", error: "memory topic not found" },
+          404,
+        );
+      }
+      delete state.memoryTopics[slug];
+      return route.fulfill({ status: 204, body: "" });
+    }
+    if (path === "/product/runtime" && method === "GET") {
+      const needsAttentionCount = state.sessions.filter(
+        (session) => session.status === "needs_attention",
+      ).length;
+      return json(route, {
+        api_version: "0.1.0",
+        connection: "connected",
+        product_store: "ready",
+        resume_health: {
+          status: needsAttentionCount === 0 ? "healthy" : "needs_attention",
+          workspace_count: state.workspaces.length,
+          session_count: state.sessions.length,
+          bound_session_count: state.sessions.filter(
+            (session) => session.runtime_binding !== undefined,
+          ).length,
+          running_session_count: state.sessions.filter(
+            (session) => session.status === "running",
+          ).length,
+          needs_attention_session_count: needsAttentionCount,
+        },
+      });
     }
     if (path === "/product/provider-profiles" && method === "GET") {
       return json(route, { provider_profiles: state.providerProfiles });

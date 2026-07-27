@@ -115,7 +115,8 @@ As of 2026-07-27:
   `rove-app-bootstrap` owns first-party AppConfig, provider factory, product
   registry assembly, and shared Engine assembly. Workspace retrieval is tool-based plus layered file memory; there is no built-in vector RAG.
 - `docs/runtime/` describes the implemented MVP, Web M1 product shell, and the
-  implemented Web Complete C0 persistence/API plus C1 continuity UI.
+  implemented Web Complete C0 persistence/API, C1 continuity UI, and C2
+  Settings surface.
 - MCP currently supports stdio and the existing legacy SSE path. Streamable
   HTTP, negotiated sessions, rich MCP result envelopes, and Tool Artifacts are
   proposed, not implemented.
@@ -138,9 +139,12 @@ As of 2026-07-27:
   focused-job SSE reattachment, background status polling, and bounded
   reconciliation when a job-start response is ambiguous. Provider profiles and
   their active selection now persist through the C0 API; raw keys remain out of
-  browser state and requests. Complete Settings sections, user-facing M1
-  migration invocation, final polish, and live-API product-shell acceptance
-  remain C2–C3 work. Product-shell continuity E2E is mock-backed;
+  browser state and requests. Web Complete C2 adds revision-safe approval
+  defaults, bounded memory/runtime settings APIs, full provider CRUD, durable
+  workspace/session management, real Memory and runtime health views, and four
+  wired keyboard shortcuts across all nine non-placeholder Settings sections.
+  User-facing M1 migration invocation, final polish, and live-API product-shell
+  acceptance remain C3 work. Product-shell continuity and Settings E2E are mock-backed;
   `local-full` real-API Playwright targets `/dev/workbench`, and the provider
   runner's Web selectors predate M1. No Tauri `apps/desktop` host exists yet.
 - This repository-level `AGENTS.md` guides maintainers and coding agents. Its

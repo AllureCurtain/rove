@@ -37,6 +37,7 @@ export function useSessionContinuity({
   activeSession,
   selection,
   profiles,
+  useDefaultApproval,
   markSession,
   refreshSessionStatuses,
   updateSessionTitle,
@@ -47,6 +48,7 @@ export function useSessionContinuity({
   activeSession: SessionRecord | null;
   selection: ActiveProviderSelection;
   profiles: ProviderProfileRecord[];
+  useDefaultApproval: boolean;
   markSession: (
     sessionId: string,
     patch: Parameters<typeof updateSession>[2],
@@ -317,6 +319,7 @@ export function useSessionContinuity({
           session,
           selection,
           profiles,
+          useDefaultApproval,
         });
       } catch (error) {
         dispatch({ type: "set_error", error: describeError(error) });
@@ -336,7 +339,7 @@ export function useSessionContinuity({
         resumedFromRunId: null,
       });
       if (session.title === "New session") {
-        void updateSessionTitle(session.id, title);
+        void updateSessionTitle(session.id, title).catch(() => undefined);
       }
 
       try {
@@ -418,6 +421,7 @@ export function useSessionContinuity({
       setConnection,
       restoreSession,
       updateSessionTitle,
+      useDefaultApproval,
     ],
   );
 

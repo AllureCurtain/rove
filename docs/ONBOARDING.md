@@ -420,9 +420,11 @@ wires the default shell to the API-authoritative catalog, safe preferences,
 provider profiles, and transcript reads. It adds durable workspace/session and
 Settings routes, exact `product_session_id` turns, explicit partial/error/retry
 restore states, focused live-job reattachment, background status polling, and
-bounded no-duplicate reconciliation after ambiguous job starts. Complete
-Settings, product-shell migration UX, and final live-API acceptance remain
-C2–C3 work.
+bounded no-duplicate reconciliation after ambiguous job starts. C2 completes
+Settings: every section has a real surface, provider CRUD
+and approval defaults are durable, workspace/session and memory management use
+the API, runtime health is live, and four documented shortcuts are wired.
+Product-shell migration UX and final live-API acceptance remain C3 work.
 
 From `apps/web/`:
 
@@ -443,8 +445,9 @@ when changing browser-visible job, SSE, approval, input, cancellation, resume,
 or proxy behavior. Follow the environment gates in
 [`runtime/integration-testing.md`](runtime/integration-testing.md).
 
-Current evidence is route-scoped: `shell.spec.ts` covers core product flows and
-`continuity.spec.ts` covers C1 continuity with mocked API boundaries, while the
+Current evidence is route-scoped: `shell.spec.ts` covers core product flows,
+`continuity.spec.ts` covers C1 continuity, and `settings.spec.ts` covers C2
+Settings behavior with mocked API boundaries, while the
 gated `real-api.spec.ts` used by `local-full` opens
 `/dev/workbench`. Full live-API product-shell acceptance is Web Complete C3
 work, not an already-passing M1 gate.
@@ -609,10 +612,10 @@ documents remain proposed/not implemented.
 ### Active product delivery
 
 - [Agent Desktop + Web shared UI](design/2026-07-25-agent-desktop-web-ui-design.md)
-  — Web M1 and C0–C1 are implemented; C2–C3 and Desktop remain pending.
+  — Web M1 and C0–C2 are implemented; C3 and Desktop remain pending.
 - [Web Complete design](design/2026-07-26-web-complete-design.md) and
-  [delivery plan](plans/2026-07-26-web-complete.md) — C0–C1 are complete; C2–C3
-  remain the active milestone work.
+  [delivery plan](plans/2026-07-26-web-complete.md) — C0–C2 are complete; C3
+  remains the active milestone work.
 - [Web → Desktop coordinator plan](plans/2026-07-25-web-desktop-master-delivery.md)
   — worktree ownership, PR authority, exact product-session binding, and
   Desktop D0 gate.
@@ -643,7 +646,7 @@ Use them for rationale, not as current API/runtime truth when they disagree with
 ## 20. Known boundary reminders
 
 - Browser/Desktop automation workspace specs are future. The Web product shell
-  and C0–C1 persistence/continuity implementation exist; a Tauri Desktop
+  and C0–C2 persistence/continuity/Settings implementation exist; a Tauri Desktop
   product host does not.
 - Hosted multi-user identity and distributed rate limiting are outside the MVP.
 - Built-in vector RAG is not provided.

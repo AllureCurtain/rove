@@ -12,11 +12,13 @@ this file is the current proof map.
 | M3 | Built-in vector/RAG indexing | Removed / out of scope for local-first product | Default builds and workspace tests do not depend on lancedb/arrow | Removed |
 | M4 | MCP tools register as first-class tools for CLI/API, expose annotations as tool metadata, and have bounded stdio transport plus opt-in real server smoke coverage. | Met | `cargo test --test mcp`; optional real server smoke: `$env:ROVE_MCP_FILESYSTEM_SMOKE="1"; cargo test --test mcp mcp_official_filesystem_server_smoke_when_enabled -- --exact --nocapture` | Closed by phases 3, 9 |
 | M5 | HTTP API can create jobs, stream/replay SSE events, cancel jobs, resolve approval/input requests, persist historical state, and enforce token/CORS/rate-limit controls. | Met | `cargo test --test api`; focused: `cargo test --test api api_creates_job_streams_events_and_reports_state -- --exact`; `cargo test --test api api_accepts_matching_bearer_token -- --exact` | Closed by phases 3, 5 |
-| M6 | Standalone Web surface consumes the API/SSE stream, supports approval/input/cancel/resume flows, token proxying, and browser E2E coverage. | Met for the historical advanced Workbench; the default product shell plus Web Complete C0 API foundation and C1 continuity UI are implemented. C2–C3 product gaps remain open. | `cd apps/web; pnpm test`; `cd apps/web; pnpm typecheck`; `cd apps/web; pnpm build`; optional browser check: `cd apps/web; pnpm test:e2e` | Historical M6 closed by phases 3, 8; full live-API product-shell acceptance belongs to Web Complete C3 |
+| M6 | Standalone Web surface consumes the API/SSE stream, supports approval/input/cancel/resume flows, token proxying, and browser E2E coverage. | Met for the historical advanced Workbench; the default product shell plus Web Complete C0 API, C1 continuity, and C2 Settings are implemented. C3 remains open. | `cd apps/web; pnpm test`; `cd apps/web; pnpm typecheck`; `cd apps/web; pnpm build`; optional browser check: `cd apps/web; pnpm test:e2e` | Historical M6 closed by phases 3, 8; full live-API product-shell acceptance belongs to Web Complete C3 |
 
 Evidence boundary: `apps/web/tests/e2e/shell.spec.ts` covers core product flows
 and `apps/web/tests/e2e/continuity.spec.ts` covers C1 refresh, routes, session
-switching, reattachment, ambiguous job starts, and provider persistence with
+switching, reattachment, ambiguous job starts, and provider persistence.
+`apps/web/tests/e2e/settings.spec.ts` covers C2 sections, mutations, preference
+conflicts, job policy requests, shortcuts, and mobile bounds with
 browser-boundary mocks. The gated real-API suite
 `apps/web/tests/e2e/real-api.spec.ts` opens `/dev/workbench`, so its three tests
 prove the advanced Workbench/API lifecycle rather than live-API acceptance of
@@ -38,8 +40,8 @@ the product shell.
 ## Web Complete C1
 
 C1 is implemented, but this does **not** mark Web Complete accepted. Its browser
-evidence is mock-backed; C2 Settings completion and C3 live-API acceptance are
-still required.
+evidence is mock-backed; C2 Settings is implemented separately below and C3
+live-API acceptance is still required.
 
 | C1 contract | Current status | Test evidence surface |
 |---|---|---|
@@ -49,6 +51,17 @@ still required.
 | Exact continuation from the default shell | Implemented: product turns send `product_session_id` and omit client `resume` | `apps/web/state/turn-request.test.ts`; restored second-turn scenario in `apps/web/tests/e2e/continuity.spec.ts` |
 | Focused reattachment and background status | Implemented: one focused live observation plus bounded background catalog polling | focused reattachment and background attention scenarios in `apps/web/tests/e2e/continuity.spec.ts` |
 | Ambiguous `POST /jobs` response | Implemented: bounded binding reconciliation, no automatic duplicate submission, transcript fallback/explicit uncertainty | disconnect plus delayed-binding scenario in `apps/web/tests/e2e/continuity.spec.ts` |
+
+## Web Complete C2
+
+| C2 contract | Current status | Test evidence surface |
+|---|---|---|
+| Nine usable Settings sections | Implemented; no placeholder-only route remains | section and mobile scenarios in `apps/web/tests/e2e/settings.spec.ts` |
+| Provider CRUD, test, models, and selection | Implemented through the API store without raw keys | client/unit tests plus provider scenarios in `continuity.spec.ts`, `shell.spec.ts`, and `settings.spec.ts` |
+| Approval defaults and execution limits | Implemented with preference revision CAS; the API default is used when a turn omits approval | `product_default_approval_is_honored_and_explicit_approval_wins` in `tests/api.rs`; state and browser policy tests |
+| Workspace/session management | Implemented for pin/remove, rename/delete, and bounded safe catalog export | catalog model tests and `settings.spec.ts` |
+| Memory and runtime health | Implemented with bounded list/read/delete and redacted health contracts | API/memory tests, settings client/model tests, and `settings.spec.ts` |
+| Critical keyboard shortcuts | Implemented for composer focus, new session, Settings, and Inspector | keyboard matcher tests and `settings.spec.ts` |
 
 Cross-cutting default gate:
 

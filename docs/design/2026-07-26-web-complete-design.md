@@ -1,6 +1,6 @@
 # Web Complete — Local Agent Web as Daily Driver
 
-> Status: **Accepted / Active — Web M1 and C0–C1 implemented; C2–C3 pending**
+> Status: **Accepted / Active — Web M1 and C0–C2 implemented; C3 pending**
 >
 > Date: 2026-07-26
 >
@@ -17,9 +17,9 @@
 This document freezes the **Web Complete** milestone: finish the local Web product
 so it is a **daily-driver** agent surface, not only an M1 shell.
 
-The C0 persistence/API foundation and C1 continuity UI are implemented, but Web
+The C0 persistence/API foundation, C1 continuity UI, and C2 Settings are implemented, but Web
 Complete is not finished. Current implementation truth remains code plus
-`docs/runtime/**`; C2–C3 continue to describe future UI delivery.
+`docs/runtime/**`; C3 continues to describe future UI delivery.
 
 ---
 
@@ -97,9 +97,10 @@ not automatically repeat the mutation. Provider profiles and their active
 selection are API-authoritative.
 
 This closes the C1 continuity and authority-switch portion of the M1 leftovers.
-Most Settings sections, provider edit/update UX, product-shell invocation of the
-M1 migration module, final polish, and live-API product-shell evidence remain
-C2–C3 work.
+C2 subsequently completed every Settings section, provider edit/update,
+revision-safe approval defaults, catalog and Memory management, runtime health,
+and critical shortcuts. Product-shell invocation of the M1 migration module,
+final polish, and live-API product-shell evidence remain C3 work.
 
 ---
 
@@ -206,9 +207,8 @@ That keeps developer continuity but fails daily-driver UX.
 ## 6. Settings completeness
 
 C1 makes General theme/safe preferences and Provider list/create/delete plus
-active selection API-backed. C2 must still bring all nine sections to the full
-Web Complete bar below; several remain placeholder-only and Provider
-edit/update UX is incomplete.
+active selection API-backed. C2 completes the full Web Complete Settings bar:
+all nine sections below are implemented and none remains placeholder-only.
 
 | Section | Web Complete bar |
 |---------|------------------|
@@ -355,16 +355,21 @@ Web Complete should make that cheaper, not harder:
 
 ## changelog
 
+- 2026-07-27: Marked C2 implemented: all nine Settings sections are usable;
+  provider CRUD, approval/step preferences, workspace/session management,
+  Memory, runtime health, shortcuts, and mobile bounds have focused and
+  mock-backed browser evidence. C3 remains open.
 - 2026-07-27: Marked C1 implemented: API-authoritative product state, canonical
   transcript restore with explicit partial/error handling, durable deep routes,
   exact product-session turns, focused reattachment/background status polling,
   provider persistence, and bounded ambiguous-start reconciliation. Evidence is
-  mock-backed at the browser boundary; C2 Settings and C3 live-API acceptance
-  remain open.
+  mock-backed at the browser boundary; C2 was completed later and C3 live-API
+  acceptance remains open.
 - 2026-07-26: Marked C0 implemented: API-global ProductStore, exact
   product-session continuation, canonical-event transcript projection,
   strict/idempotent supervised migration, runtime commit guards, and typed Web
-  client modules. Default-shell adoption was completed by C1; C2–C3 remain open.
+  client modules. Default-shell adoption was completed by C1; C2 was completed
+  later and C3 remains open.
 - 2026-07-25: Delivery coordination amended after implementation audit. The
   original serial-wave recommendation is replaced by coordinator-owned contract
   foundations plus bounded disjoint workers. Sealed exact product-session/run

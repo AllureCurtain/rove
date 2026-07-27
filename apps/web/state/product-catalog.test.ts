@@ -68,7 +68,9 @@ describe("product catalog", () => {
     ];
     const preferences: ProductPreferences = {
       schema_version: 1,
+      revision: 0,
       theme: "dark",
+      default_approval_policy: "ask",
       active_workspace_id: "ws_server",
       active_session_id: "sess_server",
     };

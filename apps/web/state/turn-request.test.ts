@@ -76,6 +76,32 @@ describe("buildTurnJobRequest", () => {
     });
   });
 
+  it("defers approval to the server preference when no selection is explicit", () => {
+    const request = buildTurnJobRequest({
+      message: "use the durable default",
+      workspace,
+      session: baseSession,
+      selection: { ...selection, approval: "never" },
+      profiles: [],
+      useDefaultApproval: true,
+    });
+
+    expect(request).not.toHaveProperty("approval");
+  });
+
+  it("sends approval when the provider selection is explicit", () => {
+    const request = buildTurnJobRequest({
+      message: "use the explicit selection",
+      workspace,
+      session: baseSession,
+      selection: { ...selection, approval: "auto" },
+      profiles: [],
+      useDefaultApproval: false,
+    });
+
+    expect(request.approval).toBe("auto");
+  });
+
   it("injects saved provider profile without raw keys", () => {
     const profiles: ProviderProfileRecord[] = [
       {

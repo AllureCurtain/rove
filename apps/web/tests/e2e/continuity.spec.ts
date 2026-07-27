@@ -437,6 +437,11 @@ test("provider profiles save, restore after browser storage clear, and delete du
     .filter({ hasText: profileLabel })
     .getByRole("button", { name: "Remove" })
     .click();
+  await page
+    .locator(".profile-row")
+    .filter({ hasText: profileLabel })
+    .getByRole("button", { name: "Confirm remove" })
+    .click();
   await expect(page.locator(".profile-row").filter({ hasText: profileLabel })).toHaveCount(0);
   await expect.poll(() => api.providerProfiles.length).toBe(0);
   await expect.poll(() => selectedProfileId(api.preferences)).toBeUndefined();

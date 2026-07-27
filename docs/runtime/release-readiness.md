@@ -66,7 +66,7 @@ Acceptance:
   in `git status --short`;
 - any `apps/web/next-env.d.ts` churn from Next.js is inspected before commit.
 
-## Web Complete C0-C1 Evidence
+## Web Complete C0-C2 Evidence
 
 C0 release evidence must include the default Rust and Web CI gates plus focused
 coverage for these contracts:
@@ -96,8 +96,18 @@ C1 release evidence additionally includes:
   background attention status, API-persisted providers, and ambiguous job-start
   responses without duplicate submission.
 
-This mock-backed evidence does not prove complete Settings or live-API
-acceptance of `/`; those remain C2–C3 release gates. The M1 migration state
+C2 release evidence additionally includes:
+
+- API coverage for preference revision CAS, default approval resolution,
+  bounded Memory management, and redacted runtime health;
+- unit coverage for strict Settings clients, catalog export safety, Memory
+  transitions, keyboard matching, and default-approval turn requests;
+- mock-backed Playwright coverage for all nine Settings sections, provider
+  update, approval/step persistence, workspace/session mutations, Memory,
+  runtime health, shortcuts, and mobile overflow.
+
+This mock-backed evidence does not prove live-API acceptance of `/`; that
+remains a C3 release gate. The M1 migration state
 machine also still requires C3 product-shell invocation and recovery UX.
 
 For release claims that include real-terminal TUI behavior, run the opt-in Unix
