@@ -28,6 +28,7 @@ pub const MAX_PRODUCT_API_BASE_BYTES: usize = 2_048;
 pub const MAX_PRODUCT_PATH_BYTES: usize = 32_768;
 pub const MAX_MIGRATION_IDEMPOTENCY_KEY_BYTES: usize = 128;
 pub const MAX_M1_BROWSER_MIGRATION_BODY_BYTES: usize = 64 * 1_048_576;
+pub const MAX_PRODUCT_MEMORY_CONTENT_BYTES: usize = 64 * 1_024;
 
 macro_rules! product_id {
     ($name:ident, $description:literal) => {
@@ -131,9 +132,10 @@ pub enum ProductThemePreference {
     System,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ProductApprovalPreference {
+    #[default]
     Ask,
     Auto,
     Never,
@@ -226,7 +228,11 @@ pub struct ProductProviderSelection {
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ProductPreferences {
     pub schema_version: u32,
+    #[serde(default)]
+    pub revision: u64,
     pub theme: ProductThemePreference,
+    #[serde(default)]
+    pub default_approval_policy: ProductApprovalPreference,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_workspace_id: Option<ProductWorkspaceId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -292,7 +298,14 @@ pub struct UpdateProductProviderProfileRequest {
 #[serde(deny_unknown_fields)]
 pub struct UpdateProductPreferencesRequest {
     pub schema_version: u32,
+    /// Optional for C0 compatibility. Settings clients send the last observed
+    /// revision so concurrent writes fail instead of silently overwriting.
+    #[serde(default)]
+    pub expected_revision: Option<u64>,
     pub theme: ProductThemePreference,
+    /// Omission preserves the current value for C0 clients.
+    #[serde(default)]
+    pub default_approval_policy: Option<ProductApprovalPreference>,
     #[serde(default)]
     pub active_workspace_id: Option<ProductWorkspaceId>,
     #[serde(default)]
@@ -314,6 +327,90 @@ pub struct ProductSessionsResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ProductProviderProfilesResponse {
     pub provider_profiles: Vec<ProductProviderProfile>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductMemoryType {
+    User,
+    Feedback,
+    Project,
+    Reference,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductMemoryScope {
+    Global,
+    Project,
+    Session,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductMemoryTopic {
+    pub slug: String,
+    pub title: String,
+    pub memory_type: ProductMemoryType,
+    pub scope: ProductMemoryScope,
+    pub confidence: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
+    pub description: String,
+    pub metadata_truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductMemoryTopicsResponse {
+    pub topics: Vec<ProductMemoryTopic>,
+    pub total: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductMemoryTopicContentResponse {
+    pub topic: ProductMemoryTopic,
+    pub content: String,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductConnectionStatus {
+    Connected,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductStoreStatus {
+    Ready,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductResumeHealthStatus {
+    Healthy,
+    NeedsAttention,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductResumeHealth {
+    pub status: ProductResumeHealthStatus,
+    pub workspace_count: u64,
+    pub session_count: u64,
+    pub bound_session_count: u64,
+    pub running_session_count: u64,
+    pub needs_attention_session_count: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductRuntimeInfo {
+    pub api_version: String,
+    pub connection: ProductConnectionStatus,
+    pub product_store: ProductStoreStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_health: Option<ProductResumeHealth>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -616,6 +713,10 @@ pub enum ProductErrorCode {
     ProductSessionRuntimeStateMissing,
     ProductSessionRuntimeStateCorrupt,
     ProductBindingCorrupt,
+    ProductRevisionConflict,
+    ProductMemoryInvalidSlug,
+    ProductMemoryNotFound,
+    ProductMemoryConflict,
     MigrationIdempotencyConflict,
     ProductStorageFailure,
 }
@@ -632,6 +733,10 @@ impl ProductErrorCode {
             Self::ProductSessionRuntimeStateMissing => "product_session_runtime_state_missing",
             Self::ProductSessionRuntimeStateCorrupt => "product_session_runtime_state_corrupt",
             Self::ProductBindingCorrupt => "product_binding_corrupt",
+            Self::ProductRevisionConflict => "product_revision_conflict",
+            Self::ProductMemoryInvalidSlug => "product_memory_invalid_slug",
+            Self::ProductMemoryNotFound => "product_memory_not_found",
+            Self::ProductMemoryConflict => "product_memory_conflict",
             Self::MigrationIdempotencyConflict => "migration_idempotency_conflict",
             Self::ProductStorageFailure => "product_storage_failure",
         }
@@ -742,6 +847,7 @@ pub trait ProductStore: Send + Sync {
         &self,
         request: UpdateProductPreferencesRequest,
     ) -> Result<ProductPreferences, ProductStoreError>;
+    async fn get_resume_health(&self) -> Result<ProductResumeHealth, ProductStoreError>;
     /// Validate the sanitized request and replay an existing receipt before
     /// callers inspect runtime artifacts that may have since been cleaned.
     async fn preflight_m1_browser_migration(

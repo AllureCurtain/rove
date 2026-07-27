@@ -18,7 +18,7 @@ apps/cli / apps/api / apps/bench
 ## Current MVP
 
 As of 2026-07-27, the modular Workspace migration, Provider Layer redesign,
-cleanup W1–W3, Web M1, and Web Complete C0–C1 are implemented. rove has reached its
+cleanup W1–W3, Web M1, and Web Complete C0–C2 are implemented. rove has reached its
 local-first MVP: CLI, API, Web product shell,
 streaming events, bounded tool execution, persisted state, resume, deterministic
 benchmarks, and current runtime docs are all present. The exact boundary is
@@ -31,8 +31,10 @@ switches the default product shell to that API authority: refresh restores the
 canonical transcript or an explicit partial/error state, durable workspace,
 session, and Settings routes preserve place, provider profiles persist through
 the API, and focused jobs reattach without falling back to workspace-global
-`latest`. Complete Settings, user-facing migration polish, and live-API product
-shell acceptance remain C2–C3 work. A Tauri Desktop host, Browser/Desktop automation workspaces, hosted multi-user identity,
+`latest`. C2 completes all nine Settings sections with API-backed provider,
+approval, workspace, session, memory, runtime-health, and keyboard surfaces.
+User-facing migration polish and live-API product-shell acceptance remain C3
+work. A Tauri Desktop host, Browser/Desktop automation workspaces, hosted multi-user identity,
 distributed rate limiting, and optional external semantic retrieval are outside
 the implemented MVP.
 

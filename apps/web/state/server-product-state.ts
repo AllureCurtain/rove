@@ -17,7 +17,10 @@ export function selectionFromPreferences(
 ): ActiveProviderSelection {
   const saved = preferences.provider_selection;
   if (!saved) {
-    return defaultProviderSelection();
+    return {
+      ...defaultProviderSelection(),
+      approval: preferences.default_approval_policy,
+    };
   }
   return {
     mode: saved.profile_id ? "profile" : "default",
@@ -33,7 +36,9 @@ export function toPreferencesRequest(
 ): UpdateProductPreferencesRequest {
   return {
     schema_version: preferences.schema_version,
+    expected_revision: preferences.revision,
     theme: preferences.theme,
+    default_approval_policy: preferences.default_approval_policy,
     active_workspace_id: preferences.active_workspace_id,
     active_session_id: preferences.active_session_id,
     provider_selection: preferences.provider_selection,

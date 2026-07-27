@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import { FormEvent, type Ref, useState } from "react";
 import { PaperPlaneIcon, StopIcon } from "@radix-ui/react-icons";
 
 export function Composer({
@@ -9,6 +9,7 @@ export function Composer({
   modelLabel,
   resumeLabel,
   error,
+  textareaRef,
   onSend,
   onCancel,
 }: {
@@ -17,6 +18,7 @@ export function Composer({
   modelLabel: string;
   resumeLabel: string;
   error: string | null;
+  textareaRef?: Ref<HTMLTextAreaElement>;
   onSend: (message: string) => Promise<void> | void;
   onCancel: () => void;
 }) {
@@ -48,7 +50,9 @@ export function Composer({
       </div>
       <div className="chat-composer__row">
         <textarea
+          ref={textareaRef}
           aria-label="Message"
+          aria-keyshortcuts="/"
           value={message}
           onChange={(event) => setMessage(event.target.value)}
           placeholder="Message the agent…"

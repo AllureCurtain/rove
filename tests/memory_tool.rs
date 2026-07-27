@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use rove_core::ToolError;
 use rove_core::ToolRegistry;
 use rove_runtime::executor::Executor;
@@ -186,6 +188,49 @@ async fn save_memory_rejects_unsafe_topic_without_writing() {
 }
 
 #[tokio::test]
+async fn save_memory_rejects_a_symlinked_topic_without_writing_outside() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let memory_dir = workspace.root.join(".rove").join("memory");
+    let topics_dir = memory_dir.join("topics");
+    std::fs::create_dir_all(&topics_dir).unwrap();
+    let outside = workspace.root.join("outside-topic.md");
+    std::fs::write(&outside, "outside must stay unchanged").unwrap();
+    if !create_test_file_symlink(&outside, &topics_dir.join("project-conventions.md")) {
+        return;
+    }
+
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(SaveMemoryTool::new()));
+    let executor = Executor::new(&registry);
+    let ctx = tool_context(&workspace);
+
+    let error = executor
+        .run(
+            &ctx,
+            "save_memory",
+            serde_json::json!({
+                "topic": "Project Conventions",
+                "content": "Run cargo fmt before committing.",
+                "type": "project"
+            }),
+            CallId::new(),
+        )
+        .await
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        ToolError::ExecutionFailed { reason } if reason.contains("regular file")
+    ));
+    assert_eq!(
+        std::fs::read_to_string(outside).unwrap(),
+        "outside must stay unchanged"
+    );
+    assert!(!memory_dir.join("MEMORY.md").exists());
+}
+
+#[tokio::test]
 async fn save_memory_rejects_secret_content_without_writing() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
@@ -327,6 +372,77 @@ async fn reindex_memory_rebuilds_index_from_existing_topics() {
 }
 
 #[tokio::test]
+async fn reindex_memory_rejects_symlinked_topics_without_replacing_the_index() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let memory_dir = workspace.root.join(".rove").join("memory");
+    let topics_dir = memory_dir.join("topics");
+    std::fs::create_dir_all(&topics_dir).unwrap();
+    let original_index = "# original index\n";
+    std::fs::write(memory_dir.join("MEMORY.md"), original_index).unwrap();
+    let outside = workspace.root.join("outside-topic.md");
+    std::fs::write(&outside, "outside must stay unchanged").unwrap();
+    if !create_test_file_symlink(&outside, &topics_dir.join("linked.md")) {
+        return;
+    }
+
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(UpdateMemoryIndexTool::new()));
+    let executor = Executor::new(&registry);
+    let ctx = tool_context(&workspace);
+
+    let error = executor
+        .run(&ctx, "reindex_memory", serde_json::json!({}), CallId::new())
+        .await
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        ToolError::ExecutionFailed { reason } if reason.contains("regular file")
+    ));
+    assert_eq!(
+        std::fs::read_to_string(memory_dir.join("MEMORY.md")).unwrap(),
+        original_index
+    );
+    assert_eq!(
+        std::fs::read_to_string(outside).unwrap(),
+        "outside must stay unchanged"
+    );
+}
+
+#[tokio::test]
+async fn reindex_memory_rejects_a_symlinked_index_without_writing_outside() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let memory_dir = workspace.root.join(".rove").join("memory");
+    std::fs::create_dir_all(memory_dir.join("topics")).unwrap();
+    let outside = workspace.root.join("outside-index.md");
+    std::fs::write(&outside, "outside index must stay unchanged").unwrap();
+    if !create_test_file_symlink(&outside, &memory_dir.join("MEMORY.md")) {
+        return;
+    }
+
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(UpdateMemoryIndexTool::new()));
+    let executor = Executor::new(&registry);
+    let ctx = tool_context(&workspace);
+
+    let error = executor
+        .run(&ctx, "reindex_memory", serde_json::json!({}), CallId::new())
+        .await
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        ToolError::ExecutionFailed { reason } if reason.contains("regular file")
+    ));
+    assert_eq!(
+        std::fs::read_to_string(outside).unwrap(),
+        "outside index must stay unchanged"
+    );
+}
+
+#[tokio::test]
 async fn read_memory_reads_only_named_topic() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
@@ -381,4 +497,14 @@ async fn read_memory_rejects_unsafe_name() {
         err,
         ToolError::InvalidInput { reason } if reason.contains("safe topic")
     ));
+}
+
+#[cfg(unix)]
+fn create_test_file_symlink(target: &Path, link: &Path) -> bool {
+    std::os::unix::fs::symlink(target, link).is_ok()
+}
+
+#[cfg(windows)]
+fn create_test_file_symlink(target: &Path, link: &Path) -> bool {
+    std::os::windows::fs::symlink_file(target, link).is_ok()
 }

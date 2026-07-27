@@ -2,10 +2,10 @@
 
 This guide is for maintainers who need to understand, debug, or extend the current implementation. It describes what exists in the codebase today. Product intent and historical design rationale live in the top-level docs; the current runtime source of truth remains this `docs/runtime/` directory.
 
-> Web status note (2026-07-27): Web Complete C0 and C1 are implemented. The
+> Web status note (2026-07-27): Web Complete C0–C2 are implemented. The
 > default Web shell uses the C0 product clients for durable state, exact-session
-> continuity, transcript restore, and deep routes. C2 Settings completeness and
-> C3 migration/polish/live-API acceptance remain future work.
+> continuity, transcript restore, deep routes, and complete Settings. C3
+> migration/polish/live-API acceptance remains future work.
 
 The root manifest is a modular resolver-3 Cargo Workspace whose default
 member is `apps/cli`, with independent packages `rove-models`, `rove-core`,
@@ -596,10 +596,11 @@ The default product surface is the C1-enabled shell:
 Workspace/session rail | Chat transcript/composer | collapsible Run Inspector
 ```
 
-Settings is a separate full-page shell. Providers/About are implemented deeply,
-General owns theme, Advanced owns Benchmark, and several other sections remain
-explicit placeholders. `/dev/workbench` retains the old developer surface as an
-advanced escape hatch only.
+Settings is a separate full-page shell. All nine sections are implemented:
+General theme; complete provider profile CRUD/test/model listing; approval and
+step defaults; workspace and session management; durable Memory; keyboard
+shortcuts; Advanced Benchmark; and live runtime health. `/dev/workbench`
+retains the old developer surface as an advanced escape hatch only.
 
 The current product shell:
 
@@ -621,7 +622,7 @@ The current product shell:
 6. Calls approval, input, and cancel endpoints when required. Switching sessions
    closes the old controller, restores the selected transcript, and reattaches
    its live binding when applicable.
-7. Loads/creates/deletes provider profiles and persists profile/model selection
+7. Loads/creates/updates/deletes provider profiles and persists profile/model selection
    through product APIs. Browser requests contain only provider
    type/base/model/key-environment references; raw keys never enter browser
    state or requests.
@@ -639,10 +640,12 @@ reconciliation, attaches the newly advanced job when visible, and otherwise
 restores canonical history plus an explicit uncertain state that requires a
 reload before another send.
 
-Current UI limits are still product-significant: several Settings sections are
-placeholders, provider edit/update is incomplete, and final responsive,
-accessibility, migration, and screenshot polish remains open. C2 owns Settings
-completeness. C3 owns user-facing migration UX and live product-shell acceptance.
+C2 also adds revision-CAS preference writes, a server-owned default approval
+policy used when a turn omits explicit approval, bounded Memory/runtime clients,
+durable catalog actions, safe session metadata export, and wired `/`,
+`Mod+Shift+Enter`, `Mod+,`, and `Mod+.` shortcuts. Remaining UI work is C3:
+user-facing migration UX, final accessibility/screenshot polish, and live
+product-shell acceptance.
 
 Relevant code:
 
@@ -1500,9 +1503,9 @@ These are implementation-level issues to keep in mind before extending the syste
    transcript projection, browser migration state machine, and typed client are
    implemented. C1 uses the client for API-authoritative catalogs, profiles,
    preferences, transcript restore, durable routes, focused reattachment, and
-   exact product-session turns. Full Settings functionality remains C2; the
-   migration module is not invoked by the shell, and final migration UX plus
-   live product-shell acceptance remain C3.
+   exact product-session turns. C2 completes the Settings platform APIs and all
+   nine Settings sections. The migration module is not invoked by the shell,
+   and final migration UX plus live product-shell acceptance remain C3.
 
 6. Browser evidence is split by route. The default product shell has
    mock-backed `shell.spec.ts` coverage. The deterministic `local-full` runner

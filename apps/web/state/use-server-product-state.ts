@@ -4,8 +4,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { describeError } from "../api/run-controller";
 import { applyDocumentTheme, webPlatform } from "../platform/web";
-import type { ProductPreferences } from "../product/product-api-types";
-import { createProductApiClient } from "../product/product-client";
+import type {
+  ProductApprovalPreference,
+  ProductPreferences,
+} from "../product/product-api-types";
+import {
+  createProductApiClient,
+  ProductApiError,
+} from "../product/product-client";
 import {
   isAbsoluteWorkspacePath,
   productCatalogFromApi,
@@ -69,7 +75,7 @@ export function useServerProductState() {
   const catalogGenerationRef = useRef(0);
   const preferencesGenerationRef = useRef(0);
   const mutationGenerationRef = useRef(0);
-  const sessionUpdateGenerationRef = useRef(0);
+  const sessionUpdateGenerationsRef = useRef(new Map<string, number>());
   const catalogMutationRef = useRef(false);
   const preferencesQueueRef = useRef<Promise<void>>(Promise.resolve());
   const deletingProviderProfileIdsRef = useRef(new Set<string>());
@@ -122,10 +128,15 @@ export function useServerProductState() {
       preferencesRef.current = next;
       setPreferences(next);
       const generation = ++preferencesGenerationRef.current;
-      const request = toPreferencesRequest(next);
       const operation = preferencesQueueRef.current
         .catch(() => undefined)
-        .then(() => productClient.updatePreferences(request));
+        .then(() => {
+          const confirmed = confirmedPreferencesRef.current;
+          const expectedRevision = confirmed?.revision ?? next.revision;
+          return productClient.updatePreferences(
+            toPreferencesRequest({ ...next, revision: expectedRevision }),
+          );
+        });
       preferencesQueueRef.current = operation
         .then((saved) => {
           confirmedPreferencesRef.current = saved;
@@ -134,9 +145,28 @@ export function useServerProductState() {
           }
           preferencesRef.current = saved;
           setPreferences(saved);
+          setSelection(selectionFromPreferences(saved));
+          setTheme(resolveProductTheme(saved.theme));
           setCatalogError(null);
         })
-        .catch((error) => {
+        .catch(async (error) => {
+          if (
+            error instanceof ProductApiError &&
+            error.code === "product_revision_conflict"
+          ) {
+            try {
+              const current = await productClient.getPreferences();
+              confirmedPreferencesRef.current = current;
+              if (preferencesGenerationRef.current === generation) {
+                preferencesRef.current = current;
+                setPreferences(current);
+                setSelection(selectionFromPreferences(current));
+                setTheme(resolveProductTheme(current.theme));
+              }
+            } catch {
+              // Keep the last confirmed snapshot when conflict recovery cannot read.
+            }
+          }
           if (preferencesGenerationRef.current === generation) {
             const confirmed = confirmedPreferencesRef.current;
             preferencesRef.current = confirmed;
@@ -218,7 +248,7 @@ export function useServerProductState() {
       ++catalogGenerationRef.current;
       ++preferencesGenerationRef.current;
       ++mutationGenerationRef.current;
-      ++sessionUpdateGenerationRef.current;
+      sessionUpdateGenerationsRef.current.clear();
     };
   }, [loadInitialState]);
 
@@ -409,7 +439,7 @@ export function useServerProductState() {
       }
       const mutation = beginCatalogMutation();
       if (mutation === null) {
-        return;
+        throw new Error("Another catalog change is already in progress.");
       }
       try {
         const saved = await productClient.createWorkspace({
@@ -432,6 +462,7 @@ export function useServerProductState() {
         if (mutationGenerationRef.current === mutation) {
           setCatalogError(describeError(error));
         }
+        throw error;
       } finally {
         finishCatalogMutation(mutation);
       }
@@ -443,7 +474,7 @@ export function useServerProductState() {
     async (workspaceId: string) => {
       const mutation = beginCatalogMutation();
       if (mutation === null) {
-        return false;
+        throw new Error("Another catalog change is already in progress.");
       }
       try {
         await productClient.deleteWorkspace(workspaceId);
@@ -473,7 +504,7 @@ export function useServerProductState() {
         if (mutationGenerationRef.current === mutation) {
           setCatalogError(describeError(error));
         }
-        return false;
+        throw error;
       } finally {
         finishCatalogMutation(mutation);
       }
@@ -489,10 +520,14 @@ export function useServerProductState() {
 
   const updateSessionTitle = useCallback(
     async (sessionId: string, title: string) => {
-      const generation = ++sessionUpdateGenerationRef.current;
+      const generation =
+        (sessionUpdateGenerationsRef.current.get(sessionId) ?? 0) + 1;
+      sessionUpdateGenerationsRef.current.set(sessionId, generation);
       try {
         const saved = await productClient.updateSession(sessionId, { title });
-        if (sessionUpdateGenerationRef.current !== generation) {
+        if (
+          sessionUpdateGenerationsRef.current.get(sessionId) !== generation
+        ) {
           return;
         }
         const record = fromProductSession(saved);
@@ -503,12 +538,60 @@ export function useServerProductState() {
           ),
         }));
       } catch (error) {
-        if (sessionUpdateGenerationRef.current === generation) {
+        if (
+          sessionUpdateGenerationsRef.current.get(sessionId) === generation
+        ) {
           setCatalogError(`Could not persist session title: ${describeError(error)}`);
         }
+        throw error;
       }
     },
     [patchCatalog, productClient],
+  );
+
+  const deleteSession = useCallback(
+    async (sessionId: string): Promise<boolean> => {
+      const mutation = beginCatalogMutation();
+      if (mutation === null) {
+        throw new Error("Another catalog change is already in progress.");
+      }
+      try {
+        await productClient.deleteSession(sessionId);
+        if (mutationGenerationRef.current !== mutation) {
+          return false;
+        }
+        sessionUpdateGenerationsRef.current.delete(sessionId);
+        const remainsActive = catalogRef.current.active.sessionId === sessionId;
+        patchCatalog((current) => ({
+          ...current,
+          sessions: current.sessions.filter((session) => session.id !== sessionId),
+          active: remainsActive
+            ? { ...current.active, sessionId: null }
+            : current.active,
+        }));
+        if (remainsActive && preferencesRef.current) {
+          queuePreferences({
+            ...preferencesRef.current,
+            active_session_id: undefined,
+          });
+        }
+        return remainsActive;
+      } catch (error) {
+        if (mutationGenerationRef.current === mutation) {
+          setCatalogError(`Could not delete session: ${describeError(error)}`);
+        }
+        throw error;
+      } finally {
+        finishCatalogMutation(mutation);
+      }
+    },
+    [
+      beginCatalogMutation,
+      finishCatalogMutation,
+      patchCatalog,
+      productClient,
+      queuePreferences,
+    ],
   );
 
   const changeTheme = useCallback(
@@ -531,21 +614,48 @@ export function useServerProductState() {
         setCatalogError("That provider profile is currently being removed.");
         return;
       }
-      setSelection(next);
-      if (!preferencesRef.current) {
+      const current = preferencesRef.current;
+      if (!current) {
         return;
       }
+      const synchronized = {
+        ...next,
+        approval: current.default_approval_policy,
+      };
+      setSelection(synchronized);
       queuePreferences({
-        ...preferencesRef.current,
+        ...current,
         provider_selection: {
-          profile_id: next.mode === "profile" ? next.profileId : undefined,
-          model: next.model,
-          approval: next.approval,
-          max_steps: next.maxSteps,
+          profile_id:
+            synchronized.mode === "profile"
+              ? synchronized.profileId
+              : undefined,
+          model: synchronized.model,
+          approval: synchronized.approval,
+          max_steps: synchronized.maxSteps,
         },
       });
     },
     [queuePreferences],
+  );
+
+  const changeDefaultApprovalPolicy = useCallback(
+    async (policy: ProductApprovalPreference): Promise<void> => {
+      const current = preferencesRef.current;
+      if (!current) {
+        throw new Error("Product preferences are not loaded.");
+      }
+      const next = {
+        ...current,
+        default_approval_policy: policy,
+        provider_selection: current.provider_selection
+          ? { ...current.provider_selection, approval: policy }
+          : undefined,
+      };
+      setSelection((active) => ({ ...active, approval: policy }));
+      await persistPreferences(next);
+    },
+    [persistPreferences],
   );
 
   const createProviderProfile = useCallback(
@@ -564,6 +674,38 @@ export function useServerProductState() {
       ]);
       setCatalogError(null);
       return record;
+    },
+    [productClient],
+  );
+
+  const updateProviderProfile = useCallback(
+    async (
+      profileId: string,
+      input: ProviderProfileInput,
+    ): Promise<ProviderProfileRecord> => {
+      if (deletingProviderProfileIdsRef.current.has(profileId)) {
+        throw new Error("That provider profile is currently being removed.");
+      }
+      try {
+        const saved = await productClient.updateProviderProfile(profileId, {
+          label: input.label,
+          provider_type: input.providerType,
+          api_base: input.apiBase,
+          api_key_env: input.apiKeyEnv,
+          default_model: input.defaultModel,
+        });
+        const record = fromProductProviderProfile(saved);
+        setProfiles((current) =>
+          current.map((profile) =>
+            profile.id === record.id ? record : profile,
+          ),
+        );
+        setCatalogError(null);
+        return record;
+      } catch (error) {
+        setCatalogError(`Could not update provider profile: ${describeError(error)}`);
+        throw error;
+      }
     },
     [productClient],
   );
@@ -609,9 +751,11 @@ export function useServerProductState() {
     preferences,
     profiles,
     createProviderProfile,
+    updateProviderProfile,
     deleteProviderProfile,
     selection,
     changeSelection,
+    changeDefaultApprovalPolicy,
     theme,
     changeTheme,
     connection,
@@ -628,5 +772,6 @@ export function useServerProductState() {
     togglePin,
     removeWorkspace,
     updateSessionTitle,
+    deleteSession,
   };
 }

@@ -54,7 +54,9 @@ const catalog: ProductCatalog = {
 
 const preferences: ProductPreferences = {
   schema_version: 1,
+  revision: 0,
   theme: "light",
+  default_approval_policy: "ask",
   active_workspace_id: "ws-two",
   active_session_id: "session-two",
 };

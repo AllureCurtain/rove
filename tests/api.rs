@@ -71,9 +71,18 @@ fn product_store_path_uses_the_bootstrap_config_state_root() {
 
     let state = ApiState::new(workspace, config);
 
+    let product_store_path = state.product_store_path();
     assert_eq!(
-        state.product_store_path(),
-        tmp.path().join("api-state").join("product.sqlite")
+        product_store_path.file_name(),
+        Some(std::ffi::OsStr::new("product.sqlite"))
+    );
+    assert_eq!(
+        product_store_path.parent().unwrap().parent().unwrap(),
+        std::fs::canonicalize(tmp.path()).unwrap()
+    );
+    assert_eq!(
+        product_store_path.parent().unwrap().file_name(),
+        Some(std::ffi::OsStr::new("api-state"))
     );
 }
 
@@ -126,6 +135,538 @@ async fn product_transcript_returns_service_unavailable_when_the_store_cannot_op
 }
 
 #[tokio::test]
+async fn product_preferences_support_legacy_updates_and_revision_cas() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let app = router(ApiState::new(workspace, test_config()));
+
+    let initial = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/product/preferences")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(initial.status(), StatusCode::OK);
+    let initial: serde_json::Value = decode_json(initial).await;
+    assert_eq!(initial["revision"], 0);
+    assert_eq!(initial["default_approval_policy"], "ask");
+
+    let legacy = request_json(
+        &app,
+        "PUT",
+        "/product/preferences",
+        serde_json::json!({
+            "schema_version": 1,
+            "theme": "dark",
+            "active_workspace_id": null,
+            "active_session_id": null,
+            "provider_selection": null
+        }),
+    )
+    .await;
+    assert_eq!(legacy.status(), StatusCode::OK);
+    let legacy: serde_json::Value = decode_json(legacy).await;
+    assert_eq!(legacy["revision"], 1);
+    assert_eq!(legacy["theme"], "dark");
+    assert_eq!(legacy["default_approval_policy"], "ask");
+
+    let updated = request_json(
+        &app,
+        "PUT",
+        "/product/preferences",
+        serde_json::json!({
+            "schema_version": 1,
+            "expected_revision": 1,
+            "theme": "light",
+            "default_approval_policy": "auto",
+            "active_workspace_id": null,
+            "active_session_id": null,
+            "provider_selection": null
+        }),
+    )
+    .await;
+    assert_eq!(updated.status(), StatusCode::OK);
+    let updated: serde_json::Value = decode_json(updated).await;
+    assert_eq!(updated["revision"], 2);
+    assert_eq!(updated["default_approval_policy"], "auto");
+
+    let stale = request_json(
+        &app,
+        "PUT",
+        "/product/preferences",
+        serde_json::json!({
+            "schema_version": 1,
+            "expected_revision": 1,
+            "theme": "system",
+            "default_approval_policy": "never",
+            "active_workspace_id": null,
+            "active_session_id": null,
+            "provider_selection": null
+        }),
+    )
+    .await;
+    assert_eq!(stale.status(), StatusCode::CONFLICT);
+    let stale: serde_json::Value = decode_json(stale).await;
+    assert_eq!(stale["code"], "product_revision_conflict");
+}
+
+#[tokio::test]
+async fn product_default_approval_is_honored_and_explicit_approval_wins() {
+    let server = tempfile::TempDir::new().unwrap();
+    let folder = tempfile::TempDir::new().unwrap();
+    let mut config = test_config();
+    config.state.state_dir = "api-state".into();
+    let app = router(ApiState::new(
+        Workspace::detect(server.path()).unwrap(),
+        config,
+    ));
+    let workspace = create_product_workspace(&app, folder.path()).await;
+    let workspace_id = workspace["id"].as_str().unwrap();
+    let session = create_product_session(&app, workspace_id, "Approval policy").await;
+    let session_id = session["id"].as_str().unwrap();
+
+    let automatic = request_json(
+        &app,
+        "PUT",
+        "/product/preferences",
+        serde_json::json!({
+            "schema_version": 1,
+            "expected_revision": 0,
+            "theme": "system",
+            "default_approval_policy": "auto",
+            "active_workspace_id": workspace_id,
+            "active_session_id": session_id,
+            "provider_selection": null
+        }),
+    )
+    .await;
+    assert_eq!(automatic.status(), StatusCode::OK);
+    let automatic: serde_json::Value = decode_json(automatic).await;
+
+    let default_job = post_json(
+        &app,
+        "/jobs",
+        serde_json::json!({
+            "message": serde_json::json!({
+                "tool": "write_file",
+                "args": {"path": "default-auto.txt", "content": "automatic"}
+            }).to_string(),
+            "model": "fake-raw",
+            "max_steps": 1,
+            "product_session_id": session_id
+        }),
+    )
+    .await;
+    assert_eq!(default_job.status(), StatusCode::OK);
+    let default_job: CreateJobResponse = decode_json(default_job).await;
+    let default_state = wait_for_done(app.clone(), default_job.job_id.to_string()).await;
+    assert!(default_state.pending_approvals.is_empty());
+    assert_eq!(
+        std::fs::read_to_string(folder.path().join("default-auto.txt")).unwrap(),
+        "automatic"
+    );
+
+    let never = request_json(
+        &app,
+        "PUT",
+        "/product/preferences",
+        serde_json::json!({
+            "schema_version": 1,
+            "expected_revision": automatic["revision"],
+            "theme": "system",
+            "default_approval_policy": "never",
+            "active_workspace_id": workspace_id,
+            "active_session_id": session_id,
+            "provider_selection": null
+        }),
+    )
+    .await;
+    assert_eq!(never.status(), StatusCode::OK);
+
+    let explicit_job = post_json(
+        &app,
+        "/jobs",
+        serde_json::json!({
+            "message": serde_json::json!({
+                "tool": "write_file",
+                "args": {"path": "explicit-auto.txt", "content": "explicit"}
+            }).to_string(),
+            "model": "fake-raw",
+            "approval": "auto",
+            "max_steps": 1,
+            "product_session_id": session_id
+        }),
+    )
+    .await;
+    assert_eq!(explicit_job.status(), StatusCode::OK);
+    let explicit_job: CreateJobResponse = decode_json(explicit_job).await;
+    let explicit_state = wait_for_done(app.clone(), explicit_job.job_id.to_string()).await;
+    assert!(explicit_state.pending_approvals.is_empty());
+    assert_eq!(
+        std::fs::read_to_string(folder.path().join("explicit-auto.txt")).unwrap(),
+        "explicit"
+    );
+}
+
+#[tokio::test]
+async fn active_product_sessions_reject_archive_session_delete_and_workspace_delete() {
+    let server = tempfile::TempDir::new().unwrap();
+    let folder = tempfile::TempDir::new().unwrap();
+    let mut config = test_config();
+    config.state.state_dir = "api-state".into();
+    let app = router(ApiState::new(
+        Workspace::detect(server.path()).unwrap(),
+        config,
+    ));
+    let workspace = create_product_workspace(&app, folder.path()).await;
+    let workspace_id = workspace["id"].as_str().unwrap();
+    let session = create_product_session(&app, workspace_id, "Active mutation guard").await;
+    let session_id = session["id"].as_str().unwrap();
+    let active = post_json(
+        &app,
+        "/jobs",
+        serde_json::json!({
+            "message": serde_json::json!({
+                "tool": "request_input",
+                "args": {"prompt": "keep the turn active"}
+            }).to_string(),
+            "model": "fake-raw",
+            "max_steps": 1,
+            "product_session_id": session_id
+        }),
+    )
+    .await;
+    assert_eq!(active.status(), StatusCode::OK);
+    let active: CreateJobResponse = decode_json(active).await;
+    wait_for_pending_input(app.clone(), active.job_id.to_string()).await;
+
+    let archive = request_json(
+        &app,
+        "PATCH",
+        &format!("/product/sessions/{session_id}"),
+        serde_json::json!({"archived": true}),
+    )
+    .await;
+    assert_eq!(archive.status(), StatusCode::CONFLICT);
+    let archive: serde_json::Value = decode_json(archive).await;
+    assert_eq!(archive["code"], "product_session_active");
+
+    for uri in [
+        format!("/product/sessions/{session_id}"),
+        format!("/product/workspaces/{workspace_id}"),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(uri)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let error: serde_json::Value = decode_json(response).await;
+        assert_eq!(error["code"], "product_session_active");
+    }
+
+    let cancel = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/jobs/{}/cancel", active.job_id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(cancel.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn product_memory_routes_are_bounded_redacted_and_idempotent() {
+    let server = tempfile::TempDir::new().unwrap();
+    let mut config = test_config();
+    config.memory.durable_dir = "platform-memory".into();
+    let app = router(ApiState::new(
+        Workspace::detect(server.path()).unwrap(),
+        config,
+    ));
+    let memory_dir = server.path().join("platform-memory");
+
+    let empty = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/product/memory/topics")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(empty.status(), StatusCode::OK);
+    let empty: serde_json::Value = decode_json(empty).await;
+    assert_eq!(empty["total"], 0);
+    assert_eq!(empty["topics"], serde_json::json!([]));
+
+    std::fs::create_dir_all(memory_dir.join("topics")).unwrap();
+    std::fs::write(
+        memory_dir.join("MEMORY.md"),
+        "# rove Memory\n\n- [Private Source](topics/private-source.md) - project reference memory\n",
+    )
+    .unwrap();
+    std::fs::write(
+        memory_dir.join("topics/private-source.md"),
+        "---\ntitle: Private Source\ntype: project\nscope: project\nsource: C:/private/source.md\nconfidence: 0.91\ncreated_at: 2026-07-27T00:00:00Z\nupdated_at: 2026-07-27T00:00:00Z\n---\nVisible body\n",
+    )
+    .unwrap();
+
+    let listed = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/product/memory/topics")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(listed.status(), StatusCode::OK);
+    let listed: serde_json::Value = decode_json(listed).await;
+    assert_eq!(listed["total"], 1);
+    assert_eq!(listed["topics"][0]["slug"], "private-source");
+    assert!(listed["topics"][0].get("source").is_none());
+
+    let content = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/product/memory/topics/private-source")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(content.status(), StatusCode::OK);
+    let content: serde_json::Value = decode_json(content).await;
+    assert_eq!(content["content"], "Visible body\n");
+    assert_eq!(content["topic"]["confidence"], 0.91);
+    assert!(!content.to_string().contains("C:/private/source.md"));
+
+    std::fs::write(
+        memory_dir.join("topics/private-source.md"),
+        format!(
+            "---\ntitle: Private Source\ntype: project\nsource: hidden\nconfidence: NaN\n---\n{}",
+            "a".repeat(rove_api::MAX_PRODUCT_MEMORY_CONTENT_BYTES + 1)
+        ),
+    )
+    .unwrap();
+    let bounded = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/product/memory/topics/private-source")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(bounded.status(), StatusCode::OK);
+    let bounded: serde_json::Value = decode_json(bounded).await;
+    assert_eq!(
+        bounded["content"].as_str().unwrap().len(),
+        rove_api::MAX_PRODUCT_MEMORY_CONTENT_BYTES
+    );
+    assert_eq!(bounded["topic"]["confidence"], 0.7);
+    assert_eq!(bounded["truncated"], true);
+
+    let invalid = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/product/memory/topics/bad--slug")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
+    let invalid: serde_json::Value = decode_json(invalid).await;
+    assert_eq!(invalid["code"], "product_memory_invalid_slug");
+
+    let deleted = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri("/product/memory/topics/private-source")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(deleted.status(), StatusCode::NO_CONTENT);
+    assert!(!memory_dir.join("topics/private-source.md").exists());
+
+    std::fs::write(
+        memory_dir.join("MEMORY.md"),
+        "# rove Memory\n\n- [Private Source](topics/private-source.md) - stale\n",
+    )
+    .unwrap();
+    for _ in 0..2 {
+        let retry = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/product/memory/topics/private-source")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(retry.status(), StatusCode::NO_CONTENT);
+    }
+    assert!(
+        !std::fs::read_to_string(memory_dir.join("MEMORY.md"))
+            .unwrap()
+            .contains("private-source")
+    );
+
+    std::fs::write(memory_dir.join("MEMORY.md"), [0xff, 0xfe]).unwrap();
+    let corrupt = app
+        .oneshot(
+            Request::builder()
+                .uri("/product/memory/topics")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(corrupt.status(), StatusCode::CONFLICT);
+    let corrupt: serde_json::Value = decode_json(corrupt).await;
+    assert_eq!(corrupt["code"], "product_memory_conflict");
+}
+
+#[tokio::test]
+async fn product_memory_routes_reject_topic_and_index_symlinks_when_supported() {
+    let server = tempfile::TempDir::new().unwrap();
+    let mut config = test_config();
+    config.memory.durable_dir = "platform-memory".into();
+    let app = router(ApiState::new(
+        Workspace::detect(server.path()).unwrap(),
+        config,
+    ));
+    let memory_dir = server.path().join("platform-memory");
+    std::fs::create_dir_all(memory_dir.join("topics")).unwrap();
+    std::fs::write(
+        memory_dir.join("MEMORY.md"),
+        "# rove Memory\n\n- [Linked](topics/linked.md) - project reference memory\n",
+    )
+    .unwrap();
+    let outside_topic = server.path().join("outside-topic.md");
+    std::fs::write(&outside_topic, "outside").unwrap();
+    let topic_link = memory_dir.join("topics/linked.md");
+    if !create_test_file_symlink(&outside_topic, &topic_link) {
+        return;
+    }
+
+    let linked = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/product/memory/topics/linked")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(linked.status(), StatusCode::CONFLICT);
+    let linked: serde_json::Value = decode_json(linked).await;
+    assert_eq!(linked["code"], "product_memory_conflict");
+    assert_eq!(std::fs::read_to_string(&outside_topic).unwrap(), "outside");
+
+    std::fs::remove_file(topic_link).unwrap();
+    std::fs::remove_file(memory_dir.join("MEMORY.md")).unwrap();
+    let outside_index = server.path().join("outside-index.md");
+    std::fs::write(&outside_index, "outside index").unwrap();
+    if !create_test_file_symlink(&outside_index, &memory_dir.join("MEMORY.md")) {
+        return;
+    }
+    let linked_index = app
+        .oneshot(
+            Request::builder()
+                .uri("/product/memory/topics")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(linked_index.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        std::fs::read_to_string(outside_index).unwrap(),
+        "outside index"
+    );
+}
+
+#[tokio::test]
+async fn product_runtime_reports_bounded_health_without_paths_or_secrets() {
+    let server = tempfile::TempDir::new().unwrap();
+    let folder = tempfile::TempDir::new().unwrap();
+    let mut config = test_config();
+    config.state.state_dir = "private-runtime-state".into();
+    config.memory.durable_dir = "private-runtime-memory".into();
+    let app = router(ApiState::new(
+        Workspace::detect(server.path()).unwrap(),
+        config,
+    ));
+    let workspace = create_product_workspace(&app, folder.path()).await;
+    create_product_session(&app, workspace["id"].as_str().unwrap(), "Runtime health").await;
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/product/runtime")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let runtime: serde_json::Value = decode_json(response).await;
+    assert!(
+        runtime["api_version"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty())
+    );
+    assert_eq!(runtime["connection"], "connected");
+    assert_eq!(runtime["product_store"], "ready");
+    assert_eq!(runtime["resume_health"]["status"], "healthy");
+    assert_eq!(runtime["resume_health"]["workspace_count"], 1);
+    assert_eq!(runtime["resume_health"]["session_count"], 1);
+    assert_eq!(runtime["resume_health"]["bound_session_count"], 0);
+    assert_eq!(runtime["resume_health"]["running_session_count"], 0);
+    assert_eq!(runtime["resume_health"]["needs_attention_session_count"], 0);
+    let keys = runtime.as_object().unwrap();
+    assert_eq!(keys.len(), 4);
+    assert!(keys.get("path").is_none());
+    let serialized = runtime.to_string();
+    for forbidden in [
+        "private-runtime-state",
+        "private-runtime-memory",
+        "api_key_env",
+        "config",
+    ] {
+        assert!(!serialized.contains(forbidden));
+    }
+}
+
+#[tokio::test]
 async fn api_exposes_openapi_json_for_all_routes() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
@@ -173,6 +714,10 @@ async fn api_exposes_openapi_json_for_all_routes() {
         ("/product/provider-profiles/{profile_id}", "delete"),
         ("/product/preferences", "get"),
         ("/product/preferences", "put"),
+        ("/product/memory/topics", "get"),
+        ("/product/memory/topics/{slug}", "get"),
+        ("/product/memory/topics/{slug}", "delete"),
+        ("/product/runtime", "get"),
         ("/product/migrations/m1-browser", "post"),
         ("/jobs", "post"),
         ("/jobs/{job_id}/events", "get"),
@@ -247,6 +792,11 @@ async fn api_exposes_openapi_json_for_all_routes() {
         "ListRunsResponse",
         "M1BrowserMigrationRequest",
         "M1BrowserMigrationResponse",
+        "ProductMemoryTopic",
+        "ProductMemoryTopicContentResponse",
+        "ProductMemoryTopicsResponse",
+        "ProductPreferences",
+        "ProductRuntimeInfo",
         "ProductSession",
         "ProductTranscriptResponse",
         "ProductWorkspace",
@@ -257,6 +807,7 @@ async fn api_exposes_openapi_json_for_all_routes() {
         "RecallTestResponse",
         "SubmitApprovalRequest",
         "SubmitInputRequest",
+        "UpdateProductPreferencesRequest",
     ] {
         assert!(schemas.contains_key(schema), "missing schema {schema}");
     }
@@ -308,6 +859,41 @@ async fn api_exposes_openapi_json_for_all_routes() {
             }),
         "legacy create-job callers must not be required to send product_session_id"
     );
+
+    let preference_schema = schemas
+        .get("ProductPreferences")
+        .expect("ProductPreferences schema");
+    assert!(preference_schema["properties"].get("revision").is_some());
+    assert!(
+        preference_schema["properties"]
+            .get("default_approval_policy")
+            .is_some()
+    );
+    let update_preference_schema = schemas
+        .get("UpdateProductPreferencesRequest")
+        .expect("UpdateProductPreferencesRequest schema");
+    assert!(
+        update_preference_schema["properties"]
+            .get("expected_revision")
+            .is_some()
+    );
+    assert!(
+        update_preference_schema["properties"]
+            .get("default_approval_policy")
+            .is_some()
+    );
+    let memory_responses = spec["paths"]["/product/memory/topics/{slug}"]["get"]["responses"]
+        .as_object()
+        .expect("product memory GET responses");
+    assert!(memory_responses.contains_key("400"));
+    assert!(memory_responses.contains_key("404"));
+    assert!(memory_responses.contains_key("409"));
+    let runtime_schema = schemas
+        .get("ProductRuntimeInfo")
+        .expect("ProductRuntimeInfo schema")
+        .to_string();
+    assert!(!runtime_schema.contains("path"));
+    assert!(!runtime_schema.contains("config"));
 
     assert!(
         spec.pointer("/components/securitySchemes/BearerAuth")
@@ -4023,7 +4609,21 @@ async fn api_defaults_to_ask_for_destructive_tool_calls() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
     let output_path = workspace.root.join("default-ask.txt");
-    let app = router(ApiState::new(workspace, test_config()));
+    let mut config = test_config();
+    config.state.sqlite_busy_timeout_ms = 0;
+    let app = router(ApiState::new(workspace, config));
+
+    let unavailable = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/product/preferences")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unavailable.status(), StatusCode::SERVICE_UNAVAILABLE);
 
     let create = app
         .clone()
@@ -4048,6 +4648,17 @@ async fn api_defaults_to_ask_for_destructive_tool_calls() {
     let pending = wait_for_pending_approval(app.clone(), created.job_id.to_string()).await;
     assert_eq!(pending.pending_approvals[0].name, "write_file");
     assert!(!output_path.exists(), "default approval should wait");
+    let cancelled = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/jobs/{}/cancel", created.job_id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(cancelled.status(), StatusCode::OK);
 }
 
 #[tokio::test]
@@ -4055,7 +4666,9 @@ async fn api_auto_approval_runs_destructive_tool_without_pending_approval() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();
     let output_path = workspace.root.join("auto.txt");
-    let app = router(ApiState::new(workspace, test_config()));
+    let mut config = test_config();
+    config.state.sqlite_busy_timeout_ms = 0;
+    let app = router(ApiState::new(workspace, config));
 
     let create = app
         .clone()
@@ -4540,10 +5153,19 @@ async fn post_json(
     uri: &str,
     value: serde_json::Value,
 ) -> axum::response::Response {
+    request_json(app, "POST", uri, value).await
+}
+
+async fn request_json(
+    app: &axum::Router,
+    method: &str,
+    uri: &str,
+    value: serde_json::Value,
+) -> axum::response::Response {
     app.clone()
         .oneshot(
             Request::builder()
-                .method("POST")
+                .method(method)
                 .uri(uri)
                 .header(CONTENT_TYPE, "application/json")
                 .body(Body::from(value.to_string()))
@@ -4551,6 +5173,16 @@ async fn post_json(
         )
         .await
         .unwrap()
+}
+
+#[cfg(unix)]
+fn create_test_file_symlink(target: &Path, link: &Path) -> bool {
+    std::os::unix::fs::symlink(target, link).is_ok()
+}
+
+#[cfg(windows)]
+fn create_test_file_symlink(target: &Path, link: &Path) -> bool {
+    std::os::windows::fs::symlink_file(target, link).is_ok()
 }
 
 async fn decode_json<T>(response: axum::response::Response) -> T

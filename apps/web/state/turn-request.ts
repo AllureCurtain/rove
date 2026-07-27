@@ -17,6 +17,7 @@ export interface BuildTurnRequestInput {
   session: SessionRecord;
   selection: ActiveProviderSelection;
   profiles: ProviderProfileRecord[];
+  useDefaultApproval?: boolean;
 }
 
 export class ProviderSelectionError extends Error {
@@ -39,7 +40,9 @@ export function buildTurnJobRequest(input: BuildTurnRequestInput): CreateJobRequ
     message: input.message,
     model: input.selection.model.trim() || undefined,
     max_steps: input.selection.maxSteps || undefined,
-    approval: input.selection.approval,
+    ...(input.useDefaultApproval
+      ? {}
+      : { approval: input.selection.approval }),
     workspace,
     provider,
     product_session_id: input.session.id,

@@ -514,10 +514,11 @@ fn migration_import_root_is_local(path: &Path) -> bool {
     {
         use std::path::{Component, Prefix};
 
-        return matches!(
+        matches!(
             path.components().next(),
-            Some(Component::Prefix(prefix)) if matches!(prefix.kind(), Prefix::Disk(_))
-        );
+            Some(Component::Prefix(prefix))
+                if matches!(prefix.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_))
+        )
     }
     #[cfg(not(windows))]
     {
@@ -647,11 +648,11 @@ fn runtime_path_uses_local_disk_namespace(_path: &Path) -> bool {
     {
         use std::path::{Component, Prefix};
 
-        return matches!(
+        matches!(
             _path.components().next(),
             Some(Component::Prefix(prefix))
                 if matches!(prefix.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_))
-        );
+        )
     }
     #[cfg(not(windows))]
     {

@@ -12,14 +12,15 @@ Primary surface: the **product shell** (Workspace → Session → Run) against l
   tool cards, inline approvals, and stop/cancel
 - Collapsible run inspector with empty / loading / error / ready states
 - Durable `/w/:workspaceId/s/:sessionId` and `/settings/:section` routes
-- Settings shell with deep **Providers & Models**, **About / Runtime**, and
-  **Advanced / Developer** (Benchmark only here)
+- Complete nine-section Settings shell with provider CRUD, approval defaults,
+  workspace/session and Memory management, runtime health, keyboard shortcuts,
+  and **Advanced / Developer** (Benchmark only here)
 - Light default + dark toggle via product design tokens
 - Session continue uses the server-owned exact `product_session_id` binding.
   The product shell omits client `resume`; soft transcript stitch and
   workspace-global `latest` are not product paths.
 
-## C0/C1 product state and continuity
+## C0-C2 product state, continuity, and Settings
 
 `apps/web/product/` now contains strict product API response validation, a thin
 client for workspace/session/profile/preferences/transcript endpoints, and a
@@ -37,6 +38,12 @@ restores the transcript without automatically submitting a duplicate turn.
 
 The replay-safe M1 browser migration module exists but is not yet invoked by
 the product shell; its user-facing migration/recovery flow remains C3 work.
+
+C2 adds revision-CAS preference writes, the default approval policy used by
+product jobs, bounded durable-memory and runtime-health clients, and complete
+Settings routes. Workspace pin/remove, session rename/delete/safe catalog
+export, provider edit/update, Memory read/delete, and four keyboard shortcuts
+operate without browser-local catalog authority.
 
 ## Run locally
 
@@ -81,7 +88,7 @@ Neither is primary product navigation.
 
 ## Providers
 
-Provider profiles are loaded, created, and removed through the C0 API, and the
+Provider profiles are loaded, created, updated, and removed through the C0 API, and the
 active profile/model selection is stored in safe API preferences. Clearing
 browser storage does not remove an API-persisted profile. The browser stores
 and sends **environment variable names** (`api_key_env`) only — never raw keys.
@@ -108,15 +115,16 @@ Focused product smoke (mock API):
 - theme toggle
 - inspector empty → ready after run
 - Advanced-only benchmark
+- all nine Settings sections, revision-conflict rollback, provider update,
+  approval/step job requests, catalog and Memory mutations, shortcuts, and
+  mobile bounds
 
 ## Remaining Web Complete backlog
 
-- Full Settings section implementations beyond Providers / About / Advanced
 - Existing M1 browser-state migration invocation and recovery UX
 - Live-API Playwright coverage for the default product shell (current
   continuity coverage is mock-backed; `local-full` targets `/dev/workbench`)
-- Rich session export / cleanup
-- Memory management UI depth
+- Optional transcript-rich export, bulk cleanup, and deeper Memory organization
 - Native Desktop host (Tauri)
 - Remote Gateway / device pairing
 - File-tree IDE features, diff studio, MCP hub marketplace

@@ -137,8 +137,8 @@ $apiProcess = $null
 $webProcess = $null
 
 try {
-    $apiProcess = Start-BackgroundCommand -Command "cargo" -Arguments @("run", "--bin", "rove-api", "--", "--addr", $ApiAddr, "-C", $Workspace) -WorkingDirectory $RepoRoot
-    Wait-HttpOk -Uri "http://$ApiAddr/runs?limit=1" -TimeoutSeconds 60 -Name "rove-api"
+    $apiProcess = Start-BackgroundCommand -Command "cargo" -Arguments @("run", "-p", "rove-api", "--bin", "rove-api", "--", "--addr", $ApiAddr, "-C", $Workspace) -WorkingDirectory $RepoRoot
+    Wait-HttpOk -Uri "http://$ApiAddr/runs?limit=1" -TimeoutSeconds 120 -Name "rove-api"
 
     $webProcess = Start-BackgroundCommand -Command "pnpm" -Arguments @("exec", "next", "dev", "--port", $WebPort) -WorkingDirectory (Join-Path $RepoRoot "apps/web")
     Wait-HttpOk -Uri "http://localhost:$WebPort" -TimeoutSeconds 120 -Name "web"

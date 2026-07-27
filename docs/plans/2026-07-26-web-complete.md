@@ -1,6 +1,6 @@
 # Web Complete Delivery Plan
 
-> Status: **Active — C0–C1 complete; C2–C3 pending**
+> Status: **Active — C0–C2 complete; C3 pending**
 >
 > Decisions:
 > [`../design/2026-07-26-web-complete-design.md`](../design/2026-07-26-web-complete-design.md)
@@ -253,11 +253,16 @@ Delivery is split into two dependency-ordered parts:
 
 #### C2 exit checklist
 
-- [ ] No settings section is a dead placeholder-only page
-- [ ] Provider CRUD uses API store
-- [ ] Tools/Approvals changes actually affect subsequent jobs
-- [ ] Sessions management operations work and are tested where critical
-- [ ] Memory section can show real data or honest empty from API
+- [x] No settings section is a dead placeholder-only page
+- [x] Provider CRUD uses API store
+- [x] Tools/Approvals changes actually affect subsequent jobs
+- [x] Sessions management operations work and are tested where critical
+- [x] Memory section can show real data or honest empty from API
+
+C2 is implemented by the revision-safe settings/platform API and Web client,
+the nine-section Settings shell, focused unit tests, and mock-backed
+`apps/web/tests/e2e/settings.spec.ts`. Live-API default-shell acceptance remains
+the separate C3 gate.
 
 #### C2 likely touch surfaces
 

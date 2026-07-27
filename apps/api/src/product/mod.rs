@@ -5,6 +5,7 @@
 
 mod contracts;
 pub(crate) mod migration;
+pub(crate) mod platform;
 pub(crate) mod routes;
 pub(crate) mod store;
 pub(crate) mod transcript;

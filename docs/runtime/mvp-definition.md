@@ -2,7 +2,7 @@
 
 Status: MVP reached for the local-first single-user runtime.
 Date: 2026-05-30
-Last interface update: 2026-07-27 (Web Complete C1 continuity UI).
+Last interface update: 2026-07-27 (Web Complete C2 Settings UI).
 
 ## Definition
 
@@ -36,6 +36,11 @@ This MVP is not a SaaS product, browser automation runtime, desktop automation r
   states; exact `product_session_id` turns; focused live-job reattachment;
   background status polling; and bounded no-duplicate reconciliation after an
   ambiguous job-start response.
+- Web Complete C2 Settings completion: revision-safe default approval
+  preferences honored by later jobs; bounded memory and runtime-health APIs;
+  provider profile create/read/update/delete; durable workspace/session
+  management; safe catalog export; and four wired keyboard shortcuts across
+  all nine Settings sections.
 - Core engine with planned and unplanned loops sharing model turns, tool turns, context checkpoints, and history writeback.
 - Local state under `.rove/` with trace, task state, report, and SQLite index.
 - Folder, Repo, and Task workspaces.
@@ -43,10 +48,10 @@ This MVP is not a SaaS product, browser automation runtime, desktop automation r
 - Provider abstraction for OpenAI, OpenAI Responses, Anthropic, Ollama, and fake providers.
 - Deterministic no-network benchmarks and default test coverage.
 
-The product shell is not yet fully Web Complete. C1 closes the continuity and
-authority-switch gaps, but several Settings sections, provider edit/update UX,
-product-shell invocation of the M1 migration module, and final polish remain
-C2–C3 work. Its product-shell browser suite is mock-backed; the current gated
+The product shell is not yet fully Web Complete. C0–C2 close persistence,
+continuity, authority, and Settings completeness, but product-shell invocation
+of the M1 migration module, final polish, and live-API acceptance remain C3
+work. Its product-shell browser suite is mock-backed; the current gated
 real-API Playwright suite targets `/dev/workbench` rather than the default shell.
 
 ## Out of scope
