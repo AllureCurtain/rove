@@ -8,6 +8,7 @@ import type {
 import {
   describeTranscriptPartialReason,
   projectProductTranscript,
+  toWorkbenchStreamEvent,
 } from "./transcript-projection";
 import {
   selectTranscriptTimeline,
@@ -115,6 +116,202 @@ describe("product transcript projection", () => {
       ["Use read_file", "call-1", "Done"],
       ["Use list_files", "call-2", "Done"],
     ]);
+  });
+
+  it("retains structured tool, usage, and context facts during canonical restore", () => {
+    const promptBuild = {
+      prompt_hash: "prompt-hash",
+      stable_prefix_hash: "stable-prefix",
+      workspace_fingerprint: "workspace-fingerprint",
+      tool_signature: "tool-signature",
+      token_estimate: 1234,
+      included_history_messages: 8,
+      dropped_history_messages: 2,
+      prompt_cache_key: "prompt-cache-key",
+    };
+    const promptCompaction = {
+      mode: "model_generated" as const,
+      auto_triggered: true,
+      degraded: false,
+      consecutive_failures: 0,
+      circuit_open: false,
+      model: "fake",
+      prompt_version: "rove.compaction.v1",
+      source_message_count: 10,
+    };
+    const segment: ProductTranscriptRunSegment = {
+      binding: binding(1, "job-evidence", "run-evidence"),
+      run_status: "done",
+      observed_through_seq: 7,
+      last_event_seq: 7,
+      events: [
+        {
+          seq: 1,
+          event: {
+            type: "run_started",
+            job_id: "job-evidence",
+            run_id: "run-evidence",
+            user_message: "Inspect canonical evidence",
+          },
+        },
+        { seq: 2, event: { type: "prompt_compacted", summary: "bounded", state: promptCompaction } },
+        { seq: 3, event: { type: "prompt_built", metadata: promptBuild } },
+        {
+          seq: 4,
+          event: {
+            type: "tool_call_started",
+            call_id: "call-evidence",
+            name: "write_file",
+            args: { path: "notes.md", content: "canonical" },
+          },
+        },
+        {
+          seq: 5,
+          event: {
+            type: "tool_call_completed",
+            call_id: "call-evidence",
+            result: {
+              call_id: "call-evidence",
+              output: "wrote notes.md",
+              mutations: [
+                { path: "notes.md", operation: "create", diff: "+canonical" },
+              ],
+              metadata: {
+                status: "ok",
+                risk_level: "high",
+                read_only: false,
+                affected_paths: ["notes.md"],
+                workspace_changed: true,
+                diff_summary: ["notes.md created"],
+              },
+            },
+          },
+        },
+        {
+          seq: 6,
+          event: {
+            type: "llm_message",
+            full: "Canonical evidence retained.",
+            usage: {
+              prompt_tokens: 21,
+              completion_tokens: 5,
+              total_tokens: 26,
+              cached_tokens: 3,
+            },
+          },
+        },
+        { seq: 7, event: { type: "run_completed", reason: "final", output: "Canonical evidence retained." } },
+      ],
+    };
+
+    const state = projectProductTranscript({
+      product_session_id: "product-session",
+      workspace_id: "workspace",
+      status: "complete",
+      partial_reasons: [],
+      segments: [segment],
+    });
+
+    expect(state.tools).toEqual([
+      expect.objectContaining({
+        id: "call-evidence",
+        args: { path: "notes.md", content: "canonical" },
+        output: "wrote notes.md",
+        mutations: [{ path: "notes.md", operation: "create", diff: "+canonical" }],
+        metadata: expect.objectContaining({
+          status: "ok",
+          risk_level: "high",
+          workspace_changed: true,
+        }),
+      }),
+    ]);
+    expect(state.runUsage).toEqual({
+      prompt_tokens: 21,
+      completion_tokens: 5,
+      total_tokens: 26,
+      cached_tokens: 3,
+    });
+    expect(state.promptBuild).toEqual(promptBuild);
+    expect(state.promptCompaction).toEqual(promptCompaction);
+    expect(
+      state.messages.find((message) => message.role === "assistant"),
+    ).toMatchObject({
+      usage: state.runUsage,
+      promptBuild,
+      promptCompaction,
+    });
+
+    const replayed = workbenchReducer(state, {
+      type: "stream_event",
+      seq: 6,
+      event: toWorkbenchStreamEvent(segment.events[5]!.event),
+    });
+    expect(replayed).toBe(state);
+    expect(replayed.runUsage.total_tokens).toBe(26);
+  });
+
+  it("never substitutes zero-usage evidence onto a restored earlier draft", () => {
+    const first = completedSegment(1, "job-draft", "run-draft", "Draft?", "draft answer");
+    first.events = [
+      first.events[0]!,
+      { seq: 2, event: { type: "llm_chunk", delta: "draft answer" } },
+      {
+        seq: 3,
+        event: {
+          type: "llm_message",
+          full: "draft answer",
+          usage: { prompt_tokens: 5, completion_tokens: 4, total_tokens: 9 },
+        },
+      },
+    ];
+    first.observed_through_seq = 3;
+    first.last_event_seq = 3;
+
+    const state = projectProductTranscript({
+      product_session_id: "product-session",
+      workspace_id: "workspace",
+      status: "complete",
+      partial_reasons: [],
+      segments: [first, completedSegment(2, "job-final", "run-final", "Final?", "final answer")],
+    });
+
+    const draft = state.messages.find(
+      (message) => message.role === "assistant" && message.content === "draft answer",
+    );
+    expect(draft?.status).toBe("final");
+    expect(draft?.usage).toEqual({
+      prompt_tokens: 5,
+      completion_tokens: 4,
+      total_tokens: 9,
+    });
+    expect(draft?.promptBuild).toBeUndefined();
+    expect(draft?.promptCompaction).toBeUndefined();
+
+    // The second segment starts with the run-scoped usage reset to zero; a
+    // duplicated completion for the already-final draft must not stamp those
+    // zeros onto it.
+    const duplicated = workbenchReducer(state, {
+      type: "stream_event",
+      seq: 3,
+      event: toWorkbenchStreamEvent(first.events[2]!.event),
+    });
+    const duplicateDraft = duplicated.messages.find(
+      (message) => message.role === "assistant" && message.content === "draft answer",
+    );
+    expect(duplicateDraft).toBe(draft);
+    expect(duplicated.messages.filter((message) => message.content === "draft answer")).toHaveLength(1);
+    // Replay dedup rejects the already-seen (run, seq) pair: no double count.
+    expect(duplicated.runUsage).toBe(state.runUsage);
+
+    const finalAnswer = state.messages.find(
+      (message) => message.role === "assistant" && message.content === "final answer",
+    );
+    expect(finalAnswer?.usage).toEqual({
+      prompt_tokens: 1,
+      completion_tokens: 1,
+      total_tokens: 2,
+    });
+    expect(duplicated.messages.filter((message) => message.content === "final answer")).toHaveLength(1);
   });
 
   it("keeps the latest running segment ready for focused reattachment", () => {

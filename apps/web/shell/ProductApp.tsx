@@ -27,23 +27,41 @@ import type { WorkspaceKind } from "../state/product-types";
 import { M1MigrationGate } from "./M1MigrationGate";
 import { TopBar } from "./TopBar";
 
-export function ProductApp() {
+export type ProductUiVersion = "v1" | "v2";
+
+export function ProductApp({
+  uiVersion = "v2",
+}: {
+  uiVersion?: ProductUiVersion;
+}) {
   return (
-    <M1MigrationGate>
-      <ServerProductApp />
-    </M1MigrationGate>
+    <div className="product-app-frame" data-ui-version={uiVersion}>
+      <M1MigrationGate>
+        <ServerProductApp uiVersion={uiVersion} />
+      </M1MigrationGate>
+    </div>
   );
 }
 
-function ServerProductApp() {
+function ServerProductApp({ uiVersion }: { uiVersion: ProductUiVersion }) {
   const server = useServerProductState();
   const settingsClient = useMemo(() => createSettingsPlatformClient(), []);
   const composerRef = useRef<HTMLTextAreaElement>(null);
+  const workspaceButtonRef = useRef<HTMLButtonElement>(null);
+  const inspectorButtonRef = useRef<HTMLButtonElement>(null);
   const [inspectorCollapsed, setInspectorCollapsed] = useState(true);
+  const [mobileLayout, setMobileLayout] = useState(false);
+  const [workspaceOpen, setWorkspaceOpen] = useState(false);
 
   useEffect(() => {
     const narrow = window.matchMedia("(max-width: 960px)");
-    const syncInspector = () => setInspectorCollapsed(narrow.matches);
+    const syncInspector = () => {
+      setMobileLayout(narrow.matches);
+      setInspectorCollapsed(narrow.matches);
+      if (!narrow.matches) {
+        setWorkspaceOpen(false);
+      }
+    };
     syncInspector();
     narrow.addEventListener("change", syncInspector);
     return () => narrow.removeEventListener("change", syncInspector);
@@ -114,9 +132,34 @@ function ServerProductApp() {
     activeSession?.status === "running" ||
     activeSession?.status === "needs_attention" ||
     routing.routeError !== null;
+  const composerDisabledReason = awaitingInitialRestore
+    ? "Restoring canonical history before a new turn."
+    : continuity.restoreState.status === "loading"
+      ? "Restoring canonical history before a new turn."
+      : continuity.restoreState.status === "error"
+        ? "Retry transcript restore before sending."
+        : activeSession?.status === "needs_attention"
+          ? "Resolve the canonical approval or input in the timeline."
+          : activeSession?.status === "running"
+            ? "A run is active. Send is available after it reaches a terminal state."
+            : routing.routeError
+              ? "Resolve the product route before sending."
+              : undefined;
   const resumeLabel = activeSession?.hasDurableTurn
     ? "continuity: exact product session"
     : "first turn: server-bound session";
+
+  function closeWorkspaceDrawer() {
+    setWorkspaceOpen(false);
+    window.requestAnimationFrame(() => workspaceButtonRef.current?.focus());
+  }
+
+  function closeInspector() {
+    setInspectorCollapsed(true);
+    if (mobileLayout) {
+      window.requestAnimationFrame(() => inspectorButtonRef.current?.focus());
+    }
+  }
 
   async function handleOpenWorkspace(path: string, kind: WorkspaceKind) {
     const activeBefore = { ...server.catalogRef.current.active };
@@ -130,6 +173,7 @@ function ServerProductApp() {
       activeNow.sessionId === activeBefore.sessionId
     ) {
       routing.navigateSession(target.workspaceId, target.sessionId);
+      setWorkspaceOpen(false);
     }
   }
 
@@ -145,6 +189,7 @@ function ServerProductApp() {
       activeNow.sessionId === activeBefore.sessionId
     ) {
       routing.navigateSession(workspaceId, session.id);
+      setWorkspaceOpen(false);
     }
   }
 
@@ -219,7 +264,7 @@ function ServerProductApp() {
 
   if (server.bootState.status !== "ready") {
     return (
-      <div className="product-root">
+      <div className="product-root" data-presentation={uiVersion}>
         <TopBar
           connectionLabel={connectionLabel}
           connectionTone={connectionTone}
@@ -240,7 +285,7 @@ function ServerProductApp() {
   }
 
   return (
-    <div className="product-root">
+    <div className="product-root" data-presentation={uiVersion}>
       <TopBar
         connectionLabel={connectionLabel}
         connectionTone={
@@ -253,6 +298,12 @@ function ServerProductApp() {
         onOpenSettings={() => routing.openSettings("providers")}
         showSettingsBack={routing.viewSettings}
         onBackToChat={routing.backToChat}
+        workspaceButtonRef={routing.viewSettings ? undefined : workspaceButtonRef}
+        onToggleWorkspace={
+          routing.viewSettings
+            ? undefined
+            : () => setWorkspaceOpen((value) => !value)
+        }
       />
 
       {routing.viewSettings ? (
@@ -291,7 +342,11 @@ function ServerProductApp() {
           />
         </div>
       ) : (
-        <div className="product-body">
+        <div
+          className="product-body"
+          data-workspace-open={workspaceOpen}
+          data-inspector-open={mobileLayout && !inspectorCollapsed}
+        >
           <WorkspaceTree
             workspaces={workspaces}
             sessionsByWorkspace={sessionsByWorkspace}
@@ -300,7 +355,10 @@ function ServerProductApp() {
             mutationBusy={server.catalogMutationBusy}
             onOpenWorkspace={(path, kind) => void handleOpenWorkspace(path, kind)}
             onSelectWorkspace={routing.navigateWorkspace}
-            onSelectSession={routing.navigateSession}
+            onSelectSession={(workspaceId, sessionId) => {
+              routing.navigateSession(workspaceId, sessionId);
+              setWorkspaceOpen(false);
+            }}
             onNewSession={(workspaceId) => void handleNewSession(workspaceId)}
             onTogglePin={(workspaceId) =>
               void server.togglePin(workspaceId).catch(() => undefined)
@@ -308,9 +366,18 @@ function ServerProductApp() {
             onRemoveWorkspace={(workspaceId) =>
               void handleRemoveWorkspace(workspaceId)
             }
+            mobileOpen={mobileLayout && workspaceOpen}
+            onCloseMobile={closeWorkspaceDrawer}
+            onOpenSettings={() => {
+              setWorkspaceOpen(false);
+              routing.openSettings("general");
+            }}
           />
 
-          <main className="product-main">
+          <main
+            className="product-main"
+            inert={mobileLayout && (workspaceOpen || !inspectorCollapsed) ? true : undefined}
+          >
             {server.catalogError ? (
               <div className="shell-alert" role="alert">
                 {server.catalogError}
@@ -345,11 +412,13 @@ function ServerProductApp() {
                     </p>
                   </div>
                   <button
+                    ref={inspectorButtonRef}
                     type="button"
                     className="secondary"
                     onClick={() => setInspectorCollapsed((value) => !value)}
+                    aria-label={inspectorCollapsed ? "Open run evidence" : "Close run evidence"}
                   >
-                    {inspectorCollapsed ? "Show inspector" : "Hide inspector"}
+                    {inspectorCollapsed ? "Evidence" : "Close evidence"}
                   </button>
                 </div>
                 <Transcript
@@ -369,12 +438,16 @@ function ServerProductApp() {
                 <Composer
                   disabled={composerDisabled}
                   busy={busy}
-                  modelLabel={`model ${server.selection.model || "default"}`}
                   resumeLabel={resumeLabel}
+                  disabledReason={composerDisabledReason}
                   error={continuity.runState.error}
+                  profiles={server.profiles}
+                  selection={server.selection}
+                  selectionSaving={server.preferencesMutationBusy}
                   textareaRef={composerRef}
                   onSend={continuity.send}
                   onCancel={() => void continuity.cancel()}
+                  onSelectionChange={server.changeSelection}
                 />
               </div>
             )}
@@ -385,13 +458,31 @@ function ServerProductApp() {
           !routing.routeError &&
           !routing.routePending ? (
             <RunInspector
+              productSessionId={activeSession.id}
               collapsed={inspectorCollapsed}
-              onToggle={() => setInspectorCollapsed((value) => !value)}
+              onToggle={() => {
+                if (!inspectorCollapsed) {
+                  closeInspector();
+                } else {
+                  setInspectorCollapsed(false);
+                }
+              }}
               runState={continuity.runState}
+              restoreState={transcriptRestoreState}
+              dialogOpen={mobileLayout && !inspectorCollapsed}
             />
           ) : (
             <div />
           )}
+          {mobileLayout && (workspaceOpen || !inspectorCollapsed) ? (
+            <button
+              type="button"
+              className="product-mobile-scrim"
+              aria-label="Close open panel"
+              tabIndex={-1}
+              onClick={workspaceOpen ? closeWorkspaceDrawer : closeInspector}
+            />
+          ) : null}
         </div>
       )}
     </div>

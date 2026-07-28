@@ -289,7 +289,10 @@ test.describe("real API product shell integration", () => {
       expect(profileId).toBeTruthy();
       await page.goto(routeA);
       await expect(
-        page.getByLabel("Message composer").getByText("model fake-raw"),
+        page
+          .getByLabel("Message composer")
+          .getByRole("button", { name: "Change global next-run model default" })
+          .getByText("fake-raw", { exact: true }),
       ).toBeVisible();
 
       await page.evaluate(() => {
@@ -298,7 +301,10 @@ test.describe("real API product shell integration", () => {
       });
       await page.reload();
       await expect(
-        page.getByLabel("Message composer").getByText("model fake-raw"),
+        page
+          .getByLabel("Message composer")
+          .getByRole("button", { name: "Change global next-run model default" })
+          .getByText("fake-raw", { exact: true }),
       ).toBeVisible();
 
       const outputName = `approved-${Date.now()}.txt`;

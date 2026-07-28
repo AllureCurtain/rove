@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 
 import {
   createMockSession,
@@ -94,6 +94,69 @@ test("stale preference revisions recover to the server-confirmed snapshot", asyn
   expect(api.preferences.revision).toBe(1);
 });
 
+test("quick model control persists the real global next-run default", async ({ page }) => {
+  const { api, workspace, session } = await installQuickModelFixture(page);
+
+  await page.goto(`/w/${workspace.id}/s/${session.id}`);
+  const trigger = page.getByRole("button", { name: "Change global next-run model default" });
+  await trigger.click();
+  const dialog = page.getByRole("dialog", { name: "Global next-run model default" });
+  await expect(dialog).toContainText("This is not a session override");
+  await dialog.getByLabel("Next-run model").fill("relay/model-v2");
+  await dialog.getByRole("button", { name: "Save global default" }).click();
+
+  await expect(page.getByText("Server preference updated.")).toBeVisible();
+  await expect(trigger).toBeFocused();
+  await expect.poll(() => selectedModel(api.preferences)).toBe("relay/model-v2");
+  expect(api.preferenceUpdateRequests).toBe(1);
+});
+
+test("quick model control rolls back after a real preference failure", async ({ page }) => {
+  const { api, workspace, session } = await installQuickModelFixture(page, {
+    preferenceUpdateFailures: 1,
+  });
+
+  await page.goto(`/w/${workspace.id}/s/${session.id}`);
+  await page.getByRole("button", { name: "Change global next-run model default" }).click();
+  const dialog = page.getByRole("dialog", { name: "Global next-run model default" });
+  const modelInput = dialog.getByLabel("Next-run model");
+  await modelInput.fill("relay/model-not-saved");
+  await dialog.getByRole("button", { name: "Save global default" }).click();
+
+  await expect(dialog.getByRole("alert")).toContainText("server preference was not changed");
+  await expect.poll(() => modelInput.inputValue()).toBe("relay/model-a");
+  expect(selectedModel(api.preferences)).toBe("relay/model-a");
+  await expect(page.locator(".shell-alert")).toContainText("preferences unavailable");
+});
+
+test("quick model control recovers a Preferences CAS conflict to server truth", async ({ page }) => {
+  const { api, workspace, session } = await installQuickModelFixture(page);
+
+  await page.goto(`/w/${workspace.id}/s/${session.id}`);
+  const trigger = page.getByRole("button", { name: "Change global next-run model default" });
+  await expect(trigger).toBeVisible();
+  api.preferences = {
+    ...api.preferences,
+    revision: Number(api.preferences.revision) + 1,
+    provider_selection: {
+      profile_id: "profile-relay",
+      model: "relay/server-confirmed",
+      approval: "ask",
+      max_steps: 24,
+    },
+  };
+  await trigger.click();
+  const dialog = page.getByRole("dialog", { name: "Global next-run model default" });
+  const modelInput = dialog.getByLabel("Next-run model");
+  await modelInput.fill("relay/stale-write");
+  await dialog.getByRole("button", { name: "Save global default" }).click();
+
+  await expect(dialog.getByRole("alert")).toContainText("server preference was not changed");
+  await expect.poll(() => modelInput.inputValue()).toBe("relay/server-confirmed");
+  await expect(page.locator(".shell-alert")).toContainText("revision does not match");
+  expect(selectedModel(api.preferences)).toBe("relay/server-confirmed");
+});
+
 test("approval defaults and execution limits affect later job requests", async ({ page }) => {
   const workspace = createMockWorkspace();
   const session = createMockSession();
@@ -156,7 +219,7 @@ test("workspace and session settings mutate the durable catalog", async ({ page 
 
   sessionRow = page.locator(".profile-row").filter({ hasText: "Renamed session" });
   const downloadPromise = page.waitForEvent("download");
-  await sessionRow.getByRole("button", { name: "Export" }).click();
+  await sessionRow.getByRole("button", { name: "Catalog metadata export" }).click();
   const download = await downloadPromise;
   expect(download.suggestedFilename()).toBe("rove-session-session-b.json");
 
@@ -311,4 +374,50 @@ function selectedMaxSteps(preferences: Record<string, unknown>): number | undefi
   }
   const value = (selection as Record<string, unknown>).max_steps;
   return typeof value === "number" ? value : undefined;
+}
+
+function selectedModel(preferences: Record<string, unknown>): string | undefined {
+  const selection = preferences.provider_selection;
+  if (!selection || typeof selection !== "object") {
+    return undefined;
+  }
+  const value = (selection as Record<string, unknown>).model;
+  return typeof value === "string" ? value : undefined;
+}
+
+async function installQuickModelFixture(
+  page: Page,
+  options: { preferenceUpdateFailures?: number } = {},
+) {
+  const workspace = createMockWorkspace();
+  const session = createMockSession();
+  const api = await installMockProductApi(page, {
+    workspaces: [workspace],
+    sessions: [session],
+    activeWorkspaceId: workspace.id,
+    activeSessionId: session.id,
+    preferenceUpdateFailures: options.preferenceUpdateFailures,
+    providerProfiles: [
+      {
+        id: "profile-relay",
+        label: "Relay",
+        provider_type: "openai",
+        api_base: "https://relay.test/v1",
+        api_key_env: "RELAY_KEY",
+        default_model: "relay/model-a",
+        created_at: "2026-07-28T00:00:00.000Z",
+        updated_at: "2026-07-28T00:00:00.000Z",
+      },
+    ],
+  });
+  api.preferences = {
+    ...api.preferences,
+    provider_selection: {
+      profile_id: "profile-relay",
+      model: "relay/model-a",
+      approval: "ask",
+      max_steps: 24,
+    },
+  };
+  return { api, workspace, session };
 }

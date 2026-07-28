@@ -2,9 +2,11 @@
 
 import {
   GearIcon,
+  HamburgerMenuIcon,
   MoonIcon,
   SunIcon,
 } from "@radix-ui/react-icons";
+import type { Ref } from "react";
 
 export function TopBar({
   connectionLabel,
@@ -14,6 +16,8 @@ export function TopBar({
   onOpenSettings,
   showSettingsBack,
   onBackToChat,
+  workspaceButtonRef,
+  onToggleWorkspace,
 }: {
   connectionLabel: string;
   connectionTone: "ok" | "working" | "error" | "idle";
@@ -22,12 +26,27 @@ export function TopBar({
   onOpenSettings: () => void;
   showSettingsBack?: boolean;
   onBackToChat?: () => void;
+  workspaceButtonRef?: Ref<HTMLButtonElement>;
+  onToggleWorkspace?: () => void;
 }) {
   return (
     <header className="product-topbar">
       <div className="product-topbar__brand">
+        {onToggleWorkspace ? (
+          <button
+            ref={workspaceButtonRef}
+            type="button"
+            className="ghost icon-button mobile-only"
+            onClick={onToggleWorkspace}
+            aria-label="Open workspaces"
+            title="Open workspaces"
+          >
+            <HamburgerMenuIcon />
+          </button>
+        ) : null}
+        <span className="product-topbar__mark" aria-hidden="true">R</span>
         <strong>rove</strong>
-        <span>agent</span>
+        <span>local agent</span>
       </div>
       <div className="product-topbar__meta">
         <span className="status-dot" data-tone={connectionTone === "idle" ? undefined : connectionTone} />

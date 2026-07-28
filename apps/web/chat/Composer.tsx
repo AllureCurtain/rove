@@ -3,24 +3,38 @@
 import { FormEvent, type Ref, useState } from "react";
 import { PaperPlaneIcon, StopIcon } from "@radix-ui/react-icons";
 
+import { QuickModelControl } from "../product-v2/QuickModelControl";
+import type {
+  ActiveProviderSelection,
+  ProviderProfileRecord,
+} from "../state/product-types";
+
 export function Composer({
   disabled,
   busy,
-  modelLabel,
   resumeLabel,
+  disabledReason,
   error,
+  profiles,
+  selection,
+  selectionSaving,
   textareaRef,
   onSend,
   onCancel,
+  onSelectionChange,
 }: {
   disabled: boolean;
   busy: boolean;
-  modelLabel: string;
   resumeLabel: string;
+  disabledReason?: string;
   error: string | null;
+  profiles: ProviderProfileRecord[];
+  selection: ActiveProviderSelection;
+  selectionSaving: boolean;
   textareaRef?: Ref<HTMLTextAreaElement>;
   onSend: (message: string) => Promise<void> | void;
   onCancel: () => void;
+  onSelectionChange: (selection: ActiveProviderSelection) => Promise<boolean>;
 }) {
   const [message, setMessage] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -48,9 +62,9 @@ export function Composer({
         </div>
       ) : null}
       <div className="chat-composer__meta">
-        <span>{modelLabel}</span>
         <span>{resumeLabel}</span>
         {busy ? <span>Streaming…</span> : null}
+        {disabledReason ? <span>{disabledReason}</span> : null}
       </div>
       <div className="chat-composer__row">
         <textarea
@@ -75,6 +89,15 @@ export function Composer({
             Send
           </button>
         )}
+      </div>
+      <div className="chat-composer__controls">
+        <QuickModelControl
+          profiles={profiles}
+          selection={selection}
+          saving={selectionSaving}
+          onSelectionChange={onSelectionChange}
+        />
+        <span>Applies globally to the next product run.</span>
       </div>
     </form>
   );

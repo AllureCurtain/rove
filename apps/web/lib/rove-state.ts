@@ -4,11 +4,16 @@ import type {
   PlanDecisionRecord,
   PlanRevision,
   PlanStep,
+  PromptBuildMetadata,
+  PromptCompactionState,
   PendingApproval,
   StepRecord,
   StreamEvent,
   TaskPlan,
+  ToolExecutionMetadata,
   ToolError,
+  ToolMutation,
+  Usage,
   JobStateResponse,
 } from "./rove-types";
 
@@ -17,7 +22,18 @@ export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
   status: "streaming" | "final";
+  usage?: Usage;
+  promptBuild?: PromptBuildMetadata;
+  promptCompaction?: PromptCompactionState;
 }
+
+export type ToolExecutionViewMetadata = Omit<
+  ToolExecutionMetadata,
+  "affected_paths" | "diff_summary"
+> & {
+  affected_paths: string[];
+  diff_summary: string[];
+};
 
 export interface ToolCallView {
   id: string;
@@ -26,6 +42,11 @@ export interface ToolCallView {
   name: string;
   status: "running" | "waiting" | "done" | "error";
   details: string;
+  args?: unknown;
+  output?: string;
+  error?: ToolError;
+  mutations?: ToolMutation[];
+  metadata?: ToolExecutionViewMetadata;
   reason?: string;
   pendingApproval?: PendingApproval;
 }
@@ -99,6 +120,9 @@ export interface WorkbenchState {
   pendingUserMessageId: string | null;
   /** Run identities whose canonical user bubble has already been projected. */
   seenUserMessageRunIds: string[];
+  runUsage: Usage;
+  promptBuild: PromptBuildMetadata | null;
+  promptCompaction: PromptCompactionState | null;
   plan: TaskPlan | null;
   planDecisions: PlanDecisionRecord[];
   planRevisions: PlanRevision[];
@@ -156,6 +180,9 @@ export function createWorkbenchState(): WorkbenchState {
     timeline: [],
     pendingUserMessageId: null,
     seenUserMessageRunIds: [],
+    runUsage: emptyUsage(),
+    promptBuild: null,
+    promptCompaction: null,
     plan: null,
     planDecisions: [],
     planRevisions: [],
@@ -436,6 +463,9 @@ function prepareRunScopedState(
         : message,
     ),
     pendingUserMessageId: null,
+    runUsage: emptyUsage(),
+    promptBuild: null,
+    promptCompaction: null,
     plan: null,
     planDecisions: [],
     planRevisions: [],
@@ -677,6 +707,7 @@ function toolFromPendingApproval(
     name: pendingApproval.name,
     status: "waiting",
     details: pendingApproval.reason,
+    args: pendingApproval.args,
     reason: pendingApproval.reason,
     pendingApproval,
   };
@@ -842,9 +873,15 @@ function applyStreamEvent(
         event.full,
         state.activeRunId,
         seq ?? next.eventCount,
+        {
+          usage: event.usage,
+          promptBuild: state.promptBuild,
+          promptCompaction: state.promptCompaction,
+        },
       );
       return {
         ...next,
+        runUsage: addUsage(state.runUsage, event.usage),
         messages: projection.messages,
         timeline: projection.created
           ? appendTimelineEntry(
@@ -871,6 +908,7 @@ function applyStreamEvent(
           name: event.name,
           status: "running",
           details: formatValue(event.args),
+          args: event.args,
         }),
         timeline: bindTimelineEntry(
           state.timeline,
@@ -900,6 +938,7 @@ function applyStreamEvent(
           name: event.name,
           status: "waiting",
           details: event.reason,
+          args: event.args,
           reason: event.reason,
           pendingApproval: {
             call_id: event.call_id,
@@ -936,6 +975,9 @@ function applyStreamEvent(
           name: findToolName(state.tools, event.result.call_id),
           status: "done",
           details: event.result.output,
+          output: event.result.output,
+          mutations: event.result.mutations,
+          metadata: normalizeToolExecutionMetadata(event.result.metadata),
         }),
         timeline: bindTimelineEntry(
           state.timeline,
@@ -965,6 +1007,8 @@ function applyStreamEvent(
           name: findToolName(state.tools, event.call_id),
           status: "error",
           details: formatToolError(event.error),
+          error: event.error,
+          metadata: normalizeToolExecutionMetadata(event.metadata),
         }),
         timeline: bindTimelineEntry(
           state.timeline,
@@ -1111,6 +1155,7 @@ function applyStreamEvent(
     case "prompt_compacted":
       return {
         ...next,
+        promptCompaction: event.state,
         statusText: event.state.degraded
           ? "Prompt compacted with fallback summary"
           : "Prompt compacted",
@@ -1123,6 +1168,7 @@ function applyStreamEvent(
     case "prompt_built":
       return {
         ...next,
+        promptBuild: event.metadata,
         trace: prependTrace(
           state.trace,
           event.type,
@@ -1288,6 +1334,11 @@ function finalizeAssistantMessage(
   full: string,
   runId: string | null,
   eventIdentity: number,
+  evidence: {
+    usage: Usage;
+    promptBuild: PromptBuildMetadata | null;
+    promptCompaction: PromptCompactionState | null;
+  },
 ): MessageProjection {
   const last = messages[messages.length - 1];
   if (last?.role === "assistant" && last.status === "streaming") {
@@ -1298,8 +1349,25 @@ function finalizeAssistantMessage(
           ...last,
           content: full,
           status: "final",
+          usage: evidence.usage,
+          promptBuild: evidence.promptBuild ?? undefined,
+          promptCompaction: evidence.promptCompaction ?? undefined,
         },
       ],
+      messageId: last.id,
+      created: false,
+    };
+  }
+  if (
+    last?.role === "assistant" &&
+    last.status === "final" &&
+    last.content === full
+  ) {
+    // Duplicate completion for a message already finalized by a later segment
+    // (possible on overlapping restore ranges). Omitted facts stay absent so
+    // the replay cannot stamp a misleading zero-usage read onto it.
+    return {
+      messages,
       messageId: last.id,
       created: false,
     };
@@ -1313,6 +1381,9 @@ function finalizeAssistantMessage(
         role: "assistant",
         content: full,
         status: "final",
+        usage: evidence.usage,
+        promptBuild: evidence.promptBuild ?? undefined,
+        promptCompaction: evidence.promptCompaction ?? undefined,
       },
     ],
     messageId,
@@ -1406,6 +1477,23 @@ function upsertTool(
   ];
 }
 
+function normalizeToolExecutionMetadata(
+  metadata: ToolExecutionMetadata | undefined,
+): ToolExecutionViewMetadata | undefined {
+  if (!metadata) {
+    return undefined;
+  }
+  return {
+    ...metadata,
+    affected_paths: Array.isArray(metadata.affected_paths)
+      ? metadata.affected_paths
+      : [],
+    diff_summary: Array.isArray(metadata.diff_summary)
+      ? metadata.diff_summary
+      : [],
+  };
+}
+
 function upsertTranscriptInput(
   inputs: TranscriptInputView[],
   next: TranscriptInputView,
@@ -1478,6 +1566,24 @@ function formatValue(value: unknown): string {
   } catch {
     return String(value);
   }
+}
+
+function emptyUsage(): Usage {
+  return {
+    prompt_tokens: 0,
+    completion_tokens: 0,
+    total_tokens: 0,
+    cached_tokens: 0,
+  };
+}
+
+function addUsage(current: Usage, next: Usage): Usage {
+  return {
+    prompt_tokens: current.prompt_tokens + next.prompt_tokens,
+    completion_tokens: current.completion_tokens + next.completion_tokens,
+    total_tokens: current.total_tokens + next.total_tokens,
+    cached_tokens: (current.cached_tokens ?? 0) + (next.cached_tokens ?? 0),
+  };
 }
 
 function truncate(value: string, max: number): string {
