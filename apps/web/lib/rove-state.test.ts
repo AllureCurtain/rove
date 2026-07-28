@@ -32,6 +32,35 @@ function planRevision(overrides: Partial<PlanRevision> = {}): PlanRevision {
 }
 
 describe("workbenchReducer", () => {
+  it("normalizes execution lists omitted from live tool metadata", () => {
+    const state = workbenchReducer(createWorkbenchState(), {
+      type: "stream_event",
+      event: {
+        type: "tool_call_completed",
+        call_id: "call-input",
+        result: {
+          call_id: "call-input",
+          output: "main",
+          metadata: {
+            status: "ok",
+            risk_level: "low",
+            read_only: true,
+            workspace_changed: false,
+          },
+        },
+      },
+    });
+
+    expect(state.tools[0]?.metadata).toEqual({
+      status: "ok",
+      risk_level: "low",
+      read_only: true,
+      affected_paths: [],
+      workspace_changed: false,
+      diff_summary: [],
+    });
+  });
+
   it("keeps canonical message, approval, input, tool-result, and follow-up order", () => {
     let state = workbenchReducer(createWorkbenchState(), {
       type: "job_created",

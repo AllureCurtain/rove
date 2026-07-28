@@ -71,6 +71,7 @@ export function useServerProductState() {
   const [bootState, setBootState] = useState<ProductBootState>({ status: "loading" });
   const [catalogError, setCatalogError] = useState<string | null>(null);
   const [catalogMutationBusy, setCatalogMutationBusy] = useState(false);
+  const [preferencesMutationBusy, setPreferencesMutationBusy] = useState(false);
   const [connection, setConnection] = useState<"unknown" | "ok" | "error">(
     "unknown",
   );
@@ -132,6 +133,7 @@ export function useServerProductState() {
     (next: ProductPreferences) => {
       preferencesRef.current = next;
       setPreferences(next);
+      setPreferencesMutationBusy(true);
       const generation = ++preferencesGenerationRef.current;
       const operation = preferencesQueueRef.current
         .catch(() => undefined)
@@ -187,6 +189,11 @@ export function useServerProductState() {
               setTheme(confirmedTheme);
             }
             setCatalogError(`Could not persist preferences: ${describeError(error)}`);
+          }
+        })
+        .finally(() => {
+          if (preferencesGenerationRef.current === generation) {
+            setPreferencesMutationBusy(false);
           }
         });
       return operation;
@@ -244,6 +251,7 @@ export function useServerProductState() {
       cacheServerConfirmedTheme(confirmedTheme);
       setTheme(confirmedTheme);
       setConnection("ok");
+      setPreferencesMutationBusy(false);
       setBootState({ status: "ready" });
     } catch (error) {
       if (bootGenerationRef.current !== bootGeneration) {
@@ -618,38 +626,44 @@ export function useServerProductState() {
   );
 
   const changeSelection = useCallback(
-    (next: ActiveProviderSelection) => {
+    async (next: ActiveProviderSelection): Promise<boolean> => {
       if (
         next.mode === "profile" &&
         next.profileId &&
         deletingProviderProfileIdsRef.current.has(next.profileId)
       ) {
         setCatalogError("That provider profile is currently being removed.");
-        return;
+        return false;
       }
       const current = preferencesRef.current;
       if (!current) {
-        return;
+        setCatalogError("Product preferences are not loaded.");
+        return false;
       }
       const synchronized = {
         ...next,
         approval: current.default_approval_policy,
       };
       setSelection(synchronized);
-      queuePreferences({
-        ...current,
-        provider_selection: {
-          profile_id:
-            synchronized.mode === "profile"
-              ? synchronized.profileId
-              : undefined,
-          model: synchronized.model,
-          approval: synchronized.approval,
-          max_steps: synchronized.maxSteps,
-        },
-      });
+      try {
+        await persistPreferences({
+          ...current,
+          provider_selection: {
+            profile_id:
+              synchronized.mode === "profile"
+                ? synchronized.profileId
+                : undefined,
+            model: synchronized.model,
+            approval: synchronized.approval,
+            max_steps: synchronized.maxSteps,
+          },
+        });
+        return true;
+      } catch {
+        return false;
+      }
     },
-    [queuePreferences],
+    [persistPreferences],
   );
 
   const changeDefaultApprovalPolicy = useCallback(
@@ -775,6 +789,7 @@ export function useServerProductState() {
     setConnection,
     catalogError,
     catalogMutationBusy,
+    preferencesMutationBusy,
     clearCatalogError: () => setCatalogError(null),
     persistActiveRoute,
     selectCatalogRoute,

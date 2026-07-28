@@ -4,6 +4,7 @@ import { Geist, Geist_Mono } from "next/font/google";
 
 import { SERVER_THEME_BOOTSTRAP_SCRIPT } from "../platform/server-theme-cache";
 import "../styles/product.css";
+import "../styles/product-v2.css";
 
 const geistSans = Geist({
   subsets: ["latin"],

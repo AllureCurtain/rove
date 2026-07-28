@@ -11,7 +11,7 @@ import {
 
 test.use({ viewport: { width: 390, height: 844 } });
 
-test("mobile chat reflows, keeps the inspector bounded, and honors reduced motion", async ({
+test("mobile chat reflows, traps both production panels, and honors reduced motion", async ({
   page,
 }, testInfo) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
@@ -41,17 +41,42 @@ test("mobile chat reflows, keeps the inspector bounded, and honors reduced motio
   const composerBox = await page.getByRole("textbox", { name: "Message" }).boundingBox();
   expect(composerBox?.width).toBeGreaterThan(240);
 
-  await inspector.getByRole("button", { name: "Expand inspector" }).click();
-  await expect(page.locator(".product-main")).toBeHidden();
+  const evidenceTrigger = page.getByRole("button", { name: "Open run evidence" });
+  await evidenceTrigger.click();
+  await expect(inspector).toHaveAttribute("role", "dialog");
+  await expect(inspector).toHaveAttribute("aria-modal", "true");
+  await expect(inspector.getByRole("button", { name: "Close run evidence" })).toBeFocused();
+  await expect(page.locator(".product-main")).toHaveAttribute("inert", "");
   const expandedBox = await page.getByLabel("Run inspector").boundingBox();
   expect(expandedBox).not.toBeNull();
   expect(expandedBox!.x).toBeGreaterThanOrEqual(0);
   expect(expandedBox!.x + expandedBox!.width).toBeLessThanOrEqual(390);
-  await page
-    .getByLabel("Run inspector")
-    .getByRole("button", { name: "Collapse inspector" })
-    .click();
-  await expect(page.locator(".product-main")).toBeVisible();
+  await page.keyboard.press("Tab");
+  await expect(inspector.getByRole("button", { name: "Close run evidence" })).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(inspector).toBeHidden();
+  await expect(evidenceTrigger).toBeFocused();
+  await expect(page.locator(".product-main")).not.toHaveAttribute("inert", "");
+
+  const workspaceTrigger = page.getByRole("button", { name: "Open workspaces" });
+  await workspaceTrigger.click();
+  const workspaceDrawer = page.getByRole("dialog", { name: "Workspaces" });
+  await expect(workspaceDrawer).toHaveAttribute("role", "dialog");
+  await expect(workspaceDrawer).toHaveAttribute("aria-modal", "true");
+  await expect(workspaceDrawer.getByRole("button", { name: "Close workspaces" })).toBeFocused();
+  await expect(
+    workspaceDrawer.getByRole("searchbox", { name: "Search workspaces and sessions" }),
+  ).toBeVisible();
+  await expect(
+    workspaceDrawer.getByText("Search workspaces and sessions", { exact: true }),
+  ).toHaveCount(0);
+  const lastDrawerAction = workspaceDrawer.getByRole("button", { name: "Product settings" });
+  await lastDrawerAction.focus();
+  await page.keyboard.press("Tab");
+  await expect(workspaceDrawer.getByRole("button", { name: "Add workspace" })).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(workspaceDrawer).toBeHidden();
+  await expect(workspaceTrigger).toBeFocused();
 
   await page.keyboard.press("/");
   await expect(page.getByRole("textbox", { name: "Message" })).toBeFocused();
@@ -112,6 +137,8 @@ test("workspace dialog traps focus, closes with Escape, and restores its trigger
   await installMockProductApi(page);
   await page.goto("/");
 
+  await page.getByRole("button", { name: "Open workspaces" }).click();
+  const workspaceDrawer = page.getByRole("dialog", { name: "Workspaces" });
   const trigger = page.getByRole("button", { name: "Add workspace" });
   await trigger.click();
   const dialog = page.getByRole("dialog", { name: "Open workspace" });
@@ -127,7 +154,7 @@ test("workspace dialog traps focus, closes with Escape, and restores its trigger
     const style = getComputedStyle(element);
     return { color: style.outlineColor, width: style.outlineWidth };
   });
-  expect(focusStyle.width).toBe("3px");
+  expect(focusStyle.width).toBe("2px");
 
   await dialog.getByRole("button", { name: "Open", exact: true }).click();
   await expect(dialog.getByRole("alert")).toHaveText("Enter an absolute path.");
@@ -140,6 +167,7 @@ test("workspace dialog traps focus, closes with Escape, and restores its trigger
   await page.keyboard.press("Escape");
   await expect(dialog).toHaveCount(0);
   await expect(trigger).toBeFocused();
+  await workspaceDrawer.getByRole("button", { name: "Close workspaces" }).click();
 });
 
 test("server-confirmed dark theme and deep Settings tab survive reload", async ({
@@ -177,6 +205,45 @@ test("server-confirmed dark theme and deep Settings tab survive reload", async (
   );
   await page.reload();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+});
+
+test("strict Mermaid rendering preserves visible SVG text labels", async ({
+  page,
+}, testInfo) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const workspace = createMockWorkspace();
+  const session = createMockSession();
+  await installMockProductApi(page, {
+    workspaces: [workspace],
+    sessions: [session],
+    transcripts: {
+      [session.id]: completedTranscript(
+        workspace,
+        session,
+        "Show the execution path",
+        "```mermaid\nflowchart LR\n  A[Plan] --> B[Execute]\n```",
+      ),
+    },
+    activeWorkspaceId: workspace.id,
+    activeSessionId: session.id,
+  });
+
+  await page.goto(`/w/${workspace.id}/s/${session.id}`);
+  const diagram = page.getByRole("figure", { name: "Mermaid diagram" });
+  await expect(diagram).toBeVisible();
+  await expect(diagram.locator("foreignObject")).toHaveCount(0);
+  const labels = diagram.locator("svg text");
+  const planLabel = labels.filter({ hasText: "Plan" });
+  const executeLabel = labels.filter({ hasText: "Execute" });
+  await expect(planLabel).toHaveCount(1);
+  await expect(planLabel).toBeVisible();
+  await expect(executeLabel).toHaveCount(1);
+  await expect(executeLabel).toBeVisible();
+
+  await page.screenshot({
+    path: testInfo.outputPath("desktop-mermaid-labels.png"),
+    fullPage: true,
+  });
 });
 
 async function seedLegacyCatalog(page: Page) {

@@ -146,6 +146,7 @@ export interface ToolResult {
   call_id: string;
   output: string;
   mutations?: ToolMutation[];
+  metadata?: ToolExecutionMetadata;
 }
 
 export interface ToolMutation {
@@ -155,6 +156,27 @@ export interface ToolMutation {
 }
 
 export type ToolMutationOperation = "create" | "update" | "delete" | "unknown";
+
+export type ToolExecutionStatus =
+  | "ok"
+  | "error"
+  | "rejected"
+  | "partial_success";
+
+export type ToolRiskLevel = "low" | "high";
+
+export interface ToolExecutionMetadata {
+  status: ToolExecutionStatus;
+  error_code?: string;
+  security_event_type?: string;
+  risk_level: ToolRiskLevel;
+  read_only: boolean;
+  /** Omitted on the wire when the canonical list is empty. */
+  affected_paths?: string[];
+  workspace_changed: boolean;
+  /** Omitted on the wire when the canonical list is empty. */
+  diff_summary?: string[];
+}
 
 export interface ToolCallRef {
   id: string;
@@ -215,6 +237,7 @@ export type StreamEvent =
       type: "tool_call_failed";
       call_id: string;
       error: ToolError;
+      metadata?: ToolExecutionMetadata;
     }
   | {
       type: "input_needed";

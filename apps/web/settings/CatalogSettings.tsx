@@ -439,7 +439,7 @@ function SessionRow({
           disabled={busy}
           onClick={handleExport}
         >
-          <DownloadIcon /> Export
+          <DownloadIcon /> Catalog metadata export
         </button>
         <button
           type="button"
@@ -474,7 +474,7 @@ export function SessionsSettings({
     <div className="settings-panel">
       <h1>Sessions</h1>
       <p className="lede">
-        Rename, open, export, or remove durable conversation entries grouped by workspace.
+        Rename, open, export catalog metadata, or remove durable conversation entries grouped by workspace.
       </p>
       {groups.length === 0 ? (
         <div className="settings-card">

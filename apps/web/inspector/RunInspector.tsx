@@ -1,18 +1,34 @@
 "use client";
 
-import { ChevronLeftIcon, ChevronRightIcon } from "@radix-ui/react-icons";
+import { ChevronLeftIcon, ChevronRightIcon, Cross2Icon } from "@radix-ui/react-icons";
+import { type KeyboardEvent, useEffect, useRef } from "react";
 
 import type { ToolCallView, WorkbenchState } from "../lib/rove-state";
+import type { TranscriptRestoreState } from "../state/transcript-projection";
 
 export function RunInspector({
+  productSessionId,
   collapsed,
   onToggle,
   runState,
+  restoreState,
+  dialogOpen = false,
 }: {
+  productSessionId: string;
   collapsed: boolean;
   onToggle: () => void;
   runState: WorkbenchState;
+  restoreState?: TranscriptRestoreState;
+  dialogOpen?: boolean;
 }) {
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (dialogOpen) {
+      closeButtonRef.current?.focus();
+    }
+  }, [dialogOpen]);
+
   if (collapsed) {
     return (
       <aside className="product-inspector" data-collapsed="true" aria-label="Run inspector">
@@ -33,18 +49,42 @@ export function RunInspector({
   const phase = resolveInspectorPhase(runState);
   const waiting = runState.tools.filter((tool) => tool.pendingApproval);
   const tools = runState.tools.slice(0, 12);
+  const mutations = runState.tools.flatMap((tool) =>
+    (tool.mutations ?? []).map((mutation) => ({ tool, mutation })),
+  );
+  const evidenceRefs = uniqueEvidenceRefs(runState);
 
   return (
-    <aside className="product-inspector" aria-label="Run inspector" data-phase={phase}>
+    <aside
+      className="product-inspector"
+      aria-label="Run inspector"
+      data-phase={phase}
+      data-open={dialogOpen}
+      aria-modal={dialogOpen ? true : undefined}
+      role={dialogOpen ? "dialog" : undefined}
+      onKeyDown={
+        dialogOpen
+          ? (event) => {
+              if (event.key === "Escape") {
+                event.preventDefault();
+                onToggle();
+                return;
+              }
+              trapFocus(event);
+            }
+          : undefined
+      }
+    >
       <div className="inspector-header">
         <h2>Inspector</h2>
         <button
+          ref={closeButtonRef}
           type="button"
           className="ghost icon-button"
           onClick={onToggle}
-          aria-label="Collapse inspector"
+          aria-label={dialogOpen ? "Close run evidence" : "Collapse inspector"}
         >
-          <ChevronRightIcon />
+          {dialogOpen ? <Cross2Icon /> : <ChevronRightIcon />}
         </button>
       </div>
       <div className="inspector-body">
@@ -80,23 +120,34 @@ export function RunInspector({
         {phase !== "empty" ? (
           <>
             <section className="inspector-section">
-              <h3>Run</h3>
+              <div className="inspector-section__heading">
+                <h3>Continuity</h3>
+                <span data-tone={continuityTone(runState)}>{continuityLabel(runState)}</span>
+              </div>
               <div className="inspector-kv">
+                <div>
+                  <span>product session</span>
+                  <strong>{productSessionId}</strong>
+                </div>
                 <div>
                   <span>status</span>
                   <strong>{runState.statusText}</strong>
                 </div>
                 <div>
+                  <span>turn ordinal</span>
+                  <strong>{runState.activeRunOrdinal ?? "Not available"}</strong>
+                </div>
+                <div>
                   <span>job</span>
-                  <strong>{shortId(runState.activeJobId)}</strong>
+                  <strong>{identity(runState.activeJobId)}</strong>
                 </div>
                 <div>
                   <span>run</span>
-                  <strong>{shortId(runState.activeRunId)}</strong>
+                  <strong>{identity(runState.activeRunId)}</strong>
                 </div>
                 <div>
                   <span>resumed from</span>
-                  <strong>{shortId(runState.resumedFromRunId)}</strong>
+                  <strong>{identity(runState.resumedFromRunId)}</strong>
                 </div>
                 <div>
                   <span>events</span>
@@ -106,7 +157,45 @@ export function RunInspector({
                   <span>signal</span>
                   <strong>{runState.lastSignal}</strong>
                 </div>
+                <div>
+                  <span>history</span>
+                  <strong>{restoreStatusLabel(restoreState)}</strong>
+                </div>
               </div>
+            </section>
+
+            <section className="inspector-section">
+              <h3>Usage &amp; context</h3>
+              <div className="inspector-kv inspector-kv--metrics">
+                <div><span>prompt</span><strong>{formatNumber(runState.runUsage.prompt_tokens)}</strong></div>
+                <div><span>completion</span><strong>{formatNumber(runState.runUsage.completion_tokens)}</strong></div>
+                <div><span>cached</span><strong>{formatNumber(runState.runUsage.cached_tokens ?? 0)}</strong></div>
+                <div><span>total</span><strong>{formatNumber(runState.runUsage.total_tokens)}</strong></div>
+                <div>
+                  <span>context estimate</span>
+                  <strong>{runState.promptBuild ? `${formatNumber(runState.promptBuild.token_estimate)} tokens` : "Not emitted"}</strong>
+                </div>
+                <div>
+                  <span>cost</span>
+                  <strong>Unavailable</strong>
+                </div>
+              </div>
+              {runState.promptBuild ? (
+                <dl className="inspector-facts">
+                  <div><dt>History</dt><dd>{runState.promptBuild.included_history_messages} included / {runState.promptBuild.dropped_history_messages} dropped</dd></div>
+                  <div><dt>Prompt hash</dt><dd><code>{shortId(runState.promptBuild.prompt_hash)}</code></dd></div>
+                  <div><dt>Cache key</dt><dd><code>{shortId(runState.promptBuild.prompt_cache_key)}</code></dd></div>
+                </dl>
+              ) : null}
+              {runState.promptCompaction ? (
+                <p className="inspector-empty-line">
+                  Compaction: {runState.promptCompaction.mode.replaceAll("_", " ")}
+                  {runState.promptCompaction.degraded ? ", degraded fallback used" : ""}.
+                </p>
+              ) : null}
+              <p className="inspector-footnote">
+                Cost requires a trusted server pricing snapshot and is not inferred in the browser.
+              </p>
             </section>
 
             <section className="inspector-section">
@@ -158,10 +247,65 @@ export function RunInspector({
                       <strong>
                         {tool.name} · {tool.status}
                       </strong>
-                      <div className="tool-list__detail">{truncate(tool.details, 120)}</div>
+                      <div className="tool-list__detail">
+                        {tool.metadata
+                          ? `${tool.metadata.read_only ? "read only" : "mutation capable"}; ${tool.metadata.risk_level} risk`
+                          : truncate(tool.details, 120)}
+                      </div>
                     </li>
                   ))}
                 </ul>
+              )}
+            </section>
+
+            <section className="inspector-section">
+              <h3>Workspace changes</h3>
+              {mutations.length === 0 ? (
+                <p className="inspector-empty-line">No canonical mutations for this run.</p>
+              ) : (
+                <ul className="mutation-list">
+                  {mutations.map(({ tool, mutation }, index) => (
+                    <li key={`${tool.id}-${mutation.path}-${index}`}>
+                      <strong>{mutation.path}</strong>
+                      <span>{mutation.operation}{mutation.diff ? "; Diff available in timeline" : "; no inline Diff"}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+
+            <section className="inspector-section">
+              <h3>Evidence references</h3>
+              {evidenceRefs.length === 0 ? (
+                <p className="inspector-empty-line">No opaque evidence or artifact references were emitted.</p>
+              ) : (
+                <ul className="evidence-ref-list">
+                  {evidenceRefs.map((reference) => (
+                    <li key={`${reference.kind}:${reference.value}`}>
+                      <span>{reference.kind}</span>
+                      <code>{reference.value}</code>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <p className="inspector-footnote">
+                References are canonical text only. The current product API does not expose artifact preview or download.
+              </p>
+            </section>
+
+            <section className="inspector-section">
+              <h3>Canonical events</h3>
+              {runState.trace.length === 0 ? (
+                <p className="inspector-empty-line">No projected events yet.</p>
+              ) : (
+                <ol className="canonical-event-list">
+                  {runState.trace.slice(0, 24).map((entry) => (
+                    <li key={entry.id}>
+                      <code>{entry.label}</code>
+                      <span>{truncate(entry.detail, 120)}</span>
+                    </li>
+                  ))}
+                </ol>
               )}
             </section>
           </>
@@ -169,6 +313,29 @@ export function RunInspector({
       </div>
     </aside>
   );
+}
+
+function trapFocus(event: KeyboardEvent<HTMLElement>) {
+  if (event.key !== "Tab") {
+    return;
+  }
+  const focusable = Array.from(
+    event.currentTarget.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    ),
+  ).filter((element) => element.getClientRects().length > 0);
+  const first = focusable[0];
+  const last = focusable.at(-1);
+  if (!first || !last) {
+    return;
+  }
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
 }
 
 export type InspectorPhase = "empty" | "loading" | "error" | "ready";
@@ -192,10 +359,73 @@ export function resolveInspectorPhase(runState: WorkbenchState): InspectorPhase 
   return "ready";
 }
 
-function shortId(value: string | null): string {
-  return value ? value.slice(0, 10) : "—";
+function shortId(value: string | null | undefined): string {
+  return value ? value.slice(0, 12) : "Not available";
+}
+
+function identity(value: string | null): string {
+  return value ?? "Not available";
+}
+
+function uniqueEvidenceRefs(runState: WorkbenchState): Array<{
+  kind: "artifact" | "evidence";
+  value: string;
+}> {
+  const seen = new Set<string>();
+  const references: Array<{ kind: "artifact" | "evidence"; value: string }> = [];
+  for (const record of runState.stepRecords) {
+    for (const [kind, values] of [
+      ["artifact", record.artifact_refs ?? []],
+      ["evidence", record.evidence_refs ?? []],
+    ] as const) {
+      for (const value of values) {
+        const key = `${kind}:${value}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          references.push({ kind, value });
+        }
+      }
+    }
+  }
+  return references;
 }
 
 function truncate(value: string, max: number): string {
   return value.length <= max ? value : `${value.slice(0, max)}…`;
+}
+
+function formatNumber(value: number): string {
+  return new Intl.NumberFormat("en-US").format(value);
+}
+
+function continuityLabel(runState: WorkbenchState): string {
+  if (runState.error) {
+    return "Needs attention";
+  }
+  if (runState.busy) {
+    return "Observed live";
+  }
+  return runState.activeRunId ? "Durable identity" : "No run";
+}
+
+function continuityTone(runState: WorkbenchState): string {
+  return runState.error ? "error" : runState.busy ? "working" : "ok";
+}
+
+function restoreStatusLabel(state: TranscriptRestoreState | undefined): string {
+  if (!state) {
+    return "Not available";
+  }
+  switch (state.status) {
+    case "idle":
+      return "Not restored";
+    case "loading":
+      return "Restoring";
+    case "complete":
+      return "Complete";
+    case "partial":
+      return `Partial (${state.reasons.length})`;
+    case "error":
+      return "Restore failed";
+  }
 }

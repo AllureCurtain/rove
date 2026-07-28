@@ -77,6 +77,7 @@ export function toWorkbenchStreamEvent(event: ProductStreamEvent): StreamEvent {
           call_id: event.result.call_id,
           output: event.result.output,
           mutations: event.result.mutations,
+          metadata: event.result.metadata,
         },
       };
     case "tool_call_failed":
@@ -84,6 +85,7 @@ export function toWorkbenchStreamEvent(event: ProductStreamEvent): StreamEvent {
         type: event.type,
         call_id: event.call_id,
         error: event.error,
+        metadata: event.metadata,
       };
     case "prompt_built":
       return {

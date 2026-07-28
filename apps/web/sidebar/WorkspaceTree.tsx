@@ -3,6 +3,7 @@
 import {
   FormEvent,
   type KeyboardEvent,
+  useEffect,
   useRef,
   useState,
 } from "react";
@@ -10,6 +11,9 @@ import {
   Cross2Icon,
   DrawingPinFilledIcon,
   DrawingPinIcon,
+  GearIcon,
+  LockClosedIcon,
+  MagnifyingGlassIcon,
   PlusIcon,
 } from "@radix-ui/react-icons";
 
@@ -27,6 +31,9 @@ export function WorkspaceTree({
   onNewSession,
   onTogglePin,
   onRemoveWorkspace,
+  mobileOpen = false,
+  onCloseMobile,
+  onOpenSettings,
 }: {
   workspaces: WorkspaceRecord[];
   sessionsByWorkspace: Record<string, SessionRecord[]>;
@@ -39,9 +46,40 @@ export function WorkspaceTree({
   onNewSession: (workspaceId: string) => void;
   onTogglePin: (workspaceId: string) => void;
   onRemoveWorkspace: (workspaceId: string) => void;
+  mobileOpen?: boolean;
+  onCloseMobile?: () => void;
+  onOpenSettings?: () => void;
 }) {
   const [openDialog, setOpenDialog] = useState(false);
+  const [query, setQuery] = useState("");
   const addWorkspaceButtonRef = useRef<HTMLButtonElement>(null);
+  const closeMobileButtonRef = useRef<HTMLButtonElement>(null);
+  const sidebarRef = useRef<HTMLElement>(null);
+
+  useEffect(() => {
+    if (!mobileOpen) {
+      return;
+    }
+    const sidebar = sidebarRef.current;
+    const focusCloseButton = () => {
+      if (sidebar && !sidebar.contains(document.activeElement)) {
+        closeMobileButtonRef.current?.focus();
+      }
+    };
+    const handleTransitionEnd = (event: TransitionEvent) => {
+      if (event.target === sidebar && event.propertyName === "transform") {
+        focusCloseButton();
+      }
+    };
+    const frame = window.requestAnimationFrame(focusCloseButton);
+    const fallback = window.setTimeout(focusCloseButton, 220);
+    sidebar?.addEventListener("transitionend", handleTransitionEnd);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.clearTimeout(fallback);
+      sidebar?.removeEventListener("transitionend", handleTransitionEnd);
+    };
+  }, [mobileOpen]);
 
   function closeDialog() {
     setOpenDialog(false);
@@ -50,9 +88,25 @@ export function WorkspaceTree({
 
   return (
     <aside
+      ref={sidebarRef}
       className="product-sidebar"
       aria-label="Workspaces"
       aria-busy={mutationBusy}
+      data-open={mobileOpen}
+      aria-modal={mobileOpen ? true : undefined}
+      role={mobileOpen ? "dialog" : undefined}
+      onKeyDown={
+        mobileOpen
+          ? (event) => {
+              if (event.key === "Escape") {
+                event.preventDefault();
+                onCloseMobile?.();
+                return;
+              }
+              trapFocus(event);
+            }
+          : undefined
+      }
     >
       <div className="product-sidebar__header">
         <h2>Workspaces</h2>
@@ -66,19 +120,52 @@ export function WorkspaceTree({
         >
           <PlusIcon />
         </button>
+        {onCloseMobile && mobileOpen ? (
+          <button
+            ref={closeMobileButtonRef}
+            type="button"
+            className="ghost icon-button mobile-only"
+            aria-label="Close workspaces"
+            onClick={onCloseMobile}
+          >
+            <Cross2Icon />
+          </button>
+        ) : null}
       </div>
+      <label className="workspace-search">
+        <MagnifyingGlassIcon aria-hidden="true" />
+        <input
+          type="search"
+          aria-label="Search workspaces and sessions"
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder="Search sessions"
+        />
+      </label>
       <div className="product-sidebar__scroll">
         {workspaces.length === 0 ? (
           <p className="sidebar-empty">No workspaces yet. Open a local folder or repo path.</p>
         ) : (
           workspaces.map((workspace) => {
-            const sessions = sessionsByWorkspace[workspace.id] ?? [];
+            const normalizedQuery = query.trim().toLocaleLowerCase();
+            const allSessions = sessionsByWorkspace[workspace.id] ?? [];
+            const workspaceMatches = `${workspace.displayName} ${workspace.rootPath}`
+              .toLocaleLowerCase()
+              .includes(normalizedQuery);
+            const sessions = normalizedQuery && !workspaceMatches
+              ? allSessions.filter((session) =>
+                  session.title.toLocaleLowerCase().includes(normalizedQuery),
+                )
+              : allSessions;
+            if (normalizedQuery && !workspaceMatches && sessions.length === 0) {
+              return null;
+            }
             const active = workspace.id === activeWorkspaceId;
-            const runningCount = sessions.filter((session) => session.status === "running").length;
-            const attentionCount = sessions.filter(
+            const runningCount = allSessions.filter((session) => session.status === "running").length;
+            const attentionCount = allSessions.filter(
               (session) => session.status === "needs_attention",
             ).length;
-            const errorCount = sessions.filter((session) => session.status === "error").length;
+            const errorCount = allSessions.filter((session) => session.status === "error").length;
             const workspaceTone =
               runningCount > 0
                 ? "running"
@@ -141,7 +228,7 @@ export function WorkspaceTree({
                     <Cross2Icon />
                   </button>
                 </div>
-                {active ? (
+                {active || normalizedQuery ? (
                   <>
                     <ul className="session-list">
                       {sessions.map((session) => (
@@ -191,6 +278,17 @@ export function WorkspaceTree({
           })
         )}
       </div>
+      <footer className="product-sidebar__footer">
+        <div className="workspace-boundary">
+          <LockClosedIcon />
+          <span><strong>Bounded roots</strong><small>API-authoritative workspaces</small></span>
+        </div>
+        {onOpenSettings ? (
+          <button type="button" className="ghost" onClick={onOpenSettings}>
+            <GearIcon /> Product settings
+          </button>
+        ) : null}
+      </footer>
       {openDialog ? (
         <OpenWorkspaceDialog
           onCancel={closeDialog}
@@ -202,6 +300,29 @@ export function WorkspaceTree({
       ) : null}
     </aside>
   );
+}
+
+function trapFocus(event: KeyboardEvent<HTMLElement>) {
+  if (event.key !== "Tab") {
+    return;
+  }
+  const focusable = Array.from(
+    event.currentTarget.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), input:not([disabled]), select:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
+    ),
+  ).filter((element) => element.getClientRects().length > 0);
+  const first = focusable[0];
+  const last = focusable.at(-1);
+  if (!first || !last) {
+    return;
+  }
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
 }
 
 function sessionStatusLabel(status: SessionRecord["status"]): string {
@@ -249,12 +370,14 @@ function OpenWorkspaceDialog({
   function handleKeyDown(event: KeyboardEvent<HTMLFormElement>) {
     if (event.key === "Escape") {
       event.preventDefault();
+      event.stopPropagation();
       onCancel();
       return;
     }
     if (event.key !== "Tab") {
       return;
     }
+    event.stopPropagation();
     const focusable = Array.from(
       event.currentTarget.querySelectorAll<HTMLElement>(
         "button:not([disabled]), input:not([disabled]), select:not([disabled])",
