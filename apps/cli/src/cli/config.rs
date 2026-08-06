@@ -81,7 +81,10 @@ pub fn format_effective_config(config: &AppConfig) -> String {
         "sources": {
             "workspace_root": config.source_summary.workspace_root.to_string_lossy(),
             "project_config_path": config.source_summary.project_config_path.to_string_lossy(),
+            "project_config_present": config.source_summary.project_config_present,
             "project_config_loaded": config.source_summary.project_config_loaded,
+            "project_activation": config.source_summary.project_activation,
+            "project_activation_source": config.source_summary.project_activation_source,
             "env_keys": config.source_summary.env_keys,
             "cli_keys": config.source_summary.cli_keys,
         },

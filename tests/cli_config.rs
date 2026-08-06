@@ -125,6 +125,9 @@ fn format_effective_config_prints_json_without_secret_value() {
     assert_eq!(json["memory"]["session_dir"], "custom-memory/sessions");
     assert_eq!(json["memory"]["durable_dir"], "custom-memory/durable");
     assert_eq!(json["memory"]["recall_limit"], 4);
+    assert_eq!(json["sources"]["project_activation"], "trusted");
+    assert_eq!(json["sources"]["project_activation_source"], "programmatic");
+    assert_eq!(json["sources"]["project_config_present"], false);
     assert!(json.get("rag").is_none());
     let resolved_session_dir = json["resolved_paths"]["memory_session_dir"]
         .as_str()

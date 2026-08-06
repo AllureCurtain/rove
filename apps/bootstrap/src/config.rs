@@ -8,6 +8,9 @@ use serde::{Deserialize, Serialize};
 
 use rove_runtime::memory::paths::MemoryPaths;
 
+use crate::project_trust::{
+    ProjectActivation, ProjectActivationSource, ProjectActivationState, TRUSTED_WORKSPACES_ENV,
+};
 use crate::provider::ProviderProfileConfig;
 
 pub use rove_models::ProviderOptions;
@@ -157,7 +160,11 @@ pub struct RoutingConfig {
 pub struct ConfigSourceSummary {
     pub workspace_root: PathBuf,
     pub project_config_path: PathBuf,
+    pub project_config_present: bool,
     pub project_config_loaded: bool,
+    pub project_activation: ProjectActivationState,
+    pub project_activation_source: Option<ProjectActivationSource>,
+    pub trusted_workspace_roots: Vec<PathBuf>,
     pub env_keys: Vec<String>,
     pub cli_keys: Vec<String>,
 }
@@ -167,6 +174,7 @@ pub struct AppConfigOverrides {
     pub model: Option<String>,
     pub max_steps: Option<u32>,
     pub api_bind_addr: Option<String>,
+    pub trust_project: bool,
 }
 
 impl Default for RuntimeConfig {
@@ -300,10 +308,15 @@ impl Default for RoutingConfig {
 
 impl Default for ConfigSourceSummary {
     fn default() -> Self {
+        let activation = ProjectActivation::programmatic();
         Self {
             workspace_root: PathBuf::from("."),
             project_config_path: PathBuf::from(".rove/config.toml"),
+            project_config_present: false,
             project_config_loaded: false,
+            project_activation: activation.state,
+            project_activation_source: activation.source,
+            trusted_workspace_roots: activation.trusted_workspace_roots,
             env_keys: Vec::new(),
             cli_keys: Vec::new(),
         }
@@ -331,14 +344,25 @@ impl AppConfig {
         workspace_root: impl AsRef<Path>,
         overrides: AppConfigOverrides,
     ) -> anyhow::Result<Self> {
-        let _ = dotenvy::dotenv();
-
         let workspace_root = workspace_root
             .as_ref()
             .canonicalize()
             .unwrap_or_else(|_| workspace_root.as_ref().to_path_buf());
+        // Resolve the grant before reading a workspace-owned .env file so the
+        // repository cannot grant trust to itself.
+        let trusted_workspaces = std::env::var_os(TRUSTED_WORKSPACES_ENV);
+        let activation = ProjectActivation::resolve(
+            &workspace_root,
+            overrides.trust_project,
+            trusted_workspaces,
+        )?;
+        if activation.state == ProjectActivationState::Trusted {
+            let _ = dotenvy::from_path(workspace_root.join(".env"));
+        }
         let project_config_path = workspace_root.join(".rove/config.toml");
-        let project_config_loaded = project_config_path.exists();
+        let project_config_present = project_config_path.exists();
+        let project_config_loaded =
+            project_config_present && activation.state == ProjectActivationState::Trusted;
 
         let env_layer = env_layer()?;
         let env_keys = env_layer.keys.clone();
@@ -358,7 +382,11 @@ impl AppConfig {
         config.source_summary = ConfigSourceSummary {
             workspace_root,
             project_config_path,
+            project_config_present,
             project_config_loaded,
+            project_activation: activation.state,
+            project_activation_source: activation.source,
+            trusted_workspace_roots: activation.trusted_workspace_roots,
             env_keys,
             cli_keys,
         };
@@ -456,7 +484,26 @@ impl AppConfig {
             .unwrap_or_else(|_| workspace_root.as_ref().to_path_buf());
         self.source_summary.workspace_root = workspace_root.clone();
         self.source_summary.project_config_path = workspace_root.join(".rove/config.toml");
+        self.source_summary.project_config_present =
+            self.source_summary.project_config_path.exists();
         self.source_summary.project_config_loaded = false;
+        let activation = ProjectActivation {
+            state: self.source_summary.project_activation,
+            source: self.source_summary.project_activation_source,
+            trusted_workspace_roots: self.source_summary.trusted_workspace_roots.clone(),
+        }
+        .for_workspace(&workspace_root);
+        self.source_summary.project_activation = activation.state;
+        self.source_summary.project_activation_source = activation.source;
+        self.source_summary.trusted_workspace_roots = activation.trusted_workspace_roots;
+    }
+
+    pub fn project_activation_state(&self) -> ProjectActivationState {
+        self.source_summary.project_activation
+    }
+
+    pub fn project_activation_allowed(&self) -> bool {
+        self.project_activation_state() == ProjectActivationState::Trusted
     }
 
     fn normalize_active_profile_model(&mut self) {
@@ -821,6 +868,9 @@ struct NamedConfigLayer {
 impl AppConfigOverrides {
     fn into_layer(self) -> NamedConfigLayer {
         let mut keys = Vec::new();
+        if self.trust_project {
+            keys.push("project.trust".to_string());
+        }
         let mut runtime = RuntimeConfigLayer::default();
         if let Some(max_steps) = self.max_steps {
             runtime.max_steps = Some(max_steps);
@@ -1155,6 +1205,13 @@ mod tests {
             .expect("env lock should not be poisoned")
     }
 
+    fn trusted_overrides() -> AppConfigOverrides {
+        AppConfigOverrides {
+            trust_project: true,
+            ..AppConfigOverrides::default()
+        }
+    }
+
     fn clear_config_env() {
         for key in [
             "ROVE_PROVIDER_ACTIVE",
@@ -1203,6 +1260,7 @@ mod tests {
             "ROVE_API_CORS_ORIGINS",
             "ROVE_API_RATE_LIMIT_PER_MINUTE",
             "ROVE_WEB_API_BASE",
+            TRUSTED_WORKSPACES_ENV,
         ] {
             unsafe {
                 std::env::remove_var(key);
@@ -1259,6 +1317,7 @@ retry_backoff_max_ms = 456
                 model: Some("cli-model".to_string()),
                 max_steps: Some(13),
                 api_bind_addr: None,
+                trust_project: true,
             },
         )
         .unwrap();
@@ -1283,6 +1342,83 @@ retry_backoff_max_ms = 456
                 .cli_keys
                 .contains(&"provider.model".to_string())
         );
+        clear_config_env();
+    }
+
+    #[test]
+    fn project_config_is_deferred_until_the_workspace_is_explicitly_trusted() {
+        let _guard = env_lock();
+        clear_config_env();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let config_dir = tmp.path().join(".rove");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::write(
+            config_dir.join("config.toml"),
+            r#"
+[runtime]
+max_steps = 9
+
+[provider]
+active = "external"
+
+[provider.profiles.external]
+provider_type = "openai"
+base_url = "https://untrusted.example.test/v1"
+model = "untrusted-model"
+"#,
+        )
+        .unwrap();
+
+        let restricted = AppConfig::load(tmp.path(), AppConfigOverrides::default()).unwrap();
+        assert_eq!(
+            restricted.project_activation_state(),
+            ProjectActivationState::Restricted
+        );
+        assert!(restricted.source_summary.project_config_present);
+        assert!(!restricted.source_summary.project_config_loaded);
+        assert_eq!(
+            restricted.runtime.max_steps,
+            RuntimeConfig::default().max_steps
+        );
+        assert_eq!(restricted.provider.model, "fake");
+
+        let trusted = AppConfig::load(tmp.path(), trusted_overrides()).unwrap();
+        assert_eq!(
+            trusted.project_activation_state(),
+            ProjectActivationState::Trusted
+        );
+        assert_eq!(
+            trusted.source_summary.project_activation_source,
+            Some(ProjectActivationSource::CommandLine)
+        );
+        assert!(trusted.source_summary.project_config_loaded);
+        assert_eq!(trusted.runtime.max_steps, 9);
+        assert_eq!(trusted.provider.model, "untrusted-model");
+        clear_config_env();
+    }
+
+    #[test]
+    fn environment_grant_is_exact_and_rebase_does_not_inherit_it() {
+        let _guard = env_lock();
+        clear_config_env();
+        let selected = tempfile::TempDir::new().unwrap();
+        let other = tempfile::TempDir::new().unwrap();
+        let trusted = std::env::join_paths([selected.path()]).unwrap();
+        unsafe { std::env::set_var(TRUSTED_WORKSPACES_ENV, trusted) };
+
+        let mut config = AppConfig::load(selected.path(), AppConfigOverrides::default()).unwrap();
+        assert_eq!(
+            config.source_summary.project_activation_source,
+            Some(ProjectActivationSource::Environment)
+        );
+        assert!(config.project_activation_allowed());
+
+        config.rebase_to_workspace(other.path());
+        assert_eq!(
+            config.project_activation_state(),
+            ProjectActivationState::Restricted
+        );
+        assert!(!config.project_activation_allowed());
         clear_config_env();
     }
 
@@ -1321,7 +1457,7 @@ auth = { style = "header", header = "x-api-key", secret = { env = "ANTHROPIC_API
         )
         .unwrap();
 
-        let config = AppConfig::load(tmp.path(), AppConfigOverrides::default()).unwrap();
+        let config = AppConfig::load(tmp.path(), trusted_overrides()).unwrap();
 
         assert_eq!(config.provider.active.as_deref(), Some("team-gateway"));
         assert_eq!(config.provider.model, "project-model");
@@ -1355,17 +1491,18 @@ model = "project-model"
         )
         .unwrap();
 
-        let project = AppConfig::load(tmp.path(), AppConfigOverrides::default()).unwrap();
+        let project = AppConfig::load(tmp.path(), trusted_overrides()).unwrap();
         assert_eq!(project.provider.model, "project-model");
 
         unsafe { std::env::set_var("ROVE_MODEL", "env-model") };
-        let env = AppConfig::load(tmp.path(), AppConfigOverrides::default()).unwrap();
+        let env = AppConfig::load(tmp.path(), trusted_overrides()).unwrap();
         assert_eq!(env.provider.model, "env-model");
 
         let cli = AppConfig::load(
             tmp.path(),
             AppConfigOverrides {
                 model: Some("cli-model".to_string()),
+                trust_project: true,
                 ..AppConfigOverrides::default()
             },
         )
@@ -1390,7 +1527,7 @@ model = "model"
 "#;
 
         std::fs::write(&path, profile).unwrap();
-        let error = AppConfig::load(tmp.path(), AppConfigOverrides::default())
+        let error = AppConfig::load(tmp.path(), trusted_overrides())
             .unwrap_err()
             .to_string();
         assert!(error.contains("provider.active is required"));
@@ -1402,7 +1539,7 @@ model = "model"
             ),
         )
         .unwrap();
-        let error = AppConfig::load(tmp.path(), AppConfigOverrides::default())
+        let error = AppConfig::load(tmp.path(), trusted_overrides())
             .unwrap_err()
             .to_string();
         assert!(error.contains("unknown profile `missing`"));
@@ -1414,7 +1551,7 @@ model = "model"
             ),
         )
         .unwrap();
-        let error = AppConfig::load(tmp.path(), AppConfigOverrides::default())
+        let error = AppConfig::load(tmp.path(), trusted_overrides())
             .unwrap_err()
             .to_string();
         assert!(error.contains("must not contain duplicates"));
@@ -1469,7 +1606,7 @@ presence_penalty = 0.4
         )
         .unwrap();
 
-        let config = AppConfig::load(tmp.path(), AppConfigOverrides::default()).unwrap();
+        let config = AppConfig::load(tmp.path(), trusted_overrides()).unwrap();
 
         assert_eq!(config.provider.options.max_tokens, Some(2048));
         assert_eq!(config.provider.options.temperature, Some(0.2));
@@ -1506,7 +1643,7 @@ system_prompt_path = "../outside/prompt.md"
         )
         .unwrap();
 
-        let err = AppConfig::load(tmp.path(), AppConfigOverrides::default()).unwrap_err();
+        let err = AppConfig::load(tmp.path(), trusted_overrides()).unwrap_err();
 
         assert!(
             err.to_string()

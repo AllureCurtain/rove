@@ -87,6 +87,7 @@ async fn run_provider_smoke(
             model: Some(model.clone()),
             max_steps: Some(3),
             api_bind_addr: None,
+            trust_project: false,
         },
     )
     .unwrap();

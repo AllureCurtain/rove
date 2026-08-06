@@ -8,7 +8,7 @@ use rove_runtime::types::{ApprovalPolicy, ToolApprovalProvider, UserInputProvide
 use rove_runtime::workspace::Workspace;
 
 use crate::config::AppConfig;
-use crate::registry::tool_registry_with_mcp;
+use crate::registry::tool_registry_for_config;
 
 /// Options shared by first-party CLI/API engine construction.
 pub struct EngineOptions<'a> {
@@ -23,14 +23,7 @@ pub struct EngineOptions<'a> {
 
 /// Build the shared first-party Engine used by CLI and API.
 pub async fn build_engine(options: EngineOptions<'_>) -> anyhow::Result<Engine> {
-    let registry = tool_registry_with_mcp(
-        options.workspace,
-        options.config.shell_policy(),
-        options
-            .config
-            .resolve_path(&options.config.tool.mcp_config_path),
-    )
-    .await?;
+    let registry = tool_registry_for_config(options.workspace, options.config).await?;
     Ok(build_engine_with_registry(options, registry))
 }
 

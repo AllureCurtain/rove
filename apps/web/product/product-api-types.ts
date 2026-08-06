@@ -653,6 +653,7 @@ export const PRODUCT_ERROR_CODES = [
   "product_memory_invalid_slug",
   "product_memory_not_found",
   "product_memory_conflict",
+  "project_trust_required",
   "migration_idempotency_conflict",
   "product_control_conflict",
   "product_control_rejected",
@@ -3992,4 +3993,3 @@ export function parseProductSessionDiffResponse(
     ),
   };
 }
-

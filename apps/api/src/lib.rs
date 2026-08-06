@@ -335,6 +335,7 @@ pub async fn serve_with_shutdown(
         &workspace.root,
         AppConfigOverrides {
             api_bind_addr: addr.map(|addr| addr.to_string()),
+            trust_project: false,
             ..AppConfigOverrides::default()
         },
     )?;
@@ -535,6 +536,7 @@ async fn prepare_and_start_job(
         job_id: record.job_id,
         run_id: record.run_id,
         resumed_from_run_id: record.resumed_from_run_id,
+        workspace_activation: record.config.project_activation_state().into(),
     };
     start_job_supervisor(state, launch).await;
 
@@ -3763,6 +3765,7 @@ impl From<ProductStoreError> for ApiError {
             | ProductErrorCode::ProductRevisionConflict
             | ProductErrorCode::ProductMemoryConflict
             | ProductErrorCode::ProductMcpConflict
+            | ProductErrorCode::ProjectTrustRequired
             | ProductErrorCode::MigrationIdempotencyConflict
             | ProductErrorCode::ProductControlConflict
             | ProductErrorCode::ProductControlRejected

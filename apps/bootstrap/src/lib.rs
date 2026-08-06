@@ -3,6 +3,7 @@
 pub mod assembly;
 pub mod config;
 pub mod factory;
+pub mod project_trust;
 pub mod provider;
 pub mod registry;
 
@@ -15,10 +16,12 @@ pub use factory::{
     ModelClientFactory, build_model_client, build_model_client_with_health, try_build_model_client,
     try_build_model_client_with_health, try_build_model_client_with_registry,
 };
+pub use project_trust::{ProjectActivationSource, ProjectActivationState, TRUSTED_WORKSPACES_ENV};
 pub use provider::{
     ProviderAuthConfig, ProviderHeaderValue, ProviderProfileConfig, SecretSource,
     default_wire_protocol_registry, wire_protocol_for_provider_type,
 };
 pub use registry::{
-    register_extra_tools, tool_registry, tool_registry_with_mcp, tool_registry_with_shell_policy,
+    register_extra_tools, tool_registry, tool_registry_for_config, tool_registry_with_mcp,
+    tool_registry_with_shell_policy,
 };

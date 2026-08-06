@@ -8,6 +8,7 @@ User-facing terminal product:
 - sessions/state maintenance commands
 - terminal rendering and full-screen TUI
 - default-run `rove` binary
+- explicit `--trust-project` activation for workspace config and MCP
 
 ## Non-responsibility
 
@@ -43,5 +44,6 @@ assert!(!registry.descriptors().is_empty());
 cargo test -p rove-cli
 cargo run -p rove-cli -- --help
 cargo run -p rove-cli -- --model fake "echo hello"
+cargo run -p rove-cli -- --trust-project --model fake "use project tools"
 cargo test -p rove-integration-tests --test cli_repl
 ```

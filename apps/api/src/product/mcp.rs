@@ -190,7 +190,7 @@ pub(crate) async fn probe_product_mcp_server(
     query: Result<Query<ProductMcpWorkspaceQuery>, QueryRejection>,
 ) -> Result<Json<ProductMcpProbeResponse>, ApiError> {
     let Query(query) = product_mcp_query(query)?;
-    let path = product_mcp_config_path(&state, &query.workspace_id).await?;
+    let path = product_mcp_activation_path(&state, &query.workspace_id).await?;
     let requested_name = name.clone();
     let server = tokio::task::spawn_blocking(move || {
         list_product_mcp_servers_sync(&path).and_then(|servers| {
@@ -233,9 +233,30 @@ async fn product_mcp_config_path(
     state: &ApiState,
     workspace_id: &ProductWorkspaceId,
 ) -> Result<std::path::PathBuf, ApiError> {
+    product_mcp_config_path_with_activation(state, workspace_id, false).await
+}
+
+async fn product_mcp_activation_path(
+    state: &ApiState,
+    workspace_id: &ProductWorkspaceId,
+) -> Result<std::path::PathBuf, ApiError> {
+    product_mcp_config_path_with_activation(state, workspace_id, true).await
+}
+
+async fn product_mcp_config_path_with_activation(
+    state: &ApiState,
+    workspace_id: &ProductWorkspaceId,
+    require_activation: bool,
+) -> Result<std::path::PathBuf, ApiError> {
     let product_workspace = state.product_store()?.get_workspace(workspace_id).await?;
     let workspace = crate::open_product_workspace(&product_workspace)?;
     let (_, config) = crate::rebased_workspace_config(state, workspace)?;
+    if require_activation && !config.project_activation_allowed() {
+        return Err(ApiError::conflict_with_code(
+            ProductErrorCode::ProjectTrustRequired.as_str(),
+            "project trust is required before probing or starting workspace MCP servers",
+        ));
+    }
     config.workspace_bounded_mcp_config_path().map_err(|error| {
         tracing::warn!(
             product_workspace_id = %workspace_id,

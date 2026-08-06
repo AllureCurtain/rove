@@ -73,7 +73,10 @@ cannot supply trustworthy interaction events fail closed.
 ## Core Flow
 
 1. `Workspace::detect` chooses the workspace root and `.rove` state directory.
-2. `AppConfig::load` merges defaults, `.rove/config.toml`, environment variables, and explicit CLI/API overrides.
+2. `AppConfig::load` resolves operator-owned project activation before reading
+   workspace files. Restricted workspaces defer `.env` and `.rove/config.toml`;
+   trusted workspaces merge defaults, project config, environment variables,
+   and explicit CLI/API overrides.
 3. The interface builds a `ModelClient`, `ToolRegistry`, `ContextManager`, and `StateStore`.
 4. `StateStore::start_run` creates a run directory and indexes session/job/run identity in SQLite.
 5. `Engine::run` emits `StreamEvent` values while model events, tool calls,

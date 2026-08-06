@@ -184,8 +184,13 @@ Relevant code:
 `AppConfig::load` merges configuration in this order:
 
 ```text
-defaults < .rove/config.toml < environment < CLI/API overrides
+defaults < trusted .rove/config.toml < environment < CLI/API overrides
 ```
+
+Workspace project config and local `.env` are deferred by default. Use
+`--trust-project` for an explicit CLI run, or set `ROVE_TRUSTED_WORKSPACES` to
+an OS path-list of exact canonical roots before starting the API. This is an
+operator activation grant; project files cannot set it for themselves.
 
 The config is grouped by runtime, provider, tool, memory, state, API, web, and
 routing. Provider configuration supports named profiles with explicit wire
@@ -255,7 +260,8 @@ High-level flow in `src/main.rs`:
 7. If `--task-workspace` is set, create or reuse that Task workspace and rebase
    config paths to the task root.
 8. Construct the model client.
-9. Register the shared runtime tool registry, including configured MCP tools.
+9. Register the shared runtime tool registry; configured MCP tools are included
+   only for an explicitly activated workspace.
 10. Build `ContextManager`.
 11. Build `Engine`.
 12. Create `StateStore`.
@@ -1059,9 +1065,9 @@ Division of labor: prefer `search_code` for repo/text search; use `run_shell` fo
 | `mcp__<server>__<tool>` | MCP-proxied remote tools |
 
 CLI and API construct runtime tools through the shared async
-`tool_registry_with_mcp(&Workspace, ShellPolicy, mcp_config_path)` builder. That
-builder registers built-ins through `tool_registry_with_shell_policy`
-and then loads configured MCP tools. Root-bound tools receive the workspace root
+`tool_registry_for_config(&Workspace, &AppConfig)` builder. It registers
+built-ins and loads configured MCP tools only for an explicitly activated
+workspace. Root-bound tools receive the workspace root
 at construction. Runtime-specific Workspace, Memory paths, approval policy, and
 input provider are attached to the invocation through `RuntimeToolServices`;
 they are not fields on the minimal `rove_core::ToolContext`.
@@ -1279,9 +1285,10 @@ Relevant code:
 ## 17. MCP
 
 MCP integration registers remote server tools into the local `ToolRegistry`.
-Both CLI and API jobs use the same runtime registry builder, so configured MCP
-tools are available through CLI runs, API jobs, and both Web surfaces via the
-API proxy.
+Both CLI and API jobs use the same config-aware registry builder, so configured
+MCP tools are available only after exact-root project activation. Product MCP
+catalogs may be listed and edited while restricted, but `probe` fails with
+`project_trust_required` before environment resolution or process spawn.
 
 Config path:
 

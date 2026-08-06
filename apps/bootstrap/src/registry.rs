@@ -9,6 +9,8 @@ use rove_runtime::tools::search::SearchCodeTool;
 use rove_runtime::tools::shell::{ShellPolicy, ShellTool};
 use rove_runtime::workspace::Workspace;
 
+use crate::config::AppConfig;
+
 /// Build the default first-party tool registry exposed to models.
 ///
 /// `echo` is intentionally omitted; keep it for tests only.
@@ -47,9 +49,62 @@ pub async fn tool_registry_with_mcp(
     Ok(registry)
 }
 
+/// Build the registry allowed by the selected workspace's activation state.
+///
+/// Restricted workspaces keep the ordinary local tools, but repository-owned
+/// MCP definitions are not read or spawned.
+pub async fn tool_registry_for_config(
+    workspace: &Workspace,
+    config: &AppConfig,
+) -> anyhow::Result<ToolRegistry> {
+    if !config.project_activation_allowed() {
+        return Ok(tool_registry_with_shell_policy(
+            workspace,
+            config.shell_policy(),
+        ));
+    }
+    tool_registry_with_mcp(
+        workspace,
+        config.shell_policy(),
+        config.resolve_path(&config.tool.mcp_config_path),
+    )
+    .await
+}
+
 /// Helper for product surfaces that need to inject extra tools after defaults.
 pub fn register_extra_tools(registry: &mut ToolRegistry, tools: Vec<Box<dyn Tool>>) {
     for tool in tools {
         registry.register(tool);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{AppConfig, ProjectActivationState};
+    use rove_runtime::workspace::Workspace;
+
+    use super::tool_registry_for_config;
+
+    #[tokio::test]
+    async fn restricted_workspace_does_not_read_or_spawn_mcp_configuration() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let config_dir = temp.path().join(".rove");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::write(
+            config_dir.join("mcp_servers.json"),
+            r#"{"servers":[{"name":"blocked","enabled":true,"transport":"stdio","command":"rove-command-that-does-not-exist"}]}"#,
+        )
+        .unwrap();
+        let workspace = Workspace::detect(temp.path()).unwrap();
+        let mut config = AppConfig::default();
+        config.rebase_to_workspace(&workspace.root);
+        config.source_summary.project_activation = ProjectActivationState::Restricted;
+        config.source_summary.project_activation_source = None;
+        config.source_summary.trusted_workspace_roots.clear();
+
+        let registry = tool_registry_for_config(&workspace, &config).await.unwrap();
+
+        assert!(registry.has("run_shell"));
+        assert!(!registry.has("mcp__blocked"));
     }
 }

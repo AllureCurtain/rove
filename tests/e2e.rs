@@ -2736,7 +2736,14 @@ async fn planner_uses_engine_configured_prompt() {
         "[runtime]\nplanner_prompt_path = \"prompts/custom-planner.md\"\n",
     )
     .unwrap();
-    let config = AppConfig::load(&workspace.root, AppConfigOverrides::default()).unwrap();
+    let config = AppConfig::load(
+        &workspace.root,
+        AppConfigOverrides {
+            trust_project: true,
+            ..AppConfigOverrides::default()
+        },
+    )
+    .unwrap();
 
     let captured = Arc::new(Mutex::new(Vec::new()));
     let model = Box::new(CapturingFakeModelClient::new(

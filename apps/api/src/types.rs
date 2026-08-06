@@ -17,6 +17,23 @@ use rove_runtime::types::{
 
 use crate::product::ProductSessionId;
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceActivationState {
+    #[default]
+    Restricted,
+    Trusted,
+}
+
+impl From<rove_app_bootstrap::ProjectActivationState> for WorkspaceActivationState {
+    fn from(value: rove_app_bootstrap::ProjectActivationState) -> Self {
+        match value {
+            rove_app_bootstrap::ProjectActivationState::Restricted => Self::Restricted,
+            rove_app_bootstrap::ProjectActivationState::Trusted => Self::Trusted,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ApiErrorResponse {
     /// Stable machine-readable error code.
@@ -152,6 +169,9 @@ pub struct CreateJobResponse {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(value_type = Option<String>, format = "ulid")]
     pub resumed_from_run_id: Option<RunId>,
+    /// Whether repository-owned project config and MCP activation were enabled.
+    #[serde(default)]
+    pub workspace_activation: WorkspaceActivationState,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]

@@ -225,7 +225,11 @@ the index from task, trace, and report artifacts.
 
 ## Configuration
 
-Configuration is layered in this order:
+Project-owned configuration is disabled until the selected workspace is
+explicitly activated with CLI `--trust-project` or its canonical path is listed
+in process-level `ROVE_TRUSTED_WORKSPACES`. A workspace `.env` or config file
+cannot grant activation to itself. Once activated, configuration is layered in
+this order:
 
 ```text
 defaults < .rove/config.toml < environment < CLI overrides
@@ -244,6 +248,7 @@ Common variables:
 | `ROVE_FALLBACK_MODELS` | Comma-separated fallback model list |
 | `ROVE_SHELL_TIMEOUT_MS` | Shell timeout; defaults to `30000` |
 | `ROVE_SHELL_MAX_OUTPUT_BYTES` | Captured output limit per stream; defaults to `65536` |
+| `ROVE_TRUSTED_WORKSPACES` | OS path-list of exact workspace roots allowed to load project config and MCP |
 
 Use `cargo run -p rove-cli -- dump-config` to inspect effective values and
 secret-redacted provider fields. The complete configuration and security

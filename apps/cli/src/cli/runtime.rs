@@ -18,6 +18,7 @@ pub struct CliRuntimeOptions {
     pub cwd: Option<PathBuf>,
     pub model: Option<String>,
     pub max_steps: Option<u32>,
+    pub trust_project: bool,
     pub approval: CliApprovalPolicy,
     pub task_workspace: Option<String>,
     pub task_base: Option<PathBuf>,
@@ -79,6 +80,7 @@ pub async fn build_cli_runtime(options: CliRuntimeOptions) -> anyhow::Result<Cli
             model: options.model.clone(),
             max_steps: options.max_steps,
             api_bind_addr: None,
+            trust_project: options.trust_project,
         },
     )?;
     let workspace = if let Some(task_name) = options.task_workspace.as_deref() {
@@ -102,6 +104,15 @@ pub async fn build_cli_runtime(options: CliRuntimeOptions) -> anyhow::Result<Cli
         ..workspace
     };
     workspace.ensure_state_dir()?;
+
+    if !config.project_activation_allowed() {
+        tracing::warn!(
+            code = "project_trust_required",
+            workspace_root = %workspace.root.display(),
+            project_config_present = config.source_summary.project_config_present,
+            "Project activation is restricted; workspace config and MCP servers are disabled. Pass --trust-project to activate this workspace explicitly."
+        );
+    }
 
     tracing::info!(
         workspace_root = %workspace.root.display(),
@@ -195,6 +206,7 @@ mod tests {
             cwd: Some(tmp.path().to_path_buf()),
             model: Some("fake".to_string()),
             max_steps: Some(2),
+            trust_project: false,
             approval: CliApprovalPolicy::Never,
             task_workspace: None,
             task_base: None,

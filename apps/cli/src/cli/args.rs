@@ -30,6 +30,10 @@ pub struct Args {
     #[arg(short = 'C', long, global = true)]
     pub cwd: Option<String>,
 
+    /// Explicitly allow this run to load project config and activate workspace MCP servers.
+    #[arg(long, global = true)]
+    pub trust_project: bool,
+
     /// Create or use an isolated standalone task workspace by name.
     #[arg(long, global = true)]
     pub task_workspace: Option<String>,
@@ -109,6 +113,15 @@ mod tests {
     fn approval_defaults_to_ask() {
         let args = Args::parse_from(["rove", "inspect"]);
         assert!(matches!(args.approval, CliApprovalPolicy::Ask));
+    }
+
+    #[test]
+    fn trust_project_is_explicit_and_global() {
+        let default = Args::parse_from(["rove", "inspect"]);
+        let trusted = Args::parse_from(["rove", "exec", "--trust-project", "inspect"]);
+
+        assert!(!default.trust_project);
+        assert!(trusted.trust_project);
     }
 
     #[test]

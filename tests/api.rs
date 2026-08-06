@@ -21,9 +21,10 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use rove_api::{
     ApiState, CreateJobResponse, JobStateResponse, MAX_M1_BROWSER_MIGRATION_BODY_BYTES,
-    MAX_PRODUCT_TEXT_BYTES, ProductSessionId, ProductWorkspaceId, router, serve_listener,
+    MAX_PRODUCT_TEXT_BYTES, ProductSessionId, ProductWorkspaceId, WorkspaceActivationState, router,
+    serve_listener,
 };
-use rove_app_bootstrap::AppConfig;
+use rove_app_bootstrap::{AppConfig, AppConfigOverrides};
 use rove_runtime::events::StreamEvent;
 use rove_runtime::execution::StepRecordStatus;
 use rove_runtime::state::store::StateStore;
@@ -7274,6 +7275,62 @@ async fn product_mcp_crud_is_workspace_scoped_secret_free_and_used_by_product_jo
         .await
         .unwrap();
     assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn restricted_product_workspace_cannot_probe_or_activate_mcp() {
+    let server = tempfile::TempDir::new().unwrap();
+    let folder = tempfile::TempDir::new().unwrap();
+    let mut config = AppConfig::load(server.path(), AppConfigOverrides::default()).unwrap();
+    config.state.state_dir = "api-state".into();
+    let app = router(ApiState::new(
+        Workspace::detect(server.path()).unwrap(),
+        config,
+    ));
+    let workspace = create_product_workspace(&app, folder.path()).await;
+    let workspace_id = workspace["id"].as_str().unwrap();
+
+    let created = post_json(
+        &app,
+        &format!("/product/mcp/servers?workspace_id={workspace_id}"),
+        serde_json::json!({
+            "name": "blocked",
+            "transport": "stdio",
+            "command": "rove-command-that-does-not-exist-058761eb",
+            "request_timeout_ms": 2_000
+        }),
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::CREATED);
+
+    let probe = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/product/mcp/servers/blocked/probe?workspace_id={workspace_id}"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(probe.status(), StatusCode::CONFLICT);
+    let error: serde_json::Value = decode_json(probe).await;
+    assert_eq!(error["code"], "project_trust_required");
+    assert!(!error.to_string().contains("058761eb"));
+
+    let session = create_product_session(&app, workspace_id, "Restricted project").await;
+    let session_id = session["id"].as_str().unwrap();
+    configure_product_session_model(&app, session_id, "fake", 1).await;
+    let job = create_product_job(&app, session_id, "inspect safely").await;
+    assert_eq!(
+        job.workspace_activation,
+        WorkspaceActivationState::Restricted
+    );
+    let state = wait_for_done(app, job.job_id.to_string()).await;
+    assert_eq!(state.status, RunStatus::Done);
 }
 
 #[tokio::test]

@@ -5,11 +5,25 @@
 Configuration is typed in `apps/bootstrap/src/config.rs` and grouped by
 runtime, provider, tool, memory, state, API, web, and routing.
 
-Merge order:
+Project activation is fail-closed. A newly selected workspace is `restricted`
+unless the operator passes CLI `--trust-project` for that exact workspace or
+lists its canonical path in the process-level `ROVE_TRUSTED_WORKSPACES`
+variable. Only a trusted workspace loads its local `.env` and
+`.rove/config.toml`. The repository cannot grant itself activation through
+either file.
+
+Merge order for an explicitly trusted workspace:
 
 ```text
 defaults < .rove/config.toml < environment < CLI/API overrides
 ```
+
+For a restricted workspace, the project-config layer is reported as present
+but deferred, and process environment plus explicit overrides apply over
+defaults. `rove dump-config` exposes `project_activation`, its non-secret
+source, and whether project config was present or loaded. This temporary guard
+is replaced, rather than silently weakened, by the future persistent Project
+Trust store and granular grants.
 
 Validation covers legacy and named provider selection, profile/fallback
 references, endpoints, model and protocol-option bounds, auth/header names,
@@ -197,9 +211,10 @@ pipeline, pre/post-tool plus post-run hooks (including session-summary), and the
 durable tool-turn coordinator live in `runtime/src/tools/executor.rs`,
 `runtime/src/tools/hooks/`, and `runtime/src/engine/tool_turn.rs`. The existing
 stdio/legacy-SSE MCP proxy is implemented in `runtime/src/tools/mcp_proxy.rs`.
-CLI and API assemble tools through the same product registry builder
-(`apps/bootstrap::tool_registry` / `tool_registry_with_mcp`), which registers
-runtime built-ins and then loads configured MCP tools.
+CLI and API assemble tools through the same product registry builder. The
+config-aware `tool_registry_for_config` always registers runtime built-ins but
+loads configured MCP tools only when the exact workspace has explicit project
+activation. A restricted workspace never reads or spawns its MCP definitions.
 
 Workspace, resolved Memory paths, approval policy, and input providers are
 runtime-owned services attached to a tool invocation through a typed extension.
@@ -223,6 +238,10 @@ workspace-bounded and store only environment variable *names*; values resolve by
 name at spawn time. Catalog reads and writes are lock-guarded, and a corrupt,
 locked, symlinked, or non-regular-file catalog fails closed as a typed conflict
 instead of degrading to an empty tool list.
+Catalog listing and editing remain available for safe inspection in a
+restricted workspace, but `probe` returns `project_trust_required` before
+environment resolution or process spawn. Job-start responses report the typed
+`workspace_activation` state.
 
 Batch execution rules:
 

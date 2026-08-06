@@ -421,6 +421,7 @@ export interface CreateJobResponse {
   job_id: string;
   run_id: string;
   resumed_from_run_id?: string | null;
+  workspace_activation?: "restricted" | "trusted";
 }
 
 export interface JobStateResponse {
