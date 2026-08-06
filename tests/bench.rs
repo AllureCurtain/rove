@@ -183,7 +183,7 @@ fn acceptance_matrix_covers_m0_to_m6_with_concrete_verification() {
     assert!(!content.contains("TBD"));
     assert!(!content.contains("TODO"));
     assert!(content.contains("cargo test"));
-    assert!(content.contains("cargo run --bin rove-bench"));
+    assert!(content.contains("cargo run -p rove-bench"));
 
     let guide =
         std::fs::read_to_string(workspace_path("docs/runtime/implementation-guide.md")).unwrap();

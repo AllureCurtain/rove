@@ -433,16 +433,18 @@ impl AppConfig {
     /// Resolve the product-managed MCP catalog only inside the selected workspace.
     pub fn workspace_bounded_mcp_config_path(&self) -> anyhow::Result<PathBuf> {
         let resolved = self.normalized_workspace_path(&self.tool.mcp_config_path);
-        if !resolved.starts_with(&self.source_summary.workspace_root) {
-            anyhow::bail!("tool.mcp_config_path resolves outside the selected workspace");
+        let canonical_workspace_root = self.source_summary.workspace_root.canonicalize()?;
+        let mut ancestor = resolved.parent().ok_or_else(|| {
+            anyhow::anyhow!("tool.mcp_config_path has no workspace-bounded parent")
+        })?;
+        while !ancestor.exists() {
+            ancestor = ancestor
+                .parent()
+                .ok_or_else(|| anyhow::anyhow!("tool.mcp_config_path has no existing ancestor"))?;
         }
-        if let Some(parent) = resolved.parent()
-            && parent.exists()
-        {
-            let canonical_parent = parent.canonicalize()?;
-            if !canonical_parent.starts_with(&self.source_summary.workspace_root) {
-                anyhow::bail!("tool.mcp_config_path resolves outside the selected workspace");
-            }
+        let canonical_ancestor = ancestor.canonicalize()?;
+        if !canonical_ancestor.starts_with(canonical_workspace_root) {
+            anyhow::bail!("tool.mcp_config_path resolves outside the selected workspace");
         }
         Ok(resolved)
     }
