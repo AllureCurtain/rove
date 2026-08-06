@@ -135,7 +135,14 @@ foreach ($check in $Checks) {
     $checkStart = Get-Date
     # -Wait is required for ExitCode to be populated reliably; WaitForExit alone
     # can leave the property unset, which would misreport a passing check.
-    $process = Start-Process -FilePath (Get-Command $check.command).Path -ArgumentList $check.arguments `
+    $resolvedCommand = Get-Command $check.command -ErrorAction Stop
+    $processFilePath = $resolvedCommand.Path
+    $processArguments = @($check.arguments)
+    if ($resolvedCommand.CommandType -eq "ExternalScript") {
+        $processFilePath = (Get-Command "powershell" -ErrorAction Stop).Path
+        $processArguments = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $resolvedCommand.Path) + $processArguments
+    }
+    $process = Start-Process -FilePath $processFilePath -ArgumentList $processArguments `
         -WorkingDirectory $check.cwd -RedirectStandardOutput $stdoutLog -RedirectStandardError $stderrLog `
         -PassThru -NoNewWindow -Wait
     $exitCode = $process.ExitCode
