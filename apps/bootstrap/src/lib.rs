@@ -18,10 +18,12 @@ pub use factory::{
 };
 pub use project_trust::{
     CAP_EXTERNAL_PATHS, CAP_HOOKS_EXTENSIONS, CAP_MCP_PROCESSES, CAP_PROJECT_CONFIGURATION,
-    CAP_PROVIDER_CREDENTIALS, CAP_WORKSPACE_INSTRUCTIONS, PROJECT_TRUST_STORE_ENV,
+    CAP_PROVIDER_CREDENTIALS, CAP_WORKSPACE_INSTRUCTIONS, PROJECT_TRUST_INVALID_INPUT_CODE,
+    PROJECT_TRUST_REQUIRED_CODE, PROJECT_TRUST_STORE_ENV, PROJECT_TRUST_UNAVAILABLE_CODE,
     ProjectActivationSource, ProjectActivationState, ProjectTrustCapability, ProjectTrustDecision,
     ProjectTrustRecord, ProjectTrustRepository, ProjectTrustResolution, TRUSTED_WORKSPACES_ENV,
-    all_capability_names, canonical_root_key, capability_digest_map, resolve_project_trust_record,
+    all_capability_names, canonical_root_key, capability_digest_map,
+    provider_capability_selector_for_workspace, resolve_project_trust_record,
     workspace_identity_digest,
 };
 pub use provider::{
@@ -29,6 +31,7 @@ pub use provider::{
     default_wire_protocol_registry, wire_protocol_for_provider_type,
 };
 pub use registry::{
-    register_extra_tools, tool_registry, tool_registry_for_config, tool_registry_with_mcp,
-    tool_registry_with_shell_policy,
+    register_extra_tools, tool_registry, tool_registry_for_config,
+    tool_registry_for_config_with_environment, tool_registry_with_mcp,
+    tool_registry_with_mcp_and_environment, tool_registry_with_shell_policy,
 };

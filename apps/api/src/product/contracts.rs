@@ -5,7 +5,6 @@
 //! state. These types may point at runtime sessions, jobs, and runs, but they
 //! never copy canonical event facts into the product store.
 
-use std::collections::BTreeMap;
 use std::fmt;
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -341,18 +340,6 @@ pub struct ProductTrustStatus {
     pub identity_digest: String,
     pub invalidated_capabilities: Vec<String>,
     pub granted_capabilities: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StoredProjectTrustRecord {
-    pub canonical_root: String,
-    pub workspace_kind: ProductWorkspaceKind,
-    pub identity_digest: String,
-    pub state: ProductTrustState,
-    pub capability_digests: BTreeMap<String, String>,
-    pub granted_at: Option<String>,
-    pub revoked_at: Option<String>,
-    pub updated_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -1396,6 +1383,8 @@ pub enum ProductErrorCode {
     ProductMcpInvalidInput,
     ProductMcpNotFound,
     ProductMcpConflict,
+    ProjectTrustInvalidInput,
+    ProjectTrustUnavailable,
     ProjectTrustRequired,
     MigrationIdempotencyConflict,
     ProductControlConflict,
@@ -1426,7 +1415,9 @@ impl ProductErrorCode {
             Self::ProductMcpInvalidInput => "product_mcp_invalid_input",
             Self::ProductMcpNotFound => "product_mcp_not_found",
             Self::ProductMcpConflict => "product_mcp_conflict",
-            Self::ProjectTrustRequired => "project_trust_required",
+            Self::ProjectTrustInvalidInput => rove_app_bootstrap::PROJECT_TRUST_INVALID_INPUT_CODE,
+            Self::ProjectTrustUnavailable => rove_app_bootstrap::PROJECT_TRUST_UNAVAILABLE_CODE,
+            Self::ProjectTrustRequired => rove_app_bootstrap::PROJECT_TRUST_REQUIRED_CODE,
             Self::MigrationIdempotencyConflict => "migration_idempotency_conflict",
             Self::ProductControlConflict => "product_control_conflict",
             Self::ProductControlRejected => "product_control_rejected",
@@ -1487,16 +1478,6 @@ pub trait ProductStore: Send + Sync {
         &self,
         workspace_id: &ProductWorkspaceId,
     ) -> Result<(), ProductStoreError>;
-    async fn get_project_trust_record(
-        &self,
-        canonical_root: &str,
-        workspace_kind: ProductWorkspaceKind,
-    ) -> Result<Option<StoredProjectTrustRecord>, ProductStoreError>;
-    async fn put_project_trust_record(
-        &self,
-        record: StoredProjectTrustRecord,
-    ) -> Result<StoredProjectTrustRecord, ProductStoreError>;
-
     async fn list_sessions(
         &self,
         workspace_id: &ProductWorkspaceId,

@@ -4,16 +4,26 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
+use figment::Figment;
+use figment::providers::{Format, Toml};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 
 use rove_runtime::context::prompt_metadata::stable_hash;
 use rove_runtime::workspace::WorkspaceKind;
 use rove_runtime::workspace::boundary::resolve_workspace_read_path;
 
+use crate::config::ProviderConfig;
+use crate::provider::{ProviderAuthConfig, ProviderHeaderValue, SecretSource};
+
 pub const TRUSTED_WORKSPACES_ENV: &str = "ROVE_TRUSTED_WORKSPACES";
 pub const PROJECT_TRUST_STORE_ENV: &str = "ROVE_PROJECT_TRUST_STORE";
-pub const PROJECT_TRUST_FILE_NAME: &str = "project-trust.json";
+pub const PROJECT_TRUST_FILE_NAME: &str = "project-trust.sqlite";
+pub const PROJECT_TRUST_LEGACY_FILE_NAME: &str = "project-trust.json";
 pub const PROJECT_TRUST_SCHEMA_VERSION: u32 = 1;
+pub const PROJECT_TRUST_INVALID_INPUT_CODE: &str = "project_trust_invalid_input";
+pub const PROJECT_TRUST_UNAVAILABLE_CODE: &str = "project_trust_unavailable";
+pub const PROJECT_TRUST_REQUIRED_CODE: &str = "project_trust_required";
 const MAX_TRUST_INPUT_BYTES: usize = 256 * 1024;
 
 pub const CAP_PROJECT_CONFIGURATION: &str = "project_configuration";
@@ -90,7 +100,7 @@ pub struct ProjectTrustRecord {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-struct TrustFile {
+struct LegacyTrustFile {
     schema_version: u32,
     records: Vec<ProjectTrustRecord>,
 }
@@ -174,9 +184,13 @@ impl ProjectActivation {
         resolution: ProjectTrustResolution,
         trusted_workspace_roots: Vec<PathBuf>,
     ) -> Self {
+        let effective_state = match resolution.state {
+            ProjectActivationState::Unknown => ProjectActivationState::Restricted,
+            state => state,
+        };
         Self {
-            state: resolution.state,
-            source: (resolution.state == ProjectActivationState::Trusted)
+            state: effective_state,
+            source: (effective_state == ProjectActivationState::Trusted)
                 .then_some(ProjectActivationSource::Durable),
             trusted_workspace_roots,
             granted_capabilities: resolution.granted_capabilities,
@@ -208,9 +222,10 @@ impl ProjectActivation {
     }
 }
 
-/// Operator-owned durable trust repository. The file is intentionally opened
-/// before project configuration and is written atomically through a sibling
-/// temporary file. A project cannot grant itself trust by editing config.
+/// Operator-owned durable trust repository. This SQLite database is the
+/// canonical Project Trust authority shared by CLI, API, and bootstrap.
+/// ProductStore v11 rows are imported once for compatibility, never used as a
+/// second live authority.
 #[derive(Debug, Clone)]
 pub struct ProjectTrustRepository {
     path: PathBuf,
@@ -243,23 +258,15 @@ impl ProjectTrustRepository {
     }
 
     pub fn load(&self) -> anyhow::Result<Vec<ProjectTrustRecord>> {
-        let backup = self.path.with_extension("json.bak");
-        let readable_path = if self.path.exists() {
-            &self.path
-        } else if backup.exists() {
-            &backup
-        } else {
-            return Ok(Vec::new());
-        };
-        let bytes = std::fs::read(readable_path)?;
-        if bytes.len() > 512 * 1024 {
-            anyhow::bail!("project trust store exceeds the supported size");
-        }
-        let file: TrustFile = serde_json::from_slice(&bytes)?;
-        if file.schema_version != PROJECT_TRUST_SCHEMA_VERSION {
-            anyhow::bail!("unsupported project trust schema version");
-        }
-        Ok(file.records)
+        let connection = self.open()?;
+        let mut statement = connection.prepare(
+            "SELECT canonical_root, workspace_kind, identity_digest, state,
+                    capability_digests_json, granted_at, revoked_at, updated_at
+             FROM project_trust_records ORDER BY canonical_root, workspace_kind",
+        )?;
+        let rows = statement.query_map([], project_trust_record_from_row)?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(anyhow::Error::from)
     }
 
     pub fn resolve(
@@ -290,34 +297,110 @@ impl ProjectTrustRepository {
     ) -> anyhow::Result<ProjectTrustRecord> {
         let canonical_root = canonical_directory(workspace_root)?;
         let identity_digest = workspace_identity_digest(&canonical_root, workspace_kind.clone());
-        let now = now_rfc3339();
-        let state = match decision {
-            ProjectTrustDecision::Grant => ProjectActivationState::Trusted,
-            ProjectTrustDecision::Deny => ProjectActivationState::Restricted,
-            ProjectTrustDecision::Revoke => ProjectActivationState::Revoked,
-        };
-        let mut records = self.load()?;
         let canonical_root_text = canonical_root_key(&canonical_root);
+        let mut connection = self.open()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let existing = transaction
+            .query_row(
+                "SELECT canonical_root, workspace_kind, identity_digest, state,
+                        capability_digests_json, granted_at, revoked_at, updated_at
+                 FROM project_trust_records
+                 WHERE canonical_root = ?1 AND workspace_kind = ?2",
+                params![
+                    &canonical_root_text,
+                    workspace_kind_to_db(workspace_kind.clone())
+                ],
+                project_trust_record_from_row,
+            )
+            .optional()?;
+        let now = now_rfc3339();
+        let same_identity = existing
+            .as_ref()
+            .is_some_and(|record| record.identity_digest == identity_digest);
+        let mut granted = if same_identity
+            && existing
+                .as_ref()
+                .is_some_and(|record| record.state == ProjectActivationState::Trusted)
+        {
+            existing
+                .as_ref()
+                .map(|record| record.capability_digests.clone())
+                .unwrap_or_default()
+        } else {
+            BTreeMap::new()
+        };
+        let state = match decision {
+            ProjectTrustDecision::Grant => {
+                granted.extend(capability_digests);
+                ProjectActivationState::Trusted
+            }
+            ProjectTrustDecision::Deny | ProjectTrustDecision::Revoke
+                if !capability_digests.is_empty() =>
+            {
+                for capability in capability_digests.keys() {
+                    granted.remove(capability);
+                }
+                if granted.is_empty() {
+                    match decision {
+                        ProjectTrustDecision::Deny => ProjectActivationState::Restricted,
+                        ProjectTrustDecision::Revoke => ProjectActivationState::Revoked,
+                        ProjectTrustDecision::Grant => unreachable!(),
+                    }
+                } else {
+                    ProjectActivationState::Trusted
+                }
+            }
+            ProjectTrustDecision::Deny => {
+                granted.clear();
+                ProjectActivationState::Restricted
+            }
+            ProjectTrustDecision::Revoke => {
+                granted.clear();
+                ProjectActivationState::Revoked
+            }
+        };
         let record = ProjectTrustRecord {
             canonical_root: canonical_root_text.clone(),
             workspace_kind: workspace_kind.clone(),
             identity_digest,
             state,
-            capability_digests: if state == ProjectActivationState::Trusted {
-                capability_digests
+            capability_digests: granted,
+            granted_at: if state == ProjectActivationState::Trusted {
+                existing
+                    .as_ref()
+                    .and_then(|record| record.granted_at.clone())
+                    .or_else(|| Some(now.clone()))
             } else {
-                BTreeMap::new()
+                None
             },
-            granted_at: (state == ProjectActivationState::Trusted).then_some(now.clone()),
             revoked_at: (state == ProjectActivationState::Revoked).then_some(now.clone()),
             updated_at: now,
         };
-        records.retain(|existing| {
-            !(existing.canonical_root == canonical_root_text
-                && existing.workspace_kind == workspace_kind)
-        });
-        records.push(record.clone());
-        self.write(&records)?;
+        let capability_digests = serde_json::to_string(&record.capability_digests)?;
+        transaction.execute(
+            "INSERT INTO project_trust_records(
+                canonical_root, workspace_kind, identity_digest, state,
+                capability_digests_json, granted_at, revoked_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(canonical_root, workspace_kind) DO UPDATE SET
+                identity_digest = excluded.identity_digest,
+                state = excluded.state,
+                capability_digests_json = excluded.capability_digests_json,
+                granted_at = excluded.granted_at,
+                revoked_at = excluded.revoked_at,
+                updated_at = excluded.updated_at",
+            params![
+                &canonical_root_text,
+                workspace_kind_to_db(record.workspace_kind.clone()),
+                &record.identity_digest,
+                activation_state_to_db(record.state),
+                &capability_digests,
+                &record.granted_at,
+                &record.revoked_at,
+                &record.updated_at,
+            ],
+        )?;
+        transaction.commit()?;
         Ok(record)
     }
 
@@ -334,42 +417,220 @@ impl ProjectTrustRepository {
         )
     }
 
-    fn write(&self, records: &[ProjectTrustRecord]) -> anyhow::Result<()> {
+    /// Import v11 ProductStore rows without overwriting a canonical operator
+    /// decision. This is intentionally one-way compatibility migration.
+    pub fn import_product_store_snapshot(
+        &self,
+        product_store_path: &Path,
+    ) -> anyhow::Result<usize> {
+        if !product_store_path.exists() || product_store_path == self.path {
+            return Ok(0);
+        }
+        let legacy = Connection::open(product_store_path)?;
+        let table_exists = legacy
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'project_trust_records'",
+                [],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some();
+        if !table_exists {
+            return Ok(0);
+        }
+        let mut statement = legacy.prepare(
+            "SELECT canonical_root, workspace_kind, identity_digest, state,
+                    capability_digests_json, granted_at, revoked_at, updated_at
+             FROM project_trust_records",
+        )?;
+        let rows = statement.query_map([], project_trust_record_from_row)?;
+        let records = rows.collect::<Result<Vec<_>, _>>()?;
+        let mut canonical = self.open()?;
+        let transaction = canonical.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut imported = 0;
+        for record in records {
+            imported += insert_trust_record_if_missing(&transaction, &record)?;
+        }
+        transaction.commit()?;
+        Ok(imported)
+    }
+
+    fn open(&self) -> anyhow::Result<Connection> {
+        if self.path.exists() {
+            migrate_legacy_json(&self.path, &self.path)?;
+        } else if self
+            .path
+            .file_name()
+            .is_some_and(|name| name == PROJECT_TRUST_FILE_NAME)
+        {
+            migrate_legacy_json(
+                &self.path.with_file_name(PROJECT_TRUST_LEGACY_FILE_NAME),
+                &self.path,
+            )?;
+        }
         let parent = self
             .path
             .parent()
             .ok_or_else(|| anyhow::anyhow!("project trust store has no parent"))?;
         std::fs::create_dir_all(parent)?;
-        let bytes = serde_json::to_vec_pretty(&TrustFile {
-            schema_version: PROJECT_TRUST_SCHEMA_VERSION,
-            records: records.to_vec(),
-        })?;
-        let temporary = self.path.with_extension(format!(
-            "json.{}.{}.tmp",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|duration| duration.as_nanos())
-                .unwrap_or_default()
-        ));
-        std::fs::write(&temporary, bytes)?;
-        if !self.path.exists() {
-            std::fs::rename(&temporary, &self.path)?;
-            return Ok(());
-        }
-        let backup = self.path.with_extension("json.bak");
-        if backup.exists() {
-            std::fs::remove_file(&backup)?;
-        }
-        std::fs::rename(&self.path, &backup)?;
-        if let Err(error) = std::fs::rename(&temporary, &self.path) {
-            let _ = std::fs::remove_file(&temporary);
-            let _ = std::fs::rename(&backup, &self.path);
-            return Err(error.into());
-        }
-        let _ = std::fs::remove_file(backup);
-        Ok(())
+        let connection = Connection::open(&self.path)?;
+        connection.busy_timeout(std::time::Duration::from_secs(5))?;
+        initialize_trust_schema(&connection)?;
+        Ok(connection)
     }
+}
+
+fn initialize_trust_schema(connection: &Connection) -> rusqlite::Result<()> {
+    connection.execute_batch(
+        "CREATE TABLE IF NOT EXISTS project_trust_records(
+            canonical_root TEXT NOT NULL,
+            workspace_kind TEXT NOT NULL CHECK(workspace_kind IN ('folder','repo','task')),
+            identity_digest TEXT NOT NULL,
+            state TEXT NOT NULL CHECK(state IN ('unknown','restricted','trusted','revoked')),
+            capability_digests_json TEXT NOT NULL,
+            granted_at TEXT,
+            revoked_at TEXT,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY(canonical_root, workspace_kind)
+        );
+        CREATE INDEX IF NOT EXISTS idx_project_trust_state
+            ON project_trust_records(state, updated_at DESC);",
+    )
+}
+
+fn insert_trust_record_if_missing(
+    connection: &Connection,
+    record: &ProjectTrustRecord,
+) -> anyhow::Result<usize> {
+    Ok(connection.execute(
+        "INSERT INTO project_trust_records(
+            canonical_root, workspace_kind, identity_digest, state,
+            capability_digests_json, granted_at, revoked_at, updated_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+         ON CONFLICT(canonical_root, workspace_kind) DO NOTHING",
+        params![
+            &record.canonical_root,
+            workspace_kind_to_db(record.workspace_kind.clone()),
+            &record.identity_digest,
+            activation_state_to_db(record.state),
+            serde_json::to_string(&record.capability_digests)?,
+            &record.granted_at,
+            &record.revoked_at,
+            &record.updated_at,
+        ],
+    )?)
+}
+
+fn project_trust_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProjectTrustRecord> {
+    let workspace_kind = row.get::<_, String>(1)?;
+    let state = row.get::<_, String>(3)?;
+    Ok(ProjectTrustRecord {
+        canonical_root: row.get(0)?,
+        workspace_kind: workspace_kind_from_db(&workspace_kind)
+            .map_err(|error| trust_row_conversion_error(1, error))?,
+        identity_digest: row.get(2)?,
+        state: activation_state_from_db(&state)
+            .map_err(|error| trust_row_conversion_error(3, error))?,
+        capability_digests: serde_json::from_str(&row.get::<_, String>(4)?).map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                4,
+                rusqlite::types::Type::Text,
+                Box::new(error),
+            )
+        })?,
+        granted_at: row.get(5)?,
+        revoked_at: row.get(6)?,
+        updated_at: row.get(7)?,
+    })
+}
+
+fn trust_row_conversion_error(column: usize, error: anyhow::Error) -> rusqlite::Error {
+    rusqlite::Error::FromSqlConversionFailure(
+        column,
+        rusqlite::types::Type::Text,
+        Box::new(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            error.to_string(),
+        )),
+    )
+}
+
+fn workspace_kind_to_db(kind: WorkspaceKind) -> &'static str {
+    match kind {
+        WorkspaceKind::Folder => "folder",
+        WorkspaceKind::Repo => "repo",
+        WorkspaceKind::Task => "task",
+    }
+}
+
+fn workspace_kind_from_db(value: &str) -> anyhow::Result<WorkspaceKind> {
+    match value {
+        "folder" => Ok(WorkspaceKind::Folder),
+        "repo" => Ok(WorkspaceKind::Repo),
+        "task" => Ok(WorkspaceKind::Task),
+        _ => anyhow::bail!("invalid project trust workspace kind `{value}`"),
+    }
+}
+
+fn activation_state_to_db(state: ProjectActivationState) -> &'static str {
+    match state {
+        ProjectActivationState::Unknown => "unknown",
+        ProjectActivationState::Restricted => "restricted",
+        ProjectActivationState::Trusted => "trusted",
+        ProjectActivationState::Revoked => "revoked",
+    }
+}
+
+fn activation_state_from_db(value: &str) -> anyhow::Result<ProjectActivationState> {
+    match value {
+        "unknown" => Ok(ProjectActivationState::Unknown),
+        "restricted" => Ok(ProjectActivationState::Restricted),
+        "trusted" => Ok(ProjectActivationState::Trusted),
+        "revoked" => Ok(ProjectActivationState::Revoked),
+        _ => anyhow::bail!("invalid project trust state `{value}`"),
+    }
+}
+
+fn migrate_legacy_json(source: &Path, destination: &Path) -> anyhow::Result<()> {
+    if !source.exists() {
+        return Ok(());
+    }
+    let bytes = std::fs::read(source)?;
+    if bytes.len() > 512 * 1024 {
+        anyhow::bail!("legacy project trust store exceeds the supported size");
+    }
+    if !bytes
+        .iter()
+        .skip_while(|byte| byte.is_ascii_whitespace())
+        .next()
+        .is_some_and(|byte| *byte == b'{')
+    {
+        return Ok(());
+    }
+    let legacy: LegacyTrustFile = serde_json::from_slice(&bytes)?;
+    if legacy.schema_version != PROJECT_TRUST_SCHEMA_VERSION {
+        anyhow::bail!("unsupported legacy project trust schema version");
+    }
+    let backup = source.with_extension("json.legacy");
+    if backup.exists() {
+        anyhow::bail!(
+            "legacy project trust backup already exists at {}",
+            backup.display()
+        );
+    }
+    if let Some(parent) = destination.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::rename(source, &backup)?;
+    let mut connection = Connection::open(destination)?;
+    connection.busy_timeout(std::time::Duration::from_secs(5))?;
+    initialize_trust_schema(&connection)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    for record in legacy.records {
+        insert_trust_record_if_missing(&transaction, &record)?;
+    }
+    transaction.commit()?;
+    Ok(())
 }
 
 pub fn capability_digest_map(
@@ -377,23 +638,23 @@ pub fn capability_digest_map(
     mcp_config: Option<&Path>,
     provider_selector: Option<&str>,
 ) -> BTreeMap<String, String> {
+    let project_config = workspace_config_value(workspace_root);
     let mut result = BTreeMap::new();
     result.insert(
         CAP_PROJECT_CONFIGURATION.to_string(),
-        digest_workspace_file(
-            workspace_root,
-            Some(&workspace_root.join(".rove/config.toml")),
-        )
-        .unwrap_or_else(|| stable_hash("missing-project-config")),
+        digest_project_configuration(workspace_root, project_config.clone()),
     );
     result.insert(
         CAP_MCP_PROCESSES.to_string(),
-        digest_workspace_file(workspace_root, mcp_config)
-            .unwrap_or_else(|| stable_hash("missing-mcp-config")),
+        digest_mcp_configuration(workspace_root, mcp_config, project_config.as_ref()),
     );
     result.insert(
         CAP_PROVIDER_CREDENTIALS.to_string(),
-        stable_hash(provider_selector.unwrap_or("provider-default")),
+        stable_hash(
+            &provider_selector
+                .map(str::to_string)
+                .unwrap_or_else(|| provider_capability_selector_for_workspace(workspace_root)),
+        ),
     );
     result.insert(
         CAP_WORKSPACE_INSTRUCTIONS.to_string(),
@@ -402,13 +663,203 @@ pub fn capability_digest_map(
     );
     result.insert(
         CAP_HOOKS_EXTENSIONS.to_string(),
-        stable_hash("hooks-not-configured"),
+        digest_hooks_extensions(project_config.as_ref()),
     );
     result.insert(
         CAP_EXTERNAL_PATHS.to_string(),
-        stable_hash("external-paths-disabled"),
+        digest_external_paths(project_config.as_ref()),
     );
     result
+}
+
+/// Return a stable, redacted provider authority selector. Endpoint/profile and
+/// credential source identifiers are included; literal secret values are only
+/// represented by a one-way digest and are never persisted or logged.
+pub fn provider_capability_selector_for_workspace(workspace_root: &Path) -> String {
+    let config = bounded_workspace_text(workspace_root, ".rove/config.toml");
+    let provider = config
+        .as_deref()
+        .and_then(|config| {
+            Figment::new()
+                .merge(Toml::string(config))
+                .extract_inner::<ProviderConfig>("provider")
+                .ok()
+        })
+        .unwrap_or_default();
+    let active = provider.active.clone().unwrap_or_default();
+    let profiles = provider
+        .profiles
+        .iter()
+        .map(|(name, profile)| {
+            format!(
+                "{name}:{}:{}:{}:{}:{}:{}:{}",
+                profile.provider_type,
+                profile.base_url,
+                profile.model,
+                auth_selector(&profile.auth),
+                profile
+                    .headers
+                    .iter()
+                    .map(|(header, value)| format!("{header}={}", header_selector(value)))
+                    .collect::<Vec<_>>()
+                    .join(","),
+                stable_hash(&serde_json::to_string(&profile.options).unwrap_or_default()),
+                stable_hash(&serde_json::to_string(&profile.protocol_options).unwrap_or_default())
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("|");
+    let env_digest = digest_workspace_file(workspace_root, Some(&workspace_root.join(".env")))
+        .unwrap_or_else(|| stable_hash("missing-project-env"));
+    format!(
+        "active={active};profiles={profiles};fallback={:?};model={};fallback_models={:?};options={};env={env_digest}",
+        provider.fallback_profiles,
+        provider.model,
+        provider.fallback_models,
+        stable_hash(&serde_json::to_string(&provider.options).unwrap_or_default()),
+    )
+}
+
+fn auth_selector(auth: &ProviderAuthConfig) -> String {
+    match auth {
+        ProviderAuthConfig::None => "none".to_string(),
+        ProviderAuthConfig::Bearer { secret } => format!("bearer:{}", secret_selector(secret)),
+        ProviderAuthConfig::Header { header, secret } => {
+            format!("header={header}:{}", secret_selector(secret))
+        }
+    }
+}
+
+fn header_selector(value: &ProviderHeaderValue) -> String {
+    match value {
+        ProviderHeaderValue::Literal(value) => format!("literal:{}", stable_hash(value)),
+        ProviderHeaderValue::Env { env } => format!("env:{env}"),
+        ProviderHeaderValue::File { file } => format!("file:{}", file.to_string_lossy()),
+    }
+}
+
+fn secret_selector(secret: &SecretSource) -> String {
+    match secret {
+        SecretSource::Env { env } => format!("env:{env}"),
+        SecretSource::File { file } => format!("file:{}", file.to_string_lossy()),
+        SecretSource::Literal(value) => format!("literal:{}", stable_hash(value)),
+    }
+}
+
+fn digest_project_configuration(
+    workspace_root: &Path,
+    mut project_config: Option<serde_json::Value>,
+) -> String {
+    if let Some(config) = project_config.as_mut() {
+        remove_config_value(config, &["provider"]);
+        remove_config_value(config, &["tool", "mcp_config_path"]);
+        remove_config_value(config, &["hooks"]);
+        remove_config_value(config, &["extensions"]);
+        for path in EXTERNAL_PATH_CONFIG_KEYS {
+            remove_config_value(config, path);
+        }
+    }
+    let config = project_config
+        .as_ref()
+        .and_then(|config| serde_json::to_string(config).ok())
+        .map(|config| stable_hash(&config))
+        .unwrap_or_else(|| stable_hash("missing-or-invalid-project-config"));
+    let env = digest_workspace_file(workspace_root, Some(&workspace_root.join(".env")))
+        .unwrap_or_else(|| stable_hash("missing-project-env"));
+    stable_hash(&format!("config={config};env={env}"))
+}
+
+const EXTERNAL_PATH_CONFIG_KEYS: &[&[&str]] = &[
+    &["runtime", "system_prompt_path"],
+    &["runtime", "planner_prompt_path"],
+    &["memory", "session_dir"],
+    &["memory", "durable_dir"],
+    &["state", "state_dir"],
+    &["state", "sqlite_path"],
+    &["state", "allow_external_paths"],
+];
+
+fn workspace_config_value(workspace_root: &Path) -> Option<serde_json::Value> {
+    let config = bounded_workspace_text(workspace_root, ".rove/config.toml")?;
+    Figment::new()
+        .merge(Toml::string(&config))
+        .extract::<serde_json::Value>()
+        .ok()
+}
+
+fn digest_mcp_configuration(
+    workspace_root: &Path,
+    explicit_path: Option<&Path>,
+    project_config: Option<&serde_json::Value>,
+) -> String {
+    let configured = project_config
+        .and_then(|config| config.pointer("/tool/mcp_config_path"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or(".rove/mcp_servers.json");
+    let path = explicit_path
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| workspace_root.join(configured));
+    let content = digest_workspace_file(workspace_root, Some(&path))
+        .unwrap_or_else(|| stable_hash("missing-or-unreadable-mcp-config"));
+    stable_hash(&format!(
+        "path={};content={content}",
+        stable_hash(configured)
+    ))
+}
+
+fn digest_external_paths(project_config: Option<&serde_json::Value>) -> String {
+    let selected = EXTERNAL_PATH_CONFIG_KEYS
+        .iter()
+        .filter_map(|path| {
+            let pointer = format!("/{}", path.join("/"));
+            project_config
+                .and_then(|config| config.pointer(&pointer))
+                .map(|value| (pointer, value.clone()))
+        })
+        .collect::<BTreeMap<_, _>>();
+    stable_hash(&serde_json::to_string(&selected).unwrap_or_default())
+}
+
+fn digest_hooks_extensions(project_config: Option<&serde_json::Value>) -> String {
+    let selected = ["hooks", "extensions"]
+        .into_iter()
+        .filter_map(|key| {
+            project_config
+                .and_then(|config| config.get(key))
+                .map(|value| (key, value.clone()))
+        })
+        .collect::<BTreeMap<_, _>>();
+    stable_hash(&serde_json::to_string(&selected).unwrap_or_default())
+}
+
+fn remove_config_value(value: &mut serde_json::Value, path: &[&str]) {
+    let Some((last, parents)) = path.split_last() else {
+        return;
+    };
+    let mut current = value;
+    for parent in parents {
+        let Some(next) = current.get_mut(*parent) else {
+            return;
+        };
+        current = next;
+    }
+    if let Some(object) = current.as_object_mut() {
+        object.remove(*last);
+    }
+}
+
+fn bounded_workspace_text(workspace_root: &Path, relative_path: &str) -> Option<String> {
+    let path = resolve_workspace_read_path(workspace_root, relative_path).ok()?;
+    let mut bytes = Vec::with_capacity(8 * 1024);
+    std::fs::File::open(path)
+        .ok()?
+        .take((MAX_TRUST_INPUT_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() > MAX_TRUST_INPUT_BYTES {
+        return None;
+    }
+    String::from_utf8(bytes).ok()
 }
 
 fn digest_workspace_file(workspace_root: &Path, path: Option<&Path>) -> Option<String> {
@@ -467,7 +918,7 @@ pub fn resolve_project_trust_record(
 ) -> ProjectTrustResolution {
     let Some(record) = record else {
         return ProjectTrustResolution {
-            state: ProjectActivationState::Restricted,
+            state: ProjectActivationState::Unknown,
             identity_digest,
             invalidated_capabilities: Vec::new(),
             granted_capabilities: BTreeSet::new(),
@@ -710,7 +1161,7 @@ mod tests {
                 &capability_digest_map(&nested, None, None),
             )
             .unwrap();
-        assert_eq!(resolved.state, ProjectActivationState::Restricted);
+        assert_eq!(resolved.state, ProjectActivationState::Unknown);
         assert!(resolved.granted_capabilities.is_empty());
     }
 
@@ -779,7 +1230,7 @@ mod tests {
                 &capability_digest_map(&junction, None, None),
             )
             .unwrap();
-        assert_eq!(resolved.state, ProjectActivationState::Restricted);
+        assert_eq!(resolved.state, ProjectActivationState::Unknown);
         assert!(resolved.granted_capabilities.is_empty());
     }
 
@@ -841,6 +1292,313 @@ mod tests {
             vec![CAP_PROJECT_CONFIGURATION.to_string()]
         );
         assert!(resolved.granted_capabilities.contains(CAP_MCP_PROCESSES));
+    }
+
+    #[test]
+    fn provider_endpoint_and_credential_selector_invalidate_only_provider_capability() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let store = ProjectTrustRepository::new(temp.path().join("operator/trust.sqlite"));
+        let root = temp.path().join("workspace");
+        std::fs::create_dir_all(root.join(".rove")).unwrap();
+        let config = root.join(".rove/config.toml");
+        write_provider_config(&config, "https://one.example.test/v1", "FIRST_API_KEY");
+        let initial = capability_digest_map(&root, None, None);
+        store
+            .decide(
+                &root,
+                WorkspaceKind::Folder,
+                ProjectTrustDecision::Grant,
+                initial,
+            )
+            .unwrap();
+
+        write_provider_config(&config, "https://two.example.test/v1", "FIRST_API_KEY");
+        let endpoint_changed = store
+            .resolve(
+                &root,
+                WorkspaceKind::Folder,
+                &capability_digest_map(&root, None, None),
+            )
+            .unwrap();
+        assert_eq!(
+            endpoint_changed.invalidated_capabilities,
+            vec![CAP_PROVIDER_CREDENTIALS.to_string()]
+        );
+        assert!(
+            endpoint_changed
+                .granted_capabilities
+                .contains(CAP_PROJECT_CONFIGURATION)
+        );
+        assert!(
+            endpoint_changed
+                .granted_capabilities
+                .contains(CAP_MCP_PROCESSES)
+        );
+
+        store
+            .decide(
+                &root,
+                WorkspaceKind::Folder,
+                ProjectTrustDecision::Grant,
+                capability_digest_map(&root, None, None),
+            )
+            .unwrap();
+        write_provider_config(&config, "https://two.example.test/v1", "SECOND_API_KEY");
+        let credential_changed = store
+            .resolve(
+                &root,
+                WorkspaceKind::Folder,
+                &capability_digest_map(&root, None, None),
+            )
+            .unwrap();
+        assert_eq!(
+            credential_changed.invalidated_capabilities,
+            vec![CAP_PROVIDER_CREDENTIALS.to_string()]
+        );
+        assert!(
+            credential_changed
+                .granted_capabilities
+                .contains(CAP_WORKSPACE_INSTRUCTIONS)
+        );
+    }
+
+    #[test]
+    fn workspace_env_change_invalidates_project_and_provider_but_not_other_capabilities() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let store = ProjectTrustRepository::new(temp.path().join("operator/trust.sqlite"));
+        let root = temp.path().join("workspace");
+        std::fs::create_dir_all(root.join(".rove")).unwrap();
+        write_provider_config(
+            &root.join(".rove/config.toml"),
+            "https://api.example.test/v1",
+            "PROJECT_API_KEY",
+        );
+        std::fs::write(root.join(".env"), "PROJECT_API_KEY=first\n").unwrap();
+        store
+            .decide(
+                &root,
+                WorkspaceKind::Folder,
+                ProjectTrustDecision::Grant,
+                capability_digest_map(&root, None, None),
+            )
+            .unwrap();
+
+        std::fs::write(root.join(".env"), "PROJECT_API_KEY=second\n").unwrap();
+        let changed = store
+            .resolve(
+                &root,
+                WorkspaceKind::Folder,
+                &capability_digest_map(&root, None, None),
+            )
+            .unwrap();
+        assert_eq!(
+            changed.invalidated_capabilities,
+            vec![
+                CAP_PROJECT_CONFIGURATION.to_string(),
+                CAP_PROVIDER_CREDENTIALS.to_string(),
+            ]
+        );
+        assert!(changed.granted_capabilities.contains(CAP_MCP_PROCESSES));
+        assert!(
+            changed
+                .granted_capabilities
+                .contains(CAP_WORKSPACE_INSTRUCTIONS)
+        );
+        assert!(changed.granted_capabilities.contains(CAP_EXTERNAL_PATHS));
+    }
+
+    #[test]
+    fn hook_and_external_path_selectors_have_independent_capability_digests() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let store = ProjectTrustRepository::new(temp.path().join("operator/trust.sqlite"));
+        let root = temp.path().join("workspace");
+        std::fs::create_dir_all(root.join(".rove")).unwrap();
+        let config = root.join(".rove/config.toml");
+        std::fs::write(
+            &config,
+            "[runtime]\nmax_steps = 9\nsystem_prompt_path = \"first.md\"\n[hooks]\ncommand = \"first-hook\"\n",
+        )
+        .unwrap();
+        store
+            .decide(
+                &root,
+                WorkspaceKind::Folder,
+                ProjectTrustDecision::Grant,
+                capability_digest_map(&root, None, None),
+            )
+            .unwrap();
+
+        std::fs::write(
+            &config,
+            "[runtime]\nmax_steps = 9\nsystem_prompt_path = \"second.md\"\n[hooks]\ncommand = \"first-hook\"\n",
+        )
+        .unwrap();
+        let external_changed = store
+            .resolve(
+                &root,
+                WorkspaceKind::Folder,
+                &capability_digest_map(&root, None, None),
+            )
+            .unwrap();
+        assert_eq!(
+            external_changed.invalidated_capabilities,
+            vec![CAP_EXTERNAL_PATHS.to_string()]
+        );
+
+        store
+            .decide(
+                &root,
+                WorkspaceKind::Folder,
+                ProjectTrustDecision::Grant,
+                capability_digest_map(&root, None, None),
+            )
+            .unwrap();
+        std::fs::write(
+            &config,
+            "[runtime]\nmax_steps = 9\nsystem_prompt_path = \"second.md\"\n[hooks]\ncommand = \"second-hook\"\n",
+        )
+        .unwrap();
+        let hook_changed = store
+            .resolve(
+                &root,
+                WorkspaceKind::Folder,
+                &capability_digest_map(&root, None, None),
+            )
+            .unwrap();
+        assert_eq!(
+            hook_changed.invalidated_capabilities,
+            vec![CAP_HOOKS_EXTENSIONS.to_string()]
+        );
+        assert!(
+            hook_changed
+                .granted_capabilities
+                .contains(CAP_PROJECT_CONFIGURATION)
+        );
+    }
+
+    #[test]
+    fn legacy_json_migrates_once_and_keeps_a_rollback_backup() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let operator = temp.path().join("operator");
+        let root = temp.path().join("workspace");
+        std::fs::create_dir_all(&operator).unwrap();
+        std::fs::create_dir(&root).unwrap();
+        let canonical_root = root.canonicalize().unwrap();
+        let digests = capability_digest_map(&root, None, None);
+        let record = ProjectTrustRecord {
+            canonical_root: canonical_root_key(&canonical_root),
+            workspace_kind: WorkspaceKind::Folder,
+            identity_digest: workspace_identity_digest(&canonical_root, WorkspaceKind::Folder),
+            state: ProjectActivationState::Trusted,
+            capability_digests: digests.clone(),
+            granted_at: Some("legacy-grant".to_string()),
+            revoked_at: None,
+            updated_at: "legacy-update".to_string(),
+        };
+        let legacy_path = operator.join(PROJECT_TRUST_LEGACY_FILE_NAME);
+        std::fs::write(
+            &legacy_path,
+            serde_json::to_vec(&LegacyTrustFile {
+                schema_version: PROJECT_TRUST_SCHEMA_VERSION,
+                records: vec![record],
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let repository = ProjectTrustRepository::new(operator.join(PROJECT_TRUST_FILE_NAME));
+
+        let resolved = repository
+            .resolve(&root, WorkspaceKind::Folder, &digests)
+            .unwrap();
+
+        assert_eq!(resolved.state, ProjectActivationState::Trusted);
+        assert!(!legacy_path.exists());
+        assert!(legacy_path.with_extension("json.legacy").exists());
+        assert!(repository.path().exists());
+    }
+
+    #[test]
+    fn product_store_snapshot_is_import_only_and_cannot_overwrite_canonical_decisions() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let root = temp.path().join("workspace");
+        std::fs::create_dir(&root).unwrap();
+        let digests = capability_digest_map(&root, None, None);
+        let legacy_path = temp.path().join("product.sqlite");
+        let legacy = Connection::open(&legacy_path).unwrap();
+        initialize_trust_schema(&legacy).unwrap();
+        let canonical_root = root.canonicalize().unwrap();
+        let legacy_record = ProjectTrustRecord {
+            canonical_root: canonical_root_key(&canonical_root),
+            workspace_kind: WorkspaceKind::Folder,
+            identity_digest: workspace_identity_digest(&canonical_root, WorkspaceKind::Folder),
+            state: ProjectActivationState::Trusted,
+            capability_digests: digests.clone(),
+            granted_at: Some("legacy-grant".to_string()),
+            revoked_at: None,
+            updated_at: "legacy-update".to_string(),
+        };
+        assert_eq!(
+            insert_trust_record_if_missing(&legacy, &legacy_record).unwrap(),
+            1
+        );
+        drop(legacy);
+        let repository = ProjectTrustRepository::new(temp.path().join("trust.sqlite"));
+
+        assert_eq!(
+            repository
+                .import_product_store_snapshot(&legacy_path)
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            repository
+                .resolve(&root, WorkspaceKind::Folder, &digests)
+                .unwrap()
+                .state,
+            ProjectActivationState::Trusted
+        );
+        repository
+            .decide(
+                &root,
+                WorkspaceKind::Folder,
+                ProjectTrustDecision::Deny,
+                BTreeMap::new(),
+            )
+            .unwrap();
+        assert_eq!(
+            repository
+                .import_product_store_snapshot(&legacy_path)
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            repository
+                .resolve(&root, WorkspaceKind::Folder, &digests)
+                .unwrap()
+                .state,
+            ProjectActivationState::Restricted
+        );
+    }
+
+    fn write_provider_config(path: &Path, endpoint: &str, api_key_env: &str) {
+        std::fs::write(
+            path,
+            format!(
+                r#"[runtime]
+max_steps = 9
+
+[provider]
+active = "default"
+
+[provider.profiles.default]
+provider_type = "openai"
+base_url = "{endpoint}"
+model = "test-model"
+auth = {{ style = "bearer", secret = {{ env = "{api_key_env}" }} }}
+"#
+            ),
+        )
+        .unwrap();
     }
 
     #[cfg(unix)]

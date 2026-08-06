@@ -3,16 +3,15 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::{Path, State};
-use chrono::{SecondsFormat, Utc};
 use rove_app_bootstrap::{
-    ProjectActivationState, ProjectTrustRecord, canonical_root_key, capability_digest_map,
-    resolve_project_trust_record, workspace_identity_digest,
+    ProjectActivationState, ProjectTrustDecision, ProjectTrustRepository, capability_digest_map,
+    provider_capability_selector_for_workspace,
 };
 use rove_runtime::workspace::{Workspace, WorkspaceKind};
 
 use super::{
-    ProductErrorCode, ProductStore, ProductTrustDecisionRequest, ProductTrustState,
-    ProductTrustStatus, ProductWorkspaceId, ProductWorkspaceKind, StoredProjectTrustRecord,
+    ProductErrorCode, ProductStoreError, ProductTrustDecisionRequest, ProductTrustState,
+    ProductTrustStatus, ProductWorkspaceId, ProductWorkspaceKind,
 };
 use crate::docs;
 use crate::{ApiError, ApiErrorResponse, ApiState};
@@ -35,11 +34,12 @@ pub(crate) async fn get_project_trust(
     State(state): State<ApiState>,
     Path(workspace_id): Path<ProductWorkspaceId>,
 ) -> Result<Json<ProductTrustStatus>, ApiError> {
+    let authority = state.project_trust()?;
     let store = state.product_store()?;
     let workspace = store.get_workspace(&workspace_id).await?;
     let (root, kind) = open_workspace(&workspace)?;
     Ok(Json(
-        trust_status(&store, &workspace_id, &root, kind).await?,
+        trust_status(&authority, &workspace_id, &root, kind).await?,
     ))
 }
 
@@ -67,42 +67,44 @@ pub(crate) async fn decide_project_trust(
     let request = super::routes::product_json(body)?;
     if request.capabilities.len() > super::MAX_PROJECT_TRUST_CAPABILITIES {
         return Err(ApiError::bad_request_with_code(
-            ProductErrorCode::ProductInvalidInput.as_str(),
+            ProductErrorCode::ProjectTrustInvalidInput.as_str(),
             "project trust capability list is too large",
         ));
     }
+    let authority = state.project_trust()?;
     let store = state.product_store()?;
     let workspace = store.get_workspace(&workspace_id).await?;
     let (root, kind) = open_workspace(&workspace)?;
-    let all_digests =
-        capability_digest_map(&root, Some(&root.join(".rove/mcp_servers.json")), None);
+    let provider_selector = provider_capability_selector_for_workspace(&root);
+    let all_digests = capability_digest_map(&root, None, Some(&provider_selector));
     let requested = selected_capability_digests(&request, all_digests)?;
-    let now = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
     let trust_state = match request.decision {
-        super::ProductTrustDecision::Grant => ProductTrustState::Trusted,
-        super::ProductTrustDecision::Deny => ProductTrustState::Restricted,
-        super::ProductTrustDecision::Revoke => ProductTrustState::Revoked,
+        super::ProductTrustDecision::Grant => ProjectActivationState::Trusted,
+        super::ProductTrustDecision::Deny => ProjectActivationState::Restricted,
+        super::ProductTrustDecision::Revoke => ProjectActivationState::Revoked,
     };
-    let record = StoredProjectTrustRecord {
-        canonical_root: canonical_root_key(&root),
-        workspace_kind: product_workspace_kind(&kind)?,
-        identity_digest: workspace_identity_digest(&root, kind.clone()),
-        state: trust_state,
-        capability_digests: if trust_state == ProductTrustState::Trusted {
-            requested
-        } else {
-            BTreeMap::new()
-        },
-        granted_at: (trust_state == ProductTrustState::Trusted).then_some(now.clone()),
-        revoked_at: (trust_state == ProductTrustState::Revoked).then_some(now.clone()),
-        updated_at: now,
-    };
-    store.put_project_trust_record(record).await?;
-    if trust_state == ProductTrustState::Revoked {
+    authority
+        .decide(
+            &root,
+            kind.clone(),
+            match request.decision {
+                super::ProductTrustDecision::Grant => ProjectTrustDecision::Grant,
+                super::ProductTrustDecision::Deny => ProjectTrustDecision::Deny,
+                super::ProductTrustDecision::Revoke => ProjectTrustDecision::Revoke,
+            },
+            requested,
+        )
+        .map_err(|error| {
+            ApiError::from(ProductStoreError::new(
+                ProductErrorCode::ProjectTrustUnavailable,
+                format!("project trust authority failed: {error}"),
+            ))
+        })?;
+    if trust_state == ProjectActivationState::Revoked {
         state.quarantine_workspace_jobs(&root).await;
     }
     Ok(Json(
-        trust_status(&store, &workspace_id, &root, kind).await?,
+        trust_status(&authority, &workspace_id, &root, kind).await?,
     ))
 }
 
@@ -111,7 +113,12 @@ fn selected_capability_digests(
     all_digests: BTreeMap<String, String>,
 ) -> Result<BTreeMap<String, String>, ApiError> {
     if request.capabilities.is_empty() {
-        return Ok(all_digests);
+        return Ok(match request.decision {
+            super::ProductTrustDecision::Grant => all_digests,
+            super::ProductTrustDecision::Deny | super::ProductTrustDecision::Revoke => {
+                BTreeMap::new()
+            }
+        });
     }
     let mut selected = BTreeMap::new();
     let mut seen = BTreeSet::new();
@@ -119,13 +126,13 @@ fn selected_capability_digests(
         let key = capability.as_str();
         if !seen.insert(key) {
             return Err(ApiError::bad_request_with_code(
-                ProductErrorCode::ProductInvalidInput.as_str(),
+                ProductErrorCode::ProjectTrustInvalidInput.as_str(),
                 "project trust capability list contains duplicates",
             ));
         }
         let digest = all_digests.get(key).ok_or_else(|| {
             ApiError::bad_request_with_code(
-                ProductErrorCode::ProductInvalidInput.as_str(),
+                ProductErrorCode::ProjectTrustInvalidInput.as_str(),
                 "unknown project trust capability",
             )
         })?;
@@ -135,72 +142,36 @@ fn selected_capability_digests(
 }
 
 pub(crate) async fn resolve_product_workspace_trust(
-    store: &Arc<dyn ProductStore>,
+    authority: &Arc<ProjectTrustRepository>,
     root: &std::path::Path,
     kind: WorkspaceKind,
-    provider_selector: Option<&str>,
+    provider_selector: &str,
 ) -> Result<rove_app_bootstrap::ProjectTrustResolution, ApiError> {
-    let canonical_root = canonical_root_key(root);
-    let record = store
-        .get_project_trust_record(&canonical_root, product_workspace_kind(&kind)?)
-        .await?;
-    let bootstrap_record = record.as_ref().map(stored_to_bootstrap_record);
-    let digests = capability_digest_map(
-        root,
-        Some(&root.join(".rove/mcp_servers.json")),
-        provider_selector,
-    );
-    Ok(resolve_project_trust_record(
-        bootstrap_record.as_ref(),
-        workspace_identity_digest(root, kind),
-        &digests,
-    ))
+    let digests = capability_digest_map(root, None, Some(provider_selector));
+    authority.resolve(root, kind, &digests).map_err(|error| {
+        ApiError::from(ProductStoreError::new(
+            ProductErrorCode::ProjectTrustUnavailable,
+            format!("project trust authority failed: {error}"),
+        ))
+    })
 }
 
 async fn trust_status(
-    store: &Arc<dyn ProductStore>,
+    authority: &Arc<ProjectTrustRepository>,
     workspace_id: &ProductWorkspaceId,
     root: &std::path::Path,
     kind: WorkspaceKind,
 ) -> Result<ProductTrustStatus, ApiError> {
-    let canonical_root = canonical_root_key(root);
-    let record = store
-        .get_project_trust_record(&canonical_root, product_workspace_kind(&kind)?)
-        .await?;
-    let resolution = resolve_product_workspace_trust(store, root, kind, None).await?;
-    let state = if record.is_none() {
-        ProductTrustState::Unknown
-    } else {
-        activation_state_to_product(resolution.state)
-    };
+    let provider_selector = provider_capability_selector_for_workspace(root);
+    let resolution =
+        resolve_product_workspace_trust(authority, root, kind, &provider_selector).await?;
     Ok(ProductTrustStatus {
         workspace_id: workspace_id.clone(),
-        state,
+        state: activation_state_to_product(resolution.state),
         identity_digest: resolution.identity_digest,
         invalidated_capabilities: resolution.invalidated_capabilities,
         granted_capabilities: resolution.granted_capabilities.into_iter().collect(),
     })
-}
-
-fn stored_to_bootstrap_record(record: &StoredProjectTrustRecord) -> ProjectTrustRecord {
-    ProjectTrustRecord {
-        canonical_root: record.canonical_root.clone(),
-        workspace_kind: match record.workspace_kind {
-            ProductWorkspaceKind::Folder => WorkspaceKind::Folder,
-            ProductWorkspaceKind::Repo => WorkspaceKind::Repo,
-        },
-        identity_digest: record.identity_digest.clone(),
-        state: match record.state {
-            ProductTrustState::Unknown => ProjectActivationState::Unknown,
-            ProductTrustState::Restricted => ProjectActivationState::Restricted,
-            ProductTrustState::Trusted => ProjectActivationState::Trusted,
-            ProductTrustState::Revoked => ProjectActivationState::Revoked,
-        },
-        capability_digests: record.capability_digests.clone(),
-        granted_at: record.granted_at.clone(),
-        revoked_at: record.revoked_at.clone(),
-        updated_at: record.updated_at.clone(),
-    }
 }
 
 fn activation_state_to_product(state: ProjectActivationState) -> ProductTrustState {
@@ -209,17 +180,6 @@ fn activation_state_to_product(state: ProjectActivationState) -> ProductTrustSta
         ProjectActivationState::Restricted => ProductTrustState::Restricted,
         ProjectActivationState::Trusted => ProductTrustState::Trusted,
         ProjectActivationState::Revoked => ProductTrustState::Revoked,
-    }
-}
-
-fn product_workspace_kind(kind: &WorkspaceKind) -> Result<ProductWorkspaceKind, ApiError> {
-    match kind {
-        WorkspaceKind::Folder => Ok(ProductWorkspaceKind::Folder),
-        WorkspaceKind::Repo => Ok(ProductWorkspaceKind::Repo),
-        WorkspaceKind::Task => Err(ApiError::bad_request_with_code(
-            ProductErrorCode::ProductInvalidInput.as_str(),
-            "task workspaces do not support durable product trust",
-        )),
     }
 }
 

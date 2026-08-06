@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::str::FromStr;
 
@@ -25,11 +25,11 @@ use crate::product::{
     ProductResumeHealthStatus, ProductRuntimeBinding, ProductSession, ProductSessionContext,
     ProductSessionId, ProductSessionModelConfig, ProductSessionRunBinding,
     ProductSessionRunModelView, ProductSessionStatus, ProductStoreError, ProductThemePreference,
-    ProductTrustState, ProductTurnClaim, ProductTurnClaimId, ProductTurnControlFinish,
-    ProductWorkspace, ProductWorkspaceId, ProductWorkspaceKind, StoredProjectTrustRecord,
-    UpdateProductPreferencesRequest, UpdateProductProviderProfileRequest,
-    UpdateProductSessionModelConfigRequest, UpdateProductSessionRequest,
-    VerifiedM1SessionRunBinding, VerifiedProductForkBoundary, m1_browser_migration_digest,
+    ProductTurnClaim, ProductTurnClaimId, ProductTurnControlFinish, ProductWorkspace,
+    ProductWorkspaceId, ProductWorkspaceKind, UpdateProductPreferencesRequest,
+    UpdateProductProviderProfileRequest, UpdateProductSessionModelConfigRequest,
+    UpdateProductSessionRequest, VerifiedM1SessionRunBinding, VerifiedProductForkBoundary,
+    m1_browser_migration_digest,
 };
 
 use super::schema::{ProductDatabase, storage_error};
@@ -216,91 +216,6 @@ impl ProductRepository {
     ) -> Result<ProductWorkspace, ProductStoreError> {
         let connection = self.database.connect()?;
         get_workspace(&connection, workspace_id)
-    }
-
-    pub(super) fn get_project_trust_record(
-        &self,
-        canonical_root: &str,
-        workspace_kind: ProductWorkspaceKind,
-    ) -> Result<Option<StoredProjectTrustRecord>, ProductStoreError> {
-        let connection = self.database.connect()?;
-        let raw = connection
-            .query_row(
-                r#"
-                SELECT canonical_root, workspace_kind, identity_digest, state,
-                       capability_digests_json, granted_at, revoked_at, updated_at
-                FROM project_trust_records
-                WHERE canonical_root = ?1 AND workspace_kind = ?2
-                "#,
-                params![canonical_root, workspace_kind_to_db(workspace_kind)],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, String>(3)?,
-                        row.get::<_, String>(4)?,
-                        row.get::<_, Option<String>>(5)?,
-                        row.get::<_, Option<String>>(6)?,
-                        row.get::<_, String>(7)?,
-                    ))
-                },
-            )
-            .optional()
-            .map_err(storage_error)?;
-        raw.map(|raw| {
-            Ok(StoredProjectTrustRecord {
-                canonical_root: raw.0,
-                workspace_kind: workspace_kind_from_db(&raw.1)?,
-                identity_digest: raw.2,
-                state: project_trust_state_from_db(&raw.3)?,
-                capability_digests: serde_json::from_str::<BTreeMap<String, String>>(&raw.4)
-                    .map_err(storage_error)?,
-                granted_at: raw.5,
-                revoked_at: raw.6,
-                updated_at: raw.7,
-            })
-        })
-        .transpose()
-    }
-
-    pub(super) fn put_project_trust_record(
-        &self,
-        record: StoredProjectTrustRecord,
-    ) -> Result<StoredProjectTrustRecord, ProductStoreError> {
-        let capability_digests =
-            serde_json::to_string(&record.capability_digests).map_err(storage_error)?;
-        let mut connection = self.database.connect()?;
-        let transaction = immediate_transaction(&mut connection)?;
-        transaction
-            .execute(
-                r#"
-                INSERT INTO project_trust_records(
-                    canonical_root, workspace_kind, identity_digest, state,
-                    capability_digests_json, granted_at, revoked_at, updated_at
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-                ON CONFLICT(canonical_root, workspace_kind) DO UPDATE SET
-                    identity_digest = excluded.identity_digest,
-                    state = excluded.state,
-                    capability_digests_json = excluded.capability_digests_json,
-                    granted_at = excluded.granted_at,
-                    revoked_at = excluded.revoked_at,
-                    updated_at = excluded.updated_at
-                "#,
-                params![
-                    record.canonical_root,
-                    workspace_kind_to_db(record.workspace_kind),
-                    record.identity_digest,
-                    project_trust_state_to_db(record.state),
-                    capability_digests,
-                    record.granted_at,
-                    record.revoked_at,
-                    record.updated_at,
-                ],
-            )
-            .map_err(storage_error)?;
-        transaction.commit().map_err(storage_error)?;
-        Ok(record)
     }
 
     pub(super) fn create_workspace(
@@ -5896,25 +5811,6 @@ fn workspace_kind_from_db(value: &str) -> Result<ProductWorkspaceKind, ProductSt
         "folder" => Ok(ProductWorkspaceKind::Folder),
         "repo" => Ok(ProductWorkspaceKind::Repo),
         _ => Err(storage_error("persisted workspace kind is invalid")),
-    }
-}
-
-fn project_trust_state_to_db(state: ProductTrustState) -> &'static str {
-    match state {
-        ProductTrustState::Unknown => "unknown",
-        ProductTrustState::Restricted => "restricted",
-        ProductTrustState::Trusted => "trusted",
-        ProductTrustState::Revoked => "revoked",
-    }
-}
-
-fn project_trust_state_from_db(value: &str) -> Result<ProductTrustState, ProductStoreError> {
-    match value {
-        "unknown" => Ok(ProductTrustState::Unknown),
-        "restricted" => Ok(ProductTrustState::Restricted),
-        "trusted" => Ok(ProductTrustState::Trusted),
-        "revoked" => Ok(ProductTrustState::Revoked),
-        _ => Err(storage_error("persisted project trust state is invalid")),
     }
 }
 

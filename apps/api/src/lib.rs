@@ -21,7 +21,7 @@ use utoipa_axum::{router::OpenApiRouter, routes};
 use utoipa_swagger_ui::SwaggerUi;
 
 use rove_app_bootstrap::build_model_client_with_health;
-use rove_app_bootstrap::{AppConfig, AppConfigOverrides};
+use rove_app_bootstrap::{AppConfig, AppConfigOverrides, ProjectTrustRepository};
 use rove_app_bootstrap::{EngineOptions, build_engine};
 use rove_core::ToolError;
 use rove_models::ModelClient;
@@ -71,6 +71,7 @@ struct ApiStateInner {
     config: AppConfig,
     product_store_path: PathBuf,
     product_store: Option<Arc<dyn ProductStore>>,
+    project_trust: Option<Arc<ProjectTrustRepository>>,
     product_transcript_reader: Option<Arc<dyn ProductTranscriptReader>>,
     shutdown_token: CancellationToken,
     job_starts: TaskTracker,
@@ -377,8 +378,40 @@ impl ApiState {
 
     pub fn with_shutdown(
         workspace: Workspace,
+        config: AppConfig,
+        shutdown_token: CancellationToken,
+    ) -> Self {
+        let project_trust = match ProjectTrustRepository::operator_default() {
+            Ok(repository) => Some(Arc::new(repository)),
+            Err(error) => {
+                tracing::warn!("project trust authority is unavailable: {error}");
+                None
+            }
+        };
+        Self::with_shutdown_and_project_trust(workspace, config, shutdown_token, project_trust)
+    }
+
+    /// Build API state with an explicit canonical Project Trust authority.
+    /// Embedders and tests can use the same repository instance as CLI or
+    /// bootstrap without relying on process-global path overrides.
+    pub fn with_project_trust_repository(
+        workspace: Workspace,
+        config: AppConfig,
+        project_trust: Arc<ProjectTrustRepository>,
+    ) -> Self {
+        Self::with_shutdown_and_project_trust(
+            workspace,
+            config,
+            CancellationToken::new(),
+            Some(project_trust),
+        )
+    }
+
+    fn with_shutdown_and_project_trust(
+        workspace: Workspace,
         mut config: AppConfig,
         shutdown_token: CancellationToken,
+        project_trust: Option<Arc<ProjectTrustRepository>>,
     ) -> Self {
         if config.source_summary.workspace_root == std::path::Path::new(".") {
             config.source_summary.workspace_root = workspace.root.clone();
@@ -402,6 +435,11 @@ impl ApiState {
                 None
             }
         };
+        if let Some(repository) = project_trust.as_ref()
+            && let Err(error) = repository.import_product_store_snapshot(&product_store_path)
+        {
+            tracing::warn!("project trust compatibility import failed: {error}");
+        }
         let product_transcript_reader = product_store.as_ref().and_then(|store| {
             let runtime_state_resolver: Arc<dyn ProductRuntimeStateResolver> =
                 Arc::new(ApiProductRuntimeStateResolver {
@@ -428,6 +466,7 @@ impl ApiState {
                 config,
                 product_store_path,
                 product_store,
+                project_trust,
                 product_transcript_reader,
                 shutdown_token,
                 job_starts: TaskTracker::new(),
@@ -450,6 +489,16 @@ impl ApiState {
             .product_store
             .clone()
             .ok_or_else(|| ProductStoreError::unavailable().into())
+    }
+
+    pub(crate) fn project_trust(&self) -> Result<Arc<ProjectTrustRepository>, ApiError> {
+        self.inner.project_trust.clone().ok_or_else(|| {
+            ProductStoreError::new(
+                ProductErrorCode::ProjectTrustUnavailable,
+                "project trust authority is not available",
+            )
+            .into()
+        })
     }
 
     pub(crate) async fn quarantine_workspace_jobs(&self, workspace_root: &FsPath) {
@@ -3048,11 +3097,14 @@ async fn workspace_and_config_for_product_job(
         validate_product_workspace_hint(requested, product_workspace, &workspace)?;
     }
     let (workspace, mut config) = rebased_workspace_config(state, workspace)?;
+    let authority = state.project_trust()?;
+    let provider_selector =
+        rove_app_bootstrap::provider_capability_selector_for_workspace(&workspace.root);
     let trust = product::trust::resolve_product_workspace_trust(
-        store,
+        &authority,
         &workspace.root,
         workspace.kind.clone(),
-        None,
+        &provider_selector,
     )
     .await?;
     config.apply_project_trust_resolution(trust);
@@ -3772,8 +3824,10 @@ impl From<ProductStoreError> for ApiError {
             | ProductErrorCode::ProductMcpNotFound => StatusCode::NOT_FOUND,
             ProductErrorCode::ProductInvalidInput
             | ProductErrorCode::ProductMemoryInvalidSlug
-            | ProductErrorCode::ProductMcpInvalidInput => StatusCode::BAD_REQUEST,
-            ProductErrorCode::ProductStoreUnavailable => StatusCode::SERVICE_UNAVAILABLE,
+            | ProductErrorCode::ProductMcpInvalidInput
+            | ProductErrorCode::ProjectTrustInvalidInput => StatusCode::BAD_REQUEST,
+            ProductErrorCode::ProductStoreUnavailable
+            | ProductErrorCode::ProjectTrustUnavailable => StatusCode::SERVICE_UNAVAILABLE,
             ProductErrorCode::ProductStorageFailure => StatusCode::INTERNAL_SERVER_ERROR,
             ProductErrorCode::ProductSessionActive
             | ProductErrorCode::ProductSessionWorkspaceMismatch

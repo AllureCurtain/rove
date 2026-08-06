@@ -24,7 +24,10 @@ use rove_api::{
     MAX_PRODUCT_TEXT_BYTES, ProductSessionId, ProductWorkspaceId, WorkspaceActivationState, router,
     serve_listener,
 };
-use rove_app_bootstrap::{AppConfig, AppConfigOverrides};
+use rove_app_bootstrap::{
+    AppConfig, AppConfigOverrides, ProjectActivationState, ProjectTrustDecision,
+    ProjectTrustRepository, capability_digest_map, provider_capability_selector_for_workspace,
+};
 use rove_runtime::events::StreamEvent;
 use rove_runtime::execution::StepRecordStatus;
 use rove_runtime::state::store::StateStore;
@@ -3772,6 +3775,73 @@ async fn project_trust_is_exact_root_digest_bound_and_revocable() {
     let revoked: serde_json::Value = decode_json(revoked).await;
     assert_eq!(revoked["state"], "revoked");
     assert_eq!(revoked["granted_capabilities"], serde_json::json!([]));
+}
+
+#[tokio::test]
+async fn api_and_bootstrap_share_one_canonical_project_trust_authority() {
+    let server = tempfile::TempDir::new().unwrap();
+    let target = tempfile::TempDir::new().unwrap();
+    std::fs::create_dir_all(target.path().join(".rove")).unwrap();
+    std::fs::write(
+        target.path().join(".rove/config.toml"),
+        "[runtime]\nmax_steps = 7\n",
+    )
+    .unwrap();
+    let authority = Arc::new(ProjectTrustRepository::new(
+        server.path().join("canonical-project-trust.sqlite"),
+    ));
+    let mut config = test_config();
+    config.state.state_dir = "api-state".into();
+    let app = router(ApiState::with_project_trust_repository(
+        Workspace::detect(server.path()).unwrap(),
+        config,
+        authority.clone(),
+    ));
+    let workspace = create_product_workspace(&app, target.path()).await;
+    let workspace_id = workspace["id"].as_str().unwrap();
+    let trust_uri = format!("/product/workspaces/{workspace_id}/trust");
+
+    let granted = request_json(
+        &app,
+        "PUT",
+        &trust_uri,
+        serde_json::json!({"decision": "grant", "capabilities": []}),
+    )
+    .await;
+    assert_eq!(granted.status(), StatusCode::OK);
+    let bootstrap = AppConfig::load_with_project_trust_repository(
+        target.path(),
+        AppConfigOverrides::default(),
+        authority.as_ref(),
+    )
+    .unwrap();
+    assert_eq!(
+        bootstrap.project_activation_state(),
+        ProjectActivationState::Trusted
+    );
+    assert!(bootstrap.source_summary.project_config_loaded);
+
+    let provider_selector = provider_capability_selector_for_workspace(target.path());
+    authority
+        .decide(
+            target.path(),
+            Workspace::detect(target.path()).unwrap().kind,
+            ProjectTrustDecision::Deny,
+            std::collections::BTreeMap::new(),
+        )
+        .unwrap();
+    let api_status = get_response(&app, &trust_uri).await;
+    assert_eq!(api_status.status(), StatusCode::OK);
+    let api_status: serde_json::Value = decode_json(api_status).await;
+    assert_eq!(api_status["state"], "restricted");
+    let resolution = authority
+        .resolve(
+            target.path(),
+            Workspace::detect(target.path()).unwrap().kind,
+            &capability_digest_map(target.path(), None, Some(&provider_selector)),
+        )
+        .unwrap();
+    assert_eq!(resolution.state, ProjectActivationState::Restricted);
 }
 
 #[tokio::test]

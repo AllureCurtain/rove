@@ -355,6 +355,34 @@ impl AppConfig {
         workspace_root: impl AsRef<Path>,
         overrides: AppConfigOverrides,
     ) -> anyhow::Result<Self> {
+        let repository = ProjectTrustRepository::operator_default().ok();
+        Self::load_with_optional_project_trust_repository(
+            workspace_root,
+            overrides,
+            repository.as_ref(),
+        )
+    }
+
+    /// Load configuration against an explicit canonical trust authority.
+    /// First-party processes normally use [`Self::load`]; this entry point lets
+    /// embedders share the exact repository instance with an API coordinator.
+    pub fn load_with_project_trust_repository(
+        workspace_root: impl AsRef<Path>,
+        overrides: AppConfigOverrides,
+        repository: &ProjectTrustRepository,
+    ) -> anyhow::Result<Self> {
+        Self::load_with_optional_project_trust_repository(
+            workspace_root,
+            overrides,
+            Some(repository),
+        )
+    }
+
+    fn load_with_optional_project_trust_repository(
+        workspace_root: impl AsRef<Path>,
+        overrides: AppConfigOverrides,
+        repository: Option<&ProjectTrustRepository>,
+    ) -> anyhow::Result<Self> {
         let workspace_root = workspace_root
             .as_ref()
             .canonicalize()
@@ -369,20 +397,18 @@ impl AppConfig {
             overrides.trust_project,
             trusted_workspaces,
         )?;
-        let capability_digests = capability_digest_map(
-            &workspace_root,
-            Some(&workspace_root.join(".rove/mcp_servers.json")),
-            std::env::var("ROVE_PROVIDER_ACTIVE").ok().as_deref(),
-        );
-        let durable_resolution = ProjectTrustRepository::operator_default()
+        let capability_digests = capability_digest_map(&workspace_root, None, None);
+        let durable_resolution = repository
             .and_then(|repository| {
-                repository.resolve(
-                    &workspace_root,
-                    workspace_kind_for_root(&workspace_root),
-                    &capability_digests,
-                )
+                repository
+                    .resolve(
+                        &workspace_root,
+                        workspace_kind_for_root(&workspace_root),
+                        &capability_digests,
+                    )
+                    .ok()
             })
-            .unwrap_or_else(|_| crate::project_trust::ProjectTrustResolution {
+            .unwrap_or_else(|| crate::project_trust::ProjectTrustResolution {
                 state: ProjectActivationState::Restricted,
                 identity_digest: crate::project_trust::workspace_identity_digest(
                     &workspace_root,
@@ -555,11 +581,7 @@ impl AppConfig {
                 repository.resolve(
                     &workspace_root,
                     workspace_kind_for_root(&workspace_root),
-                    &capability_digest_map(
-                        &workspace_root,
-                        Some(&workspace_root.join(".rove/mcp_servers.json")),
-                        None,
-                    ),
+                    &capability_digest_map(&workspace_root, None, None),
                 )
             })
             .ok();
