@@ -11,6 +11,7 @@ import {
 } from "@radix-ui/react-icons";
 import {
   type FormEvent,
+  type ReactNode,
   useMemo,
   useRef,
   useState,
@@ -33,6 +34,7 @@ export interface WorkspaceSettingsProps {
   onSelectWorkspace: (workspaceId: string) => MaybePromise;
   onTogglePin: (workspaceId: string) => MaybePromise;
   onRemoveWorkspace: (workspaceId: string) => MaybePromise;
+  projectTrust?: ReactNode;
 }
 
 export interface SessionsSettingsProps {
@@ -144,6 +146,7 @@ export function WorkspaceSettings({
   onSelectWorkspace,
   onTogglePin,
   onRemoveWorkspace,
+  projectTrust,
 }: WorkspaceSettingsProps) {
   const sortedWorkspaces = useMemo(() => sortCatalogWorkspaces(workspaces), [workspaces]);
   const actions = useGuardedItemActions();
@@ -171,6 +174,8 @@ export function WorkspaceSettings({
           removes its sessions from the product catalog, but never deletes files from disk.
         </div>
       </div>
+
+      {projectTrust}
 
       <div className="settings-card" aria-busy={sortedWorkspaces.some((item) => actions.isBusy(item.id))}>
         <h2>Known workspaces</h2>

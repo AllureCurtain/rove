@@ -6,7 +6,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 use crate::product::{ProductErrorCode, ProductStoreError};
 
-const CURRENT_SCHEMA_VERSION: i64 = 10;
+const CURRENT_SCHEMA_VERSION: i64 = 11;
 const MAX_BUSY_TIMEOUT_MS: u64 = 120_000;
 
 const MIGRATION_001: &str = r#"
@@ -412,6 +412,22 @@ ALTER TABLE product_session_run_models ADD COLUMN context_window INTEGER
     CHECK(context_window IS NULL OR context_window > 0);
 "#;
 
+const MIGRATION_011: &str = r#"
+CREATE TABLE IF NOT EXISTS project_trust_records (
+    canonical_root TEXT NOT NULL,
+    workspace_kind TEXT NOT NULL CHECK(workspace_kind IN ('folder', 'repo', 'task')),
+    identity_digest TEXT NOT NULL,
+    state TEXT NOT NULL CHECK(state IN ('unknown', 'restricted', 'trusted', 'revoked')),
+    capability_digests_json TEXT NOT NULL,
+    granted_at TEXT,
+    revoked_at TEXT,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY(canonical_root, workspace_kind)
+);
+CREATE INDEX IF NOT EXISTS idx_project_trust_state
+    ON project_trust_records(state, updated_at DESC);
+"#;
+
 #[derive(Debug, Clone)]
 pub(super) struct ProductDatabase {
     path: Arc<PathBuf>,
@@ -515,6 +531,7 @@ fn apply_migrations(connection: &mut Connection) -> Result<(), ProductStoreError
     apply_migration_008(connection)?;
     apply_migration_009(connection)?;
     apply_migration_010(connection)?;
+    apply_migration_011(connection)?;
     Ok(())
 }
 
@@ -869,6 +886,31 @@ fn apply_migration_010(connection: &mut Connection) -> Result<(), ProductStoreEr
     Ok(())
 }
 
+fn apply_migration_011(connection: &mut Connection) -> Result<(), ProductStoreError> {
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|_| database_error(true))?;
+    if migration_is_applied(&transaction, 11)? {
+        transaction.commit().map_err(|_| database_error(true))?;
+        return Ok(());
+    }
+    transaction
+        .execute_batch(MIGRATION_011)
+        .map_err(|_| database_error(true))?;
+    transaction
+        .execute(
+            "INSERT INTO product_schema_migrations(version, name, applied_at) VALUES (?1, ?2, ?3)",
+            params![
+                11,
+                "project_trust_records",
+                super::repository::now_rfc3339()
+            ],
+        )
+        .map_err(|_| database_error(true))?;
+    transaction.commit().map_err(|_| database_error(true))?;
+    Ok(())
+}
+
 fn database_error(startup: bool) -> ProductStoreError {
     if startup {
         ProductStoreError::new(
@@ -978,6 +1020,7 @@ mod tests {
         assert!(migration_is_applied(&connection, 4).unwrap());
         assert!(migration_is_applied(&connection, 5).unwrap());
         assert!(migration_is_applied(&connection, 6).unwrap());
+        assert!(migration_is_applied(&connection, 11).unwrap());
         let preparations_table: i64 = connection
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_schema WHERE type = 'table' AND name = 'product_migration_preparations'",
@@ -994,5 +1037,71 @@ mod tests {
             )
             .unwrap();
         assert_eq!(controls_table, 1);
+        assert!(table_exists(&connection, "project_trust_records").unwrap());
+    }
+
+    #[test]
+    fn schema_newer_than_v11_is_rejected_without_rollback() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                r#"
+                CREATE TABLE product_schema_migrations (
+                    version INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    applied_at TEXT NOT NULL
+                );
+                INSERT INTO product_schema_migrations(version, name, applied_at)
+                VALUES (12, 'future_schema', '2026-08-07T00:00:00Z');
+                "#,
+            )
+            .unwrap();
+
+        let error = apply_migrations(&mut connection).unwrap_err();
+        assert_eq!(error.code, ProductErrorCode::ProductStoreUnavailable);
+        assert!(error.message.contains("newer than this API"));
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM product_schema_migrations WHERE version = 12",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn failed_v11_migration_rolls_back_its_schema_record() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                r#"
+                CREATE TABLE product_schema_migrations (
+                    version INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    applied_at TEXT NOT NULL
+                );
+                CREATE TABLE project_trust_records (
+                    canonical_root TEXT PRIMARY KEY
+                );
+                "#,
+            )
+            .unwrap();
+
+        let error = apply_migration_011(&mut connection).unwrap_err();
+
+        assert_eq!(error.code, ProductErrorCode::ProductStoreUnavailable);
+        assert!(!migration_is_applied(&connection, 11).unwrap());
+        assert!(!table_has_column(&connection, "project_trust_records", "state").unwrap());
+        let index_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_schema WHERE type = 'index' AND name = 'idx_project_trust_state'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(index_count, 0);
     }
 }

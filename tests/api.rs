@@ -1727,6 +1727,8 @@ async fn api_exposes_openapi_json_for_all_routes() {
         ("/product/workspaces", "get"),
         ("/product/workspaces", "post"),
         ("/product/workspaces/{workspace_id}", "delete"),
+        ("/product/workspaces/{workspace_id}/trust", "get"),
+        ("/product/workspaces/{workspace_id}/trust", "put"),
         ("/product/sessions", "get"),
         ("/product/sessions", "post"),
         ("/product/sessions/{session_id}", "patch"),
@@ -1812,6 +1814,8 @@ async fn api_exposes_openapi_json_for_all_routes() {
         ("/product/workspaces", "get"),
         ("/product/workspaces", "post"),
         ("/product/workspaces/{workspace_id}", "delete"),
+        ("/product/workspaces/{workspace_id}/trust", "get"),
+        ("/product/workspaces/{workspace_id}/trust", "put"),
         ("/product/sessions", "get"),
         ("/product/sessions", "post"),
         ("/product/sessions/{session_id}", "patch"),
@@ -3656,6 +3660,186 @@ async fn api_rejects_missing_bearer_token_when_configured() {
             .unwrap(),
         "Bearer"
     );
+}
+
+#[tokio::test]
+async fn project_trust_is_exact_root_digest_bound_and_revocable() {
+    let server = tempfile::TempDir::new().unwrap();
+    let target = tempfile::TempDir::new().unwrap();
+    std::fs::create_dir_all(target.path().join(".rove")).unwrap();
+    std::fs::write(target.path().join(".rove/mcp_servers.json"), "[]").unwrap();
+    let mut config = test_config();
+    config.state.state_dir = "api-state".into();
+    let app = router(ApiState::new(
+        Workspace::detect(server.path()).unwrap(),
+        config,
+    ));
+    let workspace = create_product_workspace(&app, target.path()).await;
+    let workspace_id = workspace["id"].as_str().unwrap();
+    let trust_uri = format!("/product/workspaces/{workspace_id}/trust");
+
+    let unknown = get_response(&app, &trust_uri).await;
+    assert_eq!(unknown.status(), StatusCode::OK);
+    let unknown: serde_json::Value = decode_json(unknown).await;
+    assert_eq!(unknown["state"], "unknown");
+    assert!(unknown.get("canonical_root").is_none());
+
+    let denied = request_json(
+        &app,
+        "PUT",
+        &trust_uri,
+        serde_json::json!({"decision": "deny", "capabilities": []}),
+    )
+    .await;
+    assert_eq!(denied.status(), StatusCode::OK);
+    let denied: serde_json::Value = decode_json(denied).await;
+    assert_eq!(denied["state"], "restricted");
+    assert_eq!(denied["granted_capabilities"], serde_json::json!([]));
+
+    let granted = request_json(
+        &app,
+        "PUT",
+        &trust_uri,
+        serde_json::json!({
+            "decision": "grant",
+            "capabilities": ["project_configuration", "mcp_processes"]
+        }),
+    )
+    .await;
+    assert_eq!(granted.status(), StatusCode::OK);
+    let granted: serde_json::Value = decode_json(granted).await;
+    assert_eq!(granted["state"], "trusted");
+    assert_eq!(
+        granted["granted_capabilities"],
+        serde_json::json!(["mcp_processes", "project_configuration"])
+    );
+
+    std::fs::write(
+        target.path().join(".rove/mcp_servers.json"),
+        r#"[{"name":"changed"}]"#,
+    )
+    .unwrap();
+    let changed = get_response(&app, &trust_uri).await;
+    assert_eq!(changed.status(), StatusCode::OK);
+    let changed: serde_json::Value = decode_json(changed).await;
+    assert_eq!(changed["state"], "trusted");
+    assert_eq!(
+        changed["invalidated_capabilities"],
+        serde_json::json!(["mcp_processes"])
+    );
+    assert_eq!(
+        changed["granted_capabilities"],
+        serde_json::json!(["project_configuration"])
+    );
+
+    let nested_root = target.path().join("nested");
+    std::fs::create_dir(&nested_root).unwrap();
+    let nested = create_product_workspace(&app, &nested_root).await;
+    let nested_id = nested["id"].as_str().unwrap();
+    let nested_status = get_response(&app, &format!("/product/workspaces/{nested_id}/trust")).await;
+    let nested_status: serde_json::Value = decode_json(nested_status).await;
+    assert_eq!(nested_status["state"], "unknown");
+
+    let revoked = request_json(
+        &app,
+        "PUT",
+        &trust_uri,
+        serde_json::json!({"decision": "revoke", "capabilities": []}),
+    )
+    .await;
+    assert_eq!(revoked.status(), StatusCode::OK);
+    let revoked: serde_json::Value = decode_json(revoked).await;
+    assert_eq!(revoked["state"], "revoked");
+    assert_eq!(revoked["granted_capabilities"], serde_json::json!([]));
+}
+
+#[tokio::test]
+async fn project_trust_mutation_requires_bearer_and_allowed_origin() {
+    let server = tempfile::TempDir::new().unwrap();
+    let target = tempfile::TempDir::new().unwrap();
+    let mut config = test_config();
+    config.state.state_dir = "api-state".into();
+    config.api.token_auth = Some("trust-token".to_string());
+    config.api.cors_origins = vec!["https://allowed.example".to_string()];
+    let app = router(ApiState::new(
+        Workspace::detect(server.path()).unwrap(),
+        config,
+    ));
+    let created = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/product/workspaces")
+                .header(CONTENT_TYPE, "application/json")
+                .header(AUTHORIZATION, "Bearer trust-token")
+                .header("origin", "https://allowed.example")
+                .body(Body::from(
+                    serde_json::json!({
+                        "root": target.path(),
+                        "kind": "folder",
+                        "display_name": "Secured trust workspace",
+                        "pinned": false
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let workspace: serde_json::Value = decode_json(created).await;
+    let trust_uri = format!(
+        "/product/workspaces/{}/trust",
+        workspace["id"].as_str().unwrap()
+    );
+    let body = serde_json::json!({"decision": "grant", "capabilities": []}).to_string();
+
+    let missing_token = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(&trust_uri)
+                .header(CONTENT_TYPE, "application/json")
+                .header("origin", "https://allowed.example")
+                .body(Body::from(body.clone()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(missing_token.status(), StatusCode::UNAUTHORIZED);
+
+    let disallowed_origin = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(&trust_uri)
+                .header(CONTENT_TYPE, "application/json")
+                .header(AUTHORIZATION, "Bearer trust-token")
+                .header("origin", "https://evil.example")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(disallowed_origin.status(), StatusCode::FORBIDDEN);
+
+    let status = app
+        .oneshot(
+            Request::builder()
+                .uri(&trust_uri)
+                .header(AUTHORIZATION, "Bearer trust-token")
+                .header("origin", "https://allowed.example")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(status.status(), StatusCode::OK);
+    let status: serde_json::Value = decode_json(status).await;
+    assert_eq!(status["state"], "unknown");
 }
 
 #[tokio::test]

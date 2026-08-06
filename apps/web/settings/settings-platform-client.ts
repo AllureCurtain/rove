@@ -16,6 +16,8 @@ import {
   parseProductMemoryTopicContentResponse,
   parseProductMemoryTopicsResponse,
   parseProductRuntimeInfo,
+  parseProductTrustDecisionRequest,
+  parseProductTrustStatus,
   parseSettingsPreferencesUpdateRequest,
   parseUpdateProductMcpServerRequest,
   parseUpdateProductMemoryTopicRequest,
@@ -31,6 +33,8 @@ import {
   type ProductMemoryTopicContentResponse,
   type ProductMemoryTopicsResponse,
   type ProductRuntimeInfo,
+  type ProductTrustDecisionRequest,
+  type ProductTrustStatus,
   type SettingsPreferencesUpdateRequest,
   type UpdateProductMcpServerRequest,
   type UpdateProductMemoryTopicRequest,
@@ -50,6 +54,15 @@ export interface SettingsPlatformRequestOptions {
 }
 
 export interface SettingsPlatformClient {
+  getProjectTrust(
+    workspaceId: string,
+    options?: SettingsPlatformRequestOptions,
+  ): Promise<ProductTrustStatus>;
+  decideProjectTrust(
+    workspaceId: string,
+    request: ProductTrustDecisionRequest,
+    options?: SettingsPlatformRequestOptions,
+  ): Promise<ProductTrustStatus>;
   listMemoryTopics(
     workspaceId: string,
     filters?: ProductMemoryListFilters,
@@ -373,6 +386,50 @@ export function createSettingsPlatformClient(
   };
 
   return {
+    async getProjectTrust(workspaceId, requestOptions) {
+      const validWorkspaceId = validateProductMemoryWorkspaceId(workspaceId);
+      const response = await requestJson(
+        fetchImpl,
+        productUrl(
+          apiPrefix,
+          `/product/workspaces/${encodeURIComponent(validWorkspaceId)}/trust`,
+        ),
+        getRequest(requestOptions?.signal),
+        parseProductTrustStatus,
+      );
+      if (response.workspace_id !== validWorkspaceId) {
+        throw new ProductApiSchemaError(
+          "product trust response must match the requested workspace id",
+        );
+      }
+      return response;
+    },
+
+    async decideProjectTrust(workspaceId, input, requestOptions) {
+      const validWorkspaceId = validateProductMemoryWorkspaceId(workspaceId);
+      const request = parseProductTrustDecisionRequest(input);
+      const response = await requestJson(
+        fetchImpl,
+        productUrl(
+          apiPrefix,
+          `/product/workspaces/${encodeURIComponent(validWorkspaceId)}/trust`,
+        ),
+        {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(request),
+          signal: requestOptions?.signal,
+        },
+        parseProductTrustStatus,
+      );
+      if (response.workspace_id !== validWorkspaceId) {
+        throw new ProductApiSchemaError(
+          "product trust response must match the requested workspace id",
+        );
+      }
+      return response;
+    },
+
     listMemoryTopics(workspaceId, filters, requestOptions) {
       return requestJson(
         fetchImpl,

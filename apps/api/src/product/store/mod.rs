@@ -23,8 +23,8 @@ use crate::product::{
     ProductResumeHealth, ProductSession, ProductSessionContext, ProductSessionId,
     ProductSessionModelConfig, ProductSessionRunBinding, ProductSessionRunModelView,
     ProductSessionStatus, ProductStore, ProductStoreError, ProductTurnClaim, ProductTurnClaimId,
-    ProductTurnControlFinish, ProductWorkspace, ProductWorkspaceId,
-    UpdateProductPreferencesRequest, UpdateProductProviderProfileRequest,
+    ProductTurnControlFinish, ProductWorkspace, ProductWorkspaceId, ProductWorkspaceKind,
+    StoredProjectTrustRecord, UpdateProductPreferencesRequest, UpdateProductProviderProfileRequest,
     UpdateProductSessionModelConfigRequest, UpdateProductSessionRequest,
     VerifiedProductForkBoundary,
 };
@@ -110,6 +110,26 @@ impl ProductStore for SqliteProductStore {
     ) -> Result<(), ProductStoreError> {
         let workspace_id = workspace_id.clone();
         self.blocking(move |repository| repository.delete_workspace(&workspace_id))
+            .await
+    }
+
+    async fn get_project_trust_record(
+        &self,
+        canonical_root: &str,
+        workspace_kind: ProductWorkspaceKind,
+    ) -> Result<Option<StoredProjectTrustRecord>, ProductStoreError> {
+        let canonical_root = canonical_root.to_string();
+        self.blocking(move |repository| {
+            repository.get_project_trust_record(&canonical_root, workspace_kind)
+        })
+        .await
+    }
+
+    async fn put_project_trust_record(
+        &self,
+        record: StoredProjectTrustRecord,
+    ) -> Result<StoredProjectTrustRecord, ProductStoreError> {
+        self.blocking(move |repository| repository.put_project_trust_record(record))
             .await
     }
 

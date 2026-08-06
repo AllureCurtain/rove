@@ -5,6 +5,7 @@
 //! state. These types may point at runtime sessions, jobs, and runs, but they
 //! never copy canonical event facts into the product store.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -35,6 +36,7 @@ pub const MAX_PRODUCT_MAX_STEPS: u32 = 256;
 /// payloads. Keep that ancestry bounded so a deeply branched catalog cannot
 /// turn one fork or transcript read into an unbounded operation.
 pub const MAX_PRODUCT_FORK_INHERITED_RUNS: usize = 512;
+pub const MAX_PROJECT_TRUST_CAPABILITIES: usize = 6;
 
 macro_rules! product_id {
     ($name:ident, $description:literal) => {
@@ -280,6 +282,76 @@ pub struct ProductWorkspace {
     pub pinned: bool,
     pub last_opened_at: String,
     pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductTrustState {
+    Unknown,
+    Restricted,
+    Trusted,
+    Revoked,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductTrustCapability {
+    ProjectConfiguration,
+    WorkspaceInstructions,
+    McpProcesses,
+    HooksExtensions,
+    ProviderCredentials,
+    ExternalPaths,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductTrustDecision {
+    Grant,
+    Deny,
+    Revoke,
+}
+
+impl ProductTrustCapability {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ProjectConfiguration => "project_configuration",
+            Self::WorkspaceInstructions => "workspace_instructions",
+            Self::McpProcesses => "mcp_processes",
+            Self::HooksExtensions => "hooks_extensions",
+            Self::ProviderCredentials => "provider_credentials",
+            Self::ExternalPaths => "external_paths",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ProductTrustDecisionRequest {
+    pub decision: ProductTrustDecision,
+    #[serde(default)]
+    pub capabilities: Vec<ProductTrustCapability>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductTrustStatus {
+    pub workspace_id: ProductWorkspaceId,
+    pub state: ProductTrustState,
+    pub identity_digest: String,
+    pub invalidated_capabilities: Vec<String>,
+    pub granted_capabilities: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredProjectTrustRecord {
+    pub canonical_root: String,
+    pub workspace_kind: ProductWorkspaceKind,
+    pub identity_digest: String,
+    pub state: ProductTrustState,
+    pub capability_digests: BTreeMap<String, String>,
+    pub granted_at: Option<String>,
+    pub revoked_at: Option<String>,
     pub updated_at: String,
 }
 
@@ -1383,6 +1455,15 @@ pub trait ProductStore: Send + Sync {
         &self,
         workspace_id: &ProductWorkspaceId,
     ) -> Result<(), ProductStoreError>;
+    async fn get_project_trust_record(
+        &self,
+        canonical_root: &str,
+        workspace_kind: ProductWorkspaceKind,
+    ) -> Result<Option<StoredProjectTrustRecord>, ProductStoreError>;
+    async fn put_project_trust_record(
+        &self,
+        record: StoredProjectTrustRecord,
+    ) -> Result<StoredProjectTrustRecord, ProductStoreError>;
 
     async fn list_sessions(
         &self,

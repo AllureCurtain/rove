@@ -14,6 +14,7 @@ pub(crate) mod platform;
 pub(crate) mod routes;
 pub(crate) mod store;
 pub(crate) mod transcript;
+pub(crate) mod trust;
 pub(crate) mod usage;
 
 pub use artifacts::{

@@ -16,7 +16,14 @@ pub use factory::{
     ModelClientFactory, build_model_client, build_model_client_with_health, try_build_model_client,
     try_build_model_client_with_health, try_build_model_client_with_registry,
 };
-pub use project_trust::{ProjectActivationSource, ProjectActivationState, TRUSTED_WORKSPACES_ENV};
+pub use project_trust::{
+    CAP_EXTERNAL_PATHS, CAP_HOOKS_EXTENSIONS, CAP_MCP_PROCESSES, CAP_PROJECT_CONFIGURATION,
+    CAP_PROVIDER_CREDENTIALS, CAP_WORKSPACE_INSTRUCTIONS, PROJECT_TRUST_STORE_ENV,
+    ProjectActivationSource, ProjectActivationState, ProjectTrustCapability, ProjectTrustDecision,
+    ProjectTrustRecord, ProjectTrustRepository, ProjectTrustResolution, TRUSTED_WORKSPACES_ENV,
+    all_capability_names, canonical_root_key, capability_digest_map, resolve_project_trust_record,
+    workspace_identity_digest,
+};
 pub use provider::{
     ProviderAuthConfig, ProviderHeaderValue, ProviderProfileConfig, SecretSource,
     default_wire_protocol_registry, wire_protocol_for_provider_type,

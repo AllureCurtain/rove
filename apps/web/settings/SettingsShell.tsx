@@ -29,6 +29,7 @@ import { SessionsSettings, WorkspaceSettings } from "./CatalogSettings";
 import { KeyboardSettings } from "./KeyboardSettings";
 import { MemorySettings } from "./MemorySettings";
 import { MCPSettings } from "./MCPSettings";
+import { ProjectTrustSettings } from "./ProjectTrustSettings";
 import { RuntimeSettings } from "./RuntimeSettings";
 import { describeProviderProbeFailure } from "./provider-settings-model";
 import type { SettingsSectionId } from "./sections";
@@ -162,6 +163,12 @@ export function SettingsShell(props: SettingsShellProps) {
             onSelectWorkspace={onSelectWorkspace}
             onTogglePin={onTogglePin}
             onRemoveWorkspace={onRemoveWorkspace}
+            projectTrust={
+              <ProjectTrustSettings
+                client={settingsClient}
+                workspaceId={activeWorkspaceId}
+              />
+            }
           />
         ) : null}
         {section === "memory" ? (

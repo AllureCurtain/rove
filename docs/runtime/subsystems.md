@@ -5,12 +5,30 @@
 Configuration is typed in `apps/bootstrap/src/config.rs` and grouped by
 runtime, provider, tool, memory, state, API, web, and routing.
 
-Project activation is fail-closed. A newly selected workspace is `restricted`
-unless the operator passes CLI `--trust-project` for that exact workspace or
-lists its canonical path in the process-level `ROVE_TRUSTED_WORKSPACES`
-variable. Only a trusted workspace loads its local `.env` and
-`.rove/config.toml`. The repository cannot grant itself activation through
-either file.
+Project Trust is persistent, granular, and fail-closed. It has `unknown`,
+`restricted`, `trusted`, and `revoked` states and independently grants project
+configuration, workspace instructions, MCP/process definitions, hooks or
+extensions, provider/credential selectors, and external paths. Records bind an
+exact canonical root and workspace kind to a stable platform identity plus one
+digest per capability. A changed executable input invalidates only its matching
+capability; a parent grant does not cover a nested repository, and replacement,
+symlink, junction, and alias resolution is conservative.
+
+Bootstrap/CLI trust records live in an operator-owned JSON store selected by
+`ROVE_PROJECT_TRUST_STORE` or the platform user-state directory. Product API
+trust records live in the API-global ProductStore `project_trust_records` table
+added by schema v11 and are addressed by server-owned workspace IDs. Removing a
+workspace from the product catalog does not delete its trust record. The v11
+migration is forward-only and transactional: a failed migration rolls back its
+schema and migration row; a database newer than v11 is rejected without an
+automatic downgrade.
+
+CLI `--trust-project` and process-level `ROVE_TRUSTED_WORKSPACES` remain exact-
+root temporary grants. They grant only the current process and are never
+silently converted into durable records. Only an allowed project-configuration
+capability loads local `.env` and `.rove/config.toml`; both files must resolve
+inside the workspace and stay within the bootstrap size limit. Repository text
+cannot grant or widen trust, and trust never replaces per-tool approval.
 
 Merge order for an explicitly trusted workspace:
 
@@ -18,12 +36,15 @@ Merge order for an explicitly trusted workspace:
 defaults < .rove/config.toml < environment < CLI/API overrides
 ```
 
-For a restricted workspace, the project-config layer is reported as present
-but deferred, and process environment plus explicit overrides apply over
-defaults. `rove dump-config` exposes `project_activation`, its non-secret
-source, and whether project config was present or loaded. This temporary guard
-is replaced, rather than silently weakened, by the future persistent Project
-Trust store and granular grants.
+For a restricted or revoked workspace, the project-config layer is reported as
+present but deferred, and process environment plus explicit overrides apply
+over defaults. `rove dump-config` exposes the non-secret activation source,
+identity digest, invalidated/granted capability names, and whether project
+config was present or loaded. Product Web Settings exposes explicit grant,
+deny, and revoke controls; browser requests send only workspace IDs. Revocation
+blocks new activation and cancels matching live API jobs. Their existing
+cancellation path terminates foreground child work and records the normal
+canonical cancellation lifecycle; no new event family was introduced.
 
 Validation covers legacy and named provider selection, profile/fallback
 references, endpoints, model and protocol-option bounds, auth/header names,

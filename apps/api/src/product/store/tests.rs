@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::{fs, path::PathBuf};
 
 use chrono::{Duration, TimeZone, Utc};
@@ -14,7 +15,8 @@ use crate::product::{
     M1WorkspaceImport, PreparedM1BrowserMigration, ProductApprovalPreference, ProductControlKind,
     ProductControlStatus, ProductErrorCode, ProductProviderSelection, ProductProviderType,
     ProductReasoningPreference, ProductSessionStatus, ProductStore, ProductThemePreference,
-    ProductWorkspaceKind, UpdateProductPreferencesRequest, UpdateProductSessionModelConfigRequest,
+    ProductTrustState, ProductWorkspaceKind, StoredProjectTrustRecord,
+    UpdateProductPreferencesRequest, UpdateProductSessionModelConfigRequest,
     VerifiedM1SessionRunBinding, VerifiedProductForkBoundary,
 };
 
@@ -23,6 +25,50 @@ use super::repository::{now_rfc3339, remove_expired_migration_preparations_at};
 
 fn open_store(temp: &TempDir) -> SqliteProductStore {
     SqliteProductStore::open(temp.path().join("product.sqlite"), 5_000).unwrap()
+}
+
+#[tokio::test]
+async fn project_trust_record_is_operator_owned_and_survives_catalog_removal() {
+    let temp = TempDir::new().unwrap();
+    let store = open_store(&temp);
+    let (workspace, _) = create_workspace_and_session(&store, &temp).await;
+    let canonical_root = workspace
+        .canonical_root
+        .to_string_lossy()
+        .replace('\\', "/");
+    let record = StoredProjectTrustRecord {
+        canonical_root: canonical_root.clone(),
+        workspace_kind: workspace.kind,
+        identity_digest: "sha256:workspace-identity".to_string(),
+        state: ProductTrustState::Trusted,
+        capability_digests: BTreeMap::from([(
+            "mcp_processes".to_string(),
+            "sha256:mcp-config".to_string(),
+        )]),
+        granted_at: Some("2026-08-07T00:00:00.000Z".to_string()),
+        revoked_at: None,
+        updated_at: "2026-08-07T00:00:00.000Z".to_string(),
+    };
+    store
+        .put_project_trust_record(record.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .get_project_trust_record(&canonical_root, workspace.kind)
+            .await
+            .unwrap(),
+        Some(record.clone())
+    );
+
+    store.delete_workspace(&workspace.id).await.unwrap();
+    assert_eq!(
+        store
+            .get_project_trust_record(&canonical_root, workspace.kind)
+            .await
+            .unwrap(),
+        Some(record)
+    );
 }
 
 async fn preflight_baseline(

@@ -273,6 +273,8 @@ pub fn router(state: ApiState) -> Router {
         .routes(routes!(product::mcp::update_product_mcp_server))
         .routes(routes!(product::mcp::delete_product_mcp_server))
         .routes(routes!(product::mcp::probe_product_mcp_server))
+        .routes(routes!(product::trust::get_project_trust))
+        .routes(routes!(product::trust::decide_project_trust))
         .routes(routes!(product::platform::get_product_runtime_info))
         .merge(migration_router)
         .routes(routes!(create_job))
@@ -448,6 +450,15 @@ impl ApiState {
             .product_store
             .clone()
             .ok_or_else(|| ProductStoreError::unavailable().into())
+    }
+
+    pub(crate) async fn quarantine_workspace_jobs(&self, workspace_root: &FsPath) {
+        let jobs = self.inner.jobs.read().await;
+        for record in jobs.values() {
+            if record.workspace.root == workspace_root {
+                record.cancel_token.cancel();
+            }
+        }
     }
 
     pub(crate) fn product_transcript_reader(
@@ -3037,6 +3048,14 @@ async fn workspace_and_config_for_product_job(
         validate_product_workspace_hint(requested, product_workspace, &workspace)?;
     }
     let (workspace, mut config) = rebased_workspace_config(state, workspace)?;
+    let trust = product::trust::resolve_product_workspace_trust(
+        store,
+        &workspace.root,
+        workspace.kind.clone(),
+        None,
+    )
+    .await?;
+    config.apply_project_trust_resolution(trust);
     let provider_type = if let Some(profile_id) = &model_config.profile_id {
         let stored = store.get_provider_profile(profile_id).await?;
         let provider_type = product_provider_type_name(stored.provider_type);

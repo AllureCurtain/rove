@@ -57,7 +57,7 @@ pub async fn tool_registry_for_config(
     workspace: &Workspace,
     config: &AppConfig,
 ) -> anyhow::Result<ToolRegistry> {
-    if !config.project_activation_allowed() {
+    if !config.project_capability_allowed(crate::project_trust::CAP_MCP_PROCESSES) {
         return Ok(tool_registry_with_shell_policy(
             workspace,
             config.shell_policy(),
@@ -66,7 +66,7 @@ pub async fn tool_registry_for_config(
     tool_registry_with_mcp(
         workspace,
         config.shell_policy(),
-        config.resolve_path(&config.tool.mcp_config_path),
+        config.workspace_bounded_mcp_config_path()?,
     )
     .await
 }
