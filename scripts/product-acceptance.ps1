@@ -76,7 +76,9 @@ function Get-OutputTail([string]$Path, [int]$Lines = 40) {
     if (-not $content) {
         return @()
     }
-    return @($content | Select-Object -Last $Lines)
+    # Get-Content strings carry provider metadata in Windows PowerShell. Force
+    # plain strings so ConvertTo-Json cannot serialize the whole provider graph.
+    return @($content | Select-Object -Last $Lines | ForEach-Object { $_.ToString() })
 }
 
 $LogDir = Join-Path $RepoRoot ".rove/acceptance-logs"

@@ -102,8 +102,11 @@ impl StateStore {
     }
 
     pub async fn load_latest_task_state(&self) -> std::io::Result<Option<TaskState>> {
-        self.lazy_import_task_states().await?;
-        let records = self.index.list_task_state_records_async(None).await?;
+        let mut records = self.index.list_task_state_records_async(None).await?;
+        if records.is_empty() {
+            self.import_task_states().await?;
+            records = self.index.list_task_state_records_async(None).await?;
+        }
         let Some(record) = records.first() else {
             return Ok(None);
         };
@@ -116,8 +119,12 @@ impl StateStore {
     }
 
     pub async fn load_task_state(&self, run_id: RunId) -> std::io::Result<TaskState> {
-        self.lazy_import_task_states().await?;
-        let path = match self.index.task_state_path_async(run_id).await? {
+        let mut indexed_path = self.index.task_state_path_async(run_id).await?;
+        if indexed_path.is_none() {
+            self.import_task_states().await?;
+            indexed_path = self.index.task_state_path_async(run_id).await?;
+        }
+        let path = match indexed_path {
             Some(path) => path,
             None => self.run_store.run_dir(&run_id).join("task_state.json"),
         };
@@ -138,19 +145,27 @@ impl StateStore {
         &self,
         session_id: SessionId,
     ) -> std::io::Result<Vec<TaskState>> {
-        self.lazy_import_task_states().await?;
-        self.load_task_state_records(
-            self.index
+        let mut records = self
+            .index
+            .list_task_state_records_async(Some(session_id))
+            .await?;
+        if records.is_empty() {
+            self.import_task_states().await?;
+            records = self
+                .index
                 .list_task_state_records_async(Some(session_id))
-                .await?,
-        )
-        .await
+                .await?;
+        }
+        self.load_task_state_records(records).await
     }
 
     pub async fn list_task_states(&self) -> std::io::Result<Vec<TaskState>> {
-        self.lazy_import_task_states().await?;
-        self.load_task_state_records(self.index.list_task_state_records_async(None).await?)
-            .await
+        let mut records = self.index.list_task_state_records_async(None).await?;
+        if records.is_empty() {
+            self.import_task_states().await?;
+            records = self.index.list_task_state_records_async(None).await?;
+        }
+        self.load_task_state_records(records).await
     }
 
     /// Load a bounded set of snapshots that still point at their owning job's
@@ -253,10 +268,6 @@ impl StateStore {
             states.push(state);
         }
         Ok(states)
-    }
-
-    async fn lazy_import_task_states(&self) -> std::io::Result<()> {
-        self.import_task_states().await.map(|_| ())
     }
 
     async fn import_task_states(&self) -> std::io::Result<usize> {

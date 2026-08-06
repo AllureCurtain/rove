@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use chrono::{DateTime, FixedOffset, Utc};
-use rusqlite::{Connection, ErrorCode, OpenFlags, OptionalExtension, params};
+use rusqlite::{Connection, ErrorCode, OpenFlags, OptionalExtension, TransactionBehavior, params};
 
 use crate::events::StreamEvent;
 use crate::types::{JobId, RunId, SessionId, TaskState};
@@ -407,10 +407,52 @@ impl StateIndex {
         path: &Path,
         modified: SystemTime,
     ) -> std::io::Result<()> {
-        let conn = self.connect()?;
+        let mut conn = self.connect()?;
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(io_other)?;
         let now = now_rfc3339();
-        upsert_session(&conn, state.session_id, &now)?;
-        conn.execute(
+        let modified_millis = system_time_millis(modified);
+        upsert_session(&tx, state.session_id, &now)?;
+
+        // Artifact repair may replay old snapshots concurrently with live reads.
+        // Advance the mutable job pointer only when this snapshot is not older.
+        let current_run_id = tx
+            .query_row(
+                "SELECT run_id FROM jobs WHERE job_id = ?1",
+                params![state.job_id.to_string()],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()
+            .map_err(io_other)?
+            .flatten();
+        let incoming_run_id = state.run_id.to_string();
+        let current_modified = current_run_id
+            .as_deref()
+            .map(|run_id| {
+                tx.query_row(
+                    "SELECT modified_at FROM task_states WHERE run_id = ?1",
+                    params![run_id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()
+                .map_err(io_other)
+            })
+            .transpose()?
+            .flatten();
+        let advances_job = match (current_run_id.as_deref(), current_modified) {
+            (None, _) => true,
+            (Some(current), None) => current == incoming_run_id,
+            (Some(current), Some(current_modified)) if current == incoming_run_id => {
+                modified_millis >= current_modified
+            }
+            (Some(current), Some(current_modified)) => {
+                modified_millis > current_modified
+                    || (modified_millis == current_modified && incoming_run_id.as_str() > current)
+            }
+        };
+
+        tx.execute(
             r#"
             INSERT INTO jobs(job_id, session_id, status, run_id, message, created_at, updated_at)
             VALUES (?1, ?2, 'running', ?3, ?4, ?5, ?5)
@@ -419,6 +461,7 @@ impl StateIndex {
                 run_id = excluded.run_id,
                 message = COALESCE(excluded.message, jobs.message),
                 updated_at = excluded.updated_at
+            WHERE ?6
             "#,
             params![
                 state.job_id.to_string(),
@@ -426,6 +469,7 @@ impl StateIndex {
                 state.run_id.to_string(),
                 state.goal,
                 now,
+                advances_job,
             ],
         )
         .map_err(io_other)?;
@@ -434,7 +478,7 @@ impl StateIndex {
             .map(Path::to_path_buf)
             .unwrap_or_else(|| self.state_dir.join("runs").join(state.run_id.to_string()));
         let trace_path = run_dir.join("trace.jsonl");
-        conn.execute(
+        tx.execute(
             r#"
             INSERT INTO runs(
                 run_id, session_id, job_id, status, run_dir, trace_path, task_state_path,
@@ -458,7 +502,7 @@ impl StateIndex {
             ],
         )
         .map_err(io_other)?;
-        conn.execute(
+        tx.execute(
             r#"
             INSERT INTO task_states(
                 run_id, session_id, job_id, path, schema_version, goal, step, summary, modified_at,
@@ -485,11 +529,12 @@ impl StateIndex {
                 state.goal,
                 state.step,
                 state.summary,
-                system_time_millis(modified),
+                modified_millis,
                 now,
             ],
         )
         .map_err(io_other)?;
+        tx.commit().map_err(io_other)?;
         Ok(())
     }
 
@@ -2379,6 +2424,78 @@ mod tests {
             )
             .unwrap();
         (temp, index, session_id, job_id, run_id)
+    }
+
+    fn task_state(session_id: SessionId, job_id: JobId, run_id: RunId, goal: &str) -> TaskState {
+        TaskState {
+            schema_version: 1,
+            session_id,
+            job_id,
+            run_id,
+            goal: goal.to_string(),
+            step: 1,
+            history: Vec::new(),
+            summary: None,
+            checkpoint: None,
+            plan: None,
+            runtime_identity: None,
+            step_ledger: Default::default(),
+        }
+    }
+
+    #[test]
+    fn historical_task_state_import_does_not_replace_the_latest_job_run() {
+        let (temp, index, session_id, job_id, first_run_id) = indexed_run();
+        let first_modified = UNIX_EPOCH + Duration::from_secs(1);
+        index
+            .record_task_state(
+                &task_state(session_id, job_id, first_run_id, "first"),
+                &temp.path().join("first-task-state.json"),
+                first_modified,
+            )
+            .unwrap();
+
+        let second_run_id = RunId::new();
+        index
+            .record_run_started(
+                session_id,
+                job_id,
+                second_run_id,
+                &temp.path().join("second-run"),
+                &temp.path().join("second-trace.jsonl"),
+            )
+            .unwrap();
+
+        index
+            .record_task_state(
+                &task_state(session_id, job_id, first_run_id, "first"),
+                &temp.path().join("first-task-state.json"),
+                first_modified,
+            )
+            .unwrap();
+        assert_eq!(
+            index.job_record(job_id).unwrap().unwrap().run_id,
+            Some(second_run_id)
+        );
+
+        index
+            .record_task_state(
+                &task_state(session_id, job_id, second_run_id, "second"),
+                &temp.path().join("second-task-state.json"),
+                first_modified + Duration::from_secs(1),
+            )
+            .unwrap();
+        index
+            .record_task_state(
+                &task_state(session_id, job_id, first_run_id, "first"),
+                &temp.path().join("first-task-state.json"),
+                first_modified,
+            )
+            .unwrap();
+
+        let job = index.job_record(job_id).unwrap().unwrap();
+        assert_eq!(job.run_id, Some(second_run_id));
+        assert_eq!(job.message.as_deref(), Some("second"));
     }
 
     #[test]
