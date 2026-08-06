@@ -191,20 +191,15 @@ impl ToolCall {
 }
 
 /// Normalized outcome of one tool invocation.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolResultStatus {
+    #[default]
     Ok,
     Error,
     Rejected,
     Partial,
     UnknownEffect,
-}
-
-impl Default for ToolResultStatus {
-    fn default() -> Self {
-        Self::Ok
-    }
 }
 
 /// Provider-neutral tool result.  Status is retained even when the target
@@ -236,7 +231,7 @@ impl ToolResult {
         }
     }
 
-    fn validate(&self) -> Result<(), ProtocolValidationError> {
+    pub fn validate(&self) -> Result<(), ProtocolValidationError> {
         bounded("tool result name", &self.tool_name, MAX_TOOL_NAME_BYTES)?;
         if self.tool_name.trim().is_empty() {
             return Err(ProtocolValidationError::EmptyField {
@@ -252,9 +247,10 @@ impl ToolResult {
 }
 
 /// Normalized provider stop state.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum StopReason {
+    #[default]
     EndTurn,
     ToolUse,
     MaxTokens,
@@ -263,12 +259,6 @@ pub enum StopReason {
     Error,
     Incomplete,
     Other(String),
-}
-
-impl Default for StopReason {
-    fn default() -> Self {
-        Self::EndTurn
-    }
 }
 
 /// Safe provider provenance.  Wire payloads, signatures, and headers remain
@@ -296,6 +286,83 @@ pub struct AssistantTurn {
     pub stop_reason: StopReason,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provenance: Option<TurnProvenance>,
+}
+
+/// Provider-independent message used between Session/Agent context and a
+/// concrete provider request.  Unlike the legacy [`Message`], content blocks
+/// and typed tool results retain their canonical identity until target
+/// projection.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ModelMessage {
+    #[serde(default = "default_canonical_schema_version")]
+    pub schema_version: u16,
+    pub role: Role,
+    #[serde(default)]
+    pub content: Vec<ContentBlock>,
+    #[serde(default)]
+    pub tool_calls: Vec<ToolCall>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_result: Option<ToolResult>,
+}
+
+impl ModelMessage {
+    pub fn text(role: Role, text: impl Into<String>) -> Self {
+        Self {
+            schema_version: CANONICAL_MESSAGE_SCHEMA_VERSION,
+            role,
+            content: vec![ContentBlock::text(text)],
+            tool_calls: Vec::new(),
+            tool_result: None,
+        }
+    }
+
+    pub fn assistant(turn: AssistantTurn) -> Self {
+        Self {
+            schema_version: turn.schema_version,
+            role: Role::Assistant,
+            content: turn.content,
+            tool_calls: turn.tool_calls,
+            tool_result: None,
+        }
+    }
+
+    pub fn tool(result: ToolResult) -> Self {
+        Self {
+            schema_version: CANONICAL_MESSAGE_SCHEMA_VERSION,
+            role: Role::Tool,
+            content: result.content.clone(),
+            tool_calls: Vec::new(),
+            tool_result: Some(result),
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), ProtocolValidationError> {
+        if self.schema_version == 0 || self.schema_version > CANONICAL_MESSAGE_SCHEMA_VERSION {
+            return Err(ProtocolValidationError::UnsupportedVersion {
+                version: self.schema_version,
+            });
+        }
+        validate_content(&self.content)?;
+        if self.tool_calls.len() > MAX_TOOL_CALLS {
+            return Err(ProtocolValidationError::TooMany {
+                field: "tool calls",
+                max: MAX_TOOL_CALLS,
+            });
+        }
+        let mut ids = BTreeSet::new();
+        for call in &self.tool_calls {
+            call.validate()?;
+            if !ids.insert(call.internal_call_id.clone()) {
+                return Err(ProtocolValidationError::DuplicateId {
+                    id: call.internal_call_id.to_string(),
+                });
+            }
+        }
+        if let Some(result) = &self.tool_result {
+            result.validate()?;
+        }
+        Ok(())
+    }
 }
 
 fn default_canonical_schema_version() -> u16 {

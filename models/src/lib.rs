@@ -8,6 +8,7 @@ pub mod assembly;
 mod error;
 pub mod fake;
 pub mod health;
+pub mod history;
 #[cfg(test)]
 mod ollama;
 #[cfg(test)]
@@ -23,12 +24,16 @@ pub mod traits;
 pub use assembly::{TurnAssembler, assemble_turn};
 pub use error::ModelError;
 pub use fake::{FakeModelClient, FakeTurn};
+pub use history::{
+    HistoryProjectionError, HistoryProjectionPolicy, HistoryProjector, ProjectedHistory,
+    ProjectionDiagnostic,
+};
 pub use options::ProviderOptions;
 pub use protocol::{
     AssistantTurn, CANONICAL_MESSAGE_SCHEMA_VERSION, ContentBlock, InternalCallId,
     MAX_CONTENT_BLOCKS, MAX_CONTENT_BYTES, MAX_TOOL_ARGUMENT_BYTES, MAX_TOOL_CALLS,
-    MAX_TOOL_ID_BYTES, MAX_TOOL_NAME_BYTES, Message, ModelToolSchema, ProtocolValidationError,
-    Role, StopReason, ToolCall, ToolCallRef, ToolResult, ToolResultStatus, TurnProvenance, Usage,
-    WireCallReference,
+    MAX_TOOL_ID_BYTES, MAX_TOOL_NAME_BYTES, Message, ModelMessage, ModelToolSchema,
+    ProtocolValidationError, Role, StopReason, ToolCall, ToolCallRef, ToolResult, ToolResultStatus,
+    TurnProvenance, Usage, WireCallReference,
 };
 pub use traits::{ModelClient, ModelClientId, ModelEvent};
