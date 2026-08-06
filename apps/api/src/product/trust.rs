@@ -26,7 +26,9 @@ use crate::{ApiError, ApiErrorResponse, ApiState};
     responses(
         (status = 200, description = "Project trust state and safe capability summary", body = ProductTrustStatus),
         (status = 404, description = "Workspace not found", body = ApiErrorResponse),
-        (status = 409, description = "Workspace identity or trust store is invalid", body = ApiErrorResponse)
+        (status = 409, description = "Workspace identity or trust store is invalid", body = ApiErrorResponse),
+        (status = 500, description = "Project trust storage failed", body = ApiErrorResponse),
+        (status = 503, description = "ProductStore is unavailable", body = ApiErrorResponse)
     )
 )]
 pub(crate) async fn get_project_trust(
@@ -52,7 +54,9 @@ pub(crate) async fn get_project_trust(
         (status = 200, description = "Durable project trust decision", body = ProductTrustStatus),
         (status = 400, description = "Invalid trust decision", body = ApiErrorResponse),
         (status = 404, description = "Workspace not found", body = ApiErrorResponse),
-        (status = 409, description = "Workspace identity or trust store is invalid", body = ApiErrorResponse)
+        (status = 409, description = "Workspace identity or trust store is invalid", body = ApiErrorResponse),
+        (status = 500, description = "Project trust storage failed", body = ApiErrorResponse),
+        (status = 503, description = "ProductStore is unavailable", body = ApiErrorResponse)
     )
 )]
 pub(crate) async fn decide_project_trust(

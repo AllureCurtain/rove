@@ -1,8 +1,9 @@
 use std::path::PathBuf;
 
 use rove_core::{Tool, ToolRegistry};
+use rove_runtime::environment::local_environment;
 use rove_runtime::tools::fs::{FsReadTool, FsWriteTool};
-use rove_runtime::tools::mcp_proxy::register_mcp_tools_from_file;
+use rove_runtime::tools::mcp_proxy::register_mcp_tools_from_file_with_environment;
 use rove_runtime::tools::memory::{ReadMemoryTopicTool, SaveMemoryTool, UpdateMemoryIndexTool};
 use rove_runtime::tools::request_input::RequestInputTool;
 use rove_runtime::tools::search::SearchCodeTool;
@@ -45,7 +46,12 @@ pub async fn tool_registry_with_mcp(
     mcp_config_path: impl Into<PathBuf>,
 ) -> anyhow::Result<ToolRegistry> {
     let mut registry = tool_registry_with_shell_policy(workspace, shell_policy);
-    register_mcp_tools_from_file(&mut registry, mcp_config_path).await?;
+    register_mcp_tools_from_file_with_environment(
+        &mut registry,
+        mcp_config_path,
+        local_environment(workspace),
+    )
+    .await?;
     Ok(registry)
 }
 
@@ -106,5 +112,18 @@ mod tests {
 
         assert!(registry.has("run_shell"));
         assert!(!registry.has("mcp__blocked"));
+    }
+
+    #[tokio::test]
+    async fn trusted_workspace_without_mcp_configuration_keeps_builtin_tools() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let workspace = Workspace::detect(temp.path()).unwrap();
+        let mut config = AppConfig::default();
+        config.rebase_to_workspace(&workspace.root);
+
+        let registry = tool_registry_for_config(&workspace, &config).await.unwrap();
+
+        assert!(registry.has("read_file"));
+        assert!(registry.has("run_shell"));
     }
 }

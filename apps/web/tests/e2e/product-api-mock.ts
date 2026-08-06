@@ -1091,6 +1091,19 @@ export async function installMockProductApi(
         api_version: "0.1.0",
         connection: "connected",
         product_store: "ready",
+        execution_environment: {
+          adapter: "local",
+          workspace_kind: "folder",
+          workspace_digest:
+            "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+          capabilities: {
+            filesystem_read: true,
+            filesystem_write: true,
+            process_run: true,
+            process_stdio: true,
+            observations: true,
+          },
+        },
         resume_health: {
           status: needsAttentionCount === 0 ? "healthy" : "needs_attention",
           workspace_count: state.workspaces.length,

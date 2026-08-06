@@ -350,6 +350,8 @@ fn product_memory_not_found() -> ApiError {
 pub(crate) async fn get_product_runtime_info(
     State(state): State<ApiState>,
 ) -> Result<Json<ProductRuntimeInfo>, ApiError> {
+    use rove_runtime::environment::{ExecutionEnvironment, LocalExecutionEnvironment};
+
     let (product_store, resume_health) = match state.inner.product_store.as_ref() {
         Some(store) => (
             ProductStoreStatus::Ready,
@@ -357,10 +359,31 @@ pub(crate) async fn get_product_runtime_info(
         ),
         None => (ProductStoreStatus::Unavailable, None),
     };
+    let environment = LocalExecutionEnvironment::new(&state.inner.workspace);
+    let identity = environment.identity();
+    let capabilities = environment.capabilities();
     Ok(Json(ProductRuntimeInfo {
         api_version: env!("CARGO_PKG_VERSION").to_string(),
         connection: ProductConnectionStatus::Connected,
         product_store,
+        execution_environment: ProductExecutionEnvironmentInfo {
+            adapter: ProductExecutionAdapter::Local,
+            workspace_kind: match identity.workspace_kind {
+                rove_runtime::workspace::WorkspaceKind::Folder => {
+                    ProductExecutionWorkspaceKind::Folder
+                }
+                rove_runtime::workspace::WorkspaceKind::Repo => ProductExecutionWorkspaceKind::Repo,
+                rove_runtime::workspace::WorkspaceKind::Task => ProductExecutionWorkspaceKind::Task,
+            },
+            workspace_digest: identity.workspace_digest.clone(),
+            capabilities: ProductExecutionCapabilities {
+                filesystem_read: capabilities.filesystem_read,
+                filesystem_write: capabilities.filesystem_write,
+                process_run: capabilities.process_run,
+                process_stdio: capabilities.process_stdio,
+                observations: capabilities.observations,
+            },
+        },
         resume_health,
     }))
 }

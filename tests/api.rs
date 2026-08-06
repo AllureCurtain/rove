@@ -1670,6 +1670,25 @@ async fn product_runtime_reports_bounded_health_without_paths_or_secrets() {
     );
     assert_eq!(runtime["connection"], "connected");
     assert_eq!(runtime["product_store"], "ready");
+    assert_eq!(runtime["execution_environment"]["adapter"], "local");
+    assert_eq!(runtime["execution_environment"]["workspace_kind"], "folder");
+    assert!(
+        runtime["execution_environment"]["workspace_digest"]
+            .as_str()
+            .is_some_and(|value| value.starts_with("sha256:") && value.len() == 71)
+    );
+    for capability in [
+        "filesystem_read",
+        "filesystem_write",
+        "process_run",
+        "process_stdio",
+        "observations",
+    ] {
+        assert_eq!(
+            runtime["execution_environment"]["capabilities"][capability],
+            true
+        );
+    }
     assert_eq!(runtime["resume_health"]["status"], "healthy");
     assert_eq!(runtime["resume_health"]["workspace_count"], 1);
     assert_eq!(runtime["resume_health"]["session_count"], 1);
@@ -1677,7 +1696,7 @@ async fn product_runtime_reports_bounded_health_without_paths_or_secrets() {
     assert_eq!(runtime["resume_health"]["running_session_count"], 0);
     assert_eq!(runtime["resume_health"]["needs_attention_session_count"], 0);
     let keys = runtime.as_object().unwrap();
-    assert_eq!(keys.len(), 4);
+    assert_eq!(keys.len(), 5);
     assert!(keys.get("path").is_none());
     let serialized = runtime.to_string();
     for forbidden in [
@@ -1688,6 +1707,8 @@ async fn product_runtime_reports_bounded_health_without_paths_or_secrets() {
     ] {
         assert!(!serialized.contains(forbidden));
     }
+    assert!(!serialized.contains(server.path().to_string_lossy().as_ref()));
+    assert!(!serialized.contains(folder.path().to_string_lossy().as_ref()));
 }
 
 #[tokio::test]

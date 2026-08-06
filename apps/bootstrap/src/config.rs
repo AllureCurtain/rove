@@ -607,6 +607,20 @@ impl AppConfig {
         &mut self,
         resolution: crate::project_trust::ProjectTrustResolution,
     ) {
+        let temporary_grant = self.project_activation_allowed()
+            && self.source_summary.project_activation_source
+                != Some(ProjectActivationSource::Durable);
+        if temporary_grant
+            && matches!(
+                resolution.state,
+                ProjectActivationState::Unknown | ProjectActivationState::Restricted
+            )
+        {
+            self.source_summary.project_trust_identity_digest = Some(resolution.identity_digest);
+            self.source_summary.project_trust_invalidated_capabilities =
+                resolution.invalidated_capabilities;
+            return;
+        }
         self.source_summary.project_activation = resolution.state;
         self.source_summary.project_activation_source = (resolution.state
             == ProjectActivationState::Trusted)
@@ -1583,6 +1597,38 @@ model = "untrusted-model"
         );
         assert!(!config.project_activation_allowed());
         clear_config_env();
+    }
+
+    #[test]
+    fn product_trust_resolution_preserves_temporary_grants_but_not_revocation() {
+        let mut config = AppConfig::default();
+        assert_eq!(
+            config.source_summary.project_activation_source,
+            Some(ProjectActivationSource::Programmatic)
+        );
+        config.apply_project_trust_resolution(crate::project_trust::ProjectTrustResolution {
+            state: ProjectActivationState::Restricted,
+            identity_digest: "sha256:restricted".to_string(),
+            invalidated_capabilities: Vec::new(),
+            granted_capabilities: Default::default(),
+        });
+        assert!(config.project_activation_allowed());
+        assert_eq!(
+            config.source_summary.project_activation_source,
+            Some(ProjectActivationSource::Programmatic)
+        );
+
+        config.apply_project_trust_resolution(crate::project_trust::ProjectTrustResolution {
+            state: ProjectActivationState::Revoked,
+            identity_digest: "sha256:revoked".to_string(),
+            invalidated_capabilities: Vec::new(),
+            granted_capabilities: Default::default(),
+        });
+        assert_eq!(
+            config.project_activation_state(),
+            ProjectActivationState::Revoked
+        );
+        assert!(!config.project_activation_allowed());
     }
 
     #[test]

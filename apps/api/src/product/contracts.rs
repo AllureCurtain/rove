@@ -1009,11 +1009,43 @@ pub struct ProductResumeHealth {
     pub needs_attention_session_count: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductExecutionAdapter {
+    Local,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductExecutionWorkspaceKind {
+    Folder,
+    Repo,
+    Task,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ProductExecutionCapabilities {
+    pub filesystem_read: bool,
+    pub filesystem_write: bool,
+    pub process_run: bool,
+    pub process_stdio: bool,
+    pub observations: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductExecutionEnvironmentInfo {
+    pub adapter: ProductExecutionAdapter,
+    pub workspace_kind: ProductExecutionWorkspaceKind,
+    pub workspace_digest: String,
+    pub capabilities: ProductExecutionCapabilities,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ProductRuntimeInfo {
     pub api_version: String,
     pub connection: ProductConnectionStatus,
     pub product_store: ProductStoreStatus,
+    pub execution_environment: ProductExecutionEnvironmentInfo,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resume_health: Option<ProductResumeHealth>,
 }

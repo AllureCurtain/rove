@@ -243,6 +243,26 @@ They are not fields on the minimal `rove-core` context, so an embedded custom
 Tool needs only call identity and cancellation unless it explicitly opts into
 runtime services.
 
+`runtime/src/environment.rs` owns the first-wave Execution Environment ports:
+`ExecutionEnvironment`, `WorkspaceFileSystem`, `ProcessHost`, redacted
+identity/capabilities, local and in-memory adapters, and a bounded observation
+store. File read/write, code search, foreground Shell, MCP config reads, and
+stdio MCP spawn/cleanup use these ports through `RuntimeToolServices`. The
+local adapter owns canonical path enforcement, output bounds, timeouts,
+cancellation, kill-and-wait cleanup, and process cwd. The in-memory adapter
+supports deterministic parity tests and typed missing-capability failures
+before side effects.
+
+The environment workspace digest is the existing redacted
+`RuntimeIdentity.workspace_fingerprint`, which is already persisted in resume
+state; no new raw path field or broad `TaskState` schema was added. The Product
+runtime endpoint exposes only adapter kind, workspace kind, the digest, and
+boolean capability availability. `ObservationStore` provides stable identity,
+source/range, byte count, digest/version, truncation, optional artifact
+reference, bounded retention, and stale-version rejection. First-wave tools
+preserve their existing request/output contracts; ranged reads, exact edits,
+background Shell, and other Coding Tool V2 behavior remain unimplemented.
+
 MCP stdio transport is bounded by per-server policy. Initialize, list, and call requests time out; stderr is captured up to the configured diagnostic limit; JSON-RPC errors are mapped to structured tool execution failures; and child processes are killed when their client is dropped. `tests/mcp.rs` and `cargo test -p rove-integration-tests --test mcp` cover mock stdio registration, annotation safety, timeout/error/cleanup behavior, and include an opt-in real filesystem MCP smoke test gated by `ROVE_MCP_FILESYSTEM_SMOKE=1`.
 
 All MCP transports are byte-bounded by `MAX_MCP_RESPONSE_BYTES` (1 MiB): stdio

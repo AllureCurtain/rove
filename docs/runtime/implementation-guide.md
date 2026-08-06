@@ -1080,6 +1080,22 @@ at construction. Runtime-specific Workspace, Memory paths, approval policy, and
 input provider are attached to the invocation through `RuntimeToolServices`;
 they are not fields on the minimal `rove_core::ToolContext`.
 
+The same services inject a Runtime-owned `ExecutionEnvironment`. Its
+`WorkspaceFileSystem` port handles current file read/write and search; its
+`ProcessHost` handles foreground Shell and stdio MCP. Only the local adapter
+uses host filesystem/process APIs. The in-memory adapter runs the same
+filesystem/process contract without host side effects. Capability checks occur
+before tool effects, and the process adapter owns timeout, cancellation,
+bounded stdout/stderr, and child cleanup.
+
+`ExecutionEnvironmentIdentity` contains only adapter, workspace kind, and the
+redacted SHA-256 workspace digest. The digest equals the existing persisted
+`RuntimeIdentity.workspace_fingerprint`, so resume diagnostics gain
+environment identity without a `TaskState` migration. `GET /product/runtime`
+returns this redacted identity and boolean capabilities. The bounded
+`ObservationStore` foundation is available, but first-wave tool schemas and
+outputs remain unchanged; it is not Coding Tool V2.
+
 Operational Tool descriptors include:
 
 - `destructive`: requires approval unless policy allows it;
@@ -1319,9 +1335,10 @@ Supported transports:
 - `stdio`;
 - `sse`.
 
-For stdio, rove reads the bounded workspace config, spawns the configured
-command, sends JSON-RPC messages over stdin, reads stdout lines, initializes the
-MCP session, calls `tools/list`, and registers each returned tool as:
+For stdio, the Execution Environment reads the bounded workspace config and its
+process port spawns the configured command, sends JSON-RPC messages over stdin,
+reads stdout lines, initializes the MCP session, calls `tools/list`, and
+registers each returned tool as:
 
 ```text
 mcp__<sanitized_server_name>__<remote_tool_name>

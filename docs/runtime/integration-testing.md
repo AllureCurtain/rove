@@ -86,6 +86,7 @@ Web/API request
 | Product migration | Seed safe M1 browser state, then open a legacy deep route | Migration completes before product catalog reads, imports no raw key, remaps the route, and does not replay after refresh. |
 | Exact product continuity | Interleave turns in product sessions A and B, refresh A, then continue A | A resumes its own exact prior run rather than B's workspace-global latest; transcript, approval, input, cancellation, Settings, and deep routes remain usable. |
 | Project Trust | Open an unknown workspace, inspect it, then grant selected capabilities, deny, and revoke through Settings | No workspace-owned process starts before MCP/process trust; requests contain only the workspace ID; digest changes invalidate only the affected grant; revocation cancels matching work and blocks new activation. |
+| Execution Environment | Run file/search/Shell and deterministic stdio MCP through local adapters, then run adapter conformance tests | Tool names, schemas, approval, output, timeout, and cancellation remain compatible; traversal/symlink escape, missing capabilities, output limits, and child cleanup fail closed; runtime info contains only a redacted digest. |
 | Product Fork | Complete a parent ProductSession turn, click Fork in the live shell, continue the child, refresh, then switch back to the parent | API returns one idempotent child with fresh runtime identities; child transcript has an inherited read-only parent segment followed by its local segment; branch tree and parent/child isolation survive refresh. |
 
 ## Manual API Smoke Commands
@@ -450,10 +451,14 @@ Default verification remains:
 cargo test -p rove-integration-tests --test mcp
 ```
 
-Project Trust deterministic verification is:
+First-wave deterministic environment/trust verification is:
 
 ```powershell
 cargo test -p rove-app-bootstrap
+cargo test -p rove-runtime --test environment_contract
+cargo test -p rove-runtime --test tool_contract
+cargo test -p rove-runtime --test mcp_contract
+cargo test -p rove-integration-tests --test tool_safety
 cargo test -p rove-integration-tests --test mcp
 cargo test -p rove-integration-tests --test api
 

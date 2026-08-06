@@ -73,6 +73,19 @@ const runtimeInfo = {
   api_version: "0.1.0",
   connection: "connected",
   product_store: "ready",
+  execution_environment: {
+    adapter: "local",
+    workspace_kind: "repo",
+    workspace_digest:
+      "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    capabilities: {
+      filesystem_read: true,
+      filesystem_write: true,
+      process_run: true,
+      process_stdio: true,
+      observations: true,
+    },
+  },
   resume_health: {
     status: "healthy",
     workspace_count: 1,
@@ -123,11 +136,13 @@ describe("settings platform API types", () => {
         api_version: "0.1.0",
         connection: "connected",
         product_store: "unavailable",
+        execution_environment: runtimeInfo.execution_environment,
       }),
     ).toEqual({
       api_version: "0.1.0",
       connection: "connected",
       product_store: "unavailable",
+      execution_environment: runtimeInfo.execution_environment,
     });
   });
 
@@ -155,6 +170,15 @@ describe("settings platform API types", () => {
           ...runtimeInfo.resume_health,
           status: "healthy",
           needs_attention_session_count: 1,
+        },
+      }),
+    ).toThrow(ProductApiSchemaError);
+    expect(() =>
+      parseProductRuntimeInfo({
+        ...runtimeInfo,
+        execution_environment: {
+          ...runtimeInfo.execution_environment,
+          workspace_digest: "D:\\private\\workspace",
         },
       }),
     ).toThrow(ProductApiSchemaError);

@@ -1,17 +1,16 @@
 use std::path::PathBuf;
-use std::time::Duration;
 
 use async_trait::async_trait;
 use serde::Serialize;
 use serde_json::Value;
-use tokio::process::Command;
 
+use crate::environment::{EnvironmentError, ProcessRequest};
+use crate::tools::runtime_context::runtime_tool_services;
 use rove_core::ToolDescriptor;
 use rove_core::{Tool, ToolContext, ToolError, ToolOutput};
 
 /// Execute a shell command in the workspace.
 pub struct ShellTool {
-    root: PathBuf,
     policy: ShellPolicy,
 }
 
@@ -50,8 +49,8 @@ impl ShellTool {
         Self::with_policy(root, ShellPolicy::default())
     }
 
-    pub fn with_policy(root: PathBuf, policy: ShellPolicy) -> Self {
-        Self { root, policy }
+    pub fn with_policy(_root: PathBuf, policy: ShellPolicy) -> Self {
+        Self { policy }
     }
 }
 
@@ -77,7 +76,7 @@ impl Tool for ShellTool {
         }
     }
 
-    async fn execute(&self, args: Value, _ctx: &ToolContext<'_>) -> Result<ToolOutput, ToolError> {
+    async fn execute(&self, args: Value, ctx: &ToolContext<'_>) -> Result<ToolOutput, ToolError> {
         let command = args
             .get("command")
             .and_then(|value| value.as_str())
@@ -86,35 +85,41 @@ impl Tool for ShellTool {
             })?;
         validate_shell_command(command, &self.policy)?;
 
-        let mut process = shell_command(command);
-        process.current_dir(&self.root).kill_on_drop(true);
-        if !self.policy.inherit_environment {
-            process.env_clear();
+        let (program, args) = shell_command(command);
+        let services = runtime_tool_services(ctx)?;
+        if !services.environment.capabilities().process_run {
+            return Err(map_environment_error(
+                EnvironmentError::CapabilityUnavailable("process_run"),
+            ));
         }
-        let output = tokio::time::timeout(
-            Duration::from_millis(self.policy.timeout_ms),
-            process.output(),
-        )
-        .await
-        .map_err(|_| ToolError::Timeout {
-            timeout_ms: self.policy.timeout_ms,
-        })?
-        .map_err(|e| ToolError::ExecutionFailed {
-            reason: e.to_string(),
-        })?;
+        let output = services
+            .environment
+            .processes()
+            .run(
+                ProcessRequest {
+                    program,
+                    args,
+                    cwd: services.workspace.root.clone(),
+                    environment: Default::default(),
+                    clear_environment: !self.policy.inherit_environment,
+                    timeout_ms: self.policy.timeout_ms,
+                    max_output_bytes: self.policy.max_output_bytes,
+                },
+                ctx.cancel_token.clone(),
+            )
+            .await
+            .map_err(map_environment_error)?;
 
-        let (stdout, stdout_truncated) =
-            truncate_lossy(&output.stdout, self.policy.max_output_bytes);
-        let (stderr, stderr_truncated) =
-            truncate_lossy(&output.stderr, self.policy.max_output_bytes);
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
         let content = serde_json::to_string(&ShellOutput {
             command: command.to_string(),
-            success: output.status.success(),
-            exit_code: output.status.code(),
+            success: output.status_code == Some(0),
+            exit_code: output.status_code,
             stdout,
             stderr,
-            stdout_truncated,
-            stderr_truncated,
+            stdout_truncated: output.stdout_truncated,
+            stderr_truncated: output.stderr_truncated,
         })
         .map_err(|err| ToolError::ExecutionFailed {
             reason: err.to_string(),
@@ -150,26 +155,46 @@ fn validate_shell_command(command: &str, policy: &ShellPolicy) -> Result<(), Too
     Ok(())
 }
 
-fn truncate_lossy(bytes: &[u8], max_bytes: usize) -> (String, bool) {
-    if bytes.len() <= max_bytes {
-        return (String::from_utf8_lossy(bytes).to_string(), false);
-    }
+#[cfg(windows)]
+fn shell_command(command: &str) -> (String, Vec<String>) {
     (
-        String::from_utf8_lossy(&bytes[..max_bytes]).to_string(),
-        true,
+        "powershell".to_string(),
+        vec![
+            "-NoProfile".to_string(),
+            "-NonInteractive".to_string(),
+            "-Command".to_string(),
+            command.to_string(),
+        ],
     )
 }
 
-#[cfg(windows)]
-fn shell_command(command: &str) -> Command {
-    let mut process = Command::new("powershell");
-    process.args(["-NoProfile", "-NonInteractive", "-Command", command]);
-    process
+#[cfg(not(windows))]
+fn shell_command(command: &str) -> (String, Vec<String>) {
+    (
+        "sh".to_string(),
+        vec!["-lc".to_string(), command.to_string()],
+    )
 }
 
-#[cfg(not(windows))]
-fn shell_command(command: &str) -> Command {
-    let mut process = Command::new("sh");
-    process.args(["-lc", command]);
-    process
+fn map_environment_error(error: EnvironmentError) -> ToolError {
+    match error {
+        EnvironmentError::Timeout(timeout_ms) => ToolError::Timeout { timeout_ms },
+        EnvironmentError::Cancelled => ToolError::ExecutionFailed {
+            reason: "execution cancelled".to_string(),
+        },
+        EnvironmentError::CapabilityUnavailable(capability) => ToolError::PermissionDenied {
+            reason: format!("execution capability unavailable: {capability}"),
+        },
+        EnvironmentError::StaleObservation => ToolError::InvalidInput {
+            reason: "observation version is stale".to_string(),
+        },
+        EnvironmentError::NotFound => ToolError::ExecutionFailed {
+            reason: "workspace file was not found".to_string(),
+        },
+        EnvironmentError::InvalidPath(reason) => ToolError::InvalidInput { reason },
+        EnvironmentError::Boundary => ToolError::PermissionDenied {
+            reason: "path escapes workspace".to_string(),
+        },
+        EnvironmentError::Host(reason) => ToolError::ExecutionFailed { reason },
+    }
 }

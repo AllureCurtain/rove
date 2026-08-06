@@ -175,6 +175,23 @@ export interface ProductTrustDecisionRequest {
 export type ProductConnectionStatus = "connected";
 export type ProductStoreStatus = "ready" | "unavailable";
 export type ProductResumeHealthStatus = "healthy" | "needs_attention";
+export type ProductExecutionAdapter = "local";
+export type ProductExecutionWorkspaceKind = "folder" | "repo" | "task";
+
+export interface ProductExecutionCapabilities {
+  filesystem_read: boolean;
+  filesystem_write: boolean;
+  process_run: boolean;
+  process_stdio: boolean;
+  observations: boolean;
+}
+
+export interface ProductExecutionEnvironmentInfo {
+  adapter: ProductExecutionAdapter;
+  workspace_kind: ProductExecutionWorkspaceKind;
+  workspace_digest: string;
+  capabilities: ProductExecutionCapabilities;
+}
 export interface ProductResumeHealth {
   status: ProductResumeHealthStatus;
   workspace_count: number;
@@ -188,6 +205,7 @@ export interface ProductRuntimeInfo {
   api_version: string;
   connection: ProductConnectionStatus;
   product_store: ProductStoreStatus;
+  execution_environment: ProductExecutionEnvironmentInfo;
   resume_health?: ProductResumeHealth;
 }
 
@@ -1095,9 +1113,50 @@ export function parseProductRuntimeInfo(
   const record = expectRecord(value, path);
   expectOnlyKeys(
     record,
-    ["api_version", "connection", "product_store", "resume_health"],
+    [
+      "api_version",
+      "connection",
+      "product_store",
+      "execution_environment",
+      "resume_health",
+    ],
     path,
   );
+  const environmentPath = `${path}.execution_environment`;
+  const environment = expectRecord(record.execution_environment, environmentPath);
+  expectOnlyKeys(
+    environment,
+    ["adapter", "workspace_kind", "workspace_digest", "capabilities"],
+    environmentPath,
+  );
+  const capabilitiesPath = `${environmentPath}.capabilities`;
+  const capabilities = expectRecord(environment.capabilities, capabilitiesPath);
+  expectOnlyKeys(
+    capabilities,
+    [
+      "filesystem_read",
+      "filesystem_write",
+      "process_run",
+      "process_stdio",
+      "observations",
+    ],
+    capabilitiesPath,
+  );
+  const workspaceDigest = expectString(
+    environment.workspace_digest,
+    `${environmentPath}.workspace_digest`,
+    {
+      nonEmpty: true,
+      maxBytes: MAX_TRUST_DIGEST_BYTES,
+      noControls: true,
+    },
+  );
+  if (!SHA256_DIGEST_PATTERN.test(workspaceDigest)) {
+    return schemaError(
+      `${environmentPath}.workspace_digest`,
+      "a redacted sha256 digest",
+    );
+  }
   const info: ProductRuntimeInfo = {
     api_version: expectString(record.api_version, `${path}.api_version`, {
       nonEmpty: true,
@@ -1114,6 +1173,41 @@ export function parseProductRuntimeInfo(
       ["ready", "unavailable"] as const,
       `${path}.product_store`,
     ),
+    execution_environment: {
+      adapter: expectEnum(
+        environment.adapter,
+        ["local"] as const,
+        `${environmentPath}.adapter`,
+      ),
+      workspace_kind: expectEnum(
+        environment.workspace_kind,
+        ["folder", "repo", "task"] as const,
+        `${environmentPath}.workspace_kind`,
+      ),
+      workspace_digest: workspaceDigest,
+      capabilities: {
+        filesystem_read: expectBoolean(
+          capabilities.filesystem_read,
+          `${capabilitiesPath}.filesystem_read`,
+        ),
+        filesystem_write: expectBoolean(
+          capabilities.filesystem_write,
+          `${capabilitiesPath}.filesystem_write`,
+        ),
+        process_run: expectBoolean(
+          capabilities.process_run,
+          `${capabilitiesPath}.process_run`,
+        ),
+        process_stdio: expectBoolean(
+          capabilities.process_stdio,
+          `${capabilitiesPath}.process_stdio`,
+        ),
+        observations: expectBoolean(
+          capabilities.observations,
+          `${capabilitiesPath}.observations`,
+        ),
+      },
+    },
   };
   if (record.resume_health !== undefined) {
     info.resume_health = parseProductResumeHealth(

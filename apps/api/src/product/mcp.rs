@@ -12,7 +12,7 @@ use rove_runtime::tools::mcp_config::{
 };
 use rove_runtime::tools::mcp_proxy::{
     McpProbeFailure, McpProbeFailureKind, McpServerConfig, McpToolInfo, McpTransport,
-    McpTransportPolicy, probe_mcp_server,
+    McpTransportPolicy, probe_mcp_server_with_environment,
 };
 use serde::Deserialize;
 use utoipa::IntoParams;
@@ -190,7 +190,7 @@ pub(crate) async fn probe_product_mcp_server(
     query: Result<Query<ProductMcpWorkspaceQuery>, QueryRejection>,
 ) -> Result<Json<ProductMcpProbeResponse>, ApiError> {
     let Query(query) = product_mcp_query(query)?;
-    let path = product_mcp_config_path_with_activation(&state, &query.workspace_id, true).await?;
+    let (path, environment) = product_mcp_activation(&state, &query.workspace_id).await?;
     let requested_name = name.clone();
     let server = tokio::task::spawn_blocking(move || {
         list_product_mcp_servers_sync(&path).and_then(|servers| {
@@ -204,7 +204,7 @@ pub(crate) async fn probe_product_mcp_server(
     .map_err(|_| product_mcp_internal())?
     .map_err(map_mcp_io_error)?;
     let transport = product_mcp_transport(server.transport);
-    let tools = probe_mcp_server(server)
+    let tools = probe_mcp_server_with_environment(server, environment)
         .await
         .map_err(map_mcp_probe_failure)?
         .into_iter()
@@ -234,6 +234,23 @@ async fn product_mcp_config_path(
     workspace_id: &ProductWorkspaceId,
 ) -> Result<std::path::PathBuf, ApiError> {
     product_mcp_config_path_with_activation(state, workspace_id, false).await
+}
+
+async fn product_mcp_activation(
+    state: &ApiState,
+    workspace_id: &ProductWorkspaceId,
+) -> Result<
+    (
+        std::path::PathBuf,
+        std::sync::Arc<dyn rove_runtime::environment::ExecutionEnvironment>,
+    ),
+    ApiError,
+> {
+    let path = product_mcp_config_path_with_activation(state, workspace_id, true).await?;
+    let product_workspace = state.product_store()?.get_workspace(workspace_id).await?;
+    let workspace = crate::open_product_workspace(&product_workspace)?;
+    let environment = rove_runtime::environment::local_environment(&workspace);
+    Ok((path, environment))
 }
 
 async fn product_mcp_config_path_with_activation(
