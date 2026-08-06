@@ -104,9 +104,18 @@ export function Transcript({
             className="transcript-run"
             data-run-id={group.runId ?? undefined}
             data-run-ordinal={group.runOrdinal ?? undefined}
+            data-inherited={group.inherited ? "true" : undefined}
           >
             <header className="transcript-run__header">
-              <span>{group.runOrdinal ? `Turn ${group.runOrdinal}` : "Current turn"}</span>
+              <span className="transcript-run__label">
+                <span>{group.runOrdinal ? `Turn ${group.runOrdinal}` : "Current turn"}</span>
+                {group.inherited ? (
+                  <small>
+                    Read-only inherited history
+                    {group.sourceSessionId ? ` from ${shortId(group.sourceSessionId)}` : ""}
+                  </small>
+                ) : null}
+              </span>
               {group.runId ? <code>{shortId(group.runId)}</code> : null}
             </header>
             {group.items.map((item) => (

@@ -42,6 +42,7 @@ pub struct RunArtifactRecorder {
     final_reason: TerminationReason,
     final_output: Option<String>,
     pending_tool_use_ids: HashMap<CallId, Option<String>>,
+    pending_steers: HashMap<String, String>,
     last_event_seq: Option<u64>,
     compaction: PromptCompactionState,
 }
@@ -89,6 +90,7 @@ impl RunArtifactRecorder {
             final_reason: TerminationReason::Error,
             final_output: None,
             pending_tool_use_ids: HashMap::new(),
+            pending_steers: HashMap::new(),
             last_event_seq: None,
             compaction: PromptCompactionState::default(),
         }
@@ -123,6 +125,21 @@ impl RunArtifactRecorder {
             StreamEvent::PromptBuilt { metadata } => {
                 self.prompt_builds.push(metadata.clone());
                 self.write_snapshot(state_store).await;
+            }
+            // An accepted steer is not yet part of prompt history. Keep it
+            // only until the engine confirms that its next model turn began;
+            // cancellation or a budget boundary may still drop it.
+            StreamEvent::SteerAccepted { id, content } => {
+                self.pending_steers.insert(id.clone(), content.clone());
+            }
+            StreamEvent::SteerApplied { id } => {
+                if let Some(content) = self.pending_steers.remove(id) {
+                    self.history.push(Message::user(content));
+                    self.write_snapshot(state_store).await;
+                }
+            }
+            StreamEvent::SteerDropped { id, .. } => {
+                self.pending_steers.remove(id);
             }
             StreamEvent::ToolCallStarted {
                 call_id,
@@ -503,6 +520,7 @@ mod tests {
     use crate::types::{ApprovalPolicy, JobId, RunId, SessionId};
     use crate::workspace::{Workspace, WorkspaceKind};
     use rove_core::{CallId, ToolExecutionMetadata, ToolExecutionStatus, ToolResult};
+    use rove_models::Role;
 
     fn runtime_identity() -> RuntimeIdentity {
         RuntimeIdentity {
@@ -625,5 +643,109 @@ mod tests {
         let report: crate::state::report::RunReport = serde_json::from_str(&report_json).unwrap();
 
         assert_eq!(report.tool_execution_metadata, vec![metadata]);
+    }
+
+    #[tokio::test]
+    async fn recorder_persists_an_applied_steer_in_resumable_history() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state_store = StateStore::new(tmp.path());
+        let session_id = SessionId::new();
+        let job_id = JobId::new();
+        let run_id = RunId::new();
+        let mut recorder = RunArtifactRecorder::new(
+            session_id,
+            job_id,
+            run_id,
+            "original goal".to_string(),
+            None,
+            None,
+        );
+
+        recorder
+            .record_event(
+                &StreamEvent::RunStarted {
+                    run_id,
+                    job_id,
+                    user_message: "original goal".to_string(),
+                },
+                &state_store,
+            )
+            .await;
+        recorder
+            .record_event(
+                &StreamEvent::SteerAccepted {
+                    id: "steer-1".to_string(),
+                    content: "use the safe migration path".to_string(),
+                },
+                &state_store,
+            )
+            .await;
+        recorder
+            .record_event(
+                &StreamEvent::SteerApplied {
+                    id: "steer-1".to_string(),
+                },
+                &state_store,
+            )
+            .await;
+
+        let state = state_store.load_task_state(run_id).await.unwrap();
+        assert!(state.history.iter().any(|message| {
+            message.role == Role::User && message.content == "use the safe migration path"
+        }));
+    }
+
+    #[tokio::test]
+    async fn recorder_does_not_persist_a_dropped_steer_in_resumable_history() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state_store = StateStore::new(tmp.path());
+        let session_id = SessionId::new();
+        let job_id = JobId::new();
+        let run_id = RunId::new();
+        let mut recorder = RunArtifactRecorder::new(
+            session_id,
+            job_id,
+            run_id,
+            "original goal".to_string(),
+            None,
+            None,
+        );
+
+        recorder
+            .record_event(
+                &StreamEvent::RunStarted {
+                    run_id,
+                    job_id,
+                    user_message: "original goal".to_string(),
+                },
+                &state_store,
+            )
+            .await;
+        recorder
+            .record_event(
+                &StreamEvent::SteerAccepted {
+                    id: "steer-2".to_string(),
+                    content: "this must not be replayed".to_string(),
+                },
+                &state_store,
+            )
+            .await;
+        recorder
+            .record_event(
+                &StreamEvent::SteerDropped {
+                    id: "steer-2".to_string(),
+                    reason: "run cancelled".to_string(),
+                },
+                &state_store,
+            )
+            .await;
+
+        let state = state_store.load_task_state(run_id).await.unwrap();
+        assert!(
+            state
+                .history
+                .iter()
+                .all(|message| message.content != "this must not be replayed")
+        );
     }
 }

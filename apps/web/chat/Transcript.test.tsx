@@ -11,6 +11,8 @@ describe("Transcript", () => {
         id: "run:run-1",
         runId: "run-1",
         runOrdinal: 1,
+        inherited: false,
+        sourceSessionId: null,
         items: [
           {
             kind: "message",
@@ -77,6 +79,49 @@ describe("Transcript", () => {
     expect(html).not.toContain("Type your answer");
     expect(html).not.toContain('name="answer"');
   });
+
+  it("labels inherited fork history as read-only", () => {
+    const timeline: TranscriptRunGroup[] = [
+      {
+        id: "run:parent-run",
+        runId: "parent-run",
+        runOrdinal: 1,
+        inherited: true,
+        sourceSessionId: "parent-product-session",
+        items: [
+          {
+            kind: "message",
+            entry: {
+              ...entry("message", "parent-message", 1),
+              runId: "parent-run",
+            },
+            message: {
+              id: "parent-message",
+              role: "assistant",
+              content: "Parent answer",
+              status: "final",
+            },
+          },
+        ],
+      },
+    ];
+
+    const html = renderToStaticMarkup(
+      <Transcript
+        timeline={timeline}
+        approvalBusy={null}
+        inputBusy={null}
+        restoreState={{ status: "complete", sessionId: "child-session" }}
+        onRetryRestore={vi.fn()}
+        onStartNewSession={vi.fn()}
+        onApproval={vi.fn()}
+        onInputSubmit={vi.fn()}
+      />,
+    );
+
+    expect(html).toContain("Read-only inherited history");
+    expect(html).toContain('data-inherited="true"');
+  });
 });
 
 function entry(
@@ -91,5 +136,7 @@ function entry(
     runId: "run-1",
     runOrdinal: 1,
     eventSeq,
+    inherited: false,
+    sourceSessionId: null,
   };
 }

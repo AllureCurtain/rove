@@ -10,9 +10,9 @@ use rove_runtime::types::RunStatus;
 use tokio::io::AsyncReadExt;
 
 use crate::product::{
-    ProductErrorCode, ProductRuntimeStateResolver, ProductSessionContext, ProductSessionId,
-    ProductSessionRunBinding, ProductStore, ProductStoreError, ProductTranscriptFallback,
-    ProductTranscriptFallbackSource, ProductTranscriptPartialReason,
+    ProductErrorCode, ProductForkInheritedRun, ProductRuntimeStateResolver, ProductSessionContext,
+    ProductSessionId, ProductSessionRunBinding, ProductStore, ProductStoreError,
+    ProductTranscriptFallback, ProductTranscriptFallbackSource, ProductTranscriptPartialReason,
     ProductTranscriptPartialReasonCode, ProductTranscriptReader, ProductTranscriptResponse,
     ProductTranscriptRunSegment, ProductTranscriptStatus, ProductWorkspace,
 };
@@ -421,6 +421,8 @@ impl CanonicalProductTranscriptReader {
         };
         let segment = ProductTranscriptRunSegment {
             binding: binding.clone(),
+            inherited: false,
+            source_product_session_id: None,
             run_status,
             observed_through_seq,
             last_event_seq: high_water_seq,
@@ -656,19 +658,43 @@ impl ProductTranscriptReader for CanonicalProductTranscriptReader {
             ));
         }
 
+        let inherited_runs = catalog
+            .context
+            .fork
+            .as_ref()
+            .map(|fork| fork.inherited_runs.as_slice())
+            .unwrap_or_default();
+        let inherited_count = u64::try_from(inherited_runs.len()).unwrap_or(u64::MAX);
+        // A child owns local binding ordinals starting at one. Transcript
+        // ordinals are presentation ordering over the immutable inherited
+        // prefix plus local runs, so shift only the projected copies.
+        let display_bindings: Vec<ProductSessionRunBinding> = catalog
+            .bindings
+            .iter()
+            .cloned()
+            .map(|mut binding| {
+                binding.ordinal = binding.ordinal.saturating_add(inherited_count);
+                binding
+            })
+            .collect();
         let validation_count = catalog
             .bindings
             .len()
             .min(MAX_TRANSCRIPT_RUNS.saturating_add(1));
-        let binding_window = &catalog.bindings[..validation_count];
-        let valid_prefix = binding_prefix_len(session_id, binding_window, &mut reasons);
+        // Validate persisted local ordinals before applying the inherited
+        // presentation offset. A fork child still owns bindings starting at
+        // one, even though its visible transcript starts after the immutable
+        // inherited prefix.
+        let raw_binding_window = &catalog.bindings[..validation_count];
+        let valid_prefix = binding_prefix_len(session_id, raw_binding_window, &mut reasons);
         if !catalog.latest_consistent {
             let summary = catalog.context.session.runtime_binding.as_ref();
             push_reason(
                 &mut reasons,
                 ProductTranscriptPartialReason {
                     code: ProductTranscriptPartialReasonCode::MissingRunMapping,
-                    run_ordinal: summary.map(|binding| binding.ordinal),
+                    run_ordinal: summary
+                        .map(|binding| binding.ordinal.saturating_add(inherited_count)),
                     run_id: summary.map(|binding| binding.latest_run_id),
                     expected_seq: None,
                     observed_seq: None,
@@ -676,7 +702,7 @@ impl ProductTranscriptReader for CanonicalProductTranscriptReader {
             );
         }
 
-        if catalog.bindings.is_empty() {
+        if display_bindings.is_empty() && inherited_runs.is_empty() {
             return Ok(transcript_response(
                 session_id,
                 workspace_id,
@@ -686,10 +712,34 @@ impl ProductTranscriptReader for CanonicalProductTranscriptReader {
         }
 
         let identity_prefix =
-            runtime_chain_prefix_len(&binding_window[..valid_prefix], &mut reasons);
-        let process_count = identity_prefix.min(MAX_TRANSCRIPT_RUNS);
-        if identity_prefix > MAX_TRANSCRIPT_RUNS {
-            let omitted = &catalog.bindings[MAX_TRANSCRIPT_RUNS];
+            runtime_chain_prefix_len(&raw_binding_window[..valid_prefix], &mut reasons);
+        let inherited_process_count = inherited_runs.len().min(MAX_TRANSCRIPT_RUNS);
+        if inherited_runs.len() > inherited_process_count {
+            let omitted = inherited_transcript_binding(
+                &inherited_runs[inherited_process_count],
+                None,
+                &catalog
+                    .context
+                    .fork
+                    .as_ref()
+                    .expect("inherited runs require fork provenance")
+                    .fork
+                    .created_at,
+            );
+            push_reason(
+                &mut reasons,
+                reason_for_binding(
+                    ProductTranscriptPartialReasonCode::ResponseLimitReached,
+                    &omitted,
+                    None,
+                    None,
+                ),
+            );
+        }
+        let local_segment_capacity = MAX_TRANSCRIPT_RUNS.saturating_sub(inherited_process_count);
+        let process_count = identity_prefix.min(local_segment_capacity);
+        if identity_prefix > process_count {
+            let omitted = &display_bindings[process_count];
             push_reason(
                 &mut reasons,
                 reason_for_binding(
@@ -700,7 +750,7 @@ impl ProductTranscriptReader for CanonicalProductTranscriptReader {
                 ),
             );
         }
-        if process_count == 0 {
+        if inherited_process_count == 0 && process_count == 0 {
             return Ok(transcript_response(
                 session_id,
                 workspace_id,
@@ -745,31 +795,85 @@ impl ProductTranscriptReader for CanonicalProductTranscriptReader {
         };
 
         let mut budget = ProjectionBudget::default();
-        for binding in catalog.bindings.iter().take(process_count) {
-            let startup_race_possible = matches!(
-                catalog.context.session.status,
-                crate::product::ProductSessionStatus::Running
-            ) && catalog
-                .context
-                .session
-                .runtime_binding
-                .as_ref()
-                .is_some_and(|latest| latest.ordinal == binding.ordinal);
-            let projection = self
+        let mut inherited_previous_run_id = None;
+        let mut projection_stopped = false;
+        let inherited_bound_at = catalog
+            .context
+            .fork
+            .as_ref()
+            .map(|fork| fork.fork.created_at.as_str());
+        for inherited in inherited_runs.iter().take(inherited_process_count) {
+            let binding = inherited_transcript_binding(
+                inherited,
+                inherited_previous_run_id,
+                inherited_bound_at.expect("inherited runs require fork provenance"),
+            );
+            inherited_previous_run_id = Some(inherited.runtime_run_id);
+            let mut projection = self
                 .project_run(
                     &catalog.context.workspace,
                     &state_store,
-                    binding,
-                    startup_race_possible,
+                    &binding,
+                    false,
                     &mut budget,
                     &mut reasons,
                 )
                 .await;
+            if let Some(segment) = projection.segment.as_mut() {
+                segment.inherited = true;
+                segment.source_product_session_id =
+                    Some(inherited.source_product_session_id.clone());
+                if let Some(expected) = inherited.through_event_seq
+                    && segment.last_event_seq != expected
+                {
+                    push_reason(
+                        &mut reasons,
+                        reason_for_binding(
+                            ProductTranscriptPartialReasonCode::CorruptArtifact,
+                            &binding,
+                            Some(expected),
+                            Some(segment.last_event_seq),
+                        ),
+                    );
+                }
+            }
             if let Some(segment) = projection.segment {
                 segments.push(segment);
             }
             if projection.stop {
+                projection_stopped = true;
                 break;
+            }
+        }
+
+        if !projection_stopped {
+            for (index, binding) in display_bindings.iter().take(process_count).enumerate() {
+                let raw_binding = &catalog.bindings[index];
+                let startup_race_possible = matches!(
+                    catalog.context.session.status,
+                    crate::product::ProductSessionStatus::Running
+                ) && catalog
+                    .context
+                    .session
+                    .runtime_binding
+                    .as_ref()
+                    .is_some_and(|latest| latest.ordinal == raw_binding.ordinal);
+                let projection = self
+                    .project_run(
+                        &catalog.context.workspace,
+                        &state_store,
+                        binding,
+                        startup_race_possible,
+                        &mut budget,
+                        &mut reasons,
+                    )
+                    .await;
+                if let Some(segment) = projection.segment {
+                    segments.push(segment);
+                }
+                if projection.stop {
+                    break;
+                }
             }
         }
 
@@ -779,6 +883,22 @@ impl ProductTranscriptReader for CanonicalProductTranscriptReader {
             reasons,
             segments,
         ))
+    }
+}
+
+fn inherited_transcript_binding(
+    inherited: &ProductForkInheritedRun,
+    resumed_from_run_id: Option<rove_runtime::types::RunId>,
+    bound_at: &str,
+) -> ProductSessionRunBinding {
+    ProductSessionRunBinding {
+        product_session_id: inherited.source_product_session_id.clone(),
+        ordinal: inherited.ordinal,
+        runtime_session_id: inherited.runtime_session_id,
+        runtime_job_id: inherited.runtime_job_id,
+        runtime_run_id: inherited.runtime_run_id,
+        resumed_from_run_id,
+        bound_at: bound_at.to_string(),
     }
 }
 
@@ -837,6 +957,8 @@ fn fallback_segment(
 ) -> ProductTranscriptRunSegment {
     ProductTranscriptRunSegment {
         binding: binding.clone(),
+        inherited: false,
+        source_product_session_id: None,
         run_status: fallback.run_status,
         observed_through_seq: 0,
         last_event_seq,

@@ -1,7 +1,13 @@
 import type { Page, Route } from "@playwright/test";
 
 import type {
+  CreateProductMemoryTopicRequest,
+  CreateProductMcpServerRequest,
   ProductMemoryTopicContentResponse,
+  ProductMcpServerConfig,
+  ProductMcpToolDescriptor,
+  UpdateProductMcpServerRequest,
+  UpdateProductMemoryTopicRequest,
 } from "../../settings/settings-platform-api-types";
 import type {
   M1BrowserMigrationRequest,
@@ -56,17 +62,39 @@ export interface MockProviderProfile {
   updated_at: string;
 }
 
+export interface MockSessionModelConfig {
+  product_session_id: string;
+  profile_id?: string;
+  model: string;
+  reasoning: "default" | "low" | "medium" | "high";
+  max_steps: number;
+  revision: number;
+  updated_at: string;
+}
+
+export interface MockMcpProbeFailure {
+  status: number;
+  code: string;
+  error: string;
+}
+
 export interface MockProductApiOptions {
   workspaces?: MockWorkspace[];
   sessions?: MockSession[];
   transcripts?: Record<string, MockTranscript>;
   providerProfiles?: MockProviderProfile[];
   memoryTopics?: Record<string, ProductMemoryTopicContentResponse>;
+  memoryMutationFailures?: number;
+  mcpServers?: Record<string, ProductMcpServerConfig[]>;
+  mcpMutationFailures?: number;
+  mcpProbeFailures?: Record<string, MockMcpProbeFailure[]>;
+  mcpProbeTools?: ProductMcpToolDescriptor[];
   activeWorkspaceId?: string;
   activeSessionId?: string;
   mode?: "completed" | "approval";
   transcriptDelayMs?: Record<string, number>;
   transcriptFailures?: Record<string, number>;
+  sessionModelConfigFailures?: number;
   disconnectJobStartResponses?: number;
   jobBindingVisibilityDelayReads?: number;
   sessionCreateDelayMs?: number;
@@ -80,11 +108,25 @@ export interface MockProductApiOptions {
 export interface MockProductApiState {
   workspaces: MockWorkspace[];
   sessions: MockSession[];
+  sessionModelConfigs: Record<string, MockSessionModelConfig>;
   transcripts: Record<string, MockTranscript>;
   providerProfiles: MockProviderProfile[];
   memoryTopics: Record<string, ProductMemoryTopicContentResponse>;
   memoryWorkspaceRequests: Array<string | null>;
+  memoryMutationRequests: number;
+  remainingMemoryMutationFailures: number;
+  mcpServers: Record<string, ProductMcpServerConfig[]>;
+  mcpRequestBodies: string[];
+  mcpMutationRequests: number;
+  remainingMcpMutationFailures: number;
+  mcpProbeFailures: Record<string, MockMcpProbeFailure[]>;
   jobs: Array<Record<string, unknown>>;
+  jobEffectiveConfigs: Array<{
+    product_session_id: string;
+    approval: "ask" | "auto" | "never";
+    model: string;
+    max_steps: number;
+  }>;
   jobStarts: Array<{
     job_id: string;
     run_id: string;
@@ -93,6 +135,8 @@ export interface MockProductApiState {
   eventConnections: string[];
   preferences: Record<string, unknown>;
   transcriptFailures: Record<string, number>;
+  sessionModelConfigUpdateRequests: number;
+  remainingSessionModelConfigFailures: number;
   disconnectedJobStartResponses: number;
   delayedJobBindingReads: number;
   sessionCreateRequests: number;
@@ -133,11 +177,25 @@ export async function installMockProductApi(
   const state: MockProductApiState = {
     workspaces: structuredClone(options.workspaces ?? []),
     sessions: structuredClone(options.sessions ?? []),
+    sessionModelConfigs: Object.fromEntries(
+      (options.sessions ?? []).map((session) => [
+        session.id,
+        createMockSessionModelConfig(session.id),
+      ]),
+    ),
     transcripts: structuredClone(options.transcripts ?? {}),
     providerProfiles: structuredClone(options.providerProfiles ?? []),
     memoryTopics: structuredClone(options.memoryTopics ?? {}),
     memoryWorkspaceRequests: [],
+    memoryMutationRequests: 0,
+    remainingMemoryMutationFailures: options.memoryMutationFailures ?? 0,
+    mcpServers: structuredClone(options.mcpServers ?? {}),
+    mcpRequestBodies: [],
+    mcpMutationRequests: 0,
+    remainingMcpMutationFailures: options.mcpMutationFailures ?? 0,
+    mcpProbeFailures: structuredClone(options.mcpProbeFailures ?? {}),
     jobs: [],
+    jobEffectiveConfigs: [],
     jobStarts: [],
     eventConnections: [],
     preferences: {
@@ -151,6 +209,9 @@ export async function installMockProductApi(
       ...(options.activeSessionId ? { active_session_id: options.activeSessionId } : {}),
     },
     transcriptFailures: { ...(options.transcriptFailures ?? {}) },
+    sessionModelConfigUpdateRequests: 0,
+    remainingSessionModelConfigFailures:
+      options.sessionModelConfigFailures ?? 0,
     disconnectedJobStartResponses: 0,
     delayedJobBindingReads: 0,
     sessionCreateRequests: 0,
@@ -228,6 +289,9 @@ export async function installMockProductApi(
           imported.updated_at = session.updated_at;
           state.sessions.unshift(imported);
           state.transcripts[sessionId] = emptyTranscript(imported);
+          state.sessionModelConfigs[sessionId] = createMockSessionModelConfig(
+            sessionId,
+          );
         }
         return [{ source_id: session.source_id, product_session_id: sessionId }];
       });
@@ -286,6 +350,20 @@ export async function installMockProductApi(
             }
           : {}),
       };
+      if (importedSelection) {
+        for (const session of body.sessions) {
+          const mappedSessionId = migratedSessionIds.get(session.source_id);
+          if (!mappedSessionId) {
+            continue;
+          }
+          state.sessionModelConfigs[mappedSessionId] = createMockSessionModelConfig(
+            mappedSessionId,
+            mappedProfileId,
+            importedSelection.model,
+            importedSelection.max_steps,
+          );
+        }
+      }
       migrationReceiptCounter += 1;
       const acknowledgement: M1BrowserMigrationResponse = {
         source_schema_version: body.source_schema_version,
@@ -344,6 +422,12 @@ export async function installMockProductApi(
       state.sessions = state.sessions.filter(
         (session) => session.workspace_id !== workspaceId,
       );
+      for (const sessionId of Object.keys(state.sessionModelConfigs)) {
+        if (!state.sessions.some((session) => session.id === sessionId)) {
+          delete state.sessionModelConfigs[sessionId];
+        }
+      }
+      delete state.mcpServers[workspaceId];
       return route.fulfill({ status: 204, body: "" });
     }
     if (path === "/product/sessions" && method === "GET") {
@@ -381,6 +465,15 @@ export async function installMockProductApi(
       );
       state.sessions.unshift(session);
       state.transcripts[session.id] = emptyTranscript(session);
+      const selection = state.preferences.provider_selection as
+        | { profile_id?: string; model?: string; max_steps?: number }
+        | undefined;
+      state.sessionModelConfigs[session.id] = createMockSessionModelConfig(
+        session.id,
+        selection?.profile_id,
+        selection?.model ?? "fake",
+        selection?.max_steps ?? 8,
+      );
       return json(route, session, 201);
     }
     const transcriptMatch = path.match(
@@ -410,6 +503,166 @@ export async function installMockProductApi(
         state.transcripts[sessionId] ?? emptyTranscript(session),
       );
     }
+    const sessionModelConfigMatch = path.match(
+      /^\/product\/sessions\/([^/]+)\/model-config$/u,
+    );
+    if (sessionModelConfigMatch) {
+      const sessionId = decodeURIComponent(sessionModelConfigMatch[1]!);
+      const config = state.sessionModelConfigs[sessionId];
+      if (!config || !state.sessions.some((session) => session.id === sessionId)) {
+        return json(
+          route,
+          { code: "product_not_found", error: "session model config not found" },
+          404,
+        );
+      }
+      if (method === "GET") {
+        return json(route, config);
+      }
+      if (method === "PUT") {
+        state.sessionModelConfigUpdateRequests += 1;
+        if (state.remainingSessionModelConfigFailures > 0) {
+          state.remainingSessionModelConfigFailures -= 1;
+          return json(
+            route,
+            {
+              code: "product_storage_failure",
+              error: "session model settings unavailable",
+            },
+            503,
+          );
+        }
+        const body = request.postDataJSON() as {
+          profile_id?: string;
+          model: string;
+          reasoning?: "default" | "low" | "medium" | "high";
+          max_steps?: number;
+          expected_revision?: number;
+        };
+        if (
+          body.expected_revision !== undefined &&
+          body.expected_revision !== config.revision
+        ) {
+          return json(
+            route,
+            {
+              code: "product_session_model_config_conflict",
+              error: "session model config revision does not match",
+            },
+            409,
+          );
+        }
+        if (
+          body.profile_id &&
+          !state.providerProfiles.some((profile) => profile.id === body.profile_id)
+        ) {
+          return json(
+            route,
+            {
+              code: "product_provider_profile_unavailable",
+              error: "provider profile not found",
+            },
+            404,
+          );
+        }
+        config.profile_id = body.profile_id;
+        config.model = body.model;
+        config.reasoning = body.reasoning ?? "default";
+        config.max_steps = body.max_steps ?? 8;
+        config.revision += 1;
+        config.updated_at = NOW;
+        return json(route, config);
+      }
+    }
+    const sessionRunModelsMatch = path.match(
+      /^\/product\/sessions\/([^/]+)\/run-models$/u,
+    );
+    if (sessionRunModelsMatch && method === "GET") {
+      const sessionId = decodeURIComponent(sessionRunModelsMatch[1]!);
+      if (!state.sessions.some((session) => session.id === sessionId)) {
+        return json(
+          route,
+          { code: "product_not_found", error: "session not found" },
+          404,
+        );
+      }
+      return json(route, { runs: [] });
+    }
+    const sessionUsageMatch = path.match(
+      /^\/product\/sessions\/([^/]+)\/usage$/u,
+    );
+    if (sessionUsageMatch && method === "GET") {
+      const sessionId = decodeURIComponent(sessionUsageMatch[1]!);
+      if (!state.sessions.some((session) => session.id === sessionId)) {
+        return json(
+          route,
+          { code: "product_not_found", error: "session not found" },
+          404,
+        );
+      }
+      return json(route, {
+        product_session_id: sessionId,
+        totals: {
+          prompt_tokens: 0,
+          completion_tokens: 0,
+          total_tokens: 0,
+          cached_tokens: 0,
+        },
+        totals_cost: {
+          currency: "USD",
+          availability: "local_zero",
+          total_usd: 0,
+          prompt_usd: 0,
+          completion_usd: 0,
+          cache_read_usd: 0,
+          pricing_source: "bundled",
+          pricing_version: "mock",
+        },
+        runs: [],
+        partial_reasons: [],
+      });
+    }
+    const sessionExportMatch = path.match(
+      /^\/product\/sessions\/([^/]+)\/export$/u,
+    );
+    if (sessionExportMatch && method === "POST") {
+      const sessionId = decodeURIComponent(sessionExportMatch[1]!);
+      const session = state.sessions.find((item) => item.id === sessionId);
+      if (!session) {
+        return json(
+          route,
+          { code: "product_not_found", error: "session not found" },
+          404,
+        );
+      }
+      const format = url.searchParams.get("format") ?? "json";
+      const mediaType =
+        format === "html"
+          ? "text/html; charset=utf-8"
+          : format === "markdown"
+            ? "text/markdown; charset=utf-8"
+            : "application/json; charset=utf-8";
+      const extension = format === "markdown" ? "md" : format;
+      const body =
+        format === "html"
+          ? `<!doctype html><html><body><h1>${session.title}</h1></body></html>`
+          : format === "markdown"
+            ? `# ${session.title}\n`
+            : JSON.stringify({
+                schema_version: 1,
+                product_session_id: session.id,
+                title: session.title,
+                transcript: state.transcripts[session.id] ?? emptyTranscript(session),
+              });
+      return route.fulfill({
+        status: 200,
+        headers: {
+          "content-type": mediaType,
+          "content-disposition": `attachment; filename="rove-session-${session.id}-evidence.${extension}"`,
+        },
+        body,
+      });
+    }
     const sessionMatch = path.match(/^\/product\/sessions\/([^/]+)$/u);
     if (sessionMatch && method === "PATCH") {
       const sessionId = decodeURIComponent(sessionMatch[1]!);
@@ -431,6 +684,7 @@ export async function installMockProductApi(
       const sessionId = decodeURIComponent(sessionMatch[1]!);
       state.sessions = state.sessions.filter((item) => item.id !== sessionId);
       delete state.transcripts[sessionId];
+      delete state.sessionModelConfigs[sessionId];
       return route.fulfill({ status: 204, body: "" });
     }
     if (path === "/product/preferences" && method === "GET") {
@@ -494,14 +748,144 @@ export async function installMockProductApi(
           404,
         );
       }
-      const topics = Object.values(state.memoryTopics).map(
-        (entry) => entry.topic,
-      );
+      const q = url.searchParams.get("q")?.toLocaleLowerCase();
+      const memoryType = url.searchParams.get("memory_type");
+      const scope = url.searchParams.get("scope");
+      const source = url.searchParams.get("source");
+      const topics = Object.values(state.memoryTopics)
+        .map((entry) => entry.topic)
+        .filter(
+          (topic) =>
+            (q === undefined ||
+              topic.slug.toLocaleLowerCase().includes(q) ||
+              topic.title.toLocaleLowerCase().includes(q) ||
+              topic.description.toLocaleLowerCase().includes(q)) &&
+            (memoryType === null || topic.memory_type === memoryType) &&
+            (scope === null || topic.scope === scope) &&
+            (source === null || topic.source === source),
+        );
       return json(route, { topics, total: topics.length });
+    }
+    if (path === "/product/memory/topics" && method === "POST") {
+      const workspaceId = url.searchParams.get("workspace_id");
+      state.memoryWorkspaceRequests.push(workspaceId);
+      if (!state.workspaces.some((workspace) => workspace.id === workspaceId)) {
+        return json(
+          route,
+          { code: "product_not_found", error: "product workspace was not found" },
+          404,
+        );
+      }
+      state.memoryMutationRequests += 1;
+      if (state.remainingMemoryMutationFailures > 0) {
+        state.remainingMemoryMutationFailures -= 1;
+        return json(
+          route,
+          {
+            code: "product_memory_conflict",
+            error: "memory topic changed concurrently",
+          },
+          409,
+        );
+      }
+      const body = request.postDataJSON() as CreateProductMemoryTopicRequest;
+      if (state.memoryTopics[body.slug] !== undefined) {
+        return json(
+          route,
+          {
+            code: "product_memory_conflict",
+            error: "memory topic already exists",
+          },
+          409,
+        );
+      }
+      const timestamp = new Date(
+        Date.parse(NOW) + state.memoryMutationRequests * 1_000,
+      ).toISOString();
+      const created: ProductMemoryTopicContentResponse = {
+        topic: {
+          slug: body.slug,
+          title: body.title,
+          layer: "durable",
+          memory_type: body.memory_type,
+          scope: body.scope,
+          source: "product_settings",
+          confidence: body.confidence,
+          created_at: timestamp,
+          updated_at: timestamp,
+          description: body.description,
+          metadata_truncated: false,
+        },
+        content: body.content,
+        truncated: false,
+      };
+      state.memoryTopics[body.slug] = created;
+      return json(route, created, 201);
     }
     const memoryTopicMatch = path.match(
       /^\/product\/memory\/topics\/([^/]+)$/u,
     );
+    if (memoryTopicMatch && method === "PUT") {
+      const workspaceId = url.searchParams.get("workspace_id");
+      state.memoryWorkspaceRequests.push(workspaceId);
+      if (!state.workspaces.some((workspace) => workspace.id === workspaceId)) {
+        return json(
+          route,
+          { code: "product_not_found", error: "product workspace was not found" },
+          404,
+        );
+      }
+      const slug = decodeURIComponent(memoryTopicMatch[1]!);
+      const current = state.memoryTopics[slug];
+      if (current === undefined) {
+        return json(
+          route,
+          { code: "product_memory_not_found", error: "memory topic not found" },
+          404,
+        );
+      }
+      state.memoryMutationRequests += 1;
+      if (state.remainingMemoryMutationFailures > 0) {
+        state.remainingMemoryMutationFailures -= 1;
+        return json(
+          route,
+          {
+            code: "product_memory_conflict",
+            error: "memory topic changed concurrently",
+          },
+          409,
+        );
+      }
+      const body = request.postDataJSON() as UpdateProductMemoryTopicRequest;
+      if (body.expected_updated_at !== current.topic.updated_at) {
+        return json(
+          route,
+          {
+            code: "product_memory_conflict",
+            error: "memory topic changed concurrently",
+          },
+          409,
+        );
+      }
+      const updated: ProductMemoryTopicContentResponse = {
+        topic: {
+          ...current.topic,
+          title: body.title,
+          memory_type: body.memory_type,
+          scope: body.scope,
+          source: "product_settings",
+          confidence: body.confidence,
+          updated_at: new Date(
+            Date.parse(NOW) + state.memoryMutationRequests * 1_000,
+          ).toISOString(),
+          description: body.description,
+        },
+        content: body.content,
+        truncated: false,
+      };
+      state.memoryTopics[slug] = updated;
+      return json(route, updated);
+    }
     if (memoryTopicMatch && method === "GET") {
       const workspaceId = url.searchParams.get("workspace_id");
       state.memoryWorkspaceRequests.push(workspaceId);
@@ -542,6 +926,162 @@ export async function installMockProductApi(
       }
       delete state.memoryTopics[slug];
       return route.fulfill({ status: 204, body: "" });
+    }
+    if (path === "/product/mcp/servers") {
+      const workspaceId = url.searchParams.get("workspace_id");
+      if (
+        workspaceId === null ||
+        !state.workspaces.some((workspace) => workspace.id === workspaceId)
+      ) {
+        return json(
+          route,
+          { code: "product_not_found", error: "product workspace was not found" },
+          404,
+        );
+      }
+      const servers = state.mcpServers[workspaceId] ?? [];
+      if (method === "GET") {
+        return json(route, { servers, total: servers.length });
+      }
+      if (method === "POST") {
+        state.mcpRequestBodies.push(request.postData() ?? "");
+        state.mcpMutationRequests += 1;
+        if (state.remainingMcpMutationFailures > 0) {
+          state.remainingMcpMutationFailures -= 1;
+          return json(
+            route,
+            {
+              code: "product_mcp_conflict",
+              error: "MCP config is locked by another settings operation",
+            },
+            409,
+          );
+        }
+        const body = request.postDataJSON() as CreateProductMcpServerRequest;
+        if (servers.some((server) => server.name === body.name)) {
+          return json(
+            route,
+            { code: "product_mcp_conflict", error: "MCP server already exists" },
+            409,
+          );
+        }
+        const created = structuredClone(body);
+        state.mcpServers[workspaceId] = [...servers, created].sort((left, right) =>
+          left.name.localeCompare(right.name),
+        );
+        return json(route, created, 201);
+      }
+    }
+    const mcpProbeMatch = path.match(
+      /^\/product\/mcp\/servers\/([^/]+)\/probe$/u,
+    );
+    if (mcpProbeMatch && method === "POST") {
+      const workspaceId = url.searchParams.get("workspace_id");
+      if (
+        workspaceId === null ||
+        !state.workspaces.some((workspace) => workspace.id === workspaceId)
+      ) {
+        return json(
+          route,
+          { code: "product_not_found", error: "product workspace was not found" },
+          404,
+        );
+      }
+      const name = decodeURIComponent(mcpProbeMatch[1]!);
+      const server = (state.mcpServers[workspaceId] ?? []).find(
+        (candidate) => candidate.name === name,
+      );
+      if (!server) {
+        return json(
+          route,
+          { code: "product_mcp_not_found", error: "MCP server was not found" },
+          404,
+        );
+      }
+      const scopedFailureKey = `${workspaceId}:${name}`;
+      const failureQueue =
+        state.mcpProbeFailures[scopedFailureKey] ?? state.mcpProbeFailures[name];
+      const failure = failureQueue?.shift();
+      if (failure) {
+        return json(
+          route,
+          { code: failure.code, error: failure.error },
+          failure.status,
+        );
+      }
+      const tools = structuredClone(
+        options.mcpProbeTools ?? createMockMcpProbeTools(name),
+      );
+      return json(route, {
+        server_name: name,
+        transport: server.transport,
+        tools,
+        tested_at: NOW,
+      });
+    }
+    const mcpServerMatch = path.match(/^\/product\/mcp\/servers\/([^/]+)$/u);
+    if (mcpServerMatch) {
+      const workspaceId = url.searchParams.get("workspace_id");
+      if (
+        workspaceId === null ||
+        !state.workspaces.some((workspace) => workspace.id === workspaceId)
+      ) {
+        return json(
+          route,
+          { code: "product_not_found", error: "product workspace was not found" },
+          404,
+        );
+      }
+      const name = decodeURIComponent(mcpServerMatch[1]!);
+      const servers = state.mcpServers[workspaceId] ?? [];
+      const serverIndex = servers.findIndex((server) => server.name === name);
+      if (serverIndex < 0) {
+        return json(
+          route,
+          { code: "product_mcp_not_found", error: "MCP server was not found" },
+          404,
+        );
+      }
+      if (method === "PUT") {
+        state.mcpRequestBodies.push(request.postData() ?? "");
+        state.mcpMutationRequests += 1;
+        if (state.remainingMcpMutationFailures > 0) {
+          state.remainingMcpMutationFailures -= 1;
+          return json(
+            route,
+            {
+              code: "product_mcp_conflict",
+              error: "MCP config is locked by another settings operation",
+            },
+            409,
+          );
+        }
+        const body = request.postDataJSON() as UpdateProductMcpServerRequest;
+        const updated: ProductMcpServerConfig = { name, ...body };
+        servers[serverIndex] = updated;
+        state.mcpServers[workspaceId] = [...servers].sort((left, right) =>
+          left.name.localeCompare(right.name),
+        );
+        return json(route, updated);
+      }
+      if (method === "DELETE") {
+        state.mcpMutationRequests += 1;
+        if (state.remainingMcpMutationFailures > 0) {
+          state.remainingMcpMutationFailures -= 1;
+          return json(
+            route,
+            {
+              code: "product_mcp_conflict",
+              error: "MCP config is locked by another settings operation",
+            },
+            409,
+          );
+        }
+        state.mcpServers[workspaceId] = servers.filter(
+          (server) => server.name !== name,
+        );
+        return route.fulfill({ status: 204, body: "" });
+      }
     }
     if (path === "/product/runtime" && method === "GET") {
       const needsAttentionCount = state.sessions.filter(
@@ -585,6 +1125,42 @@ export async function installMockProductApi(
       state.providerProfiles.unshift(profile);
       return json(route, profile, 201);
     }
+    const providerModelsMatch = path.match(
+      /^\/product\/provider-profiles\/([^/]+)\/models$/u,
+    );
+    if (providerModelsMatch && method === "GET") {
+      const profileId = decodeURIComponent(providerModelsMatch[1]!);
+      const profile = state.providerProfiles.find((item) => item.id === profileId);
+      if (!profile) {
+        return json(
+          route,
+          { code: "product_not_found", error: "provider profile not found" },
+          404,
+        );
+      }
+      const supportsReasoning = profile.provider_type === "openai-responses";
+      return json(route, {
+        profile_id: profile.id,
+        ...(profile.default_model ? { default_model: profile.default_model } : {}),
+        models: profile.default_model
+          ? [
+              {
+                id: profile.default_model,
+                supports_reasoning: supportsReasoning,
+                supported_reasoning: supportsReasoning
+                  ? ["low", "medium", "high"]
+                  : [],
+                ...(supportsReasoning
+                  ? {}
+                  : {
+                      reasoning_unavailable_reason:
+                        "Reasoning controls are only available for OpenAI Responses profiles.",
+                    }),
+              },
+            ]
+          : [],
+      });
+    }
     const providerProfileMatch = path.match(
       /^\/product\/provider-profiles\/([^/]+)$/u,
     );
@@ -620,6 +1196,13 @@ export async function installMockProductApi(
         );
       }
       state.providerProfiles.splice(profileIndex, 1);
+      for (const config of Object.values(state.sessionModelConfigs)) {
+        if (config.profile_id === profileId) {
+          delete config.profile_id;
+          config.revision += 1;
+          config.updated_at = NOW;
+        }
+      }
       return route.fulfill({ status: 204, body: "" });
     }
     return json(route, { code: "product_not_found", error: `unmocked ${method} ${path}` }, 404);
@@ -644,6 +1227,16 @@ export async function installMockProductApi(
         409,
       );
     }
+    const modelConfig = state.sessionModelConfigs[session.id]!;
+    state.jobEffectiveConfigs.push({
+      product_session_id: session.id,
+      approval: state.preferences.default_approval_policy as
+        | "ask"
+        | "auto"
+        | "never",
+      model: modelConfig.model,
+      max_steps: modelConfig.max_steps,
+    });
     const sessionBeforeJobStart = structuredClone(session);
     const ordinal = (session.runtime_binding?.ordinal ?? 0) + 1;
     const resumedFromRunId = session.runtime_binding?.latest_run_id ?? null;
@@ -810,6 +1403,40 @@ export function createMockSession(
   };
 }
 
+export function createMockSessionModelConfig(
+  sessionId: string,
+  profileId?: string,
+  model = "fake",
+  maxSteps = 8,
+): MockSessionModelConfig {
+  return {
+    product_session_id: sessionId,
+    ...(profileId ? { profile_id: profileId } : {}),
+    model,
+    reasoning: "default",
+    max_steps: maxSteps,
+    revision: 1,
+    updated_at: NOW,
+  };
+}
+
+function createMockMcpProbeTools(serverName: string): ProductMcpToolDescriptor[] {
+  return [
+    {
+      name: `mcp__${serverName}__echo_remote`,
+      description: "Echo a value through the configured MCP server",
+      destructive: true,
+      parallel_safe: false,
+    },
+    {
+      name: `mcp__${serverName}__workspace_status`,
+      description: "Read the remote workspace status",
+      destructive: true,
+      parallel_safe: false,
+    },
+  ];
+}
+
 export function completedTranscript(
   workspace: MockWorkspace,
   session: MockSession,
@@ -865,6 +1492,7 @@ function transcriptSegment(
       ...(resumedFromRunId ? { resumed_from_run_id: resumedFromRunId } : {}),
       bound_at: NOW,
     },
+    inherited: false,
     run_status: runStatus,
     observed_through_seq: events.at(-1)?.seq ?? 0,
     last_event_seq: events.at(-1)?.seq ?? 0,

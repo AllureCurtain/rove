@@ -1,7 +1,6 @@
 import type {
   CreateJobRequest,
   CreateJobWorkspace,
-  ProviderProfile,
 } from "../lib/rove-types";
 import type {
   ActiveProviderSelection,
@@ -9,21 +8,45 @@ import type {
   SessionRecord,
   WorkspaceRecord,
 } from "./product-types";
-import { toApiProviderProfile } from "./product-types";
 
 export interface BuildTurnRequestInput {
   message: string;
   workspace: WorkspaceRecord;
   session: SessionRecord;
-  selection: ActiveProviderSelection;
-  profiles: ProviderProfileRecord[];
-  useDefaultApproval?: boolean;
 }
 
 export class ProviderSelectionError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "ProviderSelectionError";
+  }
+}
+
+/**
+ * Fail closed when the stored provider selection cannot be satisfied.
+ *
+ * The server owns provider, approval, and step limits for a run, so a turn
+ * request carries none of them. This check is only a local consistency check on
+ * catalog data the browser already holds: it refuses to submit a turn that names
+ * a profile the catalog no longer contains, so the user is not shown an
+ * optimistic turn that is guaranteed to fail.
+ */
+export function assertProviderSelectionIsSatisfiable(
+  selection: ActiveProviderSelection | null | undefined,
+  profiles: ProviderProfileRecord[],
+): void {
+  if (!selection || selection.mode !== "profile") {
+    return;
+  }
+  if (!selection.profileId) {
+    throw new ProviderSelectionError(
+      "The selected provider profile is missing. Choose a provider in Settings.",
+    );
+  }
+  if (!profiles.some((profile) => profile.id === selection.profileId)) {
+    throw new ProviderSelectionError(
+      "The selected provider profile is no longer available. Choose another provider in Settings.",
+    );
   }
 }
 
@@ -35,16 +58,9 @@ export class ProviderSelectionError extends Error {
  */
 export function buildTurnJobRequest(input: BuildTurnRequestInput): CreateJobRequest {
   const workspace = toCreateJobWorkspace(input.workspace);
-  const provider = resolveProvider(input.selection, input.profiles);
   return {
     message: input.message,
-    model: input.selection.model.trim() || undefined,
-    max_steps: input.selection.maxSteps || undefined,
-    ...(input.useDefaultApproval
-      ? {}
-      : { approval: input.selection.approval }),
     workspace,
-    provider,
     product_session_id: input.session.id,
   };
 }
@@ -61,27 +77,6 @@ export function toCreateJobWorkspace(workspace: WorkspaceRecord): CreateJobWorks
     kind: workspace.kind,
     root: workspace.rootPath,
   };
-}
-
-function resolveProvider(
-  selection: ActiveProviderSelection,
-  profiles: ProviderProfileRecord[],
-): ProviderProfile | undefined {
-  if (selection.mode !== "profile" || !selection.profileId) {
-    if (selection.mode === "profile") {
-      throw new ProviderSelectionError(
-        "The selected provider profile is missing. Choose a provider in Settings.",
-      );
-    }
-    return undefined;
-  }
-  const profile = profiles.find((item) => item.id === selection.profileId);
-  if (!profile) {
-    throw new ProviderSelectionError(
-      "The selected provider profile is no longer available. Choose another provider in Settings.",
-    );
-  }
-  return toApiProviderProfile(profile);
 }
 
 export function isHardResumeError(message: string): boolean {

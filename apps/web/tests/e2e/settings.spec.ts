@@ -16,7 +16,7 @@ test("all nine settings sections expose a usable surface", async ({ page }) => {
   await expect(page.getByRole("button", { name: "Save profile" })).toBeVisible();
 
   await page.getByRole("button", { name: "Tools & Approvals", exact: true }).click();
-  await expect(page.getByRole("button", { name: "Save limit" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Save default" })).toBeVisible();
 
   await page.getByRole("button", { name: "Workspace / Paths", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Known workspaces" })).toBeVisible();
@@ -94,67 +94,79 @@ test("stale preference revisions recover to the server-confirmed snapshot", asyn
   expect(api.preferences.revision).toBe(1);
 });
 
-test("quick model control persists the real global next-run default", async ({ page }) => {
+test("quick model control persists the session-scoped next-run model", async ({ page }) => {
   const { api, workspace, session } = await installQuickModelFixture(page);
 
   await page.goto(`/w/${workspace.id}/s/${session.id}`);
-  const trigger = page.getByRole("button", { name: "Change global next-run model default" });
+  const trigger = page.getByRole("button", { name: "Change session model settings" });
   await trigger.click();
-  const dialog = page.getByRole("dialog", { name: "Global next-run model default" });
-  await expect(dialog).toContainText("This is not a session override");
-  await dialog.getByLabel("Next-run model").fill("relay/model-v2");
-  await dialog.getByRole("button", { name: "Save global default" }).click();
+  const dialog = page.getByRole("dialog", { name: "Session model settings" });
+  await expect(dialog).toContainText("Changes apply from the next run");
+  await dialog.getByLabel("Session model").fill("relay/model-v2");
+  await dialog.getByLabel("Session max steps").fill("19");
+  await dialog.getByRole("button", { name: "Save session model" }).click();
 
-  await expect(page.getByText("Server preference updated.")).toBeVisible();
+  await expect(page.getByText("Session model updated.")).toBeVisible();
   await expect(trigger).toBeFocused();
-  await expect.poll(() => selectedModel(api.preferences)).toBe("relay/model-v2");
-  expect(api.preferenceUpdateRequests).toBe(1);
+  await expect
+    .poll(() => api.sessionModelConfigs[session.id]?.model)
+    .toBe("relay/model-v2");
+  expect(api.sessionModelConfigs[session.id]).toMatchObject({
+    profile_id: "profile-relay",
+    max_steps: 19,
+    revision: 2,
+  });
+  expect(api.sessionModelConfigUpdateRequests).toBe(1);
 });
 
-test("quick model control rolls back after a real preference failure", async ({ page }) => {
+test("quick model control rolls back after a real session-config failure", async ({ page }) => {
   const { api, workspace, session } = await installQuickModelFixture(page, {
-    preferenceUpdateFailures: 1,
+    sessionModelConfigFailures: 1,
   });
 
   await page.goto(`/w/${workspace.id}/s/${session.id}`);
-  await page.getByRole("button", { name: "Change global next-run model default" }).click();
-  const dialog = page.getByRole("dialog", { name: "Global next-run model default" });
-  const modelInput = dialog.getByLabel("Next-run model");
+  await page.getByRole("button", { name: "Change session model settings" }).click();
+  const dialog = page.getByRole("dialog", { name: "Session model settings" });
+  const modelInput = dialog.getByLabel("Session model");
   await modelInput.fill("relay/model-not-saved");
-  await dialog.getByRole("button", { name: "Save global default" }).click();
+  await dialog.getByRole("button", { name: "Save session model" }).click();
 
-  await expect(dialog.getByRole("alert")).toContainText("server preference was not changed");
+  await expect(dialog.getByRole("alert")).toContainText(
+    "session model settings were not changed",
+  );
   await expect.poll(() => modelInput.inputValue()).toBe("relay/model-a");
-  expect(selectedModel(api.preferences)).toBe("relay/model-a");
-  await expect(page.locator(".shell-alert")).toContainText("preferences unavailable");
+  expect(api.sessionModelConfigs[session.id]?.model).toBe("relay/model-a");
+  await expect(page.locator(".shell-alert")).toContainText(
+    "session model settings unavailable",
+  );
 });
 
-test("quick model control recovers a Preferences CAS conflict to server truth", async ({ page }) => {
+test("quick model control recovers a session-config CAS conflict to server truth", async ({
+  page,
+}) => {
   const { api, workspace, session } = await installQuickModelFixture(page);
 
   await page.goto(`/w/${workspace.id}/s/${session.id}`);
-  const trigger = page.getByRole("button", { name: "Change global next-run model default" });
+  const trigger = page.getByRole("button", { name: "Change session model settings" });
   await expect(trigger).toBeVisible();
-  api.preferences = {
-    ...api.preferences,
-    revision: Number(api.preferences.revision) + 1,
-    provider_selection: {
-      profile_id: "profile-relay",
-      model: "relay/server-confirmed",
-      approval: "ask",
-      max_steps: 24,
-    },
-  };
   await trigger.click();
-  const dialog = page.getByRole("dialog", { name: "Global next-run model default" });
-  const modelInput = dialog.getByLabel("Next-run model");
+  const dialog = page.getByRole("dialog", { name: "Session model settings" });
+  const modelInput = dialog.getByLabel("Session model");
+  Object.assign(api.sessionModelConfigs[session.id]!, {
+    model: "relay/server-confirmed",
+    revision: 2,
+  });
   await modelInput.fill("relay/stale-write");
-  await dialog.getByRole("button", { name: "Save global default" }).click();
+  await dialog.getByRole("button", { name: "Save session model" }).click();
 
-  await expect(dialog.getByRole("alert")).toContainText("server preference was not changed");
+  await expect(dialog.getByRole("alert")).toContainText(
+    "session model settings were not changed",
+  );
   await expect.poll(() => modelInput.inputValue()).toBe("relay/server-confirmed");
   await expect(page.locator(".shell-alert")).toContainText("revision does not match");
-  expect(selectedModel(api.preferences)).toBe("relay/server-confirmed");
+  expect(api.sessionModelConfigs[session.id]?.model).toBe(
+    "relay/server-confirmed",
+  );
 });
 
 test("approval defaults and execution limits affect later job requests", async ({ page }) => {
@@ -180,12 +192,13 @@ test("approval defaults and execution limits affect later job requests", async (
   await page.getByRole("textbox", { name: "Message" }).fill("Default policy turn");
   await page.getByRole("button", { name: "Send" }).click();
   await expect.poll(() => api.jobs).toHaveLength(1);
+  await expect(page.getByRole("textbox", { name: "Message" })).toBeEnabled();
   expect(api.jobs[0]).not.toHaveProperty("approval");
 
   await page.getByRole("button", { name: "Open settings" }).click();
   await page.getByRole("button", { name: "Tools & Approvals", exact: true }).click();
-  await page.getByLabel("Maximum steps per job").fill("17");
-  await page.getByRole("button", { name: "Save limit" }).click();
+  await page.getByLabel("Default maximum steps for new sessions").fill("17");
+  await page.getByRole("button", { name: "Save default" }).click();
   await expect
     .poll(() => selectedMaxSteps(api.preferences))
     .toBe(17);
@@ -194,7 +207,151 @@ test("approval defaults and execution limits affect later job requests", async (
   await page.getByRole("textbox", { name: "Message" }).fill("Explicit limit turn");
   await page.getByRole("button", { name: "Send" }).click();
   await expect.poll(() => api.jobs).toHaveLength(2);
-  expect(api.jobs[1]).toMatchObject({ approval: "never", max_steps: 17 });
+  expect(api.jobs[1]).not.toHaveProperty("approval");
+  expect(api.jobs[1]).not.toHaveProperty("max_steps");
+  expect(api.jobEffectiveConfigs[1]).toMatchObject({
+    approval: "never",
+    max_steps: 8,
+  });
+});
+
+test("MCP settings preserve failed drafts, recover probes, and isolate workspaces", async ({
+  page,
+}) => {
+  const workspaceA = createMockWorkspace(
+    "workspace-mcp-a",
+    "D:/tmp/rove-mcp-a",
+  );
+  const workspaceB = createMockWorkspace(
+    "workspace-mcp-b",
+    "D:/tmp/rove-mcp-b",
+  );
+  const sessionA = createMockSession(
+    "session-mcp-a",
+    workspaceA.id,
+    "MCP A",
+  );
+  const sessionB = createMockSession(
+    "session-mcp-b",
+    workspaceB.id,
+    "MCP B",
+  );
+  const api = await installMockProductApi(page, {
+    workspaces: [workspaceA, workspaceB],
+    sessions: [sessionA, sessionB],
+    activeWorkspaceId: workspaceA.id,
+    activeSessionId: sessionA.id,
+    mcpMutationFailures: 1,
+    mcpProbeFailures: {
+      [`${workspaceA.id}:mock_server`]: [
+        {
+          status: 502,
+          code: "product_mcp_protocol_mismatch",
+          error: "the MCP server returned an incompatible protocol response",
+        },
+      ],
+    },
+  });
+
+  await page.goto("/settings/tools");
+  const mcpSettings = page.getByLabel("MCP servers");
+  const mcpForm = mcpSettings.locator("form");
+  await mcpForm.getByLabel("Server name").fill("mock_server");
+  await mcpForm.getByLabel("Command").fill("python");
+  await mcpForm
+    .getByLabel("Arguments (one per line)")
+    .fill("tests/fixtures/mcp_mock_server.py\n--verbose");
+  await mcpForm.getByLabel("Environment names (one per line)").fill("MCP_TOKEN");
+  await mcpForm.getByLabel("Connection timeout (ms)").fill("2400");
+  await mcpForm.getByRole("button", { name: "Add server" }).click();
+
+  await expect(mcpForm.getByRole("alert")).toContainText(
+    "MCP config is locked",
+  );
+  await expect(mcpForm.getByLabel("Server name")).toHaveValue("mock_server");
+  await expect(mcpForm.getByLabel("Command")).toHaveValue("python");
+  await expect(mcpForm.getByLabel("Arguments (one per line)")).toHaveValue(
+    "tests/fixtures/mcp_mock_server.py\n--verbose",
+  );
+  await expect(
+    mcpForm.getByLabel("Environment names (one per line)"),
+  ).toHaveValue("MCP_TOKEN");
+
+  await mcpForm.getByRole("button", { name: "Add server" }).click();
+  let serverRow = mcpSettings
+    .locator(".profile-row")
+    .filter({ hasText: "mock_server" });
+  await expect(serverRow).toContainText("Enabled");
+  await expect(serverRow).toContainText("2400 ms");
+  await expect.poll(() => api.mcpMutationRequests).toBe(2);
+  expect(api.mcpServers[workspaceA.id]).toHaveLength(1);
+  expect(api.mcpServers[workspaceB.id] ?? []).toHaveLength(0);
+  for (const rawBody of api.mcpRequestBodies) {
+    expect(JSON.parse(rawBody)).not.toHaveProperty("env");
+  }
+  expect(JSON.parse(api.mcpRequestBodies.at(-1)!)).toMatchObject({
+    env_names: ["MCP_TOKEN"],
+  });
+
+  await serverRow.getByRole("button", { name: "Edit" }).click();
+  await mcpForm.getByLabel("Enabled").uncheck();
+  await mcpForm.getByLabel("Connection timeout (ms)").fill("4500");
+  await mcpForm.getByRole("button", { name: "Save changes" }).click();
+  serverRow = mcpSettings
+    .locator(".profile-row")
+    .filter({ hasText: "mock_server" });
+  await expect(serverRow).toContainText("Disabled");
+  await expect(serverRow).toContainText("4500 ms");
+  expect(api.mcpServers[workspaceA.id]?.[0]).toMatchObject({
+    enabled: false,
+    request_timeout_ms: 4500,
+  });
+  expect(JSON.parse(api.mcpRequestBodies.at(-1)!)).not.toHaveProperty("env");
+
+  await serverRow.getByRole("button", { name: "Test" }).click();
+  await expect(serverRow.getByRole("alert")).toContainText(
+    "compatible MCP tool catalog",
+  );
+  await serverRow.getByRole("button", { name: "Test" }).click();
+  await expect(serverRow).toContainText("2 tools");
+  await expect(
+    serverRow.getByText("mcp__mock_server__echo_remote", { exact: true }),
+  ).toBeVisible();
+  await expect(serverRow.getByRole("alert")).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Workspace / Paths", exact: true }).click();
+  await page
+    .locator(".profile-row")
+    .filter({ hasText: workspaceB.canonical_root })
+    .getByRole("button", { name: "Open" })
+    .click();
+  await expect.poll(() => api.preferences.active_workspace_id).toBe(workspaceB.id);
+  await page.getByRole("button", { name: "Open settings" }).click();
+  await page.getByRole("button", { name: "Tools & Approvals", exact: true }).click();
+  await expect(page.getByText("No MCP servers in this workspace.")).toBeVisible();
+  expect(api.mcpServers[workspaceA.id]).toHaveLength(1);
+  expect(api.mcpServers[workspaceB.id] ?? []).toHaveLength(0);
+
+  await page.getByRole("button", { name: "Workspace / Paths", exact: true }).click();
+  await page
+    .locator(".profile-row")
+    .filter({ hasText: workspaceA.canonical_root })
+    .getByRole("button", { name: "Open" })
+    .click();
+  await expect.poll(() => api.preferences.active_workspace_id).toBe(workspaceA.id);
+  await page.getByRole("button", { name: "Open settings" }).click();
+  await page.getByRole("button", { name: "Tools & Approvals", exact: true }).click();
+  serverRow = page
+    .getByLabel("MCP servers")
+    .locator(".profile-row")
+    .filter({ hasText: "mock_server" });
+  await serverRow.getByRole("button", { name: "Remove" }).click();
+  await expect(serverRow).toContainText(
+    "Remove mock_server from this workspace?",
+  );
+  await serverRow.getByRole("button", { name: "Confirm remove" }).click();
+  await expect(page.getByText("No MCP servers in this workspace.")).toBeVisible();
+  expect(api.mcpServers[workspaceA.id]).toEqual([]);
 });
 
 test("workspace and session settings mutate the durable catalog", async ({ page }) => {
@@ -218,10 +375,13 @@ test("workspace and session settings mutate the durable catalog", async ({ page 
   );
 
   sessionRow = page.locator(".profile-row").filter({ hasText: "Renamed session" });
-  const downloadPromise = page.waitForEvent("download");
-  await sessionRow.getByRole("button", { name: "Catalog metadata export" }).click();
-  const download = await downloadPromise;
-  expect(download.suggestedFilename()).toBe("rove-session-session-b.json");
+  const [download] = await Promise.all([
+    page.waitForEvent("download"),
+    sessionRow.getByRole("button", { name: "Evidence export" }).click(),
+  ]);
+  expect(download.suggestedFilename()).toBe(
+    "rove-session-session-b-evidence.json",
+  );
 
   await sessionRow.getByRole("button", { name: "Delete" }).click();
   await sessionRow.getByRole("button", { name: "Confirm delete" }).click();
@@ -246,13 +406,16 @@ test("memory management, runtime health, and critical shortcuts are live", async
     sessions: [session],
     activeWorkspaceId: workspace.id,
     activeSessionId: session.id,
+    memoryMutationFailures: 1,
     memoryTopics: {
       "project-conventions": {
         topic: {
           slug: "project-conventions",
           title: "Project Conventions",
+          layer: "durable",
           memory_type: "project",
           scope: "project",
+          source: "llm_tool",
           confidence: 0.9,
           created_at: "2026-07-26T00:00:00Z",
           updated_at: "2026-07-27T00:00:00Z",
@@ -266,14 +429,72 @@ test("memory management, runtime health, and critical shortcuts are live", async
   });
 
   await page.goto("/settings/memory");
+  await page.getByLabel("Search").fill("does-not-match");
+  await page.getByRole("button", { name: "Search", exact: true }).click();
+  await expect(
+    page.getByText("No durable memory topics match these filters."),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Clear", exact: true }).click();
+
   await page.getByRole("button", { name: "Open", exact: true }).click();
   await expect(page.getByLabel("Memory topic content")).toContainText(
     "Run pnpm test before handoff.",
   );
+  await expect(page.getByLabel("Memory topic metadata")).toContainText(
+    "durable",
+  );
+  await page.getByRole("button", { name: "Edit topic" }).click();
+  let editor = page.getByRole("region", { name: "Edit durable topic" });
+  await editor.getByLabel("Title").fill("Updated Project Conventions");
+  await editor
+    .getByLabel("Content")
+    .fill("Run pnpm test and browser acceptance before handoff.");
+  await editor.getByRole("button", { name: "Save changes" }).click();
+  await expect(editor.getByRole("alert")).toContainText(
+    "memory topic changed concurrently",
+  );
+  await expect(editor.getByLabel("Title")).toHaveValue(
+    "Updated Project Conventions",
+  );
+  await expect(editor.getByLabel("Content")).toHaveValue(
+    "Run pnpm test and browser acceptance before handoff.",
+  );
+  await editor.getByRole("button", { name: "Save changes" }).click();
+  await expect(
+    page
+      .getByLabel("Durable memory topics")
+      .getByText("Updated Project Conventions", { exact: true }),
+  ).toBeVisible();
+  expect(api.memoryTopics["project-conventions"]?.topic.source).toBe(
+    "product_settings",
+  );
+
+  await page.getByRole("button", { name: "New topic" }).click();
+  editor = page.getByRole("region", { name: "New durable topic" });
+  await editor.getByLabel("Slug").fill("session-scoped-reference");
+  await editor.getByLabel("Title").fill("Session Scoped Reference");
+  await editor.getByLabel("Type").selectOption("reference");
+  await editor.getByLabel("Durable scope").selectOption("session");
+  await editor.getByLabel("Confidence").fill("0.85");
+  await editor.getByLabel("Description").fill("A durable session-scoped fact");
+  await editor.getByLabel("Content").fill("This remains in durable memory.");
+  await editor.getByRole("button", { name: "Create topic" }).click();
+  await expect(
+    page.locator(".profile-row").filter({ hasText: "Session Scoped Reference" }),
+  ).toContainText("Durable · reference · session scope");
+  expect(api.memoryTopics["session-scoped-reference"]?.topic).toMatchObject({
+    layer: "durable",
+    scope: "session",
+    source: "product_settings",
+  });
+
   await page.getByRole("button", { name: "Delete topic" }).click();
   await page.getByRole("button", { name: "Confirm delete" }).click();
-  await expect(page.getByText("No durable memory topics are available.")).toBeVisible();
-  expect(api.memoryTopics["project-conventions"]).toBeUndefined();
+  await expect(
+    page.getByText("Session Scoped Reference", { exact: true }),
+  ).toHaveCount(0);
+  expect(api.memoryTopics["session-scoped-reference"]).toBeUndefined();
+  expect(api.memoryTopics["project-conventions"]).toBeDefined();
   expect(api.memoryWorkspaceRequests).not.toHaveLength(0);
   expect(new Set(api.memoryWorkspaceRequests)).toEqual(new Set([workspace.id]));
 
@@ -376,18 +597,9 @@ function selectedMaxSteps(preferences: Record<string, unknown>): number | undefi
   return typeof value === "number" ? value : undefined;
 }
 
-function selectedModel(preferences: Record<string, unknown>): string | undefined {
-  const selection = preferences.provider_selection;
-  if (!selection || typeof selection !== "object") {
-    return undefined;
-  }
-  const value = (selection as Record<string, unknown>).model;
-  return typeof value === "string" ? value : undefined;
-}
-
 async function installQuickModelFixture(
   page: Page,
-  options: { preferenceUpdateFailures?: number } = {},
+  options: { sessionModelConfigFailures?: number } = {},
 ) {
   const workspace = createMockWorkspace();
   const session = createMockSession();
@@ -396,7 +608,7 @@ async function installQuickModelFixture(
     sessions: [session],
     activeWorkspaceId: workspace.id,
     activeSessionId: session.id,
-    preferenceUpdateFailures: options.preferenceUpdateFailures,
+    sessionModelConfigFailures: options.sessionModelConfigFailures,
     providerProfiles: [
       {
         id: "profile-relay",
@@ -419,5 +631,10 @@ async function installQuickModelFixture(
       max_steps: 24,
     },
   };
+  Object.assign(api.sessionModelConfigs[session.id]!, {
+    profile_id: "profile-relay",
+    model: "relay/model-a",
+    max_steps: 24,
+  });
   return { api, workspace, session };
 }

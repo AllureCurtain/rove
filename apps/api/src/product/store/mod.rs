@@ -14,15 +14,21 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::product::{
-    CommitProductRunBinding, CreateProductProviderProfileRequest, CreateProductSessionRequest,
+    CommitProductRunBinding, CreateProductControlRequest, CreateProductForkRequest,
+    CreateProductProviderProfileRequest, CreateProductSessionRequest,
     CreateProductWorkspaceRequest, M1BrowserMigrationPreflight, M1BrowserMigrationRequest,
-    M1BrowserMigrationResponse, PreparedM1BrowserMigration, ProductErrorCode, ProductPreferences,
-    ProductProviderProfile, ProductProviderProfileId, ProductResumeHealth, ProductSession,
-    ProductSessionContext, ProductSessionId, ProductSessionRunBinding, ProductSessionStatus,
-    ProductStore, ProductStoreError, ProductTurnClaim, ProductTurnClaimId, ProductWorkspace,
-    ProductWorkspaceId, UpdateProductPreferencesRequest, UpdateProductProviderProfileRequest,
-    UpdateProductSessionRequest,
+    M1BrowserMigrationResponse, PreparedM1BrowserMigration, ProductControl, ProductControlId,
+    ProductControlKind, ProductControlStatus, ProductErrorCode, ProductFollowupTurnClaim,
+    ProductFork, ProductPreferences, ProductProviderProfile, ProductProviderProfileId,
+    ProductResumeHealth, ProductSession, ProductSessionContext, ProductSessionId,
+    ProductSessionModelConfig, ProductSessionRunBinding, ProductSessionRunModelView,
+    ProductSessionStatus, ProductStore, ProductStoreError, ProductTurnClaim, ProductTurnClaimId,
+    ProductTurnControlFinish, ProductWorkspace, ProductWorkspaceId,
+    UpdateProductPreferencesRequest, UpdateProductProviderProfileRequest,
+    UpdateProductSessionModelConfigRequest, UpdateProductSessionRequest,
+    VerifiedProductForkBoundary,
 };
+use rove_runtime::types::RunId;
 
 use repository::ProductRepository;
 use schema::ProductDatabase;
@@ -140,6 +146,36 @@ impl ProductStore for SqliteProductStore {
             .await
     }
 
+    async fn get_session_model_config(
+        &self,
+        session_id: &ProductSessionId,
+    ) -> Result<ProductSessionModelConfig, ProductStoreError> {
+        let session_id = session_id.clone();
+        self.blocking(move |repository| repository.get_session_model_config(&session_id))
+            .await
+    }
+
+    async fn update_session_model_config(
+        &self,
+        session_id: &ProductSessionId,
+        request: UpdateProductSessionModelConfigRequest,
+    ) -> Result<ProductSessionModelConfig, ProductStoreError> {
+        let session_id = session_id.clone();
+        self.blocking(move |repository| {
+            repository.update_session_model_config(&session_id, request)
+        })
+        .await
+    }
+
+    async fn list_session_run_models(
+        &self,
+        session_id: &ProductSessionId,
+    ) -> Result<Vec<ProductSessionRunModelView>, ProductStoreError> {
+        let session_id = session_id.clone();
+        self.blocking(move |repository| repository.list_session_run_models(&session_id))
+            .await
+    }
+
     async fn get_session_context(
         &self,
         session_id: &ProductSessionId,
@@ -155,6 +191,35 @@ impl ProductStore for SqliteProductStore {
     ) -> Result<Vec<ProductSessionRunBinding>, ProductStoreError> {
         let session_id = session_id.clone();
         self.blocking(move |repository| repository.list_run_bindings(&session_id))
+            .await
+    }
+
+    async fn create_fork(
+        &self,
+        request: CreateProductForkRequest,
+        boundary: VerifiedProductForkBoundary,
+    ) -> Result<(ProductSession, ProductFork, bool), ProductStoreError> {
+        self.blocking(move |repository| repository.create_fork(request, boundary))
+            .await
+    }
+
+    async fn replay_fork(
+        &self,
+        parent_session_id: &ProductSessionId,
+        request: &CreateProductForkRequest,
+    ) -> Result<Option<(ProductSession, ProductFork)>, ProductStoreError> {
+        let parent_session_id = parent_session_id.clone();
+        let request = request.clone();
+        self.blocking(move |repository| repository.replay_fork(&parent_session_id, &request))
+            .await
+    }
+
+    async fn list_forks(
+        &self,
+        parent_session_id: &ProductSessionId,
+    ) -> Result<Vec<ProductFork>, ProductStoreError> {
+        let parent_session_id = parent_session_id.clone();
+        self.blocking(move |repository| repository.list_forks(&parent_session_id))
             .await
     }
 
@@ -185,10 +250,61 @@ impl ProductStore for SqliteProductStore {
             .await
     }
 
+    async fn finish_session_turn_and_claim_followup(
+        &self,
+        claim_id: &ProductTurnClaimId,
+    ) -> Result<Option<ProductFollowupTurnClaim>, ProductStoreError> {
+        let claim_id = claim_id.clone();
+        self.blocking(move |repository| {
+            repository.finish_session_turn_and_claim_followup(&claim_id)
+        })
+        .await
+    }
+
+    async fn drop_unapplied_steers_for_turn(
+        &self,
+        claim_id: &ProductTurnClaimId,
+        run_id: RunId,
+        reason: &str,
+    ) -> Result<Vec<ProductControl>, ProductStoreError> {
+        let claim_id = claim_id.clone();
+        let reason = reason.to_string();
+        self.blocking(move |repository| {
+            repository.drop_unapplied_steers_for_turn(&claim_id, run_id, &reason)
+        })
+        .await
+    }
+
+    async fn finish_session_turn_and_abandon_pending_controls(
+        &self,
+        claim_id: &ProductTurnClaimId,
+        run_id: Option<RunId>,
+        status: ProductSessionStatus,
+        reason: &str,
+    ) -> Result<ProductTurnControlFinish, ProductStoreError> {
+        let claim_id = claim_id.clone();
+        let reason = reason.to_string();
+        self.blocking(move |repository| {
+            repository.finish_session_turn_and_abandon_pending_controls(
+                &claim_id, run_id, status, &reason,
+            )
+        })
+        .await
+    }
+
     async fn list_provider_profiles(
         &self,
     ) -> Result<Vec<ProductProviderProfile>, ProductStoreError> {
         self.blocking(|repository| repository.list_provider_profiles())
+            .await
+    }
+
+    async fn get_provider_profile(
+        &self,
+        profile_id: &ProductProviderProfileId,
+    ) -> Result<ProductProviderProfile, ProductStoreError> {
+        let profile_id = profile_id.clone();
+        self.blocking(move |repository| repository.get_provider_profile(&profile_id))
             .await
     }
 
@@ -251,6 +367,181 @@ impl ProductStore for SqliteProductStore {
         migration: PreparedM1BrowserMigration,
     ) -> Result<M1BrowserMigrationResponse, ProductStoreError> {
         self.blocking(move |repository| repository.apply_m1_browser_migration(migration))
+            .await
+    }
+
+    async fn create_control(
+        &self,
+        session_id: &ProductSessionId,
+        kind: ProductControlKind,
+        request: CreateProductControlRequest,
+    ) -> Result<(ProductControl, bool), ProductStoreError> {
+        let session_id = session_id.clone();
+        self.blocking(move |repository| repository.create_control(&session_id, kind, request))
+            .await
+    }
+
+    async fn list_controls(
+        &self,
+        session_id: &ProductSessionId,
+        filter: Option<ProductControlStatus>,
+    ) -> Result<Vec<ProductControl>, ProductStoreError> {
+        let session_id = session_id.clone();
+        self.blocking(move |repository| repository.list_controls(&session_id, filter))
+            .await
+    }
+
+    async fn get_control(
+        &self,
+        session_id: &ProductSessionId,
+        control_id: &ProductControlId,
+    ) -> Result<ProductControl, ProductStoreError> {
+        let session_id = session_id.clone();
+        let control_id = control_id.clone();
+        self.blocking(move |repository| repository.get_control(&session_id, &control_id))
+            .await
+    }
+
+    async fn transition_control(
+        &self,
+        session_id: &ProductSessionId,
+        control_id: &ProductControlId,
+        from: ProductControlStatus,
+        to: ProductControlStatus,
+        applied_run_id: Option<&RunId>,
+    ) -> Result<ProductControl, ProductStoreError> {
+        let session_id = session_id.clone();
+        let control_id = control_id.clone();
+        let applied_run_id = applied_run_id.copied();
+        self.blocking(move |repository| {
+            repository.transition_control(
+                &session_id,
+                &control_id,
+                from,
+                to,
+                applied_run_id.as_ref(),
+            )
+        })
+        .await
+    }
+
+    async fn confirm_abandoned_followup(
+        &self,
+        session_id: &ProductSessionId,
+        control_id: &ProductControlId,
+    ) -> Result<ProductControl, ProductStoreError> {
+        let session_id = session_id.clone();
+        let control_id = control_id.clone();
+        self.blocking(move |repository| {
+            repository.confirm_abandoned_followup(&session_id, &control_id)
+        })
+        .await
+    }
+
+    async fn abandon_pending_controls(
+        &self,
+        session_id: &ProductSessionId,
+        reason: &str,
+    ) -> Result<u64, ProductStoreError> {
+        let session_id = session_id.clone();
+        let reason = reason.to_string();
+        self.blocking(move |repository| repository.abandon_pending_controls(&session_id, &reason))
+            .await
+    }
+
+    async fn list_pending_followups(
+        &self,
+        session_id: &ProductSessionId,
+    ) -> Result<Vec<ProductControl>, ProductStoreError> {
+        let session_id = session_id.clone();
+        self.blocking(move |repository| repository.list_pending_followups(&session_id))
+            .await
+    }
+
+    async fn claim_next_pending_followup(
+        &self,
+        session_id: &ProductSessionId,
+    ) -> Result<Option<ProductControl>, ProductStoreError> {
+        let session_id = session_id.clone();
+        self.blocking(move |repository| repository.claim_next_pending_followup(&session_id))
+            .await
+    }
+
+    async fn claim_next_followup_turn(
+        &self,
+        session_id: &ProductSessionId,
+    ) -> Result<Option<ProductFollowupTurnClaim>, ProductStoreError> {
+        let session_id = session_id.clone();
+        self.blocking(move |repository| repository.claim_next_followup_turn(&session_id))
+            .await
+    }
+
+    async fn requeue_followup_turn(
+        &self,
+        claim_id: &ProductTurnClaimId,
+        control_id: &ProductControlId,
+    ) -> Result<(), ProductStoreError> {
+        let claim_id = claim_id.clone();
+        let control_id = control_id.clone();
+        self.blocking(move |repository| repository.requeue_followup_turn(&claim_id, &control_id))
+            .await
+    }
+
+    async fn reserve_followup_run(
+        &self,
+        claim_id: &ProductTurnClaimId,
+        control_id: &ProductControlId,
+        run_id: RunId,
+    ) -> Result<(), ProductStoreError> {
+        let claim_id = claim_id.clone();
+        let control_id = control_id.clone();
+        self.blocking(move |repository| {
+            repository.reserve_followup_run(&claim_id, &control_id, run_id)
+        })
+        .await
+    }
+
+    async fn abandon_followup_turn(
+        &self,
+        claim_id: &ProductTurnClaimId,
+        control_id: &ProductControlId,
+        reason: &str,
+    ) -> Result<(), ProductStoreError> {
+        let claim_id = claim_id.clone();
+        let control_id = control_id.clone();
+        let reason = reason.to_string();
+        self.blocking(move |repository| {
+            repository.abandon_followup_turn(&claim_id, &control_id, &reason)
+        })
+        .await
+    }
+
+    async fn list_idle_sessions_with_pending_followups(
+        &self,
+    ) -> Result<Vec<ProductSessionId>, ProductStoreError> {
+        self.blocking(|repository| repository.list_idle_sessions_with_pending_followups())
+            .await
+    }
+
+    async fn drop_pending_steers(
+        &self,
+        session_id: &ProductSessionId,
+        reason: &str,
+    ) -> Result<Vec<ProductControl>, ProductStoreError> {
+        let session_id = session_id.clone();
+        let reason = reason.to_string();
+        self.blocking(move |repository| repository.drop_pending_steers(&session_id, &reason))
+            .await
+    }
+
+    async fn abandon_pending_followups(
+        &self,
+        session_id: &ProductSessionId,
+        reason: &str,
+    ) -> Result<Vec<ProductControl>, ProductStoreError> {
+        let session_id = session_id.clone();
+        let reason = reason.to_string();
+        self.blocking(move |repository| repository.abandon_pending_followups(&session_id, &reason))
             .await
     }
 }

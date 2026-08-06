@@ -70,6 +70,9 @@ export interface TranscriptTimelineEntry {
   runId: string | null;
   runOrdinal: number | null;
   eventSeq: number | null;
+  /** A forked session projects these facts from an immutable parent run. */
+  inherited: boolean;
+  sourceSessionId: string | null;
 }
 
 export interface TranscriptInputView {
@@ -100,6 +103,8 @@ export interface TranscriptRunGroup {
   id: string;
   runId: string | null;
   runOrdinal: number | null;
+  inherited: boolean;
+  sourceSessionId: string | null;
   items: TranscriptTimelineItem[];
 }
 
@@ -255,6 +260,8 @@ export function selectTranscriptTimeline(
         id: groupId,
         runId: entry.runId,
         runOrdinal: entry.runOrdinal,
+        inherited: entry.inherited,
+        sourceSessionId: entry.sourceSessionId,
         items: [item],
       });
     }
@@ -517,6 +524,8 @@ function transcriptTimelineEntry(
     runId: state.activeRunId,
     runOrdinal: state.activeRunOrdinal,
     eventSeq: eventSeq ?? null,
+    inherited: false,
+    sourceSessionId: null,
   };
 }
 
@@ -537,6 +546,8 @@ function canonicalTimelineEntry(
     runId,
     runOrdinal,
     eventSeq: eventSeq ?? null,
+    inherited: false,
+    sourceSessionId: null,
   };
 }
 
@@ -1214,6 +1225,39 @@ function applyStreamEvent(
         ),
       };
     }
+    case "steer_accepted":
+      return {
+        ...next,
+        statusText: "Steer accepted at a safe point",
+        trace: prependTrace(state.trace, event.type, truncate(event.content, 220)),
+      };
+    case "steer_applied":
+      return {
+        ...next,
+        statusText: "Steer applied to the next model turn",
+        trace: prependTrace(state.trace, event.type, event.id),
+      };
+    case "steer_dropped":
+      return {
+        ...next,
+        trace: prependTrace(state.trace, event.type, event.reason),
+      };
+    case "followup_queued":
+      return {
+        ...next,
+        trace: prependTrace(state.trace, event.type, truncate(event.content, 220)),
+      };
+    case "followup_dequeued":
+      return {
+        ...next,
+        statusText: "Starting queued follow-up",
+        trace: prependTrace(state.trace, event.type, event.id),
+      };
+    case "followup_abandoned":
+      return {
+        ...next,
+        trace: prependTrace(state.trace, event.type, event.reason),
+      };
     default:
       return next;
   }

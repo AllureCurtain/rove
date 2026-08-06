@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, Lines};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
 use tokio::time::timeout;
@@ -19,10 +19,17 @@ use rove_core::{Tool, ToolContext, ToolError, ToolOutput, ToolRegistry};
 const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
 const DEFAULT_MCP_REQUEST_TIMEOUT_MS: u64 = 30_000;
 const DEFAULT_MCP_STDERR_CAPTURE_BYTES: usize = 16 * 1024;
+const MAX_MCP_CONFIG_BYTES: u64 = 256 * 1024;
+const MAX_MCP_TOOLS_PER_SERVER: usize = 128;
+pub const MAX_MCP_RESPONSE_BYTES: usize = 1024 * 1024;
+const MAX_MCP_ENDPOINT_BYTES: usize = 2_048;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct McpServerConfig {
     pub name: String,
+    #[serde(default = "default_mcp_server_enabled")]
+    pub enabled: bool,
     #[serde(default)]
     pub transport: McpTransport,
     /// Command to spawn (stdio transport only).
@@ -30,8 +37,10 @@ pub struct McpServerConfig {
     pub command: String,
     #[serde(default)]
     pub args: Vec<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub env: HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub env_names: Vec<String>,
     /// SSE endpoint URL (sse transport only).
     #[serde(default)]
     pub url: String,
@@ -39,7 +48,7 @@ pub struct McpServerConfig {
     pub policy: McpTransportPolicy,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum McpTransport {
     #[default]
@@ -47,7 +56,8 @@ pub enum McpTransport {
     Sse,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct McpTransportPolicy {
     #[serde(default = "default_mcp_request_timeout_ms")]
     pub request_timeout_ms: u64,
@@ -68,11 +78,16 @@ fn default_mcp_request_timeout_ms() -> u64 {
     DEFAULT_MCP_REQUEST_TIMEOUT_MS
 }
 
+fn default_mcp_server_enabled() -> bool {
+    true
+}
+
 fn default_mcp_stderr_capture_bytes() -> usize {
     DEFAULT_MCP_STDERR_CAPTURE_BYTES
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct McpConfigFile {
     pub servers: Vec<McpServerConfig>,
 }
@@ -84,6 +99,21 @@ pub struct McpToolInfo {
     pub schema: ToolDescriptor,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum McpProbeFailureKind {
+    EnvironmentMissing,
+    Spawn,
+    Timeout,
+    Transport,
+    Protocol,
+    NoTools,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct McpProbeFailure {
+    pub kind: McpProbeFailureKind,
+}
+
 pub async fn register_mcp_tools_from_file(
     registry: &mut ToolRegistry,
     path: impl Into<PathBuf>,
@@ -93,6 +123,10 @@ pub async fn register_mcp_tools_from_file(
         return Ok(0);
     }
 
+    let metadata = tokio::fs::metadata(&path).await?;
+    if metadata.len() > MAX_MCP_CONFIG_BYTES {
+        anyhow::bail!("MCP config exceeds the supported size");
+    }
     let bytes = tokio::fs::read(path).await?;
     let config: McpConfigFile = serde_json::from_slice(&bytes)?;
     register_mcp_tools(registry, config.servers).await
@@ -104,6 +138,10 @@ pub async fn register_mcp_tools(
 ) -> anyhow::Result<usize> {
     let mut registered = 0;
     for server in servers {
+        if !server.enabled {
+            continue;
+        }
+        let server = resolve_mcp_server_environment(server)?;
         match server.transport {
             McpTransport::Stdio => {
                 let client = Arc::new(StdioMcpClient::connect(server).await?);
@@ -128,6 +166,99 @@ pub async fn register_mcp_tools(
         }
     }
     Ok(registered)
+}
+
+pub fn resolve_mcp_server_environment(
+    mut server: McpServerConfig,
+) -> anyhow::Result<McpServerConfig> {
+    for name in &server.env_names {
+        if !is_valid_environment_name(name) {
+            anyhow::bail!("MCP environment variable name is invalid");
+        }
+        let value = std::env::var(name)
+            .map_err(|_| anyhow::anyhow!("MCP environment variable `{name}` is unavailable"))?;
+        server.env.insert(name.clone(), value);
+    }
+    Ok(server)
+}
+
+pub async fn probe_mcp_server(
+    server: McpServerConfig,
+) -> Result<Vec<McpToolInfo>, McpProbeFailure> {
+    let timeout_ms = server.policy.request_timeout_ms;
+    let server = resolve_mcp_server_environment(server).map_err(|_| McpProbeFailure {
+        kind: McpProbeFailureKind::EnvironmentMissing,
+    })?;
+    let probe = async move {
+        let tools = match server.transport {
+            McpTransport::Stdio => {
+                let client = StdioMcpClient::spawn(server)
+                    .await
+                    .map_err(|_| McpProbeFailure {
+                        kind: McpProbeFailureKind::Spawn,
+                    })?;
+                client
+                    .initialize()
+                    .await
+                    .map_err(classify_mcp_probe_error)?;
+                client
+                    .list_tools()
+                    .await
+                    .map_err(classify_mcp_probe_error)?
+            }
+            McpTransport::Sse => {
+                let client = SseMcpClient::connect(server)
+                    .await
+                    .map_err(classify_mcp_probe_error)?;
+                client
+                    .list_tools()
+                    .await
+                    .map_err(classify_mcp_probe_error)?
+            }
+        };
+        if tools.is_empty() {
+            return Err(McpProbeFailure {
+                kind: McpProbeFailureKind::NoTools,
+            });
+        }
+        Ok(tools)
+    };
+    timeout(Duration::from_millis(timeout_ms), probe)
+        .await
+        .map_err(|_| McpProbeFailure {
+            kind: McpProbeFailureKind::Timeout,
+        })?
+}
+
+fn classify_mcp_probe_error(error: anyhow::Error) -> McpProbeFailure {
+    let message = error.to_string();
+    let kind = if message.contains("timed out") {
+        McpProbeFailureKind::Timeout
+    } else if error.chain().any(|source| {
+        source.downcast_ref::<serde_json::Error>().is_some()
+            || source
+                .downcast_ref::<reqwest::Error>()
+                .is_some_and(reqwest::Error::is_decode)
+    }) || message.contains("JSON-RPC")
+        || message.contains("missing tools array")
+        || message.contains("missing name")
+        || message.contains("empty name")
+        || message.contains("too many tools")
+        || message.contains("exceeds the supported size")
+        || message.contains("MCP SSE endpoint is invalid")
+        || message.contains("without providing an endpoint")
+    {
+        McpProbeFailureKind::Protocol
+    } else {
+        McpProbeFailureKind::Transport
+    };
+    McpProbeFailure { kind }
+}
+
+fn is_valid_environment_name(name: &str) -> bool {
+    let mut characters = name.chars();
+    matches!(characters.next(), Some(first) if first == '_' || first.is_ascii_alphabetic())
+        && characters.all(|character| character == '_' || character.is_ascii_alphanumeric())
 }
 
 pub struct McpProxyTool {
@@ -164,6 +295,12 @@ pub struct StdioMcpClient {
 
 impl StdioMcpClient {
     pub async fn connect(config: McpServerConfig) -> anyhow::Result<Self> {
+        let client = Self::spawn(config).await?;
+        client.initialize().await?;
+        Ok(client)
+    }
+
+    async fn spawn(config: McpServerConfig) -> anyhow::Result<Self> {
         let mut command = Command::new(&config.command);
         command
             .args(&config.args)
@@ -191,19 +328,17 @@ impl StdioMcpClient {
         )));
         spawn_stderr_capture(stderr, stderr_capture.clone());
 
-        let client = Self {
+        Ok(Self {
             server_name: config.name,
             next_id: AtomicU64::new(1),
             policy: config.policy,
             child: StdMutex::new(Some(child)),
             transport: Mutex::new(StdioTransport {
                 stdin,
-                lines: BufReader::new(stdout).lines(),
+                stdout: BufReader::new(stdout),
             }),
             stderr: stderr_capture,
-        };
-        client.initialize().await?;
-        Ok(client)
+        })
     }
 
     async fn initialize(&self) -> anyhow::Result<()> {
@@ -229,6 +364,9 @@ impl StdioMcpClient {
             .get("tools")
             .and_then(Value::as_array)
             .ok_or_else(|| anyhow::anyhow!("MCP tools/list response missing tools array"))?;
+        if tools.len() > MAX_MCP_TOOLS_PER_SERVER {
+            anyhow::bail!("MCP tools/list response contains too many tools");
+        }
         tools
             .iter()
             .map(|tool| self.parse_tool(tool))
@@ -290,6 +428,7 @@ impl StdioMcpClient {
         let remote_name = tool
             .get("name")
             .and_then(Value::as_str)
+            .filter(|name| !name.trim().is_empty())
             .ok_or_else(|| anyhow::anyhow!("MCP tool missing name"))?
             .to_string();
         let description = tool
@@ -301,17 +440,9 @@ impl StdioMcpClient {
             .get("inputSchema")
             .cloned()
             .unwrap_or_else(|| json!({ "type": "object" }));
-        let destructive = tool
-            .get("annotations")
-            .and_then(|annotations| annotations.get("destructiveHint"))
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        let parallel_safe = !destructive
-            && tool
-                .get("annotations")
-                .and_then(|annotations| annotations.get("readOnlyHint"))
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
+        // Remote annotations describe intent; they are not a trusted local policy grant.
+        let destructive = true;
+        let parallel_safe = false;
         let name = format!("mcp__{}__{}", sanitize_name(&self.server_name), remote_name);
 
         Ok(McpToolInfo {
@@ -342,7 +473,7 @@ impl Drop for StdioMcpClient {
 
 struct StdioTransport {
     stdin: ChildStdin,
-    lines: Lines<BufReader<ChildStdout>>,
+    stdout: BufReader<ChildStdout>,
 }
 
 fn reap_stdio_child(mut child: Child) {
@@ -370,11 +501,11 @@ impl StdioTransport {
     }
 
     async fn read_response(&mut self, id: u64) -> anyhow::Result<Value> {
-        while let Some(line) = self.lines.next_line().await? {
-            if line.trim().is_empty() {
+        while let Some(line) = read_bounded_json_line(&mut self.stdout).await? {
+            if line.iter().all(u8::is_ascii_whitespace) {
                 continue;
             }
-            let message: Value = serde_json::from_str(&line)?;
+            let message: Value = serde_json::from_slice(&line)?;
             if message.get("id").and_then(Value::as_u64) != Some(id) {
                 continue;
             }
@@ -384,6 +515,31 @@ impl StdioTransport {
             return Ok(message.get("result").cloned().unwrap_or_else(|| json!({})));
         }
         anyhow::bail!("MCP server closed stdout before responding to request {id}");
+    }
+}
+
+async fn read_bounded_json_line(
+    reader: &mut BufReader<ChildStdout>,
+) -> anyhow::Result<Option<Vec<u8>>> {
+    let mut line = Vec::new();
+    loop {
+        let available = reader.fill_buf().await?;
+        if available.is_empty() {
+            return Ok((!line.is_empty()).then_some(line));
+        }
+        let newline = available.iter().position(|byte| *byte == b'\n');
+        let consumed = newline.map_or(available.len(), |index| index + 1);
+        if line.len().saturating_add(consumed) > MAX_MCP_RESPONSE_BYTES {
+            anyhow::bail!("MCP stdio response exceeds the supported size");
+        }
+        line.extend_from_slice(&available[..consumed]);
+        reader.consume(consumed);
+        if newline.is_some() {
+            while matches!(line.last(), Some(b'\n' | b'\r')) {
+                line.pop();
+            }
+            return Ok(Some(line));
+        }
     }
 }
 
@@ -459,6 +615,9 @@ impl SseMcpClient {
             .get("tools")
             .and_then(Value::as_array)
             .ok_or_else(|| anyhow::anyhow!("MCP tools/list response missing tools array"))?;
+        if tools.len() > MAX_MCP_TOOLS_PER_SERVER {
+            anyhow::bail!("MCP tools/list response contains too many tools");
+        }
         tools
             .iter()
             .map(|tool| self.parse_tool(tool))
@@ -503,12 +662,14 @@ impl SseMcpClient {
             )
         })??;
 
-        if !response.status().is_success() {
-            let text = response.text().await.unwrap_or_default();
+        let status = response.status();
+        let bytes = read_bounded_mcp_response(response).await?;
+        if !status.is_success() {
+            let text = String::from_utf8_lossy(&bytes);
             anyhow::bail!("MCP SSE request failed: {text}");
         }
 
-        let body: Value = response.json().await?;
+        let body: Value = serde_json::from_slice(&bytes)?;
         if let Some(error) = body.get("error") {
             anyhow::bail!("{}", format_mcp_error(error));
         }
@@ -534,6 +695,7 @@ impl SseMcpClient {
         let remote_name = tool
             .get("name")
             .and_then(Value::as_str)
+            .filter(|name| !name.trim().is_empty())
             .ok_or_else(|| anyhow::anyhow!("MCP tool missing name"))?
             .to_string();
         let description = tool
@@ -545,17 +707,9 @@ impl SseMcpClient {
             .get("inputSchema")
             .cloned()
             .unwrap_or_else(|| json!({ "type": "object" }));
-        let destructive = tool
-            .get("annotations")
-            .and_then(|annotations| annotations.get("destructiveHint"))
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        let parallel_safe = !destructive
-            && tool
-                .get("annotations")
-                .and_then(|annotations| annotations.get("readOnlyHint"))
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
+        // Remote annotations describe intent; they are not a trusted local policy grant.
+        let destructive = true;
+        let parallel_safe = false;
         let name = format!("mcp__{}__{}", sanitize_name(&self.server_name), remote_name);
 
         Ok(McpToolInfo {
@@ -579,30 +733,76 @@ async fn discover_endpoint(http: &reqwest::Client, sse_url: &str) -> anyhow::Res
         anyhow::bail!("MCP SSE endpoint returned HTTP {}", response.status());
     }
 
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_MCP_RESPONSE_BYTES as u64)
+    {
+        anyhow::bail!("MCP SSE response exceeds the supported size");
+    }
+
     use futures::StreamExt;
     let mut byte_stream = response.bytes_stream();
-    let mut buffer = String::new();
+    let mut buffer = Vec::new();
+    let mut received = 0_usize;
 
     while let Some(chunk) = byte_stream.next().await {
         let chunk = chunk?;
-        buffer.push_str(&String::from_utf8_lossy(&chunk));
+        received = received.saturating_add(chunk.len());
+        if received > MAX_MCP_RESPONSE_BYTES {
+            anyhow::bail!("MCP SSE response exceeds the supported size");
+        }
+        buffer.extend_from_slice(&chunk);
 
-        while let Some(line_end) = buffer.find('\n') {
-            let line = buffer[..line_end].trim().to_string();
-            buffer = buffer[line_end + 1..].to_string();
+        while let Some(line_end) = buffer.iter().position(|byte| *byte == b'\n') {
+            let remaining = buffer.split_off(line_end + 1);
+            let line = String::from_utf8_lossy(&buffer[..line_end])
+                .trim()
+                .to_string();
+            buffer = remaining;
 
-            if let Some(data) = line.strip_prefix("data: ") {
-                let endpoint = data.trim().to_string();
-                if endpoint.starts_with("http://") || endpoint.starts_with("https://") {
-                    return Ok(endpoint);
-                }
-                let base = sse_url.rfind('/').map(|i| &sse_url[..i]).unwrap_or(sse_url);
-                return Ok(format!("{}/{}", base, endpoint.trim_start_matches('/')));
+            if let Some(data) = line.strip_prefix("data:") {
+                return resolve_sse_endpoint(sse_url, data.trim());
             }
         }
     }
 
     anyhow::bail!("MCP SSE stream closed without providing an endpoint URL")
+}
+
+fn resolve_sse_endpoint(sse_url: &str, endpoint: &str) -> anyhow::Result<String> {
+    if endpoint.is_empty() || endpoint.len() > MAX_MCP_ENDPOINT_BYTES {
+        anyhow::bail!("MCP SSE endpoint is empty or exceeds the supported size");
+    }
+    let base = reqwest::Url::parse(sse_url)?;
+    let resolved = base.join(endpoint)?;
+    if !matches!(resolved.scheme(), "http" | "https")
+        || !resolved.username().is_empty()
+        || resolved.password().is_some()
+        || resolved.fragment().is_some()
+    {
+        anyhow::bail!("MCP SSE endpoint is invalid");
+    }
+    Ok(resolved.to_string())
+}
+
+async fn read_bounded_mcp_response(response: reqwest::Response) -> anyhow::Result<Vec<u8>> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_MCP_RESPONSE_BYTES as u64)
+    {
+        anyhow::bail!("MCP SSE response exceeds the supported size");
+    }
+    use futures::StreamExt;
+    let mut bytes = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        if bytes.len().saturating_add(chunk.len()) > MAX_MCP_RESPONSE_BYTES {
+            anyhow::bail!("MCP SSE response exceeds the supported size");
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
 }
 
 pub struct McpSseProxyTool {

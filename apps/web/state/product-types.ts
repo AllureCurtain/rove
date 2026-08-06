@@ -2,8 +2,10 @@ import type { CreateJobWorkspaceKind, ProviderProfile, ProviderType } from "../l
 import type {
   ProductProviderProfile,
   ProductSession,
+  ProductSessionModelConfig,
   ProductWorkspace,
 } from "../product/product-api-types";
+import type { ProductReasoningPreference } from "../product/product-api-types";
 
 export type WorkspaceKind = CreateJobWorkspaceKind;
 
@@ -30,6 +32,11 @@ export interface SessionRecord {
   activeRunId?: string | null;
   resumedFromRunId?: string | null;
   runtimeOrdinal?: number | null;
+  /** Immutable parent relation for a forked product session. */
+  parentSessionId?: string | null;
+  /** Exact final source boundary retained by a forked session. */
+  forkPointRunId?: string | null;
+  forkPointSeq?: number | null;
   /**
    * True once this product session has completed at least one durable turn
    * under its workspace root. The server uses this binding for exact resume.
@@ -54,6 +61,23 @@ export interface ActiveProviderSelection {
   profileId?: string;
   model: string;
   approval: "ask" | "auto" | "never";
+  maxSteps: number;
+}
+
+export interface SessionModelConfig {
+  sessionId: string;
+  profileId?: string;
+  model: string;
+  reasoning: ProductReasoningPreference;
+  maxSteps: number;
+  revision: number;
+  updatedAt: string;
+}
+
+export interface SessionModelConfigInput {
+  profileId?: string;
+  model: string;
+  reasoning: ProductReasoningPreference;
   maxSteps: number;
 }
 
@@ -97,6 +121,9 @@ export function fromProductSession(session: ProductSession): SessionRecord {
     activeRunId: session.runtime_binding?.latest_run_id ?? null,
     resumedFromRunId: null,
     runtimeOrdinal: session.runtime_binding?.ordinal ?? null,
+    parentSessionId: session.parent_session_id ?? null,
+    forkPointRunId: session.fork_point_run_id ?? null,
+    forkPointSeq: session.fork_point_seq ?? null,
     hasDurableTurn: session.runtime_binding !== undefined,
   };
 }
@@ -112,6 +139,20 @@ export function fromProductProviderProfile(
     apiKeyEnv: profile.api_key_env,
     defaultModel: profile.default_model,
     updatedAt: profile.updated_at,
+  };
+}
+
+export function fromProductSessionModelConfig(
+  config: ProductSessionModelConfig,
+): SessionModelConfig {
+  return {
+    sessionId: config.product_session_id,
+    profileId: config.profile_id,
+    model: config.model,
+    reasoning: config.reasoning,
+    maxSteps: config.max_steps,
+    revision: config.revision,
+    updatedAt: config.updated_at,
   };
 }
 

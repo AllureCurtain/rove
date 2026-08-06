@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { buildTurnJobRequest, isHardResumeError } from "./turn-request";
+import {
+  ProviderSelectionError,
+  assertProviderSelectionIsSatisfiable,
+  buildTurnJobRequest,
+  isHardResumeError,
+} from "./turn-request";
 import type {
   ActiveProviderSelection,
   ProviderProfileRecord,
@@ -27,12 +32,66 @@ const baseSession: SessionRecord = {
   hasDurableTurn: false,
 };
 
-const selection: ActiveProviderSelection = {
-  mode: "default",
-  model: "fake",
-  approval: "ask",
-  maxSteps: 8,
+const profile: ProviderProfileRecord = {
+  id: "profile_1",
+  label: "Local",
+  providerType: "openai",
+  apiBase: "http://127.0.0.1:11434/v1",
+  updatedAt: "2026-07-25T00:00:00.000Z",
 };
+
+function selectionOf(patch: Partial<ActiveProviderSelection>): ActiveProviderSelection {
+  return {
+    mode: "profile",
+    profileId: profile.id,
+    model: "gpt-test",
+    approval: "ask",
+    maxSteps: 8,
+    ...patch,
+  };
+}
+
+describe("assertProviderSelectionIsSatisfiable", () => {
+  it("accepts a selection whose profile is still in the catalog", () => {
+    expect(() =>
+      assertProviderSelectionIsSatisfiable(selectionOf({}), [profile]),
+    ).not.toThrow();
+  });
+
+  it("rejects a selection whose profile was removed", () => {
+    expect(() =>
+      assertProviderSelectionIsSatisfiable(
+        selectionOf({ profileId: "profile_missing" }),
+        [profile],
+      ),
+    ).toThrow(ProviderSelectionError);
+    expect(() =>
+      assertProviderSelectionIsSatisfiable(
+        selectionOf({ profileId: "profile_missing" }),
+        [profile],
+      ),
+    ).toThrow(/no longer available/i);
+  });
+
+  it("rejects profile mode without a profile id", () => {
+    expect(() =>
+      assertProviderSelectionIsSatisfiable(
+        selectionOf({ profileId: undefined }),
+        [profile],
+      ),
+    ).toThrow(/missing/i);
+  });
+
+  it("allows default mode regardless of the catalog", () => {
+    expect(() =>
+      assertProviderSelectionIsSatisfiable(
+        selectionOf({ mode: "default", profileId: undefined }),
+        [],
+      ),
+    ).not.toThrow();
+    expect(() => assertProviderSelectionIsSatisfiable(null, [])).not.toThrow();
+  });
+});
 
 describe("buildTurnJobRequest", () => {
   it("binds the exact product session and omits client resume", () => {
@@ -40,20 +99,14 @@ describe("buildTurnJobRequest", () => {
       message: "hello",
       workspace,
       session: baseSession,
-      selection,
-      profiles: [],
     });
 
     expect(request).toEqual({
       message: "hello",
-      model: "fake",
-      max_steps: 8,
-      approval: "ask",
       workspace: {
         kind: "folder",
-        root: "D:\\\\Study\\\\project",
+        root: workspace.rootPath,
       },
-      provider: undefined,
       product_session_id: "sess_1",
     });
     expect(request).not.toHaveProperty("resume");
@@ -64,101 +117,27 @@ describe("buildTurnJobRequest", () => {
       message: "continue",
       workspace,
       session: { ...baseSession, hasDurableTurn: true },
-      selection,
-      profiles: [],
     });
 
     expect(request.product_session_id).toBe("sess_1");
     expect(request).not.toHaveProperty("resume");
     expect(request.workspace).toEqual({
       kind: "folder",
-      root: "D:\\\\Study\\\\project",
+      root: workspace.rootPath,
     });
   });
 
-  it("defers approval to the server preference when no selection is explicit", () => {
+  it("does not send client-owned model, provider, approval, or step fields", () => {
     const request = buildTurnJobRequest({
-      message: "use the durable default",
+      message: "server-owned settings",
       workspace,
       session: baseSession,
-      selection: { ...selection, approval: "never" },
-      profiles: [],
-      useDefaultApproval: true,
     });
 
+    expect(request).not.toHaveProperty("model");
+    expect(request).not.toHaveProperty("max_steps");
+    expect(request).not.toHaveProperty("provider");
     expect(request).not.toHaveProperty("approval");
-  });
-
-  it("sends approval when the provider selection is explicit", () => {
-    const request = buildTurnJobRequest({
-      message: "use the explicit selection",
-      workspace,
-      session: baseSession,
-      selection: { ...selection, approval: "auto" },
-      profiles: [],
-      useDefaultApproval: false,
-    });
-
-    expect(request.approval).toBe("auto");
-  });
-
-  it("injects saved provider profile without raw keys", () => {
-    const profiles: ProviderProfileRecord[] = [
-      {
-        id: "prov_1",
-        label: "Relay",
-        providerType: "openai",
-        apiBase: "https://relay.example/v1",
-        apiKeyEnv: "OPENAI_API_KEY",
-        defaultModel: "gpt-test",
-        updatedAt: "2026-07-25T00:00:00.000Z",
-      },
-    ];
-    const request = buildTurnJobRequest({
-      message: "hi",
-      workspace: { ...workspace, kind: "repo" },
-      session: baseSession,
-      selection: {
-        mode: "profile",
-        profileId: "prov_1",
-        model: "gpt-test",
-        approval: "ask",
-        maxSteps: 4,
-      },
-      profiles,
-    });
-
-    expect(request.workspace).toEqual({
-      kind: "repo",
-      root: "D:\\\\Study\\\\project",
-    });
-    expect(request.provider).toEqual({
-      provider_type: "openai",
-      name: "Relay",
-      api_base: "https://relay.example/v1",
-      api_key_env: "OPENAI_API_KEY",
-    });
-    expect(request.product_session_id).toBe("sess_1");
-    expect(request).not.toHaveProperty("resume");
-    expect(JSON.stringify(request)).not.toMatch(/sk-/);
-  });
-
-  it("fails closed when the selected provider profile is unavailable", () => {
-    expect(() =>
-      buildTurnJobRequest({
-        message: "hi",
-        workspace,
-        session: baseSession,
-        selection: {
-          mode: "profile",
-          profileId: "prov_missing",
-          model: "gpt-test",
-          approval: "ask",
-          maxSteps: 4,
-        },
-        profiles: [],
-      }),
-    ).toThrow(/no longer available/i);
   });
 });
 

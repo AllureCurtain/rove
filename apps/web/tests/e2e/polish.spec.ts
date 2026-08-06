@@ -51,8 +51,23 @@ test("mobile chat reflows, traps both production panels, and honors reduced moti
   expect(expandedBox).not.toBeNull();
   expect(expandedBox!.x).toBeGreaterThanOrEqual(0);
   expect(expandedBox!.x + expandedBox!.width).toBeLessThanOrEqual(390);
+  // The inspector now holds real evidence-export controls, so Tab advances
+  // within the panel instead of wrapping to the close button. Assert the trap's
+  // actual contract: focus stays inside, and it wraps at the boundaries.
   await page.keyboard.press("Tab");
-  await expect(inspector.getByRole("button", { name: "Close run evidence" })).toBeFocused();
+  await expect(
+    inspector.locator(":focus"),
+    "Tab must keep focus inside the trapped inspector",
+  ).toHaveCount(1);
+  const closeButton = inspector.getByRole("button", { name: "Close run evidence" });
+  await closeButton.focus();
+  await page.keyboard.press("Shift+Tab");
+  await expect(
+    inspector.locator(":focus"),
+    "Shift+Tab from the first control must wrap to the last control inside the inspector",
+  ).toHaveCount(1);
+  await expect(closeButton).not.toBeFocused();
+  await closeButton.focus();
   await page.keyboard.press("Escape");
   await expect(inspector).toBeHidden();
   await expect(evidenceTrigger).toBeFocused();

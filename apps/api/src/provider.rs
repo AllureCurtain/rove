@@ -7,7 +7,9 @@
 //! as a read-only diagnostic.
 
 use std::collections::BTreeMap;
+use std::time::Duration;
 
+use futures::StreamExt;
 use rove_app_bootstrap::AppConfig;
 use rove_app_bootstrap::provider::{ProviderAuthConfig, ProviderProfileConfig, SecretSource};
 use rove_models::provider::WireProtocolId;
@@ -17,6 +19,10 @@ use super::{ApiError, ProviderProfileRequest};
 const DEFAULT_PROVIDER_KEY_ENV: &str = "OPENAI_API_KEY";
 const DEFAULT_ANTHROPIC_KEY_ENV: &str = "ANTHROPIC_API_KEY";
 const JOB_PROVIDER_PROFILE: &str = "__api_request__";
+const PROVIDER_INVENTORY_TIMEOUT_MS: u64 = 5_000;
+const PROVIDER_INVENTORY_CONNECT_TIMEOUT_MS: u64 = 2_000;
+const MAX_PROVIDER_INVENTORY_ENDPOINT_BYTES: usize = 2_048;
+const MAX_PROVIDER_INVENTORY_RESPONSE_BYTES: usize = 1_048_576;
 
 /// Normalized provider identity used by job assembly and inventory.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -305,16 +311,16 @@ async fn openai_inventory(
     requested_endpoint: Option<&str>,
 ) -> Result<ProviderInventory, ApiError> {
     let api_key = provider_api_key(&profile.inventory_family, key_env)?;
-    let endpoint = requested_endpoint
-        .filter(|endpoint| !endpoint.trim().is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(|| format!("{}/models", profile.api_base.trim_end_matches('/')));
-    let response = reqwest::Client::new()
+    let endpoint = inventory_endpoint(
+        requested_endpoint,
+        &format!("{}/models", profile.api_base.trim_end_matches('/')),
+    )?;
+    let response = provider_inventory_client()?
         .get(&endpoint)
         .bearer_auth(&api_key)
         .send()
         .await
-        .map_err(|err| ApiError::bad_gateway(format!("provider model inventory failed: {err}")))?;
+        .map_err(classify_inventory_transport_error)?;
     model_inventory_response(response, "data", "id", true).await
 }
 
@@ -324,17 +330,17 @@ async fn anthropic_inventory(
     requested_endpoint: Option<&str>,
 ) -> Result<ProviderInventory, ApiError> {
     let api_key = provider_api_key(&profile.inventory_family, key_env)?;
-    let endpoint = requested_endpoint
-        .filter(|endpoint| !endpoint.trim().is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(|| format!("{}/v1/models", profile.api_base.trim_end_matches('/')));
-    let response = reqwest::Client::new()
+    let endpoint = inventory_endpoint(
+        requested_endpoint,
+        &format!("{}/v1/models", profile.api_base.trim_end_matches('/')),
+    )?;
+    let response = provider_inventory_client()?
         .get(&endpoint)
         .header("x-api-key", api_key)
         .header("anthropic-version", "2023-06-01")
         .send()
         .await
-        .map_err(|err| ApiError::bad_gateway(format!("provider model inventory failed: {err}")))?;
+        .map_err(classify_inventory_transport_error)?;
     model_inventory_response(response, "data", "id", true).await
 }
 
@@ -342,16 +348,72 @@ async fn ollama_inventory(
     profile: &NormalizedProviderProfile,
     requested_endpoint: Option<&str>,
 ) -> Result<ProviderInventory, ApiError> {
-    let endpoint = requested_endpoint
-        .filter(|endpoint| !endpoint.trim().is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(|| format!("{}/api/tags", profile.api_base.trim_end_matches('/')));
-    let response = reqwest::Client::new()
+    let endpoint = inventory_endpoint(
+        requested_endpoint,
+        &format!("{}/api/tags", profile.api_base.trim_end_matches('/')),
+    )?;
+    let response = provider_inventory_client()?
         .get(&endpoint)
         .send()
         .await
-        .map_err(|err| ApiError::bad_gateway(format!("provider model inventory failed: {err}")))?;
+        .map_err(classify_inventory_transport_error)?;
     model_inventory_response(response, "models", "name", false).await
+}
+
+fn provider_inventory_client() -> Result<reqwest::Client, ApiError> {
+    reqwest::Client::builder()
+        .connect_timeout(Duration::from_millis(PROVIDER_INVENTORY_CONNECT_TIMEOUT_MS))
+        .timeout(Duration::from_millis(PROVIDER_INVENTORY_TIMEOUT_MS))
+        .build()
+        .map_err(|_| {
+            ApiError::bad_gateway_with_code(
+                "provider_transport",
+                "provider inventory transport could not be initialized",
+            )
+        })
+}
+
+fn inventory_endpoint(
+    requested_endpoint: Option<&str>,
+    default_endpoint: &str,
+) -> Result<String, ApiError> {
+    let endpoint = requested_endpoint
+        .filter(|endpoint| !endpoint.trim().is_empty())
+        .unwrap_or(default_endpoint)
+        .trim();
+    if endpoint.len() > MAX_PROVIDER_INVENTORY_ENDPOINT_BYTES {
+        return Err(ApiError::bad_request(
+            "provider models endpoint is too long",
+        ));
+    }
+    let parsed = reqwest::Url::parse(endpoint)
+        .map_err(|_| ApiError::bad_request("provider models endpoint is invalid"))?;
+    if !matches!(parsed.scheme(), "http" | "https")
+        || parsed.host_str().is_none()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        return Err(ApiError::bad_request(
+            "provider models endpoint must be an HTTP URL without credentials, query, or fragment",
+        ));
+    }
+    Ok(endpoint.to_string())
+}
+
+fn classify_inventory_transport_error(error: reqwest::Error) -> ApiError {
+    if error.is_timeout() {
+        ApiError::gateway_timeout_with_code(
+            "provider_timeout",
+            format!("provider model inventory timed out after {PROVIDER_INVENTORY_TIMEOUT_MS}ms"),
+        )
+    } else {
+        ApiError::bad_gateway_with_code(
+            "provider_transport",
+            "provider model inventory transport failed",
+        )
+    }
 }
 
 async fn model_inventory_response(
@@ -362,28 +424,95 @@ async fn model_inventory_response(
 ) -> Result<ProviderInventory, ApiError> {
     if !response.status().is_success() {
         let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        return Err(ApiError::bad_gateway(format!(
-            "provider model inventory returned HTTP {status}: {body}"
-        )));
+        let code = match status.as_u16() {
+            401 | 403 => "provider_authentication",
+            429 => "provider_rate_limited",
+            400..=499 => "provider_protocol_mismatch",
+            _ => "provider_transport",
+        };
+        let message = match code {
+            "provider_authentication" => {
+                format!("provider rejected the configured credentials (HTTP {status})")
+            }
+            "provider_rate_limited" => {
+                format!("provider rate limited the inventory request (HTTP {status})")
+            }
+            "provider_protocol_mismatch" => {
+                format!(
+                    "provider inventory endpoint rejected the expected protocol (HTTP {status})"
+                )
+            }
+            _ => {
+                format!("provider inventory endpoint returned an upstream failure (HTTP {status})")
+            }
+        };
+        return Err(match code {
+            "provider_rate_limited" => ApiError::too_many_requests_with_code(code, message),
+            "provider_protocol_mismatch" | "provider_authentication" | "provider_transport" => {
+                ApiError::bad_gateway_with_code(code, message)
+            }
+            _ => ApiError::bad_gateway(message),
+        });
     }
-    let body: serde_json::Value = response.json().await.map_err(|err| {
-        ApiError::bad_gateway(format!("provider model inventory JSON failed: {err}"))
-    })?;
-    let models = body
+    let body = read_inventory_json(response).await?;
+    let values = body
         .get(array_field)
         .and_then(|value| value.as_array())
-        .into_iter()
-        .flatten()
+        .ok_or_else(|| {
+            ApiError::bad_gateway_with_code(
+                "provider_protocol_mismatch",
+                "provider inventory response did not contain the expected model list",
+            )
+        })?;
+    let models: Vec<String> = values
+        .iter()
         .filter_map(|item| {
             item.get(id_field)
                 .and_then(|id| id.as_str())
+                .filter(|id| !id.trim().is_empty())
                 .map(str::to_string)
         })
         .collect();
+    if models.is_empty() {
+        return Err(ApiError::bad_gateway_with_code(
+            "provider_no_models",
+            "provider inventory returned no usable models",
+        ));
+    }
     Ok(ProviderInventory {
         key_present,
         models,
+    })
+}
+
+async fn read_inventory_json(response: reqwest::Response) -> Result<serde_json::Value, ApiError> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_PROVIDER_INVENTORY_RESPONSE_BYTES as u64)
+    {
+        return Err(ApiError::bad_gateway_with_code(
+            "provider_protocol_mismatch",
+            "provider inventory response exceeded the 1 MiB limit",
+        ));
+    }
+
+    let mut bytes = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(classify_inventory_transport_error)?;
+        if bytes.len().saturating_add(chunk.len()) > MAX_PROVIDER_INVENTORY_RESPONSE_BYTES {
+            return Err(ApiError::bad_gateway_with_code(
+                "provider_protocol_mismatch",
+                "provider inventory response exceeded the 1 MiB limit",
+            ));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    serde_json::from_slice(&bytes).map_err(|_| {
+        ApiError::bad_gateway_with_code(
+            "provider_protocol_mismatch",
+            "provider inventory response was not valid JSON",
+        )
     })
 }
 

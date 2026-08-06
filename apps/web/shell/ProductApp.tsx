@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Composer } from "../chat/Composer";
 import { Transcript } from "../chat/Transcript";
 import { RunInspector } from "../inspector/RunInspector";
+import { useSessionUsage } from "../state/use-session-usage";
 import { selectTranscriptTimeline } from "../lib/rove-state";
 import { SettingsShell } from "../settings/SettingsShell";
 import { matchKeyboardShortcut } from "../settings/keyboard-settings-model";
@@ -80,7 +81,6 @@ function ServerProductApp({ uiVersion }: { uiVersion: ProductUiVersion }) {
     activeSession,
     selection: server.selection,
     profiles: server.profiles,
-    useDefaultApproval: server.preferences?.provider_selection === undefined,
     markSession: server.markSession,
     refreshSessionStatuses: server.refreshSessionStatuses,
     updateSessionTitle: server.updateSessionTitle,
@@ -118,6 +118,7 @@ function ServerProductApp({ uiVersion }: { uiVersion: ProductUiVersion }) {
         ? "error"
         : "idle";
   const busy = continuity.runState.busy;
+  const sessionUsage = useSessionUsage(activeSession?.id ?? null, busy);
   const awaitingInitialRestore =
     routing.route.kind === "session" &&
     activeSession?.id === routing.route.sessionId &&
@@ -125,20 +126,38 @@ function ServerProductApp({ uiVersion }: { uiVersion: ProductUiVersion }) {
   const transcriptRestoreState = awaitingInitialRestore
     ? ({ status: "loading", sessionId: activeSession.id } as const)
     : continuity.restoreState;
-  const composerDisabled =
+  const composerPrerequisiteUnavailable =
     awaitingInitialRestore ||
     continuity.restoreState.status === "loading" ||
     continuity.restoreState.status === "error" ||
-    activeSession?.status === "running" ||
-    activeSession?.status === "needs_attention" ||
+    server.sessionModelConfigLoading ||
+    server.sessionModelConfig === null ||
     routing.routeError !== null;
+  const composerDisabled =
+    composerPrerequisiteUnavailable ||
+    busy ||
+    activeSession?.status === "running" ||
+    activeSession?.status === "needs_attention";
+  const controlAvailable =
+    !composerPrerequisiteUnavailable &&
+    activeSession !== undefined &&
+    activeSession !== null &&
+    (busy ||
+      activeSession.status === "running" ||
+      activeSession.status === "needs_attention");
+  const forkAvailable =
+    activeSession?.status === "idle" &&
+    Boolean(activeSession.activeRunId) &&
+    !server.catalogMutationBusy;
   const composerDisabledReason = awaitingInitialRestore
     ? "Restoring canonical history before a new turn."
     : continuity.restoreState.status === "loading"
       ? "Restoring canonical history before a new turn."
-      : continuity.restoreState.status === "error"
-        ? "Retry transcript restore before sending."
-        : activeSession?.status === "needs_attention"
+    : continuity.restoreState.status === "error"
+      ? "Retry transcript restore before sending."
+      : server.sessionModelConfigLoading || server.sessionModelConfig === null
+        ? "Loading session model settings."
+      : activeSession?.status === "needs_attention"
           ? "Resolve the canonical approval or input in the timeline."
           : activeSession?.status === "running"
             ? "A run is active. Send is available after it reaches a terminal state."
@@ -190,6 +209,24 @@ function ServerProductApp({ uiVersion }: { uiVersion: ProductUiVersion }) {
     ) {
       routing.navigateSession(workspaceId, session.id);
       setWorkspaceOpen(false);
+    }
+  }
+
+  async function handleForkSession() {
+    if (!activeWorkspace || !activeSession) {
+      return;
+    }
+    const activeBefore = { ...server.catalogRef.current.active };
+    const navigationIntent = routing.captureNavigationIntent();
+    const child = await server.forkSession(activeSession.id);
+    const activeNow = server.catalogRef.current.active;
+    if (
+      child &&
+      routing.isNavigationIntentCurrent(navigationIntent) &&
+      activeNow.workspaceId === activeBefore.workspaceId &&
+      activeNow.sessionId === activeBefore.sessionId
+    ) {
+      routing.navigateSession(activeWorkspace.id, child.id);
     }
   }
 
@@ -412,6 +449,19 @@ function ServerProductApp({ uiVersion }: { uiVersion: ProductUiVersion }) {
                     </p>
                   </div>
                   <button
+                    type="button"
+                    className="secondary"
+                    onClick={() => void handleForkSession()}
+                    disabled={!forkAvailable}
+                    title={
+                      forkAvailable
+                        ? "Create an independent branch from this completed turn"
+                        : "Fork is available after this session reaches a completed turn"
+                    }
+                  >
+                    Fork
+                  </button>
+                  <button
                     ref={inspectorButtonRef}
                     type="button"
                     className="secondary"
@@ -438,16 +488,33 @@ function ServerProductApp({ uiVersion }: { uiVersion: ProductUiVersion }) {
                 <Composer
                   disabled={composerDisabled}
                   busy={busy}
+                  controlAvailable={controlAvailable}
                   resumeLabel={resumeLabel}
                   disabledReason={composerDisabledReason}
                   error={continuity.runState.error}
                   profiles={server.profiles}
-                  selection={server.selection}
-                  selectionSaving={server.preferencesMutationBusy}
+                  modelConfig={server.sessionModelConfig}
+                  modelConfigSaving={server.sessionModelConfigMutationBusy}
                   textareaRef={composerRef}
                   onSend={continuity.send}
+                  onSteer={continuity.submitSteer}
+                  onFollowup={continuity.submitFollowup}
                   onCancel={() => void continuity.cancel()}
-                  onSelectionChange={server.changeSelection}
+                  onLoadProviderModels={server.productClient.listProviderModels}
+                  onModelConfigChange={server.changeSessionModelConfig}
+                  controls={continuity.controls}
+                  controlsLoading={continuity.controlsLoading}
+                  controlBusy={continuity.controlBusy}
+                  controlError={continuity.controlError}
+                  onRefreshControls={() => {
+                    if (activeSession) {
+                      void continuity.refreshControls(activeSession.id);
+                    }
+                  }}
+                  onRevokeControl={(controlId) => void continuity.revokeControl(controlId)}
+                  onConfirmFollowup={(controlId) =>
+                    void continuity.confirmFollowup(controlId)
+                  }
                 />
               </div>
             )}
@@ -459,6 +526,7 @@ function ServerProductApp({ uiVersion }: { uiVersion: ProductUiVersion }) {
           !routing.routePending ? (
             <RunInspector
               productSessionId={activeSession.id}
+              workspaceId={activeWorkspace.id}
               collapsed={inspectorCollapsed}
               onToggle={() => {
                 if (!inspectorCollapsed) {
@@ -469,6 +537,7 @@ function ServerProductApp({ uiVersion }: { uiVersion: ProductUiVersion }) {
               }}
               runState={continuity.runState}
               restoreState={transcriptRestoreState}
+              sessionUsage={sessionUsage}
               dialogOpen={mobileLayout && !inspectorCollapsed}
             />
           ) : (

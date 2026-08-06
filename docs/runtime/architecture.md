@@ -43,8 +43,9 @@ StateStore
 
 API product control plane
     -> <api state_dir>/product.sqlite
-    -> product workspace/session/profile/preferences catalog
+    -> product workspace/session/profile/preferences/control catalog
     -> exact product-session -> runtime session/job/run bindings
+    -> bounded live steer delivery + durable follow-up drain
     -> transcript read projection over per-workspace StateStore events
 ```
 
@@ -76,7 +77,9 @@ cannot supply trustworthy interaction events fail closed.
 3. The interface builds a `ModelClient`, `ToolRegistry`, `ContextManager`, and `StateStore`.
 4. `StateStore::start_run` creates a run directory and indexes session/job/run identity in SQLite.
 5. `Engine::run` emits `StreamEvent` values while model events, tool calls,
-   approvals, inputs, planner state, and cancellation are processed. Planned
+   approvals, inputs, planner state, cancellation, and bounded in-flight steer
+   delivery are processed. A steer crosses only a loop safe point before the
+   next model turn; it never lands inside a tool side effect. Planned
    attempts carry stable plan/revision/attempt identity and end with canonical
    `step_result` and `plan_decision` events. Replacement work emits a linked
    `plan_revised` event rather than another initial-plan event. Compatibility
@@ -88,9 +91,22 @@ cannot supply trustworthy interaction events fail closed.
 7. The API adds a live job registry for active handles and reads SQLite for persisted job state and SSE replay after restart.
 8. The API also opens one application-global ProductStore at
    `<configured state_dir>/product.sqlite`. Product routes own catalog,
-   preferences, migration receipts, active-turn claims, and exact runtime
-   bindings there; canonical events and run artifacts remain in each selected
-   execution workspace.
+   preferences, migration receipts, active-turn claims, exact runtime
+   bindings, and idempotent product-session controls there. Live steers are
+   persisted before their bounded runtime delivery. Follow-ups are durable
+   queue records: an atomic terminal-turn transition claims the oldest pending
+   follow-up and starts its successor through the API supervisor. Canonical
+   events and run artifacts remain in each selected execution workspace.
+
+CDH G2 extends that catalog with immutable fork provenance. A fork is accepted
+only after the API verifies the selected parent run's durable terminal boundary;
+the child records the parent product session and exact source runtime
+session/job/run plus terminal sequence. Its inherited prefix is a read-only
+projection of source canonical events, never a copied child event ledger. The
+first child turn seeds its prompt/history from the verified source TaskState but
+starts with fresh runtime identities and no parent `resumed_from_run_id` lineage.
+Fork retries are idempotent, and the provenance/replay record survives parent
+product-session deletion.
 
 For a C0 product turn, `POST /jobs.product_session_id` resolves the server-owned
 workspace and exact prior runtime identity, claims one active turn, and launches
@@ -143,9 +159,10 @@ are committed.
   persisted or exposed by apps.
 - Files remain the readable source artifacts; SQLite is the query/replay index.
 - ProductStore is API-global product-control state, not another event store. It
-  may retain product IDs, safe settings, mappings, claims, migration
+  may retain product IDs, safe settings, mappings, claims, controls, migration
   preparations, and receipts, but it does not copy canonical trace/task/report
-  truth.
+  truth. API-originated control lifecycle facts are appended through the same
+  canonical stream contract rather than a product-private event lifecycle.
 - Verified migration bindings use canonical workspace-contained runtime
   database/artifact paths when external paths are disabled. SQLite guards use
   no-follow opens and reject symlinked parent paths before read or reservation.
@@ -191,3 +208,11 @@ record advances the materialized plan without replaying that step. Resume does
 not yet reconcile trace events written after the latest task-state snapshot.
 Legacy snapshots with a mutable plan but no lifecycle chain are wrapped once as
 an immutable revision-zero plan before new transitions are evaluated.
+
+Product controls have separate conservative recovery rules. On ProductStore
+open, a stale follow-up claim without a reserved runtime run is returned to the
+durable pending queue; an already reserved run is not replayed and is surfaced
+as `needs_attention`. Once the API is ready, only idle product sessions with a
+pending follow-up are scheduled for drain. Pending or safe-point-accepted
+steers are classified as dropped at a terminal boundary when no next model turn
+can apply them.

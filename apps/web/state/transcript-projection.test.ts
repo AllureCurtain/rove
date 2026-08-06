@@ -69,6 +69,42 @@ describe("product transcript projection", () => {
     ).toHaveLength(2);
   });
 
+  it("marks a fork prefix as read-only inherited history", () => {
+    const inherited = completedSegment(
+      1,
+      "parent-job",
+      "parent-run",
+      "Parent question",
+      "Parent answer",
+    );
+    inherited.inherited = true;
+    inherited.source_product_session_id = "parent-product-session";
+    const local = completedSegment(
+      2,
+      "child-job",
+      "child-run",
+      "Child question",
+      "Child answer",
+    );
+
+    const timeline = selectTranscriptTimeline(
+      projectProductTranscript({
+        product_session_id: "child-product-session",
+        workspace_id: "workspace",
+        status: "complete",
+        partial_reasons: [],
+        segments: [inherited, local],
+      }),
+    );
+
+    expect(
+      timeline.map((group) => [group.runId, group.inherited, group.sourceSessionId]),
+    ).toEqual([
+      ["parent-run", true, "parent-product-session"],
+      ["child-run", false, null],
+    ]);
+  });
+
   it("retains terminal tool cards from earlier run ordinals", () => {
     const state = projectProductTranscript({
       product_session_id: "product-session",
@@ -141,6 +177,7 @@ describe("product transcript projection", () => {
     };
     const segment: ProductTranscriptRunSegment = {
       binding: binding(1, "job-evidence", "run-evidence"),
+      inherited: false,
       run_status: "done",
       observed_through_seq: 7,
       last_event_seq: 7,
@@ -407,6 +444,7 @@ describe("product transcript projection", () => {
       segments: [
         {
           binding: binding(1, "job-1", "run-1"),
+          inherited: false,
           run_status: "done",
           observed_through_seq: 0,
           last_event_seq: 0,
@@ -493,6 +531,7 @@ function completedSegment(
 ): ProductTranscriptRunSegment {
   return {
     binding: binding(ordinal, jobId, runId, resumedFromRunId),
+    inherited: false,
     run_status: "done",
     observed_through_seq: 4,
     last_event_seq: 4,
@@ -533,6 +572,7 @@ function completedToolSegment(
 ): ProductTranscriptRunSegment {
   return {
     binding: binding(ordinal, jobId, runId, resumedFromRunId),
+    inherited: false,
     run_status: "done",
     observed_through_seq: 6,
     last_event_seq: 6,

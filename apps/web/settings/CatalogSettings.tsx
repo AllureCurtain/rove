@@ -16,10 +16,10 @@ import {
   useState,
 } from "react";
 
+import { createProductApiClient } from "../product/product-client";
+import { downloadEvidenceFile } from "../product/evidence-export";
 import type { SessionRecord, WorkspaceRecord } from "../state/product-types";
 import {
-  createSessionExportDownload,
-  downloadSessionExport,
   groupCatalogSessions,
   resolveSessionSelection,
   sortCatalogWorkspaces,
@@ -277,7 +277,6 @@ export function WorkspaceSettings({
 
 function SessionRow({
   session,
-  workspace,
   active,
   canSelect,
   onSelectSession,
@@ -285,7 +284,6 @@ function SessionRow({
   onDeleteSession,
 }: {
   session: SessionRecord;
-  workspace: WorkspaceRecord | null;
   active: boolean;
   canSelect: boolean;
   onSelectSession: SessionsSettingsProps["onSelectSession"];
@@ -298,6 +296,7 @@ function SessionRow({
   const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState(session.title);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const client = useMemo(() => createProductApiClient(), []);
 
   async function handleRename(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
@@ -322,13 +321,11 @@ function SessionRow({
     }
   }
 
-  function handleExport(): void {
-    actions.clearError(session.id);
-    try {
-      downloadSessionExport(createSessionExportDownload(session, workspace));
-    } catch (exportError) {
-      void actions.run(session.id, () => Promise.reject(exportError));
-    }
+  async function handleExport(): Promise<void> {
+    await actions.run(session.id, async () => {
+      const download = await client.exportSessionEvidence(session.id, "json");
+      downloadEvidenceFile(download);
+    });
   }
 
   return (
@@ -437,9 +434,9 @@ function SessionRow({
           type="button"
           className="secondary"
           disabled={busy}
-          onClick={handleExport}
+          onClick={() => void handleExport()}
         >
-          <DownloadIcon /> Catalog metadata export
+          <DownloadIcon /> Evidence export
         </button>
         <button
           type="button"
@@ -474,7 +471,7 @@ export function SessionsSettings({
     <div className="settings-panel">
       <h1>Sessions</h1>
       <p className="lede">
-        Rename, open, export catalog metadata, or remove durable conversation entries grouped by workspace.
+        Rename, open, export redacted session evidence, or remove durable conversation entries grouped by workspace.
       </p>
       {groups.length === 0 ? (
         <div className="settings-card">
@@ -504,7 +501,6 @@ export function SessionsSettings({
                     <SessionRow
                       key={session.id}
                       session={session}
-                      workspace={group.workspace}
                       active={session.id === activeSessionId}
                       canSelect={selection !== null}
                       onSelectSession={onSelectSession}

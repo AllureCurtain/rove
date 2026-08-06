@@ -409,7 +409,10 @@ fn validate_api_key_env(value: Option<&str>) -> Result<Option<String>, ProductSt
     Ok(Some(value.to_string()))
 }
 
-fn validate_required_text(field: &'static str, value: &str) -> Result<String, ProductStoreError> {
+pub(super) fn validate_required_text(
+    field: &'static str,
+    value: &str,
+) -> Result<String, ProductStoreError> {
     let value = value.trim();
     if value.is_empty()
         || value.len() > MAX_PRODUCT_TEXT_BYTES

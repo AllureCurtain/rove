@@ -85,6 +85,7 @@ Web/API request
 | History consistency | After all scenarios | `/runs`, `/runs/{run_id}/report`, product transcript bindings, and Web assertions agree on exact run ids, statuses, and important tool/input/approval records. |
 | Product migration | Seed safe M1 browser state, then open a legacy deep route | Migration completes before product catalog reads, imports no raw key, remaps the route, and does not replay after refresh. |
 | Exact product continuity | Interleave turns in product sessions A and B, refresh A, then continue A | A resumes its own exact prior run rather than B's workspace-global latest; transcript, approval, input, cancellation, Settings, and deep routes remain usable. |
+| Product Fork | Complete a parent ProductSession turn, click Fork in the live shell, continue the child, refresh, then switch back to the parent | API returns one idempotent child with fresh runtime identities; child transcript has an inherited read-only parent segment followed by its local segment; branch tree and parent/child isolation survive refresh. |
 
 ## Manual API Smoke Commands
 
@@ -445,6 +446,39 @@ The official filesystem MCP smoke remains opt-in:
 $env:ROVE_MCP_FILESYSTEM_SMOKE = "1"
 cargo test --test mcp mcp_official_filesystem_server_smoke_when_enabled -- --exact --nocapture
 ```
+
+## Product Acceptance Runner
+
+`scripts/product-acceptance.ps1` and `scripts/product-acceptance.sh` are two
+entries over one shared check table. Both execute every gate and write
+`PRODUCT_ACCEPTANCE_REPORT.json`:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/product-acceptance.ps1
+```
+
+```bash
+bash scripts/product-acceptance.sh
+```
+
+Flags: `-SkipWeb` / `--skip-web`, `-SkipBrowser` / `--skip-browser`, and
+`-IncludeGated` / `--include-gated` for env-gated checks.
+
+Report contract:
+
+- Every status is derived from a real process exit code. There is no default or
+  inferred `pass`.
+- A check that does not execute is `not_run` and must carry a `reason`.
+- The verdict is `PASS` only when there are zero `fail` results and zero required
+  `not_run` results. Gated checks may be `not_run` without blocking, but they
+  still appear in the report.
+- The runner exits non-zero on any verdict other than `PASS`, so it is usable as
+  a CI gate.
+- Provenance records branch, commit, dirty flag, dirty file count, OS, and
+  toolchain versions, plus each check's command, working directory, exit code,
+  duration, and output tail. A report produced from a dirty tree says so.
+
+Per-check logs are written to `.rove/acceptance-logs/`.
 
 ## Pass Criteria
 

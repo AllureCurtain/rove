@@ -58,12 +58,32 @@ export function projectProductTranscript(
       });
     }
     state = settleRestoredSegment(state, segment);
+    state = applySegmentLineage(state, segment);
   }
 
   return {
     ...state,
     error: null,
     lastSignal: transcript.segments.length > 0 ? "Transcript restored" : "Idle",
+  };
+}
+
+function applySegmentLineage(
+  state: WorkbenchState,
+  segment: ProductTranscriptRunSegment,
+): WorkbenchState {
+  if (!segment.inherited) {
+    return state;
+  }
+  const sourceSessionId =
+    segment.source_product_session_id ?? segment.binding.product_session_id;
+  return {
+    ...state,
+    timeline: state.timeline.map((entry) =>
+      entry.runId === segment.binding.runtime_run_id
+        ? { ...entry, inherited: true, sourceSessionId }
+        : entry,
+    ),
   };
 }
 

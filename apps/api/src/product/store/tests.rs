@@ -6,14 +6,16 @@ use rusqlite::{Connection, params};
 use tempfile::TempDir;
 
 use crate::product::{
-    CommitProductRunBinding, CreateProductProviderProfileRequest, CreateProductSessionRequest,
+    CommitProductRunBinding, CreateProductControlRequest, CreateProductForkRequest,
+    CreateProductProviderProfileRequest, CreateProductSessionRequest,
     CreateProductWorkspaceRequest, M1BrowserMigrationPreflight, M1BrowserMigrationRequest,
     M1BrowserMigrationSource, M1MigrationDisposition, M1MigrationIssueCode, M1PreferencesBaseline,
     M1ProviderProfileImport, M1ProviderSelectionImport, M1SafePreferencesImport, M1SessionImport,
-    M1WorkspaceImport, PreparedM1BrowserMigration, ProductApprovalPreference, ProductErrorCode,
-    ProductProviderSelection, ProductProviderType, ProductSessionStatus, ProductStore,
-    ProductThemePreference, ProductWorkspaceKind, UpdateProductPreferencesRequest,
-    VerifiedM1SessionRunBinding,
+    M1WorkspaceImport, PreparedM1BrowserMigration, ProductApprovalPreference, ProductControlKind,
+    ProductControlStatus, ProductErrorCode, ProductProviderSelection, ProductProviderType,
+    ProductReasoningPreference, ProductSessionStatus, ProductStore, ProductThemePreference,
+    ProductWorkspaceKind, UpdateProductPreferencesRequest, UpdateProductSessionModelConfigRequest,
+    VerifiedM1SessionRunBinding, VerifiedProductForkBoundary,
 };
 
 use super::SqliteProductStore;
@@ -139,6 +141,229 @@ async fn create_workspace_and_session(
     (workspace, session)
 }
 
+async fn create_forkable_parent(
+    store: &SqliteProductStore,
+    temp: &TempDir,
+) -> (
+    crate::product::ProductWorkspace,
+    crate::product::ProductSession,
+    VerifiedProductForkBoundary,
+) {
+    let (workspace, parent) = create_workspace_and_session(store, temp).await;
+    let claim = store.claim_session_turn(&parent.id).await.unwrap();
+    let source_runtime_session_id = SessionId::new();
+    let source_runtime_job_id = JobId::new();
+    let source_runtime_run_id = RunId::new();
+    store
+        .commit_run_binding(CommitProductRunBinding {
+            claim_id: claim.claim_id.clone(),
+            product_session_id: parent.id.clone(),
+            runtime_session_id: source_runtime_session_id,
+            runtime_job_id: source_runtime_job_id,
+            runtime_run_id: source_runtime_run_id,
+            resumed_from_run_id: None,
+            followup_control_id: None,
+            model_config: claim.model_config.clone(),
+        })
+        .await
+        .unwrap();
+    store
+        .finish_session_turn(&claim.claim_id, ProductSessionStatus::Idle)
+        .await
+        .unwrap();
+    let boundary = VerifiedProductForkBoundary {
+        parent_product_session_id: parent.id.clone(),
+        parent_workspace_id: workspace.id.clone(),
+        parent_title: parent.title.clone(),
+        source_runtime_session_id,
+        source_runtime_job_id,
+        source_runtime_run_id,
+        fork_at_event_seq: 4,
+    };
+    (workspace, parent, boundary)
+}
+
+#[tokio::test]
+async fn session_model_config_is_seeded_cas_safe_and_forked_with_a_new_revision() {
+    let temp = TempDir::new().unwrap();
+    let store = open_store(&temp);
+    let (_, session) = create_workspace_and_session(&store, &temp).await;
+
+    let initial = store.get_session_model_config(&session.id).await.unwrap();
+    assert_eq!(initial.model, "fake");
+    assert_eq!(initial.max_steps, 8);
+    assert_eq!(initial.reasoning, ProductReasoningPreference::Default);
+    assert_eq!(initial.revision, 1);
+
+    let updated = store
+        .update_session_model_config(
+            &session.id,
+            UpdateProductSessionModelConfigRequest {
+                profile_id: None,
+                model: "fake-raw".to_string(),
+                reasoning: ProductReasoningPreference::Default,
+                max_steps: 16,
+                expected_revision: Some(initial.revision),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(updated.model, "fake-raw");
+    assert_eq!(updated.max_steps, 16);
+    assert_eq!(updated.revision, 2);
+
+    let stale = store
+        .update_session_model_config(
+            &session.id,
+            UpdateProductSessionModelConfigRequest {
+                profile_id: None,
+                model: "fake".to_string(),
+                reasoning: ProductReasoningPreference::Default,
+                max_steps: 8,
+                expected_revision: Some(initial.revision),
+            },
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(
+        stale.code,
+        ProductErrorCode::ProductSessionModelConfigConflict
+    );
+
+    let (_, parent, boundary) = create_forkable_parent(&store, &temp).await;
+    let parent_config = store.get_session_model_config(&parent.id).await.unwrap();
+    let parent_config = store
+        .update_session_model_config(
+            &parent.id,
+            UpdateProductSessionModelConfigRequest {
+                profile_id: None,
+                model: "fake-raw".to_string(),
+                reasoning: ProductReasoningPreference::Default,
+                max_steps: 16,
+                expected_revision: Some(parent_config.revision),
+            },
+        )
+        .await
+        .unwrap();
+    let (child, _, _) = store
+        .create_fork(
+            CreateProductForkRequest {
+                fork_at_run_id: boundary.source_runtime_run_id,
+                title: None,
+                idempotency_key: "model-config-fork".to_string(),
+            },
+            boundary,
+        )
+        .await
+        .unwrap();
+    let child_config = store.get_session_model_config(&child.id).await.unwrap();
+    assert_eq!(child_config.model, parent_config.model);
+    assert_eq!(child_config.max_steps, parent_config.max_steps);
+    assert_eq!(child_config.reasoning, parent_config.reasoning);
+    assert_eq!(child_config.revision, 1);
+}
+
+#[tokio::test]
+async fn run_model_snapshot_is_captured_at_claim_time() {
+    let temp = TempDir::new().unwrap();
+    let store = open_store(&temp);
+    let (_, session) = create_workspace_and_session(&store, &temp).await;
+    let initial = store.get_session_model_config(&session.id).await.unwrap();
+    let configured = store
+        .update_session_model_config(
+            &session.id,
+            UpdateProductSessionModelConfigRequest {
+                profile_id: None,
+                model: "fake-raw".to_string(),
+                reasoning: ProductReasoningPreference::Default,
+                max_steps: 20,
+                expected_revision: Some(initial.revision),
+            },
+        )
+        .await
+        .unwrap();
+    let claim = store.claim_session_turn(&session.id).await.unwrap();
+    assert_eq!(claim.model_config.revision, configured.revision);
+
+    store
+        .commit_run_binding(CommitProductRunBinding {
+            claim_id: claim.claim_id.clone(),
+            product_session_id: session.id.clone(),
+            runtime_session_id: SessionId::new(),
+            runtime_job_id: JobId::new(),
+            runtime_run_id: RunId::new(),
+            resumed_from_run_id: None,
+            followup_control_id: None,
+            model_config: claim.model_config.clone(),
+        })
+        .await
+        .unwrap();
+    let snapshots = store.list_session_run_models(&session.id).await.unwrap();
+    assert_eq!(snapshots.len(), 1);
+    assert_eq!(snapshots[0].model, "fake-raw");
+    assert_eq!(snapshots[0].max_steps, 20);
+}
+
+#[tokio::test]
+async fn deleting_a_provider_profile_unbinds_session_model_configs() {
+    let temp = TempDir::new().unwrap();
+    let store = open_store(&temp);
+    let (_, session) = create_workspace_and_session(&store, &temp).await;
+    let profile = store
+        .create_provider_profile(CreateProductProviderProfileRequest {
+            label: "Fake profile".to_string(),
+            provider_type: ProductProviderType::Fake,
+            api_base: String::new(),
+            api_key_env: None,
+            default_model: Some("fake".to_string()),
+        })
+        .await
+        .unwrap();
+    let initial = store.get_session_model_config(&session.id).await.unwrap();
+    let configured = store
+        .update_session_model_config(
+            &session.id,
+            UpdateProductSessionModelConfigRequest {
+                profile_id: Some(profile.id.clone()),
+                model: "fake".to_string(),
+                reasoning: ProductReasoningPreference::Default,
+                max_steps: 8,
+                expected_revision: Some(initial.revision),
+            },
+        )
+        .await
+        .unwrap();
+
+    let claim = store.claim_session_turn(&session.id).await.unwrap();
+    store
+        .commit_run_binding(CommitProductRunBinding {
+            claim_id: claim.claim_id.clone(),
+            product_session_id: session.id.clone(),
+            runtime_session_id: SessionId::new(),
+            runtime_job_id: JobId::new(),
+            runtime_run_id: RunId::new(),
+            resumed_from_run_id: None,
+            followup_control_id: None,
+            model_config: claim.model_config.clone(),
+        })
+        .await
+        .unwrap();
+    store
+        .finish_session_turn(&claim.claim_id, ProductSessionStatus::Idle)
+        .await
+        .unwrap();
+
+    store.delete_provider_profile(&profile.id).await.unwrap();
+    let after = store.get_session_model_config(&session.id).await.unwrap();
+    assert_eq!(after.profile_id, None);
+    assert_eq!(after.model, configured.model);
+    assert_eq!(after.revision, configured.revision + 1);
+    let snapshots = store.list_session_run_models(&session.id).await.unwrap();
+    assert_eq!(snapshots.len(), 1);
+    assert_eq!(snapshots[0].profile_id, None);
+    assert_eq!(snapshots[0].model, "fake");
+}
+
 #[tokio::test]
 async fn claims_are_exclusive_and_bindings_are_contiguous() {
     let temp = TempDir::new().unwrap();
@@ -160,6 +385,8 @@ async fn claims_are_exclusive_and_bindings_are_contiguous() {
             runtime_job_id,
             runtime_run_id: first_run_id,
             resumed_from_run_id: None,
+            followup_control_id: None,
+            model_config: first_claim.model_config.clone(),
         })
         .await
         .unwrap();
@@ -181,6 +408,8 @@ async fn claims_are_exclusive_and_bindings_are_contiguous() {
             runtime_job_id,
             runtime_run_id: RunId::new(),
             resumed_from_run_id: Some(first_run_id),
+            followup_control_id: None,
+            model_config: second_claim.model_config.clone(),
         })
         .await
         .unwrap();
@@ -479,6 +708,8 @@ async fn migration_rejects_an_active_source_mapped_session_then_retries_after_tu
             runtime_job_id: JobId::new(),
             runtime_run_id: RunId::new(),
             resumed_from_run_id: None,
+            followup_control_id: None,
+            model_config: claim.model_config.clone(),
         })
         .await
         .unwrap();
@@ -1267,4 +1498,898 @@ async fn migration_rechecks_verified_workspace_seal_before_apply() {
 
     assert_eq!(error.code, ProductErrorCode::ProductBindingCorrupt);
     assert!(store.list_workspaces().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn controls_create_list_and_transition() {
+    let temp = TempDir::new().unwrap();
+    let store = open_store(&temp);
+    let workspace_root = temp.path().join("ws");
+    fs::create_dir_all(&workspace_root).unwrap();
+    let ws = store
+        .create_workspace(CreateProductWorkspaceRequest {
+            root: fs::canonicalize(&workspace_root).unwrap(),
+            kind: ProductWorkspaceKind::Folder,
+            display_name: None,
+            pinned: false,
+        })
+        .await
+        .unwrap();
+    let session = store
+        .create_session(CreateProductSessionRequest {
+            workspace_id: ws.id.clone(),
+            title: Some("s1".to_string()),
+        })
+        .await
+        .unwrap();
+
+    let (ctrl, existed) = store
+        .create_control(
+            &session.id,
+            ProductControlKind::Steer,
+            CreateProductControlRequest {
+                content: " steer-1 ".to_string(),
+                idempotency_key: Some("key1".to_string()),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(!existed);
+    assert_eq!(ctrl.status, ProductControlStatus::Pending);
+    assert_eq!(ctrl.content, "steer-1");
+    assert_eq!(ctrl.seq, 1);
+
+    let (ctrl2, existed2) = store
+        .create_control(
+            &session.id,
+            ProductControlKind::Steer,
+            CreateProductControlRequest {
+                content: " steer-1 ".to_string(),
+                idempotency_key: Some("key1".to_string()),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(existed2);
+    assert_eq!(ctrl.id, ctrl2.id);
+
+    let err = store
+        .create_control(
+            &session.id,
+            ProductControlKind::Steer,
+            CreateProductControlRequest {
+                content: "different".to_string(),
+                idempotency_key: Some("key1".to_string()),
+            },
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, ProductErrorCode::ProductControlConflict);
+
+    let all = store.list_controls(&session.id, None).await.unwrap();
+    assert_eq!(all.len(), 1);
+
+    let run_id = RunId::new();
+    let updated = store
+        .transition_control(
+            &session.id,
+            &ctrl.id,
+            ProductControlStatus::Pending,
+            ProductControlStatus::Accepted,
+            Some(&run_id),
+        )
+        .await
+        .unwrap();
+    assert_eq!(updated.status, ProductControlStatus::Accepted);
+    assert!(updated.applied_at.is_none());
+    assert!(updated.run_id.is_some());
+
+    let applied = store
+        .transition_control(
+            &session.id,
+            &ctrl.id,
+            ProductControlStatus::Accepted,
+            ProductControlStatus::Applied,
+            Some(&run_id),
+        )
+        .await
+        .unwrap();
+    assert_eq!(applied.status, ProductControlStatus::Applied);
+    assert!(applied.applied_at.is_some());
+
+    let err = store
+        .transition_control(
+            &session.id,
+            &ctrl.id,
+            ProductControlStatus::Accepted,
+            ProductControlStatus::Accepted,
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, ProductErrorCode::ProductControlRejected);
+
+    let (fu, _) = store
+        .create_control(
+            &session.id,
+            ProductControlKind::Followup,
+            CreateProductControlRequest {
+                content: "fu-1".to_string(),
+                idempotency_key: None,
+            },
+        )
+        .await
+        .unwrap();
+    let n = store
+        .abandon_pending_controls(&session.id, "cancelled")
+        .await
+        .unwrap();
+    assert_eq!(n, 1);
+    let fu2 = store.get_control(&session.id, &fu.id).await.unwrap();
+    assert_eq!(fu2.status, ProductControlStatus::Abandoned);
+}
+
+#[tokio::test]
+async fn empty_control_rejected() {
+    let temp = TempDir::new().unwrap();
+    let store = open_store(&temp);
+    let workspace_root = temp.path().join("ws");
+    fs::create_dir_all(&workspace_root).unwrap();
+    let ws = store
+        .create_workspace(CreateProductWorkspaceRequest {
+            root: fs::canonicalize(&workspace_root).unwrap(),
+            kind: ProductWorkspaceKind::Folder,
+            display_name: None,
+            pinned: false,
+        })
+        .await
+        .unwrap();
+    let session = store
+        .create_session(CreateProductSessionRequest {
+            workspace_id: ws.id.clone(),
+            title: Some("s".to_string()),
+        })
+        .await
+        .unwrap();
+    let err = store
+        .create_control(
+            &session.id,
+            ProductControlKind::Steer,
+            CreateProductControlRequest {
+                content: "   ".to_string(),
+                idempotency_key: None,
+            },
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, ProductErrorCode::ProductInvalidInput);
+}
+
+#[tokio::test]
+async fn claim_next_pending_followup_is_atomic() {
+    let temp = TempDir::new().unwrap();
+    let store = open_store(&temp);
+    let workspace_root = temp.path().join("ws");
+    fs::create_dir_all(&workspace_root).unwrap();
+    let ws = store
+        .create_workspace(CreateProductWorkspaceRequest {
+            root: fs::canonicalize(&workspace_root).unwrap(),
+            kind: ProductWorkspaceKind::Folder,
+            display_name: None,
+            pinned: false,
+        })
+        .await
+        .unwrap();
+    let session = store
+        .create_session(CreateProductSessionRequest {
+            workspace_id: ws.id.clone(),
+            title: Some("s".to_string()),
+        })
+        .await
+        .unwrap();
+
+    let (first, _) = store
+        .create_control(
+            &session.id,
+            ProductControlKind::Followup,
+            CreateProductControlRequest {
+                content: "first".to_string(),
+                idempotency_key: Some("fu-a".to_string()),
+            },
+        )
+        .await
+        .unwrap();
+    let (second, _) = store
+        .create_control(
+            &session.id,
+            ProductControlKind::Followup,
+            CreateProductControlRequest {
+                content: "second".to_string(),
+                idempotency_key: Some("fu-b".to_string()),
+            },
+        )
+        .await
+        .unwrap();
+
+    let claimed = store
+        .claim_next_pending_followup(&session.id)
+        .await
+        .unwrap()
+        .expect("first follow-up");
+    assert_eq!(claimed.id, first.id);
+    assert_eq!(claimed.status, ProductControlStatus::Accepted);
+
+    let pending = store.list_pending_followups(&session.id).await.unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].id, second.id);
+
+    let claimed2 = store
+        .claim_next_pending_followup(&session.id)
+        .await
+        .unwrap()
+        .expect("second follow-up");
+    assert_eq!(claimed2.id, second.id);
+
+    assert!(
+        store
+            .claim_next_pending_followup(&session.id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn final_turn_claims_oldest_followup_without_an_idle_gap() {
+    let temp = TempDir::new().unwrap();
+    let store = open_store(&temp);
+    let (_, session) = create_workspace_and_session(&store, &temp).await;
+    let claim = store.claim_session_turn(&session.id).await.unwrap();
+
+    let (first, _) = store
+        .create_control(
+            &session.id,
+            ProductControlKind::Followup,
+            CreateProductControlRequest {
+                content: "first queued instruction".to_string(),
+                idempotency_key: Some("first-final".to_string()),
+            },
+        )
+        .await
+        .unwrap();
+    let (second, _) = store
+        .create_control(
+            &session.id,
+            ProductControlKind::Followup,
+            CreateProductControlRequest {
+                content: "second queued instruction".to_string(),
+                idempotency_key: Some("second-final".to_string()),
+            },
+        )
+        .await
+        .unwrap();
+
+    let next = store
+        .finish_session_turn_and_claim_followup(&claim.claim_id)
+        .await
+        .unwrap()
+        .expect("the oldest follow-up is claimed");
+    assert_eq!(next.control.id, first.id);
+    assert_eq!(next.control.status, ProductControlStatus::Accepted);
+    assert_eq!(
+        store
+            .get_session_context(&session.id)
+            .await
+            .unwrap()
+            .session
+            .status,
+        ProductSessionStatus::Running
+    );
+    assert_eq!(
+        store
+            .get_control(&session.id, &second.id)
+            .await
+            .unwrap()
+            .status,
+        ProductControlStatus::Pending
+    );
+    assert!(
+        store
+            .claim_next_followup_turn(&session.id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn final_turn_drops_unapplied_steers_before_claiming_followup() {
+    let temp = TempDir::new().unwrap();
+    let store = open_store(&temp);
+    let (_, session) = create_workspace_and_session(&store, &temp).await;
+    let claim = store.claim_session_turn(&session.id).await.unwrap();
+    let (pending, _) = store
+        .create_control(
+            &session.id,
+            ProductControlKind::Steer,
+            CreateProductControlRequest {
+                content: "pending steer".to_string(),
+                idempotency_key: Some("final-pending-steer".to_string()),
+            },
+        )
+        .await
+        .unwrap();
+    let (accepted, _) = store
+        .create_control(
+            &session.id,
+            ProductControlKind::Steer,
+            CreateProductControlRequest {
+                content: "accepted steer".to_string(),
+                idempotency_key: Some("final-accepted-steer".to_string()),
+            },
+        )
+        .await
+        .unwrap();
+    store
+        .transition_control(
+            &session.id,
+            &accepted.id,
+            ProductControlStatus::Pending,
+            ProductControlStatus::Accepted,
+            Some(&RunId::new()),
+        )
+        .await
+        .unwrap();
+    let (applied, _) = store
+        .create_control(
+            &session.id,
+            ProductControlKind::Steer,
+            CreateProductControlRequest {
+                content: "applied steer".to_string(),
+                idempotency_key: Some("final-applied-steer".to_string()),
+            },
+        )
+        .await
+        .unwrap();
+    let applied_run = RunId::new();
+    store
+        .transition_control(
+            &session.id,
+            &applied.id,
+            ProductControlStatus::Pending,
+            ProductControlStatus::Accepted,
+            Some(&applied_run),
+        )
+        .await
+        .unwrap();
+    store
+        .transition_control(
+            &session.id,
+            &applied.id,
+            ProductControlStatus::Accepted,
+            ProductControlStatus::Applied,
+            Some(&applied_run),
+        )
+        .await
+        .unwrap();
+    let (followup, _) = store
+        .create_control(
+            &session.id,
+            ProductControlKind::Followup,
+            CreateProductControlRequest {
+                content: "successor turn".to_string(),
+                idempotency_key: Some("final-followup".to_string()),
+            },
+        )
+        .await
+        .unwrap();
+
+    let dropped = store
+        .drop_unapplied_steers_for_turn(
+            &claim.claim_id,
+            RunId::new(),
+            "finalized before model turn",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        dropped
+            .iter()
+            .map(|control| control.id.clone())
+            .collect::<Vec<_>>(),
+        vec![pending.id.clone(), accepted.id.clone()]
+    );
+    assert_eq!(
+        store
+            .get_control(&session.id, &pending.id)
+            .await
+            .unwrap()
+            .status,
+        ProductControlStatus::Dropped
+    );
+    assert_eq!(
+        store
+            .get_control(&session.id, &accepted.id)
+            .await
+            .unwrap()
+            .status,
+        ProductControlStatus::Dropped
+    );
+    let preserved = store.get_control(&session.id, &applied.id).await.unwrap();
+    assert_eq!(preserved.status, ProductControlStatus::Applied);
+    assert_eq!(preserved.run_id, Some(applied_run));
+
+    let successor = store
+        .finish_session_turn_and_claim_followup(&claim.claim_id)
+        .await
+        .unwrap()
+        .expect("queued follow-up starts after old steers are closed");
+    assert_eq!(successor.control.id, followup.id);
+    assert_eq!(successor.control.status, ProductControlStatus::Accepted);
+}
+
+#[tokio::test]
+async fn nonfinal_turn_drops_steers_and_abandons_followups_atomically() {
+    let temp = TempDir::new().unwrap();
+    let store = open_store(&temp);
+    let (_, session) = create_workspace_and_session(&store, &temp).await;
+    let claim = store.claim_session_turn(&session.id).await.unwrap();
+    let (steer, _) = store
+        .create_control(
+            &session.id,
+            ProductControlKind::Steer,
+            CreateProductControlRequest {
+                content: "change direction".to_string(),
+                idempotency_key: Some("nonfinal-steer".to_string()),
+            },
+        )
+        .await
+        .unwrap();
+    let (followup, _) = store
+        .create_control(
+            &session.id,
+            ProductControlKind::Followup,
+            CreateProductControlRequest {
+                content: "continue later".to_string(),
+                idempotency_key: Some("nonfinal-followup".to_string()),
+            },
+        )
+        .await
+        .unwrap();
+    let (accepted_steer, _) = store
+        .create_control(
+            &session.id,
+            ProductControlKind::Steer,
+            CreateProductControlRequest {
+                content: "safe-point steer".to_string(),
+                idempotency_key: Some("nonfinal-accepted-steer".to_string()),
+            },
+        )
+        .await
+        .unwrap();
+    store
+        .transition_control(
+            &session.id,
+            &accepted_steer.id,
+            ProductControlStatus::Pending,
+            ProductControlStatus::Accepted,
+            Some(&RunId::new()),
+        )
+        .await
+        .unwrap();
+
+    let finished = store
+        .finish_session_turn_and_abandon_pending_controls(
+            &claim.claim_id,
+            Some(RunId::new()),
+            ProductSessionStatus::NeedsAttention,
+            "run cancelled",
+        )
+        .await
+        .unwrap();
+    assert_eq!(finished.dropped_steers.len(), 2);
+    assert_eq!(finished.dropped_steers[0].id, steer.id);
+    assert_eq!(finished.dropped_steers[1].id, accepted_steer.id);
+    assert_eq!(finished.abandoned_followups.len(), 1);
+    assert_eq!(finished.abandoned_followups[0].id, followup.id);
+    assert_eq!(
+        store
+            .get_control(&session.id, &steer.id)
+            .await
+            .unwrap()
+            .status,
+        ProductControlStatus::Dropped
+    );
+    assert_eq!(
+        store
+            .get_control(&session.id, &accepted_steer.id)
+            .await
+            .unwrap()
+            .status,
+        ProductControlStatus::Dropped
+    );
+    assert_eq!(
+        store
+            .get_control(&session.id, &followup.id)
+            .await
+            .unwrap()
+            .status,
+        ProductControlStatus::Abandoned
+    );
+    assert_eq!(
+        store
+            .get_session_context(&session.id)
+            .await
+            .unwrap()
+            .session
+            .status,
+        ProductSessionStatus::NeedsAttention
+    );
+}
+
+#[tokio::test]
+async fn stale_unreserved_followup_claim_requeues_but_reserved_claim_needs_attention() {
+    let temp = TempDir::new().unwrap();
+    let store = open_store(&temp);
+    let (_, session) = create_workspace_and_session(&store, &temp).await;
+    let (safe_control, _) = store
+        .create_control(
+            &session.id,
+            ProductControlKind::Followup,
+            CreateProductControlRequest {
+                content: "safe recovery".to_string(),
+                idempotency_key: Some("safe-recovery".to_string()),
+            },
+        )
+        .await
+        .unwrap();
+    let safe_claim = store
+        .claim_next_followup_turn(&session.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(safe_claim.control.id, safe_control.id);
+    drop(store);
+    let store = open_store(&temp);
+    assert_eq!(
+        store
+            .get_control(&session.id, &safe_control.id)
+            .await
+            .unwrap()
+            .status,
+        ProductControlStatus::Pending
+    );
+    assert_eq!(
+        store
+            .get_session_context(&session.id)
+            .await
+            .unwrap()
+            .session
+            .status,
+        ProductSessionStatus::Idle
+    );
+
+    let reserved_claim = store
+        .claim_next_followup_turn(&session.id)
+        .await
+        .unwrap()
+        .unwrap();
+    store
+        .reserve_followup_run(
+            &reserved_claim.turn.claim_id,
+            &reserved_claim.control.id,
+            RunId::new(),
+        )
+        .await
+        .unwrap();
+    drop(store);
+    let store = open_store(&temp);
+    assert_eq!(
+        store
+            .get_control(&session.id, &safe_control.id)
+            .await
+            .unwrap()
+            .status,
+        ProductControlStatus::Abandoned
+    );
+    assert_eq!(
+        store
+            .get_session_context(&session.id)
+            .await
+            .unwrap()
+            .session
+            .status,
+        ProductSessionStatus::NeedsAttention
+    );
+}
+
+#[tokio::test]
+async fn restart_after_followup_binding_commit_never_starts_the_reserved_run_twice() {
+    let temp = TempDir::new().unwrap();
+    let store = open_store(&temp);
+    let (_, session) = create_workspace_and_session(&store, &temp).await;
+    let (control, _) = store
+        .create_control(
+            &session.id,
+            ProductControlKind::Followup,
+            CreateProductControlRequest {
+                content: "bound before supervisor start".to_string(),
+                idempotency_key: Some("bound-crash-window".to_string()),
+            },
+        )
+        .await
+        .unwrap();
+    let claimed = store
+        .claim_next_followup_turn(&session.id)
+        .await
+        .unwrap()
+        .expect("follow-up claim");
+    let runtime_session_id = SessionId::new();
+    let runtime_job_id = JobId::new();
+    let runtime_run_id = RunId::new();
+    store
+        .reserve_followup_run(&claimed.turn.claim_id, &claimed.control.id, runtime_run_id)
+        .await
+        .unwrap();
+    store
+        .commit_run_binding(CommitProductRunBinding {
+            claim_id: claimed.turn.claim_id.clone(),
+            product_session_id: session.id.clone(),
+            runtime_session_id,
+            runtime_job_id,
+            runtime_run_id,
+            resumed_from_run_id: None,
+            followup_control_id: Some(control.id.clone()),
+            model_config: claimed.turn.model_config,
+        })
+        .await
+        .unwrap();
+
+    drop(store);
+    let reopened = open_store(&temp);
+    let recovered = reopened
+        .get_control(&session.id, &control.id)
+        .await
+        .unwrap();
+    assert_eq!(recovered.status, ProductControlStatus::Abandoned);
+    assert_eq!(recovered.run_id, Some(runtime_run_id));
+    assert_eq!(
+        reopened
+            .get_session_context(&session.id)
+            .await
+            .unwrap()
+            .session
+            .status,
+        ProductSessionStatus::NeedsAttention
+    );
+    let bindings = reopened.list_run_bindings(&session.id).await.unwrap();
+    assert_eq!(bindings.len(), 1);
+    assert_eq!(bindings[0].runtime_run_id, runtime_run_id);
+    assert!(
+        reopened
+            .claim_next_followup_turn(&session.id)
+            .await
+            .unwrap()
+            .is_none(),
+        "a durably bound follow-up must never be auto-claimed again"
+    );
+
+    drop(reopened);
+    let reopened_again = open_store(&temp);
+    assert_eq!(
+        reopened_again
+            .get_control(&session.id, &control.id)
+            .await
+            .unwrap()
+            .status,
+        ProductControlStatus::Abandoned
+    );
+    assert_eq!(
+        reopened_again
+            .list_run_bindings(&session.id)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn abandoned_followup_requires_explicit_confirmation_before_redrain() {
+    let temp = TempDir::new().unwrap();
+    let store = open_store(&temp);
+    let (_, session) = create_workspace_and_session(&store, &temp).await;
+    let claim = store.claim_session_turn(&session.id).await.unwrap();
+    let (followup, _) = store
+        .create_control(
+            &session.id,
+            ProductControlKind::Followup,
+            CreateProductControlRequest {
+                content: "only after confirmation".to_string(),
+                idempotency_key: Some("confirm-followup".to_string()),
+            },
+        )
+        .await
+        .unwrap();
+    store
+        .finish_session_turn_and_abandon_pending_controls(
+            &claim.claim_id,
+            Some(RunId::new()),
+            ProductSessionStatus::NeedsAttention,
+            "tool effect is uncertain",
+        )
+        .await
+        .unwrap();
+    assert!(
+        store
+            .claim_next_followup_turn(&session.id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    let confirmed = store
+        .confirm_abandoned_followup(&session.id, &followup.id)
+        .await
+        .unwrap();
+    assert_eq!(confirmed.status, ProductControlStatus::Pending);
+    assert_eq!(
+        store
+            .get_session_context(&session.id)
+            .await
+            .unwrap()
+            .session
+            .status,
+        ProductSessionStatus::Idle
+    );
+    let claimed = store
+        .claim_next_followup_turn(&session.id)
+        .await
+        .unwrap()
+        .expect("explicitly confirmed follow-up can run");
+    assert_eq!(claimed.control.id, followup.id);
+}
+
+#[tokio::test]
+async fn forks_are_idempotent_independent_and_survive_parent_deletion() {
+    let temp = TempDir::new().unwrap();
+    let store = open_store(&temp);
+    let (workspace, parent, boundary) = create_forkable_parent(&store, &temp).await;
+    let request = CreateProductForkRequest {
+        fork_at_run_id: boundary.source_runtime_run_id,
+        title: Some("Investigate alternate path".to_string()),
+        idempotency_key: "fork-parent-terminal-1".to_string(),
+    };
+
+    let (child, fork, already_exists) = store
+        .create_fork(request.clone(), boundary.clone())
+        .await
+        .unwrap();
+    assert!(!already_exists);
+    assert_eq!(child.parent_session_id, Some(parent.id.clone()));
+    assert_eq!(
+        child.fork_point_run_id,
+        Some(boundary.source_runtime_run_id)
+    );
+    assert_eq!(child.fork_point_seq, Some(boundary.fork_at_event_seq));
+    assert_eq!(fork.parent_title, parent.title);
+
+    let (replayed_child, replayed_fork, replayed) = store
+        .create_fork(request.clone(), boundary.clone())
+        .await
+        .unwrap();
+    assert!(replayed);
+    assert_eq!(replayed_child.id, child.id);
+    assert_eq!(replayed_fork.id, fork.id);
+    let conflict = store
+        .create_fork(
+            CreateProductForkRequest {
+                title: Some("A different body".to_string()),
+                ..request.clone()
+            },
+            boundary.clone(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(conflict.code, ProductErrorCode::ProductForkConflict);
+
+    let child_context = store.get_session_context(&child.id).await.unwrap();
+    let inherited = child_context
+        .fork
+        .expect("child fork context")
+        .inherited_runs;
+    assert_eq!(inherited.len(), 1);
+    assert_eq!(inherited[0].source_product_session_id, parent.id);
+    assert_eq!(
+        inherited[0].runtime_session_id,
+        boundary.source_runtime_session_id
+    );
+    assert_eq!(inherited[0].runtime_job_id, boundary.source_runtime_job_id);
+    assert_eq!(inherited[0].runtime_run_id, boundary.source_runtime_run_id);
+    assert_eq!(
+        inherited[0].through_event_seq,
+        Some(boundary.fork_at_event_seq)
+    );
+
+    let child_claim = store.claim_session_turn(&child.id).await.unwrap();
+    let child_binding = store
+        .commit_run_binding(CommitProductRunBinding {
+            claim_id: child_claim.claim_id.clone(),
+            product_session_id: child.id.clone(),
+            runtime_session_id: SessionId::new(),
+            runtime_job_id: JobId::new(),
+            runtime_run_id: RunId::new(),
+            resumed_from_run_id: None,
+            followup_control_id: None,
+            model_config: child_claim.model_config.clone(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(child_binding.ordinal, 1);
+    assert_ne!(
+        child_binding.runtime_session_id,
+        boundary.source_runtime_session_id
+    );
+    assert_ne!(child_binding.runtime_job_id, boundary.source_runtime_job_id);
+    store
+        .finish_session_turn(&child_claim.claim_id, ProductSessionStatus::Idle)
+        .await
+        .unwrap();
+
+    store.delete_session(&parent.id).await.unwrap();
+    let listed = store.list_forks(&parent.id).await.unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].id, fork.id);
+    let after_delete = store.get_session_context(&child.id).await.unwrap();
+    assert_eq!(
+        after_delete.session.parent_session_id,
+        Some(parent.id.clone())
+    );
+    assert_eq!(
+        after_delete
+            .fork
+            .expect("child provenance remains after parent removal")
+            .inherited_runs[0]
+            .runtime_run_id,
+        boundary.source_runtime_run_id
+    );
+    let (after_delete_child, after_delete_fork) = store
+        .replay_fork(&parent.id, &request)
+        .await
+        .unwrap()
+        .expect("exact retry remains recoverable after parent removal");
+    assert_eq!(after_delete_child.id, child.id);
+    assert_eq!(after_delete_fork.id, fork.id);
+    assert!(
+        store
+            .list_sessions(&workspace.id)
+            .await
+            .unwrap()
+            .iter()
+            .any(|session| session.id == child.id)
+    );
+}
+
+#[tokio::test]
+async fn forks_reject_a_parent_with_an_active_turn() {
+    let temp = TempDir::new().unwrap();
+    let store = open_store(&temp);
+    let (_, parent, boundary) = create_forkable_parent(&store, &temp).await;
+    let active_claim = store.claim_session_turn(&parent.id).await.unwrap();
+    let error = store
+        .create_fork(
+            CreateProductForkRequest {
+                fork_at_run_id: boundary.source_runtime_run_id,
+                title: None,
+                idempotency_key: "fork-active-parent".to_string(),
+            },
+            boundary,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, ProductErrorCode::ProductSessionActive);
+    store
+        .finish_session_turn(&active_claim.claim_id, ProductSessionStatus::Idle)
+        .await
+        .unwrap();
 }

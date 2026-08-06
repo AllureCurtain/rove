@@ -6,10 +6,12 @@ use std::{
 
 use async_stream::stream;
 use futures::stream::{BoxStream, Stream, StreamExt};
+use tokio::sync::Mutex as AsyncMutex;
 use tokio_util::sync::CancellationToken;
 
 use crate::compaction::CompactionRuntime;
 use crate::context::{ContextManager, durable_memory_message, session_summary_message};
+use crate::engine::control::{RunControlHandle, SteerLifecycle, control_channel};
 use crate::events::StreamEvent;
 use crate::execution::{DEFAULT_MAX_MODEL_TURNS_PER_STEP, ExecutionPolicy, ExecutionStrategy};
 use crate::hooks::{HookRegistry, PostRunHookContext, RunSummary};
@@ -17,7 +19,7 @@ use crate::memory::layered::load_prompt_memory_from_paths_sync;
 use crate::memory::paths::MemoryPaths;
 use crate::plan_loop::{PlanLoopState, run_planned_loop};
 use crate::planner::Planner;
-use crate::run_loop::{LoopContext, LoopItem, RunLoopState, run_unplanned_loop};
+use crate::run_loop::{LoopContext, LoopItem, RunLoopState, SteerReceiver, run_unplanned_loop};
 use crate::runtime_identity::{
     RuntimeIdentity, RuntimeIdentityInput, RuntimeIdentityStatus, build_runtime_identity,
 };
@@ -30,12 +32,14 @@ use crate::workspace::Workspace;
 use rove_core::ToolRegistry;
 use rove_models::ModelClient;
 
-/// A running engine stream plus immediate identity and cancellation handle.
+/// A running engine stream plus immediate identity, cancellation, and a
+/// control handle for steer/follow-up submission.
 pub struct RunStream<'e> {
     session_id: SessionId,
     job_id: JobId,
     run_id: RunId,
     cancel_token: CancellationToken,
+    control: RunControlHandle,
     inner: Pin<Box<dyn Stream<Item = StreamEvent> + Send + 'e>>,
 }
 
@@ -45,6 +49,7 @@ impl<'e> RunStream<'e> {
         job_id: JobId,
         run_id: RunId,
         cancel_token: CancellationToken,
+        control: RunControlHandle,
         inner: impl Stream<Item = StreamEvent> + Send + 'e,
     ) -> Self {
         Self {
@@ -52,6 +57,7 @@ impl<'e> RunStream<'e> {
             job_id,
             run_id,
             cancel_token,
+            control,
             inner: Box::pin(inner),
         }
     }
@@ -70,6 +76,11 @@ impl<'e> RunStream<'e> {
 
     pub fn cancel(&self) {
         self.cancel_token.cancel();
+    }
+
+    /// Handle for submitting steer/followup messages to the in-flight run.
+    pub fn control(&self) -> &RunControlHandle {
+        &self.control
     }
 }
 
@@ -321,12 +332,16 @@ impl Engine {
         let resume_state = req.resume_state;
         let stream_cancel = cancel.clone();
         let runtime_identity = self.runtime_identity();
+        let (control_handle, steer_rx) = control_channel();
+        let steer_rx: SteerReceiver = Arc::new(AsyncMutex::new(steer_rx));
+        let steer_lifecycle = SteerLifecycle::default();
 
         RunStream::new(
             session_id,
             job_id,
             run_id,
             cancel,
+            control_handle,
             stream! {
                 let mut run_summary = RunSummary::new(user_message.clone());
 
@@ -334,6 +349,36 @@ impl Engine {
                     ($reason:expr, $output:expr) => {{
                         let reason = $reason;
                         let output = $output;
+                        // The last safe point may have passed while an LLM
+                        // turn was resolving. Close any remaining steers
+                        // before the terminal fact so every accepted API
+                        // control has an explicit lifecycle outcome.
+                        let mut pending_steers = steer_rx.lock().await;
+                        // Reject a concurrent API submission before draining.
+                        // Any sender that won the race is already buffered and
+                        // is surfaced as a dropped lifecycle event below.
+                        pending_steers.close();
+                        while let Ok(steer) = pending_steers.try_recv() {
+                            let dropped = StreamEvent::SteerDropped {
+                                id: steer.id.0,
+                                reason: "run completed before the steer reached a safe point"
+                                    .to_string(),
+                            };
+                            run_summary.record_event(&dropped);
+                            append_trace(&trace_writer, &dropped);
+                            yield dropped;
+                        }
+                        drop(pending_steers);
+                        for id in steer_lifecycle.take_unapplied().await {
+                            let dropped = StreamEvent::SteerDropped {
+                                id,
+                                reason: "run completed before the accepted steer reached a model turn"
+                                    .to_string(),
+                            };
+                            run_summary.record_event(&dropped);
+                            append_trace(&trace_writer, &dropped);
+                            yield dropped;
+                        }
                         let event = StreamEvent::RunCompleted {
                             reason: reason.clone(),
                             output: output.clone(),
@@ -432,6 +477,8 @@ impl Engine {
                         self.model_compaction_enabled,
                         self.compaction_failure_threshold,
                     ),
+                    steer_rx: Some(steer_rx.clone()),
+                    steer_lifecycle: Some(steer_lifecycle.clone()),
                 };
 
                 let mut runtime: BoxStream<'_, LoopItem> = match execution_policy.strategy {

@@ -20,8 +20,10 @@ function topic(
   return {
     slug,
     title: slug,
+    layer: "durable",
     memory_type: "project",
     scope: "project",
+    source: "product_settings",
     confidence: 0.8,
     description: `${slug} description`,
     metadata_truncated: false,
@@ -180,6 +182,35 @@ describe("memory settings model", () => {
     expect(state.listError).toBe("offline");
     expect(state.topics).toEqual([alpha]);
     expect(state.selectedSlug).toBe("alpha");
+  });
+
+  it("upserts a saved topic and selects its complete mutation response", () => {
+    const alpha = topic("alpha");
+    const created = topic("created", {
+      title: "Created",
+      updated_at: "2026-07-28T00:00:00Z",
+    });
+    let state = readyState([alpha]);
+
+    state = memorySettingsReducer(state, {
+      type: "topic_saved",
+      detail: detail(created),
+    });
+    expect(state.topics.map(({ slug }) => slug)).toEqual(["created", "alpha"]);
+    expect(state.selectedSlug).toBe("created");
+    expect(state.detail?.topic).toEqual(created);
+
+    const updated = topic("created", {
+      title: "Updated",
+      updated_at: "2026-07-29T00:00:00Z",
+    });
+    state = memorySettingsReducer(state, {
+      type: "topic_saved",
+      detail: detail(updated),
+    });
+    expect(state.topics).toHaveLength(2);
+    expect(state.topics[0]).toEqual(updated);
+    expect(state.detail?.topic.title).toBe("Updated");
   });
 
   it("requires confirmation and clears selected detail only after delete succeeds", () => {

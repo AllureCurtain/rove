@@ -214,6 +214,34 @@ const streamEventFixtures: StreamEvent[] = [
     reason: "final",
     output: "done",
   },
+  {
+    type: "steer_accepted",
+    id: "steer-1",
+    content: "Prioritize the release notes.",
+  },
+  {
+    type: "steer_applied",
+    id: "steer-1",
+  },
+  {
+    type: "steer_dropped",
+    id: "steer-2",
+    reason: "run completed before the steer reached a model turn",
+  },
+  {
+    type: "followup_queued",
+    id: "followup-1",
+    content: "Draft the release notes next.",
+  },
+  {
+    type: "followup_dequeued",
+    id: "followup-1",
+  },
+  {
+    type: "followup_abandoned",
+    id: "followup-2",
+    reason: "run cancelled",
+  },
 ];
 
 const providerProfileFixtures = [

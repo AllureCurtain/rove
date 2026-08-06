@@ -29,6 +29,12 @@ pub const MAX_PRODUCT_PATH_BYTES: usize = 32_768;
 pub const MAX_MIGRATION_IDEMPOTENCY_KEY_BYTES: usize = 128;
 pub const MAX_M1_BROWSER_MIGRATION_BODY_BYTES: usize = 64 * 1_048_576;
 pub const MAX_PRODUCT_MEMORY_CONTENT_BYTES: usize = 64 * 1_024;
+pub const DEFAULT_PRODUCT_MAX_STEPS: u32 = 8;
+pub const MAX_PRODUCT_MAX_STEPS: u32 = 256;
+/// A fork preserves references to prior runtime runs, never copied event
+/// payloads. Keep that ancestry bounded so a deeply branched catalog cannot
+/// turn one fork or transcript read into an unbounded operation.
+pub const MAX_PRODUCT_FORK_INHERITED_RUNS: usize = 512;
 
 macro_rules! product_id {
     ($name:ident, $description:literal) => {
@@ -102,6 +108,14 @@ product_id!(
     ProductTurnClaimId,
     "Internal compare-and-set token for one active product-session turn."
 );
+product_id!(
+    ProductControlId,
+    "Server-owned identity for one steer or follow-up control message."
+);
+product_id!(
+    ProductForkId,
+    "Server-owned identity for immutable product-session fork provenance."
+);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
@@ -141,11 +155,118 @@ pub enum ProductApprovalPreference {
     Never,
 }
 
+/// Session model configuration is explicit about the provider default. The
+/// API never invents a reasoning level for protocols that do not support it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductReasoningPreference {
+    #[default]
+    Default,
+    Low,
+    Medium,
+    High,
+}
+
+impl ProductReasoningPreference {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+        }
+    }
+}
+
+impl fmt::Display for ProductReasoningPreference {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl FromStr for ProductReasoningPreference {
+    type Err = ProductStoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "default" => Ok(Self::Default),
+            "low" => Ok(Self::Low),
+            "medium" => Ok(Self::Medium),
+            "high" => Ok(Self::High),
+            _ => Err(ProductStoreError::new(
+                ProductErrorCode::ProductInvalidInput,
+                format!("invalid reasoning preference: {value}"),
+            )),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ProductWorkspaceKind {
     Folder,
     Repo,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductControlKind {
+    Steer,
+    Followup,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductControlStatus {
+    Pending,
+    Accepted,
+    Applied,
+    Dropped,
+    Abandoned,
+    Revoked,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductControl {
+    pub id: ProductControlId,
+    pub product_session_id: ProductSessionId,
+    pub kind: ProductControlKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idempotency_key: Option<String>,
+    pub content: String,
+    pub status: ProductControlStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>, format = "ulid")]
+    pub run_id: Option<RunId>,
+    pub seq: i64,
+    pub created_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub applied_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CreateProductControlRequest {
+    pub content: String,
+    #[serde(default)]
+    pub idempotency_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductControlsResponse {
+    pub controls: Vec<ProductControl>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductControlStatusFilter {
+    Pending,
+    Accepted,
+    Applied,
+    Dropped,
+    Abandoned,
+    Revoked,
+    All,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -181,6 +302,17 @@ pub struct ProductSession {
     pub status: ProductSessionStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_binding: Option<ProductRuntimeBinding>,
+    /// Parent product session retained as lineage even when the parent catalog
+    /// row has subsequently been deleted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_session_id: Option<ProductSessionId>,
+    /// Exact parent runtime run from which this session inherited history.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>, format = "ulid")]
+    pub fork_point_run_id: Option<RunId>,
+    /// Terminal canonical event sequence for `fork_point_run_id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fork_point_seq: Option<u64>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -199,6 +331,87 @@ pub struct ProductSessionRunBinding {
     #[schema(value_type = Option<String>, format = "ulid")]
     pub resumed_from_run_id: Option<RunId>,
     pub bound_at: String,
+}
+
+/// Immutable source boundary for one child product session. This contains
+/// runtime identities and references only; canonical event facts continue to
+/// live in the source workspace StateStore.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductFork {
+    pub id: ProductForkId,
+    pub parent_product_session_id: ProductSessionId,
+    pub child_product_session_id: ProductSessionId,
+    pub parent_workspace_id: ProductWorkspaceId,
+    pub parent_title: String,
+    #[schema(value_type = String, format = "ulid")]
+    pub source_runtime_session_id: SessionId,
+    #[schema(value_type = String, format = "ulid")]
+    pub source_runtime_job_id: JobId,
+    #[schema(value_type = String, format = "ulid")]
+    pub source_runtime_run_id: RunId,
+    pub fork_at_event_seq: u64,
+    pub idempotency_key: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CreateProductForkRequest {
+    /// The already-final parent run to branch from. The server derives the
+    /// terminal event sequence and rejects anything incomplete or corrupt.
+    #[schema(value_type = String, format = "ulid")]
+    pub fork_at_run_id: RunId,
+    #[serde(default)]
+    pub title: Option<String>,
+    /// Required client-generated key. Retrying the exact same action returns
+    /// the same child; a body mismatch returns a typed conflict.
+    pub idempotency_key: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductForkResponse {
+    pub fork: ProductFork,
+    pub session: ProductSession,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductForksResponse {
+    pub forks: Vec<ProductFork>,
+}
+
+/// One runtime-run reference projected into a child's inherited prefix. It
+/// deliberately has no event content and remains readable if a parent Product
+/// session is later removed from the catalog.
+#[derive(Debug, Clone)]
+pub struct ProductForkInheritedRun {
+    pub ordinal: u64,
+    pub source_product_session_id: ProductSessionId,
+    pub runtime_session_id: SessionId,
+    pub runtime_job_id: JobId,
+    pub runtime_run_id: RunId,
+    /// Present on the exact terminal source boundary; earlier inherited runs
+    /// are projected through their own complete canonical records.
+    pub through_event_seq: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProductForkContext {
+    pub fork: ProductFork,
+    pub inherited_runs: Vec<ProductForkInheritedRun>,
+}
+
+/// Runtime boundary verified by the coordinator. Browser JSON can never
+/// construct this; ProductStore rechecks it against its immutable binding
+/// ledger in the transaction that creates the child.
+#[derive(Debug, Clone)]
+pub struct VerifiedProductForkBoundary {
+    pub parent_product_session_id: ProductSessionId,
+    pub parent_workspace_id: ProductWorkspaceId,
+    pub parent_title: String,
+    pub source_runtime_session_id: SessionId,
+    pub source_runtime_job_id: JobId,
+    pub source_runtime_run_id: RunId,
+    pub fork_at_event_seq: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -223,6 +436,196 @@ pub struct ProductProviderSelection {
     pub model: String,
     pub approval: ProductApprovalPreference,
     pub max_steps: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductSessionModelConfig {
+    pub product_session_id: ProductSessionId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_id: Option<ProductProviderProfileId>,
+    pub model: String,
+    pub reasoning: ProductReasoningPreference,
+    pub max_steps: u32,
+    pub revision: u64,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateProductSessionModelConfigRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_id: Option<ProductProviderProfileId>,
+    pub model: String,
+    #[serde(default)]
+    pub reasoning: ProductReasoningPreference,
+    #[serde(default = "default_product_max_steps")]
+    pub max_steps: u32,
+    #[serde(default)]
+    pub expected_revision: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductModelDescriptor {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u32>,
+    #[serde(default)]
+    pub supports_reasoning: bool,
+    #[serde(default)]
+    pub supported_reasoning: Vec<ProductReasoningPreference>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_unavailable_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductProviderModelsResponse {
+    pub profile_id: ProductProviderProfileId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_model: Option<String>,
+    pub models: Vec<ProductModelDescriptor>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductSessionRunModelView {
+    pub product_session_id: ProductSessionId,
+    pub ordinal: u64,
+    #[schema(value_type = String, format = "ulid")]
+    pub runtime_run_id: RunId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_id: Option<ProductProviderProfileId>,
+    pub model: String,
+    pub reasoning: ProductReasoningPreference,
+    pub max_steps: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pricing_source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pricing_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pricing_currency: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pricing_availability: Option<ProductPricingAvailability>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub per_mtok_prompt: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub per_mtok_completion: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub per_mtok_cache_read: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductSessionRunModelsResponse {
+    pub runs: Vec<ProductSessionRunModelView>,
+}
+
+/// Whether a run's cost can be computed from a trusted price snapshot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductPricingAvailability {
+    Priced,
+    LocalZero,
+    Unpriced,
+}
+
+impl ProductPricingAvailability {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Priced => "priced",
+            Self::LocalZero => "local_zero",
+            Self::Unpriced => "unpriced",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "priced" => Some(Self::Priced),
+            "local_zero" => Some(Self::LocalZero),
+            "unpriced" => Some(Self::Unpriced),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema, Default, PartialEq, Eq)]
+pub struct ProductUsage {
+    pub prompt_tokens: u32,
+    pub completion_tokens: u32,
+    pub total_tokens: u32,
+    pub cached_tokens: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema, PartialEq)]
+pub struct ProductCostBreakdown {
+    pub currency: String,
+    pub availability: ProductPricingAvailability,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_usd: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_usd: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completion_usd: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read_usd: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pricing_source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pricing_version: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema, PartialEq, Eq)]
+pub struct ProductContextOccupancy {
+    pub token_estimate: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u64>,
+    pub estimate_kind: String,
+    pub included_history_messages: u64,
+    pub dropped_history_messages: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction_mode: Option<String>,
+    #[serde(default)]
+    pub compaction_degraded: bool,
+    #[serde(default)]
+    pub compaction_auto_triggered: bool,
+    #[serde(default)]
+    pub compacted_history_messages: u64,
+    #[serde(default)]
+    pub compaction_source_messages: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction_prompt_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_hash: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductRunUsage {
+    #[schema(value_type = String, format = "ulid")]
+    pub runtime_run_id: RunId,
+    pub ordinal: u64,
+    pub model: String,
+    pub usage: ProductUsage,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost: Option<ProductCostBreakdown>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<ProductContextOccupancy>,
+    pub steps: u32,
+    pub tool_calls: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductSessionUsageResponse {
+    pub product_session_id: ProductSessionId,
+    pub totals: ProductUsage,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub totals_cost: Option<ProductCostBreakdown>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest_context: Option<ProductContextOccupancy>,
+    pub runs: Vec<ProductRunUsage>,
+    pub partial_reasons: Vec<String>,
+}
+
+const fn default_product_max_steps() -> u32 {
+    DEFAULT_PRODUCT_MAX_STEPS
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -346,12 +749,29 @@ pub enum ProductMemoryScope {
     Session,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductMemoryLayer {
+    Durable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductMemorySource {
+    ProductSettings,
+    LlmTool,
+    Other,
+    Unknown,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ProductMemoryTopic {
     pub slug: String,
     pub title: String,
+    pub layer: ProductMemoryLayer,
     pub memory_type: ProductMemoryType,
     pub scope: ProductMemoryScope,
+    pub source: ProductMemorySource,
     pub confidence: f32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_at: Option<String>,
@@ -372,6 +792,119 @@ pub struct ProductMemoryTopicContentResponse {
     pub topic: ProductMemoryTopic,
     pub content: String,
     pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CreateProductMemoryTopicRequest {
+    pub slug: String,
+    pub title: String,
+    pub memory_type: ProductMemoryType,
+    pub scope: ProductMemoryScope,
+    pub confidence: f32,
+    #[serde(default)]
+    pub description: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateProductMemoryTopicRequest {
+    pub title: String,
+    pub memory_type: ProductMemoryType,
+    pub scope: ProductMemoryScope,
+    pub confidence: f32,
+    #[serde(default)]
+    pub description: String,
+    pub content: String,
+    #[serde(default)]
+    pub expected_updated_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductMcpTransport {
+    Stdio,
+    Sse,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductMcpServer {
+    pub name: String,
+    pub enabled: bool,
+    pub transport: ProductMcpTransport,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    pub args: Vec<String>,
+    pub env_names: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    pub request_timeout_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductMcpServersResponse {
+    pub servers: Vec<ProductMcpServer>,
+    pub total: usize,
+}
+
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CreateProductMcpServerRequest {
+    pub name: String,
+    #[serde(default = "default_product_mcp_enabled")]
+    pub enabled: bool,
+    pub transport: ProductMcpTransport,
+    #[serde(default)]
+    pub command: Option<String>,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub env_names: Vec<String>,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default = "default_product_mcp_timeout_ms")]
+    pub request_timeout_ms: u64,
+}
+
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateProductMcpServerRequest {
+    pub enabled: bool,
+    pub transport: ProductMcpTransport,
+    #[serde(default)]
+    pub command: Option<String>,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub env_names: Vec<String>,
+    #[serde(default)]
+    pub url: Option<String>,
+    pub request_timeout_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductMcpToolDescriptor {
+    pub name: String,
+    pub description: String,
+    pub destructive: bool,
+    pub parallel_safe: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductMcpProbeResponse {
+    pub server_name: String,
+    pub transport: ProductMcpTransport,
+    pub tools: Vec<ProductMcpToolDescriptor>,
+    pub tested_at: String,
+}
+
+const fn default_product_mcp_enabled() -> bool {
+    true
+}
+
+const fn default_product_mcp_timeout_ms() -> u64 {
+    30_000
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -465,6 +998,12 @@ pub struct ProductTranscriptFallback {
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ProductTranscriptRunSegment {
     pub binding: ProductSessionRunBinding,
+    /// True when this segment is a read-only reference inherited at a fork
+    /// boundary rather than an event written by the requested product session.
+    #[serde(default)]
+    pub inherited: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_product_session_id: Option<ProductSessionId>,
     #[schema(value_type = String, example = "done")]
     pub run_status: RunStatus,
     pub observed_through_seq: u64,
@@ -639,6 +1178,7 @@ pub struct M1BrowserMigrationResponse {
 pub struct ProductSessionContext {
     pub workspace: ProductWorkspace,
     pub session: ProductSession,
+    pub fork: Option<ProductForkContext>,
 }
 
 #[derive(Debug, Clone)]
@@ -647,6 +1187,7 @@ pub struct ProductTurnClaim {
     pub context: ProductSessionContext,
     pub previous_status: ProductSessionStatus,
     pub previous_binding: Option<ProductRuntimeBinding>,
+    pub model_config: ProductSessionModelConfig,
 }
 
 #[derive(Debug, Clone)]
@@ -657,6 +1198,37 @@ pub struct CommitProductRunBinding {
     pub runtime_job_id: JobId,
     pub runtime_run_id: RunId,
     pub resumed_from_run_id: Option<RunId>,
+    /// The durable follow-up that caused this turn, when this is an automatic
+    /// queued continuation. ProductStore commits its delivery state and the
+    /// run binding together so restart recovery can distinguish a started
+    /// follow-up from one that must be confirmed by the user.
+    pub followup_control_id: Option<ProductControlId>,
+    /// The config captured while the product turn was claimed. The binding
+    /// transaction records it with the run so later edits cannot rewrite the
+    /// model used by an already-started run.
+    pub model_config: ProductSessionModelConfig,
+}
+
+/// One atomically claimed queued follow-up and its exclusive product turn.
+///
+/// The store creates the turn claim, changes the session to `running`, and
+/// moves the control from `pending` to `accepted` in one transaction. A second
+/// coordinator therefore cannot dequeue the next follow-up while this one is
+/// being prepared.
+#[derive(Debug, Clone)]
+pub struct ProductFollowupTurnClaim {
+    pub control: ProductControl,
+    pub turn: ProductTurnClaim,
+}
+
+/// Result of closing a product turn with a non-final or indeterminate
+/// outcome. The control rows are returned so the coordinator can surface the
+/// corresponding canonical lifecycle events before it publishes the terminal
+/// run result.
+#[derive(Debug, Clone)]
+pub struct ProductTurnControlFinish {
+    pub dropped_steers: Vec<ProductControl>,
+    pub abandoned_followups: Vec<ProductControl>,
 }
 
 /// Runtime identity validated by the coordinator before a browser migration
@@ -717,7 +1289,16 @@ pub enum ProductErrorCode {
     ProductMemoryInvalidSlug,
     ProductMemoryNotFound,
     ProductMemoryConflict,
+    ProductMcpInvalidInput,
+    ProductMcpNotFound,
+    ProductMcpConflict,
     MigrationIdempotencyConflict,
+    ProductControlConflict,
+    ProductControlRejected,
+    ProductForkConflict,
+    ProductForkSourceInvalid,
+    ProductSessionModelConfigConflict,
+    ProductProviderProfileUnavailable,
     ProductStorageFailure,
 }
 
@@ -737,7 +1318,16 @@ impl ProductErrorCode {
             Self::ProductMemoryInvalidSlug => "product_memory_invalid_slug",
             Self::ProductMemoryNotFound => "product_memory_not_found",
             Self::ProductMemoryConflict => "product_memory_conflict",
+            Self::ProductMcpInvalidInput => "product_mcp_invalid_input",
+            Self::ProductMcpNotFound => "product_mcp_not_found",
+            Self::ProductMcpConflict => "product_mcp_conflict",
             Self::MigrationIdempotencyConflict => "migration_idempotency_conflict",
+            Self::ProductControlConflict => "product_control_conflict",
+            Self::ProductControlRejected => "product_control_rejected",
+            Self::ProductForkConflict => "product_fork_conflict",
+            Self::ProductForkSourceInvalid => "product_fork_source_invalid",
+            Self::ProductSessionModelConfigConflict => "product_session_model_config_conflict",
+            Self::ProductProviderProfileUnavailable => "product_provider_profile_unavailable",
             Self::ProductStorageFailure => "product_storage_failure",
         }
     }
@@ -806,6 +1396,19 @@ pub trait ProductStore: Send + Sync {
         request: UpdateProductSessionRequest,
     ) -> Result<ProductSession, ProductStoreError>;
     async fn delete_session(&self, session_id: &ProductSessionId) -> Result<(), ProductStoreError>;
+    async fn get_session_model_config(
+        &self,
+        session_id: &ProductSessionId,
+    ) -> Result<ProductSessionModelConfig, ProductStoreError>;
+    async fn update_session_model_config(
+        &self,
+        session_id: &ProductSessionId,
+        request: UpdateProductSessionModelConfigRequest,
+    ) -> Result<ProductSessionModelConfig, ProductStoreError>;
+    async fn list_session_run_models(
+        &self,
+        session_id: &ProductSessionId,
+    ) -> Result<Vec<ProductSessionRunModelView>, ProductStoreError>;
     async fn get_session_context(
         &self,
         session_id: &ProductSessionId,
@@ -814,6 +1417,30 @@ pub trait ProductStore: Send + Sync {
         &self,
         session_id: &ProductSessionId,
     ) -> Result<Vec<ProductSessionRunBinding>, ProductStoreError>;
+
+    /// Atomically materialize an immutable child session from an already
+    /// coordinator-verified terminal parent boundary. `already_exists` is true
+    /// only for an idempotent replay of the exact same request.
+    async fn create_fork(
+        &self,
+        request: CreateProductForkRequest,
+        boundary: VerifiedProductForkBoundary,
+    ) -> Result<(ProductSession, ProductFork, bool /* already_exists */), ProductStoreError>;
+
+    /// Resolve an existing fork before inspecting the parent runtime boundary.
+    /// This keeps an exact idempotent retry recoverable after the parent
+    /// catalog row has been removed, while a body mismatch remains a conflict.
+    async fn replay_fork(
+        &self,
+        parent_session_id: &ProductSessionId,
+        request: &CreateProductForkRequest,
+    ) -> Result<Option<(ProductSession, ProductFork)>, ProductStoreError>;
+
+    /// Direct children only, ordered and bounded for branch-tree expansion.
+    async fn list_forks(
+        &self,
+        parent_session_id: &ProductSessionId,
+    ) -> Result<Vec<ProductFork>, ProductStoreError>;
 
     async fn claim_session_turn(
         &self,
@@ -829,9 +1456,49 @@ pub trait ProductStore: Send + Sync {
         status: ProductSessionStatus,
     ) -> Result<(), ProductStoreError>;
 
+    /// Finish a successfully-final product turn and atomically claim the
+    /// oldest queued follow-up, if one exists. This closes the enqueue/final
+    /// race: a follow-up written before this transaction is claimed here;
+    /// one written after observes the session idle and is claimed by its route.
+    async fn finish_session_turn_and_claim_followup(
+        &self,
+        claim_id: &ProductTurnClaimId,
+    ) -> Result<Option<ProductFollowupTurnClaim>, ProductStoreError>;
+
+    /// Drop steers which did not reach a model turn, while the current product
+    /// turn claim still owns the session. The coordinator publishes the
+    /// returned rows as canonical `steer_dropped` events before it writes the
+    /// run terminal event. `applied` steers are historical facts and are never
+    /// changed by this operation.
+    async fn drop_unapplied_steers_for_turn(
+        &self,
+        claim_id: &ProductTurnClaimId,
+        run_id: RunId,
+        reason: &str,
+    ) -> Result<Vec<ProductControl>, ProductStoreError>;
+
+    /// Close an unsuccessful product turn and transition all controls that
+    /// have not reached a terminal control lifecycle at that exact boundary.
+    /// This is one transaction so a concurrently submitted follow-up is either
+    /// part of the old queue and explicitly abandoned, or is a new instruction
+    /// submitted after the session has reached its next state.
+    /// `run_id` is `None` only before a runtime run has been allocated. Once
+    /// a run id exists, dropped steers retain it for auditability.
+    async fn finish_session_turn_and_abandon_pending_controls(
+        &self,
+        claim_id: &ProductTurnClaimId,
+        run_id: Option<RunId>,
+        status: ProductSessionStatus,
+        reason: &str,
+    ) -> Result<ProductTurnControlFinish, ProductStoreError>;
+
     async fn list_provider_profiles(
         &self,
     ) -> Result<Vec<ProductProviderProfile>, ProductStoreError>;
+    async fn get_provider_profile(
+        &self,
+        profile_id: &ProductProviderProfileId,
+    ) -> Result<ProductProviderProfile, ProductStoreError>;
     async fn create_provider_profile(
         &self,
         request: CreateProductProviderProfileRequest,
@@ -862,6 +1529,129 @@ pub trait ProductStore: Send + Sync {
         &self,
         migration: PreparedM1BrowserMigration,
     ) -> Result<M1BrowserMigrationResponse, ProductStoreError>;
+
+    /// Persist a steer or follow-up control. Same idempotency key + same body
+    /// returns the existing row (`already_existed = true`); same key + different
+    /// body returns [`ProductErrorCode::ProductControlConflict`].
+    async fn create_control(
+        &self,
+        session_id: &ProductSessionId,
+        kind: ProductControlKind,
+        request: CreateProductControlRequest,
+    ) -> Result<(ProductControl, bool /* already_existed */), ProductStoreError>;
+
+    async fn list_controls(
+        &self,
+        session_id: &ProductSessionId,
+        filter: Option<ProductControlStatus>,
+    ) -> Result<Vec<ProductControl>, ProductStoreError>;
+
+    async fn get_control(
+        &self,
+        session_id: &ProductSessionId,
+        control_id: &ProductControlId,
+    ) -> Result<ProductControl, ProductStoreError>;
+
+    /// Compare-and-swap control status. Rejects when the stored status is not `from`.
+    async fn transition_control(
+        &self,
+        session_id: &ProductSessionId,
+        control_id: &ProductControlId,
+        from: ProductControlStatus,
+        to: ProductControlStatus,
+        applied_run_id: Option<&RunId>,
+    ) -> Result<ProductControl, ProductStoreError>;
+
+    /// Explicitly confirm that an abandoned follow-up may be retried. This is
+    /// the only path that moves an indeterminate queued continuation back to
+    /// `pending`; ordinary restart recovery never does so after uncertainty.
+    async fn confirm_abandoned_followup(
+        &self,
+        session_id: &ProductSessionId,
+        control_id: &ProductControlId,
+    ) -> Result<ProductControl, ProductStoreError>;
+
+    /// Mark every still-pending control abandoned (non-final run termination).
+    async fn abandon_pending_controls(
+        &self,
+        session_id: &ProductSessionId,
+        reason: &str,
+    ) -> Result<u64, ProductStoreError>;
+
+    /// List pending follow-ups in seq order (read-only; prefer
+    /// [`Self::claim_next_pending_followup`] for drain).
+    async fn list_pending_followups(
+        &self,
+        session_id: &ProductSessionId,
+    ) -> Result<Vec<ProductControl>, ProductStoreError>;
+
+    /// Atomically claim the next pending follow-up (`pending` → `accepted`) so
+    /// crash restart cannot double-start the same control.
+    async fn claim_next_pending_followup(
+        &self,
+        session_id: &ProductSessionId,
+    ) -> Result<Option<ProductControl>, ProductStoreError>;
+
+    /// Atomically dequeue one pending follow-up and claim the product session
+    /// turn required to start it. Only idle sessions without an active turn
+    /// claim are eligible.
+    async fn claim_next_followup_turn(
+        &self,
+        session_id: &ProductSessionId,
+    ) -> Result<Option<ProductFollowupTurnClaim>, ProductStoreError>;
+
+    /// Undo an automatic follow-up claim before any runtime run is started.
+    /// This keeps a transient assembly failure retryable without exposing a
+    /// second runnable session turn.
+    async fn requeue_followup_turn(
+        &self,
+        claim_id: &ProductTurnClaimId,
+        control_id: &ProductControlId,
+    ) -> Result<(), ProductStoreError>;
+
+    /// Persist the exact runtime run id that is about to be started for a
+    /// claimed follow-up. Once this succeeds, restart recovery must assume
+    /// the runtime side effect may have started and require confirmation
+    /// rather than risk a duplicate run.
+    async fn reserve_followup_run(
+        &self,
+        claim_id: &ProductTurnClaimId,
+        control_id: &ProductControlId,
+        run_id: RunId,
+    ) -> Result<(), ProductStoreError>;
+
+    /// Release an automatic follow-up claim into a conservative state when
+    /// runtime preparation reached an uncertain boundary.
+    async fn abandon_followup_turn(
+        &self,
+        claim_id: &ProductTurnClaimId,
+        control_id: &ProductControlId,
+        reason: &str,
+    ) -> Result<(), ProductStoreError>;
+
+    /// Sessions whose final prior turn is idle and which still own a queued
+    /// follow-up. Used once at API startup to resume safe server-side drains.
+    async fn list_idle_sessions_with_pending_followups(
+        &self,
+    ) -> Result<Vec<ProductSessionId>, ProductStoreError>;
+
+    /// Close queued steer controls that were never observed at a runtime safe
+    /// point. The returned rows are used to publish canonical dropped events
+    /// before the run terminal event.
+    async fn drop_pending_steers(
+        &self,
+        session_id: &ProductSessionId,
+        reason: &str,
+    ) -> Result<Vec<ProductControl>, ProductStoreError>;
+
+    /// Move queued follow-ups to explicit confirmation after a non-final or
+    /// otherwise indeterminate run outcome. Returned rows become canonical
+    /// `followup_abandoned` events before the terminal event is published.
+    async fn abandon_pending_followups(
+        &self,
+        session_id: &ProductSessionId,
+        reason: &str,
+    ) -> Result<Vec<ProductControl>, ProductStoreError>;
 }
 
 pub trait ProductRuntimeStateResolver: Send + Sync {

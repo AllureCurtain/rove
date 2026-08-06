@@ -1,14 +1,15 @@
 use std::io::ErrorKind;
 
 use axum::Json;
-use axum::extract::rejection::QueryRejection;
+use axum::extract::rejection::{JsonRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use rove_runtime::memory::durable::{MemoryScope, MemoryType};
 use rove_runtime::memory::management::{
-    ManagedMemoryTopicInfo, MemoryTopicDeleteOutcome, delete_memory_topic_for_product_sync,
+    ManagedMemorySource, ManagedMemoryTopicInfo, ManagedMemoryTopicWrite, MemoryTopicDeleteOutcome,
+    create_memory_topic_for_product_sync, delete_memory_topic_for_product_sync,
     is_valid_memory_topic_slug, list_memory_topics_for_product_sync,
-    read_memory_topic_for_product_sync,
+    read_memory_topic_for_product_sync, update_memory_topic_for_product_sync,
 };
 use serde::Deserialize;
 use utoipa::IntoParams;
@@ -24,12 +25,28 @@ pub(crate) struct ProductMemoryWorkspaceQuery {
     pub workspace_id: ProductWorkspaceId,
 }
 
+#[derive(Debug, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub(crate) struct ListProductMemoryTopicsQuery {
+    /// Server-owned product workspace identity. Client paths are never accepted.
+    pub workspace_id: ProductWorkspaceId,
+    /// Case-insensitive match against topic slug, title, or description.
+    #[serde(default)]
+    pub q: Option<String>,
+    #[serde(default)]
+    pub memory_type: Option<ProductMemoryType>,
+    #[serde(default)]
+    pub scope: Option<ProductMemoryScope>,
+    #[serde(default)]
+    pub source: Option<ProductMemorySource>,
+}
+
 #[utoipa::path(
     get,
     path = "/product/memory/topics",
     tag = docs::PRODUCT_TAG,
     security(("BearerAuth" = [])),
-    params(ProductMemoryWorkspaceQuery),
+    params(ListProductMemoryTopicsQuery),
     responses(
         (status = 200, description = "Bounded durable memory topic catalog", body = ProductMemoryTopicsResponse),
         (status = 400, description = "Missing or invalid product workspace id", body = ApiErrorResponse),
@@ -41,9 +58,10 @@ pub(crate) struct ProductMemoryWorkspaceQuery {
 )]
 pub(crate) async fn list_product_memory_topics(
     State(state): State<ApiState>,
-    query: Result<Query<ProductMemoryWorkspaceQuery>, QueryRejection>,
+    query: Result<Query<ListProductMemoryTopicsQuery>, QueryRejection>,
 ) -> Result<Json<ProductMemoryTopicsResponse>, ApiError> {
-    let Query(query) = product_memory_query(query)?;
+    let Query(query) = query.map_err(|_| invalid_product_memory_query())?;
+    let search = product_memory_search_query(query.q)?;
     let memory_dir = product_memory_dir(&state, &query.workspace_id).await?;
     let topics =
         tokio::task::spawn_blocking(move || list_memory_topics_for_product_sync(&memory_dir))
@@ -54,9 +72,72 @@ pub(crate) async fn list_product_memory_topics(
         .into_iter()
         .filter(|topic| is_valid_memory_topic_slug(&topic.slug))
         .map(product_memory_topic)
+        .filter(|topic| {
+            query
+                .memory_type
+                .is_none_or(|memory_type| topic.memory_type == memory_type)
+                && query.scope.is_none_or(|scope| topic.scope == scope)
+                && query.source.is_none_or(|source| topic.source == source)
+                && search.as_ref().is_none_or(|search| {
+                    topic.slug.to_lowercase().contains(search)
+                        || topic.title.to_lowercase().contains(search)
+                        || topic.description.to_lowercase().contains(search)
+                })
+        })
         .collect::<Vec<_>>();
     let total = topics.len();
     Ok(Json(ProductMemoryTopicsResponse { topics, total }))
+}
+
+#[utoipa::path(
+    post,
+    path = "/product/memory/topics",
+    tag = docs::PRODUCT_TAG,
+    security(("BearerAuth" = [])),
+    params(ProductMemoryWorkspaceQuery),
+    request_body = CreateProductMemoryTopicRequest,
+    responses(
+        (status = 201, description = "Durable memory topic created", body = ProductMemoryTopicContentResponse),
+        (status = 400, description = "Invalid workspace query or memory topic body", body = ApiErrorResponse),
+        (status = 404, description = "Product workspace not found", body = ApiErrorResponse),
+        (status = 409, description = "Memory topic already exists or memory storage is unsafe or corrupt", body = ApiErrorResponse),
+        (status = 500, description = "Memory topic creation failed", body = ApiErrorResponse),
+        (status = 503, description = "ProductStore is unavailable", body = ApiErrorResponse)
+    )
+)]
+pub(crate) async fn create_product_memory_topic(
+    State(state): State<ApiState>,
+    query: Result<Query<ProductMemoryWorkspaceQuery>, QueryRejection>,
+    body: Result<Json<CreateProductMemoryTopicRequest>, JsonRejection>,
+) -> Result<(StatusCode, Json<ProductMemoryTopicContentResponse>), ApiError> {
+    let Query(query) = product_memory_query(query)?;
+    let request = super::routes::product_json(body)?;
+    validate_product_memory_slug(&request.slug)?;
+    let memory_dir = product_memory_dir(&state, &query.workspace_id).await?;
+    let content = request.content.clone();
+    let topic = product_memory_write(
+        request.slug,
+        request.title,
+        request.memory_type,
+        request.scope,
+        request.confidence,
+        request.description,
+        request.content,
+    );
+    let topic = tokio::task::spawn_blocking(move || {
+        create_memory_topic_for_product_sync(&memory_dir, topic)
+    })
+    .await
+    .map_err(|_| product_memory_internal())?
+    .map_err(map_memory_io_error)?;
+    Ok((
+        StatusCode::CREATED,
+        Json(ProductMemoryTopicContentResponse {
+            topic: product_memory_topic(topic),
+            content,
+            truncated: false,
+        }),
+    ))
 }
 
 #[utoipa::path(
@@ -111,6 +192,59 @@ pub(crate) async fn get_product_memory_topic(
 }
 
 #[utoipa::path(
+    put,
+    path = "/product/memory/topics/{slug}",
+    tag = docs::PRODUCT_TAG,
+    security(("BearerAuth" = [])),
+    params(
+        ProductMemoryWorkspaceQuery,
+        ("slug" = String, Path, description = "Validated durable memory topic slug")
+    ),
+    request_body = UpdateProductMemoryTopicRequest,
+    responses(
+        (status = 200, description = "Durable memory topic updated", body = ProductMemoryTopicContentResponse),
+        (status = 400, description = "Invalid workspace query, slug, or memory topic body", body = ApiErrorResponse),
+        (status = 404, description = "Product workspace or memory topic not found", body = ApiErrorResponse),
+        (status = 409, description = "Memory topic revision conflict or memory storage is unsafe or corrupt", body = ApiErrorResponse),
+        (status = 500, description = "Memory topic update failed", body = ApiErrorResponse),
+        (status = 503, description = "ProductStore is unavailable", body = ApiErrorResponse)
+    )
+)]
+pub(crate) async fn update_product_memory_topic(
+    State(state): State<ApiState>,
+    Path(slug): Path<String>,
+    query: Result<Query<ProductMemoryWorkspaceQuery>, QueryRejection>,
+    body: Result<Json<UpdateProductMemoryTopicRequest>, JsonRejection>,
+) -> Result<Json<ProductMemoryTopicContentResponse>, ApiError> {
+    validate_product_memory_slug(&slug)?;
+    let Query(query) = product_memory_query(query)?;
+    let request = super::routes::product_json(body)?;
+    let memory_dir = product_memory_dir(&state, &query.workspace_id).await?;
+    let expected_updated_at = request.expected_updated_at.clone();
+    let content = request.content.clone();
+    let topic = product_memory_write(
+        slug,
+        request.title,
+        request.memory_type,
+        request.scope,
+        request.confidence,
+        request.description,
+        request.content,
+    );
+    let topic = tokio::task::spawn_blocking(move || {
+        update_memory_topic_for_product_sync(&memory_dir, topic, expected_updated_at.as_deref())
+    })
+    .await
+    .map_err(|_| product_memory_internal())?
+    .map_err(map_memory_io_error)?;
+    Ok(Json(ProductMemoryTopicContentResponse {
+        topic: product_memory_topic(topic),
+        content,
+        truncated: false,
+    }))
+}
+
+#[utoipa::path(
     delete,
     path = "/product/memory/topics/{slug}",
     tag = docs::PRODUCT_TAG,
@@ -151,12 +285,28 @@ pub(crate) async fn delete_product_memory_topic(
 fn product_memory_query(
     query: Result<Query<ProductMemoryWorkspaceQuery>, QueryRejection>,
 ) -> Result<Query<ProductMemoryWorkspaceQuery>, ApiError> {
-    query.map_err(|_| {
-        ApiError::bad_request_with_code(
-            ProductErrorCode::ProductInvalidInput.as_str(),
-            "a valid product workspace id is required for memory operations",
-        )
-    })
+    query.map_err(|_| invalid_product_memory_query())
+}
+
+fn invalid_product_memory_query() -> ApiError {
+    ApiError::bad_request_with_code(
+        ProductErrorCode::ProductInvalidInput.as_str(),
+        "a valid product workspace id and bounded memory filters are required",
+    )
+}
+
+fn product_memory_search_query(query: Option<String>) -> Result<Option<String>, ApiError> {
+    let Some(query) = query else {
+        return Ok(None);
+    };
+    if query.len() > MAX_PRODUCT_TEXT_BYTES || query.chars().any(char::is_control) {
+        return Err(invalid_product_memory_query());
+    }
+    let query = query.trim();
+    if query.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(query.to_lowercase()))
 }
 
 async fn product_memory_dir(
@@ -229,13 +379,16 @@ fn validate_product_memory_slug(slug: &str) -> Result<(), ApiError> {
 fn map_memory_io_error(error: std::io::Error) -> ApiError {
     match error.kind() {
         ErrorKind::InvalidInput => ApiError::bad_request_with_code(
-            ProductErrorCode::ProductMemoryInvalidSlug.as_str(),
-            "invalid product memory topic slug",
+            ProductErrorCode::ProductInvalidInput.as_str(),
+            "invalid product memory topic input",
         ),
-        ErrorKind::InvalidData | ErrorKind::PermissionDenied => ApiError::conflict_with_code(
-            ProductErrorCode::ProductMemoryConflict.as_str(),
-            "product memory topic or index is unsafe or corrupt",
-        ),
+        ErrorKind::NotFound => product_memory_not_found(),
+        ErrorKind::AlreadyExists | ErrorKind::InvalidData | ErrorKind::PermissionDenied => {
+            ApiError::conflict_with_code(
+                ProductErrorCode::ProductMemoryConflict.as_str(),
+                "product memory topic changed, already exists, or its storage is unsafe",
+            )
+        }
         _ => product_memory_internal(),
     }
 }
@@ -256,6 +409,7 @@ fn product_memory_topic(topic: ManagedMemoryTopicInfo) -> ProductMemoryTopic {
     ProductMemoryTopic {
         slug: topic.slug,
         title,
+        layer: ProductMemoryLayer::Durable,
         memory_type: match topic.memory_type {
             MemoryType::User => ProductMemoryType::User,
             MemoryType::Feedback => ProductMemoryType::Feedback,
@@ -267,6 +421,12 @@ fn product_memory_topic(topic: ManagedMemoryTopicInfo) -> ProductMemoryTopic {
             MemoryScope::Project => ProductMemoryScope::Project,
             MemoryScope::Session => ProductMemoryScope::Session,
         },
+        source: match topic.source {
+            ManagedMemorySource::ProductSettings => ProductMemorySource::ProductSettings,
+            ManagedMemorySource::LlmTool => ProductMemorySource::LlmTool,
+            ManagedMemorySource::Other => ProductMemorySource::Other,
+            ManagedMemorySource::Unknown => ProductMemorySource::Unknown,
+        },
         confidence: topic.confidence.clamp(0.0, 1.0),
         created_at,
         updated_at,
@@ -276,6 +436,35 @@ fn product_memory_topic(topic: ManagedMemoryTopicInfo) -> ProductMemoryTopic {
             || description_truncated
             || created_at_truncated
             || updated_at_truncated,
+    }
+}
+
+fn product_memory_write(
+    slug: String,
+    title: String,
+    memory_type: ProductMemoryType,
+    scope: ProductMemoryScope,
+    confidence: f32,
+    description: String,
+    content: String,
+) -> ManagedMemoryTopicWrite {
+    ManagedMemoryTopicWrite {
+        slug,
+        title,
+        memory_type: match memory_type {
+            ProductMemoryType::User => MemoryType::User,
+            ProductMemoryType::Feedback => MemoryType::Feedback,
+            ProductMemoryType::Project => MemoryType::Project,
+            ProductMemoryType::Reference => MemoryType::Reference,
+        },
+        scope: match scope {
+            ProductMemoryScope::Global => MemoryScope::Global,
+            ProductMemoryScope::Project => MemoryScope::Project,
+            ProductMemoryScope::Session => MemoryScope::Session,
+        },
+        confidence,
+        description,
+        content,
     }
 }
 

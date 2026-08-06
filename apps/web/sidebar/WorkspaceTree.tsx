@@ -230,33 +230,13 @@ export function WorkspaceTree({
                 </div>
                 {active || normalizedQuery ? (
                   <>
-                    <ul className="session-list">
-                      {sessions.map((session) => (
-                        <li key={session.id}>
-                          <button
-                            type="button"
-                            className="session-item"
-                            data-active={session.id === activeSessionId}
-                            data-status={session.status}
-                            onClick={() => onSelectSession(workspace.id, session.id)}
-                            aria-label={sessionAriaLabel(session)}
-                            disabled={mutationBusy}
-                          >
-                            <span className="session-item__title">{session.title}</span>
-                            {session.status !== "idle" ? (
-                              <span className="session-badge" data-status={session.status}>
-                                {sessionStatusLabel(session.status)}
-                              </span>
-                            ) : null}
-                            <span
-                              className="session-item__status"
-                              data-status={session.status}
-                              aria-hidden="true"
-                            />
-                          </button>
-                        </li>
-                      ))}
-                    </ul>
+                    <SessionBranchList
+                      sessions={sessions}
+                      workspaceId={workspace.id}
+                      activeSessionId={activeSessionId}
+                      mutationBusy={mutationBusy}
+                      onSelectSession={onSelectSession}
+                    />
                     <div className="session-list__actions">
                       <button
                         type="button"
@@ -302,6 +282,126 @@ export function WorkspaceTree({
   );
 }
 
+function SessionBranchList({
+  sessions,
+  workspaceId,
+  activeSessionId,
+  mutationBusy,
+  onSelectSession,
+}: {
+  sessions: SessionRecord[];
+  workspaceId: string;
+  activeSessionId: string | null;
+  mutationBusy: boolean;
+  onSelectSession: (workspaceId: string, sessionId: string) => void;
+}) {
+  const visibleSessionIds = new Set(sessions.map((session) => session.id));
+  const childrenByParent = new Map<string, SessionRecord[]>();
+  for (const session of sessions) {
+    if (!session.parentSessionId || !visibleSessionIds.has(session.parentSessionId)) {
+      continue;
+    }
+    const children = childrenByParent.get(session.parentSessionId) ?? [];
+    children.push(session);
+    childrenByParent.set(session.parentSessionId, children);
+  }
+  const roots = sessions.filter(
+    (session) =>
+      !session.parentSessionId || !visibleSessionIds.has(session.parentSessionId),
+  );
+
+  return (
+    <ul className="session-list" aria-label="Sessions and branches">
+      {roots.map((session) => (
+        <SessionBranch
+          key={session.id}
+          session={session}
+          childrenByParent={childrenByParent}
+          parentAvailable={
+            !session.parentSessionId || visibleSessionIds.has(session.parentSessionId)
+          }
+          workspaceId={workspaceId}
+          activeSessionId={activeSessionId}
+          mutationBusy={mutationBusy}
+          onSelectSession={onSelectSession}
+        />
+      ))}
+    </ul>
+  );
+}
+
+function SessionBranch({
+  session,
+  childrenByParent,
+  parentAvailable,
+  workspaceId,
+  activeSessionId,
+  mutationBusy,
+  onSelectSession,
+}: {
+  session: SessionRecord;
+  childrenByParent: Map<string, SessionRecord[]>;
+  parentAvailable: boolean;
+  workspaceId: string;
+  activeSessionId: string | null;
+  mutationBusy: boolean;
+  onSelectSession: (workspaceId: string, sessionId: string) => void;
+}) {
+  const children = childrenByParent.get(session.id) ?? [];
+  return (
+    <li
+      className="session-branch"
+      data-forked={session.parentSessionId ? "true" : undefined}
+      data-orphaned={session.parentSessionId && !parentAvailable ? "true" : undefined}
+    >
+      <button
+        type="button"
+        className="session-item"
+        data-active={session.id === activeSessionId}
+        data-status={session.status}
+        onClick={() => onSelectSession(workspaceId, session.id)}
+        aria-label={sessionAriaLabel(session, parentAvailable)}
+        disabled={mutationBusy}
+      >
+        <span className="session-item__title">
+          <span>{session.title}</span>
+          {session.parentSessionId ? (
+            <small className="session-item__lineage">
+              {forkPointLabel(session, parentAvailable)}
+            </small>
+          ) : null}
+        </span>
+        {session.status !== "idle" ? (
+          <span className="session-badge" data-status={session.status}>
+            {sessionStatusLabel(session.status)}
+          </span>
+        ) : null}
+        <span
+          className="session-item__status"
+          data-status={session.status}
+          aria-hidden="true"
+        />
+      </button>
+      {children.length > 0 ? (
+        <ul className="session-list session-list--branch">
+          {children.map((child) => (
+            <SessionBranch
+              key={child.id}
+              session={child}
+              childrenByParent={childrenByParent}
+              parentAvailable
+              workspaceId={workspaceId}
+              activeSessionId={activeSessionId}
+              mutationBusy={mutationBusy}
+              onSelectSession={onSelectSession}
+            />
+          ))}
+        </ul>
+      ) : null}
+    </li>
+  );
+}
+
 function trapFocus(event: KeyboardEvent<HTMLElement>) {
   if (event.key !== "Tab") {
     return;
@@ -338,11 +438,28 @@ function sessionStatusLabel(status: SessionRecord["status"]): string {
   }
 }
 
-function sessionAriaLabel(session: SessionRecord): string {
+function sessionAriaLabel(session: SessionRecord, parentAvailable: boolean): string {
+  const lineage = session.parentSessionId
+    ? parentAvailable
+      ? "Forked session, "
+      : "Forked session with removed parent, "
+    : "";
   if (session.status === "idle") {
-    return session.title;
+    return `${lineage}${session.title}`;
   }
-  return `${session.title}, ${sessionStatusLabel(session.status)}`;
+  return `${lineage}${session.title}, ${sessionStatusLabel(session.status)}`;
+}
+
+function forkPointLabel(session: SessionRecord, parentAvailable: boolean): string {
+  const source = session.forkPointRunId
+    ? shortId(session.forkPointRunId)
+    : "boundary unavailable";
+  const sequence = session.forkPointSeq ? `event ${session.forkPointSeq}` : "event unavailable";
+  return `${parentAvailable ? "Fork" : "Parent removed"} · ${source} · ${sequence}`;
+}
+
+function shortId(value: string): string {
+  return value.length <= 10 ? value : value.slice(0, 10);
 }
 
 function OpenWorkspaceDialog({

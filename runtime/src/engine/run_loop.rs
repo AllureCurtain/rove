@@ -7,6 +7,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::compaction::{CompactionRuntime, maybe_compact_history};
 use crate::context::ContextManager;
+use crate::engine::control::{SteerLifecycle, SteerMessage};
 use crate::events::StreamEvent;
 use crate::hooks::HookRegistry;
 use crate::memory::paths::MemoryPaths;
@@ -25,6 +26,12 @@ use crate::types::{
 use crate::workspace::Workspace;
 use rove_core::ToolRegistry;
 use rove_models::ModelClient;
+use tokio::sync::Mutex as AsyncMutex;
+
+/// Shared receiver for in-flight steer messages. Wrapped in Arc<AsyncMutex> so
+/// it can be cloned into LoopContext and polled at each safe point without
+/// holding a mutable borrow across await boundaries.
+pub(crate) type SteerReceiver = Arc<AsyncMutex<tokio::sync::mpsc::Receiver<SteerMessage>>>;
 
 #[derive(Clone)]
 pub(crate) struct LoopContext<'a> {
@@ -42,6 +49,13 @@ pub(crate) struct LoopContext<'a> {
     pub input_provider: Option<Arc<dyn UserInputProvider>>,
     pub hooks: HookRegistry,
     pub compaction: CompactionRuntime,
+    /// Inbound steer messages drained at the declared safe point (top of each
+    /// loop iteration, BEFORE prompt construction for the next model turn).
+    /// `None` for runs without a control plane (e.g. direct CLI exec).
+    pub steer_rx: Option<SteerReceiver>,
+    /// Tracks steers after the safe point and until the next model turn is
+    /// actually handed to the model runner.
+    pub steer_lifecycle: Option<SteerLifecycle>,
 }
 
 impl<'a> LoopContext<'a> {
@@ -145,11 +159,42 @@ pub(crate) fn run_unplanned_loop<'a>(
         let mut compaction = ctx.compaction.clone();
         loop {
             if cancel_token.is_cancelled() {
+                // Drain and surface dropped steers so the API/product store
+                // can reconcile them as never-applied.
+                if let Some(rx) = ctx.steer_rx.as_ref() {
+                    let mut r = rx.lock().await;
+                    while let Ok(msg) = r.try_recv() {
+                        yield LoopItem::Event(StreamEvent::SteerDropped {
+                            id: msg.id.0,
+                            reason: "cancelled".to_string(),
+                        });
+                    }
+                }
                 yield LoopItem::Complete {
                     reason: TerminationReason::Cancelled,
                     output: None,
                 };
                 return;
+            }
+
+            // SAFE POINT — drain any steers queued since the last turn. Runs
+            // *before* prompt assembly for the next model call so the injected
+            // message is visible on the next turn. Never runs mid-turn.
+            let mut accepted_steer_ids = Vec::new();
+            if let Some(rx) = ctx.steer_rx.as_ref() {
+                let mut r = rx.lock().await;
+                while let Ok(msg) = r.try_recv() {
+                    let id = msg.id.0;
+                    state.working_memory.push(Message::user(msg.content.clone()));
+                    if let Some(lifecycle) = ctx.steer_lifecycle.as_ref() {
+                        lifecycle.accepted(id.clone()).await;
+                    }
+                    yield LoopItem::Event(StreamEvent::SteerAccepted {
+                        id: id.clone(),
+                        content: msg.content,
+                    });
+                    accepted_steer_ids.push(id);
+                }
             }
 
             if state.step >= ctx.max_steps {
@@ -228,10 +273,40 @@ pub(crate) fn run_unplanned_loop<'a>(
                 ctx.registry.model_schemas(),
                 cancel_token.clone(),
             );
+            let mut steers_applied = false;
             let model_turn = loop {
                 match turn_stream.next().await {
-                    Some(ModelTurnItem::Event(event)) => yield LoopItem::Event(event),
-                    Some(ModelTurnItem::Finished(turn)) => break turn,
+                    Some(ModelTurnItem::Event(event)) => {
+                        // `run_model_turn` has now been successfully polled and
+                        // constructed its provider stream. This is the earliest
+                        // durable lifecycle boundary at which a steer can claim
+                        // to have entered a model turn rather than merely a
+                        // prepared prompt.
+                        if !steers_applied {
+                            for id in accepted_steer_ids.drain(..) {
+                                if let Some(lifecycle) = ctx.steer_lifecycle.as_ref() {
+                                    lifecycle.applied(&id).await;
+                                }
+                                yield LoopItem::Event(StreamEvent::SteerApplied { id });
+                            }
+                            steers_applied = true;
+                        }
+                        yield LoopItem::Event(event);
+                    }
+                    Some(ModelTurnItem::Finished(turn)) => {
+                        // The current implementation emits a status event first,
+                        // but keep the lifecycle correct if a future adapter
+                        // produces a finished turn as its first item.
+                        if !steers_applied {
+                            for id in accepted_steer_ids.drain(..) {
+                                if let Some(lifecycle) = ctx.steer_lifecycle.as_ref() {
+                                    lifecycle.applied(&id).await;
+                                }
+                                yield LoopItem::Event(StreamEvent::SteerApplied { id });
+                            }
+                        }
+                        break turn;
+                    }
                     Some(ModelTurnItem::Cancelled) => {
                         yield LoopItem::Complete {
                             reason: TerminationReason::Cancelled,

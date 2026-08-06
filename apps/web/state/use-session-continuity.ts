@@ -12,6 +12,10 @@ import {
   workbenchReducer,
   type ToolCallView,
 } from "../lib/rove-state";
+import type {
+  ProductControl,
+  ProductControlKind,
+} from "../product/product-api-types";
 import type { ProductApiClient } from "../product/product-client";
 import {
   findSession,
@@ -28,7 +32,11 @@ import {
   projectProductTranscript,
   type TranscriptRestoreState,
 } from "./transcript-projection";
-import { buildTurnJobRequest, isHardResumeError } from "./turn-request";
+import {
+  assertProviderSelectionIsSatisfiable,
+  buildTurnJobRequest,
+  isHardResumeError,
+} from "./turn-request";
 import { hasAdvancedRuntimeBinding } from "./server-product-state";
 
 export function useSessionContinuity({
@@ -37,7 +45,6 @@ export function useSessionContinuity({
   activeSession,
   selection,
   profiles,
-  useDefaultApproval,
   markSession,
   refreshSessionStatuses,
   updateSessionTitle,
@@ -48,7 +55,6 @@ export function useSessionContinuity({
   activeSession: SessionRecord | null;
   selection: ActiveProviderSelection;
   profiles: ProviderProfileRecord[];
-  useDefaultApproval: boolean;
   markSession: (
     sessionId: string,
     patch: Parameters<typeof updateSession>[2],
@@ -62,21 +68,102 @@ export function useSessionContinuity({
   });
   const [approvalBusy, setApprovalBusy] = useState<string | null>(null);
   const [inputBusy, setInputBusy] = useState<string | null>(null);
+  const [controls, setControls] = useState<ProductControl[]>([]);
+  const [controlsLoading, setControlsLoading] = useState(false);
+  const [controlBusy, setControlBusy] = useState<string | null>(null);
+  const [controlError, setControlError] = useState<string | null>(null);
   const [runState, dispatch] = useReducer(
     workbenchReducer,
     undefined,
     createWorkbenchState,
   );
   const controllerRef = useRef<ReturnType<typeof createRunController> | null>(null);
+  // The send callback is stable, so the provider guard reads selection and
+  // profiles through refs instead of capturing a stale render's values.
+  const selectionRef = useRef(selection);
+  selectionRef.current = selection;
+  const profilesRef = useRef(profiles);
+  profilesRef.current = profiles;
   const focusedSessionRef = useRef<string | null>(null);
   const restoredSessionRef = useRef<string | null>(null);
   const observedJobRef = useRef<string | null>(null);
   const transcriptGenerationRef = useRef(0);
+  const controlsGenerationRef = useRef(0);
+  const controlRequestsRef = useRef(
+    new Map<
+      string,
+      { idempotencyKey: string; kind: ProductControlKind; sessionId: string }
+    >(),
+  );
   const refreshStatusesRef = useRef(refreshSessionStatuses);
+  const terminalReconciliationRef = useRef<
+    (
+      sessionId: string,
+      controller: ReturnType<typeof createRunController>,
+      completedJobId: string | null,
+    ) => void
+  >(() => undefined);
 
   useEffect(() => {
     refreshStatusesRef.current = refreshSessionStatuses;
   }, [refreshSessionStatuses]);
+
+  const clearControls = useCallback(() => {
+    ++controlsGenerationRef.current;
+    setControls([]);
+    setControlsLoading(false);
+    setControlBusy(null);
+    setControlError(null);
+  }, []);
+
+  const refreshControls = useCallback(
+    async (sessionId: string): Promise<ProductControl[] | null> => {
+      const generation = ++controlsGenerationRef.current;
+      setControlsLoading(true);
+      try {
+        const response = await productClient.listControls(sessionId);
+        if (
+          controlsGenerationRef.current !== generation ||
+          focusedSessionRef.current !== sessionId
+        ) {
+          return null;
+        }
+        setControls(response.controls);
+        setControlError(null);
+        return response.controls;
+      } catch (error) {
+        if (
+          controlsGenerationRef.current === generation &&
+          focusedSessionRef.current === sessionId
+        ) {
+          setControlError(`Could not refresh controls: ${describeError(error)}`);
+        }
+        return null;
+      } finally {
+        if (controlsGenerationRef.current === generation) {
+          setControlsLoading(false);
+        }
+      }
+    },
+    [productClient],
+  );
+
+  const upsertControl = useCallback((control: ProductControl) => {
+    if (focusedSessionRef.current !== control.product_session_id) {
+      return;
+    }
+    setControls((current) => {
+      const index = current.findIndex((item) => item.id === control.id);
+      if (index === -1) {
+        return [...current, control].sort((left, right) => left.seq - right.seq);
+      }
+      return [
+        ...current.slice(0, index),
+        control,
+        ...current.slice(index + 1),
+      ];
+    });
+  }, []);
 
   const closeFocusedObservation = useCallback(() => {
     controllerRef.current?.close();
@@ -96,15 +183,29 @@ export function useSessionContinuity({
           ) {
             return;
           }
+          const completedJobId = observedJobRef.current;
           observedJobRef.current = null;
-          markSession(sessionId, { status: "idle", hasDurableTurn: true });
-          void refreshStatusesRef.current();
+          terminalReconciliationRef.current(sessionId, controller, completedJobId);
+        },
+        onStreamEvent: (event) => {
+          if (
+            focusedSessionRef.current !== sessionId ||
+            (event.type !== "steer_accepted" &&
+              event.type !== "steer_applied" &&
+              event.type !== "steer_dropped" &&
+              event.type !== "followup_queued" &&
+              event.type !== "followup_dequeued" &&
+              event.type !== "followup_abandoned")
+          ) {
+            return;
+          }
+          void refreshControls(sessionId);
         },
       });
       controllerRef.current = controller;
       return controller;
     },
-    [closeFocusedObservation, markSession],
+    [closeFocusedObservation, refreshControls],
   );
 
   const attachFocusedJob = useCallback(
@@ -140,6 +241,7 @@ export function useSessionContinuity({
       closeFocusedObservation();
       focusedSessionRef.current = sessionId;
       restoredSessionRef.current = sessionId;
+      clearControls();
       dispatch({ type: "reset" });
       setRestoreState({ status: "loading", sessionId });
 
@@ -166,6 +268,7 @@ export function useSessionContinuity({
               }
             : { status: "complete", sessionId },
         );
+        void refreshControls(sessionId);
 
         const session = findSession(catalogRef.current, sessionId);
         const liveJobId =
@@ -194,7 +297,14 @@ export function useSessionContinuity({
         });
       }
     },
-    [attachFocusedJob, catalogRef, closeFocusedObservation, productClient],
+    [
+      attachFocusedJob,
+      catalogRef,
+      clearControls,
+      closeFocusedObservation,
+      productClient,
+      refreshControls,
+    ],
   );
 
   const focusSession = useCallback(
@@ -212,10 +322,11 @@ export function useSessionContinuity({
       closeFocusedObservation();
       focusedSessionRef.current = sessionId;
       restoredSessionRef.current = null;
+      clearControls();
       dispatch({ type: "reset" });
       setRestoreState({ status: "loading", sessionId });
     },
-    [closeFocusedObservation],
+    [clearControls, closeFocusedObservation],
   );
 
   const leaveSession = useCallback(() => {
@@ -223,9 +334,10 @@ export function useSessionContinuity({
     closeFocusedObservation();
     focusedSessionRef.current = null;
     restoredSessionRef.current = null;
+    clearControls();
     dispatch({ type: "reset" });
     setRestoreState({ status: "idle" });
-  }, [closeFocusedObservation]);
+  }, [clearControls, closeFocusedObservation]);
 
   const retryRestore = useCallback(
     (workspaceId: string, sessionId: string) => {
@@ -234,6 +346,220 @@ export function useSessionContinuity({
     },
     [restoreSession],
   );
+
+  const submitControl = useCallback(
+    async (kind: ProductControlKind, content: string): Promise<boolean> => {
+      const sessionId = focusedSessionRef.current ?? catalogRef.current.active.sessionId;
+      const session = sessionId ? findSession(catalogRef.current, sessionId) : null;
+      const trimmed = content.trim();
+      if (!session || !trimmed) {
+        setControlError("Open a session and enter a control message first.");
+        return false;
+      }
+
+      const requestKey = `${session.id}\u0000${kind}\u0000${trimmed}`;
+      let pending = controlRequestsRef.current.get(requestKey);
+      if (!pending) {
+        if (controlRequestsRef.current.size >= MAX_PENDING_CONTROL_REQUESTS) {
+          const oldest = controlRequestsRef.current.keys().next().value;
+          if (oldest) {
+            controlRequestsRef.current.delete(oldest);
+          }
+        }
+        pending = {
+          idempotencyKey: createControlIdempotencyKey(),
+          kind,
+          sessionId: session.id,
+        };
+        controlRequestsRef.current.set(requestKey, pending);
+      }
+
+      const busyId = `submit:${kind}`;
+      setControlBusy(busyId);
+      setControlError(null);
+      try {
+        const control =
+          kind === "steer"
+            ? await productClient.enqueueSteer(session.id, {
+                content: trimmed,
+                idempotency_key: pending.idempotencyKey,
+              })
+            : await productClient.enqueueFollowup(session.id, {
+                content: trimmed,
+                idempotency_key: pending.idempotencyKey,
+              });
+        controlRequestsRef.current.delete(requestKey);
+        if (focusedSessionRef.current !== session.id) {
+          return true;
+        }
+        upsertControl(control);
+        setConnection("ok");
+        void refreshControls(session.id);
+        return true;
+      } catch (error) {
+        if (focusedSessionRef.current !== session.id) {
+          return false;
+        }
+        const detail = describeError(error);
+        setControlError(`Could not submit ${controlLabel(kind)}: ${detail}`);
+        if (isLikelyNetworkError(detail)) {
+          setConnection("error");
+        }
+        return false;
+      } finally {
+        if (focusedSessionRef.current === session.id) {
+          setControlBusy((current) => (current === busyId ? null : current));
+        }
+      }
+    },
+    [catalogRef, productClient, refreshControls, setConnection, upsertControl],
+  );
+
+  const revokeControl = useCallback(
+    async (controlId: string) => {
+      const sessionId = focusedSessionRef.current ?? catalogRef.current.active.sessionId;
+      if (!sessionId) {
+        setControlError("Open the session that owns this control first.");
+        return;
+      }
+      const busyId = `revoke:${controlId}`;
+      setControlBusy(busyId);
+      setControlError(null);
+      try {
+        const control = await productClient.revokeControl(sessionId, controlId);
+        if (focusedSessionRef.current !== sessionId) {
+          return;
+        }
+        upsertControl(control);
+        setConnection("ok");
+        void refreshControls(sessionId);
+      } catch (error) {
+        if (focusedSessionRef.current !== sessionId) {
+          return;
+        }
+        setControlError(`Could not revoke control: ${describeError(error)}`);
+      } finally {
+        if (focusedSessionRef.current === sessionId) {
+          setControlBusy((current) => (current === busyId ? null : current));
+        }
+      }
+    },
+    [catalogRef, productClient, refreshControls, setConnection, upsertControl],
+  );
+
+  const confirmFollowup = useCallback(
+    async (controlId: string) => {
+      const sessionId = focusedSessionRef.current ?? catalogRef.current.active.sessionId;
+      if (!sessionId) {
+        setControlError("Open the session that owns this follow-up first.");
+        return;
+      }
+      const busyId = `confirm:${controlId}`;
+      setControlBusy(busyId);
+      setControlError(null);
+      try {
+        const control = await productClient.confirmFollowup(sessionId, controlId);
+        if (focusedSessionRef.current !== sessionId) {
+          return;
+        }
+        upsertControl(control);
+        setConnection("ok");
+        void refreshControls(sessionId);
+      } catch (error) {
+        if (focusedSessionRef.current !== sessionId) {
+          return;
+        }
+        setControlError(`Could not confirm follow-up: ${describeError(error)}`);
+      } finally {
+        if (focusedSessionRef.current === sessionId) {
+          setControlBusy((current) => (current === busyId ? null : current));
+        }
+      }
+    },
+    [catalogRef, productClient, refreshControls, setConnection, upsertControl],
+  );
+
+  const reconcileTerminal = useCallback(
+    async (
+      sessionId: string,
+      controller: ReturnType<typeof createRunController>,
+      completedJobId: string | null,
+    ) => {
+      for (const delayMs of TERMINAL_RECONCILIATION_DELAYS_MS) {
+        if (delayMs > 0) {
+          await waitForReconciliationDelay(delayMs);
+        }
+        if (
+          controllerRef.current !== controller ||
+          focusedSessionRef.current !== sessionId
+        ) {
+          return;
+        }
+
+        const refreshed = await refreshStatusesRef.current();
+        if (
+          !refreshed ||
+          controllerRef.current !== controller ||
+          focusedSessionRef.current !== sessionId
+        ) {
+          continue;
+        }
+        const currentControls = await refreshControls(sessionId);
+        if (
+          controllerRef.current !== controller ||
+          focusedSessionRef.current !== sessionId
+        ) {
+          return;
+        }
+        const currentSession = findSession(catalogRef.current, sessionId);
+        const successorJobId = currentSession?.activeJobId ?? null;
+        const successorIsLive =
+          (currentSession?.status === "running" ||
+            currentSession?.status === "needs_attention") &&
+          successorJobId !== null &&
+          successorJobId !== completedJobId;
+        if (successorIsLive) {
+          attachFocusedJob(sessionId, successorJobId);
+          return;
+        }
+
+        const followupStillPending = currentControls?.some(
+          (control) =>
+            control.kind === "followup" &&
+            (control.status === "pending" || control.status === "accepted"),
+        );
+        if (followupStillPending || currentSession?.status === "running") {
+          continue;
+        }
+
+        if (currentSession) {
+          restoredSessionRef.current = null;
+          await restoreSession(currentSession.workspaceId, sessionId);
+          return;
+        }
+      }
+
+      const currentSession = findSession(catalogRef.current, sessionId);
+      if (
+        currentSession &&
+        controllerRef.current === controller &&
+        focusedSessionRef.current === sessionId
+      ) {
+        restoredSessionRef.current = null;
+        await restoreSession(currentSession.workspaceId, sessionId);
+      }
+    },
+    [attachFocusedJob, catalogRef, refreshControls, restoreSession],
+  );
+
+  useEffect(() => {
+    terminalReconciliationRef.current = (sessionId, controller, completedJobId) => {
+      void reconcileTerminal(sessionId, controller, completedJobId);
+    };
+    return () => {
+      terminalReconciliationRef.current = () => undefined;
+    };
+  }, [reconcileTerminal]);
 
   const reconcileCreatedTurn = useCallback(
     async (
@@ -313,13 +639,15 @@ export function useSessionContinuity({
 
       let request;
       try {
+        // Fail closed before any optimistic turn is appended below.
+        assertProviderSelectionIsSatisfiable(
+          selectionRef.current,
+          profilesRef.current,
+        );
         request = buildTurnJobRequest({
           message,
           workspace,
           session,
-          selection,
-          profiles,
-          useDefaultApproval,
         });
       } catch (error) {
         dispatch({ type: "set_error", error: describeError(error) });
@@ -415,13 +743,10 @@ export function useSessionContinuity({
       catalogRef,
       installFocusedController,
       markSession,
-      profiles,
       reconcileCreatedTurn,
-      selection,
       setConnection,
       restoreSession,
       updateSessionTitle,
-      useDefaultApproval,
     ],
   );
 
@@ -431,15 +756,12 @@ export function useSessionContinuity({
     }
     try {
       await controllerRef.current?.cancel(runState.activeJobId);
-      if (activeSession) {
-        markSession(activeSession.id, { status: "idle" });
-      }
     } catch (error) {
       if (!isRunControllerInactive(error)) {
         dispatch({ type: "set_error", error: describeError(error) });
       }
     }
-  }, [activeSession, markSession, runState.activeJobId]);
+  }, [runState.activeJobId]);
 
   const approve = useCallback(
     async (tool: ToolCallView, decision: "approve" | "reject") => {
@@ -528,15 +850,48 @@ export function useSessionContinuity({
     restoreState,
     approvalBusy,
     inputBusy,
+    controls,
+    controlsLoading,
+    controlBusy,
+    controlError,
+    refreshControls,
     focusSession,
     prepareSession,
     leaveSession,
     retryRestore,
     send,
+    submitSteer: (content: string) => submitControl("steer", content),
+    submitFollowup: (content: string) => submitControl("followup", content),
+    revokeControl,
+    confirmFollowup,
     cancel,
     approve,
     answer,
   };
+}
+
+const MAX_PENDING_CONTROL_REQUESTS = 32;
+const TERMINAL_RECONCILIATION_DELAYS_MS = [0, 100, 200, 400, 800, 1_000] as const;
+
+function createControlIdempotencyKey(): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return `control_${crypto.randomUUID()}`;
+  }
+  return `control_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 12)}`;
+}
+
+function controlLabel(kind: ProductControlKind): string {
+  return kind === "steer" ? "steer" : "follow-up";
+}
+
+function isLikelyNetworkError(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes("fetch") ||
+    normalized.includes("network") ||
+    normalized.includes("connection") ||
+    normalized.includes("timeout")
+  );
 }
 
 function isAmbiguousJobStartError(error: unknown): boolean {

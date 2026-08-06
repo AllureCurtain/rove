@@ -24,7 +24,7 @@ pub(crate) struct ListProductSessionsQuery {
     pub workspace_id: ProductWorkspaceId,
 }
 
-fn product_json<T>(body: Result<Json<T>, JsonRejection>) -> Result<T, ApiError> {
+pub(super) fn product_json<T>(body: Result<Json<T>, JsonRejection>) -> Result<T, ApiError> {
     body.map(|Json(value)| value).map_err(|_| {
         ApiError::bad_request_with_code(
             ProductErrorCode::ProductInvalidInput.as_str(),
@@ -173,6 +173,64 @@ pub(crate) async fn create_product_session(
 }
 
 #[utoipa::path(
+    post,
+    path = "/product/sessions/{session_id}/forks",
+    tag = docs::PRODUCT_TAG,
+    security(("BearerAuth" = [])),
+    params(("session_id" = ProductSessionId, Path, description = "Parent product session id")),
+    request_body = CreateProductForkRequest,
+    responses(
+        (status = 201, description = "Child session forked from an exact final runtime boundary", body = ProductForkResponse),
+        (status = 200, description = "Idempotent replay of the same fork", body = ProductForkResponse),
+        (status = 400, description = "Invalid fork request", body = ApiErrorResponse),
+        (status = 404, description = "Parent product session not found", body = ApiErrorResponse),
+        (status = 409, description = "Source is active, incomplete, corrupt, or conflicts with an idempotency key", body = ApiErrorResponse),
+        (status = 500, description = "Product store operation failed", body = ApiErrorResponse),
+        (status = 503, description = "ProductStore is unavailable", body = ApiErrorResponse)
+    )
+)]
+pub(crate) async fn create_product_session_fork(
+    State(state): State<ApiState>,
+    Path(session_id): Path<ProductSessionId>,
+    body: Result<Json<CreateProductForkRequest>, JsonRejection>,
+) -> Result<(StatusCode, Json<ProductForkResponse>), ApiError> {
+    let request = product_json(body)?;
+    let store = state.product_store()?;
+    if let Some((session, fork)) = store.replay_fork(&session_id, &request).await? {
+        return Ok((StatusCode::OK, Json(ProductForkResponse { fork, session })));
+    }
+    let boundary =
+        crate::verify_product_fork_boundary(&state, &session_id, request.fork_at_run_id).await?;
+    let (session, fork, already_exists) = store.create_fork(request, boundary).await?;
+    let status = if already_exists {
+        StatusCode::OK
+    } else {
+        StatusCode::CREATED
+    };
+    Ok((status, Json(ProductForkResponse { fork, session })))
+}
+
+#[utoipa::path(
+    get,
+    path = "/product/sessions/{session_id}/forks",
+    tag = docs::PRODUCT_TAG,
+    security(("BearerAuth" = [])),
+    params(("session_id" = ProductSessionId, Path, description = "Parent product session id, including deleted-parent provenance")),
+    responses(
+        (status = 200, description = "Direct immutable forks from this parent", body = ProductForksResponse),
+        (status = 500, description = "Product store operation failed", body = ApiErrorResponse),
+        (status = 503, description = "ProductStore is unavailable", body = ApiErrorResponse)
+    )
+)]
+pub(crate) async fn list_product_session_forks(
+    State(state): State<ApiState>,
+    Path(session_id): Path<ProductSessionId>,
+) -> Result<Json<ProductForksResponse>, ApiError> {
+    let forks = state.product_store()?.list_forks(&session_id).await?;
+    Ok(Json(ProductForksResponse { forks }))
+}
+
+#[utoipa::path(
     patch,
     path = "/product/sessions/{session_id}",
     tag = docs::PRODUCT_TAG,
@@ -245,6 +303,85 @@ pub(crate) async fn get_product_session_transcript(
         .read_transcript(&session_id)
         .await?;
     Ok(Json(transcript))
+}
+
+#[utoipa::path(
+    get,
+    path = "/product/sessions/{session_id}/model-config",
+    tag = docs::PRODUCT_TAG,
+    security(("BearerAuth" = [])),
+    params(("session_id" = ProductSessionId, Path, description = "Product session id")),
+    responses(
+        (status = 200, description = "Session-scoped model configuration", body = ProductSessionModelConfig),
+        (status = 404, description = "Product session not found", body = ApiErrorResponse),
+        (status = 500, description = "Product store operation failed", body = ApiErrorResponse),
+        (status = 503, description = "ProductStore is unavailable", body = ApiErrorResponse)
+    )
+)]
+pub(crate) async fn get_product_session_model_config(
+    State(state): State<ApiState>,
+    Path(session_id): Path<ProductSessionId>,
+) -> Result<Json<ProductSessionModelConfig>, ApiError> {
+    Ok(Json(
+        state
+            .product_store()?
+            .get_session_model_config(&session_id)
+            .await?,
+    ))
+}
+
+#[utoipa::path(
+    put,
+    path = "/product/sessions/{session_id}/model-config",
+    tag = docs::PRODUCT_TAG,
+    security(("BearerAuth" = [])),
+    params(("session_id" = ProductSessionId, Path, description = "Product session id")),
+    request_body = UpdateProductSessionModelConfigRequest,
+    responses(
+        (status = 200, description = "Session-scoped model configuration updated", body = ProductSessionModelConfig),
+        (status = 400, description = "Invalid model configuration", body = ApiErrorResponse),
+        (status = 409, description = "Session model revision conflict", body = ApiErrorResponse),
+        (status = 404, description = "Product session or provider profile not found", body = ApiErrorResponse),
+        (status = 500, description = "Product store operation failed", body = ApiErrorResponse),
+        (status = 503, description = "ProductStore is unavailable", body = ApiErrorResponse)
+    )
+)]
+pub(crate) async fn update_product_session_model_config(
+    State(state): State<ApiState>,
+    Path(session_id): Path<ProductSessionId>,
+    body: Result<Json<UpdateProductSessionModelConfigRequest>, JsonRejection>,
+) -> Result<Json<ProductSessionModelConfig>, ApiError> {
+    let request = product_json(body)?;
+    Ok(Json(
+        state
+            .product_store()?
+            .update_session_model_config(&session_id, request)
+            .await?,
+    ))
+}
+
+#[utoipa::path(
+    get,
+    path = "/product/sessions/{session_id}/run-models",
+    tag = docs::PRODUCT_TAG,
+    security(("BearerAuth" = [])),
+    params(("session_id" = ProductSessionId, Path, description = "Product session id")),
+    responses(
+        (status = 200, description = "Immutable model snapshots for product runs", body = ProductSessionRunModelsResponse),
+        (status = 404, description = "Product session not found", body = ApiErrorResponse),
+        (status = 500, description = "Product store operation failed", body = ApiErrorResponse),
+        (status = 503, description = "ProductStore is unavailable", body = ApiErrorResponse)
+    )
+)]
+pub(crate) async fn list_product_session_run_models(
+    State(state): State<ApiState>,
+    Path(session_id): Path<ProductSessionId>,
+) -> Result<Json<ProductSessionRunModelsResponse>, ApiError> {
+    let runs = state
+        .product_store()?
+        .list_session_run_models(&session_id)
+        .await?;
+    Ok(Json(ProductSessionRunModelsResponse { runs }))
 }
 
 #[utoipa::path(
@@ -340,6 +477,81 @@ pub(crate) async fn delete_product_provider_profile(
         .delete_provider_profile(&profile_id)
         .await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(
+    get,
+    path = "/product/provider-profiles/{profile_id}/models",
+    tag = docs::PRODUCT_TAG,
+    security(("BearerAuth" = [])),
+    params(("profile_id" = ProductProviderProfileId, Path, description = "Provider profile id")),
+    responses(
+        (status = 200, description = "Models reported by the configured provider", body = ProductProviderModelsResponse),
+        (status = 400, description = "Invalid provider profile or missing key environment variable", body = ApiErrorResponse),
+        (status = 404, description = "Provider profile not found", body = ApiErrorResponse),
+        (status = 429, description = "Provider model inventory was rate limited", body = ApiErrorResponse),
+        (status = 500, description = "Product store operation failed", body = ApiErrorResponse),
+        (status = 502, description = "Provider model inventory failed", body = ApiErrorResponse),
+        (status = 503, description = "ProductStore is unavailable", body = ApiErrorResponse),
+        (status = 504, description = "Provider model inventory timed out", body = ApiErrorResponse)
+    )
+)]
+pub(crate) async fn list_product_provider_models(
+    State(state): State<ApiState>,
+    Path(profile_id): Path<ProductProviderProfileId>,
+) -> Result<Json<ProductProviderModelsResponse>, ApiError> {
+    let stored = state
+        .product_store()?
+        .get_provider_profile(&profile_id)
+        .await?;
+    let provider = crate::types::ProviderProfileRequest {
+        provider_type: Some(product_provider_type_name(stored.provider_type).to_string()),
+        name: stored.label.clone(),
+        api_base: stored.api_base.clone(),
+        api_key_env: stored.api_key_env.clone(),
+    };
+    let normalized = crate::provider::normalize_provider_profile(&provider)?;
+    let key_env = crate::provider::provider_key_env(&normalized);
+    let inventory = crate::provider::provider_inventory(&normalized, &key_env, None).await?;
+    let supports_reasoning = stored.provider_type == ProductProviderType::OpenaiResponses;
+    let supported_reasoning = if supports_reasoning {
+        vec![
+            ProductReasoningPreference::Low,
+            ProductReasoningPreference::Medium,
+            ProductReasoningPreference::High,
+        ]
+    } else {
+        Vec::new()
+    };
+    let reasoning_unavailable_reason = (!supports_reasoning).then(|| {
+        "Reasoning controls are only available for OpenAI Responses profiles.".to_string()
+    });
+    Ok(Json(ProductProviderModelsResponse {
+        profile_id,
+        default_model: stored.default_model,
+        models: inventory
+            .models
+            .into_iter()
+            .map(|id| ProductModelDescriptor {
+                context_window: crate::pricing::bundled_context_window(&id)
+                    .and_then(|value| u32::try_from(value).ok()),
+                id,
+                supports_reasoning,
+                supported_reasoning: supported_reasoning.clone(),
+                reasoning_unavailable_reason: reasoning_unavailable_reason.clone(),
+            })
+            .collect(),
+    }))
+}
+
+fn product_provider_type_name(provider_type: ProductProviderType) -> &'static str {
+    match provider_type {
+        ProductProviderType::Openai => "openai",
+        ProductProviderType::OpenaiResponses => "openai-responses",
+        ProductProviderType::Anthropic => "anthropic",
+        ProductProviderType::Ollama => "ollama",
+        ProductProviderType::Fake => "fake",
+    }
 }
 
 #[utoipa::path(
@@ -453,6 +665,350 @@ pub(crate) async fn migrate_m1_browser_state(
         },
     )
     .await
+}
+
+#[derive(Debug, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub(crate) struct ListControlsQuery {
+    #[serde(default)]
+    pub status: Option<ProductControlStatusFilter>,
+}
+
+#[utoipa::path(
+    post,
+    path = "/product/sessions/{session_id}/steers",
+    tag = docs::PRODUCT_TAG,
+    security(("BearerAuth" = [])),
+    params(("session_id" = String, Path, description = "Product session ULID")),
+    request_body = CreateProductControlRequest,
+    responses(
+        (status = 201, description = "Steer accepted", body = ProductControl),
+        (status = 200, description = "Idempotent replay", body = ProductControl),
+        (status = 400, description = "Invalid input", body = ApiErrorResponse),
+        (status = 404, description = "Product session not found", body = ApiErrorResponse),
+        (status = 409, description = "Idempotency or control-state conflict", body = ApiErrorResponse),
+        (status = 500, description = "Product store operation failed", body = ApiErrorResponse),
+        (status = 503, description = "ProductStore is unavailable", body = ApiErrorResponse),
+    )
+)]
+pub(crate) async fn create_product_session_steer(
+    State(state): State<ApiState>,
+    Path(session_id): Path<ProductSessionId>,
+    body: Result<Json<CreateProductControlRequest>, JsonRejection>,
+) -> Result<(StatusCode, Json<ProductControl>), ApiError> {
+    create_control(state, session_id, ProductControlKind::Steer, body).await
+}
+
+#[utoipa::path(
+    post,
+    path = "/product/sessions/{session_id}/followups",
+    tag = docs::PRODUCT_TAG,
+    security(("BearerAuth" = [])),
+    params(("session_id" = String, Path, description = "Product session ULID")),
+    request_body = CreateProductControlRequest,
+    responses(
+        (status = 201, description = "Follow-up queued", body = ProductControl),
+        (status = 200, description = "Idempotent replay", body = ProductControl),
+        (status = 400, description = "Invalid input", body = ApiErrorResponse),
+        (status = 404, description = "Product session not found", body = ApiErrorResponse),
+        (status = 409, description = "Idempotency or control-state conflict", body = ApiErrorResponse),
+        (status = 500, description = "Product store operation failed", body = ApiErrorResponse),
+        (status = 503, description = "ProductStore is unavailable", body = ApiErrorResponse),
+    )
+)]
+pub(crate) async fn create_product_session_followup(
+    State(state): State<ApiState>,
+    Path(session_id): Path<ProductSessionId>,
+    body: Result<Json<CreateProductControlRequest>, JsonRejection>,
+) -> Result<(StatusCode, Json<ProductControl>), ApiError> {
+    create_control(state, session_id, ProductControlKind::Followup, body).await
+}
+
+async fn create_control(
+    state: ApiState,
+    session_id: ProductSessionId,
+    kind: ProductControlKind,
+    body: Result<Json<CreateProductControlRequest>, JsonRejection>,
+) -> Result<(StatusCode, Json<ProductControl>), ApiError> {
+    let request = product_json(body)?;
+    let store = state.product_store()?;
+    // A live run owns the final safe point. Hold its lifecycle lock across
+    // persistence and delivery so a just-finished run cannot leave a steer
+    // stranded between terminal cleanup and the next turn claim.
+    let live = live_product_job(&state, &session_id).await;
+    let lifecycle = match &live {
+        Some(record) => Some(record.control_lifecycle_lock.lock().await),
+        None => None,
+    };
+    let (mut control, already_exists) = store.create_control(&session_id, kind, request).await?;
+    let status = if already_exists {
+        StatusCode::OK
+    } else {
+        StatusCode::CREATED
+    };
+
+    if !already_exists {
+        match kind {
+            ProductControlKind::Steer => {
+                control =
+                    deliver_steer_to_live_job(&state, &session_id, &control, live.as_ref()).await?;
+            }
+            ProductControlKind::Followup => {
+                if let Some(record) = live.as_ref() {
+                    crate::queue_or_publish_product_control_event(
+                        record,
+                        rove_runtime::events::StreamEvent::FollowupQueued {
+                            id: control.id.to_string(),
+                            content: control.content.clone(),
+                        },
+                    )
+                    .await;
+                }
+                // Durable queue only; supervisor drains after Final.
+                // If the session is already idle, kick the drain immediately so
+                // the client does not need a second send().
+                try_start_idle_followup(&state, &session_id).await;
+            }
+        }
+    }
+    drop(lifecycle);
+
+    Ok((status, Json(control)))
+}
+
+async fn deliver_steer_to_live_job(
+    state: &ApiState,
+    session_id: &ProductSessionId,
+    control: &ProductControl,
+    known_live: Option<&std::sync::Arc<crate::JobRecord>>,
+) -> Result<ProductControl, ApiError> {
+    let record = match known_live {
+        Some(record) => Some(std::sync::Arc::clone(record)),
+        None => live_product_job(state, session_id).await,
+    };
+    let Some(record) = record else {
+        // A session marked running can still be between product-turn claim and
+        // supervisor registration. The start path will replay this pending
+        // row under the lifecycle lock once its runtime handle exists.
+        let session = state
+            .product_store()?
+            .get_session_context(session_id)
+            .await?;
+        if session.session.status == ProductSessionStatus::Running {
+            tracing::debug!(control_id = %control.id, "steer submitted while a live run was attaching");
+            return Ok(control.clone());
+        }
+        // There is no safe point left for an idle or terminal session. Commit
+        // a durable outcome now so a repeated idempotency key returns this
+        // exact dropped fact and never targets a later run.
+        let dropped = state
+            .product_store()?
+            .transition_control(
+                session_id,
+                &control.id,
+                ProductControlStatus::Pending,
+                ProductControlStatus::Dropped,
+                None,
+            )
+            .await?;
+        tracing::debug!(
+            control_id = %control.id,
+            "steer submitted after the product session reached a terminal state"
+        );
+        return Ok(dropped);
+    };
+    let handle_guard = record.control.lock().await;
+    let Some(handle) = handle_guard.as_ref() else {
+        drop(handle_guard);
+        // The supervisor installs the control handle under the same lifecycle
+        // lock as this route, then replays pending controls. Keep this row
+        // pending so the original idempotency key has one durable outcome.
+        tracing::debug!(
+            control_id = %control.id,
+            "steer persisted before the runtime control handle was installed"
+        );
+        return Ok(control.clone());
+    };
+    let msg =
+        rove_runtime::engine::SteerMessage::with_id(control.id.as_str(), control.content.clone());
+    if !handle.try_send_steer(msg) {
+        drop(handle_guard);
+        // A closed or full bounded channel did not accept this message. Mark
+        // only this still-pending row as dropped; accepted/applied rows remain
+        // immutable facts. The idempotency replay therefore cannot deliver it
+        // later to a different run.
+        let dropped = state
+            .product_store()?
+            .transition_control(
+                session_id,
+                &control.id,
+                ProductControlStatus::Pending,
+                ProductControlStatus::Dropped,
+                Some(&record.run_id),
+            )
+            .await?;
+        tracing::debug!(
+            control_id = %control.id,
+            "runtime steer channel did not accept the control"
+        );
+        return Ok(dropped);
+    }
+    Ok(control.clone())
+}
+
+async fn live_product_job(
+    state: &ApiState,
+    session_id: &ProductSessionId,
+) -> Option<std::sync::Arc<crate::JobRecord>> {
+    let candidates: Vec<std::sync::Arc<crate::JobRecord>> = {
+        let jobs = state.inner.jobs.read().await;
+        jobs.values()
+            .filter(|r| r.product_session_id.as_ref() == Some(session_id))
+            .cloned()
+            .collect()
+    };
+    for record in candidates {
+        let is_terminal = {
+            let status = record.status.lock().await;
+            crate::is_terminal(&status)
+        };
+        if !is_terminal {
+            return Some(record);
+        }
+    }
+    None
+}
+
+/// When a follow-up is enqueued against an idle session, ask the supervisor
+/// path to claim+start it. Best-effort: failures leave the control pending.
+async fn try_start_idle_followup(state: &ApiState, session_id: &ProductSessionId) {
+    if live_product_job(state, session_id).await.is_some() {
+        return;
+    }
+    let Ok(store) = state.product_store() else {
+        return;
+    };
+    let Ok(context) = store.get_session_context(session_id).await else {
+        return;
+    };
+    if context.session.status != ProductSessionStatus::Idle {
+        return;
+    }
+    crate::schedule_followup_drain(state, session_id.clone());
+}
+
+#[utoipa::path(
+    get,
+    path = "/product/sessions/{session_id}/controls",
+    tag = docs::PRODUCT_TAG,
+    security(("BearerAuth" = [])),
+    params(
+        ("session_id" = String, Path, description = "Product session ULID"),
+        ListControlsQuery,
+    ),
+    responses(
+        (status = 200, description = "Controls for the session", body = ProductControlsResponse),
+        (status = 400, description = "Invalid control status filter", body = ApiErrorResponse),
+        (status = 404, description = "Product session not found", body = ApiErrorResponse),
+        (status = 500, description = "Product store operation failed", body = ApiErrorResponse),
+        (status = 503, description = "ProductStore is unavailable", body = ApiErrorResponse),
+    )
+)]
+pub(crate) async fn list_product_session_controls(
+    State(state): State<ApiState>,
+    Path(session_id): Path<ProductSessionId>,
+    Query(query): Query<ListControlsQuery>,
+) -> Result<Json<ProductControlsResponse>, ApiError> {
+    let store = state.product_store()?;
+    let filter = match query.status {
+        None | Some(ProductControlStatusFilter::All) => None,
+        Some(ProductControlStatusFilter::Pending) => Some(ProductControlStatus::Pending),
+        Some(ProductControlStatusFilter::Accepted) => Some(ProductControlStatus::Accepted),
+        Some(ProductControlStatusFilter::Applied) => Some(ProductControlStatus::Applied),
+        Some(ProductControlStatusFilter::Dropped) => Some(ProductControlStatus::Dropped),
+        Some(ProductControlStatusFilter::Abandoned) => Some(ProductControlStatus::Abandoned),
+        Some(ProductControlStatusFilter::Revoked) => Some(ProductControlStatus::Revoked),
+    };
+    let controls = store.list_controls(&session_id, filter).await?;
+    Ok(Json(ProductControlsResponse { controls }))
+}
+
+#[utoipa::path(
+    post,
+    path = "/product/sessions/{session_id}/controls/{control_id}/revoke",
+    tag = docs::PRODUCT_TAG,
+    security(("BearerAuth" = [])),
+    params(
+        ("session_id" = String, Path),
+        ("control_id" = String, Path),
+    ),
+    responses(
+        (status = 200, description = "Control revoked", body = ProductControl),
+        (status = 400, description = "Invalid control identifier", body = ApiErrorResponse),
+        (status = 404, description = "Product session or control not found", body = ApiErrorResponse),
+        (status = 409, description = "Control already terminal", body = ApiErrorResponse),
+        (status = 500, description = "Product store operation failed", body = ApiErrorResponse),
+        (status = 503, description = "ProductStore is unavailable", body = ApiErrorResponse),
+    )
+)]
+pub(crate) async fn revoke_product_session_control(
+    State(state): State<ApiState>,
+    Path((session_id, control_id)): Path<(ProductSessionId, ProductControlId)>,
+) -> Result<Json<ProductControl>, ApiError> {
+    let store = state.product_store()?;
+    let current = store.get_control(&session_id, &control_id).await?;
+    let from = match (current.kind, current.status) {
+        (_, ProductControlStatus::Pending) => ProductControlStatus::Pending,
+        (ProductControlKind::Followup, ProductControlStatus::Abandoned) => {
+            ProductControlStatus::Abandoned
+        }
+        _ => {
+            return Err(ApiError::conflict_with_code(
+                ProductErrorCode::ProductControlRejected.as_str(),
+                "only pending controls or abandoned follow-ups can be revoked",
+            ));
+        }
+    };
+    let updated = store
+        .transition_control(
+            &session_id,
+            &control_id,
+            from,
+            ProductControlStatus::Revoked,
+            None,
+        )
+        .await?;
+    Ok(Json(updated))
+}
+
+#[utoipa::path(
+    post,
+    path = "/product/sessions/{session_id}/controls/{control_id}/confirm",
+    tag = docs::PRODUCT_TAG,
+    security(("BearerAuth" = [])),
+    params(
+        ("session_id" = String, Path),
+        ("control_id" = String, Path),
+    ),
+    responses(
+        (status = 200, description = "Abandoned follow-up confirmed for a new server-owned turn", body = ProductControl),
+        (status = 400, description = "Invalid control identifier", body = ApiErrorResponse),
+        (status = 404, description = "Product session or control not found", body = ApiErrorResponse),
+        (status = 409, description = "Control cannot be confirmed in its current state", body = ApiErrorResponse),
+        (status = 500, description = "Product store operation failed", body = ApiErrorResponse),
+        (status = 503, description = "ProductStore is unavailable", body = ApiErrorResponse),
+    )
+)]
+pub(crate) async fn confirm_product_session_followup(
+    State(state): State<ApiState>,
+    Path((session_id, control_id)): Path<(ProductSessionId, ProductControlId)>,
+) -> Result<Json<ProductControl>, ApiError> {
+    let store = state.product_store()?;
+    let control = store
+        .confirm_abandoned_followup(&session_id, &control_id)
+        .await?;
+    try_start_idle_followup(&state, &session_id).await;
+    Ok(Json(control))
 }
 
 #[cfg(test)]

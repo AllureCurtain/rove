@@ -292,6 +292,34 @@ export type StreamEvent =
       type: "run_completed";
       reason: string;
       output?: string | null;
+    }
+  | {
+      type: "steer_accepted";
+      id: string;
+      content: string;
+    }
+  | {
+      type: "steer_applied";
+      id: string;
+    }
+  | {
+      type: "steer_dropped";
+      id: string;
+      reason: string;
+    }
+  | {
+      type: "followup_queued";
+      id: string;
+      content: string;
+    }
+  | {
+      type: "followup_dequeued";
+      id: string;
+    }
+  | {
+      type: "followup_abandoned";
+      id: string;
+      reason: string;
     };
 
 export type CreateJobWorkspaceKind = "folder" | "repo" | "task";
@@ -480,6 +508,12 @@ export const STREAM_EVENT_NAMES = [
   "memory_flushed",
   "prompt_built",
   "run_completed",
+  "steer_accepted",
+  "steer_applied",
+  "steer_dropped",
+  "followup_queued",
+  "followup_dequeued",
+  "followup_abandoned",
 ] as const;
 
 export type StreamEventName = (typeof STREAM_EVENT_NAMES)[number];
