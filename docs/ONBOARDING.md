@@ -634,10 +634,12 @@ documents remain proposed/not implemented.
   — historical Web delivery coordination; Desktop remains future scope.
 - [CDH G1-G7 delivery](plans/2026-08-03-cdh-alder-merge.md) — completed through
   PR #29; G8 Desktop was out of scope.
-- [Post-CDH Agent Kernel and Coding Capability](plans/2026-08-05-post-cdh-agent-kernel-and-coding-capability.md)
-  — active M0-M10 order. Repository work is main-thread-only and strictly
-  serial; the two worktrees are isolation boundaries and Subagents are
-  prohibited.
+- [Kernel, Message, and Provider Implementation](plans/2026-08-06-kernel-message-provider-implementation.md)
+  — active brief for typed message/session projection, provider protocol
+  normalization, and the later shared-kernel migration.
+- [Project Trust, Execution Environment, and Coding Tools Implementation](plans/2026-08-06-project-trust-execution-tools-implementation.md)
+  — active brief for persistent Project Trust, Runtime-owned execution
+  adapters, and the later Coding Tool V2 work.
 
 ### Independent terminal interface direction
 

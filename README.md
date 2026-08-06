@@ -336,7 +336,8 @@ current-state documents agree.
 | [Release readiness](docs/runtime/release-readiness.md) | Evidence and security checklist for release-oriented claims |
 | [Maintainer onboarding](docs/ONBOARDING.md) | Repository map, change workflows, and verification guidance |
 | [`AGENTS.md`](AGENTS.md) | Repository-wide source-of-truth and engineering rules |
-| [Post-CDH implementation plan](docs/plans/2026-08-05-post-cdh-agent-kernel-and-coding-capability.md) | Active serial, two-worktree delivery order for the next kernel/coding-capability program |
+| [Kernel, Message, and Provider brief](docs/plans/2026-08-06-kernel-message-provider-implementation.md) | Active typed-session, provider-protocol, and shared-kernel implementation track |
+| [Project Trust, Execution Environment, and Coding Tools brief](docs/plans/2026-08-06-project-trust-execution-tools-implementation.md) | Active trust, execution-adapter, and coding-tool implementation track |
 
 Future architecture is kept under [`docs/design/`](docs/design/) and marked as
 proposed when it is not implemented. Historical material lives under

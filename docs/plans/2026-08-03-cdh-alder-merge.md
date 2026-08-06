@@ -127,6 +127,7 @@ an authorized base for post-CDH work.
 ## 6. Progress pointer
 
 The completed step-by-step record is `CDH_IMPLEMENTATION_LOG.md` at the
-repository root. Future work follows
-`docs/plans/2026-08-05-post-cdh-agent-kernel-and-coding-capability.md` from a
+repository root. Future work follows the two independent implementation briefs
+`docs/plans/2026-08-06-kernel-message-provider-implementation.md` and
+`docs/plans/2026-08-06-project-trust-execution-tools-implementation.md` from a
 fresh, synchronized `main` baseline.

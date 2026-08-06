@@ -1,6 +1,13 @@
 # Post-CDH Agent Kernel and Coding Capability Plan
 
-> Status: **Active implementation plan - M0 sealed, M0.5/M1 next**
+> Status: **Superseded / Historical**
+>
+> Replaced on 2026-08-06 by the two independently executable briefs:
+> [`Kernel, Message, and Provider Implementation`](../../plans/2026-08-06-kernel-message-provider-implementation.md)
+> and [`Project Trust, Execution Environment, and Coding Tools
+> Implementation`](../../plans/2026-08-06-project-trust-execution-tools-implementation.md).
+> Its former execution and conversation rules are retained only as history and
+> are not current instructions.
 >
 > Created: 2026-08-05
 >
@@ -27,7 +34,7 @@
 > baseline and follows the two-worktree ownership, dependency, and conversation
 > concurrency rules in Section 0.
 >
-> Current runtime truth remains under [`../runtime/`](../runtime/README.md).
+> Current runtime truth remains under [`docs/runtime/`](../../runtime/README.md).
 > This plan must not be used as evidence that the proposed types, hooks,
 > execution environments, tools, trust flow, Skills, Subagents, or Desktop
 > behavior already exist.
@@ -109,10 +116,10 @@ Playwright output, logs) is never committed.
 Implementation decisions in this plan remain subordinate to:
 
 1. post-CDH source code, tests, generated schemas, and reproducible behavior;
-2. [`../runtime/`](../runtime/README.md) for implemented current behavior;
+2. [`docs/runtime/`](../../runtime/README.md) for implemented current behavior;
 3. root `README.md`, `MEMORY_DOCTRINE.md`, and
-   [`../ONBOARDING.md`](../ONBOARDING.md);
-4. active target designs under [`../design/`](../design/);
+   [`docs/ONBOARDING.md`](../../ONBOARDING.md);
+4. active target designs under [`docs/design/`](../../design/);
 5. this implementation plan.
 
 M0 reconciled the source and line references in this document against the merged
@@ -307,14 +314,14 @@ Agent/application message
 ```
 
 Post-CDH rove still persists working history directly as `Vec<Message>` in
-[`../../runtime/src/foundation/types.rs`](../../runtime/src/foundation/types.rs).
+[`runtime/src/foundation/types.rs`](../../../runtime/src/foundation/types.rs).
 Those messages have model-protocol roles such as system, user, assistant, and
 tool. This is adequate for a simple chat loop but creates pressure to encode
 future product facts as fake model messages.
 
 ### 3.2 The product still has two Agent loops
 
-[`../../core/src/agent.rs`](../../core/src/agent.rs) contains an embeddable
+[`core/src/agent.rs`](../../../core/src/agent.rs) contains an embeddable
 Agent loop with model iteration, tool execution, Steer, and Follow-up behavior.
 The product path separately coordinates unplanned and planned loops under
 `runtime/src/engine/` and currently reuses lower-level Core turn conversion
@@ -347,7 +354,7 @@ Engine, API, and Web implementation.
 
 The current Runtime Hook families are `PreToolHook`, `PostToolHook`, and
 `PostRunHook` in
-[`../../runtime/src/tools/hooks/mod.rs`](../../runtime/src/tools/hooks/mod.rs).
+[`runtime/src/tools/hooks/mod.rs`](../../../runtime/src/tools/hooks/mod.rs).
 They are useful but cannot express context transformation, compaction policy,
 Session projection, model interception, or resource/UI contribution.
 
@@ -357,7 +364,7 @@ loading are separate decisions and are not required for this program.
 ### 3.4 Skills and workspace instructions remain future behavior
 
 The target design exists in
-[`../design/2026-07-14-agent-definition-and-procedural-knowledge-design.md`](../design/2026-07-14-agent-definition-and-procedural-knowledge-design.md),
+[`docs/design/2026-07-14-agent-definition-and-procedural-knowledge-design.md`](../../design/2026-07-14-agent-definition-and-procedural-knowledge-design.md),
 but post-CDH Runtime does not discover workspace `AGENTS.md` files or provide
 Skill progressive disclosure.
 
@@ -369,7 +376,7 @@ authority labels and cannot grant tool permission.
 ### 3.5 File and Shell tools are below the real coding-product bar
 
 The post-CDH filesystem implementation in
-[`../../runtime/src/tools/fs.rs`](../../runtime/src/tools/fs.rs):
+[`runtime/src/tools/fs.rs`](../../../runtime/src/tools/fs.rs):
 
 - reads an entire UTF-8 file with `tokio::fs::read_to_string`;
 - has no `offset`, line range, byte range, or continuation contract;
@@ -378,7 +385,7 @@ The post-CDH filesystem implementation in
   added rather than computing localized hunks.
 
 The post-CDH Shell implementation in
-[`../../runtime/src/tools/shell.rs`](../../runtime/src/tools/shell.rs):
+[`runtime/src/tools/shell.rs`](../../../runtime/src/tools/shell.rs):
 
 - directly owns a workspace `PathBuf` and launches a host shell;
 - waits for process completion;
@@ -409,10 +416,10 @@ That coupling blocks clean substitution of:
 ### 3.7 Project Trust is a release blocker
 
 Post-CDH CLI/API configuration loading considers workspace `.rove/config.toml` in
-[`../../apps/bootstrap/src/config.rs`](../../apps/bootstrap/src/config.rs).
+[`apps/bootstrap/src/config.rs`](../../../apps/bootstrap/src/config.rs).
 The default MCP path is `.rove/mcp_servers.json`, first-party assembly registers
 configured MCP servers, and stdio MCP creates the configured host command in
-[`../../runtime/src/tools/mcp_proxy.rs`](../../runtime/src/tools/mcp_proxy.rs).
+[`runtime/src/tools/mcp_proxy.rs`](../../../runtime/src/tools/mcp_proxy.rs).
 
 The product path remains vulnerable to the unsafe class: repository-controlled
 data must not cause a process to start merely because a user opened or selected
@@ -423,7 +430,7 @@ M5 trust store and product surfaces.
 
 Post-CDH first-party assembly constructs `EngineConfig` with
 `plan_enabled: true` in
-[`../../apps/bootstrap/src/assembly.rs`](../../apps/bootstrap/src/assembly.rs).
+[`apps/bootstrap/src/assembly.rs`](../../../apps/bootstrap/src/assembly.rs).
 This can add a planning model call even for ordinary coding work.
 
 rove should preserve StepRecord, PlanDecision, PlanRevision, bounded
@@ -688,19 +695,19 @@ provider byte stream
 
 The principal types and boundaries are:
 
-- [`../../models/src/protocol.rs`](../../models/src/protocol.rs): `Message`,
+- [`models/src/protocol.rs`](../../../models/src/protocol.rs): `Message`,
   `ToolCallRef`, `ModelToolSchema`, and usage;
-- [`../../models/src/traits.rs`](../../models/src/traits.rs): `ModelClient` and
+- [`models/src/traits.rs`](../../../models/src/traits.rs): `ModelClient` and
   normalized streaming `ModelEvent`;
-- [`../../models/src/provider/wire.rs`](../../models/src/provider/wire.rs):
+- [`models/src/provider/wire.rs`](../../../models/src/provider/wire.rs):
   `WireProtocol`, `WireRequest`, and `StreamDecoder`;
-- [`../../models/src/provider/client.rs`](../../models/src/provider/client.rs):
+- [`models/src/provider/client.rs`](../../../models/src/provider/client.rs):
   production `ProviderClient` assembly;
 - `models/src/provider/protocols/`: independent OpenAI Responses, OpenAI Chat
   Completions, Anthropic Messages, and Ollama request/stream adapters;
-- [`../../core/src/model_turn.rs`](../../core/src/model_turn.rs): conversion of
+- [`core/src/model_turn.rs`](../../../core/src/model_turn.rs): conversion of
   normalized model events to Core actions;
-- [`../../core/src/tools.rs`](../../core/src/tools.rs): registry lookup,
+- [`core/src/tools.rs`](../../../core/src/tools.rs): registry lookup,
   provider-independent argument validation, and execution.
 
 Current outbound mappings are already isolated correctly:
@@ -1851,7 +1858,7 @@ cannot silently consume or pause every budget dimension.
 
 This plan schedules implementation after the kernel, message, trust, extension,
 and environment contracts. The detailed source design remains
-[`../design/2026-07-14-agent-definition-and-procedural-knowledge-design.md`](../design/2026-07-14-agent-definition-and-procedural-knowledge-design.md).
+[`docs/design/2026-07-14-agent-definition-and-procedural-knowledge-design.md`](../../design/2026-07-14-agent-definition-and-procedural-knowledge-design.md).
 
 ### 10.1 AgentDefinition and runtime profile
 

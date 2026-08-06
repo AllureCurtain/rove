@@ -121,6 +121,10 @@ As of 2026-08-06:
 - MCP currently supports stdio and the existing legacy SSE path. Streamable
   HTTP, negotiated sessions, rich MCP result envelopes, and Tool Artifacts are
   proposed, not implemented.
+- Project activation is restricted by default. Commit `d2cd822` defers
+  workspace `.env`, `.rove/config.toml`, and workspace MCP startup until an
+  exact canonical root is explicitly activated. Durable granular Project Trust
+  and the Runtime-owned Execution Environment remain proposed.
 - Versioned AgentDefinition packages, `AGENTS.md` runtime discovery, typed
   procedural knowledge, and the OnCall reference evaluation suite are proposed,
   not implemented. The execution-lifecycle design is partially implemented:
@@ -171,6 +175,11 @@ The active future/runtime-evolution design chain is:
 
 Use those documents to plan future implementation, not to describe current
 runtime behavior.
+
+The active implementation work is split between two independent briefs:
+
+- `docs/plans/2026-08-06-kernel-message-provider-implementation.md`
+- `docs/plans/2026-08-06-project-trust-execution-tools-implementation.md`
 
 The optional terminal-interface direction is documented separately in
 `docs/design/2026-07-16-grok-build-reference-and-tui-design.md`.

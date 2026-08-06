@@ -2,7 +2,7 @@
 
 `rove` 的设计文档集合。
 
-**当前阶段：Web Complete C0-C3 与 CDH G1-G7 均已合入 `main`；下一阶段按 Post-CDH Agent Kernel and Coding Capability Plan 推进。当前实现事实以代码、测试和 `docs/runtime/` 为准；项目起步期材料统一归档在 `docs/Archive/`。**
+**当前阶段：Web Complete C0-C3 与 CDH G1-G7 均已合入 `main`，M0.5 Project Activation guard 已实现；下一阶段分别按 Kernel/Message/Provider 与 Project Trust/Execution Environment/Coding Tools 两份实施文档推进。当前实现事实以代码、测试和 `docs/runtime/` 为准；项目起步期材料统一归档在 `docs/Archive/`。**
 
 ---
 
@@ -26,7 +26,7 @@
 | ✅ | Provider Layer redesign：开放协议注册、named profiles、`/providers/models` |
 | ✅ | `docs/runtime/` 与当前实现对齐 |
 | ✅ | Web M1、Web Complete C0-C3 与 CDH G1-G7 已合入 `main` |
-| 🧭 | **Post-CDH**：统一 Agent kernel、Project Trust、Execution Environment 与 Coding Tool V2；Desktop 后置 |
+| 🧭 | **Post-CDH**：两条独立任务线推进 Agent kernel、Project Trust、Execution Environment 与 Coding Tool V2；Desktop 后置 |
 | 📦 | 起步期设计、handoff、对照材料归档到 `docs/Archive/` |
 
 ---
@@ -49,7 +49,8 @@
 | plan | [Web → Desktop master delivery](./plans/2026-07-25-web-desktop-master-delivery.md) | Historical coordinator plan; Web delivery landed and Desktop is deferred |
 | plan | [Web Complete delivery](./plans/2026-07-26-web-complete.md) | Completed C0-C3 delivery ledger |
 | plan | [CDH G1-G7 delivery](./plans/2026-08-03-cdh-alder-merge.md) | Completed through PR #29; G8 Desktop was out of scope |
-| plan | [Post-CDH Agent Kernel and Coding Capability](./plans/2026-08-05-post-cdh-agent-kernel-and-coding-capability.md) | Active M0-M10 plan; two isolation worktrees operated serially by the main Agent thread, with Subagents prohibited |
+| plan | [Kernel, Message, and Provider Implementation](./plans/2026-08-06-kernel-message-provider-implementation.md) | Active brief for typed session/message contracts, provider normalization, and the shared kernel path |
+| plan | [Project Trust, Execution Environment, and Coding Tools Implementation](./plans/2026-08-06-project-trust-execution-tools-implementation.md) | Active brief for persistent trust, execution adapters, and the later Coding Tool V2 path |
 | future | [Agent Execution Lifecycle](./design/2026-07-14-agent-execution-lifecycle-design.md) | Partially implemented: StepRunner/ledger/revision/decisions landed; Finalizer/budgets remain |
 | future | [Agent Definition 与程序性知识](./design/2026-07-14-agent-definition-and-procedural-knowledge-design.md) | Proposed: versioned Agent profile、procedure 与 capability binding |
 | future | [MCP Streamable HTTP 与 Tool Artifacts](./design/2026-07-15-mcp-streamable-http-and-tool-artifacts-design.md) | Proposed: transport/session/result/artifact 演进 |
@@ -101,5 +102,5 @@
 - 2026-07-25:P0 状态校准：登记 Web → Desktop 主交付计划，将 Web Complete
   调整为契约 foundation + 有界并行 worker，并修正 lifecycle/cleanup/TUI 等状态漂移。
 - 2026-07-26:Web M1 已合入 main；新增 Web Complete 封板设计与 C0–C3 串行交付计划，Desktop 继续后置。
-- 2026-08-06:Web Complete C0–C3 与 CDH G1–G7 已合入 main；登记 Post-CDH
-  Agent Kernel and Coding Capability 主计划，明确仅主线程串行执行、禁止子 Agent。
+- 2026-08-06:Web Complete C0–C3 与 CDH G1–G7 已合入 main；实现 M0.5
+  Project Activation guard，并将后续工作拆为两份可独立执行的实施文档。

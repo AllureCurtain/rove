@@ -85,10 +85,11 @@ The Web product line is tracked separately:
   workspace-scoped MCP catalog shared by Settings and job assembly. See the
   [`acceptance matrix`](acceptance-matrix.md) and the
   [`completed CDH plan`](../plans/2026-08-03-cdh-alder-merge.md).
-- The active post-CDH implementation order is the
-  [`Agent Kernel and Coding Capability plan`](../plans/2026-08-05-post-cdh-agent-kernel-and-coding-capability.md).
-  Its repository work is strictly serial in the main Agent thread; its two
-  worktrees are isolation boundaries and Subagents are prohibited.
+- Active post-CDH kernel/message/provider work follows the
+  [`Kernel, Message, and Provider implementation brief`](../plans/2026-08-06-kernel-message-provider-implementation.md).
+- Active Project Trust/execution/coding-tool work follows the
+  [`Project Trust, Execution Environment, and Coding Tools implementation
+  brief`](../plans/2026-08-06-project-trust-execution-tools-implementation.md).
 - No Tauri Desktop host exists. `desktop-workspace-spec.md` is an automation
   workspace note, not the Desktop product-shell design.
 
