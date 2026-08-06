@@ -3,7 +3,11 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
+use futures::StreamExt;
 use rove_core::{CallId, ToolRegistry};
+use rove_models::{FakeModelClient, FakeTurn};
+use rove_runtime::context::ContextManager;
+use rove_runtime::engine::{Engine, EngineConfig};
 use rove_runtime::environment::{
     EnvironmentError, ExecutionCapabilities, ExecutionEnvironment, InMemoryExecutionEnvironment,
     LocalExecutionEnvironment, Observation, ObservationStore, ProcessHost, ProcessOutput,
@@ -13,7 +17,8 @@ use rove_runtime::memory::paths::MemoryPaths;
 use rove_runtime::tools::fs::FsWriteTool;
 use rove_runtime::tools::mcp_proxy::register_mcp_tools_from_file_with_environment;
 use rove_runtime::tools::runtime_context::runtime_tool_context_with_environment;
-use rove_runtime::types::ApprovalPolicy;
+use rove_runtime::tools::shell::{ShellPolicy, ShellTool};
+use rove_runtime::types::{ApprovalDecision, ApprovalPolicy};
 use rove_runtime::workspace::Workspace;
 use tokio_util::sync::CancellationToken;
 
@@ -314,6 +319,87 @@ async fn invocation_services_accept_an_explicit_in_memory_environment() {
         environment.identity().workspace_digest,
         rove_runtime::runtime_identity::workspace_fingerprint(&workspace)
     );
+}
+
+#[tokio::test]
+async fn engine_reuses_one_injected_environment_for_file_and_shell_tools() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(temp.path()).unwrap();
+    let environment = Arc::new(InMemoryExecutionEnvironment::new(&workspace));
+    let shell_program = if cfg!(windows) { "powershell" } else { "sh" };
+    environment
+        .processes()
+        .set_response(
+            shell_program,
+            ProcessOutput {
+                status_code: Some(0),
+                stdout: b"virtual-shell-output".to_vec(),
+                stderr: Vec::new(),
+                stdout_truncated: false,
+                stderr_truncated: false,
+            },
+        )
+        .await;
+    let injected: Arc<dyn ExecutionEnvironment> = environment.clone();
+    let model = FakeModelClient::with_turns(
+        "unused".to_string(),
+        vec![
+            FakeTurn::ToolUse {
+                id: "write-memory".to_string(),
+                name: "write_file".to_string(),
+                args: serde_json::json!({
+                    "path": "engine-virtual.txt",
+                    "content": "memory only"
+                }),
+            },
+            FakeTurn::ToolUse {
+                id: "shell-memory".to_string(),
+                name: "run_shell".to_string(),
+                args: serde_json::json!({"command": "virtual-command"}),
+            },
+            FakeTurn::Text("done".to_string()),
+        ],
+    );
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(FsWriteTool::new(workspace.root.clone())));
+    registry.register(Box::new(ShellTool::with_policy(
+        workspace.root.clone(),
+        ShellPolicy::default(),
+    )));
+    let engine = Engine::with_workspace_and_approval_decision_and_environment(
+        Box::new(model),
+        registry,
+        ContextManager::new("test system prompt".to_string()),
+        EngineConfig {
+            max_steps: 4,
+            plan_enabled: false,
+        },
+        workspace.clone(),
+        ApprovalPolicy::Auto,
+        ApprovalDecision::Approve,
+        injected.clone(),
+    );
+
+    let events = engine
+        .ask("exercise injected environment".to_string(), None)
+        .collect::<Vec<_>>()
+        .await;
+
+    assert!(Arc::ptr_eq(engine.execution_environment(), &injected));
+    assert_eq!(
+        environment
+            .filesystem()
+            .read_utf8("engine-virtual.txt")
+            .await
+            .unwrap(),
+        "memory only"
+    );
+    assert!(!workspace.root.join("engine-virtual.txt").exists());
+    assert!(events.iter().any(|event| matches!(
+        event,
+        rove_runtime::events::StreamEvent::ToolCallCompleted { result, .. }
+            if result.output.contains("virtual-shell-output")
+    )));
 }
 
 #[tokio::test]

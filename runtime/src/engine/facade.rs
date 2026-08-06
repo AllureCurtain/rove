@@ -12,6 +12,7 @@ use tokio_util::sync::CancellationToken;
 use crate::compaction::CompactionRuntime;
 use crate::context::{ContextManager, durable_memory_message, session_summary_message};
 use crate::engine::control::{RunControlHandle, SteerLifecycle, control_channel};
+use crate::environment::{ExecutionEnvironment, local_environment};
 use crate::events::StreamEvent;
 use crate::execution::{DEFAULT_MAX_MODEL_TURNS_PER_STEP, ExecutionPolicy, ExecutionStrategy};
 use crate::hooks::{HookRegistry, PostRunHookContext, RunSummary};
@@ -137,6 +138,7 @@ pub struct Engine {
     config: EngineConfig,
     planner: Planner,
     workspace: Workspace,
+    environment: Arc<dyn ExecutionEnvironment>,
     approval_policy: ApprovalPolicy,
     approval_decision: ApprovalDecision,
     approval_provider: Option<Arc<dyn ToolApprovalProvider>>,
@@ -200,6 +202,29 @@ impl Engine {
         approval_policy: ApprovalPolicy,
         approval_decision: ApprovalDecision,
     ) -> Self {
+        let environment = local_environment(&workspace);
+        Self::with_workspace_and_approval_decision_and_environment(
+            model,
+            registry,
+            context_manager,
+            config,
+            workspace,
+            approval_policy,
+            approval_decision,
+            environment,
+        )
+    }
+
+    pub fn with_workspace_and_approval_decision_and_environment(
+        model: Box<dyn ModelClient>,
+        registry: ToolRegistry,
+        context_manager: ContextManager,
+        config: EngineConfig,
+        workspace: Workspace,
+        approval_policy: ApprovalPolicy,
+        approval_decision: ApprovalDecision,
+        environment: Arc<dyn ExecutionEnvironment>,
+    ) -> Self {
         let memory_paths = MemoryPaths::from_workspace(&workspace, 8);
         Self {
             model,
@@ -208,6 +233,7 @@ impl Engine {
             config,
             planner: Planner::default(),
             workspace,
+            environment,
             approval_policy,
             approval_decision,
             approval_provider: None,
@@ -264,6 +290,10 @@ impl Engine {
 
     pub fn workspace(&self) -> &Workspace {
         &self.workspace
+    }
+
+    pub fn execution_environment(&self) -> &Arc<dyn ExecutionEnvironment> {
+        &self.environment
     }
 
     pub fn runtime_identity(&self) -> RuntimeIdentity {
@@ -464,6 +494,7 @@ impl Engine {
                     registry: &self.registry,
                     context_manager: &self.context_manager,
                     workspace: &self.workspace,
+                    environment: self.environment.clone(),
                     memory_paths: &self.memory_paths,
                     session_id,
                     max_steps: self.config.max_steps,

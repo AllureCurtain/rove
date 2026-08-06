@@ -3052,6 +3052,7 @@ async fn assemble_job_engine(
         approval_policy,
         input_provider: Some(input_provider),
         approval_provider,
+        environment: None,
     })
     .await
 }

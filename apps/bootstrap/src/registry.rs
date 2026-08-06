@@ -1,7 +1,8 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use rove_core::{Tool, ToolRegistry};
-use rove_runtime::environment::local_environment;
+use rove_runtime::environment::{ExecutionEnvironment, local_environment};
 use rove_runtime::tools::fs::{FsReadTool, FsWriteTool};
 use rove_runtime::tools::mcp_proxy::register_mcp_tools_from_file_with_environment;
 use rove_runtime::tools::memory::{ReadMemoryTopicTool, SaveMemoryTool, UpdateMemoryIndexTool};
@@ -45,13 +46,24 @@ pub async fn tool_registry_with_mcp(
     shell_policy: ShellPolicy,
     mcp_config_path: impl Into<PathBuf>,
 ) -> anyhow::Result<ToolRegistry> {
-    let mut registry = tool_registry_with_shell_policy(workspace, shell_policy);
-    register_mcp_tools_from_file_with_environment(
-        &mut registry,
+    tool_registry_with_mcp_and_environment(
+        workspace,
+        shell_policy,
         mcp_config_path,
         local_environment(workspace),
     )
-    .await?;
+    .await
+}
+
+pub async fn tool_registry_with_mcp_and_environment(
+    workspace: &Workspace,
+    shell_policy: ShellPolicy,
+    mcp_config_path: impl Into<PathBuf>,
+    environment: Arc<dyn ExecutionEnvironment>,
+) -> anyhow::Result<ToolRegistry> {
+    let mut registry = tool_registry_with_shell_policy(workspace, shell_policy);
+    register_mcp_tools_from_file_with_environment(&mut registry, mcp_config_path, environment)
+        .await?;
     Ok(registry)
 }
 
@@ -63,16 +75,25 @@ pub async fn tool_registry_for_config(
     workspace: &Workspace,
     config: &AppConfig,
 ) -> anyhow::Result<ToolRegistry> {
+    tool_registry_for_config_with_environment(workspace, config, local_environment(workspace)).await
+}
+
+pub async fn tool_registry_for_config_with_environment(
+    workspace: &Workspace,
+    config: &AppConfig,
+    environment: Arc<dyn ExecutionEnvironment>,
+) -> anyhow::Result<ToolRegistry> {
     if !config.project_capability_allowed(crate::project_trust::CAP_MCP_PROCESSES) {
         return Ok(tool_registry_with_shell_policy(
             workspace,
             config.shell_policy(),
         ));
     }
-    tool_registry_with_mcp(
+    tool_registry_with_mcp_and_environment(
         workspace,
         config.shell_policy(),
         config.workspace_bounded_mcp_config_path()?,
+        environment,
     )
     .await
 }

@@ -4,11 +4,14 @@ use rove_core::ToolRegistry;
 use rove_models::ModelClient;
 use rove_runtime::context::{ContextBudget, ContextManager};
 use rove_runtime::engine::{Engine, EngineConfig};
-use rove_runtime::types::{ApprovalPolicy, ToolApprovalProvider, UserInputProvider};
+use rove_runtime::environment::{ExecutionEnvironment, local_environment};
+use rove_runtime::types::{
+    ApprovalDecision, ApprovalPolicy, ToolApprovalProvider, UserInputProvider,
+};
 use rove_runtime::workspace::Workspace;
 
 use crate::config::AppConfig;
-use crate::registry::tool_registry_for_config;
+use crate::registry::tool_registry_for_config_with_environment;
 
 /// Options shared by first-party CLI/API engine construction.
 pub struct EngineOptions<'a> {
@@ -19,11 +22,22 @@ pub struct EngineOptions<'a> {
     pub approval_policy: ApprovalPolicy,
     pub input_provider: Option<Arc<dyn UserInputProvider>>,
     pub approval_provider: Option<Arc<dyn ToolApprovalProvider>>,
+    pub environment: Option<Arc<dyn ExecutionEnvironment>>,
 }
 
 /// Build the shared first-party Engine used by CLI and API.
-pub async fn build_engine(options: EngineOptions<'_>) -> anyhow::Result<Engine> {
-    let registry = tool_registry_for_config(options.workspace, options.config).await?;
+pub async fn build_engine(mut options: EngineOptions<'_>) -> anyhow::Result<Engine> {
+    let environment = options
+        .environment
+        .clone()
+        .unwrap_or_else(|| local_environment(options.workspace));
+    let registry = tool_registry_for_config_with_environment(
+        options.workspace,
+        options.config,
+        environment.clone(),
+    )
+    .await?;
+    options.environment = Some(environment);
     Ok(build_engine_with_registry(options, registry))
 }
 
@@ -38,7 +52,10 @@ pub fn build_engine_with_registry(options: EngineOptions<'_>, registry: ToolRegi
         },
     );
 
-    let mut engine = Engine::with_workspace(
+    let environment = options
+        .environment
+        .unwrap_or_else(|| local_environment(options.workspace));
+    let mut engine = Engine::with_workspace_and_approval_decision_and_environment(
         options.model,
         registry,
         context_manager,
@@ -48,6 +65,8 @@ pub fn build_engine_with_registry(options: EngineOptions<'_>, registry: ToolRegi
         },
         options.workspace.clone(),
         options.approval_policy,
+        ApprovalDecision::Reject,
+        environment,
     )
     .with_planner_prompt(options.config.load_planner_prompt())
     .with_memory_paths(options.config.memory_paths())

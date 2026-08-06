@@ -6,12 +6,13 @@ use futures::stream::{BoxStream, StreamExt};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+use crate::environment::ExecutionEnvironment;
 use crate::events::StreamEvent;
 use crate::executor::Executor;
 use crate::hooks::HookRegistry;
 use crate::memory::paths::MemoryPaths;
 use crate::tool_input::RegisteredUserInput;
-use crate::tools::runtime_context::runtime_tool_context;
+use crate::tools::runtime_context::runtime_tool_context_with_environment;
 use crate::types::{
     ApprovalDecision, ApprovalPolicy, CallId, Message, PendingToolApproval, ToolApprovalProvider,
     ToolApprovalRequest, ToolCallAction, ToolCallRef, ToolExecutionMetadata, ToolExecutionStatus,
@@ -33,6 +34,7 @@ pub(crate) enum ToolAction {
 pub(crate) struct ToolTurnContext<'a> {
     pub registry: &'a ToolRegistry,
     pub workspace: &'a Workspace,
+    pub environment: Arc<dyn ExecutionEnvironment>,
     pub memory_paths: &'a MemoryPaths,
     pub approval_policy: ApprovalPolicy,
     pub approval_decision: ApprovalDecision,
@@ -155,13 +157,14 @@ impl<'a> ToolTurnContext<'a> {
         input_events: Option<mpsc::Sender<RegisteredUserInput>>,
     ) -> ToolExecution {
         let executor = Executor::with_hooks(self.registry, self.hooks.clone());
-        let tool_context = runtime_tool_context(
+        let tool_context = runtime_tool_context_with_environment(
             call.call_id,
             self.workspace,
             self.memory_paths.clone(),
             self.effective_approval_policy(&call.name, approval_decision),
             self.input_provider.clone(),
             self.cancel_token.clone(),
+            self.environment.clone(),
         );
         let result = executor
             .run_with_input_events(
@@ -483,6 +486,7 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     use super::{ToolAction, ToolTurnContext, ToolTurnItem, run_tool_turn};
+    use crate::environment::local_environment;
     use crate::hooks::HookRegistry;
     use crate::memory::paths::MemoryPaths;
     use crate::tools::echo::EchoTool;
@@ -531,6 +535,7 @@ mod tests {
         let base = ToolTurnContext {
             registry: &registry,
             workspace: &workspace,
+            environment: local_environment(&workspace),
             memory_paths: &memory_paths,
             approval_policy: ApprovalPolicy::Auto,
             approval_decision: ApprovalDecision::Approve,
@@ -559,6 +564,7 @@ mod tests {
         let ctx = ToolTurnContext {
             registry: &registry,
             workspace: &workspace,
+            environment: local_environment(&workspace),
             memory_paths: &memory_paths,
             approval_policy: ApprovalPolicy::Auto,
             approval_decision: ApprovalDecision::Approve,
