@@ -5,7 +5,8 @@ use futures::stream::BoxStream;
 use thiserror::Error;
 
 use crate::{
-    Message, ModelClient, ModelClientId, ModelError, ModelEvent, ModelToolSchema, ProviderOptions,
+    Message, ModelClient, ModelClientId, ModelError, ModelEvent, ModelToolSchema,
+    ProviderCapabilities, ProviderOptions,
 };
 
 use super::{
@@ -67,6 +68,9 @@ impl ModelClient for ProviderClient {
         messages: &[Message],
         tools: &[ModelToolSchema],
     ) -> BoxStream<'_, Result<ModelEvent, ModelError>> {
+        if let Err(error) = self.protocol.capabilities().validate_tools(tools) {
+            return Box::pin(futures::stream::once(async move { Err(error) }));
+        }
         self.transport.stream(
             &self.config.base_url,
             &self.config.auth,
@@ -92,6 +96,14 @@ impl ModelClient for ProviderClient {
             &self.config.base_url,
             &self.config.model,
         )
+    }
+
+    fn capabilities(&self) -> ProviderCapabilities {
+        self.protocol.capabilities()
+    }
+
+    fn requires_terminal_event(&self) -> bool {
+        true
     }
 }
 
@@ -131,6 +143,7 @@ fn validate_config(config: &ProviderClientConfig) -> Result<(), ProviderClientEr
 
 #[cfg(test)]
 mod tests {
+    use futures::StreamExt;
     use reqwest::{Method, StatusCode, header::HeaderMap};
 
     use super::*;
@@ -190,6 +203,14 @@ mod tests {
         fn default_auth_style(&self) -> AuthStyle {
             AuthStyle::None
         }
+
+        fn capabilities(&self) -> ProviderCapabilities {
+            ProviderCapabilities {
+                streaming: true,
+                tool_calls: false,
+                parallel_tool_calls: false,
+            }
+        }
     }
 
     fn config() -> ProviderClientConfig {
@@ -220,6 +241,30 @@ mod tests {
         );
         assert_eq!(client.protocol().id().as_str(), "test/noop");
         assert_eq!(client.config().base_url, "https://example.test/v1");
+    }
+
+    #[tokio::test]
+    async fn capability_failure_precedes_transport_dispatch() {
+        let client = ProviderClient::new(
+            config(),
+            Arc::new(NoopProtocol::new()),
+            Arc::new(Transport::new(Default::default()).unwrap()),
+        )
+        .unwrap();
+        let mut stream = client.stream(
+            &[Message::user("hello")],
+            &[ModelToolSchema {
+                name: "echo".to_string(),
+                description: String::new(),
+                parameters: serde_json::json!({"type":"object"}),
+            }],
+        );
+
+        assert!(matches!(
+            stream.next().await,
+            Some(Err(ModelError::InvalidConfiguration(message)))
+                if message.contains("does not support tool calls")
+        ));
     }
 
     #[test]

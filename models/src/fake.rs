@@ -54,6 +54,7 @@ fn turn_events(turn: FakeTurn) -> Vec<Result<ModelEvent, ModelError>> {
             Ok(ModelEvent::Usage {
                 usage: Usage::default(),
             }),
+            Ok(ModelEvent::Done),
         ],
         FakeTurn::ToolUse { id, name, args } => vec![
             Ok(ModelEvent::ToolUseStart {
@@ -64,6 +65,7 @@ fn turn_events(turn: FakeTurn) -> Vec<Result<ModelEvent, ModelError>> {
             Ok(ModelEvent::Usage {
                 usage: Usage::default(),
             }),
+            Ok(ModelEvent::Done),
         ],
         FakeTurn::ToolBatch(calls) => {
             let mut events = Vec::with_capacity(calls.len() * 2 + 1);
@@ -77,6 +79,7 @@ fn turn_events(turn: FakeTurn) -> Vec<Result<ModelEvent, ModelError>> {
             events.push(Ok(ModelEvent::Usage {
                 usage: Usage::default(),
             }));
+            events.push(Ok(ModelEvent::Done));
             events
         }
     }
@@ -128,11 +131,16 @@ impl ModelClient for FakeModelClient {
                     cached_tokens: 0,
                 },
             }),
+            Ok(ModelEvent::Done),
         ]))
     }
 
     fn model_id(&self) -> &str {
         "fake"
+    }
+
+    fn requires_terminal_event(&self) -> bool {
+        true
     }
 
     fn client_id(&self) -> ModelClientId {

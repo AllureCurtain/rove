@@ -18,6 +18,7 @@ pub struct TurnAssembler {
     text: String,
     usage: Usage,
     calls: BTreeMap<String, PartialCall>,
+    call_order: Vec<String>,
     completed: BTreeSet<String>,
     terminal: Option<StopReason>,
     event_count: usize,
@@ -76,7 +77,7 @@ impl TurnAssembler {
         self.set_terminal(reason)
     }
 
-    pub fn finish(self) -> Result<AssistantTurn, ModelError> {
+    pub fn finish(mut self) -> Result<AssistantTurn, ModelError> {
         let reason = self
             .terminal
             .ok_or_else(|| protocol_error(ProtocolValidationError::IncompleteTurn))?;
@@ -87,7 +88,11 @@ impl TurnAssembler {
         }
 
         let mut tool_calls = Vec::with_capacity(self.completed.len());
-        for call in self.calls.into_values() {
+        for id in self.call_order {
+            let call = self
+                .calls
+                .remove(&id)
+                .expect("call order must match the call map");
             let arguments =
                 serde_json::from_str::<serde_json::Value>(&call.arguments).map_err(|_| {
                     protocol_error(ProtocolValidationError::InvalidArguments {
@@ -161,10 +166,11 @@ impl TurnAssembler {
                 internal_id,
                 name,
                 arguments: String::new(),
-                wire_id: id,
+                wire_id: id.clone(),
                 done: false,
             },
         );
+        self.call_order.push(id);
         Ok(())
     }
 
@@ -203,18 +209,13 @@ impl TurnAssembler {
                 reason: "tool arguments must be a JSON object".to_string(),
             }));
         }
-        if !call.arguments.is_empty() {
-            let delta_args =
-                serde_json::from_str::<serde_json::Value>(&call.arguments).map_err(|_| {
-                    protocol_error(ProtocolValidationError::InvalidArguments {
-                        reason: "tool argument fragments are not valid JSON".to_string(),
-                    })
-                })?;
-            if delta_args != args {
-                return Err(protocol_error(ProtocolValidationError::InvalidArguments {
-                    reason: "tool call completion conflicts with assembled arguments".to_string(),
-                }));
-            }
+        if !call.arguments.is_empty()
+            && let Ok(delta_args) = serde_json::from_str::<serde_json::Value>(&call.arguments)
+            && delta_args != args
+        {
+            return Err(protocol_error(ProtocolValidationError::InvalidArguments {
+                reason: "tool call completion conflicts with assembled arguments".to_string(),
+            }));
         }
         call.arguments = args.to_string();
         call.done = true;
@@ -315,6 +316,64 @@ mod tests {
         let turn = assemble_turn(events).unwrap();
         assert_eq!(turn.stop_reason, StopReason::ToolUse);
         assert_eq!(turn.tool_calls[0].arguments["message"], "ok");
+    }
+
+    #[test]
+    fn provider_fragment_arguments_are_completed_by_the_terminal_object() {
+        let events = vec![
+            Ok(ModelEvent::ToolUseStart {
+                id: "call-fragment".to_string(),
+                name: "echo".to_string(),
+            }),
+            Ok(ModelEvent::ToolUseDelta {
+                id: "call-fragment".to_string(),
+                args_delta: "{\"message\":".to_string(),
+            }),
+            Ok(ModelEvent::ToolUseDelta {
+                id: "call-fragment".to_string(),
+                args_delta: "\"ok\"}".to_string(),
+            }),
+            Ok(ModelEvent::ToolUseDone {
+                id: "call-fragment".to_string(),
+                name: "echo".to_string(),
+                args: serde_json::json!({"message":"ok"}),
+            }),
+            Ok(ModelEvent::Done),
+        ];
+        assert!(assemble_turn(events).is_ok());
+    }
+
+    #[test]
+    fn tool_call_order_follows_stream_order_instead_of_wire_id_sorting() {
+        let events = vec![
+            Ok(ModelEvent::ToolUseStart {
+                id: "call-z".to_string(),
+                name: "first".to_string(),
+            }),
+            Ok(ModelEvent::ToolUseDone {
+                id: "call-z".to_string(),
+                name: "first".to_string(),
+                args: serde_json::json!({}),
+            }),
+            Ok(ModelEvent::ToolUseStart {
+                id: "call-a".to_string(),
+                name: "second".to_string(),
+            }),
+            Ok(ModelEvent::ToolUseDone {
+                id: "call-a".to_string(),
+                name: "second".to_string(),
+                args: serde_json::json!({}),
+            }),
+            Ok(ModelEvent::Done),
+        ];
+        let turn = assemble_turn(events).unwrap();
+        assert_eq!(
+            turn.tool_calls
+                .iter()
+                .map(|call| call.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["first", "second"]
+        );
     }
 
     #[test]

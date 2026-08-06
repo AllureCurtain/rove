@@ -1,3 +1,4 @@
+use rove_models::{InternalCallId, Message, ToolResultStatus};
 use rove_runtime::events::StreamEvent;
 use rove_runtime::state::report::RunReport;
 use rove_runtime::types::TaskState;
@@ -43,4 +44,19 @@ fn pre_lifecycle_trace_fixture_remains_readable() {
         &events[1],
         StreamEvent::PlanStepStarted { attempt, .. } if !attempt.is_complete()
     ));
+}
+
+#[test]
+fn additive_message_identity_and_result_status_round_trip() {
+    let message = Message::tool_with_status(
+        "permission denied",
+        Some("wire-call-1".to_string()),
+        Some(InternalCallId::new("internal-call-1").unwrap()),
+        Some("write_file".to_string()),
+        ToolResultStatus::Rejected,
+    );
+    let encoded = serde_json::to_string(&message).unwrap();
+    let decoded: Message = serde_json::from_str(&encoded).unwrap();
+    assert_eq!(decoded, message);
+    assert_eq!(decoded.tool_result_status, Some(ToolResultStatus::Rejected));
 }

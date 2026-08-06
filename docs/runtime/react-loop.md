@@ -143,3 +143,34 @@ StepRunner =
 
 `Engine` is the orchestration shell. It loads resume state and memory, chooses
 planned or unplanned mode, streams events, and writes run artifacts.
+
+## Typed model-turn boundary
+
+The current provider-neutral boundary is implemented in `rove-models` and
+`rove-core`:
+
+- `AssistantTurn` carries ordered bounded content, typed tool calls, usage, a
+  normalized stop reason, and safe provenance. `InternalCallId` is distinct
+  from the provider wire reference.
+- `TurnAssembler` is shared by every native and Fake stream after wire
+  decoding. It bounds text/argument bytes and call counts, validates start /
+  delta / done correlation, and requires a terminal `Done` event before Core
+  can create an `Action` for strict clients.
+- A truncated stream, duplicate/unknown call, conflicting name, or non-object
+  arguments becomes a typed model failure before ToolRegistry policy or tool
+  execution. Valid provider argument fragments are completed by the terminal
+  call object.
+
+`ProviderClient`, the external adapter, `RoutingModelClient` when all selected
+targets are strict, and the shared `FakeModelClient` require `Done`; EOF is a
+typed incomplete-stream failure. Existing embedded `ModelClient` implementations
+remain dual-compatible through the default legacy EOF marker while they migrate
+to `requires_terminal_event()`. Even in that compatibility mode, the shared
+assembler still rejects incomplete calls, duplicate or conflicting identities,
+invalid arguments, and oversized content before ToolRegistry execution.
+
+The existing `Message` history JSON remains readable. Typed session entries
+and `HistoryProjector` are additive; they project canonical call/result pairs
+to target-valid wire IDs without mutating persisted history. Legacy tool
+results without native IDs are accepted only through the explicit deterministic
+compatibility policy. Provider-specific payloads remain inside `rove-models`.

@@ -3,6 +3,40 @@ use futures::stream::BoxStream;
 
 use crate::{Message, ModelError, ModelToolSchema, Usage};
 
+/// Capabilities negotiated before a provider request is sent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProviderCapabilities {
+    pub streaming: bool,
+    pub tool_calls: bool,
+    pub parallel_tool_calls: bool,
+}
+
+impl Default for ProviderCapabilities {
+    fn default() -> Self {
+        Self {
+            streaming: true,
+            tool_calls: true,
+            parallel_tool_calls: true,
+        }
+    }
+}
+
+impl ProviderCapabilities {
+    pub fn validate_tools(&self, tools: &[ModelToolSchema]) -> Result<(), ModelError> {
+        if !tools.is_empty() && !self.tool_calls {
+            return Err(ModelError::InvalidConfiguration(
+                "selected provider does not support tool calls".to_string(),
+            ));
+        }
+        if !self.streaming {
+            return Err(ModelError::InvalidConfiguration(
+                "selected provider does not support streaming".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ModelClientId(String);
 
@@ -77,8 +111,46 @@ pub trait ModelClient: Send + Sync {
     /// The model identifier (for logging/tracing).
     fn model_id(&self) -> &str;
 
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities::default()
+    }
+
+    /// Whether this client participates in the explicit terminal-event
+    /// contract introduced by the typed turn boundary.
+    ///
+    /// The default keeps existing embedded clients compatible: their stream
+    /// EOF is treated as the legacy terminal marker. First-party provider
+    /// clients and the shared Fake client opt in so a truncated stream is
+    /// rejected before a tool action can be created.
+    fn requires_terminal_event(&self) -> bool {
+        false
+    }
+
     /// Stable provider target identity for routing health state.
     fn client_id(&self) -> ModelClientId {
         ModelClientId::opaque(self.model_id().to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ProviderCapabilities;
+    use crate::ModelToolSchema;
+
+    #[test]
+    fn capability_failure_is_deterministic_before_request_projection() {
+        let capabilities = ProviderCapabilities {
+            streaming: true,
+            tool_calls: false,
+            parallel_tool_calls: false,
+        };
+        let error = capabilities
+            .validate_tools(&[ModelToolSchema {
+                name: "echo".to_string(),
+                description: String::new(),
+                parameters: serde_json::json!({"type":"object"}),
+            }])
+            .unwrap_err();
+        assert!(matches!(error, crate::ModelError::InvalidConfiguration(_)));
     }
 }

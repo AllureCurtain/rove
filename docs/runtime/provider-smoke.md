@@ -224,6 +224,15 @@ can be reached, stream events can be normalized, native tool-use events can
 round trip through the engine, and the engine can complete or step-limit the
 minimal tool run without losing the tool call or tool result.
 
+All deterministic provider paths now pass their decoded events through the
+shared `TurnAssembler` in Core. Strict provider clients require a terminal
+stream event and reject malformed, duplicate, truncated, or oversized calls
+before ToolRegistry execution. Capability checks are performed at the provider
+client boundary before HTTP request dispatch. Existing embedded clients retain
+the legacy EOF marker until they opt into `requires_terminal_event()`. These
+guarantees are covered by the local models/core tests; the smoke commands below
+remain opt-in interoperability evidence only.
+
 Some OpenAI Chat Completions models keep calling the same tool after receiving a valid
 tool result instead of producing the requested final text. The smoke therefore
 requires the separate direct final-answer check for text generation, and the

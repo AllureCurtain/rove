@@ -258,6 +258,10 @@ impl ModelClient for ExternalAdapterClient {
         };
         ModelClientId::new(EXTERNAL_ADAPTER_V1_PROTOCOL, endpoint, &self.config.model)
     }
+
+    fn requires_terminal_event(&self) -> bool {
+        true
+    }
 }
 
 struct ExternalAdapterSession {

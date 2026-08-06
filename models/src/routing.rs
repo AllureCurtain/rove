@@ -324,6 +324,12 @@ impl ModelClient for RoutingModelClient {
     fn model_id(&self) -> &str {
         &self.model_id
     }
+
+    fn requires_terminal_event(&self) -> bool {
+        self.clients
+            .iter()
+            .all(|client| client.requires_terminal_event())
+    }
 }
 
 fn is_commit_event(event: &ModelEvent) -> bool {

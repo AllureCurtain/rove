@@ -36,4 +36,4 @@ pub use protocol::{
     ProtocolValidationError, Role, StopReason, ToolCall, ToolCallRef, ToolResult, ToolResultStatus,
     TurnProvenance, Usage, WireCallReference,
 };
-pub use traits::{ModelClient, ModelClientId, ModelEvent};
+pub use traits::{ModelClient, ModelClientId, ModelEvent, ProviderCapabilities};
