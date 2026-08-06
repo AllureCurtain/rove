@@ -6,10 +6,11 @@
 >
 > Last reconciled: 2026-08-06
 >
-> Execution rule: **Subagents are prohibited.** All planning, implementation,
-> review, verification, merge, and cleanup work is performed serially by the
-> main Agent thread. The two worktrees are isolation boundaries, not concurrent
-> Agent lanes.
+> Execution rule: **Subagents are prohibited inside every implementation
+> conversation.** The user may run at most two independent top-level
+> conversations concurrently, one bound to each implementation worktree, when
+> dependency gates and the ownership manifest permit it. A top-level
+> conversation must never call, create, delegate to, or resume a Subagent.
 >
 > Implementation baseline: `main` at
 > `f9e88a7553bcc7561550e5b8286c320108c8fd51`, the merge commit for PR #29,
@@ -23,8 +24,8 @@
 >
 > Worktree boundary: the retired CDH worktrees and branches are not
 > implementation bases. New implementation begins only from the sealed `main`
-> baseline and follows the two-worktree ownership and serial-execution rules in
-> Section 0.
+> baseline and follows the two-worktree ownership, dependency, and conversation
+> concurrency rules in Section 0.
 >
 > Current runtime truth remains under [`../runtime/`](../runtime/README.md).
 > This plan must not be used as evidence that the proposed types, hooks,
@@ -46,7 +47,7 @@ The goal is not to rewrite rove as Pi or to copy Claude Code. The goal is:
 
 ---
 
-## 0. Coordinator, worktree, and serial-execution rules
+## 0. Coordinator, worktree, and conversation-concurrency rules
 
 This document is the coordinator-owned source for delivery order, dependency
 gates, worktree ownership, compatibility, and acceptance. Detailed future
@@ -60,36 +61,44 @@ The implementation may keep at most two implementation worktrees:
 main                         coordinator integration and release truth
   +-- worktree A            kernel / message / provider track
   +-- worktree B            trust / environment / coding-tool track
-                              (operated one at a time by the main thread)
+                              (at most one top-level conversation per worktree)
 ```
 
-Execution is strictly serial because the available Agent concurrency is
-limited:
+The concurrency boundary applies inside each conversation, not across
+user-opened top-level conversations:
 
-1. Do not call, create, delegate to, or resume any Subagent for this program.
-   There is no exception for research, review, tests, or supposedly disjoint
-   implementation work.
-2. Only the main Agent thread performs work. It may switch between worktree A,
-   worktree B, and `main`, but only one checkout may be actively edited, tested,
-   merged, or cleaned at a time.
-3. Two tasks that are dependency-independent may be placed on separate branches
-   and worktrees for isolation, but they are executed sequentially. “Parallel”
-   in the dependency graph means merge-order independence, not simultaneous
-   Agent execution.
-4. Finish the current worktree's bounded milestone, record its tests/status,
-   and reach a safe handoff before switching to the other worktree.
-5. Shared hotspots are coordinator-owned unless a milestone handoff explicitly
+1. No top-level implementation conversation may call, create, delegate to, or
+   resume any Subagent. There is no exception for research, review, tests, or
+   supposedly disjoint implementation work.
+2. The user may open at most two top-level implementation conversations: one
+   assigned to worktree A and one assigned to worktree B. These user-created
+   conversations are independent primary sessions, not Subagents.
+3. Each conversation is pinned to its assigned worktree, branch, milestone,
+   and allowed-file set. It must not edit the other worktree or perform
+   coordinator integration directly on `main`.
+4. The two conversations may execute simultaneously only when their dependency
+   gates are already merged and their owned files are disjoint under the M1
+   manifest. M0.5 and M1 are bootstrap checkpoints and remain ordered.
+5. Each conversation must finish a bounded checkpoint, record commits,
+   tests/status, changed files, and remaining risks, and leave a clean handoff
+   before changing branches or milestone ownership.
+6. Shared hotspots are coordinator-owned unless a milestone handoff explicitly
    assigns them: public serialized types, canonical events, migrations,
    `Cargo.lock`, generated schemas, acceptance reports, and current runtime
-   documentation.
-6. No later worktree starts from an unmerged dependency branch. Merge and
+   documentation. If concurrent work discovers a shared-hotspot change, that
+   work pauses until the coordinator assigns one exclusive owner.
+7. No later worktree starts from an unmerged dependency branch. Merge and
    verify the dependency checkpoint first, then create or rebase the dependent
    worktree from the new `main`.
+8. Coordinator merges, shared-hotspot edits, full acceptance, release cleanup,
+   and pushes to `main` are serialized. Both implementation conversations pause
+   while the coordinator integrates a dependency checkpoint.
 
-Before opening either worktree, the coordinator records branch name, base SHA,
-allowed files, forbidden hotspots, required tests, rollback floor, and merge
-order in Section 14. Worktree-local generated state (`target/`, `node_modules/`,
-`.next/`, `.rove/`, Playwright output, logs) is never committed.
+Before assigning work in either worktree, the coordinator records branch name,
+base SHA, allowed files, forbidden hotspots, required tests, rollback floor,
+merge order, and whether the checkpoint is concurrency-eligible in Section 14.
+Worktree-local generated state (`target/`, `node_modules/`, `.next/`, `.rove/`,
+Playwright output, logs) is never committed.
 
 ---
 
@@ -1768,8 +1777,10 @@ smuggled into resume as an ordinary message.
 
 This subsection describes a possible rove product capability only. It does not
 authorize the coding Agent executing this plan to call, create, resume, or
-delegate to a Subagent. Repository implementation remains main-thread-only and
-strictly serial under Section 0, including any separately accepted M8C scope.
+delegate to a Subagent. Section 0 permits separate user-opened top-level
+conversations in the two owned worktrees; it does not permit either
+conversation to create child Agents, including for any separately accepted M8C
+scope.
 
 Subagents are a later consumer of the same kernel, not a second bespoke loop.
 The first design must require:
@@ -2130,9 +2141,10 @@ future Desktop release gate requires:
 
 No implementation branch for a later milestone starts before its dependency
 contract is merged. The dependency graph may identify disjoint worktree tracks,
-but Section 0 requires the main Agent thread to execute those tracks serially.
+and Section 0 permits their top-level conversations to run concurrently only
+after the bootstrap gates and ownership manifest are merged.
 
-### Serial two-worktree schedule
+### Dependency-gated two-worktree schedule
 
 After this plan is merged, create these two isolation worktrees from the same
 then-current `origin/main` and record the exact SHA:
@@ -2142,25 +2154,33 @@ then-current `origin/main` and record the exact SHA:
 | A | `.worktrees/agent-kernel` / `feature/agent-kernel-*` | `models/`, `core/`, typed message/projection, provider protocol slices, kernel/lifecycle |
 | B | `.worktrees/agent-trust-tools` / `feature/agent-trust-tools-*` | Project Trust, Execution Environment adapters, Coding Tool V2, focused bootstrap integration |
 
-They are operated serially in this order; each numbered checkpoint is merged
-and verified on `main` before the main thread switches to a dependent item:
+Bootstrap is ordered; each checkpoint is merged and verified on `main` before
+the next one begins:
 
 1. B: M0.5 immediate trust guard.
 2. A: M1 design/contract seal and coordinator-owned ownership manifest.
-3. A: M2, then M3A-M3C as separate merge checkpoints.
-4. B: create its next milestone branch from the new `main`; implement M5
-   and M6 parity migration as separate checkpoints.
-5. A: start from the new `main`; implement M4 and M3D in the dependency order
+
+After M1 merges, the following two lanes are concurrency-eligible under the
+manifest. Each lane remains internally ordered and uses separate merge
+checkpoints:
+
+1. A: M2, then M3A-M3C.
+2. B: create its next milestone branch from the new `main`; implement M5, then
+   the M6 parity migration.
+
+After those lanes merge, continue through the remaining dependency gates:
+
+1. A: start from the new `main`; implement M4 and M3D in the dependency order
    sealed by M1.
-6. B: start from `main` containing M3D and M6; implement M7.
-7. A: implement M8A and M8B as separate checkpoints.
-8. B or a short coordinator branch: implement M9; use `main` for the final M10
+2. B: start from `main` containing M3D and M6; implement M7.
+3. A: implement M8A and M8B as separate checkpoints.
+4. B or a short coordinator branch: implement M9; use `main` for the final M10
    evidence/documentation seal only after all implementation PRs merge.
 
-The main thread may choose the other independent next checkpoint when one is
-blocked, but it must first leave the current worktree clean with a written
-handoff. It never works both checkouts simultaneously and never uses a
-Subagent.
+When one lane is blocked, the other dependency-independent lane may continue.
+Every top-level conversation remains confined to its worktree and may never use
+a Subagent. The coordinator serializes merges and refreshes both worktrees from
+the resulting `main` before dependent work resumes.
 
 Shared hotspots are assigned by the M1 manifest rather than by this coarse
 track table. Until then neither worktree may independently change canonical
@@ -2260,9 +2280,11 @@ Exit gate:
   budget accounting, profile/procedure identity, or public schema generation;
 - migration and rollback are reviewable before serialized code changes;
 - security checklist is complete for the target contracts;
-- worktree A and B have disjoint owned files and can be operated serially without
-  ambiguous ownership of canonical events, migrations, generated schemas, or
-  lockfiles.
+- worktree A and B have disjoint owned files and can be operated concurrently
+  without ambiguous ownership of canonical events, migrations, generated
+  schemas, or lockfiles;
+- every concurrency-eligible checkpoint has explicit branch, base, test,
+  handoff, and shared-hotspot rules.
 
 ### M2 - Typed message/session projection
 
@@ -2468,7 +2490,7 @@ Exit gate:
 
 ### M8 - Strategy and Agent knowledge integration
 
-M8 has two required serial submilestones and one optional follow-up. They do not
+M8 has two required ordered submilestones and one optional follow-up. They do not
 share a long-lived implementation branch.
 
 **M8A - Strategy and context efficiency:**
@@ -2499,7 +2521,7 @@ accepted scope with deterministic fixtures, global budget enforcement,
 restricted Execution Environment, typed parent/child result, canonical
 provenance, cancellation, and unknown-effect semantics. Implementing rove's
 Subagent feature does not authorize coding agents working on this repository to
-spawn Subagents; Section 0 remains absolute.
+spawn Subagents; Section 0's per-conversation prohibition remains absolute.
 
 Exit gate:
 
@@ -2682,8 +2704,9 @@ Add enforceable checks where practical:
 - workspace content cannot register executable UI/runtime extensions;
 - provider payload types do not escape `rove-models`;
 - public wire variants stay synchronized with the chosen schema workflow;
-- repository implementation records show only the main Agent thread operated
-  the two worktrees serially; no Subagent delegation is permitted.
+- repository implementation records identify at most one authorized top-level
+  conversation per worktree, prove that each stayed within its ownership, and
+  show no Subagent creation or delegation.
 
 ### 16.5 Security gate
 
@@ -2742,8 +2765,9 @@ This program is complete only when all applicable milestones have merged into
 17. current `docs/runtime/` agrees with the merged implementation;
 18. optional external-provider, remote, container, M8C Subagent, future Desktop,
     or unsupported-platform claims are made only from gates that actually ran;
-19. the full program was implemented serially by the main Agent thread without
-    calling or delegating to any Subagent;
+19. every implementation conversation stayed within one assigned worktree and
+    ownership manifest without calling, creating, resuming, or delegating to
+    any Subagent;
 20. M10 leaves local `main` clean, synchronized with `origin/main`, with no open
     program PR, stale implementation worktree, or generated evidence staged.
 
@@ -2769,8 +2793,8 @@ Prose, type scaffolding, or a passing pipeline smoke alone is not completion.
 - Automatically restarting background commands or unknown side effects.
 - Reimplementing CDH features that already merged and passed M0.
 - Implementing Desktop in this program; it requires a future D0 design/plan.
-- Treating the two worktrees as permission for concurrent Agents or calling any
-  Subagent during repository implementation.
+- Treating top-level worktree concurrency as permission to cross ownership,
+  bypass dependency gates, edit `main` directly, or call any Subagent.
 
 ---
 
@@ -2813,8 +2837,9 @@ MCP Tool Artifacts and Desktop are not.
 ### Plan reconciliation
 
 - Updated the baseline and CDH/current documentation to merged reality.
-- Added the absolute main-thread-only/no-Subagent rule and serial two-worktree
-  schedule.
+- Corrected the execution boundary to prohibit Subagents inside every
+  conversation while allowing up to two user-opened top-level conversations,
+  one per owned worktree, after dependency and ownership gates.
 - Added M0.5 Trust guard, lifecycle Finalizer/evaluator/budget/trace-tail work,
   AgentDefinition/profile/procedure scope, observation/file lifecycle/search,
   claim levels, cross-platform conformance, and clean evidence requirements.
@@ -2825,9 +2850,12 @@ MCP Tool Artifacts and Desktop are not.
 ### First implementation milestone
 
 - Milestone: M0.5 immediate Project Trust guard.
-- Worktree: B at `.worktrees/agent-trust-tools`; suggested first branch
-  `feature/agent-trust-guard`, created from the then-current `origin/main` and
-  recorded with its exact base SHA.
+- Worktree B: `.worktrees/agent-trust-tools`, branch
+  `feature/agent-trust-guard`, created on 2026-08-06 from exact `origin/main`
+  SHA `b972df42f0f90d5ce7776c1962cbefa6b4941ade`.
+- Worktree A: `.worktrees/agent-kernel`, branch `feature/agent-kernel-m1`,
+  created from the same exact SHA. It remains idle until M0.5 is merged and
+  verified, then refreshes from the new `main` before M1 begins.
 - Initial ownership: focused `apps/bootstrap` config/assembly, MCP activation
   boundary, new narrowly owned trust-guard module/types, focused CLI/API/Web
   restricted-state adapters, and dedicated negative tests.
@@ -2865,3 +2893,8 @@ MCP Tool Artifacts and Desktop are not.
   observation and missing file/search operations, claim-level evaluation,
   cross-platform and clean-evidence gates, corrected milestone ownership, and a
   Desktop-independent M10 program seal.
+- 2026-08-06: Corrected the execution rule after operator clarification. Kept
+  the absolute per-conversation Subagent prohibition, allowed up to two
+  user-opened top-level conversations bound one-to-one to worktrees A and B,
+  retained serialized coordinator merges, and limited concurrent work to
+  dependency-ready, manifest-disjoint checkpoints.
