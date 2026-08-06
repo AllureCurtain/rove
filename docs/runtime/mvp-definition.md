@@ -2,7 +2,7 @@
 
 Status: MVP reached for the local-first single-user runtime.
 Date: 2026-05-30
-Last interface update: 2026-07-27 (Web Complete C3 migration, polish, and live-API acceptance).
+Last interface update: 2026-08-06 (CDH G1-G7 control, evidence, and Settings completion).
 
 ## Definition
 
@@ -48,6 +48,12 @@ This MVP is not a SaaS product, browser automation runtime, desktop automation r
   live-API coverage for migration, exact A/B continuation, refresh,
   approval/input/cancel, Settings, and deep routes. One bounded advanced
   `/dev/workbench` smoke remains available.
+- CDH G1-G7 completion: API-authoritative Steer/Follow-up, terminal-boundary
+  Fork with inherited read-only lineage, revision-safe session model/reasoning/
+  approval/step-limit configuration with immutable run snapshots, explicit
+  usage/context/cost states, bounded workspace files/artifacts/images/diff,
+  redacted JSON/HTML/Markdown evidence export, and workspace-scoped MCP catalog
+  management shared by Settings and runtime assembly.
 - Core engine with planned and unplanned loops sharing model turns, tool turns, context checkpoints, and history writeback.
 - Local state under `.rove/` with trace, task state, report, and SQLite index.
 - Folder, Repo, and Task workspaces.
@@ -55,7 +61,8 @@ This MVP is not a SaaS product, browser automation runtime, desktop automation r
 - Provider abstraction for OpenAI, OpenAI Responses, Anthropic, Ollama, and fake providers.
 - Deterministic no-network benchmarks and default test coverage.
 
-Web Complete C0-C3 is implemented and verified on `main` through PRs #24–#26.
+Web Complete C0-C3 is implemented and verified on `main` through PRs #24–#26;
+CDH G1-G7 are implemented through PR #29 at `f9e88a7`.
 Broad deterministic race, failure, migration-recovery, and visual scenarios
 remain browser-boundary mock evidence; `local-full` separately passed three
 live-API browser cases covering migration, the default product lifecycle, and a
@@ -70,19 +77,21 @@ external-provider C3 browser gate has been run.
 - Built-in vector or provider-backed RAG retrieval; future semantic retrieval
   requires a separate optional-external-service design.
 - Long-running human-in-the-loop reconstruction after process restart.
+- One shared Core/Runtime Agent kernel, Project Trust activation, a shared
+  Execution Environment, Coding Tool V2, and product Subagents.
 
 ## Golden paths
 
 1. CLI smoke:
 
    ```powershell
-   cargo run -- --model fake "echo hello from rove"
+   cargo run -p rove-cli -- --model fake "echo hello from rove"
    ```
 
 2. API and Web smoke:
 
    ```powershell
-   cargo run --bin rove-api
+   cargo run -p rove-api
    cd apps/web
    pnpm dev
    ```
@@ -90,23 +99,23 @@ external-provider C3 browser gate has been run.
 3. Deterministic benchmark:
 
    ```powershell
-   cargo run --bin rove-bench -- --suite benchmarks/agent-smoke.json --output-dir .rove/bench
+   cargo run -p rove-bench -- --suite benchmarks/agent-smoke.json --output-dir .rove/bench
    ```
 
 4. Resume state:
 
    ```powershell
-   cargo run -- --model fake "inspect this workspace"
-   cargo run -- sessions
-   cargo run -- --resume latest --model fake "continue"
+   cargo run -p rove-cli -- --model fake "inspect this workspace"
+   cargo run -p rove-cli -- sessions
+   cargo run -p rove-cli -- --resume latest --model fake "continue"
    ```
 
 ## Required verification baseline
 
 ```powershell
 cargo fmt --all --check
-cargo clippy --all-targets -- -D warnings
-cargo test
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
 cd apps/web
 pnpm test
 pnpm typecheck

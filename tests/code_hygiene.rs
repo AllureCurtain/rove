@@ -112,7 +112,7 @@ fn runtime_docs_and_ignore_rules_match_release_artifact_policy() {
     let ignore = std::fs::read_to_string(workspace_path(".gitignore")).unwrap();
 
     assert!(
-        status.contains("scheduled/manual release-gate workflow"),
+        status.contains("manual Windows release-gate workflow"),
         "implementation status should mention the current release-gate workflow"
     );
     assert!(

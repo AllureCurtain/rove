@@ -101,7 +101,7 @@ $env:ROVE_STATE_DIR = $state
 $env:ROVE_STATE_SQLITE = Join-Path $state "state.sqlite"
 $env:ROVE_MEMORY_SESSION_DIR = Join-Path $state "memory/sessions"
 $env:ROVE_MEMORY_DURABLE_DIR = Join-Path $state "memory"
-cargo run --bin rove-api -- --addr 127.0.0.1:8787 -C $workspace
+cargo run -p rove-api -- --addr 127.0.0.1:8787 -C $workspace
 ```
 
 Create a plain job:
@@ -213,7 +213,7 @@ The runner:
 1. Loads `.env.integration` when present and falls back to safe `local-full` defaults.
 2. Verifies required commands are available: `cargo` and `pnpm`.
 3. Creates `<integration-root>/workspace`, `<integration-root>/workspace/.rove-integration-state`, and `<integration-root>/artifacts`.
-4. Starts `cargo run --bin rove-api -- --addr <addr> -C <workspace>` with integration env.
+4. Starts `cargo run -p rove-api -- --addr <addr> -C <workspace>` with integration env.
 5. Waits until `GET /runs` succeeds.
 6. Runs API smoke scenarios and saves JSON responses under `<integration-root>/artifacts/api`.
 7. Starts `pnpm exec next dev --port <port>` in `apps/web` with `ROVE_API_BASE` pointing to the API.
@@ -416,13 +416,15 @@ environment. A prebuilt binary can be supplied with `--binary`; use
 
 ### Provider Smoke
 
-Use `docs/runtime/provider-smoke.md` as the source of truth. With no gate enabled, `cargo test --test provider_smoke` should pass by skipping real calls. Enable one provider at a time:
+Use `docs/runtime/provider-smoke.md` as the source of truth. With no gate enabled,
+`cargo test -p rove-integration-tests --test provider_smoke` should pass by
+skipping real calls. Enable one provider at a time:
 
 ```powershell
 $env:ROVE_PROVIDER_SMOKE_OPENAI = "1"
 $env:OPENAI_API_KEY = "<secret>"
 $env:ROVE_PROVIDER_SMOKE_OPENAI_MODEL = "gpt-4.1-mini"
-cargo test --test provider_smoke openai_real_provider_smoke_when_enabled -- --exact --nocapture
+cargo test -p rove-integration-tests --test provider_smoke openai_real_provider_smoke_when_enabled -- --exact --nocapture
 ```
 
 Passing `provider-smoke` proves provider reachability, event normalization, and one native tool-use round trip. It does not replace `local-full`.
@@ -437,14 +439,14 @@ The deterministic MCP fixture is `tests/fixtures/mcp_mock_server.py`; `.rove/mcp
 Default verification remains:
 
 ```powershell
-cargo test --test mcp
+cargo test -p rove-integration-tests --test mcp
 ```
 
 The official filesystem MCP smoke remains opt-in:
 
 ```powershell
 $env:ROVE_MCP_FILESYSTEM_SMOKE = "1"
-cargo test --test mcp mcp_official_filesystem_server_smoke_when_enabled -- --exact --nocapture
+cargo test -p rove-integration-tests --test mcp mcp_official_filesystem_server_smoke_when_enabled -- --exact --nocapture
 ```
 
 ## Product Acceptance Runner
@@ -506,8 +508,8 @@ Run the deterministic code gates before a full integration pass:
 
 ```powershell
 cargo fmt --all --check
-cargo clippy --all-targets -- -D warnings
-cargo test
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
 
 cd apps/web
 pnpm test

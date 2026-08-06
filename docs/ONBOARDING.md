@@ -430,6 +430,12 @@ keyboard/focus, live-status, reduced-motion, theme, and screenshot-evidence
 polish for the default shell. C0–C3 are integrated on `main` through PRs
 #24–#26 and passed the post-merge deterministic gates.
 
+CDH G1-G7 merged through PR #29 at `f9e88a7`. The default product shell and API
+also expose durable Steer/Follow-up, terminal-boundary Fork/lineage, immutable
+session run configuration snapshots, usage/context/cost, bounded files and
+artifacts, image validation, run/Git diff, redacted evidence export, and a
+workspace-scoped MCP catalog shared by Settings and job assembly.
+
 From `apps/web/`:
 
 ```powershell
@@ -477,7 +483,7 @@ Current benchmark code is under `apps/bench/`. It supports:
 Fast checks:
 
 ```powershell
-cargo test --test bench
+cargo test -p rove-integration-tests --test bench
 cargo run -p rove-bench -- --suite benchmarks/agent-smoke.json --output-dir .rove/bench
 ```
 
@@ -500,11 +506,11 @@ cargo test --workspace
 Start focused when iterating:
 
 ```powershell
-cargo test --test e2e
-cargo test --test api
-cargo test --test mcp
-cargo test --test tool_safety
-cargo test --test bench
+cargo test -p rove-integration-tests --test e2e
+cargo test -p rove-integration-tests --test api
+cargo test -p rove-integration-tests --test mcp
+cargo test -p rove-integration-tests --test tool_safety
+cargo test -p rove-integration-tests --test bench
 ```
 
 ### 17.2 Web
@@ -625,8 +631,13 @@ documents remain proposed/not implemented.
   [delivery plan](plans/2026-07-26-web-complete.md) — C0–C3 implementation,
   ordered coordinator integration, and post-merge local acceptance are complete.
 - [Web → Desktop coordinator plan](plans/2026-07-25-web-desktop-master-delivery.md)
-  — worktree ownership, PR authority, exact product-session binding, and
-  Desktop D0 gate.
+  — historical Web delivery coordination; Desktop remains future scope.
+- [CDH G1-G7 delivery](plans/2026-08-03-cdh-alder-merge.md) — completed through
+  PR #29; G8 Desktop was out of scope.
+- [Post-CDH Agent Kernel and Coding Capability](plans/2026-08-05-post-cdh-agent-kernel-and-coding-capability.md)
+  — active M0-M10 order. Repository work is main-thread-only and strictly
+  serial; the two worktrees are isolation boundaries and Subagents are
+  prohibited.
 
 ### Independent terminal interface direction
 
@@ -696,7 +707,8 @@ deterministic tests regardless.
 ### MCP optional smoke skipped
 
 This is expected unless `ROVE_MCP_FILESYSTEM_SMOKE=1` and its external
-dependencies are available. `cargo test --test mcp` remains the default local
+dependencies are available. `cargo test -p rove-integration-tests --test mcp`
+remains the default local
 contract.
 
 ### Dirty tree

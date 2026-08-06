@@ -1,8 +1,13 @@
 # CDH Completion — Implementation Log
 
-> Working log for porting + completing the cloud-produced "CDH completion" work
-> (from the alder workspace copy) into rove proper. We work ONLY in this worktree.
-> One In Progress item at a time. Failures are recorded, not deleted.
+> Status: **Completed / Merged.** G1-G7 landed through PR #29 at
+> `f9e88a7553bcc7561550e5b8286c320108c8fd51` on 2026-08-06. G8 Desktop was
+> explicitly out of scope.
+>
+> This is the preserved delivery log for porting and completing the
+> cloud-produced "CDH completion" work from the alder workspace copy. The old
+> worktree/branch references below are historical, not instructions for future
+> implementation. Failures remain recorded rather than deleted.
 >
 > Checklist plan: `docs/plans/2026-08-03-cdh-alder-merge.md`
 
@@ -10,7 +15,8 @@
 
 - **Start:** 2026-08-01 (local, China Standard Time)
 - **Resumed:** 2026-08-03 — user confirmed the worktree is now `.worktrees/cdh-merge`; G8 Desktop out of scope; G7 = gap-fill on main Settings (not full alder port); alder root docs not copied.
-- **Worktree:** `.worktrees/cdh-merge`, branch `worktree-cdh-merge`, from `main @ 3aa51a1`
+- **Merged:** 2026-08-06 — PR #29, merge commit `f9e88a7`; required Rust and Web CI jobs passed.
+- **Historical worktree:** `.worktrees/cdh-merge`, final branch `feature/cdh-control-completion`, from `main @ 3aa51a1`; retired after merge.
 - **OS:** Windows 11 (win32), shell = Git Bash
 - **Source being reviewed/ported:** `D:\Study\cc\claw\code\CODING_TASK_36_ROVE\res\alder\workspace\rove` (no git history; treated as untrusted reference, reviewed file-by-file before porting)
 - **Task guide:** `D:\Study\cc\claw\code\CODING_TASK_36_ROVE\CODING_TASK_GUIDE-36-ROVE.md`
@@ -38,7 +44,7 @@
 | 7 | G7 settings gap-fill (main Settings baseline; alder MCP only if additive) | Done |
 | 8 | G8 Desktop | **Skipped — out of scope** |
 | 9 | Hardening: concurrency/crash/load + acceptance runner | Done |
-| 10 | Final gates + product docs + cleanup + PR | Pending |
+| 10 | Final gates + product docs + cleanup + PR | Done — PR #29 merged |
 
 ## Step 3 — G3 Session model + reasoning (2026-08-04, Done)
 

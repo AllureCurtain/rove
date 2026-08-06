@@ -101,7 +101,7 @@ and updates its tests and current documentation:
 
 ## 5. Current implementation boundaries
 
-As of 2026-07-27:
+As of 2026-08-06:
 
 - rove is a local-first Rust runtime with CLI, API, Web, persisted run state,
   resume, provider routing, tools, layered memory, optional future external retrieval, and
@@ -116,7 +116,8 @@ As of 2026-07-27:
   registry assembly, and shared Engine assembly. Workspace retrieval is tool-based plus layered file memory; there is no built-in vector RAG.
 - `docs/runtime/` describes the implemented MVP, Web M1 product shell, and the
   Web Complete C0–C3 persistence, continuity, Settings, migration, polish, and
-  acceptance work now integrated on `main` through PRs #24, #25, and #26.
+  acceptance work integrated on `main` through PRs #24, #25, and #26, plus the
+  CDH G1-G7 control, evidence, and Settings completion merged through PR #29.
 - MCP currently supports stdio and the existing legacy SSE path. Streamable
   HTTP, negotiated sessions, rich MCP result envelopes, and Tool Artifacts are
   proposed, not implemented.
@@ -152,7 +153,11 @@ As of 2026-07-27:
   passed all three Playwright scenarios before and after coordinator
   integration. The external-provider gate was not run, so no external
   interoperability claim is made. C0–C3 are on `main` through merge commits
-  `db8f970`, `abbd7d6`, and `e3c2403`. No Tauri `apps/desktop` host exists yet.
+  `db8f970`, `abbd7d6`, and `e3c2403`. CDH G1-G7 add durable Steer/Follow-up,
+  terminal-boundary Fork/lineage, session model/reasoning/approval/step-limit
+  snapshots, usage/context/cost, bounded files/artifacts/images/diff, redacted
+  evidence export, and workspace-scoped Settings/MCP management; they are on
+  `main` through PR #29 at `f9e88a7`. No Tauri `apps/desktop` host exists yet.
 - This repository-level `AGENTS.md` guides maintainers and coding agents. Its
   existence does not mean the rove runtime already loads workspace
   `AGENTS.md` files into model context.

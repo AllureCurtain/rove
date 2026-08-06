@@ -207,7 +207,7 @@ They are not fields on the minimal `rove-core` context, so an embedded custom
 Tool needs only call identity and cancellation unless it explicitly opts into
 runtime services.
 
-MCP stdio transport is bounded by per-server policy. Initialize, list, and call requests time out; stderr is captured up to the configured diagnostic limit; JSON-RPC errors are mapped to structured tool execution failures; and child processes are killed when their client is dropped. `runtime/tests/mcp_contract.rs` and `cargo test --test mcp` cover mock stdio registration, annotation safety, timeout/error/cleanup behavior, and include an opt-in real filesystem MCP smoke test gated by `ROVE_MCP_FILESYSTEM_SMOKE=1`.
+MCP stdio transport is bounded by per-server policy. Initialize, list, and call requests time out; stderr is captured up to the configured diagnostic limit; JSON-RPC errors are mapped to structured tool execution failures; and child processes are killed when their client is dropped. `tests/mcp.rs` and `cargo test -p rove-integration-tests --test mcp` cover mock stdio registration, annotation safety, timeout/error/cleanup behavior, and include an opt-in real filesystem MCP smoke test gated by `ROVE_MCP_FILESYSTEM_SMOKE=1`.
 
 All MCP transports are byte-bounded by `MAX_MCP_RESPONSE_BYTES` (1 MiB): stdio
 JSON lines, legacy SSE endpoint discovery, and SSE JSON responses. HTTP bodies
@@ -422,6 +422,16 @@ ledger. The product shell exposes Fork only for a completed latest turn and
 renders parent/child rows with the persisted fork point; catalog session loading
 has a fixed ProductStore collection limit rather than unbounded tree traversal.
 
+CDH G3-G7 are also implemented on `main`. Session model/reasoning/approval/
+step-limit configuration uses revision CAS and immutable per-run snapshots;
+usage/cost/context inspection preserves explicit unavailable states; product
+file browsing, artifacts, image validation, and run/Git diff are bounded and
+workspace/session scoped; evidence export renders redacted JSON, offline HTML,
+and Markdown from one sanitized value; and the workspace-scoped MCP catalog is
+shared by Settings and jobs with secret-name-only persistence, typed probes,
+1 MiB transport bounds, and fail-closed corrupt/locked/unsafe configuration.
+The exact contract/test map is in `acceptance-matrix.md` under CDH G1-G7.
+
 The web verification surface is:
 
 ```bash
@@ -447,9 +457,10 @@ recovery, and visual states with browser-boundary mocks. The gated
 `real-api.spec.ts` used by `local-full` exercises the default `/` product shell
 against the live Rust API and retains one bounded `/dev/workbench` smoke. The C3
 run passed migration, exact A/B continuation with refresh and product
-interactions, and the bounded advanced case (3/3). The current CDH G1/G2 run
-also passes a live wait-for-input steer, follow-up enqueue/revoke, final control
-status, and completed-session Fork/child-continuation case (5/5 total). The provider runner now uses
+interactions, and the bounded advanced case. The merged CDH live path also
+passes wait-for-input Steer, Follow-up enqueue/revoke, final control status, and
+completed-session Fork/child continuation (five real-API scenarios total). The
+provider runner now uses
 the product shell and verifies exact browser-returned job/run IDs, but its
 external-provider Web gate was not run for C3.
 
@@ -476,7 +487,7 @@ output is JSON with suite/task pass-fail status and artifact paths for each run.
 Run it with:
 
 ```bash
-cargo run --bin rove-bench -- --suite benchmarks/agent-smoke.json --output-dir .rove/bench
+cargo run -p rove-bench -- --suite benchmarks/agent-smoke.json --output-dir .rove/bench
 ```
 
 The milestone proof map is maintained in

@@ -137,8 +137,8 @@ Run deterministic gates before any network-backed test:
 
 ```powershell
 cargo fmt --all --check
-cargo clippy --all-targets -- -D warnings
-cargo test
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
 
 cd apps/web
 pnpm test
@@ -346,7 +346,7 @@ $env:OPENAI_API_KEY = "<secret>"
 $env:OPENAI_API_BASE = "https://<provider-or-gateway>/v1"
 $env:ROVE_PROVIDER_SMOKE_OPENAI_MODEL = "<chat/tool model>"
 
-cargo test --test provider_smoke openai_real_provider_smoke_when_enabled -- --exact --nocapture
+cargo test -p rove-integration-tests --test provider_smoke openai_real_provider_smoke_when_enabled -- --exact --nocapture
 ```
 
 The test performs:
@@ -400,7 +400,7 @@ $env:ROVE_WEB_PORT = "3000"
 Start the API in terminal A:
 
 ```powershell
-cargo run --bin rove-api -- --addr 127.0.0.1:8787 -C $workspace
+cargo run -p rove-api -- --addr 127.0.0.1:8787 -C $workspace
 ```
 
 Start Web in terminal B:
@@ -489,14 +489,14 @@ Acceptance:
 Run deterministic MCP tests first:
 
 ```powershell
-cargo test --test mcp
+cargo test -p rove-integration-tests --test mcp
 ```
 
 Run official filesystem MCP smoke:
 
 ```powershell
 $env:ROVE_MCP_FILESYSTEM_SMOKE = "1"
-cargo test --test mcp mcp_official_filesystem_server_smoke_when_enabled -- --exact --nocapture
+cargo test -p rove-integration-tests --test mcp mcp_official_filesystem_server_smoke_when_enabled -- --exact --nocapture
 ```
 
 Then verify MCP through API/Web using the local mock server:
@@ -533,7 +533,7 @@ Expected local mock tool names:
 
 Acceptance:
 
-- `cargo test --test mcp` exits with code 0;
+- `cargo test -p rove-integration-tests --test mcp` exits with code 0;
 - official filesystem smoke exits with code 0 when the opt-in gate is enabled;
 - API job using `mcp__mock_server__echo_remote` reaches terminal `done`;
 - report contains `remote: hello api mcp`;

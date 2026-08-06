@@ -1,11 +1,11 @@
 # Runtime Documentation
 
 This directory is the authoritative current-state documentation surface. It
-summarizes the implemented runtime, API, Web M1 product shell, and the verified
-Web Complete C0-C3 implementation. C1-C3 are integrated on `main` through PRs
-#24-#26, and the deterministic live-API gate passed after merge. Desktop
-contracts remain under `docs/design/` and `docs/plans/` until their code and
-tests land.
+summarizes the implemented runtime, API, Web M1 product shell, verified Web
+Complete C0-C3 implementation, and CDH G1-G7 control/evidence/Settings
+completion. C1-C3 are integrated on `main` through PRs #24-#26; CDH G1-G7
+merged through PR #29 at `f9e88a7`. The deterministic live-API gates passed.
+Desktop contracts remain future work until code and tests land.
 
 New maintainers should start with [`docs/ONBOARDING.md`](../ONBOARDING.md), then use this directory for current subsystem truth.
 
@@ -77,8 +77,18 @@ The Web product line is tracked separately:
   product session and correlates the browser's returned job/run IDs, but no
   external-provider C3 gate has been run. Follow
   [`docs/design/2026-07-26-web-complete-design.md`](../design/2026-07-26-web-complete-design.md)
-  and the
-  [`Web → Desktop coordinator plan`](../plans/2026-07-25-web-desktop-master-delivery.md).
+  for the completed design record.
+- CDH G1-G7 are implemented and verified on `main` through PR #29. The product
+  has durable Steer/Follow-up controls, terminal-boundary Fork/lineage, immutable
+  session run configuration snapshots, usage/context/cost, bounded files and
+  artifacts, image validation, run/Git diff, redacted evidence export, and a
+  workspace-scoped MCP catalog shared by Settings and job assembly. See the
+  [`acceptance matrix`](acceptance-matrix.md) and the
+  [`completed CDH plan`](../plans/2026-08-03-cdh-alder-merge.md).
+- The active post-CDH implementation order is the
+  [`Agent Kernel and Coding Capability plan`](../plans/2026-08-05-post-cdh-agent-kernel-and-coding-capability.md).
+  Its repository work is strictly serial in the main Agent thread; its two
+  worktrees are isolation boundaries and Subagents are prohibited.
 - No Tauri Desktop host exists. `desktop-workspace-spec.md` is an automation
   workspace note, not the Desktop product-shell design.
 

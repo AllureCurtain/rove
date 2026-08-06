@@ -5,7 +5,7 @@ Provider smoke tests are opt-in checks for real model endpoints. They are not pa
 ## Default behavior
 
 ```powershell
-cargo test --test provider_smoke
+cargo test -p rove-integration-tests --test provider_smoke
 ```
 
 With no smoke gates enabled, the tests exit early and should pass.
@@ -16,7 +16,7 @@ With no smoke gates enabled, the tests exit early and should pass.
 $env:ROVE_PROVIDER_SMOKE_OPENAI = "1"
 $env:OPENAI_API_KEY = "<secret>"
 $env:ROVE_PROVIDER_SMOKE_OPENAI_MODEL = "gpt-4.1-mini"
-cargo test --test provider_smoke openai_real_provider_smoke_when_enabled -- --exact --nocapture
+cargo test -p rove-integration-tests --test provider_smoke openai_real_provider_smoke_when_enabled -- --exact --nocapture
 ```
 
 Set `OPENAI_API_BASE` when testing a compatible endpoint that is not OpenAI.
@@ -30,7 +30,7 @@ separate from `openai`, which continues to use `/chat/completions`.
 $env:OPENAI_API_KEY = "<secret>"
 $env:ROVE_PROVIDER_SMOKE_OPENAI_RESPONSES = "1"
 $env:ROVE_PROVIDER_SMOKE_OPENAI_RESPONSES_MODEL = "gpt-4.1-mini"
-cargo test --test provider_smoke openai_responses_real_provider_smoke_when_enabled -- --exact --nocapture
+cargo test -p rove-integration-tests --test provider_smoke openai_responses_real_provider_smoke_when_enabled -- --exact --nocapture
 ```
 
 For a full provider evidence package when quota allows:
@@ -197,7 +197,7 @@ powershell -ExecutionPolicy Bypass -File scripts/provider-integration.ps1 `
 $env:ROVE_PROVIDER_SMOKE_ANTHROPIC = "1"
 $env:ANTHROPIC_API_KEY = "<secret>"
 $env:ROVE_PROVIDER_SMOKE_ANTHROPIC_MODEL = "claude-3-5-haiku-latest"
-cargo test --test provider_smoke anthropic_real_provider_smoke_when_enabled -- --exact --nocapture
+cargo test -p rove-integration-tests --test provider_smoke anthropic_real_provider_smoke_when_enabled -- --exact --nocapture
 ```
 
 ## Ollama
@@ -213,7 +213,7 @@ Then run:
 ```powershell
 $env:ROVE_PROVIDER_SMOKE_OLLAMA = "1"
 $env:ROVE_PROVIDER_SMOKE_OLLAMA_MODEL = "llama3.2"
-cargo test --test provider_smoke ollama_real_provider_smoke_when_enabled -- --exact --nocapture
+cargo test -p rove-integration-tests --test provider_smoke ollama_real_provider_smoke_when_enabled -- --exact --nocapture
 ```
 
 ## Expected result

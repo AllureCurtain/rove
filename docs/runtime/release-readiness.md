@@ -21,6 +21,9 @@ Included:
   provider persistence, and bounded ambiguous-start reconciliation.
 - Web Complete C2 complete Settings surface and C3 migration gate, final product
   polish, and deterministic live-API default-shell acceptance.
+- CDH G1-G7 durable controls and Fork/lineage, session configuration snapshots,
+  usage/context/cost, bounded files/artifacts/images/diff, redacted evidence
+  export, and workspace-scoped Settings/MCP management.
 - Local state under `.rove/`.
 - Folder, Repo, and Task workspaces.
 - Built-in tools, MCP proxy, memory tools, fake provider, OpenAI /
@@ -51,14 +54,20 @@ Run these before any release candidate:
 
 ```powershell
 cargo fmt --all --check
-cargo clippy --all-targets -- -D warnings
-cargo test
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
 
 cd apps/web
 pnpm test
 pnpm typecheck
 pnpm build
 cd ..
+```
+
+Run the machine-readable aggregate acceptance from the repository root:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/product-acceptance.ps1
 ```
 
 Acceptance:
@@ -260,7 +269,7 @@ Select a chat/tool model from the authenticated inventory, then run:
 ```powershell
 $env:ROVE_PROVIDER_SMOKE_OPENAI = "1"
 $env:ROVE_PROVIDER_SMOKE_OPENAI_MODEL = "<selected model>"
-cargo test --test provider_smoke openai_real_provider_smoke_when_enabled -- --exact --nocapture
+cargo test -p rove-integration-tests --test provider_smoke openai_real_provider_smoke_when_enabled -- --exact --nocapture
 ```
 
 Per-run API/Web profiles also support `anthropic`, `ollama`, and `fake`; use
@@ -285,14 +294,14 @@ Acceptance:
 MCP deterministic gate:
 
 ```powershell
-cargo test --test mcp
+cargo test -p rove-integration-tests --test mcp
 ```
 
 Official filesystem MCP opt-in gate:
 
 ```powershell
 $env:ROVE_MCP_FILESYSTEM_SMOKE = "1"
-cargo test --test mcp mcp_official_filesystem_server_smoke_when_enabled -- --exact --nocapture
+cargo test -p rove-integration-tests --test mcp mcp_official_filesystem_server_smoke_when_enabled -- --exact --nocapture
 ```
 
 Acceptance:

@@ -2,9 +2,12 @@
 
 This guide is for maintainers who need to understand, debug, or extend the current implementation. It describes what exists in the codebase today. Product intent and historical design rationale live in the top-level docs; the current runtime source of truth remains this `docs/runtime/` directory.
 
-> Web status note (2026-07-27): Web Complete C0-C3 is implemented on `main`
-> through PRs #24–#26. Deterministic `local-full` passed all three live-API
-> browser cases after merge; the external-provider browser gate was not run.
+> Product status note (2026-08-06): Web Complete C0-C3 is implemented on
+> `main` through PRs #24–#26. CDH G1-G7 merged through PR #29 at `f9e88a7`,
+> adding controls, Fork/lineage, session configuration snapshots,
+> usage/context/cost, files/artifacts/diff, evidence export, and Settings/MCP
+> completion. Deterministic live-API gates passed; the external-provider browser
+> gate was not run.
 
 The root manifest is a modular resolver-3 Cargo Workspace whose default
 member is `apps/cli`, with independent packages `rove-models`, `rove-core`,
@@ -1327,7 +1330,7 @@ Default test coverage uses Python stdio fixtures for normal registration, timeou
 
 ```powershell
 $env:ROVE_MCP_FILESYSTEM_SMOKE = "1"
-cargo test --test mcp mcp_official_filesystem_server_smoke_when_enabled -- --exact --nocapture
+cargo test -p rove-integration-tests --test mcp mcp_official_filesystem_server_smoke_when_enabled -- --exact --nocapture
 ```
 
 By default that smoke test runs `npx -y @modelcontextprotocol/server-filesystem <temp-dir>` and verifies `read_file`. Override `ROVE_MCP_FILESYSTEM_COMMAND` and `ROVE_MCP_FILESYSTEM_ARGS` when testing a locally installed or pinned server. GitHub or database MCP servers should remain optional and secret-gated when added.
@@ -1401,10 +1404,10 @@ Useful focused tests:
 ```powershell
 cargo test interfaces::tui --lib
 cargo test interfaces::terminal --lib
-cargo test --test cli_repl
-cargo test --test api
-cargo test --test e2e
-cargo test --test mcp
+cargo test -p rove-integration-tests --test cli_repl
+cargo test -p rove-integration-tests --test api
+cargo test -p rove-integration-tests --test e2e
+cargo test -p rove-integration-tests --test mcp
 
 ```
 
@@ -1424,7 +1427,7 @@ is added; do not convert that result into a pass claim.
 Deterministic local benchmark checks:
 
 ```powershell
-cargo test --test bench
+cargo test -p rove-integration-tests --test bench
 cargo run -p rove-bench -- --suite benchmarks/agent-smoke.json --output-dir .rove/bench
 ```
 
@@ -1456,7 +1459,8 @@ the runtime docs first:
 - root `README.md` stays focused on accurate user-facing setup and commands.
 
 Code hygiene is part of the default gate. `src/lib.rs` must not use a global
-`#![allow(dead_code)]`; `cargo clippy --all-targets -- -D warnings` is expected
+`#![allow(dead_code)]`; `cargo clippy --workspace --all-targets -- -D warnings`
+is expected
 to surface unused stubs. Any local dead-code allowance should carry an inline
 reason that explains why the item is intentionally retained.
 
@@ -1555,8 +1559,8 @@ The current aggregate verification baseline is:
 
 ```powershell
 cargo fmt --all --check
-cargo clippy --all-targets -- -D warnings
-cargo test
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
 
 cd apps/web; pnpm test
 cd apps/web; pnpm typecheck

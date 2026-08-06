@@ -1,8 +1,11 @@
 # CDH Alder Merge — Control Capabilities Completion
 
-> Status: **Active** — implementation in worktree `.worktrees/cdh-merge`
-> Branch: `worktree-cdh-merge` from `main @ 3aa51a1`
-> Process log: repo-root `CDH_IMPLEMENTATION_LOG.md` (worktree only; do not copy alder delivery docs)
+> Status: **Completed / Merged** — G1-G7 landed through PR #29 at
+> `f9e88a7553bcc7561550e5b8286c320108c8fd51` on 2026-08-06
+> Delivery branch: `feature/cdh-control-completion`, developed in the historical
+> `.worktrees/cdh-merge` checkout from `main @ 3aa51a1`
+> Process log: repo-root `CDH_IMPLEMENTATION_LOG.md` (historical delivery record;
+> do not copy alder delivery docs)
 > Reference only (untrusted): `D:\Study\cc\claw\code\CODING_TASK_36_ROVE\res\alder\workspace\rove`
 > Task guide: `D:\Study\cc\claw\code\CODING_TASK_36_ROVE\CODING_TASK_GUIDE-36-ROVE.md`
 
@@ -17,9 +20,10 @@ Complete the Control / evidence / settings product surface that Web Complete lef
 
 **Desktop (Group 8) is out of scope for this plan.** Do not implement Tauri host work here.
 
-## 2. Fixed rules
+## 2. Fixed delivery rules
 
-- Work **only** in `.worktrees/cdh-merge` on `worktree-cdh-merge`.
+- During implementation, work stayed in `.worktrees/cdh-merge`; that checkout is
+  now retired and must not be used as a future implementation base.
 - One group In Progress at a time; finish server contract + persistence + UI + real tests before the next group.
 - Schema migrations 5→6→7→… land in order and never renumber.
 - Alder root docs (`SUMMARY.md`, `VERIFICATION.md`, etc.) are **not** copied into this repo.
@@ -109,16 +113,20 @@ Complete the Control / evidence / settings product surface that Web Complete lef
 - Shipping Tauri / Windows installer in this plan.
 - Claiming PASS without executed commands and evidence.
 
-## 5. Worktree / branch
+## 5. Historical worktree / branch
 
 ```text
 main @ 3aa51a1
-  └─ worktree-cdh-merge  (.worktrees/cdh-merge)
+  `-- feature/cdh-control-completion  (.worktrees/cdh-merge)
+        `-- PR #29 -> main @ f9e88a7
 ```
 
-Do **not** use `.worktrees/web-control-complete` (stale tip `30a345b`, no CDH work).
+The CDH and `.worktrees/web-control-complete` checkouts are retired. Neither is
+an authorized base for post-CDH work.
 
 ## 6. Progress pointer
 
-Authoritative step-by-step status: `CDH_IMPLEMENTATION_LOG.md` in the worktree root.
-Update that log before starting the next step; mark plan groups Done only when log + tests agree.
+The completed step-by-step record is `CDH_IMPLEMENTATION_LOG.md` at the
+repository root. Future work follows
+`docs/plans/2026-08-05-post-cdh-agent-kernel-and-coding-capability.md` from a
+fresh, synchronized `main` baseline.

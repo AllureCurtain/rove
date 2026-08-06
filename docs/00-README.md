@@ -2,7 +2,7 @@
 
 `rove` 的设计文档集合。
 
-**当前阶段：模块化 Cargo Workspace 与 Provider Layer 重构均已合入 `main`。当前实现事实以代码、测试和 `docs/runtime/` 为准；项目起步期材料统一归档在 `docs/Archive/`。**
+**当前阶段：Web Complete C0-C3 与 CDH G1-G7 均已合入 `main`；下一阶段按 Post-CDH Agent Kernel and Coding Capability Plan 推进。当前实现事实以代码、测试和 `docs/runtime/` 为准；项目起步期材料统一归档在 `docs/Archive/`。**
 
 ---
 
@@ -25,8 +25,8 @@
 | ✅ | 本地优先 MVP：CLI / API / Web / state / resume / tools / memory |
 | ✅ | Provider Layer redesign：开放协议注册、named profiles、`/providers/models` |
 | ✅ | `docs/runtime/` 与当前实现对齐 |
-| ✅ | Agent Desktop + Web 共享 UI 封板；Web M1（F0–F2）已合入 `main` |
-| 🧭 | **Web Complete** 已封板：一次完善 Web 至日常主力可用；Desktop 后置 |
+| ✅ | Web M1、Web Complete C0-C3 与 CDH G1-G7 已合入 `main` |
+| 🧭 | **Post-CDH**：统一 Agent kernel、Project Trust、Execution Environment 与 Coding Tool V2；Desktop 后置 |
 | 📦 | 起步期设计、handoff、对照材料归档到 `docs/Archive/` |
 
 ---
@@ -42,12 +42,14 @@
 | design | [模块化 Workspace 架构](./design/2026-07-22-modular-workspace-architecture.md) | Implemented: `models / core / runtime / apps` 四层结构 |
 | design | [Provider Layer 重构](./design/2026-07-23-provider-layer-redesign-design.md) | Accepted/implemented provider protocol registry and profiles |
 | design | [Cleanup & naming decisions](./design/2026-07-24-cleanup-and-naming-decisions.md) | Implemented: delete legacy, provider vocabulary, tools, W1–W3 |
-| design | [Agent Desktop + Web Shared UI](./design/2026-07-25-agent-desktop-web-ui-design.md) | Partially implemented: Web M1 landed; Web Complete → Tauri remains |
-| design | [Web Complete](./design/2026-07-26-web-complete-design.md) | Active/not implemented: daily-driver Web (restore, settings, API persistence, deep links) |
+| design | [Agent Desktop + Web Shared UI](./design/2026-07-25-agent-desktop-web-ui-design.md) | Partially implemented: Web product work landed; Tauri Desktop remains future scope |
+| design | [Web Complete](./design/2026-07-26-web-complete-design.md) | Implemented on `main`: C0-C3 persistence, continuity, Settings, migration, polish, and acceptance |
 | plan | [Cleanup W1/W2/W3 delivery](./plans/2026-07-24-cleanup-w1-w2-w3.md) | Completed implementation ledger |
 | plan | [Web Management M1 delivery](./plans/2026-07-25-web-management-m1.md) | Completed serial waves F0→F1→F2 on main |
-| plan | [Web → Desktop master delivery](./plans/2026-07-25-web-desktop-master-delivery.md) | Active coordinator plan: PR/worktree ownership, C0 contracts, bounded parallel lanes, Desktop gate |
-| plan | [Web Complete delivery](./plans/2026-07-26-web-complete.md) | Foundation + bounded parallel workers through C0–C3 |
+| plan | [Web → Desktop master delivery](./plans/2026-07-25-web-desktop-master-delivery.md) | Historical coordinator plan; Web delivery landed and Desktop is deferred |
+| plan | [Web Complete delivery](./plans/2026-07-26-web-complete.md) | Completed C0-C3 delivery ledger |
+| plan | [CDH G1-G7 delivery](./plans/2026-08-03-cdh-alder-merge.md) | Completed through PR #29; G8 Desktop was out of scope |
+| plan | [Post-CDH Agent Kernel and Coding Capability](./plans/2026-08-05-post-cdh-agent-kernel-and-coding-capability.md) | Active M0-M10 plan; two isolation worktrees operated serially by the main Agent thread, with Subagents prohibited |
 | future | [Agent Execution Lifecycle](./design/2026-07-14-agent-execution-lifecycle-design.md) | Partially implemented: StepRunner/ledger/revision/decisions landed; Finalizer/budgets remain |
 | future | [Agent Definition 与程序性知识](./design/2026-07-14-agent-definition-and-procedural-knowledge-design.md) | Proposed: versioned Agent profile、procedure 与 capability binding |
 | future | [MCP Streamable HTTP 与 Tool Artifacts](./design/2026-07-15-mcp-streamable-http-and-tool-artifacts-design.md) | Proposed: transport/session/result/artifact 演进 |
@@ -99,3 +101,5 @@
 - 2026-07-25:P0 状态校准：登记 Web → Desktop 主交付计划，将 Web Complete
   调整为契约 foundation + 有界并行 worker，并修正 lifecycle/cleanup/TUI 等状态漂移。
 - 2026-07-26:Web M1 已合入 main；新增 Web Complete 封板设计与 C0–C3 串行交付计划，Desktop 继续后置。
+- 2026-08-06:Web Complete C0–C3 与 CDH G1–G7 已合入 main；登记 Post-CDH
+  Agent Kernel and Coding Capability 主计划，明确仅主线程串行执行、禁止子 Agent。
