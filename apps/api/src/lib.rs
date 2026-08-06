@@ -27,7 +27,7 @@ use rove_core::ToolError;
 use rove_models::ModelClient;
 use rove_models::fake::FakeModelClient;
 use rove_models::health::{HealthConfig, ModelHealthStore};
-use rove_runtime::engine::Engine;
+use rove_runtime::engine::{Engine, RunControlHandle};
 use rove_runtime::events::StreamEvent;
 use rove_runtime::state::artifacts::RunArtifactRecorder;
 use rove_runtime::state::index::{ResumeJobClaim, RunIndexRecord, StateIndex};
@@ -44,6 +44,7 @@ use rove_runtime::workspace::Workspace;
 mod benchmark;
 mod debug;
 mod docs;
+mod pricing;
 mod product;
 mod provider;
 mod security;
@@ -123,7 +124,7 @@ impl ProductRuntimeStateResolver for ApiProductRuntimeStateResolver {
     }
 }
 
-struct JobRecord {
+pub(crate) struct JobRecord {
     session_id: SessionId,
     job_id: JobId,
     run_id: RunId,
@@ -132,12 +133,36 @@ struct JobRecord {
     message: String,
     resumed_from_run_id: Option<RunId>,
     resume_state: Option<TaskState>,
+    /// Product session this job is bound to (if any). Used for steer delivery
+    /// and follow-up drain after terminal.
+    pub(crate) product_session_id: Option<ProductSessionId>,
+    product_store: Option<Arc<dyn ProductStore>>,
+    /// Captured by ProductStore while claiming this turn. It is intentionally
+    /// immutable for the lifetime of the runtime job.
+    product_model_config: Option<ProductSessionModelConfig>,
     status: Mutex<RunStatus>,
     events: Mutex<Vec<JobStreamEvent>>,
     pending_approvals: Mutex<HashMap<CallId, PendingApproval>>,
     pending_inputs: Mutex<HashMap<CallId, PendingInput>>,
     tx: broadcast::Sender<JobStreamEvent>,
     handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// In-flight steer handle captured from the engine stream.
+    pub(crate) control: Mutex<Option<RunControlHandle>>,
+    /// The active run trace is retained for API-originated canonical control
+    /// events such as `followup_queued`. These events do not alter runtime
+    /// prompt/history projection: their durable scheduling authority is the
+    /// ProductStore row, while `trace.jsonl` remains the transcript fact.
+    control_event_trace: Mutex<Option<TraceWriter>>,
+    control_event_trace_lock: Mutex<()>,
+    /// Serializes API control creation against terminal control cleanup. A
+    /// steer cannot become pending after the runtime has passed its final safe
+    /// point and before the session turn is released.
+    pub(crate) control_lifecycle_lock: Mutex<()>,
+    /// Product control events submitted before the engine has persisted its
+    /// mandatory `run_started` fact. The lifecycle lock protects this queue
+    /// together with trace installation, so it cannot be stranded between the
+    /// two phases.
+    pending_product_events: Mutex<Vec<StreamEvent>>,
     completion: watch::Sender<bool>,
     cancel_token: CancellationToken,
 }
@@ -147,6 +172,7 @@ struct JobLaunch {
     engine: Engine,
     run: RunHandle,
     product_turn: Option<ProductTurnSupervisor>,
+    startup_events: Vec<StreamEvent>,
 }
 
 #[derive(Clone)]
@@ -192,6 +218,7 @@ struct RunsQuery {
 }
 
 pub fn router(state: ApiState) -> Router {
+    schedule_pending_followup_recovery(&state);
     let migration_router: OpenApiRouter<ApiState> = OpenApiRouter::new()
         .routes(routes!(product::routes::migrate_m1_browser_state))
         .route_layer(DefaultBodyLimit::max(MAX_M1_BROWSER_MIGRATION_BODY_BYTES));
@@ -203,18 +230,49 @@ pub fn router(state: ApiState) -> Router {
         .routes(routes!(product::routes::delete_product_workspace))
         .routes(routes!(product::routes::list_product_sessions))
         .routes(routes!(product::routes::create_product_session))
+        .routes(routes!(product::routes::create_product_session_fork))
+        .routes(routes!(product::routes::list_product_session_forks))
         .routes(routes!(product::routes::update_product_session))
         .routes(routes!(product::routes::delete_product_session))
         .routes(routes!(product::routes::get_product_session_transcript))
+        .routes(routes!(product::routes::get_product_session_model_config))
+        .routes(routes!(
+            product::routes::update_product_session_model_config
+        ))
+        .routes(routes!(product::routes::list_product_session_run_models))
+        .routes(routes!(product::usage::get_product_session_usage))
+        .routes(routes!(product::files::list_workspace_files))
+        .routes(routes!(product::files::get_workspace_file_content))
+        .routes(routes!(product::files::download_workspace_file))
+        .routes(routes!(product::files::preview_workspace_file))
+        .routes(routes!(product::artifacts::list_session_artifacts))
+        .routes(routes!(product::artifacts::get_artifact_content))
+        .routes(routes!(product::artifacts::download_artifact))
+        .routes(routes!(product::artifacts::preview_artifact))
+        .routes(routes!(product::diff::get_session_diff))
+        .routes(routes!(product::export::export_product_session))
         .routes(routes!(product::routes::list_product_provider_profiles))
         .routes(routes!(product::routes::create_product_provider_profile))
         .routes(routes!(product::routes::update_product_provider_profile))
         .routes(routes!(product::routes::delete_product_provider_profile))
+        .routes(routes!(product::routes::list_product_provider_models))
         .routes(routes!(product::routes::get_product_preferences))
         .routes(routes!(product::routes::update_product_preferences))
+        .routes(routes!(product::routes::create_product_session_steer))
+        .routes(routes!(product::routes::create_product_session_followup))
+        .routes(routes!(product::routes::list_product_session_controls))
+        .routes(routes!(product::routes::revoke_product_session_control))
+        .routes(routes!(product::routes::confirm_product_session_followup))
         .routes(routes!(product::platform::list_product_memory_topics))
+        .routes(routes!(product::platform::create_product_memory_topic))
         .routes(routes!(product::platform::get_product_memory_topic))
+        .routes(routes!(product::platform::update_product_memory_topic))
         .routes(routes!(product::platform::delete_product_memory_topic))
+        .routes(routes!(product::mcp::list_product_mcp_servers))
+        .routes(routes!(product::mcp::create_product_mcp_server))
+        .routes(routes!(product::mcp::update_product_mcp_server))
+        .routes(routes!(product::mcp::delete_product_mcp_server))
+        .routes(routes!(product::mcp::probe_product_mcp_server))
         .routes(routes!(product::platform::get_product_runtime_info))
         .merge(migration_router)
         .routes(routes!(create_job))
@@ -242,6 +300,17 @@ pub fn router(state: ApiState) -> Router {
         .split_for_parts();
 
     api_router.merge(SwaggerUi::new("/swagger-ui").url("/api/openapi.json", api))
+}
+
+fn schedule_pending_followup_recovery(state: &ApiState) {
+    if state.inner.shutdown_token.is_cancelled() || state.inner.job_starts.is_closed() {
+        return;
+    }
+    let state = state.clone();
+    let job_starts = state.inner.job_starts.clone();
+    drop(job_starts.spawn(async move {
+        recover_pending_followup_drains(state).await;
+    }));
 }
 
 pub async fn serve(addr: Option<SocketAddr>, cwd: PathBuf) -> anyhow::Result<()> {
@@ -395,6 +464,16 @@ impl ApiState {
         }
         .state_store_for_workspace(workspace.clone())
     }
+
+    pub(crate) fn product_state_store_for_product_workspace(
+        &self,
+        workspace: &ProductWorkspace,
+    ) -> Result<StateStore, ProductStoreError> {
+        ApiProductRuntimeStateResolver {
+            config: self.inner.config.clone(),
+        }
+        .state_store_for(workspace)
+    }
 }
 
 #[utoipa::path(
@@ -471,6 +550,8 @@ async fn prepare_and_start_job(
     responses(
         (status = 200, description = "Provider model catalog", body = ProviderModelsResponse, content_type = "application/json"),
         (status = 400, description = "Invalid provider profile or missing key env", body = serde_json::Value, content_type = "application/json"),
+        (status = 429, description = "Provider rate limited the inventory request", body = ApiErrorResponse, content_type = "application/json"),
+        (status = 504, description = "Provider inventory request timed out", body = ApiErrorResponse, content_type = "application/json"),
         (status = 502, description = "Provider model inventory request failed", body = serde_json::Value, content_type = "application/json"),
         (status = 500, description = "Internal runtime error", body = serde_json::Value, content_type = "application/json")
     )
@@ -503,6 +584,8 @@ async fn list_provider_models(
     responses(
         (status = 200, description = "Provider inventory check result", body = ProviderTestResponse, content_type = "application/json"),
         (status = 400, description = "Invalid provider profile", body = serde_json::Value, content_type = "application/json"),
+        (status = 429, description = "Provider rate limited the inventory request", body = ApiErrorResponse, content_type = "application/json"),
+        (status = 504, description = "Provider inventory request timed out", body = ApiErrorResponse, content_type = "application/json"),
         (status = 502, description = "Provider inventory request failed", body = serde_json::Value, content_type = "application/json"),
         (status = 500, description = "Internal runtime error", body = serde_json::Value, content_type = "application/json")
     )
@@ -859,7 +942,7 @@ async fn prepare_job_launch(
 ) -> Result<JobLaunch, ApiError> {
     match req.product_session_id.as_ref() {
         Some(product_session_id) => {
-            let approval_policy = resolve_product_job_approval_policy(state, req).await?;
+            let approval_policy = resolve_product_job_approval_policy(state).await?;
             prepare_product_job_launch(state, req, product_session_id, approval_policy).await
         }
         None => {
@@ -869,13 +952,7 @@ async fn prepare_job_launch(
     }
 }
 
-async fn resolve_product_job_approval_policy(
-    state: &ApiState,
-    req: &CreateJobRequest,
-) -> Result<ApprovalPolicy, ApiError> {
-    if let Some(explicit) = req.approval {
-        return Ok(explicit);
-    }
+async fn resolve_product_job_approval_policy(state: &ApiState) -> Result<ApprovalPolicy, ApiError> {
     let store = state.product_store()?;
     let preference = store.get_preferences().await?.default_approval_policy;
     Ok(match preference {
@@ -910,15 +987,20 @@ async fn prepare_generic_job_launch(
         .as_ref()
         .map(|task_state| task_state.job_id)
         .unwrap_or_else(JobId::new);
-    let record = new_job_record(
+    let resumed_from_run_id = resume_state.as_ref().map(|task_state| task_state.run_id);
+    let record = new_job_record(NewJobRecord {
         state,
         workspace,
         config,
-        req,
+        request: req,
         session_id,
         job_id,
         resume_state,
-    );
+        resumed_from_run_id,
+        product_session_id: None,
+        product_store: None,
+        product_model_config: None,
+    });
     let engine = match assemble_job_engine(
         state,
         &record.message,
@@ -948,6 +1030,7 @@ async fn prepare_generic_job_launch(
         engine,
         run,
         product_turn: None,
+        startup_events: Vec::new(),
     })
 }
 
@@ -959,57 +1042,226 @@ async fn prepare_product_job_launch(
 ) -> Result<JobLaunch, ApiError> {
     let store = state.product_store()?;
     let claim = store.claim_session_turn(product_session_id).await?;
+    prepare_claimed_product_job_launch(
+        state,
+        req,
+        product_session_id,
+        store,
+        claim,
+        approval_policy,
+        None,
+    )
+    .await
+}
+
+async fn prepare_followup_job_launch(
+    state: &ApiState,
+    product_session_id: &ProductSessionId,
+    claim: ProductFollowupTurnClaim,
+) -> Result<JobLaunch, ApiError> {
+    let store = state.product_store()?;
+    let request = CreateJobRequest {
+        message: claim.control.content.clone(),
+        model: None,
+        max_steps: None,
+        approval: None,
+        resume: None,
+        workspace: None,
+        provider: None,
+        product_session_id: Some(product_session_id.clone()),
+    };
+    let approval_policy = match resolve_product_job_approval_policy(state).await {
+        Ok(policy) => policy,
+        Err(error) => {
+            release_failed_followup_start(
+                &store,
+                &claim.turn.claim_id,
+                &claim.control.id,
+                false,
+                "approval policy resolution",
+            )
+            .await;
+            return Err(error);
+        }
+    };
+    prepare_claimed_product_job_launch(
+        state,
+        &request,
+        product_session_id,
+        store,
+        claim.turn,
+        approval_policy,
+        Some(claim.control.id),
+    )
+    .await
+}
+
+async fn release_failed_followup_start(
+    store: &Arc<dyn ProductStore>,
+    claim_id: &ProductTurnClaimId,
+    control_id: &ProductControlId,
+    needs_attention: bool,
+    phase: &'static str,
+) {
+    let result = if needs_attention {
+        store
+            .abandon_followup_turn(claim_id, control_id, phase)
+            .await
+    } else {
+        store.requeue_followup_turn(claim_id, control_id).await
+    };
+    if let Err(error) = result {
+        tracing::warn!(
+            control_id = %control_id,
+            phase = phase,
+            "failed to release automatic follow-up turn: {error}"
+        );
+    }
+}
+
+async fn prepare_claimed_product_job_launch(
+    state: &ApiState,
+    req: &CreateJobRequest,
+    product_session_id: &ProductSessionId,
+    store: Arc<dyn ProductStore>,
+    claim: ProductTurnClaim,
+    approval_policy: ApprovalPolicy,
+    followup_control_id: Option<ProductControlId>,
+) -> Result<JobLaunch, ApiError> {
     let claim_id = claim.claim_id.clone();
     let previous_product_status = claim.previous_status;
+    let product_model_config = claim.model_config.clone();
 
-    let (workspace, config) =
-        match workspace_and_config_for_product_job(state, req, &claim.context.workspace) {
-            Ok(value) => value,
-            Err(error) => {
+    let (workspace, config) = match workspace_and_config_for_product_job(
+        state,
+        req,
+        &claim.context.workspace,
+        &store,
+        &product_model_config,
+    )
+    .await
+    {
+        Ok(value) => value,
+        Err(error) => {
+            if let Some(control_id) = &followup_control_id {
+                release_failed_followup_start(
+                    &store,
+                    &claim_id,
+                    control_id,
+                    false,
+                    "workspace validation",
+                )
+                .await;
+            } else {
                 finish_failed_product_start(
                     &store,
                     &claim_id,
+                    None,
                     previous_product_status,
                     "workspace validation",
                 )
                 .await;
-                return Err(error);
             }
-        };
+            return Err(error);
+        }
+    };
     let state_store = state_store_for_parts(&workspace, &config);
-    let (resume_state, mut resume_claim) = match claim.previous_binding.as_ref() {
+    // A fork's first child turn starts with the source run's verified prompt
+    // state, but must never resume the source job. The fresh runtime session
+    // and job identities keep cancellation, controls, and later follow-ups
+    // isolated from the parent. Subsequent child turns use their own binding.
+    let (resume_state, mut resume_claim, fork_bootstrap) = match claim.previous_binding.as_ref() {
         Some(previous) => match load_and_claim_product_resume(&state_store, previous).await {
-            Ok((resume_state, resume_claim)) => (Some(resume_state), Some(resume_claim)),
+            Ok((resume_state, resume_claim)) => (Some(resume_state), Some(resume_claim), false),
             Err(error) => {
-                finish_failed_product_start(
-                    &store,
-                    &claim_id,
-                    ProductSessionStatus::NeedsAttention,
-                    "exact runtime resume validation",
-                )
-                .await;
+                if let Some(control_id) = &followup_control_id {
+                    release_failed_followup_start(
+                        &store,
+                        &claim_id,
+                        control_id,
+                        true,
+                        "exact runtime resume validation",
+                    )
+                    .await;
+                } else {
+                    finish_failed_product_start(
+                        &store,
+                        &claim_id,
+                        None,
+                        ProductSessionStatus::NeedsAttention,
+                        "exact runtime resume validation",
+                    )
+                    .await;
+                }
                 return Err(error);
             }
         },
-        None => (None, None),
+        None => match claim.context.fork.as_ref() {
+            Some(fork) => match load_product_fork_resume(&state_store, &fork.fork).await {
+                Ok(resume_state) => (Some(resume_state), None, true),
+                Err(error) => {
+                    if let Some(control_id) = &followup_control_id {
+                        release_failed_followup_start(
+                            &store,
+                            &claim_id,
+                            control_id,
+                            true,
+                            "fork source resume validation",
+                        )
+                        .await;
+                    } else {
+                        finish_failed_product_start(
+                            &store,
+                            &claim_id,
+                            None,
+                            ProductSessionStatus::NeedsAttention,
+                            "fork source resume validation",
+                        )
+                        .await;
+                    }
+                    return Err(error);
+                }
+            },
+            None => (None, None, false),
+        },
     };
-    let session_id = resume_state
-        .as_ref()
-        .map(|task_state| task_state.session_id)
-        .unwrap_or_else(SessionId::new);
-    let job_id = resume_state
-        .as_ref()
-        .map(|task_state| task_state.job_id)
-        .unwrap_or_else(JobId::new);
-    let record = new_job_record(
+    let session_id = if fork_bootstrap {
+        SessionId::new()
+    } else {
+        resume_state
+            .as_ref()
+            .map(|task_state| task_state.session_id)
+            .unwrap_or_else(SessionId::new)
+    };
+    let job_id = if fork_bootstrap {
+        JobId::new()
+    } else {
+        resume_state
+            .as_ref()
+            .map(|task_state| task_state.job_id)
+            .unwrap_or_else(JobId::new)
+    };
+    // Fork bootstrap reuses the verified source task state only as a history
+    // seed. It is a new runtime lineage, so the child binding must not be
+    // classified as a normal resume of the parent run.
+    let resumed_from_run_id = if fork_bootstrap {
+        None
+    } else {
+        resume_state.as_ref().map(|task_state| task_state.run_id)
+    };
+    let record = new_job_record(NewJobRecord {
         state,
         workspace,
         config,
-        req,
+        request: req,
         session_id,
         job_id,
         resume_state,
-    );
+        resumed_from_run_id,
+        product_session_id: Some(product_session_id.clone()),
+        product_store: Some(store.clone()),
+        product_model_config: Some(product_model_config),
+    });
     let engine = match assemble_job_engine(
         state,
         &record.message,
@@ -1022,28 +1274,69 @@ async fn prepare_product_job_launch(
         Ok(engine) => engine,
         Err(error) => {
             release_runtime_resume_claim(&state_store, resume_claim.take()).await;
-            finish_failed_product_start(
-                &store,
-                &claim_id,
-                previous_product_status,
-                "engine assembly",
-            )
-            .await;
+            if let Some(control_id) = &followup_control_id {
+                release_failed_followup_start(
+                    &store,
+                    &claim_id,
+                    control_id,
+                    false,
+                    "engine assembly",
+                )
+                .await;
+            } else {
+                finish_failed_product_start(
+                    &store,
+                    &claim_id,
+                    None,
+                    previous_product_status,
+                    "engine assembly",
+                )
+                .await;
+            }
             tracing::warn!(job_id = %record.job_id, "failed to assemble product job engine: {error}");
             return Err(ApiError::internal("failed to assemble job engine"));
         }
     };
+
+    if let Some(control_id) = &followup_control_id
+        && let Err(error) = store
+            .reserve_followup_run(&claim_id, control_id, record.run_id)
+            .await
+    {
+        release_runtime_resume_claim(&state_store, resume_claim.take()).await;
+        release_failed_followup_start(
+            &store,
+            &claim_id,
+            control_id,
+            true,
+            "runtime run reservation",
+        )
+        .await;
+        return Err(error.into());
+    }
     let run = match state_store.start_run(record.session_id, record.job_id, record.run_id) {
         Ok(run) => run,
         Err(error) => {
             release_runtime_resume_claim(&state_store, resume_claim.take()).await;
-            finish_failed_product_start(
-                &store,
-                &claim_id,
-                ProductSessionStatus::NeedsAttention,
-                "runtime run start",
-            )
-            .await;
+            if let Some(control_id) = &followup_control_id {
+                release_failed_followup_start(
+                    &store,
+                    &claim_id,
+                    control_id,
+                    true,
+                    "runtime run start",
+                )
+                .await;
+            } else {
+                finish_failed_product_start(
+                    &store,
+                    &claim_id,
+                    Some(record.run_id),
+                    ProductSessionStatus::NeedsAttention,
+                    "runtime run start",
+                )
+                .await;
+            }
             tracing::warn!(product_session_id = %product_session_id, "failed to start product runtime run: {error}");
             return Err(ProductStoreError::new(
                 ProductErrorCode::ProductSessionRuntimeStateMissing,
@@ -1062,6 +1355,13 @@ async fn prepare_product_job_launch(
             runtime_job_id: record.job_id,
             runtime_run_id: record.run_id,
             resumed_from_run_id: record.resumed_from_run_id,
+            followup_control_id: followup_control_id.clone(),
+            model_config: record.product_model_config.clone().ok_or_else(|| {
+                ProductStoreError::new(
+                    ProductErrorCode::ProductBindingCorrupt,
+                    "product run is missing its claimed model configuration",
+                )
+            })?,
         })
         .await
     {
@@ -1072,13 +1372,25 @@ async fn prepare_product_job_launch(
             "product run binding was not committed",
         )
         .await;
-        finish_failed_product_start(
-            &store,
-            &claim_id,
-            ProductSessionStatus::NeedsAttention,
-            "runtime binding commit",
-        )
-        .await;
+        if let Some(control_id) = &followup_control_id {
+            release_failed_followup_start(
+                &store,
+                &claim_id,
+                control_id,
+                true,
+                "runtime binding commit",
+            )
+            .await;
+        } else {
+            finish_failed_product_start(
+                &store,
+                &claim_id,
+                Some(record.run_id),
+                ProductSessionStatus::NeedsAttention,
+                "runtime binding commit",
+            )
+            .await;
+        }
         return Err(error.into());
     }
 
@@ -1087,20 +1399,44 @@ async fn prepare_product_job_launch(
         engine,
         run,
         product_turn: Some(ProductTurnSupervisor { store, claim_id }),
+        startup_events: followup_control_id
+            .into_iter()
+            .map(|control_id| StreamEvent::FollowupDequeued {
+                id: control_id.to_string(),
+            })
+            .collect(),
     })
 }
 
-fn new_job_record(
-    state: &ApiState,
+struct NewJobRecord<'a> {
+    state: &'a ApiState,
     workspace: Workspace,
     config: AppConfig,
-    req: &CreateJobRequest,
+    request: &'a CreateJobRequest,
     session_id: SessionId,
     job_id: JobId,
     resume_state: Option<TaskState>,
-) -> Arc<JobRecord> {
+    resumed_from_run_id: Option<RunId>,
+    product_session_id: Option<ProductSessionId>,
+    product_store: Option<Arc<dyn ProductStore>>,
+    product_model_config: Option<ProductSessionModelConfig>,
+}
+
+fn new_job_record(input: NewJobRecord<'_>) -> Arc<JobRecord> {
+    let NewJobRecord {
+        state,
+        workspace,
+        config,
+        request,
+        session_id,
+        job_id,
+        resume_state,
+        resumed_from_run_id,
+        product_session_id,
+        product_store,
+        product_model_config,
+    } = input;
     let run_id = RunId::new();
-    let resumed_from_run_id = resume_state.as_ref().map(|task_state| task_state.run_id);
     let (tx, _) = broadcast::channel(EVENT_BUFFER);
     let (completion, _) = watch::channel(false);
     Arc::new(JobRecord {
@@ -1109,15 +1445,23 @@ fn new_job_record(
         run_id,
         workspace,
         config,
-        message: req.message.clone(),
+        message: request.message.clone(),
         resumed_from_run_id,
         resume_state,
+        product_session_id,
+        product_store,
+        product_model_config,
         status: Mutex::new(RunStatus::Running),
         events: Mutex::new(Vec::new()),
         pending_approvals: Mutex::new(HashMap::new()),
         pending_inputs: Mutex::new(HashMap::new()),
         tx,
         handle: Mutex::new(None),
+        control: Mutex::new(None),
+        control_event_trace: Mutex::new(None),
+        control_event_trace_lock: Mutex::new(()),
+        control_lifecycle_lock: Mutex::new(()),
+        pending_product_events: Mutex::new(Vec::new()),
         completion,
         cancel_token: state.inner.shutdown_token.child_token(),
     })
@@ -1239,6 +1583,180 @@ async fn load_and_claim_product_resume(
     Ok((resume_state, claim))
 }
 
+/// Verify a fork request against the parent session's immutable product binding
+/// and the canonical terminal runtime artifacts. The browser supplies only a
+/// run id; every other source identity and the terminal event sequence come
+/// from server-owned state.
+pub(crate) async fn verify_product_fork_boundary(
+    state: &ApiState,
+    parent_session_id: &ProductSessionId,
+    fork_at_run_id: RunId,
+) -> Result<VerifiedProductForkBoundary, ApiError> {
+    let store = state.product_store()?;
+    let context = store.get_session_context(parent_session_id).await?;
+    if context.session.status == ProductSessionStatus::Running {
+        return Err(ProductStoreError::new(
+            ProductErrorCode::ProductSessionActive,
+            "a product session can only be forked after its active turn reaches a terminal boundary",
+        )
+        .into());
+    }
+    if context.session.status != ProductSessionStatus::Idle {
+        return Err(fork_source_rejection(
+            "only an idle product session with a final durable run can be forked",
+        ));
+    }
+    let bindings = store.list_run_bindings(parent_session_id).await?;
+    let Some(binding) = bindings
+        .iter()
+        .find(|binding| binding.runtime_run_id == fork_at_run_id)
+    else {
+        return Err(fork_source_rejection(
+            "the requested runtime run is not bound to the parent product session",
+        ));
+    };
+    let state_store = state.product_state_store_for_product_workspace(&context.workspace)?;
+    let (_, terminal_event_seq) = load_final_fork_source_state(
+        &state_store,
+        binding.runtime_session_id,
+        binding.runtime_job_id,
+        binding.runtime_run_id,
+        None,
+    )
+    .await?;
+    Ok(VerifiedProductForkBoundary {
+        parent_product_session_id: context.session.id,
+        parent_workspace_id: context.workspace.id,
+        parent_title: context.session.title,
+        source_runtime_session_id: binding.runtime_session_id,
+        source_runtime_job_id: binding.runtime_job_id,
+        source_runtime_run_id: binding.runtime_run_id,
+        fork_at_event_seq: terminal_event_seq,
+    })
+}
+
+async fn load_product_fork_resume(
+    state_store: &StateStore,
+    fork: &ProductFork,
+) -> Result<TaskState, ApiError> {
+    let (state, _) = load_final_fork_source_state(
+        state_store,
+        fork.source_runtime_session_id,
+        fork.source_runtime_job_id,
+        fork.source_runtime_run_id,
+        Some(fork.fork_at_event_seq),
+    )
+    .await?;
+    project_product_follow_up_state(state)
+}
+
+async fn load_final_fork_source_state(
+    state_store: &StateStore,
+    runtime_session_id: SessionId,
+    runtime_job_id: JobId,
+    runtime_run_id: RunId,
+    expected_terminal_event_seq: Option<u64>,
+) -> Result<(TaskState, u64), ApiError> {
+    let job = state_store
+        .index
+        .job_record_async(runtime_job_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| fork_source_rejection("the fork source runtime job is missing"))?;
+    if job.session_id != runtime_session_id || job.run_id != Some(runtime_run_id) {
+        return Err(fork_source_rejection(
+            "the fork source runtime job identity does not match its product binding",
+        ));
+    }
+    let run = load_runtime_run_record(&state_store.index, runtime_run_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| fork_source_rejection("the fork source runtime run is missing"))?;
+    if run.session_id != runtime_session_id
+        || run.job_id != runtime_job_id
+        || run.run_id != runtime_run_id
+        || run.status != "done"
+        || run.task_state_path.is_none()
+        || run.report_path.is_none()
+        || run.last_event_seq == 0
+    {
+        return Err(fork_source_rejection(
+            "the fork source runtime run is not a complete durable terminal boundary",
+        ));
+    }
+    if expected_terminal_event_seq.is_some_and(|expected| expected != run.last_event_seq) {
+        return Err(fork_source_rejection(
+            "the fork source terminal event sequence no longer matches its stored boundary",
+        ));
+    }
+    let task_state = state_store
+        .load_task_state(runtime_run_id)
+        .await
+        .map_err(|_| {
+            fork_source_rejection("the fork source task state is unavailable or corrupt")
+        })?;
+    if task_state.session_id != runtime_session_id
+        || task_state.job_id != runtime_job_id
+        || task_state.run_id != runtime_run_id
+        || task_state
+            .checkpoint
+            .as_ref()
+            .and_then(|checkpoint| checkpoint.last_event_seq)
+            != Some(run.last_event_seq)
+    {
+        return Err(fork_source_rejection(
+            "the fork source task-state identity or terminal checkpoint is invalid",
+        ));
+    }
+    let report = state_store
+        .load_report(runtime_run_id)
+        .await
+        .map_err(|_| fork_source_rejection("the fork source report is unavailable or corrupt"))?;
+    if report.session_id != runtime_session_id
+        || report.job_id != runtime_job_id
+        || report.run_id != runtime_run_id
+        || report.status != "success"
+        || report.termination_reason != TerminationReason::Final
+    {
+        return Err(fork_source_rejection(
+            "the fork source report does not prove a final completed run",
+        ));
+    }
+    let snapshot = state_store
+        .index
+        .run_event_snapshot_async(runtime_run_id, run.last_event_seq.saturating_sub(1), 1)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| fork_source_rejection("the fork source canonical event is missing"))?;
+    if snapshot.high_water_seq != run.last_event_seq
+        || snapshot.has_more
+        || snapshot.events.len() != 1
+        || snapshot.events[0].seq != run.last_event_seq
+    {
+        return Err(fork_source_rejection(
+            "the fork source canonical terminal event range is incomplete",
+        ));
+    }
+    let terminal = serde_json::from_str::<StreamEvent>(&snapshot.events[0].event_json)
+        .map_err(|_| fork_source_rejection("the fork source terminal event is corrupt"))?;
+    if !matches!(
+        terminal,
+        StreamEvent::RunCompleted {
+            reason: TerminationReason::Final,
+            ..
+        }
+    ) {
+        return Err(fork_source_rejection(
+            "the fork source does not end with a final canonical completion event",
+        ));
+    }
+    Ok((task_state, run.last_event_seq))
+}
+
+fn fork_source_rejection(message: impl Into<String>) -> ApiError {
+    ProductStoreError::new(ProductErrorCode::ProductForkSourceInvalid, message).into()
+}
+
 fn project_product_follow_up_state(mut state: TaskState) -> Result<TaskState, ApiError> {
     // A product follow-up is a new user turn in the same durable conversation,
     // not a replay of the previous turn's terminal execution decision.
@@ -1347,13 +1865,17 @@ fn append_missing_product_tool_results(
 async fn finish_failed_product_start(
     store: &Arc<dyn ProductStore>,
     claim_id: &ProductTurnClaimId,
+    run_id: Option<RunId>,
     status: ProductSessionStatus,
     phase: &'static str,
 ) {
-    if let Err(error) = store.finish_session_turn(claim_id, status).await {
+    if let Err(error) = store
+        .finish_session_turn_and_abandon_pending_controls(claim_id, run_id, status, phase)
+        .await
+    {
         tracing::warn!(
             phase = phase,
-            "failed to release product turn after start failure: {error}"
+            "failed to classify controls after product start failure: {error}"
         );
     }
 }
@@ -1369,7 +1891,7 @@ async fn finalize_prestarted_run(
         reason: TerminationReason::Error,
         output: Some(message.to_string()),
     };
-    let trace_persisted = append_trace_event(&run.trace_writer, record, &terminal);
+    let trace_persisted = append_trace_event(&run.trace_writer, record, &terminal).await;
     let mut recorder = RunArtifactRecorder::new(
         record.session_id,
         record.job_id,
@@ -1402,18 +1924,33 @@ async fn start_job_supervisor(state: ApiState, launch: JobLaunch) {
         engine,
         run,
         product_turn,
+        startup_events,
     } = launch;
     let record_for_task = Arc::clone(&record);
     let recovery_record = Arc::clone(&record);
     let recovery_product_turn = product_turn.clone();
     let completion = record.completion.clone();
+    let state_for_supervisor = state.clone();
+    // Register before spawning the stream. A control submitted after the
+    // ProductStore turn claim but before `consume_job_stream` installs its
+    // handle is either replayed from the durable queue or explicitly
+    // rejected; it cannot be inserted after the one-time replay and become
+    // stranded forever.
+    state
+        .inner
+        .jobs
+        .write()
+        .await
+        .insert(record.job_id, Arc::clone(&record));
     let handle = state.inner.supervisors.spawn(async move {
         let _completion_guard = JobCompletionGuard::new(completion);
         let outcome = AssertUnwindSafe(run_job_supervisor(
+            state_for_supervisor,
             record_for_task,
             engine,
             run,
             product_turn,
+            startup_events,
         ))
         .catch_unwind()
         .await;
@@ -1442,14 +1979,15 @@ async fn start_job_supervisor(state: ApiState, launch: JobLaunch) {
         }
     });
     *record.handle.lock().await = Some(handle);
-    state.inner.jobs.write().await.insert(record.job_id, record);
 }
 
 async fn run_job_supervisor(
+    state: ApiState,
     record: Arc<JobRecord>,
     engine: Engine,
     run: RunHandle,
     product_turn: Option<ProductTurnSupervisor>,
+    startup_events: Vec<StreamEvent>,
 ) {
     let state_store = state_store_for_record(&record);
     let mut recorder = RunArtifactRecorder::new(
@@ -1466,10 +2004,11 @@ async fn run_job_supervisor(
         &run,
         &state_store,
         &mut recorder,
+        startup_events,
     ))
     .catch_unwind()
     .await;
-    let (terminal, needs_attention, stream_trace_complete) = match stream_outcome {
+    let (terminal, mut needs_attention, mut stream_trace_complete) = match stream_outcome {
         Ok(Some((terminal, trace_complete))) => (terminal, false, trace_complete),
         Ok(None) => (
             supervisor_failure_event("runtime stream ended without exactly one terminal event"),
@@ -1481,22 +2020,73 @@ async fn run_job_supervisor(
             (supervisor_failure_event("job runtime failed"), true, false)
         }
     };
-    let trace_persisted = append_trace_event(&run.trace_writer, &record, &terminal);
-    recorder.record_event(&terminal, &state_store).await;
-    recorder
-        .finalize(
-            &state_store,
-            engine.workspace(),
-            engine.model_id(),
-            &run.run_dir,
-        )
-        .await;
-
     let terminal_status = terminal_run_status(&terminal);
     if matches!(terminal_status, RunStatus::Cancelled | RunStatus::Error) {
         reject_pending_approvals(&record, &state_store.index).await;
         reject_pending_inputs(&record, &state_store.index).await;
     }
+
+    let mut final_candidate = matches!(
+        &terminal,
+        StreamEvent::RunCompleted {
+            reason: TerminationReason::Final,
+            ..
+        }
+    ) && !needs_attention
+        && stream_trace_complete;
+    let _control_lifecycle = record.control_lifecycle_lock.lock().await;
+    if final_candidate {
+        match drop_unapplied_product_steers_before_terminal(
+            product_turn.as_ref(),
+            &record,
+            &run.trace_writer,
+            &mut recorder,
+            &state_store,
+        )
+        .await
+        {
+            Ok(trace_complete) => {
+                stream_trace_complete &= trace_complete;
+                if !stream_trace_complete {
+                    final_candidate = false;
+                    needs_attention = true;
+                }
+            }
+            Err(error) => {
+                tracing::warn!(
+                    job_id = %record.job_id,
+                    run_id = %record.run_id,
+                    "failed to close unapplied steers before product terminal: {error}"
+                );
+                final_candidate = false;
+                needs_attention = true;
+                stream_trace_complete = false;
+            }
+        }
+    }
+    if !final_candidate {
+        finish_nonfinal_product_turn(
+            product_turn.clone(),
+            &terminal,
+            needs_attention || !stream_trace_complete,
+            &record,
+            &run.trace_writer,
+            &mut recorder,
+            &state_store,
+        )
+        .await;
+    }
+
+    let trace_persisted = persist_terminal_and_finalize(
+        &run.trace_writer,
+        &record,
+        terminal.clone(),
+        &mut recorder,
+        &state_store,
+        &engine,
+        &run,
+    )
+    .await;
     let runtime_durable = stream_trace_complete
         && trace_persisted
         && runtime_terminal_is_durable(&state_store, &record, &terminal).await;
@@ -1507,8 +2097,32 @@ async fn run_job_supervisor(
             "runtime terminal artifacts are incomplete"
         );
     }
-    finish_product_turn(product_turn, &terminal, needs_attention || !runtime_durable).await;
-    append_job_event(&record, terminal).await;
+
+    let claimed_followup = if final_candidate && runtime_durable {
+        finish_final_product_turn(product_turn.clone(), record.run_id).await
+    } else if final_candidate {
+        // The terminal trace is already incomplete, so do not append late
+        // lifecycle events after it. Persist the conservative store state;
+        // transcript projection will expose the durable-artifact failure.
+        finish_product_turn_needs_attention(
+            product_turn.clone(),
+            Some(record.run_id),
+            "run completed with incomplete terminal artifacts",
+        )
+        .await;
+        None
+    } else {
+        None
+    };
+
+    if let (Some(psid), Some(claim)) = (record.product_session_id.clone(), claimed_followup) {
+        schedule_claimed_followup_start(&state, psid, claim);
+    }
+
+    // The terminal event is the public lifecycle barrier. A client that sees
+    // it must never observe the old product turn still claimed, so publish
+    // only after ProductStore has released or atomically replaced that claim.
+    publish_terminal_event(&record, terminal).await;
 }
 
 async fn consume_job_stream(
@@ -1517,13 +2131,28 @@ async fn consume_job_stream(
     run: &RunHandle,
     state_store: &StateStore,
     recorder: &mut RunArtifactRecorder,
+    startup_events: Vec<StreamEvent>,
 ) -> Option<(StreamEvent, bool)> {
     let request = run.request(record.message.clone(), record.resume_state.clone());
     let mut stream =
         std::pin::pin!(engine.run_with_cancel(request, None, record.cancel_token.clone(),));
+    // Capture the control handle so HTTP steer handlers can inject mid-run.
+    {
+        let _control_lifecycle = record.control_lifecycle_lock.lock().await;
+        let handle = stream.control().clone();
+        *record.control.lock().await = Some(handle);
+        // A request can persist a steer after the product turn is claimed but
+        // before this supervisor installs the in-memory handle. Replay the
+        // bounded durable queue while holding the same lifecycle lock used by
+        // route delivery, so no control can arrive between replay and the
+        // live-handle handoff.
+        replay_pending_product_steers(record).await;
+    }
     let mut terminal = None;
     let mut protocol_invalid = false;
     let mut trace_complete = true;
+    let mut saw_run_started = false;
+    let mut startup_events = Some(startup_events);
     while let Some(event) = stream.next().await {
         if matches!(&event, StreamEvent::RunCompleted { .. }) {
             if terminal.replace(event).is_some() {
@@ -1535,48 +2164,503 @@ async fn consume_job_stream(
             protocol_invalid = true;
             continue;
         }
-        trace_complete &= append_trace_event(&run.trace_writer, record, &event);
-        recorder.record_event(&event, state_store).await;
-        append_job_event(record, event).await;
+        if !saw_run_started {
+            if !matches!(&event, StreamEvent::RunStarted { .. }) {
+                protocol_invalid = true;
+                continue;
+            }
+            saw_run_started = true;
+        }
+        let is_run_started = matches!(&event, StreamEvent::RunStarted { .. });
+        // Reflect control lifecycle events back into ProductStore before the
+        // canonical event is persisted and published.
+        reflect_control_event(record, &event).await;
+        trace_complete &= persist_record_and_publish_runtime_event(
+            &run.trace_writer,
+            record,
+            event,
+            recorder,
+            state_store,
+        )
+        .await;
+        if is_run_started {
+            // Only expose the trace to concurrent API-originated control
+            // events after its mandatory first event has been persisted.
+            let _control_lifecycle = record.control_lifecycle_lock.lock().await;
+            *record.control_event_trace.lock().await = Some(run.trace_writer.clone());
+            let queued_product_events =
+                std::mem::take(&mut *record.pending_product_events.lock().await);
+            for queued_event in queued_product_events {
+                trace_complete &= persist_record_and_publish_runtime_event(
+                    &run.trace_writer,
+                    record,
+                    queued_event,
+                    recorder,
+                    state_store,
+                )
+                .await;
+            }
+            for startup_event in startup_events.take().unwrap_or_default() {
+                // A claimed follow-up becomes applied only after its successor
+                // has actually reached the durable run-start boundary. Keep the
+                // ProductStore transition coupled to the same canonical event
+                // path as ordinary stream events.
+                reflect_control_event(record, &startup_event).await;
+                trace_complete &= persist_record_and_publish_runtime_event(
+                    &run.trace_writer,
+                    record,
+                    startup_event,
+                    recorder,
+                    state_store,
+                )
+                .await;
+            }
+        }
     }
-    if protocol_invalid {
+    // Drop the control handle once the stream ends so further steers are rejected.
+    {
+        let _control_lifecycle = record.control_lifecycle_lock.lock().await;
+        *record.control.lock().await = None;
+    }
+    if protocol_invalid || !saw_run_started {
         None
     } else {
         terminal.map(|terminal| (terminal, trace_complete))
     }
 }
 
-async fn finish_product_turn(
+async fn reflect_control_event(record: &JobRecord, event: &StreamEvent) {
+    let (Some(product_session_id), Some(store)) = (
+        record.product_session_id.as_ref(),
+        record.product_store.as_ref(),
+    ) else {
+        return;
+    };
+    match event {
+        StreamEvent::SteerAccepted { id, .. } => {
+            let Ok(control_id) = id.parse::<ProductControlId>() else {
+                tracing::warn!(control_id = %id, "steer_accepted id is not a product control id");
+                return;
+            };
+            if let Err(error) = store
+                .transition_control(
+                    product_session_id,
+                    &control_id,
+                    ProductControlStatus::Pending,
+                    ProductControlStatus::Accepted,
+                    Some(&record.run_id),
+                )
+                .await
+            {
+                // Already accepted/applied is fine on replay.
+                tracing::debug!(
+                    control_id = %control_id,
+                    "steer_accepted store transition: {error}"
+                );
+            }
+        }
+        StreamEvent::SteerApplied { id } => {
+            let Ok(control_id) = id.parse::<ProductControlId>() else {
+                tracing::warn!(control_id = %id, "steer_applied id is not a product control id");
+                return;
+            };
+            if let Err(error) = store
+                .transition_control(
+                    product_session_id,
+                    &control_id,
+                    ProductControlStatus::Accepted,
+                    ProductControlStatus::Applied,
+                    Some(&record.run_id),
+                )
+                .await
+            {
+                // Replayed canonical events may encounter the already-applied
+                // historical row. They must not mutate a completed fact.
+                tracing::debug!(control_id = %control_id, "steer_applied store transition: {error}");
+            }
+        }
+        StreamEvent::SteerDropped { id, .. } => {
+            let Ok(control_id) = id.parse::<ProductControlId>() else {
+                return;
+            };
+            let pending = store
+                .transition_control(
+                    product_session_id,
+                    &control_id,
+                    ProductControlStatus::Pending,
+                    ProductControlStatus::Dropped,
+                    Some(&record.run_id),
+                )
+                .await;
+            if pending.is_err()
+                && let Err(error) = store
+                    .transition_control(
+                        product_session_id,
+                        &control_id,
+                        ProductControlStatus::Accepted,
+                        ProductControlStatus::Dropped,
+                        Some(&record.run_id),
+                    )
+                    .await
+            {
+                tracing::debug!(
+                    control_id = %control_id,
+                    "steer_dropped store transition: {error}"
+                );
+            }
+        }
+        StreamEvent::FollowupDequeued { id } => {
+            let Ok(control_id) = id.parse::<ProductControlId>() else {
+                return;
+            };
+            // Claim already moved pending→accepted; mark applied once the new run starts.
+            if let Err(error) = store
+                .transition_control(
+                    product_session_id,
+                    &control_id,
+                    ProductControlStatus::Accepted,
+                    ProductControlStatus::Applied,
+                    Some(&record.run_id),
+                )
+                .await
+            {
+                tracing::debug!(
+                    control_id = %control_id,
+                    "followup_dequeued store transition: {error}"
+                );
+            }
+        }
+        StreamEvent::FollowupAbandoned { id, .. } => {
+            let Ok(control_id) = id.parse::<ProductControlId>() else {
+                return;
+            };
+            let _ = store
+                .transition_control(
+                    product_session_id,
+                    &control_id,
+                    ProductControlStatus::Pending,
+                    ProductControlStatus::Abandoned,
+                    None,
+                )
+                .await;
+            let _ = store
+                .transition_control(
+                    product_session_id,
+                    &control_id,
+                    ProductControlStatus::Accepted,
+                    ProductControlStatus::Abandoned,
+                    None,
+                )
+                .await;
+        }
+        _ => {}
+    }
+}
+
+async fn replay_pending_product_steers(record: &JobRecord) {
+    let (Some(session_id), Some(store)) = (
+        record.product_session_id.as_ref(),
+        record.product_store.as_ref(),
+    ) else {
+        return;
+    };
+    let pending = match store
+        .list_controls(session_id, Some(ProductControlStatus::Pending))
+        .await
+    {
+        Ok(controls) => controls,
+        Err(error) => {
+            tracing::warn!(job_id = %record.job_id, "failed to load pending steer controls: {error}");
+            return;
+        }
+    };
+    let handle = record.control.lock().await.clone();
+    let Some(handle) = handle else {
+        return;
+    };
+    for control in pending
+        .into_iter()
+        .filter(|control| control.kind == ProductControlKind::Steer)
+    {
+        if !handle.try_send_steer(rove_runtime::engine::SteerMessage::with_id(
+            control.id.as_str(),
+            control.content,
+        )) {
+            tracing::warn!(
+                job_id = %record.job_id,
+                control_id = %control.id,
+                "pending steer could not be replayed into the bounded runtime channel"
+            );
+            // The persistent pending bound mirrors the runtime channel bound,
+            // so this is only possible if a concurrently delivered control
+            // filled the channel. Leave this and later controls pending; the
+            // next safe-point/attachment pass will classify or deliver them.
+            break;
+        }
+    }
+}
+
+/// Start a server-owned queued follow-up drain without nesting it inside the
+/// just-completed run supervisor. The product-store CAS makes duplicate
+/// scheduler wake-ups harmless.
+pub(crate) fn schedule_followup_drain(state: &ApiState, session_id: ProductSessionId) {
+    if state.inner.shutdown_token.is_cancelled() {
+        return;
+    }
+    let state = state.clone();
+    let job_starts = state.inner.job_starts.clone();
+    drop(job_starts.spawn(async move {
+        drain_followup_for_session(state, session_id).await;
+    }));
+}
+
+/// Claim the next pending follow-up (if any) and start it as a fresh durable
+/// product run. The store atomically claims both the control and session turn;
+/// run-id reservation makes post-reservation interruption conservative.
+pub(crate) async fn drain_followup_for_session(state: ApiState, session_id: ProductSessionId) {
+    if state.inner.shutdown_token.is_cancelled() {
+        return;
+    }
+    let Ok(store) = state.product_store() else {
+        return;
+    };
+    let claimed = match store.claim_next_followup_turn(&session_id).await {
+        Ok(value) => value,
+        Err(error) => {
+            tracing::warn!(
+                product_session_id = %session_id,
+                "failed to claim pending follow-up turn: {error}"
+            );
+            return;
+        }
+    };
+    let Some(claimed) = claimed else {
+        return;
+    };
+    let control_id = claimed.control.id.clone();
+    tracing::info!(
+        product_session_id = %session_id,
+        control_id = %control_id,
+        "starting claimed follow-up as a new product run"
+    );
+
+    match prepare_followup_job_launch(&state, &session_id, claimed).await {
+        Ok(launch) => start_job_supervisor(state, launch).await,
+        Err(error) => tracing::warn!(
+            product_session_id = %session_id,
+            control_id = %control_id,
+            "failed to prepare follow-up job: {error:?}"
+        ),
+    }
+}
+
+/// Recover safe queued follow-ups once an API process is serving requests.
+/// Stale automatic turn claims are handled synchronously when the store opens:
+/// only claims without a reserved runtime run id return to `pending`.
+pub(crate) async fn recover_pending_followup_drains(state: ApiState) {
+    let Ok(store) = state.product_store() else {
+        return;
+    };
+    let sessions = match store.list_idle_sessions_with_pending_followups().await {
+        Ok(sessions) => sessions,
+        Err(error) => {
+            tracing::warn!("failed to list queued follow-ups for recovery: {error}");
+            return;
+        }
+    };
+    for session_id in sessions {
+        schedule_followup_drain(&state, session_id);
+    }
+}
+
+/// Start a follow-up that was already claimed while its previous run was
+/// finalizing. It deliberately bypasses the generic drain because the
+/// exclusive store claim already exists.
+fn schedule_claimed_followup_start(
+    state: &ApiState,
+    session_id: ProductSessionId,
+    claim: ProductFollowupTurnClaim,
+) {
+    if state.inner.shutdown_token.is_cancelled() || state.inner.job_starts.is_closed() {
+        return;
+    }
+    let state = state.clone();
+    let job_starts = state.inner.job_starts.clone();
+    drop(job_starts.spawn(async move {
+        let control_id = claim.control.id.clone();
+        match prepare_followup_job_launch(&state, &session_id, claim).await {
+            Ok(launch) => start_job_supervisor(state, launch).await,
+            Err(error) => tracing::warn!(
+                product_session_id = %session_id,
+                control_id = %control_id,
+                "failed to prepare atomically claimed follow-up job: {error:?}"
+            ),
+        }
+    }));
+}
+
+async fn finish_final_product_turn(
     product_turn: Option<ProductTurnSupervisor>,
-    terminal: &StreamEvent,
-    needs_attention: bool,
+    run_id: RunId,
+) -> Option<ProductFollowupTurnClaim> {
+    let product_turn = product_turn?;
+    match product_turn
+        .store
+        .finish_session_turn_and_claim_followup(&product_turn.claim_id)
+        .await
+    {
+        Ok(claim) => claim,
+        Err(error) => {
+            tracing::warn!("failed to atomically finish final product turn: {error}");
+            finish_product_turn_needs_attention(
+                Some(product_turn),
+                Some(run_id),
+                "final product-turn completion could not be committed",
+            )
+            .await;
+            None
+        }
+    }
+}
+
+/// Close every steer which is still pending or only safe-point accepted before
+/// the terminal fact is persisted. The runtime itself emits dropped events for
+/// its in-memory channel; this covers the durable race window between that
+/// channel closing and the product turn's terminal transaction.
+async fn drop_unapplied_product_steers_before_terminal(
+    product_turn: Option<&ProductTurnSupervisor>,
+    record: &JobRecord,
+    trace_writer: &TraceWriter,
+    recorder: &mut RunArtifactRecorder,
+    state_store: &StateStore,
+) -> Result<bool, ProductStoreError> {
+    let Some(product_turn) = product_turn else {
+        return Ok(true);
+    };
+    let reason = "run completed before the steer reached a model turn";
+    let dropped = product_turn
+        .store
+        .drop_unapplied_steers_for_turn(&product_turn.claim_id, record.run_id, reason)
+        .await?;
+    let mut trace_complete = true;
+    for control in dropped {
+        trace_complete &= persist_record_and_publish_runtime_event(
+            trace_writer,
+            record,
+            StreamEvent::SteerDropped {
+                id: control.id.to_string(),
+                reason: reason.to_string(),
+            },
+            recorder,
+            state_store,
+        )
+        .await;
+    }
+    Ok(trace_complete)
+}
+
+async fn finish_product_turn_needs_attention(
+    product_turn: Option<ProductTurnSupervisor>,
+    run_id: Option<RunId>,
+    reason: &'static str,
 ) {
     let Some(product_turn) = product_turn else {
         return;
     };
+    if let Err(error) = product_turn
+        .store
+        .finish_session_turn_and_abandon_pending_controls(
+            &product_turn.claim_id,
+            run_id,
+            ProductSessionStatus::NeedsAttention,
+            reason,
+        )
+        .await
+    {
+        tracing::warn!("failed to conservatively classify product turn controls: {error}");
+    }
+}
+
+async fn finish_nonfinal_product_turn(
+    product_turn: Option<ProductTurnSupervisor>,
+    terminal: &StreamEvent,
+    needs_attention: bool,
+    record: &JobRecord,
+    trace_writer: &TraceWriter,
+    recorder: &mut RunArtifactRecorder,
+    state_store: &StateStore,
+) {
+    let Some(product_turn) = product_turn else {
+        return;
+    };
+    let terminal_status = terminal_run_status(terminal);
     let status = if needs_attention {
         ProductSessionStatus::NeedsAttention
     } else {
-        match terminal_run_status(terminal) {
+        match terminal_status {
             RunStatus::Error | RunStatus::Interrupted => ProductSessionStatus::Error,
+            // Explicit cancellation is a known user decision. The existing
+            // product continuation contract permits a later fresh turn from
+            // its durable terminal state; queued follow-ups remain abandoned
+            // and still require explicit confirmation.
+            RunStatus::Cancelled => ProductSessionStatus::Idle,
+            RunStatus::Done => ProductSessionStatus::NeedsAttention,
             RunStatus::Init | RunStatus::Running => ProductSessionStatus::NeedsAttention,
-            RunStatus::Done | RunStatus::Cancelled => ProductSessionStatus::Idle,
         }
     };
-    if let Err(error) = product_turn
+    let reason = match terminal_status {
+        RunStatus::Done => "run completed without a final answer",
+        RunStatus::Cancelled => "run cancelled",
+        RunStatus::Error | RunStatus::Interrupted => "run did not complete normally",
+        RunStatus::Init | RunStatus::Running => "run ended without a durable terminal",
+    };
+    let finished = match product_turn
         .store
-        .finish_session_turn(&product_turn.claim_id, status)
+        .finish_session_turn_and_abandon_pending_controls(
+            &product_turn.claim_id,
+            Some(record.run_id),
+            status,
+            reason,
+        )
         .await
     {
-        tracing::warn!("failed to finish product session turn: {error}");
-        if status != ProductSessionStatus::NeedsAttention
-            && let Err(retry_error) = product_turn
-                .store
-                .finish_session_turn(&product_turn.claim_id, ProductSessionStatus::NeedsAttention)
-                .await
-        {
-            tracing::warn!("failed to conservatively release product session turn: {retry_error}");
+        Ok(finished) => finished,
+        Err(error) => {
+            tracing::warn!("failed to atomically close non-final product turn: {error}");
+            finish_product_turn_needs_attention(
+                Some(product_turn),
+                Some(record.run_id),
+                "non-final product-turn completion could not be committed",
+            )
+            .await;
+            return;
         }
+    };
+    for control in finished.dropped_steers {
+        let _ = persist_record_and_publish_runtime_event(
+            trace_writer,
+            record,
+            StreamEvent::SteerDropped {
+                id: control.id.to_string(),
+                reason: reason.to_string(),
+            },
+            recorder,
+            state_store,
+        )
+        .await;
+    }
+    for control in finished.abandoned_followups {
+        let _ = persist_record_and_publish_runtime_event(
+            trace_writer,
+            record,
+            StreamEvent::FollowupAbandoned {
+                id: control.id.to_string(),
+                reason: reason.to_string(),
+            },
+            recorder,
+            state_store,
+        )
+        .await;
     }
 }
 
@@ -1595,9 +2679,13 @@ async fn recover_job_supervisor_panic(
     };
     reject_pending_approvals(record, &state_store.index).await;
     reject_pending_inputs(record, &state_store.index).await;
-    let finish_outcome = AssertUnwindSafe(finish_product_turn(product_turn, &terminal, true))
-        .catch_unwind()
-        .await;
+    let finish_outcome = AssertUnwindSafe(finish_product_turn_needs_attention(
+        product_turn,
+        Some(record.run_id),
+        "job supervisor failed before control completion",
+    ))
+    .catch_unwind()
+    .await;
     if finish_outcome.is_err() {
         tracing::warn!(job_id = %record.job_id, "product turn recovery panicked");
     }
@@ -1755,12 +2843,102 @@ fn run_status_label(status: &RunStatus) -> &'static str {
     }
 }
 
-fn append_trace_event(trace_writer: &TraceWriter, record: &JobRecord, event: &StreamEvent) -> bool {
+async fn append_trace_event(
+    trace_writer: &TraceWriter,
+    record: &JobRecord,
+    event: &StreamEvent,
+) -> bool {
+    let _sequence = record.control_event_trace_lock.lock().await;
+    append_trace_event_unlocked(trace_writer, record, event)
+}
+
+fn append_trace_event_unlocked(
+    trace_writer: &TraceWriter,
+    record: &JobRecord,
+    event: &StreamEvent,
+) -> bool {
     if let Err(error) = trace_writer.append(event) {
         tracing::warn!(job_id = %record.job_id, run_id = %record.run_id, "failed to append runtime trace event: {error}");
         return false;
     }
     true
+}
+
+/// Persist one runtime-owned event, project it into the resumable artifacts,
+/// then make it visible to live SSE consumers. The ordering ensures a client
+/// never observes an event that cannot subsequently be replayed from the
+/// canonical run index.
+async fn persist_record_and_publish_runtime_event(
+    trace_writer: &TraceWriter,
+    record: &JobRecord,
+    event: StreamEvent,
+    recorder: &mut RunArtifactRecorder,
+    state_store: &StateStore,
+) -> bool {
+    if !append_trace_event(trace_writer, record, &event).await {
+        return false;
+    }
+    recorder.record_event(&event, state_store).await;
+    append_job_event(record, event).await;
+    true
+}
+
+/// Persist the terminal event and finish the artifact projections before the
+/// product supervisor settles its turn claim. Publication is deliberately a
+/// separate final step: product clients treat the visible terminal event as
+/// proof that their session is idle or has an atomically claimed successor.
+async fn persist_terminal_and_finalize(
+    trace_writer: &TraceWriter,
+    record: &JobRecord,
+    terminal: StreamEvent,
+    recorder: &mut RunArtifactRecorder,
+    state_store: &StateStore,
+    engine: &Engine,
+    run: &RunHandle,
+) -> bool {
+    let persisted = append_trace_event(trace_writer, record, &terminal).await;
+    recorder.record_event(&terminal, state_store).await;
+    recorder
+        .finalize(
+            state_store,
+            engine.workspace(),
+            engine.model_id(),
+            &run.run_dir,
+        )
+        .await;
+    persisted
+}
+
+async fn publish_terminal_event(record: &JobRecord, terminal: StreamEvent) {
+    append_job_event(record, terminal).await;
+    *record.control_event_trace.lock().await = None;
+}
+
+/// Queue an API-originated product control event until `run_started` is
+/// durable, or persist and publish it immediately when the run trace is live.
+/// Callers hold `control_lifecycle_lock`, which also serializes this decision
+/// against terminal cleanup.
+pub(crate) async fn queue_or_publish_product_control_event(record: &JobRecord, event: StreamEvent) {
+    let persisted = {
+        let _sequence = record.control_event_trace_lock.lock().await;
+        let trace = record.control_event_trace.lock().await.clone();
+        match trace {
+            Some(trace) => append_trace_event_unlocked(&trace, record, &event),
+            None => {
+                record.pending_product_events.lock().await.push(event);
+                return;
+            }
+        }
+    };
+    if persisted {
+        append_job_event(record, event).await;
+    } else {
+        tracing::warn!(
+            job_id = %record.job_id,
+            run_id = %record.run_id,
+            "failed to persist API-originated product control event"
+        );
+    }
 }
 
 async fn assemble_job_engine(
@@ -1770,15 +2948,20 @@ async fn assemble_job_engine(
     record: Arc<JobRecord>,
     approval_policy: ApprovalPolicy,
 ) -> anyhow::Result<Engine> {
-    let config = &record.config;
-    let model_id = req
-        .model
-        .clone()
+    let mut config = record.config.clone();
+    if record.product_session_id.is_some() {
+        config.tool.mcp_config_path = config.workspace_bounded_mcp_config_path()?;
+    }
+    let model_id = record
+        .product_model_config
+        .as_ref()
+        .map(|model_config| model_config.model.clone())
+        .or_else(|| req.model.clone())
         .unwrap_or_else(|| config.provider.model.clone());
     let model: Box<dyn ModelClient> = match model_id.as_str() {
         "fake" => Box::new(FakeModelClient::new(format!("fake response: {message}"))),
         "fake-raw" => Box::new(FakeModelClient::new(message.to_string())),
-        _ => build_model_client_with_health(config, model_id, state.inner.model_health.clone()),
+        _ => build_model_client_with_health(&config, model_id, state.inner.model_health.clone()),
     };
 
     let workspace = record.workspace.clone();
@@ -1797,8 +2980,13 @@ async fn assemble_job_engine(
     build_engine(EngineOptions {
         model,
         workspace: &workspace,
-        config,
-        max_steps: req.max_steps.unwrap_or(config.runtime.max_steps),
+        config: &config,
+        max_steps: record
+            .product_model_config
+            .as_ref()
+            .map(|model_config| model_config.max_steps)
+            .or(req.max_steps)
+            .unwrap_or(config.runtime.max_steps),
         approval_policy,
         input_provider: Some(input_provider),
         approval_provider,
@@ -1825,20 +3013,89 @@ fn workspace_and_config_for_create_job(
     Ok((workspace, config))
 }
 
-fn workspace_and_config_for_product_job(
+async fn workspace_and_config_for_product_job(
     state: &ApiState,
     req: &CreateJobRequest,
     product_workspace: &ProductWorkspace,
+    store: &Arc<dyn ProductStore>,
+    model_config: &ProductSessionModelConfig,
 ) -> Result<(Workspace, AppConfig), ApiError> {
+    if req.model.is_some()
+        || req.max_steps.is_some()
+        || req.approval.is_some()
+        || req.provider.is_some()
+        || req.resume.is_some()
+    {
+        return Err(ApiError::bad_request(
+            "product job requests must leave model, reasoning, approval, provider, max_steps, and resume to the server",
+        ));
+    }
     let workspace = open_product_workspace(product_workspace)?;
     if let Some(requested) = req.workspace.as_ref() {
         validate_product_workspace_hint(requested, product_workspace, &workspace)?;
     }
     let (workspace, mut config) = rebased_workspace_config(state, workspace)?;
-    if let Some(profile) = &req.provider {
-        apply_provider_profile(&mut config, profile, req.model.as_deref())?;
-    }
+    let provider_type = if let Some(profile_id) = &model_config.profile_id {
+        let stored = store.get_provider_profile(profile_id).await?;
+        let provider_type = product_provider_type_name(stored.provider_type);
+        let profile = ProviderProfileRequest {
+            provider_type: Some(provider_type.to_string()),
+            name: stored.label,
+            api_base: stored.api_base,
+            api_key_env: stored.api_key_env,
+        };
+        apply_provider_profile(&mut config, &profile, Some(&model_config.model))?;
+        provider_type.to_string()
+    } else {
+        config.provider.model = model_config.model.clone();
+        config
+            .provider
+            .active
+            .as_ref()
+            .and_then(|active| config.provider.profiles.get(active))
+            .map(|profile| profile.provider_type.clone())
+            .unwrap_or_else(|| "fake".to_string())
+    };
+    apply_product_reasoning(&mut config, &provider_type, model_config.reasoning)?;
     Ok((workspace, config))
+}
+
+fn apply_product_reasoning(
+    config: &mut AppConfig,
+    provider_type: &str,
+    reasoning: ProductReasoningPreference,
+) -> Result<(), ApiError> {
+    if reasoning == ProductReasoningPreference::Default {
+        return Ok(());
+    }
+    if provider_type != "openai-responses" {
+        return Err(ApiError::bad_request(
+            "the selected provider does not support reasoning controls; choose default reasoning",
+        ));
+    }
+    let active = config
+        .provider
+        .active
+        .clone()
+        .ok_or_else(|| ApiError::bad_request("the selected provider has no active protocol"))?;
+    let profile =
+        config.provider.profiles.get_mut(&active).ok_or_else(|| {
+            ApiError::bad_request("the selected provider protocol is unavailable")
+        })?;
+    profile.protocol_options = serde_json::json!({
+        "reasoning_effort": reasoning.as_str(),
+    });
+    Ok(())
+}
+
+fn product_provider_type_name(provider_type: ProductProviderType) -> &'static str {
+    match provider_type {
+        ProductProviderType::Openai => "openai",
+        ProductProviderType::OpenaiResponses => "openai-responses",
+        ProductProviderType::Anthropic => "anthropic",
+        ProductProviderType::Ollama => "ollama",
+        ProductProviderType::Fake => "fake",
+    }
 }
 
 fn open_product_workspace(product_workspace: &ProductWorkspace) -> Result<Workspace, ApiError> {
@@ -1988,10 +3245,6 @@ async fn live_job(state: &ApiState, job_id: JobId) -> Option<Arc<JobRecord>> {
 }
 
 async fn wait_for_job_completion(record: &JobRecord) {
-    if record.handle.lock().await.is_none() {
-        tracing::warn!(job_id = %record.job_id, "live job has no supervisor handle");
-        return;
-    }
     let mut completion = record.completion.subscribe();
     while !*completion.borrow_and_update() {
         if completion.changed().await.is_err() {
@@ -2357,7 +3610,7 @@ fn parse_last_event_id(headers: &HeaderMap) -> Result<Option<u64>, ApiError> {
         .map_err(|_| ApiError::bad_request("Last-Event-ID must be a valid integer"))
 }
 
-fn is_terminal(status: &RunStatus) -> bool {
+pub(crate) fn is_terminal(status: &RunStatus) -> bool {
     matches!(
         status,
         RunStatus::Done | RunStatus::Error | RunStatus::Cancelled | RunStatus::Interrupted
@@ -2395,7 +3648,7 @@ pub(crate) struct ApiError {
 }
 
 impl ApiError {
-    fn bad_request(message: impl Into<String>) -> Self {
+    pub(crate) fn bad_request(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::BAD_REQUEST,
             code: "bad_request",
@@ -2411,7 +3664,7 @@ impl ApiError {
         }
     }
 
-    fn not_found(message: impl Into<String>) -> Self {
+    pub(crate) fn not_found(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::NOT_FOUND,
             code: "not_found",
@@ -2451,6 +3704,25 @@ impl ApiError {
         }
     }
 
+    pub(crate) fn bad_gateway_with_code(code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::BAD_GATEWAY,
+            code,
+            message: message.into(),
+        }
+    }
+
+    pub(crate) fn too_many_requests_with_code(
+        code: &'static str,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            status: StatusCode::TOO_MANY_REQUESTS,
+            code,
+            message: message.into(),
+        }
+    }
+
     pub(crate) fn gateway_timeout_with_code(
         code: &'static str,
         message: impl Into<String>,
@@ -2462,7 +3734,7 @@ impl ApiError {
         }
     }
 
-    fn internal(err: impl std::fmt::Display) -> Self {
+    pub(crate) fn internal(err: impl std::fmt::Display) -> Self {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
             code: "internal_error",
@@ -2474,12 +3746,12 @@ impl ApiError {
 impl From<ProductStoreError> for ApiError {
     fn from(error: ProductStoreError) -> Self {
         let status = match error.code {
-            ProductErrorCode::ProductNotFound | ProductErrorCode::ProductMemoryNotFound => {
-                StatusCode::NOT_FOUND
-            }
-            ProductErrorCode::ProductInvalidInput | ProductErrorCode::ProductMemoryInvalidSlug => {
-                StatusCode::BAD_REQUEST
-            }
+            ProductErrorCode::ProductNotFound
+            | ProductErrorCode::ProductMemoryNotFound
+            | ProductErrorCode::ProductMcpNotFound => StatusCode::NOT_FOUND,
+            ProductErrorCode::ProductInvalidInput
+            | ProductErrorCode::ProductMemoryInvalidSlug
+            | ProductErrorCode::ProductMcpInvalidInput => StatusCode::BAD_REQUEST,
             ProductErrorCode::ProductStoreUnavailable => StatusCode::SERVICE_UNAVAILABLE,
             ProductErrorCode::ProductStorageFailure => StatusCode::INTERNAL_SERVER_ERROR,
             ProductErrorCode::ProductSessionActive
@@ -2490,7 +3762,14 @@ impl From<ProductStoreError> for ApiError {
             | ProductErrorCode::ProductBindingCorrupt
             | ProductErrorCode::ProductRevisionConflict
             | ProductErrorCode::ProductMemoryConflict
-            | ProductErrorCode::MigrationIdempotencyConflict => StatusCode::CONFLICT,
+            | ProductErrorCode::ProductMcpConflict
+            | ProductErrorCode::MigrationIdempotencyConflict
+            | ProductErrorCode::ProductControlConflict
+            | ProductErrorCode::ProductControlRejected
+            | ProductErrorCode::ProductForkConflict
+            | ProductErrorCode::ProductForkSourceInvalid
+            | ProductErrorCode::ProductSessionModelConfigConflict => StatusCode::CONFLICT,
+            ProductErrorCode::ProductProviderProfileUnavailable => StatusCode::NOT_FOUND,
         };
         let message = if error.code == ProductErrorCode::ProductStorageFailure {
             tracing::warn!("product store operation failed: {error}");
@@ -2682,12 +3961,20 @@ mod tests {
             message: "test".to_string(),
             resumed_from_run_id: None,
             resume_state: None,
+            product_session_id: None,
+            product_store: None,
+            product_model_config: None,
             status: Mutex::new(RunStatus::Running),
             events: Mutex::new(Vec::new()),
             pending_approvals: Mutex::new(HashMap::new()),
             pending_inputs: Mutex::new(HashMap::new()),
             tx,
             handle: Mutex::new(None),
+            control: Mutex::new(None),
+            control_event_trace: Mutex::new(None),
+            control_event_trace_lock: Mutex::new(()),
+            control_lifecycle_lock: Mutex::new(()),
+            pending_product_events: Mutex::new(Vec::new()),
             completion,
             cancel_token: CancellationToken::new(),
         };
@@ -2723,6 +4010,29 @@ mod tests {
         assert!(handle.await.is_err());
         receiver.changed().await.unwrap();
         assert!(*receiver.borrow());
+    }
+
+    #[tokio::test]
+    async fn completion_waiter_waits_for_registration_gap_to_close() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let (_state, record, _) = test_job_record(&temp_dir).await;
+        assert!(record.handle.lock().await.is_none());
+
+        let waiting_record = Arc::clone(&record);
+        let waiter = tokio::spawn(async move {
+            wait_for_job_completion(&waiting_record).await;
+        });
+        tokio::task::yield_now().await;
+        assert!(
+            !waiter.is_finished(),
+            "a live record must not look complete merely because its supervisor is registering"
+        );
+
+        record.completion.send_replace(true);
+        tokio::time::timeout(Duration::from_secs(1), waiter)
+            .await
+            .expect("completion waiter should observe the durable completion signal")
+            .unwrap();
     }
 
     #[tokio::test]
@@ -2840,12 +4150,20 @@ mod tests {
             message: "test interaction".to_string(),
             resumed_from_run_id: None,
             resume_state: None,
+            product_session_id: None,
+            product_store: None,
+            product_model_config: None,
             status: Mutex::new(RunStatus::Running),
             events: Mutex::new(Vec::new()),
             pending_approvals: Mutex::new(HashMap::new()),
             pending_inputs: Mutex::new(HashMap::new()),
             tx,
             handle: Mutex::new(None),
+            control: Mutex::new(None),
+            control_event_trace: Mutex::new(None),
+            control_event_trace_lock: Mutex::new(()),
+            control_lifecycle_lock: Mutex::new(()),
+            pending_product_events: Mutex::new(Vec::new()),
             completion,
             cancel_token: CancellationToken::new(),
         });
@@ -2921,12 +4239,20 @@ mod tests {
             message: "same job continuation".to_string(),
             resumed_from_run_id: Some(first.run_id),
             resume_state: None,
+            product_session_id: None,
+            product_store: None,
+            product_model_config: None,
             status: Mutex::new(RunStatus::Running),
             events: Mutex::new(Vec::new()),
             pending_approvals: Mutex::new(HashMap::new()),
             pending_inputs: Mutex::new(HashMap::new()),
             tx,
             handle: Mutex::new(None),
+            control: Mutex::new(None),
+            control_event_trace: Mutex::new(None),
+            control_event_trace_lock: Mutex::new(()),
+            control_lifecycle_lock: Mutex::new(()),
+            pending_product_events: Mutex::new(Vec::new()),
             completion,
             cancel_token: state.inner.shutdown_token.child_token(),
         });
@@ -3020,8 +4346,8 @@ mod tests {
             state.clone(),
             CreateJobRequest {
                 message: "finish after the response waiter disconnects".to_string(),
-                model: Some("fake".to_string()),
-                max_steps: Some(1),
+                model: None,
+                max_steps: None,
                 approval: None,
                 resume: None,
                 workspace: None,

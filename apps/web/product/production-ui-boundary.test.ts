@@ -43,11 +43,8 @@ describe("production Product UI boundary", () => {
     expect(violations).toEqual([]);
   });
 
-  it("does not expose controls for contracts absent from the current product API", () => {
+  it("uses the server-backed G1 controls without preview-only or client-run ownership", () => {
     const forbiddenAffordances = [
-      ">Steer<",
-      ">Follow-up<",
-      ">Fork<",
       ">Reasoning<",
       ">Browse files<",
       ">Open artifact<",
@@ -68,6 +65,27 @@ describe("production Product UI boundary", () => {
     }
 
     expect(violations).toEqual([]);
+
+    const composer = readFileSync(join(WEB_ROOT, "chat", "Composer.tsx"), "utf8");
+    const continuity = readFileSync(
+      join(WEB_ROOT, "state", "use-session-continuity.ts"),
+      "utf8",
+    );
+    expect(composer).toMatch(/>\s*Steer\s*</u);
+    expect(composer).toMatch(/>\s*Follow-up\s*</u);
+    expect(continuity).toContain("productClient.enqueueSteer");
+    expect(continuity).toContain("productClient.enqueueFollowup");
+    expect(continuity).toContain("productClient.revokeControl");
+    expect(continuity).toContain("productClient.confirmFollowup");
+    expect(continuity).not.toContain("submitFollowup: (content: string) => send(content)");
+
+    const shell = readFileSync(join(WEB_ROOT, "shell", "ProductApp.tsx"), "utf8");
+    const tree = readFileSync(join(WEB_ROOT, "sidebar", "WorkspaceTree.tsx"), "utf8");
+    const transcript = readFileSync(join(WEB_ROOT, "chat", "Transcript.tsx"), "utf8");
+    expect(shell).toContain("server.forkSession(activeSession.id)");
+    expect(tree).toContain("forkPointRunId");
+    expect(tree).toContain("Sessions and branches");
+    expect(transcript).toContain("Read-only inherited history");
   });
 });
 

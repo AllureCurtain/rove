@@ -24,6 +24,11 @@ pub(crate) struct StepRunnerInput {
     pub compact_summary: Option<String>,
     pub history: Vec<Message>,
     pub compaction: crate::compaction::CompactionRuntime,
+    /// Steers accepted before this runner started. Steers arriving while the
+    /// step is running are accepted at its internal model-turn safe points.
+    /// Both become applied only when a prepared request reaches the model-turn
+    /// implementation.
+    pub accepted_steer_ids: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -71,15 +76,17 @@ pub(crate) fn run_step<'a>(
         let StepRunnerInput {
             goal,
             step,
-            working_memory,
+            mut working_memory,
             compact_summary: initial_compact_summary,
             history,
             mut compaction,
+            accepted_steer_ids,
         } = input;
         let mut compact_summary = initial_compact_summary;
         let mut step_history = Vec::new();
         let mut model_turns = 0u32;
         let mut metrics = StepRunMetrics::default();
+        let mut accepted_steer_ids = accepted_steer_ids;
         let max_model_turns = ctx.max_model_turns_per_step;
         let step_prompt = format!(
             "Goal: {goal}\nCurrent step {}: {}\nComplete this step and report the result. A tool result is evidence, not step completion; continue this step until you can state its conclusion.",
@@ -143,6 +150,26 @@ pub(crate) fn run_step<'a>(
                     metrics,
                 ));
                 return;
+            }
+
+            // SAFE POINT -- a planned step can contain several model/tool
+            // turns. Drain here as well as at the enclosing plan-step boundary
+            // so a steer submitted during an input or tool wait is visible to
+            // the next model turn, never in the middle of a side effect.
+            if let Some(rx) = ctx.steer_rx.as_ref() {
+                let mut receiver = rx.lock().await;
+                while let Ok(steer) = receiver.try_recv() {
+                    let id = steer.id.0;
+                    working_memory.push(Message::user(steer.content.clone()));
+                    if let Some(lifecycle) = ctx.steer_lifecycle.as_ref() {
+                        lifecycle.accepted(id.clone()).await;
+                    }
+                    yield StepRunnerItem::Event(StreamEvent::SteerAccepted {
+                        id: id.clone(),
+                        content: steer.content,
+                    });
+                    accepted_steer_ids.push(id);
+                }
             }
 
             // Current-step messages are prefix material for this attempt. This
@@ -251,10 +278,36 @@ pub(crate) fn run_step<'a>(
                 ctx.registry.model_schemas(),
                 cancel_token.clone(),
             );
+            let mut steers_applied = false;
             let model_turn = loop {
                 match turn_stream.next().await {
-                    Some(ModelTurnItem::Event(event)) => emit_step_event!(event),
-                    Some(ModelTurnItem::Finished(turn)) => break Ok(turn),
+                    Some(ModelTurnItem::Event(event)) => {
+                        // Match the unplanned loop: a steer becomes applied
+                        // only after the model-turn stream has actually been
+                        // polled successfully, rather than when its prompt is
+                        // merely assembled.
+                        if !steers_applied {
+                            for id in accepted_steer_ids.drain(..) {
+                                if let Some(lifecycle) = ctx.steer_lifecycle.as_ref() {
+                                    lifecycle.applied(&id).await;
+                                }
+                                emit_step_event!(StreamEvent::SteerApplied { id });
+                            }
+                            steers_applied = true;
+                        }
+                        emit_step_event!(event);
+                    }
+                    Some(ModelTurnItem::Finished(turn)) => {
+                        if !steers_applied {
+                            for id in accepted_steer_ids.drain(..) {
+                                if let Some(lifecycle) = ctx.steer_lifecycle.as_ref() {
+                                    lifecycle.applied(&id).await;
+                                }
+                                emit_step_event!(StreamEvent::SteerApplied { id });
+                            }
+                        }
+                        break Ok(turn);
+                    }
                     Some(ModelTurnItem::Cancelled) => break Err(StepRunnerOutcome::Cancelled),
                     Some(ModelTurnItem::Failed(err)) => break Err(StepRunnerOutcome::Failed {
                         reason: format!("Model error: {err}"),

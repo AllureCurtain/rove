@@ -6,7 +6,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 use crate::product::{ProductErrorCode, ProductStoreError};
 
-const CURRENT_SCHEMA_VERSION: i64 = 4;
+const CURRENT_SCHEMA_VERSION: i64 = 10;
 const MAX_BUSY_TIMEOUT_MS: u64 = 120_000;
 
 const MIGRATION_001: &str = r#"
@@ -279,6 +279,139 @@ ADD COLUMN default_approval_policy TEXT NOT NULL DEFAULT 'ask'
 CHECK(default_approval_policy IN ('ask', 'auto', 'never'));
 "#;
 
+const MIGRATION_005: &str = r#"
+CREATE TABLE product_session_controls (
+    control_id TEXT PRIMARY KEY,
+    product_session_id TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK(kind IN ('steer', 'followup')),
+    idempotency_key TEXT,
+    request_digest TEXT,
+    content TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN (
+        'pending', 'accepted', 'applied', 'dropped', 'abandoned', 'revoked'
+    )),
+    run_id TEXT,
+    seq INTEGER NOT NULL,
+    abandoned_reason TEXT,
+    created_at TEXT NOT NULL,
+    applied_at TEXT,
+    FOREIGN KEY(product_session_id) REFERENCES product_sessions(product_session_id)
+        ON DELETE CASCADE
+);
+
+CREATE UNIQUE INDEX idx_product_session_controls_idempotency
+    ON product_session_controls(product_session_id, idempotency_key)
+    WHERE idempotency_key IS NOT NULL;
+CREATE INDEX idx_product_session_controls_session_status
+    ON product_session_controls(product_session_id, status, created_at ASC);
+CREATE INDEX idx_product_session_controls_session_seq
+    ON product_session_controls(product_session_id, seq ASC);
+"#;
+
+// A follow-up's `run_id` is written in the same ProductStore transaction as
+// the corresponding run binding. This turns the formerly ambiguous
+// `accepted` state into a recoverable delivery record: an accepted row with
+// no run id never crossed the runtime-start boundary and can be requeued;
+// one with a run id was durably bound and must not be started again.
+const MIGRATION_006_INDEX: &str = r#"
+CREATE INDEX IF NOT EXISTS idx_product_session_controls_followup_recovery
+    ON product_session_controls(product_session_id, kind, status, run_id, seq);
+"#;
+
+// Fork provenance intentionally has no foreign keys to product_sessions. A
+// removed parent catalog row must not erase a child's immutable source
+// boundary or read-only runtime-run references. Runtime artifacts remain under
+// the workspace StateStore and are validated when read.
+const MIGRATION_007: &str = r#"
+CREATE TABLE IF NOT EXISTS product_session_forks (
+    fork_id TEXT PRIMARY KEY,
+    parent_product_session_id TEXT NOT NULL,
+    child_product_session_id TEXT NOT NULL UNIQUE,
+    parent_workspace_id TEXT NOT NULL,
+    parent_title TEXT NOT NULL,
+    source_runtime_session_id TEXT NOT NULL,
+    source_runtime_job_id TEXT NOT NULL,
+    source_runtime_run_id TEXT NOT NULL,
+    fork_at_event_seq INTEGER NOT NULL CHECK(fork_at_event_seq >= 1),
+    idempotency_key TEXT NOT NULL,
+    request_digest TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(parent_product_session_id, idempotency_key)
+);
+
+CREATE TABLE IF NOT EXISTS product_fork_inherited_runs (
+    fork_id TEXT NOT NULL,
+    ordinal INTEGER NOT NULL CHECK(ordinal >= 1),
+    source_product_session_id TEXT NOT NULL,
+    runtime_session_id TEXT NOT NULL,
+    runtime_job_id TEXT NOT NULL,
+    runtime_run_id TEXT NOT NULL,
+    through_event_seq INTEGER CHECK(through_event_seq IS NULL OR through_event_seq >= 1),
+    PRIMARY KEY(fork_id, ordinal)
+);
+
+CREATE INDEX IF NOT EXISTS idx_product_session_forks_parent
+    ON product_session_forks(parent_product_session_id, created_at ASC, fork_id ASC);
+CREATE INDEX IF NOT EXISTS idx_product_session_forks_child
+    ON product_session_forks(child_product_session_id);
+CREATE INDEX IF NOT EXISTS idx_product_fork_inherited_runs_source
+    ON product_fork_inherited_runs(runtime_run_id);
+"#;
+
+const MIGRATION_008: &str = r#"
+CREATE TABLE IF NOT EXISTS product_session_model_configs (
+    product_session_id TEXT PRIMARY KEY,
+    profile_id TEXT,
+    model TEXT NOT NULL,
+    reasoning TEXT NOT NULL CHECK(reasoning IN ('default', 'low', 'medium', 'high')),
+    max_steps INTEGER NOT NULL CHECK(max_steps >= 1 AND max_steps <= 256),
+    revision INTEGER NOT NULL CHECK(revision >= 1),
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(product_session_id) REFERENCES product_sessions(product_session_id)
+        ON DELETE CASCADE,
+    FOREIGN KEY(profile_id) REFERENCES product_provider_profiles(profile_id)
+        ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS product_session_run_models (
+    product_session_id TEXT NOT NULL,
+    ordinal INTEGER NOT NULL CHECK(ordinal >= 1),
+    runtime_run_id TEXT NOT NULL UNIQUE,
+    profile_id TEXT,
+    model TEXT NOT NULL,
+    reasoning TEXT NOT NULL CHECK(reasoning IN ('default', 'low', 'medium', 'high')),
+    max_steps INTEGER NOT NULL CHECK(max_steps >= 1 AND max_steps <= 256),
+    started_at TEXT NOT NULL,
+    PRIMARY KEY(product_session_id, ordinal),
+    FOREIGN KEY(product_session_id) REFERENCES product_sessions(product_session_id)
+        ON DELETE CASCADE,
+    FOREIGN KEY(profile_id) REFERENCES product_provider_profiles(profile_id)
+        ON DELETE RESTRICT
+);
+
+CREATE INDEX IF NOT EXISTS idx_product_session_run_models_session
+    ON product_session_run_models(product_session_id, ordinal ASC);
+"#;
+
+const MIGRATION_009: &str = r#"
+ALTER TABLE product_session_run_models ADD COLUMN pricing_source TEXT;
+ALTER TABLE product_session_run_models ADD COLUMN pricing_version TEXT;
+ALTER TABLE product_session_run_models ADD COLUMN pricing_currency TEXT;
+ALTER TABLE product_session_run_models ADD COLUMN pricing_availability TEXT
+    CHECK(
+        pricing_availability IS NULL
+        OR pricing_availability IN ('priced', 'local_zero', 'unpriced')
+    );
+ALTER TABLE product_session_run_models ADD COLUMN per_mtok_prompt REAL;
+ALTER TABLE product_session_run_models ADD COLUMN per_mtok_completion REAL;
+ALTER TABLE product_session_run_models ADD COLUMN per_mtok_cache_read REAL;
+"#;
+
+const MIGRATION_010: &str = r#"
+ALTER TABLE product_session_run_models ADD COLUMN context_window INTEGER
+    CHECK(context_window IS NULL OR context_window > 0);
+"#;
+
 #[derive(Debug, Clone)]
 pub(super) struct ProductDatabase {
     path: Arc<PathBuf>,
@@ -376,6 +509,12 @@ fn apply_migrations(connection: &mut Connection) -> Result<(), ProductStoreError
     apply_migration_002(connection)?;
     apply_migration_003(connection)?;
     apply_migration_004(connection)?;
+    apply_migration_005(connection)?;
+    apply_migration_006(connection)?;
+    apply_migration_007(connection)?;
+    apply_migration_008(connection)?;
+    apply_migration_009(connection)?;
+    apply_migration_010(connection)?;
     Ok(())
 }
 
@@ -388,6 +527,34 @@ fn migration_is_applied(connection: &Connection, version: i64) -> Result<bool, P
         )
         .optional()
         .map(|version| version.is_some())
+        .map_err(|_| database_error(true))
+}
+
+fn table_exists(connection: &Connection, table: &str) -> Result<bool, ProductStoreError> {
+    connection
+        .query_row(
+            "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?1 LIMIT 1",
+            params![table],
+            |_| Ok(()),
+        )
+        .optional()
+        .map(|row| row.is_some())
+        .map_err(|_| database_error(true))
+}
+
+fn table_has_column(
+    connection: &Connection,
+    table: &str,
+    column: &str,
+) -> Result<bool, ProductStoreError> {
+    connection
+        .query_row(
+            "SELECT 1 FROM pragma_table_info(?1) WHERE name = ?2 LIMIT 1",
+            params![table, column],
+            |_| Ok(()),
+        )
+        .optional()
+        .map(|row| row.is_some())
         .map_err(|_| database_error(true))
 }
 
@@ -486,6 +653,214 @@ fn apply_migration_004(connection: &mut Connection) -> Result<(), ProductStoreEr
             params![
                 4,
                 "product_default_approval_policy",
+                super::repository::now_rfc3339()
+            ],
+        )
+        .map_err(|_| database_error(true))?;
+    transaction.commit().map_err(|_| database_error(true))?;
+    Ok(())
+}
+
+fn apply_migration_005(connection: &mut Connection) -> Result<(), ProductStoreError> {
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|_| database_error(true))?;
+    if migration_is_applied(&transaction, 5)? {
+        transaction.commit().map_err(|_| database_error(true))?;
+        return Ok(());
+    }
+    transaction
+        .execute_batch(MIGRATION_005)
+        .map_err(|_| database_error(true))?;
+    transaction
+        .execute(
+            "INSERT INTO product_schema_migrations(version, name, applied_at) VALUES (?1, ?2, ?3)",
+            params![
+                5,
+                "product_session_controls",
+                super::repository::now_rfc3339()
+            ],
+        )
+        .map_err(|_| database_error(true))?;
+    transaction.commit().map_err(|_| database_error(true))?;
+    Ok(())
+}
+
+fn apply_migration_006(connection: &mut Connection) -> Result<(), ProductStoreError> {
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|_| database_error(true))?;
+    if migration_is_applied(&transaction, 6)? {
+        transaction.commit().map_err(|_| database_error(true))?;
+        return Ok(());
+    }
+    // The v1-preferences compatibility fixture intentionally predates the
+    // session/claim tables. A real v1 product store has the table, but avoid
+    // making a preferences-only legacy database impossible to open solely
+    // because this additive delivery column has no parent table yet.
+    if table_exists(&transaction, "product_turn_claims")?
+        && !table_has_column(&transaction, "product_turn_claims", "followup_control_id")?
+    {
+        transaction
+            .execute_batch("ALTER TABLE product_turn_claims ADD COLUMN followup_control_id TEXT;")
+            .map_err(|_| database_error(true))?;
+    }
+    transaction
+        .execute_batch(MIGRATION_006_INDEX)
+        .map_err(|_| database_error(true))?;
+    transaction
+        .execute(
+            "INSERT INTO product_schema_migrations(version, name, applied_at) VALUES (?1, ?2, ?3)",
+            params![
+                6,
+                "product_followup_delivery_recovery",
+                super::repository::now_rfc3339()
+            ],
+        )
+        .map_err(|_| database_error(true))?;
+    transaction.commit().map_err(|_| database_error(true))?;
+    Ok(())
+}
+
+fn apply_migration_007(connection: &mut Connection) -> Result<(), ProductStoreError> {
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|_| database_error(true))?;
+    if migration_is_applied(&transaction, 7)? {
+        transaction.commit().map_err(|_| database_error(true))?;
+        return Ok(());
+    }
+    // The compatibility fixture can contain only the preferences table. A
+    // normal v6 ProductStore always contains product_sessions, but preserve the
+    // existing additive-migration convention for partial historical fixtures.
+    if table_exists(&transaction, "product_sessions")? {
+        if !table_has_column(&transaction, "product_sessions", "parent_session_id")? {
+            transaction
+                .execute_batch("ALTER TABLE product_sessions ADD COLUMN parent_session_id TEXT;")
+                .map_err(|_| database_error(true))?;
+        }
+        if !table_has_column(&transaction, "product_sessions", "fork_point_run_id")? {
+            transaction
+                .execute_batch("ALTER TABLE product_sessions ADD COLUMN fork_point_run_id TEXT;")
+                .map_err(|_| database_error(true))?;
+        }
+        if !table_has_column(&transaction, "product_sessions", "fork_point_seq")? {
+            transaction
+                .execute_batch("ALTER TABLE product_sessions ADD COLUMN fork_point_seq INTEGER;")
+                .map_err(|_| database_error(true))?;
+        }
+    }
+    transaction
+        .execute_batch(MIGRATION_007)
+        .map_err(|_| database_error(true))?;
+    transaction
+        .execute(
+            "INSERT INTO product_schema_migrations(version, name, applied_at) VALUES (?1, ?2, ?3)",
+            params![7, "product_session_forks", super::repository::now_rfc3339()],
+        )
+        .map_err(|_| database_error(true))?;
+    transaction.commit().map_err(|_| database_error(true))?;
+    Ok(())
+}
+
+fn apply_migration_008(connection: &mut Connection) -> Result<(), ProductStoreError> {
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|_| database_error(true))?;
+    if migration_is_applied(&transaction, 8)? {
+        transaction.commit().map_err(|_| database_error(true))?;
+        return Ok(());
+    }
+    transaction
+        .execute_batch(MIGRATION_008)
+        .map_err(|_| database_error(true))?;
+    // Existing sessions inherit the last global product preference exactly
+    // once. New sessions and forks write their own row in their creation
+    // transaction, so later global edits do not rewrite session defaults.
+    if table_exists(&transaction, "product_sessions")? {
+        transaction
+            .execute(
+                r#"
+                INSERT OR IGNORE INTO product_session_model_configs(
+                    product_session_id, profile_id, model, reasoning, max_steps,
+                    revision, updated_at
+                )
+                SELECT sessions.product_session_id,
+                       preferences.provider_profile_id,
+                       COALESCE(preferences.provider_model, 'fake'),
+                       'default',
+                       COALESCE(preferences.provider_max_steps, 8),
+                       1,
+                       sessions.updated_at
+                FROM product_sessions AS sessions
+                CROSS JOIN product_preferences AS preferences
+                WHERE preferences.singleton = 1
+                "#,
+                [],
+            )
+            .map_err(|_| database_error(true))?;
+    }
+    transaction
+        .execute(
+            "INSERT INTO product_schema_migrations(version, name, applied_at) VALUES (?1, ?2, ?3)",
+            params![
+                8,
+                "product_session_model_config",
+                super::repository::now_rfc3339()
+            ],
+        )
+        .map_err(|_| database_error(true))?;
+    transaction.commit().map_err(|_| database_error(true))?;
+    Ok(())
+}
+
+fn apply_migration_009(connection: &mut Connection) -> Result<(), ProductStoreError> {
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|_| database_error(true))?;
+    if migration_is_applied(&transaction, 9)? {
+        transaction.commit().map_err(|_| database_error(true))?;
+        return Ok(());
+    }
+    transaction
+        .execute_batch(MIGRATION_009)
+        .map_err(|_| database_error(true))?;
+    // Existing run model rows keep their historical model identity. Pricing
+    // columns stay NULL so cost stays unavailable until a new run captures a
+    // real snapshot; we never invent retroactive rates for old runs.
+    transaction
+        .execute(
+            "INSERT INTO product_schema_migrations(version, name, applied_at) VALUES (?1, ?2, ?3)",
+            params![
+                9,
+                "product_session_run_pricing_snapshot",
+                super::repository::now_rfc3339()
+            ],
+        )
+        .map_err(|_| database_error(true))?;
+    transaction.commit().map_err(|_| database_error(true))?;
+    Ok(())
+}
+
+fn apply_migration_010(connection: &mut Connection) -> Result<(), ProductStoreError> {
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|_| database_error(true))?;
+    if migration_is_applied(&transaction, 10)? {
+        transaction.commit().map_err(|_| database_error(true))?;
+        return Ok(());
+    }
+    transaction
+        .execute_batch(MIGRATION_010)
+        .map_err(|_| database_error(true))?;
+    // Existing rows remain NULL. Inferring a current hard limit for an old run
+    // would violate the historical snapshot contract.
+    transaction
+        .execute(
+            "INSERT INTO product_schema_migrations(version, name, applied_at) VALUES (?1, ?2, ?3)",
+            params![
+                10,
+                "product_session_run_context_snapshot",
                 super::repository::now_rfc3339()
             ],
         )
@@ -601,6 +976,8 @@ mod tests {
         assert!(migration_is_applied(&connection, 2).unwrap());
         assert!(migration_is_applied(&connection, 3).unwrap());
         assert!(migration_is_applied(&connection, 4).unwrap());
+        assert!(migration_is_applied(&connection, 5).unwrap());
+        assert!(migration_is_applied(&connection, 6).unwrap());
         let preparations_table: i64 = connection
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_schema WHERE type = 'table' AND name = 'product_migration_preparations'",
@@ -609,5 +986,13 @@ mod tests {
             )
             .unwrap();
         assert_eq!(preparations_table, 1);
+        let controls_table: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_schema WHERE type = 'table' AND name = 'product_session_controls'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(controls_table, 1);
     }
 }

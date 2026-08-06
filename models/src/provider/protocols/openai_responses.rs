@@ -52,6 +52,10 @@ impl WireProtocol for OpenAiResponsesProtocol {
         let prompt_cache_retention =
             protocol_string_option(input.protocol_options, "prompt_cache_retention")?
                 .or(self.prompt_cache_retention.as_deref());
+        let reasoning_effort = protocol_string_option(input.protocol_options, "reasoning_effort")?;
+        if let Some(effort) = reasoning_effort {
+            validate_reasoning_effort(effort)?;
+        }
         let (instructions, messages) = format_responses_input(input.messages);
         let tools = input
             .tools
@@ -86,6 +90,12 @@ impl WireProtocol for OpenAiResponsesProtocol {
         }
         insert_float_option(&mut body, "temperature", input.options.temperature);
         insert_float_option(&mut body, "top_p", input.options.top_p);
+        if let Some(effort) = reasoning_effort {
+            body.insert(
+                "reasoning".to_string(),
+                serde_json::json!({ "effort": effort }),
+            );
+        }
         if prompt_cache_enabled {
             body.insert(
                 "prompt_cache_key".to_string(),
@@ -124,6 +134,17 @@ impl WireProtocol for OpenAiResponsesProtocol {
 
     fn default_auth_style(&self) -> AuthStyle {
         AuthStyle::Bearer
+    }
+}
+
+fn validate_reasoning_effort(value: &str) -> Result<(), ModelError> {
+    if matches!(value, "low" | "medium" | "high") {
+        Ok(())
+    } else {
+        Err(ModelError::InvalidConfiguration(
+            "OpenAI Responses protocol option 'reasoning_effort' must be low, medium, or high"
+                .to_string(),
+        ))
     }
 }
 
@@ -696,6 +717,38 @@ mod tests {
             .unwrap();
         assert!(uncached.body.get("prompt_cache_key").is_none());
         assert!(uncached.body.get("prompt_cache_retention").is_none());
+    }
+
+    #[test]
+    fn reasoning_effort_is_only_emitted_as_responses_reasoning() {
+        let messages = messages();
+        let options = options();
+        let request = OpenAiResponsesProtocol::new()
+            .build_request(&WireRequestInput {
+                model: "gpt-5",
+                messages: &messages,
+                tools: &[],
+                options: &options,
+                protocol_options: &serde_json::json!({
+                    "reasoning_effort": "high"
+                }),
+            })
+            .unwrap();
+        assert_eq!(request.body["reasoning"]["effort"], "high");
+        assert!(request.body.get("reasoning_effort").is_none());
+
+        let error = OpenAiResponsesProtocol::new()
+            .build_request(&WireRequestInput {
+                model: "gpt-5",
+                messages: &messages,
+                tools: &[],
+                options: &options,
+                protocol_options: &serde_json::json!({
+                    "reasoning_effort": "unsupported"
+                }),
+            })
+            .unwrap_err();
+        assert!(error.to_string().contains("reasoning_effort"));
     }
 
     #[test]

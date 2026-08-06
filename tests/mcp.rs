@@ -18,7 +18,8 @@ use rove_core::ToolError;
 use rove_core::ToolRegistry;
 use rove_runtime::memory::paths::MemoryPaths;
 use rove_runtime::tools::mcp_proxy::{
-    McpServerConfig, McpTransport, McpTransportPolicy, register_mcp_tools,
+    MAX_MCP_RESPONSE_BYTES, McpProbeFailureKind, McpServerConfig, McpTransport, McpTransportPolicy,
+    probe_mcp_server, register_mcp_tools, resolve_mcp_server_environment,
 };
 use rove_runtime::tools::runtime_context::runtime_tool_context;
 use rove_runtime::types::{ApprovalPolicy, ToolContext};
@@ -30,6 +31,63 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 static MCP_STDIO_TEST_LOCK: Mutex<()> = Mutex::const_new(());
+
+#[tokio::test]
+async fn mcp_sse_rejects_oversized_discovery_and_json_responses() {
+    use axum::Router;
+    use axum::http::header::CONTENT_TYPE;
+    use axum::routing::{get, post};
+
+    for oversized_discovery in [true, false] {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let oversized = "x".repeat(MAX_MCP_RESPONSE_BYTES + 1);
+        let router = if oversized_discovery {
+            Router::new().route(
+                "/sse",
+                get(move || {
+                    let body = oversized.clone();
+                    async move { ([(CONTENT_TYPE, "text/event-stream")], body) }
+                }),
+            )
+        } else {
+            Router::new()
+                .route(
+                    "/sse",
+                    get(|| async {
+                        ([(CONTENT_TYPE, "text/event-stream")], "data: /messages\n\n")
+                    }),
+                )
+                .route(
+                    "/messages",
+                    post(move || {
+                        let body = oversized.clone();
+                        async move { ([(CONTENT_TYPE, "application/json")], body) }
+                    }),
+                )
+        };
+        let server_task = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+
+        let failure = probe_mcp_server(McpServerConfig {
+            name: "bounded-sse".to_string(),
+            enabled: true,
+            transport: McpTransport::Sse,
+            command: String::new(),
+            args: Vec::new(),
+            env: Default::default(),
+            env_names: Vec::new(),
+            url: format!("http://{address}/sse"),
+            policy: responsive_mcp_policy(),
+        })
+        .await
+        .unwrap_err();
+
+        assert_eq!(failure.kind, McpProbeFailureKind::Protocol);
+        server_task.abort();
+    }
+}
 
 fn python_command() -> String {
     if cfg!(windows) {
@@ -74,10 +132,12 @@ async fn mcp_proxy_registers_and_calls_stdio_tools() {
         &mut registry,
         vec![McpServerConfig {
             name: "mock-server".to_string(),
+            enabled: true,
             transport: McpTransport::Stdio,
             command: python_command(),
             args: vec![workspace_path_string("tests/fixtures/mcp_mock_server.py").to_string()],
             env: Default::default(),
+            env_names: Vec::new(),
             url: String::new(),
             policy: McpTransportPolicy::default(),
         }],
@@ -88,6 +148,11 @@ async fn mcp_proxy_registers_and_calls_stdio_tools() {
     assert_eq!(count, 2);
     assert!(registry.has("mcp__mock_server__echo_remote"));
     assert!(registry.has("mcp__mock_server__delete_remote"));
+    let remotely_claimed_read_only = registry
+        .descriptor("mcp__mock_server__echo_remote")
+        .unwrap();
+    assert!(remotely_claimed_read_only.destructive);
+    assert!(!remotely_claimed_read_only.parallel_safe);
     assert!(
         registry
             .descriptor("mcp__mock_server__delete_remote")
@@ -115,10 +180,12 @@ async fn mcp_stdio_requests_time_out_when_server_does_not_respond() {
         &mut registry,
         vec![McpServerConfig {
             name: "hanging-server".to_string(),
+            enabled: true,
             transport: McpTransport::Stdio,
             command: python_command(),
             args: vec![workspace_path_string("tests/fixtures/mcp_hanging_server.py").to_string()],
             env: Default::default(),
+            env_names: Vec::new(),
             url: String::new(),
             policy: short_mcp_policy(),
         }],
@@ -140,10 +207,12 @@ async fn mcp_tool_call_error_maps_to_structured_tool_error() {
         &mut registry,
         vec![McpServerConfig {
             name: "error-server".to_string(),
+            enabled: true,
             transport: McpTransport::Stdio,
             command: python_command(),
             args: vec![workspace_path_string("tests/fixtures/mcp_error_server.py").to_string()],
             env: Default::default(),
+            env_names: Vec::new(),
             url: String::new(),
             policy: responsive_mcp_policy(),
         }],
@@ -185,12 +254,14 @@ async fn dropping_stdio_mcp_registry_cleans_up_child_process() {
             &mut registry,
             vec![McpServerConfig {
                 name: "lifecycle-server".to_string(),
+                enabled: true,
                 transport: McpTransport::Stdio,
                 command: python_command(),
                 args: vec![
                     workspace_path_string("tests/fixtures/mcp_lifecycle_server.py").to_string(),
                 ],
                 env,
+                env_names: Vec::new(),
                 url: String::new(),
                 policy: responsive_mcp_policy(),
             }],
@@ -206,6 +277,82 @@ async fn dropping_stdio_mcp_registry_cleans_up_child_process() {
         .parse()
         .unwrap();
     assert_process_exits(pid, Duration::from_secs(3));
+}
+
+#[tokio::test]
+async fn disabled_mcp_servers_are_never_assembled_or_environment_resolved() {
+    let _guard = MCP_STDIO_TEST_LOCK.lock().await;
+    let mut registry = ToolRegistry::new();
+    // A disabled server must be skipped before environment resolution and spawn,
+    // so an unavailable variable and a bogus command must not fail assembly.
+    let count = register_mcp_tools(
+        &mut registry,
+        vec![McpServerConfig {
+            name: "disabled_server".to_string(),
+            enabled: false,
+            transport: McpTransport::Stdio,
+            command: "rove-command-that-does-not-exist-019fcfd2".to_string(),
+            args: Vec::new(),
+            env: Default::default(),
+            env_names: vec!["ROVE_MCP_ENV_MISSING_019FCFD2".to_string()],
+            url: String::new(),
+            policy: short_mcp_policy(),
+        }],
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(count, 0);
+    assert!(!registry.has("mcp__disabled_server__echo_remote"));
+    assert!(
+        registry
+            .descriptors()
+            .iter()
+            .all(|descriptor| !descriptor.name.starts_with("mcp__disabled_server__"))
+    );
+}
+
+#[test]
+fn mcp_environment_resolution_rejects_invalid_and_unavailable_names() {
+    let base = McpServerConfig {
+        name: "env_server".to_string(),
+        enabled: true,
+        transport: McpTransport::Stdio,
+        command: python_command(),
+        args: Vec::new(),
+        env: Default::default(),
+        env_names: Vec::new(),
+        url: String::new(),
+        policy: short_mcp_policy(),
+    };
+
+    for invalid in ["BAD-NAME", "1LEADING_DIGIT", "", "HAS SPACE", "HAS=EQUALS"] {
+        let mut server = base.clone();
+        server.env_names = vec![invalid.to_string()];
+        let error = resolve_mcp_server_environment(server).unwrap_err();
+        assert!(
+            error.to_string().contains("invalid"),
+            "unexpected error for {invalid:?}: {error}"
+        );
+    }
+
+    let mut missing = base.clone();
+    missing.env_names = vec!["ROVE_MCP_ENV_MISSING_019FCFD2".to_string()];
+    let error = resolve_mcp_server_environment(missing).unwrap_err();
+    assert!(
+        error.to_string().contains("unavailable"),
+        "unexpected error: {error}"
+    );
+
+    // A present variable is injected by name only; the catalog never stores the value.
+    let mut present = base;
+    present.env_names = vec!["PATH".to_string()];
+    let resolved = resolve_mcp_server_environment(present).unwrap();
+    assert_eq!(resolved.env_names, vec!["PATH".to_string()]);
+    assert_eq!(
+        resolved.env.get("PATH"),
+        Some(&std::env::var("PATH").unwrap())
+    );
 }
 
 #[tokio::test]
@@ -245,10 +392,12 @@ async fn mcp_official_filesystem_server_smoke_when_enabled() {
         &mut registry,
         vec![McpServerConfig {
             name: "filesystem-smoke".to_string(),
+            enabled: true,
             transport: McpTransport::Stdio,
             command,
             args,
             env: Default::default(),
+            env_names: Vec::new(),
             url: String::new(),
             policy: McpTransportPolicy {
                 request_timeout_ms: 15_000,

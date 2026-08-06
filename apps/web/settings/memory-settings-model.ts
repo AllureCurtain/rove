@@ -37,6 +37,10 @@ export type MemorySettingsAction =
     }
   | { type: "detail_load_failed"; slug: string; error: string }
   | { type: "detail_retry_requested" }
+  | {
+      type: "topic_saved";
+      detail: ProductMemoryTopicContentResponse;
+    }
   | { type: "delete_confirmation_requested"; slug: string }
   | { type: "delete_confirmation_cancelled" }
   | { type: "delete_started"; slug: string }
@@ -252,6 +256,27 @@ export function memorySettingsReducer(
         detailError: null,
         detailRequestVersion: state.detailRequestVersion + 1,
       };
+
+    case "topic_saved": {
+      const saved = action.detail.topic;
+      const topics = sortMemoryTopics([
+        ...state.topics.filter((topic) => topic.slug !== saved.slug),
+        saved,
+      ]);
+      return {
+        ...state,
+        topics,
+        listStatus: "ready",
+        listError: null,
+        selectedSlug: saved.slug,
+        detail: action.detail,
+        detailStatus: "ready",
+        detailError: null,
+        pendingDeleteSlug: null,
+        deleteStatus: "idle",
+        deleteError: null,
+      };
+    }
 
     case "delete_confirmation_requested":
       if (!state.topics.some((topic) => topic.slug === action.slug)) {

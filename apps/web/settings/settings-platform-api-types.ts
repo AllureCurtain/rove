@@ -25,11 +25,24 @@ export const PRODUCT_MEMORY_SCOPES = [
 ] as const;
 export type ProductMemoryScope = (typeof PRODUCT_MEMORY_SCOPES)[number];
 
+export const PRODUCT_MEMORY_LAYERS = ["durable"] as const;
+export type ProductMemoryLayer = (typeof PRODUCT_MEMORY_LAYERS)[number];
+
+export const PRODUCT_MEMORY_SOURCES = [
+  "product_settings",
+  "llm_tool",
+  "other",
+  "unknown",
+] as const;
+export type ProductMemorySource = (typeof PRODUCT_MEMORY_SOURCES)[number];
+
 export interface ProductMemoryTopic {
   slug: string;
   title: string;
+  layer: ProductMemoryLayer;
   memory_type: ProductMemoryType;
   scope: ProductMemoryScope;
+  source: ProductMemorySource;
   confidence: number;
   created_at?: string;
   updated_at?: string;
@@ -46,6 +59,82 @@ export interface ProductMemoryTopicContentResponse {
   topic: ProductMemoryTopic;
   content: string;
   truncated: boolean;
+}
+
+export interface ProductMemoryListFilters {
+  q?: string;
+  memory_type?: ProductMemoryType;
+  scope?: ProductMemoryScope;
+  source?: ProductMemorySource;
+}
+
+export interface CreateProductMemoryTopicRequest {
+  slug: string;
+  title: string;
+  memory_type: ProductMemoryType;
+  scope: ProductMemoryScope;
+  confidence: number;
+  description: string;
+  content: string;
+}
+
+export interface UpdateProductMemoryTopicRequest {
+  title: string;
+  memory_type: ProductMemoryType;
+  scope: ProductMemoryScope;
+  confidence: number;
+  description: string;
+  content: string;
+  expected_updated_at?: string;
+}
+
+export const PRODUCT_MCP_TRANSPORTS = ["stdio", "sse"] as const;
+export type ProductMcpTransport = (typeof PRODUCT_MCP_TRANSPORTS)[number];
+
+export interface ProductMcpServerConfig {
+  name: string;
+  enabled: boolean;
+  transport: ProductMcpTransport;
+  command?: string;
+  args: string[];
+  env_names: string[];
+  url?: string;
+  request_timeout_ms: number;
+}
+
+export interface ProductMcpServersResponse {
+  servers: ProductMcpServerConfig[];
+  total: number;
+}
+
+export interface CreateProductMcpServerRequest {
+  name: string;
+  enabled: boolean;
+  transport: ProductMcpTransport;
+  command?: string;
+  args: string[];
+  env_names: string[];
+  url?: string;
+  request_timeout_ms: number;
+}
+
+export type UpdateProductMcpServerRequest = Omit<
+  CreateProductMcpServerRequest,
+  "name"
+>;
+
+export interface ProductMcpToolDescriptor {
+  name: string;
+  description: string;
+  destructive: true;
+  parallel_safe: false;
+}
+
+export interface ProductMcpProbeResponse {
+  server_name: string;
+  transport: ProductMcpTransport;
+  tools: ProductMcpToolDescriptor[];
+  tested_at: string;
 }
 
 export type ProductConnectionStatus = "connected";
@@ -80,10 +169,32 @@ export interface SettingsPreferencesUpdateRequest {
 
 const MAX_PRODUCT_TEXT_BYTES = 512;
 const MAX_MEMORY_TOPIC_SLUG_BYTES = 80;
+const MAX_MEMORY_TOPIC_TITLE_BYTES = 256;
 const MAX_MEMORY_TOPICS = 200;
 const MAX_MEMORY_CONTENT_BYTES = 64 * 1_024;
+const MAX_MCP_SERVERS = 32;
+const MAX_MCP_SERVER_NAME_BYTES = 64;
+const MAX_MCP_COMMAND_BYTES = 2_048;
+const MAX_MCP_URL_BYTES = 2_048;
+const MAX_MCP_ARGUMENTS = 64;
+const MAX_MCP_ARGUMENT_BYTES = 2_048;
+const MAX_MCP_ENV_NAMES = 32;
+const MAX_MCP_TOOLS = 128;
+const MIN_MCP_TIMEOUT_MS = 100;
+const MAX_MCP_TIMEOUT_MS = 120_000;
 const MEMORY_TOPIC_SLUG_PATTERN =
   /^[\p{Alphabetic}\p{Number}]+(?:-[\p{Alphabetic}\p{Number}]+)*$/u;
+const MCP_SERVER_NAME_PATTERN = /^[a-z0-9][a-z0-9_]*$/u;
+const MCP_ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/u;
+const MCP_SECRET_MARKERS = [
+  "sk-",
+  "bearer ",
+  "api_key=",
+  "api-key=",
+  "token=",
+  "password=",
+  "secret=",
+] as const;
 type UnknownRecord = Record<string, unknown>;
 
 function schemaError(path: string, expectation: string): never {
@@ -229,6 +340,153 @@ export function validateProductMemoryWorkspaceId(
   });
 }
 
+function expectMemoryTitle(value: unknown, path: string): string {
+  const title = expectString(value, path, {
+    nonEmpty: true,
+    maxBytes: MAX_MEMORY_TOPIC_TITLE_BYTES,
+    noControls: true,
+  });
+  if (title.includes("[") || title.includes("]")) {
+    return schemaError(path, "free of memory-index delimiters");
+  }
+  return title;
+}
+
+function expectMemoryContent(value: unknown, path: string): string {
+  const content = expectString(value, path, {
+    maxBytes: MAX_MEMORY_CONTENT_BYTES,
+  });
+  if (content.includes("\0")) {
+    return schemaError(path, "free of null bytes");
+  }
+  return content;
+}
+
+export function parseProductMemoryListFilters(
+  value: ProductMemoryListFilters = {},
+  path = "product memory filters",
+): ProductMemoryListFilters {
+  const record = expectRecord(value, path);
+  expectOnlyKeys(record, ["q", "memory_type", "scope", "source"], path);
+  const filters: ProductMemoryListFilters = {};
+  if (record.q !== undefined) {
+    const q = expectString(record.q, `${path}.q`, {
+      maxBytes: MAX_PRODUCT_TEXT_BYTES,
+      noControls: true,
+    }).trim();
+    if (q.length > 0) {
+      filters.q = q;
+    }
+  }
+  if (record.memory_type !== undefined) {
+    filters.memory_type = expectEnum(
+      record.memory_type,
+      PRODUCT_MEMORY_TYPES,
+      `${path}.memory_type`,
+    );
+  }
+  if (record.scope !== undefined) {
+    filters.scope = expectEnum(
+      record.scope,
+      PRODUCT_MEMORY_SCOPES,
+      `${path}.scope`,
+    );
+  }
+  if (record.source !== undefined) {
+    filters.source = expectEnum(
+      record.source,
+      PRODUCT_MEMORY_SOURCES,
+      `${path}.source`,
+    );
+  }
+  return filters;
+}
+
+export function parseCreateProductMemoryTopicRequest(
+  value: CreateProductMemoryTopicRequest,
+  path = "create product memory topic request",
+): CreateProductMemoryTopicRequest {
+  const record = expectRecord(value, path);
+  expectOnlyKeys(
+    record,
+    [
+      "slug",
+      "title",
+      "memory_type",
+      "scope",
+      "confidence",
+      "description",
+      "content",
+    ],
+    path,
+  );
+  return {
+    slug: expectMemorySlug(record.slug, `${path}.slug`),
+    title: expectMemoryTitle(record.title, `${path}.title`),
+    memory_type: expectEnum(
+      record.memory_type,
+      PRODUCT_MEMORY_TYPES,
+      `${path}.memory_type`,
+    ),
+    scope: expectEnum(record.scope, PRODUCT_MEMORY_SCOPES, `${path}.scope`),
+    confidence: expectNumber(record.confidence, `${path}.confidence`, {
+      min: 0,
+      max: 1,
+    }),
+    description: expectString(record.description, `${path}.description`, {
+      maxBytes: MAX_PRODUCT_TEXT_BYTES,
+      noControls: true,
+    }),
+    content: expectMemoryContent(record.content, `${path}.content`),
+  };
+}
+
+export function parseUpdateProductMemoryTopicRequest(
+  value: UpdateProductMemoryTopicRequest,
+  path = "update product memory topic request",
+): UpdateProductMemoryTopicRequest {
+  const record = expectRecord(value, path);
+  expectOnlyKeys(
+    record,
+    [
+      "title",
+      "memory_type",
+      "scope",
+      "confidence",
+      "description",
+      "content",
+      "expected_updated_at",
+    ],
+    path,
+  );
+  const request: UpdateProductMemoryTopicRequest = {
+    title: expectMemoryTitle(record.title, `${path}.title`),
+    memory_type: expectEnum(
+      record.memory_type,
+      PRODUCT_MEMORY_TYPES,
+      `${path}.memory_type`,
+    ),
+    scope: expectEnum(record.scope, PRODUCT_MEMORY_SCOPES, `${path}.scope`),
+    confidence: expectNumber(record.confidence, `${path}.confidence`, {
+      min: 0,
+      max: 1,
+    }),
+    description: expectString(record.description, `${path}.description`, {
+      maxBytes: MAX_PRODUCT_TEXT_BYTES,
+      noControls: true,
+    }),
+    content: expectMemoryContent(record.content, `${path}.content`),
+  };
+  if (record.expected_updated_at !== undefined) {
+    request.expected_updated_at = expectString(
+      record.expected_updated_at,
+      `${path}.expected_updated_at`,
+      { maxBytes: MAX_PRODUCT_TEXT_BYTES, noControls: true },
+    );
+  }
+  return request;
+}
+
 export function parseProductMemoryTopic(
   value: unknown,
   path = "product memory topic",
@@ -239,8 +497,10 @@ export function parseProductMemoryTopic(
     [
       "slug",
       "title",
+      "layer",
       "memory_type",
       "scope",
+      "source",
       "confidence",
       "created_at",
       "updated_at",
@@ -255,12 +515,22 @@ export function parseProductMemoryTopic(
       maxBytes: MAX_PRODUCT_TEXT_BYTES,
       noControls: true,
     }),
+    layer: expectEnum(
+      record.layer,
+      PRODUCT_MEMORY_LAYERS,
+      `${path}.layer`,
+    ),
     memory_type: expectEnum(
       record.memory_type,
       PRODUCT_MEMORY_TYPES,
       `${path}.memory_type`,
     ),
     scope: expectEnum(record.scope, PRODUCT_MEMORY_SCOPES, `${path}.scope`),
+    source: expectEnum(
+      record.source,
+      PRODUCT_MEMORY_SOURCES,
+      `${path}.source`,
+    ),
     confidence: expectNumber(record.confidence, `${path}.confidence`, {
       min: 0,
       max: 1,
@@ -325,6 +595,300 @@ export function parseProductMemoryTopicContentResponse(
       maxBytes: MAX_MEMORY_CONTENT_BYTES,
     }),
     truncated: expectBoolean(record.truncated, `${path}.truncated`),
+  };
+}
+
+function expectMcpServerName(value: unknown, path: string): string {
+  const name = expectString(value, path, {
+    nonEmpty: true,
+    maxBytes: MAX_MCP_SERVER_NAME_BYTES,
+    noControls: true,
+  });
+  if (!MCP_SERVER_NAME_PATTERN.test(name)) {
+    return schemaError(
+      path,
+      "a lowercase identifier containing only letters, numbers, and underscores",
+    );
+  }
+  return name;
+}
+
+export function validateProductMcpServerName(name: string): string {
+  return expectMcpServerName(name, "product MCP server name");
+}
+
+function parseMcpStringArray(
+  value: unknown,
+  path: string,
+  limit: number,
+  itemLimit: number,
+): string[] {
+  if (!Array.isArray(value) || value.length > limit) {
+    return schemaError(path, `an array with at most ${limit} items`);
+  }
+  return value.map((item, index) =>
+    expectString(item, `${path}[${index}]`, {
+      maxBytes: itemLimit,
+      noControls: true,
+    }),
+  );
+}
+
+function parseMcpEnvironmentNames(value: unknown, path: string): string[] {
+  const names = parseMcpStringArray(
+    value,
+    path,
+    MAX_MCP_ENV_NAMES,
+    MAX_PRODUCT_TEXT_BYTES,
+  );
+  const unique = new Set<string>();
+  for (const name of names) {
+    if (!MCP_ENV_NAME_PATTERN.test(name) || unique.has(name)) {
+      return schemaError(path, "unique environment variable names");
+    }
+    unique.add(name);
+  }
+  return names;
+}
+
+function parseMcpArguments(value: unknown, path: string): string[] {
+  const args = parseMcpStringArray(
+    value,
+    path,
+    MAX_MCP_ARGUMENTS,
+    MAX_MCP_ARGUMENT_BYTES,
+  );
+  if (
+    args.some((argument) =>
+      MCP_SECRET_MARKERS.some((marker) =>
+        argument.toLocaleLowerCase("en-US").includes(marker),
+      ),
+    )
+  ) {
+    return schemaError(path, "free of raw secret-shaped values");
+  }
+  return args;
+}
+
+function expectMcpUrl(value: unknown, path: string): string {
+  const url = expectString(value, path, {
+    nonEmpty: true,
+    maxBytes: MAX_MCP_URL_BYTES,
+    noControls: true,
+  });
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return schemaError(path, "an HTTP or HTTPS URL");
+  }
+  if (
+    (parsed.protocol !== "http:" && parsed.protocol !== "https:") ||
+    parsed.username !== "" ||
+    parsed.password !== "" ||
+    parsed.hash !== ""
+  ) {
+    return schemaError(path, "an HTTP or HTTPS URL without credentials or a fragment");
+  }
+  return url;
+}
+
+function parseProductMcpServerFields(
+  record: UnknownRecord,
+  path: string,
+): Omit<ProductMcpServerConfig, "name"> {
+  const transport = expectEnum(
+    record.transport,
+    PRODUCT_MCP_TRANSPORTS,
+    `${path}.transport`,
+  );
+  const args = parseMcpArguments(record.args, `${path}.args`);
+  const envNames = parseMcpEnvironmentNames(
+    record.env_names,
+    `${path}.env_names`,
+  );
+  const common = {
+    enabled: expectBoolean(record.enabled, `${path}.enabled`),
+    transport,
+    args,
+    env_names: envNames,
+    request_timeout_ms: expectInteger(
+      record.request_timeout_ms,
+      `${path}.request_timeout_ms`,
+      { min: MIN_MCP_TIMEOUT_MS, max: MAX_MCP_TIMEOUT_MS },
+    ),
+  };
+  if (transport === "stdio") {
+    if (record.url !== undefined) {
+      return schemaError(`${path}.url`, "omitted for stdio transport");
+    }
+    return {
+      ...common,
+      command: expectString(record.command, `${path}.command`, {
+        nonEmpty: true,
+        maxBytes: MAX_MCP_COMMAND_BYTES,
+        noControls: true,
+      }),
+    };
+  }
+  if (
+    record.command !== undefined ||
+    args.length !== 0 ||
+    envNames.length !== 0
+  ) {
+    return schemaError(path, "an SSE config without command, args, or environment names");
+  }
+  return { ...common, url: expectMcpUrl(record.url, `${path}.url`) };
+}
+
+export function parseProductMcpServerConfig(
+  value: unknown,
+  path = "product MCP server",
+): ProductMcpServerConfig {
+  const record = expectRecord(value, path);
+  expectOnlyKeys(
+    record,
+    [
+      "name",
+      "enabled",
+      "transport",
+      "command",
+      "args",
+      "env_names",
+      "url",
+      "request_timeout_ms",
+    ],
+    path,
+  );
+  return {
+    name: expectMcpServerName(record.name, `${path}.name`),
+    ...parseProductMcpServerFields(record, path),
+  };
+}
+
+export function parseCreateProductMcpServerRequest(
+  value: unknown,
+  path = "create product MCP server request",
+): CreateProductMcpServerRequest {
+  return parseProductMcpServerConfig(value, path);
+}
+
+export function parseUpdateProductMcpServerRequest(
+  value: unknown,
+  path = "update product MCP server request",
+): UpdateProductMcpServerRequest {
+  const record = expectRecord(value, path);
+  expectOnlyKeys(
+    record,
+    [
+      "enabled",
+      "transport",
+      "command",
+      "args",
+      "env_names",
+      "url",
+      "request_timeout_ms",
+    ],
+    path,
+  );
+  return parseProductMcpServerFields(record, path);
+}
+
+export function parseProductMcpServersResponse(
+  value: unknown,
+  path = "product MCP servers response",
+): ProductMcpServersResponse {
+  const record = expectRecord(value, path);
+  expectOnlyKeys(record, ["servers", "total"], path);
+  if (!Array.isArray(record.servers) || record.servers.length > MAX_MCP_SERVERS) {
+    return schemaError(
+      `${path}.servers`,
+      `an array with at most ${MAX_MCP_SERVERS} items`,
+    );
+  }
+  const servers = record.servers.map((server, index) =>
+    parseProductMcpServerConfig(server, `${path}.servers[${index}]`),
+  );
+  if (new Set(servers.map((server) => server.name)).size !== servers.length) {
+    return schemaError(`${path}.servers`, "servers with unique names");
+  }
+  const total = expectInteger(record.total, `${path}.total`, {
+    min: 0,
+    max: MAX_MCP_SERVERS,
+  });
+  if (total !== servers.length) {
+    return schemaError(`${path}.total`, "equal to the number of servers");
+  }
+  return { servers, total };
+}
+
+function parseProductMcpToolDescriptor(
+  value: unknown,
+  path: string,
+): ProductMcpToolDescriptor {
+  const record = expectRecord(value, path);
+  expectOnlyKeys(
+    record,
+    ["name", "description", "destructive", "parallel_safe"],
+    path,
+  );
+  const destructive = expectBoolean(record.destructive, `${path}.destructive`);
+  const parallelSafe = expectBoolean(
+    record.parallel_safe,
+    `${path}.parallel_safe`,
+  );
+  if (!destructive || parallelSafe) {
+    return schemaError(path, "a locally restricted MCP tool descriptor");
+  }
+  return {
+    name: expectString(record.name, `${path}.name`, {
+      nonEmpty: true,
+      maxBytes: MAX_PRODUCT_TEXT_BYTES,
+      noControls: true,
+    }),
+    description: expectString(record.description, `${path}.description`, {
+      maxBytes: MAX_PRODUCT_TEXT_BYTES,
+      noControls: true,
+    }),
+    destructive: true,
+    parallel_safe: false,
+  };
+}
+
+export function parseProductMcpProbeResponse(
+  value: unknown,
+  path = "product MCP probe response",
+): ProductMcpProbeResponse {
+  const record = expectRecord(value, path);
+  expectOnlyKeys(record, ["server_name", "transport", "tools", "tested_at"], path);
+  if (!Array.isArray(record.tools) || record.tools.length > MAX_MCP_TOOLS) {
+    return schemaError(
+      `${path}.tools`,
+      `an array with at most ${MAX_MCP_TOOLS} items`,
+    );
+  }
+  const testedAt = expectString(record.tested_at, `${path}.tested_at`, {
+    nonEmpty: true,
+    maxBytes: MAX_PRODUCT_TEXT_BYTES,
+    noControls: true,
+  });
+  if (!Number.isFinite(Date.parse(testedAt))) {
+    return schemaError(`${path}.tested_at`, "an ISO timestamp");
+  }
+  return {
+    server_name: expectMcpServerName(
+      record.server_name,
+      `${path}.server_name`,
+    ),
+    transport: expectEnum(
+      record.transport,
+      PRODUCT_MCP_TRANSPORTS,
+      `${path}.transport`,
+    ),
+    tools: record.tools.map((tool, index) =>
+      parseProductMcpToolDescriptor(tool, `${path}.tools[${index}]`),
+    ),
+    tested_at: testedAt,
   };
 }
 

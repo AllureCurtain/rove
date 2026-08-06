@@ -9,19 +9,26 @@ use serde::de::DeserializeOwned;
 use rove_runtime::types::{JobId, RunId, SessionId};
 
 use crate::product::{
-    CommitProductRunBinding, CreateProductProviderProfileRequest, CreateProductSessionRequest,
-    CreateProductWorkspaceRequest, M1BrowserMigrationPreflight, M1BrowserMigrationResponse,
-    M1MigrationDisposition, M1MigrationIssue, M1MigrationIssueCode, M1PreferencesBaseline,
-    M1ProviderProfileIdMapping, M1SessionIdMapping, M1WorkspaceIdMapping,
-    MAX_PRODUCT_PROVIDER_PROFILES, MAX_PRODUCT_SESSIONS, MAX_PRODUCT_WORKSPACES,
-    PreparedM1BrowserMigration, ProductApprovalPreference, ProductErrorCode,
-    ProductMigrationReceiptId, ProductPreferences, ProductProviderProfile,
-    ProductProviderProfileId, ProductProviderSelection, ProductProviderType, ProductResumeHealth,
+    CommitProductRunBinding, CreateProductControlRequest, CreateProductForkRequest,
+    CreateProductProviderProfileRequest, CreateProductSessionRequest,
+    CreateProductWorkspaceRequest, DEFAULT_PRODUCT_MAX_STEPS, M1BrowserMigrationPreflight,
+    M1BrowserMigrationResponse, M1MigrationDisposition, M1MigrationIssue, M1MigrationIssueCode,
+    M1PreferencesBaseline, M1ProviderProfileIdMapping, M1SessionIdMapping, M1WorkspaceIdMapping,
+    MAX_PRODUCT_FORK_INHERITED_RUNS, MAX_PRODUCT_MAX_STEPS, MAX_PRODUCT_PROVIDER_PROFILES,
+    MAX_PRODUCT_SESSIONS, MAX_PRODUCT_TEXT_BYTES, MAX_PRODUCT_WORKSPACES,
+    PreparedM1BrowserMigration, ProductApprovalPreference, ProductControl, ProductControlId,
+    ProductControlKind, ProductControlStatus, ProductErrorCode, ProductFollowupTurnClaim,
+    ProductFork, ProductForkContext, ProductForkId, ProductForkInheritedRun,
+    ProductMigrationReceiptId, ProductPreferences, ProductPricingAvailability,
+    ProductProviderProfile, ProductProviderProfileId, ProductProviderSelection,
+    ProductProviderType, ProductReasoningPreference, ProductResumeHealth,
     ProductResumeHealthStatus, ProductRuntimeBinding, ProductSession, ProductSessionContext,
-    ProductSessionId, ProductSessionRunBinding, ProductSessionStatus, ProductStoreError,
-    ProductThemePreference, ProductTurnClaim, ProductTurnClaimId, ProductWorkspace,
+    ProductSessionId, ProductSessionModelConfig, ProductSessionRunBinding,
+    ProductSessionRunModelView, ProductSessionStatus, ProductStoreError, ProductThemePreference,
+    ProductTurnClaim, ProductTurnClaimId, ProductTurnControlFinish, ProductWorkspace,
     ProductWorkspaceId, ProductWorkspaceKind, UpdateProductPreferencesRequest,
-    UpdateProductProviderProfileRequest, UpdateProductSessionRequest, VerifiedM1SessionRunBinding,
+    UpdateProductProviderProfileRequest, UpdateProductSessionModelConfigRequest,
+    UpdateProductSessionRequest, VerifiedM1SessionRunBinding, VerifiedProductForkBoundary,
     m1_browser_migration_digest,
 };
 
@@ -31,11 +38,16 @@ use super::validation::{
     ValidatedWorkspace, invalid, normalized_timestamp, profile_id_string, validate_issue_entity,
     validate_migration_envelope, validate_migration_provider, validate_preferences,
     validate_provider_create, validate_provider_selection, validate_provider_update,
-    validate_source_id, validate_title, validate_workspace, validate_workspace_request,
+    validate_required_text, validate_source_id, validate_title, validate_workspace,
+    validate_workspace_request,
 };
 
 const MIGRATION_SOURCE_WEB_M1: &str = "web_m1_local_storage";
 const MIGRATION_PREPARATION_TTL_SECS: i64 = 24 * 60 * 60;
+// Mirrors the bounded runtime steer channel. Keeping persistent pending
+// steers within this capacity guarantees a run attaching after an HTTP/API
+// race can inject every pending message at its first declared safe point.
+const MAX_PENDING_STEERS_PER_SESSION: i64 = 64;
 
 #[derive(Debug, Clone)]
 pub(super) struct ProductRepository {
@@ -64,23 +76,111 @@ impl ProductRepository {
     pub(super) fn recover_stale_turn_claims(&self) -> Result<u64, ProductStoreError> {
         let mut connection = self.database.connect()?;
         let transaction = immediate_transaction(&mut connection)?;
-        let affected = transaction
-            .execute(
-                r#"
-                UPDATE product_sessions
-                SET status = 'needs_attention', updated_at = ?1
-                WHERE product_session_id IN (
-                    SELECT product_session_id FROM product_turn_claims
+        let claims: Vec<(
+            ProductTurnClaimId,
+            ProductSessionId,
+            Option<ProductControlId>,
+        )> = {
+            let mut statement = transaction
+                .prepare(
+                    "SELECT claim_id, product_session_id, followup_control_id FROM product_turn_claims",
                 )
-                "#,
-                params![now_rfc3339()],
-            )
-            .map_err(storage_error)?;
-        transaction
-            .execute("DELETE FROM product_turn_claims", [])
-            .map_err(storage_error)?;
+                .map_err(storage_error)?;
+            statement
+                .query_map([], |row| {
+                    let claim_id: String = row.get(0)?;
+                    let session_id: String = row.get(1)?;
+                    let control_id: Option<String> = row.get(2)?;
+                    Ok((claim_id, session_id, control_id))
+                })
+                .map_err(storage_error)?
+                .map(|row| {
+                    let (claim_id, session_id, control_id) = row.map_err(storage_error)?;
+                    Ok((
+                        parse_product_id(&claim_id, "turn claim id")?,
+                        parse_product_id(&session_id, "product session id")?,
+                        control_id
+                            .as_deref()
+                            .map(|value| parse_product_id(value, "follow-up control id"))
+                            .transpose()?,
+                    ))
+                })
+                .collect::<Result<Vec<_>, ProductStoreError>>()?
+        };
+
+        let mut affected = 0_u64;
+        for (claim_id, session_id, control_id) in claims {
+            let safely_requeue = match control_id.as_ref() {
+                Some(control_id) => transaction
+                    .query_row(
+                        r#"
+                        SELECT status = 'accepted' AND run_id IS NULL
+                        FROM product_session_controls
+                        WHERE product_session_id = ?1 AND control_id = ?2
+                        "#,
+                        params![session_id.to_string(), control_id.to_string()],
+                        |row| row.get::<_, bool>(0),
+                    )
+                    .optional()
+                    .map_err(storage_error)?
+                    .unwrap_or(false),
+                None => false,
+            };
+
+            if safely_requeue {
+                let control_id = control_id.as_ref().expect("checked above");
+                transaction
+                    .execute(
+                        r#"
+                        UPDATE product_session_controls
+                        SET status = 'pending', run_id = NULL, applied_at = NULL,
+                            abandoned_reason = NULL
+                        WHERE product_session_id = ?1 AND control_id = ?2
+                          AND status = 'accepted' AND run_id IS NULL
+                        "#,
+                        params![session_id.to_string(), control_id.to_string()],
+                    )
+                    .map_err(storage_error)?;
+                transaction
+                    .execute(
+                        "UPDATE product_sessions SET status = 'idle', updated_at = ?2 WHERE product_session_id = ?1",
+                        params![session_id.to_string(), now_rfc3339()],
+                    )
+                    .map_err(storage_error)?;
+            } else {
+                let steers = unapplied_steers_for_session(&transaction, &session_id)?;
+                let followups = unapplied_followups_for_session(&transaction, &session_id)?;
+                transition_unapplied_steers_in_transaction(
+                    &transaction,
+                    &session_id,
+                    None,
+                    "API process stopped before the steer reached a model turn",
+                    steers.len(),
+                )?;
+                transition_unapplied_followups_in_transaction(
+                    &transaction,
+                    &session_id,
+                    "API process stopped during follow-up delivery",
+                    followups.len(),
+                )?;
+                transaction
+                    .execute(
+                        "UPDATE product_sessions SET status = 'needs_attention', updated_at = ?2 WHERE product_session_id = ?1",
+                        params![session_id.to_string(), now_rfc3339()],
+                    )
+                    .map_err(storage_error)?;
+            }
+            let deleted = transaction
+                .execute(
+                    "DELETE FROM product_turn_claims WHERE claim_id = ?1 AND product_session_id = ?2",
+                    params![claim_id.to_string(), session_id.to_string()],
+                )
+                .map_err(storage_error)?;
+            affected = affected.saturating_add(u64::try_from(deleted).map_err(storage_error)?);
+        }
+
         transaction.commit().map_err(storage_error)?;
-        u64::try_from(affected).map_err(storage_error)
+        Ok(affected)
     }
 
     pub(super) fn list_workspaces(&self) -> Result<Vec<ProductWorkspace>, ProductStoreError> {
@@ -255,7 +355,9 @@ impl ProductRepository {
                 .prepare(
                     r#"
                     SELECT product_session_id, workspace_id, title, status, latest_ordinal,
-                           runtime_session_id, latest_job_id, latest_run_id, created_at, updated_at
+                           runtime_session_id, latest_job_id, latest_run_id,
+                           parent_session_id, fork_point_run_id, fork_point_seq,
+                           created_at, updated_at
                     FROM product_sessions
                     WHERE workspace_id = ?1
                     ORDER BY CASE WHEN status = 'archived' THEN 1 ELSE 0 END ASC,
@@ -314,6 +416,19 @@ impl ProductRepository {
                 ],
             )
             .map_err(storage_error)?;
+        let (profile_id, model, max_steps) = default_session_model_values(&transaction)?;
+        insert_session_model_config(
+            &transaction,
+            SessionModelConfigWrite {
+                session_id: &session_id,
+                profile_id: profile_id.as_deref(),
+                model: &model,
+                reasoning: ProductReasoningPreference::Default,
+                max_steps,
+                revision: 1,
+                updated_at: &now,
+            },
+        )?;
         let session = get_session(&transaction, &session_id)?;
         transaction.commit().map_err(storage_error)?;
         Ok(session)
@@ -366,6 +481,147 @@ impl ProductRepository {
         Ok(updated)
     }
 
+    pub(super) fn get_session_model_config(
+        &self,
+        session_id: &ProductSessionId,
+    ) -> Result<ProductSessionModelConfig, ProductStoreError> {
+        let mut connection = self.database.connect()?;
+        let transaction = immediate_transaction(&mut connection)?;
+        get_session(&transaction, session_id)?;
+        ensure_session_model_config(&transaction, session_id)?;
+        let config = get_session_model_config_in_transaction(&transaction, session_id)?;
+        transaction.commit().map_err(storage_error)?;
+        Ok(config)
+    }
+
+    pub(super) fn update_session_model_config(
+        &self,
+        session_id: &ProductSessionId,
+        request: UpdateProductSessionModelConfigRequest,
+    ) -> Result<ProductSessionModelConfig, ProductStoreError> {
+        let model = validate_required_text("session model", &request.model)?;
+        if request.max_steps == 0 || request.max_steps > MAX_PRODUCT_MAX_STEPS {
+            return Err(invalid("session max_steps is outside the supported range"));
+        }
+        if request
+            .expected_revision
+            .is_some_and(|revision| revision > i64::MAX as u64)
+        {
+            return Err(invalid(
+                "session model revision is outside the supported range",
+            ));
+        }
+        let mut connection = self.database.connect()?;
+        let transaction = immediate_transaction(&mut connection)?;
+        get_session(&transaction, session_id)?;
+        if let Some(profile_id) = request.profile_id.as_ref() {
+            let exists: bool = transaction
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM product_provider_profiles WHERE profile_id = ?1)",
+                    params![profile_id.to_string()],
+                    |row| row.get(0),
+                )
+                .map_err(storage_error)?;
+            if !exists {
+                return Err(ProductStoreError::new(
+                    ProductErrorCode::ProductProviderProfileUnavailable,
+                    "the selected provider profile was not found",
+                ));
+            }
+        }
+        let current_revision = transaction
+            .query_row(
+                "SELECT revision FROM product_session_model_configs WHERE product_session_id = ?1",
+                params![session_id.to_string()],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .map_err(storage_error)?
+            .map(|value| {
+                u64::try_from(value)
+                    .map_err(|_| binding_corrupt("session model revision is invalid"))
+            })
+            .transpose()?
+            .unwrap_or(0);
+        if let Some(expected_revision) = request.expected_revision
+            && expected_revision != current_revision
+        {
+            return Err(ProductStoreError::new(
+                ProductErrorCode::ProductSessionModelConfigConflict,
+                format!(
+                    "session model config revision mismatch (expected {expected_revision}, current {current_revision})"
+                ),
+            ));
+        }
+        let revision = current_revision
+            .checked_add(1)
+            .ok_or_else(|| invalid("session model revision overflow"))?;
+        let now = now_rfc3339();
+        let profile_id = request.profile_id.as_ref().map(ToString::to_string);
+        insert_or_update_session_model_config(
+            &transaction,
+            SessionModelConfigWrite {
+                session_id,
+                profile_id: profile_id.as_deref(),
+                model: &model,
+                reasoning: request.reasoning,
+                max_steps: request.max_steps,
+                revision,
+                updated_at: &now,
+            },
+        )?;
+        let config = get_session_model_config_in_transaction(&transaction, session_id)?;
+        transaction.commit().map_err(storage_error)?;
+        Ok(config)
+    }
+
+    pub(super) fn list_session_run_models(
+        &self,
+        session_id: &ProductSessionId,
+    ) -> Result<Vec<ProductSessionRunModelView>, ProductStoreError> {
+        let connection = self.database.connect()?;
+        get_session(&connection, session_id)?;
+        let mut statement = connection
+            .prepare(
+                r#"
+                SELECT product_session_id, ordinal, runtime_run_id, profile_id,
+                       model, reasoning, max_steps,
+                       context_window,
+                       pricing_source, pricing_version, pricing_currency,
+                       pricing_availability, per_mtok_prompt, per_mtok_completion,
+                       per_mtok_cache_read
+                FROM product_session_run_models
+                WHERE product_session_id = ?1
+                ORDER BY ordinal ASC
+                LIMIT 2048
+                "#,
+            )
+            .map_err(storage_error)?;
+        let rows = statement
+            .query_map(params![session_id.to_string()], |row| {
+                Ok(RawSessionRunModel {
+                    product_session_id: row.get(0)?,
+                    ordinal: row.get(1)?,
+                    runtime_run_id: row.get(2)?,
+                    profile_id: row.get(3)?,
+                    model: row.get(4)?,
+                    reasoning: row.get(5)?,
+                    max_steps: row.get(6)?,
+                    context_window: row.get(7)?,
+                    pricing_source: row.get(8)?,
+                    pricing_version: row.get(9)?,
+                    pricing_currency: row.get(10)?,
+                    pricing_availability: row.get(11)?,
+                    per_mtok_prompt: row.get(12)?,
+                    per_mtok_completion: row.get(13)?,
+                    per_mtok_cache_read: row.get(14)?,
+                })
+            })
+            .map_err(storage_error)?;
+        rows.map(|row| row.map_err(storage_error)?.into_product())
+            .collect()
+    }
+
     pub(super) fn delete_session(
         &self,
         session_id: &ProductSessionId,
@@ -411,8 +667,13 @@ impl ProductRepository {
         let session = get_session(&transaction, session_id)?;
         validate_binding_integrity(&transaction, &session)?;
         let workspace = get_workspace(&transaction, &session.workspace_id)?;
+        let fork = get_fork_context(&transaction, &session)?;
         transaction.commit().map_err(storage_error)?;
-        Ok(ProductSessionContext { workspace, session })
+        Ok(ProductSessionContext {
+            workspace,
+            session,
+            fork,
+        })
     }
 
     pub(super) fn list_run_bindings(
@@ -425,6 +686,273 @@ impl ProductRepository {
         let bindings = list_and_validate_bindings(&transaction, &session)?;
         transaction.commit().map_err(storage_error)?;
         Ok(bindings)
+    }
+
+    pub(super) fn create_fork(
+        &self,
+        request: CreateProductForkRequest,
+        boundary: VerifiedProductForkBoundary,
+    ) -> Result<(ProductSession, ProductFork, bool), ProductStoreError> {
+        let idempotency_key = validate_fork_idempotency_key(&request.idempotency_key)?;
+        if request.fork_at_run_id != boundary.source_runtime_run_id {
+            return Err(fork_source_invalid(
+                "the verified fork boundary does not match the requested runtime run",
+            ));
+        }
+        let digest = fork_request_digest(&request);
+        let mut connection = self.database.connect()?;
+        let transaction = immediate_transaction(&mut connection)?;
+
+        // Check an idempotent replay before loading the parent. This means a
+        // network retry still returns the original child even if the user has
+        // since removed the parent catalog row.
+        if let Some((child, fork)) = replay_fork_if_exists(
+            &transaction,
+            &boundary.parent_product_session_id,
+            &idempotency_key,
+            &digest,
+        )? {
+            transaction.commit().map_err(storage_error)?;
+            return Ok((child, fork, true));
+        }
+
+        let parent = get_session(&transaction, &boundary.parent_product_session_id)?;
+        if parent.workspace_id != boundary.parent_workspace_id {
+            return Err(fork_source_invalid(
+                "the verified fork workspace does not match the parent session",
+            ));
+        }
+        if has_active_claim_for_session(&transaction, &parent.id)?
+            || parent.status == ProductSessionStatus::Running
+        {
+            return Err(session_active(
+                "a product session can only be forked after its active turn reaches a terminal boundary",
+            ));
+        }
+        if parent.status != ProductSessionStatus::Idle {
+            return Err(fork_source_invalid(
+                "only an idle product session with a final durable run can be forked",
+            ));
+        }
+
+        ensure_session_model_config(&transaction, &parent.id)?;
+        let parent_model_config =
+            get_session_model_config_in_transaction(&transaction, &parent.id)?;
+
+        let parent_bindings = list_and_validate_bindings(&transaction, &parent)?;
+        let Some(source_index) = parent_bindings.iter().position(|binding| {
+            binding.runtime_session_id == boundary.source_runtime_session_id
+                && binding.runtime_job_id == boundary.source_runtime_job_id
+                && binding.runtime_run_id == boundary.source_runtime_run_id
+        }) else {
+            return Err(fork_source_invalid(
+                "the verified runtime run is not an immutable binding of the parent session",
+            ));
+        };
+
+        let mut inherited_runs = get_fork_context(&transaction, &parent)?
+            .map(|context| context.inherited_runs)
+            .unwrap_or_default();
+        for binding in parent_bindings.iter().take(source_index + 1) {
+            inherited_runs.push(ProductForkInheritedRun {
+                ordinal: u64::try_from(inherited_runs.len() + 1).map_err(storage_error)?,
+                source_product_session_id: parent.id.clone(),
+                runtime_session_id: binding.runtime_session_id,
+                runtime_job_id: binding.runtime_job_id,
+                runtime_run_id: binding.runtime_run_id,
+                through_event_seq: (binding.runtime_run_id == boundary.source_runtime_run_id)
+                    .then_some(boundary.fork_at_event_seq),
+            });
+        }
+        if inherited_runs.is_empty() || inherited_runs.len() > MAX_PRODUCT_FORK_INHERITED_RUNS {
+            return Err(fork_source_invalid(
+                "the fork source has no bounded inherited runtime history",
+            ));
+        }
+
+        let title = match request.title.as_deref() {
+            Some(title) => validate_title(Some(title))?,
+            None => default_fork_title(&parent.title),
+        };
+        enforce_table_limit(
+            &transaction,
+            "product_sessions",
+            MAX_PRODUCT_SESSIONS,
+            "product session limit reached",
+        )?;
+        let child_id = ProductSessionId::new();
+        let fork_id = ProductForkId::new();
+        let now = now_rfc3339();
+        let parent_title = parent.title.clone();
+        transaction
+            .execute(
+                r#"
+                INSERT INTO product_sessions(
+                    product_session_id, workspace_id, title, status,
+                    parent_session_id, fork_point_run_id, fork_point_seq,
+                    created_at, updated_at
+                ) VALUES (?1, ?2, ?3, 'idle', ?4, ?5, ?6, ?7, ?7)
+                "#,
+                params![
+                    child_id.to_string(),
+                    parent.workspace_id.to_string(),
+                    title,
+                    parent.id.to_string(),
+                    boundary.source_runtime_run_id.to_string(),
+                    i64::try_from(boundary.fork_at_event_seq).map_err(|_| {
+                        ProductStoreError::new(
+                            ProductErrorCode::ProductInvalidInput,
+                            "fork terminal event sequence exceeds SQLite integer range",
+                        )
+                    })?,
+                    now,
+                ],
+            )
+            .map_err(storage_error)?;
+        transaction
+            .execute(
+                r#"
+                INSERT INTO product_session_forks(
+                    fork_id, parent_product_session_id, child_product_session_id,
+                    parent_workspace_id, parent_title, source_runtime_session_id,
+                    source_runtime_job_id, source_runtime_run_id, fork_at_event_seq,
+                    idempotency_key, request_digest, created_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+                "#,
+                params![
+                    fork_id.to_string(),
+                    parent.id.to_string(),
+                    child_id.to_string(),
+                    parent.workspace_id.to_string(),
+                    parent_title.clone(),
+                    boundary.source_runtime_session_id.to_string(),
+                    boundary.source_runtime_job_id.to_string(),
+                    boundary.source_runtime_run_id.to_string(),
+                    i64::try_from(boundary.fork_at_event_seq).map_err(|_| {
+                        ProductStoreError::new(
+                            ProductErrorCode::ProductInvalidInput,
+                            "fork terminal event sequence exceeds SQLite integer range",
+                        )
+                    })?,
+                    idempotency_key,
+                    digest,
+                    now,
+                ],
+            )
+            .map_err(storage_error)?;
+        for inherited in &inherited_runs {
+            transaction
+                .execute(
+                    r#"
+                    INSERT INTO product_fork_inherited_runs(
+                        fork_id, ordinal, source_product_session_id,
+                        runtime_session_id, runtime_job_id, runtime_run_id,
+                        through_event_seq
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                    "#,
+                    params![
+                        fork_id.to_string(),
+                        i64::try_from(inherited.ordinal).map_err(storage_error)?,
+                        inherited.source_product_session_id.to_string(),
+                        inherited.runtime_session_id.to_string(),
+                        inherited.runtime_job_id.to_string(),
+                        inherited.runtime_run_id.to_string(),
+                        inherited
+                            .through_event_seq
+                            .map(i64::try_from)
+                            .transpose()
+                            .map_err(storage_error)?,
+                    ],
+                )
+                .map_err(storage_error)?;
+        }
+
+        let parent_profile_id = parent_model_config
+            .profile_id
+            .as_ref()
+            .map(ToString::to_string);
+        insert_session_model_config(
+            &transaction,
+            SessionModelConfigWrite {
+                session_id: &child_id,
+                profile_id: parent_profile_id.as_deref(),
+                model: &parent_model_config.model,
+                reasoning: parent_model_config.reasoning,
+                max_steps: parent_model_config.max_steps,
+                revision: 1,
+                updated_at: &now,
+            },
+        )?;
+
+        let child = get_session(&transaction, &child_id)?;
+        let fork = ProductFork {
+            id: fork_id,
+            parent_product_session_id: parent.id,
+            child_product_session_id: child_id,
+            parent_workspace_id: boundary.parent_workspace_id,
+            parent_title,
+            source_runtime_session_id: boundary.source_runtime_session_id,
+            source_runtime_job_id: boundary.source_runtime_job_id,
+            source_runtime_run_id: boundary.source_runtime_run_id,
+            fork_at_event_seq: boundary.fork_at_event_seq,
+            idempotency_key,
+            created_at: now,
+        };
+        transaction.commit().map_err(storage_error)?;
+        Ok((child, fork, false))
+    }
+
+    pub(super) fn replay_fork(
+        &self,
+        parent_session_id: &ProductSessionId,
+        request: &CreateProductForkRequest,
+    ) -> Result<Option<(ProductSession, ProductFork)>, ProductStoreError> {
+        let idempotency_key = validate_fork_idempotency_key(&request.idempotency_key)?;
+        let digest = fork_request_digest(request);
+        let mut connection = self.database.connect()?;
+        let transaction = connection.transaction().map_err(storage_error)?;
+        let replay =
+            replay_fork_if_exists(&transaction, parent_session_id, &idempotency_key, &digest)?;
+        transaction.commit().map_err(storage_error)?;
+        Ok(replay)
+    }
+
+    pub(super) fn list_forks(
+        &self,
+        parent_session_id: &ProductSessionId,
+    ) -> Result<Vec<ProductFork>, ProductStoreError> {
+        let connection = self.database.connect()?;
+        let mut statement = connection
+            .prepare(
+                r#"
+                SELECT fork_id, parent_product_session_id, child_product_session_id,
+                       parent_workspace_id, parent_title, source_runtime_session_id,
+                       source_runtime_job_id, source_runtime_run_id, fork_at_event_seq,
+                       idempotency_key, request_digest, created_at
+                FROM product_session_forks
+                WHERE parent_product_session_id = ?1
+                ORDER BY created_at ASC, fork_id ASC
+                LIMIT ?2
+                "#,
+            )
+            .map_err(storage_error)?;
+        let rows = statement
+            .query_map(
+                params![
+                    parent_session_id.to_string(),
+                    limit_i64(MAX_PRODUCT_SESSIONS)?
+                ],
+                raw_fork_from_row,
+            )
+            .map_err(storage_error)?;
+        let mut forks = Vec::new();
+        for row in rows {
+            forks.push(row.map_err(storage_error)?.into_stored()?.fork);
+        }
+        if forks.is_empty() && get_session(&connection, parent_session_id).is_err() {
+            return Err(not_found("product session was not found"));
+        }
+        Ok(forks)
     }
 
     pub(super) fn claim_session_turn(
@@ -448,6 +976,9 @@ impl ProductRepository {
         }
         validate_binding_integrity(&transaction, &session)?;
         let workspace = get_workspace(&transaction, &session.workspace_id)?;
+        let fork = get_fork_context(&transaction, &session)?;
+        ensure_session_model_config(&transaction, session_id)?;
+        let model_config = get_session_model_config_in_transaction(&transaction, session_id)?;
         let previous_status = session.status;
         let previous_binding = session.runtime_binding.clone();
         let claim_id = ProductTurnClaimId::new();
@@ -482,9 +1013,14 @@ impl ProductRepository {
         transaction.commit().map_err(storage_error)?;
         Ok(ProductTurnClaim {
             claim_id,
-            context: ProductSessionContext { workspace, session },
+            context: ProductSessionContext {
+                workspace,
+                session,
+                fork,
+            },
             previous_status,
             previous_binding,
+            model_config,
         })
     }
 
@@ -494,17 +1030,30 @@ impl ProductRepository {
     ) -> Result<ProductSessionRunBinding, ProductStoreError> {
         let mut connection = self.database.connect()?;
         let transaction = immediate_transaction(&mut connection)?;
-        let claimed_session_id = transaction
+        let claimed = transaction
             .query_row(
-                "SELECT product_session_id FROM product_turn_claims WHERE claim_id = ?1",
+                "SELECT product_session_id, followup_control_id FROM product_turn_claims WHERE claim_id = ?1",
                 params![binding.claim_id.to_string()],
-                |row| row.get::<_, String>(0),
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
             )
             .optional()
             .map_err(storage_error)?
-            .map(|value| parse_product_id::<ProductSessionId>(&value, "product session id"))
+            .map(|(session_id, control_id)| {
+                Ok((
+                    parse_product_id::<ProductSessionId>(&session_id, "product session id")?,
+                    control_id
+                        .as_deref()
+                        .map(|value| parse_product_id(value, "follow-up control id"))
+                        .transpose()?,
+                ))
+            })
             .transpose()?;
-        if claimed_session_id.as_ref() != Some(&binding.product_session_id) {
+        if claimed.as_ref().map(|(session_id, _)| session_id) != Some(&binding.product_session_id)
+            || claimed
+                .as_ref()
+                .and_then(|(_, control_id)| control_id.as_ref())
+                != binding.followup_control_id.as_ref()
+        {
             return Err(resume_conflict(
                 "product session turn claim is missing or does not match",
             ));
@@ -549,6 +1098,42 @@ impl ProductRepository {
             },
         )?;
         update_latest_binding_cas(&transaction, &session, &created)?;
+        insert_session_run_model_snapshot(
+            &transaction,
+            &binding.product_session_id,
+            created.ordinal,
+            &binding.runtime_run_id,
+            &binding.model_config,
+        )?;
+        if let Some(control_id) = &binding.followup_control_id {
+            let claimable = transaction
+                .query_row(
+                    r#"
+                    SELECT 1
+                    FROM product_session_controls
+                    WHERE product_session_id = ?1 AND control_id = ?2
+                      AND kind = 'followup' AND status = 'accepted' AND run_id = ?3
+                    "#,
+                    params![
+                        binding.product_session_id.to_string(),
+                        control_id.to_string(),
+                        binding.runtime_run_id.to_string(),
+                    ],
+                    |_| Ok(()),
+                )
+                .optional()
+                .map_err(storage_error)?;
+            if claimable.is_none() {
+                return Err(ProductStoreError::new(
+                    ProductErrorCode::ProductControlRejected,
+                    "queued follow-up was no longer claimable for the new run",
+                ));
+            }
+            // A binding only proves that preparation reached a durable
+            // reservation. The control becomes `applied` after the successor
+            // has emitted and persisted `followup_dequeued` at its actual
+            // run-start boundary.
+        }
         transaction.commit().map_err(storage_error)?;
         Ok(created)
     }
@@ -608,6 +1193,188 @@ impl ProductRepository {
         Ok(())
     }
 
+    /// Atomically replace a successfully-final turn claim with the oldest
+    /// queued follow-up claim. Keeping the old claim until the new one exists
+    /// closes the final/enqueue race and means concurrent drain attempts can
+    /// never observe the session as independently runnable.
+    pub(super) fn finish_session_turn_and_claim_followup(
+        &self,
+        claim_id: &ProductTurnClaimId,
+    ) -> Result<Option<ProductFollowupTurnClaim>, ProductStoreError> {
+        let mut connection = self.database.connect()?;
+        let transaction = immediate_transaction(&mut connection)?;
+        let session_id = active_turn_session_id(&transaction, claim_id)?;
+        let mut session = get_session(&transaction, &session_id)?;
+        if session.status != ProductSessionStatus::Running {
+            return Err(resume_conflict(
+                "product session turn claim does not own a running session",
+            ));
+        }
+        validate_binding_integrity(&transaction, &session)?;
+        let workspace = get_workspace(&transaction, &session.workspace_id)?;
+        let fork = get_fork_context(&transaction, &session)?;
+        ensure_session_model_config(&transaction, &session_id)?;
+        let model_config = get_session_model_config_in_transaction(&transaction, &session_id)?;
+        let previous_binding = session.runtime_binding.clone();
+
+        let Some(pending) = pending_followup_for_session(&transaction, &session_id)? else {
+            release_turn_claim_with_status(
+                &transaction,
+                claim_id,
+                &session_id,
+                ProductSessionStatus::Idle,
+            )?;
+            transaction.commit().map_err(storage_error)?;
+            return Ok(None);
+        };
+
+        let now = now_rfc3339();
+        let accepted = transaction
+            .execute(
+                r#"
+                UPDATE product_session_controls
+                SET status = 'accepted', applied_at = NULL
+                WHERE product_session_id = ?1 AND control_id = ?2
+                  AND kind = 'followup' AND status = 'pending' AND run_id IS NULL
+                "#,
+                params![session_id.to_string(), pending.id.to_string()],
+            )
+            .map_err(storage_error)?;
+        if accepted != 1 {
+            return Err(ProductStoreError::new(
+                ProductErrorCode::ProductControlRejected,
+                "queued follow-up changed while the previous turn was finishing",
+            ));
+        }
+
+        let next_claim_id = ProductTurnClaimId::new();
+        let deleted = transaction
+            .execute(
+                "DELETE FROM product_turn_claims WHERE claim_id = ?1 AND product_session_id = ?2",
+                params![claim_id.to_string(), session_id.to_string()],
+            )
+            .map_err(storage_error)?;
+        if deleted != 1 {
+            return Err(resume_conflict(
+                "product session turn claim is missing or no longer active",
+            ));
+        }
+        transaction
+            .execute(
+                r#"
+                INSERT INTO product_turn_claims(
+                    claim_id, product_session_id, claimed_at, followup_control_id
+                ) VALUES (?1, ?2, ?3, ?4)
+                "#,
+                params![
+                    next_claim_id.to_string(),
+                    session_id.to_string(),
+                    now,
+                    pending.id.to_string(),
+                ],
+            )
+            .map_err(storage_error)?;
+        let updated = transaction
+            .execute(
+                r#"
+                UPDATE product_sessions
+                SET status = 'running', updated_at = ?2
+                WHERE product_session_id = ?1
+                "#,
+                params![session_id.to_string(), now_rfc3339()],
+            )
+            .map_err(storage_error)?;
+        if updated != 1 {
+            return Err(binding_corrupt(
+                "product turn claim references a missing session",
+            ));
+        }
+        session.status = ProductSessionStatus::Running;
+        session.updated_at = now;
+        let control = get_control_in_transaction(&transaction, &session_id, &pending.id)?;
+        transaction.commit().map_err(storage_error)?;
+        Ok(Some(ProductFollowupTurnClaim {
+            control,
+            turn: ProductTurnClaim {
+                claim_id: next_claim_id,
+                context: ProductSessionContext {
+                    workspace,
+                    session,
+                    fork,
+                },
+                previous_status: ProductSessionStatus::Idle,
+                previous_binding,
+                model_config,
+            },
+        }))
+    }
+
+    /// Close steers that made it into the current turn's control channel or
+    /// safe-point bookkeeping but never reached a model-turn start. This must
+    /// happen while the old turn claim is still active, before the coordinator
+    /// makes its terminal runtime artifact visible. A successor follow-up can
+    /// therefore never inherit a stale steer as pending work.
+    pub(super) fn drop_unapplied_steers_for_turn(
+        &self,
+        claim_id: &ProductTurnClaimId,
+        run_id: RunId,
+        reason: &str,
+    ) -> Result<Vec<ProductControl>, ProductStoreError> {
+        let mut connection = self.database.connect()?;
+        let transaction = immediate_transaction(&mut connection)?;
+        let session_id = active_turn_session_id(&transaction, claim_id)?;
+        let steers = unapplied_steers_for_session(&transaction, &session_id)?;
+        transition_unapplied_steers_in_transaction(
+            &transaction,
+            &session_id,
+            Some(run_id),
+            reason,
+            steers.len(),
+        )?;
+        transaction.commit().map_err(storage_error)?;
+        Ok(steers)
+    }
+
+    /// Close an indeterminate or non-final turn and atomically classify every
+    /// control that did not reach its terminal lifecycle at that boundary. No
+    /// later request can be silently swept into the old run after its claim is
+    /// released.
+    pub(super) fn finish_session_turn_and_abandon_pending_controls(
+        &self,
+        claim_id: &ProductTurnClaimId,
+        run_id: Option<RunId>,
+        status: ProductSessionStatus,
+        reason: &str,
+    ) -> Result<ProductTurnControlFinish, ProductStoreError> {
+        if status == ProductSessionStatus::Running {
+            return Err(invalid("a completed product turn cannot remain running"));
+        }
+        let mut connection = self.database.connect()?;
+        let transaction = immediate_transaction(&mut connection)?;
+        let session_id = active_turn_session_id(&transaction, claim_id)?;
+        let dropped_steers = unapplied_steers_for_session(&transaction, &session_id)?;
+        let abandoned_followups = unapplied_followups_for_session(&transaction, &session_id)?;
+        transition_unapplied_steers_in_transaction(
+            &transaction,
+            &session_id,
+            run_id,
+            reason,
+            dropped_steers.len(),
+        )?;
+        transition_unapplied_followups_in_transaction(
+            &transaction,
+            &session_id,
+            reason,
+            abandoned_followups.len(),
+        )?;
+        release_turn_claim_with_status(&transaction, claim_id, &session_id, status)?;
+        transaction.commit().map_err(storage_error)?;
+        Ok(ProductTurnControlFinish {
+            dropped_steers,
+            abandoned_followups,
+        })
+    }
+
     pub(super) fn list_provider_profiles(
         &self,
     ) -> Result<Vec<ProductProviderProfile>, ProductStoreError> {
@@ -634,6 +1401,14 @@ impl ProductRepository {
             profiles.push(row.map_err(storage_error)?.into_product()?);
         }
         Ok(profiles)
+    }
+
+    pub(super) fn get_provider_profile(
+        &self,
+        profile_id: &ProductProviderProfileId,
+    ) -> Result<ProductProviderProfile, ProductStoreError> {
+        let connection = self.database.connect()?;
+        get_provider_profile(&connection, profile_id)
     }
 
     pub(super) fn create_provider_profile(
@@ -689,6 +1464,22 @@ impl ProductRepository {
                 WHERE singleton = 1 AND provider_profile_id = ?1
                 "#,
                 params![profile_id.to_string(), now_rfc3339()],
+            )
+            .map_err(storage_error)?;
+        transaction
+            .execute(
+                r#"
+                UPDATE product_session_model_configs
+                SET profile_id = NULL, revision = revision + 1, updated_at = ?2
+                WHERE profile_id = ?1
+                "#,
+                params![profile_id.to_string(), now_rfc3339()],
+            )
+            .map_err(storage_error)?;
+        transaction
+            .execute(
+                "UPDATE product_session_run_models SET profile_id = NULL WHERE profile_id = ?1",
+                params![profile_id.to_string()],
             )
             .map_err(storage_error)?;
         let deleted = transaction
@@ -854,6 +1645,1071 @@ impl ProductRepository {
         transaction.commit().map_err(storage_error)?;
         Ok(M1BrowserMigrationPreflight::Prepare(baseline))
     }
+
+    pub(super) fn create_control(
+        &self,
+        session_id: &ProductSessionId,
+        kind: ProductControlKind,
+        request: CreateProductControlRequest,
+    ) -> Result<(ProductControl, bool), ProductStoreError> {
+        let content = request.content.trim();
+        if content.is_empty() {
+            return Err(ProductStoreError::new(
+                ProductErrorCode::ProductInvalidInput,
+                "control content must not be empty",
+            ));
+        }
+        if content.len() > 32_768 {
+            return Err(ProductStoreError::new(
+                ProductErrorCode::ProductInvalidInput,
+                "control content exceeds the 32KiB limit",
+            ));
+        }
+        if let Some(key) = request.idempotency_key.as_deref()
+            && (key.is_empty() || key.len() > 128)
+        {
+            return Err(ProductStoreError::new(
+                ProductErrorCode::ProductInvalidInput,
+                "idempotency_key must be 1..128 characters",
+            ));
+        }
+
+        let mut connection = self.database.connect()?;
+        let transaction = immediate_transaction(&mut connection)?;
+        get_session(&transaction, session_id)?;
+
+        let kind_db = control_kind_to_db(kind);
+        let now = now_rfc3339();
+        let digest = rove_runtime::context::stable_hash(content);
+
+        if let Some(key) = request.idempotency_key.as_deref()
+            && let Some(existing) = transaction
+                .query_row(
+                    r#"
+                    SELECT control_id, product_session_id, kind, idempotency_key, content,
+                           status, run_id, seq, created_at, applied_at
+                    FROM product_session_controls
+                    WHERE product_session_id = ?1 AND idempotency_key = ?2
+                    "#,
+                    params![session_id.to_string(), key],
+                    row_to_control,
+                )
+                .optional()
+                .map_err(storage_error)?
+        {
+            if existing.kind != kind || existing.content != content {
+                return Err(ProductStoreError::new(
+                    ProductErrorCode::ProductControlConflict,
+                    "idempotency_key already exists with different kind or content",
+                ));
+            }
+            transaction.commit().map_err(storage_error)?;
+            return Ok((existing, true));
+        }
+
+        if kind == ProductControlKind::Steer {
+            let pending_count: i64 = transaction
+                .query_row(
+                    r#"
+                    SELECT COUNT(*) FROM product_session_controls
+                    WHERE product_session_id = ?1 AND kind = 'steer' AND status = 'pending'
+                    "#,
+                    params![session_id.to_string()],
+                    |row| row.get(0),
+                )
+                .map_err(storage_error)?;
+            if pending_count >= MAX_PENDING_STEERS_PER_SESSION {
+                return Err(ProductStoreError::new(
+                    ProductErrorCode::ProductControlRejected,
+                    "steer queue is full; retry after the next model turn",
+                ));
+            }
+        }
+
+        let control_id = ProductControlId::new();
+        let seq: i64 = transaction
+            .query_row(
+                "SELECT COALESCE(MAX(seq), 0) + 1 FROM product_session_controls WHERE product_session_id = ?1",
+                params![session_id.to_string()],
+                |row| row.get(0),
+            )
+            .map_err(storage_error)?;
+
+        transaction
+            .execute(
+                r#"
+                INSERT INTO product_session_controls(
+                    control_id, product_session_id, kind, idempotency_key,
+                    request_digest, content, status, seq, created_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', ?7, ?8)
+                "#,
+                params![
+                    control_id.to_string(),
+                    session_id.to_string(),
+                    kind_db,
+                    request.idempotency_key,
+                    digest,
+                    content,
+                    seq,
+                    now,
+                ],
+            )
+            .map_err(storage_error)?;
+
+        let control = ProductControl {
+            id: control_id,
+            product_session_id: session_id.clone(),
+            kind,
+            idempotency_key: request.idempotency_key.clone(),
+            content: content.to_string(),
+            status: ProductControlStatus::Pending,
+            run_id: None,
+            seq,
+            created_at: now,
+            applied_at: None,
+        };
+        transaction.commit().map_err(storage_error)?;
+        Ok((control, false))
+    }
+
+    pub(super) fn list_controls(
+        &self,
+        session_id: &ProductSessionId,
+        filter: Option<ProductControlStatus>,
+    ) -> Result<Vec<ProductControl>, ProductStoreError> {
+        let mut connection = self.database.connect()?;
+        let transaction = connection.transaction().map_err(storage_error)?;
+        get_session(&transaction, session_id)?;
+        let (sql, status_db) = match filter {
+            Some(s) => (
+                "SELECT control_id, product_session_id, kind, idempotency_key, content, status, run_id, seq, created_at, applied_at FROM product_session_controls WHERE product_session_id = ?1 AND status = ?2 ORDER BY seq ASC",
+                Some(control_status_to_db(s)),
+            ),
+            None => (
+                "SELECT control_id, product_session_id, kind, idempotency_key, content, status, run_id, seq, created_at, applied_at FROM product_session_controls WHERE product_session_id = ?1 ORDER BY seq ASC",
+                None,
+            ),
+        };
+        let mut statement = transaction.prepare(sql).map_err(storage_error)?;
+        let rows: Vec<ProductControl> = match status_db {
+            Some(s) => statement
+                .query_map(params![session_id.to_string(), s], row_to_control)
+                .map_err(storage_error)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(storage_error)?,
+            None => statement
+                .query_map(params![session_id.to_string()], row_to_control)
+                .map_err(storage_error)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(storage_error)?,
+        };
+        drop(statement);
+        transaction.commit().map_err(storage_error)?;
+        Ok(rows)
+    }
+
+    pub(super) fn get_control(
+        &self,
+        session_id: &ProductSessionId,
+        control_id: &ProductControlId,
+    ) -> Result<ProductControl, ProductStoreError> {
+        let mut connection = self.database.connect()?;
+        let transaction = connection.transaction().map_err(storage_error)?;
+        let control = transaction
+            .query_row(
+                r#"
+                SELECT control_id, product_session_id, kind, idempotency_key, content,
+                       status, run_id, seq, created_at, applied_at
+                FROM product_session_controls
+                WHERE product_session_id = ?1 AND control_id = ?2
+                "#,
+                params![session_id.to_string(), control_id.to_string()],
+                row_to_control,
+            )
+            .optional()
+            .map_err(storage_error)?
+            .ok_or_else(|| not_found("control not found"))?;
+        transaction.commit().map_err(storage_error)?;
+        Ok(control)
+    }
+
+    pub(super) fn transition_control(
+        &self,
+        session_id: &ProductSessionId,
+        control_id: &ProductControlId,
+        from: ProductControlStatus,
+        to: ProductControlStatus,
+        applied_run_id: Option<&RunId>,
+    ) -> Result<ProductControl, ProductStoreError> {
+        let mut connection = self.database.connect()?;
+        let transaction = immediate_transaction(&mut connection)?;
+        let existing = transaction
+            .query_row(
+                r#"
+                SELECT control_id, product_session_id, kind, idempotency_key, content,
+                       status, run_id, seq, created_at, applied_at
+                FROM product_session_controls
+                WHERE product_session_id = ?1 AND control_id = ?2
+                "#,
+                params![session_id.to_string(), control_id.to_string()],
+                row_to_control,
+            )
+            .optional()
+            .map_err(storage_error)?
+            .ok_or_else(|| not_found("control not found"))?;
+        if existing.status != from {
+            return Err(ProductStoreError::new(
+                ProductErrorCode::ProductControlRejected,
+                format!(
+                    "control status is {} (expected {})",
+                    control_status_to_db(existing.status),
+                    control_status_to_db(from)
+                ),
+            ));
+        }
+        let now = now_rfc3339();
+        let applied_at = (to == ProductControlStatus::Applied).then(|| now.clone());
+        let changed = transaction
+            .execute(
+                r#"
+                UPDATE product_session_controls
+                SET status = ?3,
+                    run_id = COALESCE(?4, run_id),
+                    applied_at = COALESCE(?5, applied_at)
+                WHERE product_session_id = ?1 AND control_id = ?2 AND status = ?6
+                "#,
+                params![
+                    session_id.to_string(),
+                    control_id.to_string(),
+                    control_status_to_db(to),
+                    applied_run_id.map(|id| id.to_string()),
+                    applied_at,
+                    control_status_to_db(from),
+                ],
+            )
+            .map_err(storage_error)?;
+        if changed != 1 {
+            return Err(ProductStoreError::new(
+                ProductErrorCode::ProductControlRejected,
+                "control status transition failed",
+            ));
+        }
+        let updated = transaction
+            .query_row(
+                r#"
+                SELECT control_id, product_session_id, kind, idempotency_key, content,
+                       status, run_id, seq, created_at, applied_at
+                FROM product_session_controls
+                WHERE product_session_id = ?1 AND control_id = ?2
+                "#,
+                params![session_id.to_string(), control_id.to_string()],
+                row_to_control,
+            )
+            .map_err(storage_error)?;
+        transaction.commit().map_err(storage_error)?;
+        Ok(updated)
+    }
+
+    pub(super) fn confirm_abandoned_followup(
+        &self,
+        session_id: &ProductSessionId,
+        control_id: &ProductControlId,
+    ) -> Result<ProductControl, ProductStoreError> {
+        let mut connection = self.database.connect()?;
+        let transaction = immediate_transaction(&mut connection)?;
+        let session = get_session(&transaction, session_id)?;
+        validate_binding_integrity(&transaction, &session)?;
+        if has_active_claim_for_session(&transaction, session_id)? {
+            return Err(session_active(
+                "an abandoned follow-up cannot be confirmed while a turn is active",
+            ));
+        }
+        let control = get_control_in_transaction(&transaction, session_id, control_id)?;
+        if control.kind != ProductControlKind::Followup {
+            return Err(ProductStoreError::new(
+                ProductErrorCode::ProductControlRejected,
+                "only follow-up controls can be confirmed",
+            ));
+        }
+        if matches!(
+            control.status,
+            ProductControlStatus::Pending
+                | ProductControlStatus::Accepted
+                | ProductControlStatus::Applied
+        ) {
+            transaction.commit().map_err(storage_error)?;
+            return Ok(control);
+        }
+        if control.status != ProductControlStatus::Abandoned {
+            return Err(ProductStoreError::new(
+                ProductErrorCode::ProductControlRejected,
+                "only an abandoned follow-up can be confirmed",
+            ));
+        }
+        if session.status == ProductSessionStatus::Archived {
+            return Err(invalid(
+                "archived product sessions cannot confirm a follow-up",
+            ));
+        }
+        let changed = transaction
+            .execute(
+                r#"
+                UPDATE product_session_controls
+                SET status = 'pending', run_id = NULL, applied_at = NULL,
+                    abandoned_reason = NULL
+                WHERE product_session_id = ?1 AND control_id = ?2 AND status = 'abandoned'
+                "#,
+                params![session_id.to_string(), control_id.to_string()],
+            )
+            .map_err(storage_error)?;
+        if changed != 1 {
+            return Err(ProductStoreError::new(
+                ProductErrorCode::ProductControlRejected,
+                "abandoned follow-up confirmation was not acquired",
+            ));
+        }
+        let updated_session = transaction
+            .execute(
+                r#"
+                UPDATE product_sessions
+                SET status = 'idle', updated_at = ?2
+                WHERE product_session_id = ?1
+                  AND status IN ('needs_attention', 'error', 'idle')
+                "#,
+                params![session_id.to_string(), now_rfc3339()],
+            )
+            .map_err(storage_error)?;
+        if updated_session != 1 {
+            return Err(ProductStoreError::new(
+                ProductErrorCode::ProductControlRejected,
+                "product session cannot confirm a follow-up from its current state",
+            ));
+        }
+        let updated = get_control_in_transaction(&transaction, session_id, control_id)?;
+        transaction.commit().map_err(storage_error)?;
+        Ok(updated)
+    }
+
+    pub(super) fn abandon_pending_controls(
+        &self,
+        session_id: &ProductSessionId,
+        reason: &str,
+    ) -> Result<u64, ProductStoreError> {
+        let mut connection = self.database.connect()?;
+        let transaction = immediate_transaction(&mut connection)?;
+        let changed = transaction
+            .execute(
+                r#"
+                UPDATE product_session_controls
+                SET status = 'abandoned', abandoned_reason = ?2
+                WHERE product_session_id = ?1 AND status = 'pending'
+                "#,
+                params![session_id.to_string(), reason],
+            )
+            .map_err(storage_error)?;
+        transaction.commit().map_err(storage_error)?;
+        u64::try_from(changed).map_err(storage_error)
+    }
+
+    pub(super) fn list_pending_followups(
+        &self,
+        session_id: &ProductSessionId,
+    ) -> Result<Vec<ProductControl>, ProductStoreError> {
+        let mut connection = self.database.connect()?;
+        let transaction = connection.transaction().map_err(storage_error)?;
+        let mut statement = transaction
+            .prepare(
+                r#"
+                SELECT control_id, product_session_id, kind, idempotency_key, content,
+                       status, run_id, seq, created_at, applied_at
+                FROM product_session_controls
+                WHERE product_session_id = ?1 AND kind = 'followup' AND status = 'pending'
+                ORDER BY seq ASC
+                "#,
+            )
+            .map_err(storage_error)?;
+        let rows: Vec<ProductControl> = statement
+            .query_map(params![session_id.to_string()], row_to_control)
+            .map_err(storage_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(storage_error)?;
+        drop(statement);
+        transaction.commit().map_err(storage_error)?;
+        Ok(rows)
+    }
+
+    /// Atomically pick the lowest-seq pending follow-up and mark it accepted so
+    /// a crash between claim and run-start cannot double-start the same control.
+    pub(super) fn claim_next_pending_followup(
+        &self,
+        session_id: &ProductSessionId,
+    ) -> Result<Option<ProductControl>, ProductStoreError> {
+        let mut connection = self.database.connect()?;
+        let transaction = immediate_transaction(&mut connection)?;
+        let Some(pending) = transaction
+            .query_row(
+                r#"
+                SELECT control_id, product_session_id, kind, idempotency_key, content,
+                       status, run_id, seq, created_at, applied_at
+                FROM product_session_controls
+                WHERE product_session_id = ?1 AND kind = 'followup' AND status = 'pending'
+                ORDER BY seq ASC
+                LIMIT 1
+                "#,
+                params![session_id.to_string()],
+                row_to_control,
+            )
+            .optional()
+            .map_err(storage_error)?
+        else {
+            transaction.commit().map_err(storage_error)?;
+            return Ok(None);
+        };
+
+        let changed = transaction
+            .execute(
+                r#"
+                UPDATE product_session_controls
+                SET status = 'accepted', applied_at = NULL
+                WHERE product_session_id = ?1 AND control_id = ?2 AND status = 'pending'
+                "#,
+                params![session_id.to_string(), pending.id.to_string()],
+            )
+            .map_err(storage_error)?;
+        if changed != 1 {
+            transaction.commit().map_err(storage_error)?;
+            return Ok(None);
+        }
+        let claimed = transaction
+            .query_row(
+                r#"
+                SELECT control_id, product_session_id, kind, idempotency_key, content,
+                       status, run_id, seq, created_at, applied_at
+                FROM product_session_controls
+                WHERE product_session_id = ?1 AND control_id = ?2
+                "#,
+                params![session_id.to_string(), pending.id.to_string()],
+                row_to_control,
+            )
+            .map_err(storage_error)?;
+        transaction.commit().map_err(storage_error)?;
+        Ok(Some(claimed))
+    }
+
+    pub(super) fn claim_next_followup_turn(
+        &self,
+        session_id: &ProductSessionId,
+    ) -> Result<Option<ProductFollowupTurnClaim>, ProductStoreError> {
+        let mut connection = self.database.connect()?;
+        let transaction = immediate_transaction(&mut connection)?;
+        let mut session = get_session(&transaction, session_id)?;
+        if session.status != ProductSessionStatus::Idle
+            || has_active_claim_for_session(&transaction, session_id)?
+        {
+            transaction.commit().map_err(storage_error)?;
+            return Ok(None);
+        }
+        validate_binding_integrity(&transaction, &session)?;
+        let workspace = get_workspace(&transaction, &session.workspace_id)?;
+        let fork = get_fork_context(&transaction, &session)?;
+        ensure_session_model_config(&transaction, session_id)?;
+        let model_config = get_session_model_config_in_transaction(&transaction, session_id)?;
+        let previous_binding = session.runtime_binding.clone();
+        let Some(pending) = transaction
+            .query_row(
+                r#"
+                SELECT control_id, product_session_id, kind, idempotency_key, content,
+                       status, run_id, seq, created_at, applied_at
+                FROM product_session_controls
+                WHERE product_session_id = ?1 AND kind = 'followup' AND status = 'pending'
+                ORDER BY seq ASC
+                LIMIT 1
+                "#,
+                params![session_id.to_string()],
+                row_to_control,
+            )
+            .optional()
+            .map_err(storage_error)?
+        else {
+            transaction.commit().map_err(storage_error)?;
+            return Ok(None);
+        };
+
+        let claim_id = ProductTurnClaimId::new();
+        let accepted = transaction
+            .execute(
+                r#"
+                UPDATE product_session_controls
+                SET status = 'accepted', applied_at = NULL
+                WHERE product_session_id = ?1 AND control_id = ?2
+                  AND kind = 'followup' AND status = 'pending' AND run_id IS NULL
+                "#,
+                params![session_id.to_string(), pending.id.to_string()],
+            )
+            .map_err(storage_error)?;
+        if accepted != 1 {
+            transaction.commit().map_err(storage_error)?;
+            return Ok(None);
+        }
+        transaction
+            .execute(
+                r#"
+                INSERT INTO product_turn_claims(
+                    claim_id, product_session_id, claimed_at, followup_control_id
+                ) VALUES (?1, ?2, ?3, ?4)
+                "#,
+                params![
+                    claim_id.to_string(),
+                    session_id.to_string(),
+                    now_rfc3339(),
+                    pending.id.to_string(),
+                ],
+            )
+            .map_err(storage_error)?;
+        let session_updated = transaction
+            .execute(
+                r#"
+                UPDATE product_sessions
+                SET status = 'running', updated_at = ?2
+                WHERE product_session_id = ?1 AND status = 'idle'
+                "#,
+                params![session_id.to_string(), now_rfc3339()],
+            )
+            .map_err(storage_error)?;
+        if session_updated != 1 {
+            return Err(session_active(
+                "product session follow-up turn claim was not acquired",
+            ));
+        }
+        session.status = ProductSessionStatus::Running;
+        session.updated_at = now_rfc3339();
+        let control = transaction
+            .query_row(
+                r#"
+                SELECT control_id, product_session_id, kind, idempotency_key, content,
+                       status, run_id, seq, created_at, applied_at
+                FROM product_session_controls
+                WHERE product_session_id = ?1 AND control_id = ?2
+                "#,
+                params![session_id.to_string(), pending.id.to_string()],
+                row_to_control,
+            )
+            .map_err(storage_error)?;
+        transaction.commit().map_err(storage_error)?;
+        Ok(Some(ProductFollowupTurnClaim {
+            control,
+            turn: ProductTurnClaim {
+                claim_id,
+                context: ProductSessionContext {
+                    workspace,
+                    session,
+                    fork,
+                },
+                previous_status: ProductSessionStatus::Idle,
+                previous_binding,
+                model_config,
+            },
+        }))
+    }
+
+    pub(super) fn requeue_followup_turn(
+        &self,
+        claim_id: &ProductTurnClaimId,
+        control_id: &ProductControlId,
+    ) -> Result<(), ProductStoreError> {
+        let mut connection = self.database.connect()?;
+        let transaction = immediate_transaction(&mut connection)?;
+        let session_id = followup_claim_session_id(&transaction, claim_id, control_id)?;
+        let changed = transaction
+            .execute(
+                r#"
+                UPDATE product_session_controls
+                SET status = 'pending', run_id = NULL, applied_at = NULL,
+                    abandoned_reason = NULL
+                WHERE product_session_id = ?1 AND control_id = ?2
+                  AND status = 'accepted' AND run_id IS NULL
+                "#,
+                params![session_id.to_string(), control_id.to_string()],
+            )
+            .map_err(storage_error)?;
+        if changed != 1 {
+            return Err(ProductStoreError::new(
+                ProductErrorCode::ProductControlRejected,
+                "queued follow-up cannot be requeued after runtime preparation",
+            ));
+        }
+        release_followup_claim_with_status(
+            &transaction,
+            claim_id,
+            &session_id,
+            ProductSessionStatus::Idle,
+        )?;
+        transaction.commit().map_err(storage_error)
+    }
+
+    pub(super) fn reserve_followup_run(
+        &self,
+        claim_id: &ProductTurnClaimId,
+        control_id: &ProductControlId,
+        run_id: RunId,
+    ) -> Result<(), ProductStoreError> {
+        let mut connection = self.database.connect()?;
+        let transaction = immediate_transaction(&mut connection)?;
+        let session_id = followup_claim_session_id(&transaction, claim_id, control_id)?;
+        let changed = transaction
+            .execute(
+                r#"
+                UPDATE product_session_controls
+                SET run_id = ?3
+                WHERE product_session_id = ?1 AND control_id = ?2
+                  AND status = 'accepted' AND run_id IS NULL
+                "#,
+                params![
+                    session_id.to_string(),
+                    control_id.to_string(),
+                    run_id.to_string(),
+                ],
+            )
+            .map_err(storage_error)?;
+        if changed != 1 {
+            return Err(ProductStoreError::new(
+                ProductErrorCode::ProductControlRejected,
+                "queued follow-up run reservation was not acquired",
+            ));
+        }
+        transaction.commit().map_err(storage_error)
+    }
+
+    pub(super) fn abandon_followup_turn(
+        &self,
+        claim_id: &ProductTurnClaimId,
+        control_id: &ProductControlId,
+        reason: &str,
+    ) -> Result<(), ProductStoreError> {
+        let mut connection = self.database.connect()?;
+        let transaction = immediate_transaction(&mut connection)?;
+        let session_id = followup_claim_session_id(&transaction, claim_id, control_id)?;
+        transaction
+            .execute(
+                r#"
+                UPDATE product_session_controls
+                SET status = 'abandoned', abandoned_reason = ?3
+                WHERE product_session_id = ?1 AND control_id = ?2
+                  AND status IN ('pending', 'accepted', 'applied')
+                "#,
+                params![session_id.to_string(), control_id.to_string(), reason],
+            )
+            .map_err(storage_error)?;
+        release_followup_claim_with_status(
+            &transaction,
+            claim_id,
+            &session_id,
+            ProductSessionStatus::NeedsAttention,
+        )?;
+        transaction.commit().map_err(storage_error)
+    }
+
+    pub(super) fn list_idle_sessions_with_pending_followups(
+        &self,
+    ) -> Result<Vec<ProductSessionId>, ProductStoreError> {
+        let connection = self.database.connect()?;
+        let mut statement = connection
+            .prepare(
+                r#"
+                SELECT session.product_session_id
+                FROM product_sessions AS session
+                WHERE session.status = 'idle'
+                  AND NOT EXISTS (
+                      SELECT 1 FROM product_turn_claims AS claim
+                      WHERE claim.product_session_id = session.product_session_id
+                  )
+                  AND EXISTS (
+                      SELECT 1 FROM product_session_controls AS control
+                      WHERE control.product_session_id = session.product_session_id
+                        AND control.kind = 'followup' AND control.status = 'pending'
+                  )
+                ORDER BY session.updated_at ASC, session.product_session_id ASC
+                "#,
+            )
+            .map_err(storage_error)?;
+        statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(storage_error)?
+            .map(|row| {
+                row.map_err(storage_error)
+                    .and_then(|value| parse_product_id(&value, "product session id"))
+            })
+            .collect()
+    }
+
+    pub(super) fn drop_pending_steers(
+        &self,
+        session_id: &ProductSessionId,
+        reason: &str,
+    ) -> Result<Vec<ProductControl>, ProductStoreError> {
+        transition_pending_controls(
+            &self.database,
+            session_id,
+            ProductControlKind::Steer,
+            ProductControlStatus::Dropped,
+            reason,
+        )
+    }
+
+    pub(super) fn abandon_pending_followups(
+        &self,
+        session_id: &ProductSessionId,
+        reason: &str,
+    ) -> Result<Vec<ProductControl>, ProductStoreError> {
+        transition_pending_controls(
+            &self.database,
+            session_id,
+            ProductControlKind::Followup,
+            ProductControlStatus::Abandoned,
+            reason,
+        )
+    }
+}
+
+fn followup_claim_session_id(
+    transaction: &Transaction<'_>,
+    claim_id: &ProductTurnClaimId,
+    control_id: &ProductControlId,
+) -> Result<ProductSessionId, ProductStoreError> {
+    transaction
+        .query_row(
+            r#"
+            SELECT product_session_id
+            FROM product_turn_claims
+            WHERE claim_id = ?1 AND followup_control_id = ?2
+            "#,
+            params![claim_id.to_string(), control_id.to_string()],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(storage_error)?
+        .map(|value| parse_product_id(&value, "product session id"))
+        .transpose()?
+        .ok_or_else(|| {
+            ProductStoreError::new(
+                ProductErrorCode::ProductControlRejected,
+                "follow-up turn claim is missing or no longer active",
+            )
+        })
+}
+
+fn active_turn_session_id(
+    transaction: &Transaction<'_>,
+    claim_id: &ProductTurnClaimId,
+) -> Result<ProductSessionId, ProductStoreError> {
+    transaction
+        .query_row(
+            "SELECT product_session_id FROM product_turn_claims WHERE claim_id = ?1",
+            params![claim_id.to_string()],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(storage_error)?
+        .map(|value| parse_product_id(&value, "product session id"))
+        .transpose()?
+        .ok_or_else(|| resume_conflict("product session turn claim is missing or no longer active"))
+}
+
+fn pending_followup_for_session(
+    transaction: &Transaction<'_>,
+    session_id: &ProductSessionId,
+) -> Result<Option<ProductControl>, ProductStoreError> {
+    transaction
+        .query_row(
+            r#"
+            SELECT control_id, product_session_id, kind, idempotency_key, content,
+                   status, run_id, seq, created_at, applied_at
+            FROM product_session_controls
+            WHERE product_session_id = ?1 AND kind = 'followup' AND status = 'pending'
+            ORDER BY seq ASC
+            LIMIT 1
+            "#,
+            params![session_id.to_string()],
+            row_to_control,
+        )
+        .optional()
+        .map_err(storage_error)
+}
+
+fn get_control_in_transaction(
+    transaction: &Transaction<'_>,
+    session_id: &ProductSessionId,
+    control_id: &ProductControlId,
+) -> Result<ProductControl, ProductStoreError> {
+    transaction
+        .query_row(
+            r#"
+            SELECT control_id, product_session_id, kind, idempotency_key, content,
+                   status, run_id, seq, created_at, applied_at
+            FROM product_session_controls
+            WHERE product_session_id = ?1 AND control_id = ?2
+            "#,
+            params![session_id.to_string(), control_id.to_string()],
+            row_to_control,
+        )
+        .map_err(storage_error)
+}
+
+/// Follow-ups become historical only after their successor emits a durable
+/// run-start fact. A queued or claimed-but-not-started follow-up is still
+/// recoverable work and must be classified if its owning turn ends.
+fn unapplied_followups_for_session(
+    transaction: &Transaction<'_>,
+    session_id: &ProductSessionId,
+) -> Result<Vec<ProductControl>, ProductStoreError> {
+    let mut statement = transaction
+        .prepare(
+            r#"
+            SELECT control_id, product_session_id, kind, idempotency_key, content,
+                   status, run_id, seq, created_at, applied_at
+            FROM product_session_controls
+            WHERE product_session_id = ?1 AND kind = 'followup'
+              AND status IN ('pending', 'accepted')
+            ORDER BY seq ASC
+            "#,
+        )
+        .map_err(storage_error)?;
+    statement
+        .query_map(params![session_id.to_string()], row_to_control)
+        .map_err(storage_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(storage_error)
+}
+
+/// A steer is only terminal once it was applied to a model turn, dropped, or
+/// revoked. `accepted` means it crossed a safe point but may still be lost to
+/// cancellation or a budget/error boundary; it must therefore be closed with
+/// the same conservative rule as `pending`.
+fn unapplied_steers_for_session(
+    transaction: &Transaction<'_>,
+    session_id: &ProductSessionId,
+) -> Result<Vec<ProductControl>, ProductStoreError> {
+    let mut statement = transaction
+        .prepare(
+            r#"
+            SELECT control_id, product_session_id, kind, idempotency_key, content,
+                   status, run_id, seq, created_at, applied_at
+            FROM product_session_controls
+            WHERE product_session_id = ?1 AND kind = 'steer'
+              AND status IN ('pending', 'accepted')
+            ORDER BY seq ASC
+            "#,
+        )
+        .map_err(storage_error)?;
+    statement
+        .query_map(params![session_id.to_string()], row_to_control)
+        .map_err(storage_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(storage_error)
+}
+
+fn transition_unapplied_steers_in_transaction(
+    transaction: &Transaction<'_>,
+    session_id: &ProductSessionId,
+    run_id: Option<RunId>,
+    reason: &str,
+    expected_count: usize,
+) -> Result<(), ProductStoreError> {
+    if expected_count == 0 {
+        return Ok(());
+    }
+    let changed = transaction
+        .execute(
+            r#"
+            UPDATE product_session_controls
+            SET status = 'dropped',
+                run_id = COALESCE(run_id, ?2),
+                abandoned_reason = ?3
+            WHERE product_session_id = ?1 AND kind = 'steer'
+              AND status IN ('pending', 'accepted')
+            "#,
+            params![
+                session_id.to_string(),
+                run_id.map(|value| value.to_string()),
+                reason
+            ],
+        )
+        .map_err(storage_error)?;
+    if changed != expected_count {
+        return Err(ProductStoreError::new(
+            ProductErrorCode::ProductControlRejected,
+            "unapplied steers changed while closing a run",
+        ));
+    }
+    Ok(())
+}
+
+fn transition_unapplied_followups_in_transaction(
+    transaction: &Transaction<'_>,
+    session_id: &ProductSessionId,
+    reason: &str,
+    expected_count: usize,
+) -> Result<(), ProductStoreError> {
+    if expected_count == 0 {
+        return Ok(());
+    }
+    let changed = transaction
+        .execute(
+            r#"
+            UPDATE product_session_controls
+            SET status = 'abandoned', abandoned_reason = ?2
+            WHERE product_session_id = ?1 AND kind = 'followup'
+              AND status IN ('pending', 'accepted')
+            "#,
+            params![session_id.to_string(), reason],
+        )
+        .map_err(storage_error)?;
+    if changed != expected_count {
+        return Err(ProductStoreError::new(
+            ProductErrorCode::ProductControlRejected,
+            "unapplied follow-ups changed while closing a run",
+        ));
+    }
+    Ok(())
+}
+
+fn release_turn_claim_with_status(
+    transaction: &Transaction<'_>,
+    claim_id: &ProductTurnClaimId,
+    session_id: &ProductSessionId,
+    status: ProductSessionStatus,
+) -> Result<(), ProductStoreError> {
+    let deleted = transaction
+        .execute(
+            "DELETE FROM product_turn_claims WHERE claim_id = ?1 AND product_session_id = ?2",
+            params![claim_id.to_string(), session_id.to_string()],
+        )
+        .map_err(storage_error)?;
+    if deleted != 1 {
+        return Err(resume_conflict(
+            "product session turn claim is missing or no longer active",
+        ));
+    }
+    let updated = transaction
+        .execute(
+            r#"
+            UPDATE product_sessions
+            SET status = ?2, updated_at = ?3
+            WHERE product_session_id = ?1
+            "#,
+            params![
+                session_id.to_string(),
+                session_status_to_db(status),
+                now_rfc3339(),
+            ],
+        )
+        .map_err(storage_error)?;
+    if updated != 1 {
+        return Err(binding_corrupt("turn claim references a missing session"));
+    }
+    Ok(())
+}
+
+fn release_followup_claim_with_status(
+    transaction: &Transaction<'_>,
+    claim_id: &ProductTurnClaimId,
+    session_id: &ProductSessionId,
+    status: ProductSessionStatus,
+) -> Result<(), ProductStoreError> {
+    let deleted = transaction
+        .execute(
+            r#"
+            DELETE FROM product_turn_claims
+            WHERE claim_id = ?1 AND product_session_id = ?2
+            "#,
+            params![claim_id.to_string(), session_id.to_string()],
+        )
+        .map_err(storage_error)?;
+    if deleted != 1 {
+        return Err(ProductStoreError::new(
+            ProductErrorCode::ProductControlRejected,
+            "follow-up turn claim is missing or no longer active",
+        ));
+    }
+    let updated = transaction
+        .execute(
+            r#"
+            UPDATE product_sessions
+            SET status = ?2, updated_at = ?3
+            WHERE product_session_id = ?1
+            "#,
+            params![
+                session_id.to_string(),
+                session_status_to_db(status),
+                now_rfc3339(),
+            ],
+        )
+        .map_err(storage_error)?;
+    if updated != 1 {
+        return Err(binding_corrupt(
+            "follow-up turn claim references a missing session",
+        ));
+    }
+    Ok(())
+}
+
+fn transition_pending_controls(
+    database: &ProductDatabase,
+    session_id: &ProductSessionId,
+    kind: ProductControlKind,
+    target: ProductControlStatus,
+    reason: &str,
+) -> Result<Vec<ProductControl>, ProductStoreError> {
+    let mut connection = database.connect()?;
+    let transaction = immediate_transaction(&mut connection)?;
+    let controls: Vec<ProductControl> = {
+        let mut statement = transaction
+            .prepare(
+                r#"
+                SELECT control_id, product_session_id, kind, idempotency_key, content,
+                       status, run_id, seq, created_at, applied_at
+                FROM product_session_controls
+                WHERE product_session_id = ?1 AND kind = ?2 AND status = 'pending'
+                ORDER BY seq ASC
+                "#,
+            )
+            .map_err(storage_error)?;
+        statement
+            .query_map(
+                params![session_id.to_string(), control_kind_to_db(kind)],
+                row_to_control,
+            )
+            .map_err(storage_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(storage_error)?
+    };
+    if controls.is_empty() {
+        transaction.commit().map_err(storage_error)?;
+        return Ok(controls);
+    }
+    let changed = transaction
+        .execute(
+            r#"
+            UPDATE product_session_controls
+            SET status = ?3, abandoned_reason = ?4
+            WHERE product_session_id = ?1 AND kind = ?2 AND status = 'pending'
+            "#,
+            params![
+                session_id.to_string(),
+                control_kind_to_db(kind),
+                control_status_to_db(target),
+                reason,
+            ],
+        )
+        .map_err(storage_error)?;
+    if changed != controls.len() {
+        return Err(ProductStoreError::new(
+            ProductErrorCode::ProductControlRejected,
+            "pending controls changed while closing a run",
+        ));
+    }
+    transaction.commit().map_err(storage_error)?;
+    Ok(controls)
 }
 
 pub(super) fn remove_expired_migration_preparations_at(
@@ -918,6 +2774,9 @@ struct RawSession {
     runtime_session_id: Option<String>,
     latest_job_id: Option<String>,
     latest_run_id: Option<String>,
+    parent_session_id: Option<String>,
+    fork_point_run_id: Option<String>,
+    fork_point_seq: Option<i64>,
     created_at: String,
     updated_at: String,
 }
@@ -946,12 +2805,35 @@ impl RawSession {
                 ));
             }
         };
+        let (parent_session_id, fork_point_run_id, fork_point_seq) = match (
+            self.parent_session_id,
+            self.fork_point_run_id,
+            self.fork_point_seq,
+        ) {
+            (None, None, None) => (None, None, None),
+            (Some(parent), Some(run_id), Some(seq)) if seq >= 1 => (
+                Some(parse_product_id(&parent, "parent product session id")?),
+                Some(parse_runtime_id(&run_id, "fork point runtime run id")?),
+                Some(
+                    u64::try_from(seq)
+                        .map_err(|_| binding_corrupt("fork point event seq is invalid"))?,
+                ),
+            ),
+            _ => {
+                return Err(binding_corrupt(
+                    "product session fork provenance is incomplete",
+                ));
+            }
+        };
         Ok(ProductSession {
             id: parse_product_id(&self.id, "product session id")?,
             workspace_id: parse_product_id(&self.workspace_id, "workspace id")?,
             title: self.title,
             status: session_status_from_db(&self.status)?,
             runtime_binding,
+            parent_session_id,
+            fork_point_run_id,
+            fork_point_seq,
             created_at: self.created_at,
             updated_at: self.updated_at,
         })
@@ -967,6 +2849,121 @@ struct RawBinding {
     runtime_run_id: String,
     resumed_from_run_id: Option<String>,
     bound_at: String,
+}
+
+#[derive(Debug)]
+struct RawFork {
+    id: String,
+    parent_session_id: String,
+    child_session_id: String,
+    parent_workspace_id: String,
+    parent_title: String,
+    source_runtime_session_id: String,
+    source_runtime_job_id: String,
+    source_runtime_run_id: String,
+    fork_at_event_seq: i64,
+    idempotency_key: String,
+    request_digest: String,
+    created_at: String,
+}
+
+#[derive(Debug)]
+struct StoredFork {
+    fork: ProductFork,
+    request_digest: String,
+}
+
+impl RawFork {
+    fn into_stored(self) -> Result<StoredFork, ProductStoreError> {
+        if self.fork_at_event_seq < 1 {
+            return Err(binding_corrupt("fork terminal event sequence is invalid"));
+        }
+        let request_digest = self.request_digest;
+        Ok(StoredFork {
+            fork: ProductFork {
+                id: parse_product_id(&self.id, "fork id")?,
+                parent_product_session_id: parse_product_id(
+                    &self.parent_session_id,
+                    "fork parent product session id",
+                )?,
+                child_product_session_id: parse_product_id(
+                    &self.child_session_id,
+                    "fork child product session id",
+                )?,
+                parent_workspace_id: parse_product_id(
+                    &self.parent_workspace_id,
+                    "fork parent workspace id",
+                )?,
+                parent_title: self.parent_title,
+                source_runtime_session_id: parse_runtime_id(
+                    &self.source_runtime_session_id,
+                    "fork source runtime session id",
+                )?,
+                source_runtime_job_id: parse_runtime_id(
+                    &self.source_runtime_job_id,
+                    "fork source runtime job id",
+                )?,
+                source_runtime_run_id: parse_runtime_id(
+                    &self.source_runtime_run_id,
+                    "fork source runtime run id",
+                )?,
+                fork_at_event_seq: u64::try_from(self.fork_at_event_seq)
+                    .map_err(|_| binding_corrupt("fork terminal event sequence is invalid"))?,
+                idempotency_key: self.idempotency_key,
+                created_at: self.created_at,
+            },
+            request_digest,
+        })
+    }
+}
+
+#[derive(Debug)]
+struct RawForkInheritedRun {
+    ordinal: i64,
+    source_product_session_id: String,
+    runtime_session_id: String,
+    runtime_job_id: String,
+    runtime_run_id: String,
+    through_event_seq: Option<i64>,
+}
+
+impl RawForkInheritedRun {
+    fn into_product(self) -> Result<ProductForkInheritedRun, ProductStoreError> {
+        if self.ordinal < 1 {
+            return Err(binding_corrupt("fork inherited run ordinal is invalid"));
+        }
+        let through_event_seq = match self.through_event_seq {
+            None => None,
+            Some(seq) if seq >= 1 => Some(
+                u64::try_from(seq)
+                    .map_err(|_| binding_corrupt("fork inherited event sequence is invalid"))?,
+            ),
+            Some(_) => {
+                return Err(binding_corrupt("fork inherited event sequence is invalid"));
+            }
+        };
+        Ok(ProductForkInheritedRun {
+            ordinal: u64::try_from(self.ordinal)
+                .map_err(|_| binding_corrupt("fork inherited run ordinal is invalid"))?,
+            source_product_session_id: parse_product_id(
+                &self.source_product_session_id,
+                "fork inherited source product session id",
+            )?,
+            runtime_session_id: parse_runtime_id(
+                &self.runtime_session_id,
+                "fork inherited runtime session id",
+            )?,
+            runtime_job_id: parse_runtime_id(
+                &self.runtime_job_id,
+                "fork inherited runtime job id",
+            )?,
+            runtime_run_id: parse_runtime_id(
+                &self.runtime_run_id,
+                "fork inherited runtime run id",
+            )?,
+            through_event_seq,
+        })
+    }
 }
 
 impl RawBinding {
@@ -1000,6 +2997,114 @@ struct RawProviderProfile {
     default_model: Option<String>,
     created_at: String,
     updated_at: String,
+}
+
+#[derive(Debug)]
+struct RawSessionModelConfig {
+    product_session_id: String,
+    profile_id: Option<String>,
+    model: String,
+    reasoning: String,
+    max_steps: i64,
+    revision: i64,
+    updated_at: String,
+}
+
+impl RawSessionModelConfig {
+    fn into_product(self) -> Result<ProductSessionModelConfig, ProductStoreError> {
+        if self.max_steps < 1 || self.max_steps > i64::from(MAX_PRODUCT_MAX_STEPS) {
+            return Err(binding_corrupt("persisted session max_steps is invalid"));
+        }
+        if self.revision < 1 {
+            return Err(binding_corrupt(
+                "persisted session model revision is invalid",
+            ));
+        }
+        Ok(ProductSessionModelConfig {
+            product_session_id: parse_product_id(&self.product_session_id, "product session id")?,
+            profile_id: self
+                .profile_id
+                .as_deref()
+                .map(|value| parse_product_id(value, "provider profile id"))
+                .transpose()?,
+            model: self.model,
+            reasoning: ProductReasoningPreference::from_str(&self.reasoning)?,
+            max_steps: u32::try_from(self.max_steps)
+                .map_err(|_| binding_corrupt("persisted session max_steps is invalid"))?,
+            revision: u64::try_from(self.revision)
+                .map_err(|_| binding_corrupt("persisted session model revision is invalid"))?,
+            updated_at: self.updated_at,
+        })
+    }
+}
+
+#[derive(Debug)]
+struct RawSessionRunModel {
+    product_session_id: String,
+    ordinal: i64,
+    runtime_run_id: String,
+    profile_id: Option<String>,
+    model: String,
+    reasoning: String,
+    max_steps: i64,
+    context_window: Option<i64>,
+    pricing_source: Option<String>,
+    pricing_version: Option<String>,
+    pricing_currency: Option<String>,
+    pricing_availability: Option<String>,
+    per_mtok_prompt: Option<f64>,
+    per_mtok_completion: Option<f64>,
+    per_mtok_cache_read: Option<f64>,
+}
+
+impl RawSessionRunModel {
+    fn into_product(self) -> Result<ProductSessionRunModelView, ProductStoreError> {
+        if self.ordinal < 1
+            || self.max_steps < 1
+            || self.max_steps > i64::from(MAX_PRODUCT_MAX_STEPS)
+        {
+            return Err(binding_corrupt("persisted run model snapshot is invalid"));
+        }
+        let pricing_availability = self
+            .pricing_availability
+            .as_deref()
+            .map(|value| {
+                ProductPricingAvailability::parse(value)
+                    .ok_or_else(|| binding_corrupt("persisted run pricing availability is invalid"))
+            })
+            .transpose()?;
+        Ok(ProductSessionRunModelView {
+            product_session_id: parse_product_id(&self.product_session_id, "product session id")?,
+            ordinal: u64::try_from(self.ordinal)
+                .map_err(|_| binding_corrupt("run model ordinal is invalid"))?,
+            runtime_run_id: parse_runtime_id(&self.runtime_run_id, "runtime run id")?,
+            profile_id: self
+                .profile_id
+                .as_deref()
+                .map(|value| parse_product_id(value, "provider profile id"))
+                .transpose()?,
+            model: self.model,
+            reasoning: ProductReasoningPreference::from_str(&self.reasoning)?,
+            max_steps: u32::try_from(self.max_steps)
+                .map_err(|_| binding_corrupt("run model max_steps is invalid"))?,
+            context_window: self
+                .context_window
+                .map(|value| {
+                    u64::try_from(value)
+                        .ok()
+                        .filter(|value| *value > 0)
+                        .ok_or_else(|| binding_corrupt("persisted context window is invalid"))
+                })
+                .transpose()?,
+            pricing_source: self.pricing_source,
+            pricing_version: self.pricing_version,
+            pricing_currency: self.pricing_currency,
+            pricing_availability,
+            per_mtok_prompt: self.per_mtok_prompt,
+            per_mtok_completion: self.per_mtok_completion,
+            per_mtok_cache_read: self.per_mtok_cache_read,
+        })
+    }
 }
 
 impl RawProviderProfile {
@@ -1040,8 +3145,11 @@ fn raw_session_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawSession>
         runtime_session_id: row.get(5)?,
         latest_job_id: row.get(6)?,
         latest_run_id: row.get(7)?,
-        created_at: row.get(8)?,
-        updated_at: row.get(9)?,
+        parent_session_id: row.get(8)?,
+        fork_point_run_id: row.get(9)?,
+        fork_point_seq: row.get(10)?,
+        created_at: row.get(11)?,
+        updated_at: row.get(12)?,
     })
 }
 
@@ -1057,6 +3165,36 @@ fn raw_binding_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawBinding>
     })
 }
 
+fn raw_fork_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawFork> {
+    Ok(RawFork {
+        id: row.get(0)?,
+        parent_session_id: row.get(1)?,
+        child_session_id: row.get(2)?,
+        parent_workspace_id: row.get(3)?,
+        parent_title: row.get(4)?,
+        source_runtime_session_id: row.get(5)?,
+        source_runtime_job_id: row.get(6)?,
+        source_runtime_run_id: row.get(7)?,
+        fork_at_event_seq: row.get(8)?,
+        idempotency_key: row.get(9)?,
+        request_digest: row.get(10)?,
+        created_at: row.get(11)?,
+    })
+}
+
+fn raw_fork_inherited_run_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<RawForkInheritedRun> {
+    Ok(RawForkInheritedRun {
+        ordinal: row.get(0)?,
+        source_product_session_id: row.get(1)?,
+        runtime_session_id: row.get(2)?,
+        runtime_job_id: row.get(3)?,
+        runtime_run_id: row.get(4)?,
+        through_event_seq: row.get(5)?,
+    })
+}
+
 fn raw_provider_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawProviderProfile> {
     Ok(RawProviderProfile {
         id: row.get(0)?,
@@ -1067,6 +3205,20 @@ fn raw_provider_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawProvide
         default_model: row.get(5)?,
         created_at: row.get(6)?,
         updated_at: row.get(7)?,
+    })
+}
+
+fn raw_session_model_config_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<RawSessionModelConfig> {
+    Ok(RawSessionModelConfig {
+        product_session_id: row.get(0)?,
+        profile_id: row.get(1)?,
+        model: row.get(2)?,
+        reasoning: row.get(3)?,
+        max_steps: row.get(4)?,
+        revision: row.get(5)?,
+        updated_at: row.get(6)?,
     })
 }
 
@@ -1136,7 +3288,9 @@ fn get_session(
         .query_row(
             r#"
             SELECT product_session_id, workspace_id, title, status, latest_ordinal,
-                   runtime_session_id, latest_job_id, latest_run_id, created_at, updated_at
+                   runtime_session_id, latest_job_id, latest_run_id,
+                   parent_session_id, fork_point_run_id, fork_point_seq,
+                   created_at, updated_at
             FROM product_sessions WHERE product_session_id = ?1
             "#,
             params![session_id.to_string()],
@@ -1146,6 +3300,332 @@ fn get_session(
         .map_err(storage_error)?
         .ok_or_else(|| not_found("product session was not found"))?
         .into_product()
+}
+
+fn default_session_model_values(
+    connection: &Connection,
+) -> Result<(Option<String>, String, u32), ProductStoreError> {
+    let row = connection
+        .query_row(
+            "SELECT provider_profile_id, provider_model, provider_max_steps FROM product_preferences WHERE singleton = 1",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<i64>>(2)?,
+                ))
+            },
+        )
+        .map_err(storage_error)?;
+    let max_steps = row
+        .2
+        .and_then(|value| u32::try_from(value).ok())
+        .filter(|value| (1..=MAX_PRODUCT_MAX_STEPS).contains(value))
+        .unwrap_or(DEFAULT_PRODUCT_MAX_STEPS);
+    Ok((
+        row.0,
+        row.1
+            .filter(|model| !model.trim().is_empty())
+            .unwrap_or_else(|| "fake".to_string()),
+        max_steps,
+    ))
+}
+
+fn ensure_session_model_config(
+    connection: &Connection,
+    session_id: &ProductSessionId,
+) -> Result<(), ProductStoreError> {
+    let exists: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM product_session_model_configs WHERE product_session_id = ?1)",
+            params![session_id.to_string()],
+            |row| row.get(0),
+        )
+        .map_err(storage_error)?;
+    if exists {
+        return Ok(());
+    }
+    let (profile_id, model, max_steps) = default_session_model_values(connection)?;
+    let updated_at = now_rfc3339();
+    insert_session_model_config(
+        connection,
+        SessionModelConfigWrite {
+            session_id,
+            profile_id: profile_id.as_deref(),
+            model: &model,
+            reasoning: ProductReasoningPreference::Default,
+            max_steps,
+            revision: 1,
+            updated_at: &updated_at,
+        },
+    )
+}
+
+struct SessionModelConfigWrite<'a> {
+    session_id: &'a ProductSessionId,
+    profile_id: Option<&'a str>,
+    model: &'a str,
+    reasoning: ProductReasoningPreference,
+    max_steps: u32,
+    revision: u64,
+    updated_at: &'a str,
+}
+
+fn insert_session_model_config(
+    connection: &Connection,
+    write: SessionModelConfigWrite<'_>,
+) -> Result<(), ProductStoreError> {
+    if !(1..=MAX_PRODUCT_MAX_STEPS).contains(&write.max_steps) {
+        return Err(binding_corrupt("persisted session max_steps is invalid"));
+    }
+    connection
+        .execute(
+            r#"
+            INSERT INTO product_session_model_configs(
+                product_session_id, profile_id, model, reasoning, max_steps,
+                revision, updated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            "#,
+            params![
+                write.session_id.to_string(),
+                write.profile_id,
+                write.model,
+                write.reasoning.as_str(),
+                i64::from(write.max_steps),
+                i64::try_from(write.revision)
+                    .map_err(|_| binding_corrupt("session model revision is invalid"))?,
+                write.updated_at,
+            ],
+        )
+        .map_err(storage_error)?;
+    Ok(())
+}
+
+fn insert_or_update_session_model_config(
+    connection: &Connection,
+    write: SessionModelConfigWrite<'_>,
+) -> Result<(), ProductStoreError> {
+    connection
+        .execute(
+            r#"
+            INSERT INTO product_session_model_configs(
+                product_session_id, profile_id, model, reasoning, max_steps,
+                revision, updated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            ON CONFLICT(product_session_id) DO UPDATE SET
+                profile_id = excluded.profile_id,
+                model = excluded.model,
+                reasoning = excluded.reasoning,
+                max_steps = excluded.max_steps,
+                revision = excluded.revision,
+                updated_at = excluded.updated_at
+            "#,
+            params![
+                write.session_id.to_string(),
+                write.profile_id,
+                write.model,
+                write.reasoning.as_str(),
+                i64::from(write.max_steps),
+                i64::try_from(write.revision)
+                    .map_err(|_| binding_corrupt("session model revision is invalid"))?,
+                write.updated_at,
+            ],
+        )
+        .map_err(storage_error)?;
+    Ok(())
+}
+
+fn get_session_model_config_in_transaction(
+    connection: &Connection,
+    session_id: &ProductSessionId,
+) -> Result<ProductSessionModelConfig, ProductStoreError> {
+    connection
+        .query_row(
+            r#"
+            SELECT product_session_id, profile_id, model, reasoning, max_steps,
+                   revision, updated_at
+            FROM product_session_model_configs
+            WHERE product_session_id = ?1
+            "#,
+            params![session_id.to_string()],
+            raw_session_model_config_from_row,
+        )
+        .optional()
+        .map_err(storage_error)?
+        .ok_or_else(|| binding_corrupt("product session model config is missing"))?
+        .into_product()
+}
+
+fn find_fork_by_parent_and_key(
+    connection: &Connection,
+    parent_session_id: &ProductSessionId,
+    idempotency_key: &str,
+) -> Result<Option<StoredFork>, ProductStoreError> {
+    connection
+        .query_row(
+            r#"
+            SELECT fork_id, parent_product_session_id, child_product_session_id,
+                   parent_workspace_id, parent_title, source_runtime_session_id,
+                   source_runtime_job_id, source_runtime_run_id, fork_at_event_seq,
+                   idempotency_key, request_digest, created_at
+            FROM product_session_forks
+            WHERE parent_product_session_id = ?1 AND idempotency_key = ?2
+            "#,
+            params![parent_session_id.to_string(), idempotency_key],
+            raw_fork_from_row,
+        )
+        .optional()
+        .map_err(storage_error)?
+        .map(RawFork::into_stored)
+        .transpose()
+}
+
+fn replay_fork_if_exists(
+    connection: &Connection,
+    parent_session_id: &ProductSessionId,
+    idempotency_key: &str,
+    request_digest: &str,
+) -> Result<Option<(ProductSession, ProductFork)>, ProductStoreError> {
+    let Some(existing) =
+        find_fork_by_parent_and_key(connection, parent_session_id, idempotency_key)?
+    else {
+        return Ok(None);
+    };
+    if existing.request_digest != request_digest {
+        return Err(fork_conflict(
+            "idempotency_key already exists for a different fork request",
+        ));
+    }
+    let child = get_session(connection, &existing.fork.child_product_session_id).map_err(|error| {
+        if error.code == ProductErrorCode::ProductNotFound {
+            fork_conflict(
+                "the idempotent fork child was deleted and cannot be recreated with the same key",
+            )
+        } else {
+            error
+        }
+    })?;
+    Ok(Some((child, existing.fork)))
+}
+
+fn find_fork_by_child(
+    connection: &Connection,
+    child_session_id: &ProductSessionId,
+) -> Result<Option<StoredFork>, ProductStoreError> {
+    connection
+        .query_row(
+            r#"
+            SELECT fork_id, parent_product_session_id, child_product_session_id,
+                   parent_workspace_id, parent_title, source_runtime_session_id,
+                   source_runtime_job_id, source_runtime_run_id, fork_at_event_seq,
+                   idempotency_key, request_digest, created_at
+            FROM product_session_forks
+            WHERE child_product_session_id = ?1
+            "#,
+            params![child_session_id.to_string()],
+            raw_fork_from_row,
+        )
+        .optional()
+        .map_err(storage_error)?
+        .map(RawFork::into_stored)
+        .transpose()
+}
+
+fn list_fork_inherited_runs(
+    connection: &Connection,
+    fork_id: &ProductForkId,
+) -> Result<Vec<ProductForkInheritedRun>, ProductStoreError> {
+    let mut statement = connection
+        .prepare(
+            r#"
+            SELECT ordinal, source_product_session_id, runtime_session_id,
+                   runtime_job_id, runtime_run_id, through_event_seq
+            FROM product_fork_inherited_runs
+            WHERE fork_id = ?1
+            ORDER BY ordinal ASC
+            LIMIT ?2
+            "#,
+        )
+        .map_err(storage_error)?;
+    let rows = statement
+        .query_map(
+            params![
+                fork_id.to_string(),
+                i64::try_from(MAX_PRODUCT_FORK_INHERITED_RUNS + 1).map_err(storage_error)?
+            ],
+            raw_fork_inherited_run_from_row,
+        )
+        .map_err(storage_error)?;
+    let mut inherited = Vec::new();
+    for row in rows {
+        inherited.push(row.map_err(storage_error)?.into_product()?);
+    }
+    if inherited.is_empty() || inherited.len() > MAX_PRODUCT_FORK_INHERITED_RUNS {
+        return Err(binding_corrupt(
+            "fork inherited runtime history is absent or exceeds its limit",
+        ));
+    }
+    for (index, inherited_run) in inherited.iter().enumerate() {
+        let expected = u64::try_from(index + 1).map_err(storage_error)?;
+        if inherited_run.ordinal != expected {
+            return Err(binding_corrupt(
+                "fork inherited runtime history is not contiguous",
+            ));
+        }
+    }
+    Ok(inherited)
+}
+
+fn get_fork_context(
+    connection: &Connection,
+    session: &ProductSession,
+) -> Result<Option<ProductForkContext>, ProductStoreError> {
+    let stored = find_fork_by_child(connection, &session.id)?;
+    let Some(parent_session_id) = session.parent_session_id.as_ref() else {
+        if stored.is_some() {
+            return Err(binding_corrupt(
+                "product session has fork provenance without a parent session pointer",
+            ));
+        }
+        return Ok(None);
+    };
+    let (Some(fork_point_run_id), Some(fork_point_seq), Some(stored)) =
+        (session.fork_point_run_id, session.fork_point_seq, stored)
+    else {
+        return Err(binding_corrupt(
+            "product session fork provenance is incomplete",
+        ));
+    };
+    let fork = stored.fork;
+    if fork.parent_product_session_id != *parent_session_id
+        || fork.child_product_session_id != session.id
+        || fork.parent_workspace_id != session.workspace_id
+        || fork.source_runtime_run_id != fork_point_run_id
+        || fork.fork_at_event_seq != fork_point_seq
+    {
+        return Err(binding_corrupt(
+            "product session fork provenance does not match its immutable fork record",
+        ));
+    }
+    let inherited_runs = list_fork_inherited_runs(connection, &fork.id)?;
+    let Some(boundary) = inherited_runs.last() else {
+        return Err(binding_corrupt("fork inherited runtime history is absent"));
+    };
+    if boundary.source_product_session_id != fork.parent_product_session_id
+        || boundary.runtime_session_id != fork.source_runtime_session_id
+        || boundary.runtime_job_id != fork.source_runtime_job_id
+        || boundary.runtime_run_id != fork.source_runtime_run_id
+        || boundary.through_event_seq != Some(fork.fork_at_event_seq)
+    {
+        return Err(binding_corrupt(
+            "fork inherited runtime history does not end at its stored boundary",
+        ));
+    }
+    Ok(Some(ProductForkContext {
+        fork,
+        inherited_runs,
+    }))
 }
 
 fn list_and_validate_bindings(
@@ -1272,6 +3752,104 @@ fn binding_matches_commit(
         && existing.runtime_job_id == requested.runtime_job_id
         && existing.runtime_run_id == requested.runtime_run_id
         && existing.resumed_from_run_id == requested.resumed_from_run_id
+}
+
+fn insert_session_run_model_snapshot(
+    transaction: &Transaction<'_>,
+    session_id: &ProductSessionId,
+    ordinal: u64,
+    runtime_run_id: &RunId,
+    config: &ProductSessionModelConfig,
+) -> Result<(), ProductStoreError> {
+    if config.product_session_id != *session_id {
+        return Err(resume_conflict(
+            "run model snapshot does not belong to the claimed product session",
+        ));
+    }
+    let pricing = crate::pricing::PricingSnapshot::bundled_for_model(&config.model);
+    let inserted = transaction
+        .execute(
+            r#"
+            INSERT OR IGNORE INTO product_session_run_models(
+                product_session_id, ordinal, runtime_run_id, profile_id,
+                model, reasoning, max_steps, started_at,
+                context_window,
+                pricing_source, pricing_version, pricing_currency,
+                pricing_availability, per_mtok_prompt, per_mtok_completion,
+                per_mtok_cache_read
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+            "#,
+            params![
+                session_id.to_string(),
+                i64::try_from(ordinal).map_err(storage_error)?,
+                runtime_run_id.to_string(),
+                config.profile_id.as_ref().map(ToString::to_string),
+                config.model,
+                config.reasoning.as_str(),
+                i64::from(config.max_steps),
+                now_rfc3339(),
+                crate::pricing::bundled_context_window(&config.model)
+                    .and_then(|value| i64::try_from(value).ok()),
+                pricing.source,
+                pricing.version,
+                pricing.currency,
+                pricing.availability.as_str(),
+                pricing.per_mtok_prompt,
+                pricing.per_mtok_completion,
+                pricing.per_mtok_cache_read,
+            ],
+        )
+        .map_err(storage_error)?;
+    if inserted == 0 {
+        let existing = transaction
+            .query_row(
+                r#"
+                SELECT product_session_id, ordinal, runtime_run_id, profile_id,
+                       model, reasoning, max_steps,
+                       context_window,
+                       pricing_source, pricing_version, pricing_currency,
+                       pricing_availability, per_mtok_prompt, per_mtok_completion,
+                       per_mtok_cache_read
+                FROM product_session_run_models
+                WHERE runtime_run_id = ?1
+                "#,
+                params![runtime_run_id.to_string()],
+                |row| {
+                    Ok(RawSessionRunModel {
+                        product_session_id: row.get(0)?,
+                        ordinal: row.get(1)?,
+                        runtime_run_id: row.get(2)?,
+                        profile_id: row.get(3)?,
+                        model: row.get(4)?,
+                        reasoning: row.get(5)?,
+                        max_steps: row.get(6)?,
+                        context_window: row.get(7)?,
+                        pricing_source: row.get(8)?,
+                        pricing_version: row.get(9)?,
+                        pricing_currency: row.get(10)?,
+                        pricing_availability: row.get(11)?,
+                        per_mtok_prompt: row.get(12)?,
+                        per_mtok_completion: row.get(13)?,
+                        per_mtok_cache_read: row.get(14)?,
+                    })
+                },
+            )
+            .map_err(storage_error)?
+            .into_product()?;
+        let same_identity = existing.product_session_id == *session_id
+            && existing.ordinal == ordinal
+            && existing.runtime_run_id == *runtime_run_id
+            && existing.profile_id == config.profile_id
+            && existing.model == config.model
+            && existing.reasoning == config.reasoning
+            && existing.max_steps == config.max_steps;
+        if !same_identity {
+            return Err(resume_conflict(
+                "runtime run already has a different model snapshot",
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn next_binding_ordinal(session: &ProductSession) -> Result<u64, ProductStoreError> {
@@ -3257,6 +5835,83 @@ fn session_status_from_db(value: &str) -> Result<ProductSessionStatus, ProductSt
     }
 }
 
+fn control_kind_to_db(kind: ProductControlKind) -> &'static str {
+    match kind {
+        ProductControlKind::Steer => "steer",
+        ProductControlKind::Followup => "followup",
+    }
+}
+
+fn control_kind_from_db(value: &str) -> Result<ProductControlKind, ProductStoreError> {
+    match value {
+        "steer" => Ok(ProductControlKind::Steer),
+        "followup" => Ok(ProductControlKind::Followup),
+        _ => Err(storage_error("persisted product control kind is invalid")),
+    }
+}
+
+fn control_status_to_db(status: ProductControlStatus) -> &'static str {
+    match status {
+        ProductControlStatus::Pending => "pending",
+        ProductControlStatus::Accepted => "accepted",
+        ProductControlStatus::Applied => "applied",
+        ProductControlStatus::Dropped => "dropped",
+        ProductControlStatus::Abandoned => "abandoned",
+        ProductControlStatus::Revoked => "revoked",
+    }
+}
+
+fn control_status_from_db(value: &str) -> Result<ProductControlStatus, ProductStoreError> {
+    match value {
+        "pending" => Ok(ProductControlStatus::Pending),
+        "accepted" => Ok(ProductControlStatus::Accepted),
+        "applied" => Ok(ProductControlStatus::Applied),
+        "dropped" => Ok(ProductControlStatus::Dropped),
+        "abandoned" => Ok(ProductControlStatus::Abandoned),
+        "revoked" => Ok(ProductControlStatus::Revoked),
+        _ => Err(storage_error("persisted product control status is invalid")),
+    }
+}
+
+fn row_to_control(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProductControl> {
+    let control_id: String = row.get(0)?;
+    let product_session_id: String = row.get(1)?;
+    let kind: String = row.get(2)?;
+    let idempotency_key: Option<String> = row.get(3)?;
+    let content: String = row.get(4)?;
+    let status: String = row.get(5)?;
+    let run_id: Option<String> = row.get(6)?;
+    let seq: i64 = row.get(7)?;
+    let created_at: String = row.get(8)?;
+    let applied_at: Option<String> = row.get(9)?;
+
+    // Map storage failures into rusqlite::Error so query_row/query_map work.
+    let mapped = (|| {
+        Ok::<ProductControl, ProductStoreError>(ProductControl {
+            id: parse_product_id(&control_id, "control id")?,
+            product_session_id: parse_product_id(&product_session_id, "product session id")?,
+            kind: control_kind_from_db(&kind)?,
+            idempotency_key,
+            content,
+            status: control_status_from_db(&status)?,
+            run_id: run_id
+                .as_deref()
+                .map(|value| parse_runtime_id(value, "control run id"))
+                .transpose()?,
+            seq,
+            created_at,
+            applied_at,
+        })
+    })();
+    mapped.map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(
+            0,
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::other(error.message)),
+        )
+    })
+}
+
 fn provider_type_to_db(provider_type: ProductProviderType) -> &'static str {
     match provider_type {
         ProductProviderType::Openai => "openai",
@@ -3346,4 +6001,54 @@ fn resume_conflict(message: impl Into<String>) -> ProductStoreError {
 
 fn binding_corrupt(message: impl Into<String>) -> ProductStoreError {
     ProductStoreError::new(ProductErrorCode::ProductBindingCorrupt, message)
+}
+
+fn fork_conflict(message: impl Into<String>) -> ProductStoreError {
+    ProductStoreError::new(ProductErrorCode::ProductForkConflict, message)
+}
+
+fn fork_source_invalid(message: impl Into<String>) -> ProductStoreError {
+    ProductStoreError::new(ProductErrorCode::ProductForkSourceInvalid, message)
+}
+
+fn validate_fork_idempotency_key(value: &str) -> Result<String, ProductStoreError> {
+    if value.is_empty() || value.len() > 128 {
+        return Err(ProductStoreError::new(
+            ProductErrorCode::ProductInvalidInput,
+            "fork idempotency_key must be 1..128 characters",
+        ));
+    }
+    if value.chars().any(char::is_control) {
+        return Err(ProductStoreError::new(
+            ProductErrorCode::ProductInvalidInput,
+            "fork idempotency_key must not contain control characters",
+        ));
+    }
+    Ok(value.to_string())
+}
+
+fn fork_request_digest(request: &CreateProductForkRequest) -> String {
+    // Length-delimited fields avoid conflating distinct title/run combinations
+    // while remaining deterministic across retried JSON requests.
+    let title = request.title.as_deref().unwrap_or("");
+    rove_runtime::context::stable_hash(&format!(
+        "run:{}:{}:title:{}:{}",
+        request.fork_at_run_id,
+        request.fork_at_run_id.to_string().len(),
+        title.len(),
+        title
+    ))
+}
+
+fn default_fork_title(parent_title: &str) -> String {
+    const PREFIX: &str = "Fork of ";
+    let available = MAX_PRODUCT_TEXT_BYTES.saturating_sub(PREFIX.len());
+    if parent_title.len() <= available {
+        return format!("{PREFIX}{parent_title}");
+    }
+    let mut end = available;
+    while end > 0 && !parent_title.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{PREFIX}{}", &parent_title[..end])
 }

@@ -88,7 +88,9 @@ describe("resolveInspectorPhase", () => {
     expect(html).toContain("run-01JEXACTIDENTITY000000000001");
     expect(html).toContain("artifact:opaque-7");
     expect(html).toContain("trace:42");
-    expect(html).toContain("Cost requires a trusted server pricing snapshot");
+    expect(html).toContain("Cost uses the server pricing snapshot frozen per run");
+    expect(html).toContain("Evidence export");
+    expect(html).toContain("Offline HTML");
     expect(html).not.toContain("Download artifact");
     expect(html).not.toContain("Open artifact");
   });

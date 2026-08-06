@@ -25,9 +25,12 @@ export const MAX_PRODUCT_TEXT_BYTES = 512;
 export const MAX_PRODUCT_API_BASE_BYTES = 2_048;
 export const MAX_PRODUCT_PATH_BYTES = 32_768;
 export const MAX_MIGRATION_IDEMPOTENCY_KEY_BYTES = 128;
+export const MAX_PRODUCT_CONTROL_CONTENT_BYTES = 32_768;
+export const MAX_PRODUCT_CONTROL_IDEMPOTENCY_KEY_BYTES = 128;
 
 export type ProductWorkspaceId = string;
 export type ProductSessionId = string;
+export type ProductForkId = string;
 export type ProductProviderProfileId = string;
 export type ProductMigrationReceiptId = string;
 
@@ -57,6 +60,17 @@ export const PRODUCT_APPROVAL_PREFERENCES = ["ask", "auto", "never"] as const;
 export type ProductApprovalPreference =
   (typeof PRODUCT_APPROVAL_PREFERENCES)[number];
 
+export const PRODUCT_REASONING_PREFERENCES = [
+  "default",
+  "low",
+  "medium",
+  "high",
+] as const;
+export type ProductReasoningPreference =
+  (typeof PRODUCT_REASONING_PREFERENCES)[number];
+
+export const MAX_PRODUCT_MAX_STEPS = 256;
+
 export const PRODUCT_WORKSPACE_KINDS = ["folder", "repo"] as const;
 export type ProductWorkspaceKind = (typeof PRODUCT_WORKSPACE_KINDS)[number];
 
@@ -84,6 +98,9 @@ export interface ProductSession {
   title: string;
   status: ProductSessionStatus;
   runtime_binding?: ProductRuntimeBinding;
+  parent_session_id?: ProductSessionId;
+  fork_point_run_id?: string;
+  fork_point_seq?: number;
   created_at: string;
   updated_at: string;
 }
@@ -96,6 +113,20 @@ export interface ProductSessionRunBinding {
   runtime_run_id: string;
   resumed_from_run_id?: string;
   bound_at: string;
+}
+
+export interface ProductFork {
+  id: ProductForkId;
+  parent_product_session_id: ProductSessionId;
+  child_product_session_id: ProductSessionId;
+  parent_workspace_id: ProductWorkspaceId;
+  parent_title: string;
+  source_runtime_session_id: string;
+  source_runtime_job_id: string;
+  source_runtime_run_id: string;
+  fork_at_event_seq: number;
+  idempotency_key: string;
+  created_at: string;
 }
 
 export interface ProductProviderProfile {
@@ -114,6 +145,249 @@ export interface ProductProviderSelection {
   model: string;
   approval: ProductApprovalPreference;
   max_steps: number;
+}
+
+export interface ProductSessionModelConfig {
+  product_session_id: ProductSessionId;
+  profile_id?: ProductProviderProfileId;
+  model: string;
+  reasoning: ProductReasoningPreference;
+  max_steps: number;
+  revision: number;
+  updated_at: string;
+}
+
+export interface UpdateProductSessionModelConfigRequest {
+  profile_id?: ProductProviderProfileId;
+  model: string;
+  reasoning: ProductReasoningPreference;
+  max_steps: number;
+  expected_revision?: number;
+}
+
+export interface ProductModelDescriptor {
+  id: string;
+  context_window?: number;
+  supports_reasoning: boolean;
+  supported_reasoning: ProductReasoningPreference[];
+  reasoning_unavailable_reason?: string;
+}
+
+export interface ProductProviderModelsResponse {
+  profile_id: ProductProviderProfileId;
+  default_model?: string;
+  models: ProductModelDescriptor[];
+}
+
+export interface ProductSessionRunModelView {
+  product_session_id: ProductSessionId;
+  ordinal: number;
+  runtime_run_id: string;
+  profile_id?: ProductProviderProfileId;
+  model: string;
+  reasoning: ProductReasoningPreference;
+  max_steps: number;
+  context_window?: number;
+  pricing_source?: string;
+  pricing_version?: string;
+  pricing_currency?: string;
+  pricing_availability?: ProductPricingAvailability;
+  per_mtok_prompt?: number;
+  per_mtok_completion?: number;
+  per_mtok_cache_read?: number;
+}
+
+export interface ProductSessionRunModelsResponse {
+  runs: ProductSessionRunModelView[];
+}
+
+export const PRODUCT_PRICING_AVAILABILITIES = [
+  "priced",
+  "local_zero",
+  "unpriced",
+] as const;
+export type ProductPricingAvailability =
+  (typeof PRODUCT_PRICING_AVAILABILITIES)[number];
+
+export interface ProductUsage {
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  cached_tokens: number;
+}
+
+export interface ProductCostBreakdown {
+  currency: string;
+  availability: ProductPricingAvailability;
+  total_usd?: number;
+  prompt_usd?: number;
+  completion_usd?: number;
+  cache_read_usd?: number;
+  pricing_source?: string;
+  pricing_version?: string;
+}
+
+export interface ProductContextOccupancy {
+  token_estimate: number;
+  context_window?: number;
+  estimate_kind: string;
+  included_history_messages: number;
+  dropped_history_messages: number;
+  compaction_mode?: string;
+  compaction_degraded: boolean;
+  compaction_auto_triggered: boolean;
+  compacted_history_messages: number;
+  compaction_source_messages: number;
+  compaction_prompt_version?: string;
+  prompt_hash?: string;
+}
+
+export interface ProductRunUsage {
+  runtime_run_id: string;
+  ordinal: number;
+  model: string;
+  usage: ProductUsage;
+  cost?: ProductCostBreakdown;
+  context?: ProductContextOccupancy;
+  steps: number;
+  tool_calls: number;
+}
+
+export interface ProductSessionUsageResponse {
+  product_session_id: ProductSessionId;
+  totals: ProductUsage;
+  totals_cost?: ProductCostBreakdown;
+  latest_context?: ProductContextOccupancy;
+  runs: ProductRunUsage[];
+  partial_reasons: string[];
+}
+
+
+export const PRODUCT_FILE_KINDS = ["file", "directory"] as const;
+export type ProductFileKind = (typeof PRODUCT_FILE_KINDS)[number];
+
+export interface ProductFileEntry {
+  path: string;
+  kind: ProductFileKind;
+  size: number;
+  modified?: string;
+}
+
+export interface ProductFilesResponse {
+  workspace_id: string;
+  prefix: string;
+  entries: ProductFileEntry[];
+  next_cursor?: string;
+  truncated: boolean;
+  scan_limit_reached: boolean;
+}
+
+export interface ProductImageMetadata {
+  width: number;
+  height: number;
+  format: string;
+}
+
+export interface ProductFileContentEnvelope {
+  path: string;
+  mime: string;
+  size: number;
+  truncated: boolean;
+  text?: string;
+  encoding?: string;
+  image?: ProductImageMetadata;
+  preview_allowed: boolean;
+  validation_error?: string;
+}
+
+export const PRODUCT_ARTIFACT_SOURCE_KINDS = [
+  "report",
+  "task_state",
+  "trace",
+  "registered",
+] as const;
+export type ProductArtifactSourceKind =
+  (typeof PRODUCT_ARTIFACT_SOURCE_KINDS)[number];
+
+export const PRODUCT_ARTIFACT_AVAILABILITIES = [
+  "available",
+  "cleaned",
+  "invalid",
+  "too_large",
+] as const;
+export type ProductArtifactAvailability =
+  (typeof PRODUCT_ARTIFACT_AVAILABILITIES)[number];
+
+export const PRODUCT_ARTIFACT_PREVIEW_KINDS = [
+  "text",
+  "raster_image",
+  "download_only",
+  "unavailable",
+] as const;
+export type ProductArtifactPreviewKind =
+  (typeof PRODUCT_ARTIFACT_PREVIEW_KINDS)[number];
+
+export interface ProductArtifactView {
+  artifact_id: string;
+  safe_name: string;
+  mime: string;
+  size?: number;
+  sha256?: string;
+  source_run_id: string;
+  source_kind: ProductArtifactSourceKind;
+  availability: ProductArtifactAvailability;
+  preview_kind: ProductArtifactPreviewKind;
+  image?: ProductImageMetadata;
+  validation_error?: string;
+}
+
+export interface ProductArtifactsResponse {
+  session_id: string;
+  artifacts: ProductArtifactView[];
+  partial_reasons: string[];
+}
+
+export interface ProductArtifactContentEnvelope {
+  artifact_id: string;
+  safe_name: string;
+  mime: string;
+  size: number;
+  truncated: boolean;
+  text?: string;
+  encoding?: string;
+  image?: ProductImageMetadata;
+  preview_allowed: boolean;
+  validation_error?: string;
+}
+
+export const PRODUCT_DIFF_OPS = [
+  "create",
+  "update",
+  "delete",
+  "modified",
+  "unknown",
+] as const;
+export type ProductDiffOp = (typeof PRODUCT_DIFF_OPS)[number];
+
+export const PRODUCT_DIFF_SOURCES = ["run", "git"] as const;
+export type ProductDiffSource = (typeof PRODUCT_DIFF_SOURCES)[number];
+
+export interface ProductDiffEntry {
+  path: string;
+  op: ProductDiffOp;
+  source: ProductDiffSource;
+  source_run_id?: string;
+  diff?: string;
+  binary: boolean;
+  truncated: boolean;
+  reconstructable: boolean;
+}
+
+export interface ProductSessionDiffResponse {
+  session_id: string;
+  scope: string;
+  entries: ProductDiffEntry[];
+  partial_reasons: string[];
 }
 
 export interface ProductPreferences {
@@ -136,6 +410,21 @@ export interface CreateProductWorkspaceRequest {
 export interface CreateProductSessionRequest {
   workspace_id: ProductWorkspaceId;
   title?: string;
+}
+
+export interface CreateProductForkRequest {
+  fork_at_run_id: string;
+  title?: string;
+  idempotency_key: string;
+}
+
+export interface ProductForkResponse {
+  fork: ProductFork;
+  session: ProductSession;
+}
+
+export interface ProductForksResponse {
+  forks: ProductFork[];
 }
 
 export interface UpdateProductSessionRequest {
@@ -224,6 +513,8 @@ export interface ProductTranscriptFallback {
 
 export interface ProductTranscriptRunSegment {
   binding: ProductSessionRunBinding;
+  inherited: boolean;
+  source_product_session_id?: ProductSessionId;
   run_status: RunStatus;
   observed_through_seq: number;
   last_event_seq: number;
@@ -363,6 +654,10 @@ export const PRODUCT_ERROR_CODES = [
   "product_memory_not_found",
   "product_memory_conflict",
   "migration_idempotency_conflict",
+  "product_control_conflict",
+  "product_control_rejected",
+  "product_fork_conflict",
+  "product_fork_source_invalid",
   "product_storage_failure",
 ] as const;
 export type ProductErrorCode = (typeof PRODUCT_ERROR_CODES)[number];
@@ -433,6 +728,45 @@ export type ProductStreamEvent =
       type: "prompt_built";
       metadata: ProductPromptBuildMetadata;
     };
+
+export type ProductControlId = string;
+
+export const PRODUCT_CONTROL_KINDS = ["steer", "followup"] as const;
+export type ProductControlKind = (typeof PRODUCT_CONTROL_KINDS)[number];
+
+export const PRODUCT_CONTROL_STATUSES = [
+  "pending",
+  "accepted",
+  "applied",
+  "dropped",
+  "abandoned",
+  "revoked",
+] as const;
+export type ProductControlStatus = (typeof PRODUCT_CONTROL_STATUSES)[number];
+
+export interface ProductControl {
+  id: ProductControlId;
+  product_session_id: ProductSessionId;
+  kind: ProductControlKind;
+  idempotency_key?: string;
+  content: string;
+  status: ProductControlStatus;
+  run_id?: string;
+  seq: number;
+  created_at: string;
+  applied_at?: string;
+}
+
+export interface CreateProductControlRequest {
+  content: string;
+  idempotency_key?: string;
+}
+
+export interface ProductControlsResponse {
+  controls: ProductControl[];
+}
+
+export type ProductControlStatusFilter = ProductControlStatus | "all";
 
 export interface ProductJobStreamEvent {
   seq: number;
@@ -656,6 +990,33 @@ function optionalInteger(
   return expectInteger(candidate, `${path}.${key}`, options);
 }
 
+function optionalNumber(
+  value: UnknownRecord,
+  key: string,
+  path: string,
+): number | undefined {
+  const candidate = value[key];
+  if (candidate === undefined || candidate === null) {
+    return undefined;
+  }
+  if (typeof candidate !== "number" || !Number.isFinite(candidate)) {
+    return schemaError(`${path}.${key}`, "a finite number");
+  }
+  return candidate;
+}
+
+function optionalId(
+  value: UnknownRecord,
+  key: string,
+  path: string,
+): string | undefined {
+  const candidate = value[key];
+  if (candidate === undefined || candidate === null) {
+    return undefined;
+  }
+  return expectId(candidate, `${path}.${key}`);
+}
+
 function expectArray<T>(
   value: unknown,
   path: string,
@@ -838,7 +1199,79 @@ export function parseProductSession(
       `${path}.runtime_binding`,
     );
   }
+  assignOptional(
+    session,
+    "parent_session_id",
+    optionalId(record, "parent_session_id", path),
+  );
+  assignOptional(
+    session,
+    "fork_point_run_id",
+    optionalId(record, "fork_point_run_id", path),
+  );
+  assignOptional(
+    session,
+    "fork_point_seq",
+    optionalInteger(record, "fork_point_seq", path, { min: 1 }),
+  );
+  const hasForkParent = session.parent_session_id !== undefined;
+  const hasForkRun = session.fork_point_run_id !== undefined;
+  const hasForkSeq = session.fork_point_seq !== undefined;
+  if (hasForkParent !== hasForkRun || hasForkParent !== hasForkSeq) {
+    schemaError(
+      path,
+      "complete fork provenance fields or no fork provenance fields",
+    );
+  }
   return session;
+}
+
+export function parseProductFork(
+  value: unknown,
+  path = "product fork",
+): ProductFork {
+  const record = expectRecord(value, path);
+  return {
+    id: expectId(record.id, `${path}.id`),
+    parent_product_session_id: expectId(
+      record.parent_product_session_id,
+      `${path}.parent_product_session_id`,
+    ),
+    child_product_session_id: expectId(
+      record.child_product_session_id,
+      `${path}.child_product_session_id`,
+    ),
+    parent_workspace_id: expectId(
+      record.parent_workspace_id,
+      `${path}.parent_workspace_id`,
+    ),
+    parent_title: expectString(record.parent_title, `${path}.parent_title`, {
+      maxBytes: MAX_PRODUCT_TEXT_BYTES,
+    }),
+    source_runtime_session_id: expectId(
+      record.source_runtime_session_id,
+      `${path}.source_runtime_session_id`,
+    ),
+    source_runtime_job_id: expectId(
+      record.source_runtime_job_id,
+      `${path}.source_runtime_job_id`,
+    ),
+    source_runtime_run_id: expectId(
+      record.source_runtime_run_id,
+      `${path}.source_runtime_run_id`,
+    ),
+    fork_at_event_seq: expectInteger(record.fork_at_event_seq, `${path}.fork_at_event_seq`, {
+      min: 1,
+    }),
+    idempotency_key: expectString(record.idempotency_key, `${path}.idempotency_key`, {
+      nonEmpty: true,
+      maxBytes: MAX_MIGRATION_IDEMPOTENCY_KEY_BYTES,
+      noControlCharacters: true,
+    }),
+    created_at: expectString(record.created_at, `${path}.created_at`, {
+      nonEmpty: true,
+    }),
+  };
 }
 
 function parseProductSessionRunBinding(
@@ -918,6 +1351,452 @@ export function parseProductProviderProfile(
     }),
   );
   return profile;
+}
+
+function parseProductSessionModelConfig(
+  value: unknown,
+  path = "product session model config",
+): ProductSessionModelConfig {
+  const record = expectRecord(value, path);
+  const config: ProductSessionModelConfig = {
+    product_session_id: expectId(
+      record.product_session_id,
+      `${path}.product_session_id`,
+    ),
+    model: expectString(record.model, `${path}.model`, {
+      nonEmpty: true,
+      maxBytes: MAX_PRODUCT_TEXT_BYTES,
+    }),
+    reasoning: expectEnum(
+      record.reasoning,
+      PRODUCT_REASONING_PREFERENCES,
+      `${path}.reasoning`,
+    ),
+    max_steps: expectInteger(record.max_steps, `${path}.max_steps`, {
+      min: 1,
+      max: MAX_PRODUCT_MAX_STEPS,
+    }),
+    revision: expectInteger(record.revision, `${path}.revision`, { min: 0 }),
+    updated_at: expectString(record.updated_at, `${path}.updated_at`, {
+      nonEmpty: true,
+    }),
+  };
+  assignOptional(
+    config,
+    "profile_id",
+    optionalString(record, "profile_id", path, { nonEmpty: true }),
+  );
+  return config;
+}
+
+export function parseProductSessionModelConfigResponse(
+  value: unknown,
+): ProductSessionModelConfig {
+  return parseProductSessionModelConfig(value);
+}
+
+export function parseUpdateProductSessionModelConfigRequest(
+  value: unknown,
+  path = "update product session model config request",
+): UpdateProductSessionModelConfigRequest {
+  const record = expectRecord(value, path);
+  expectOnlyKeys(
+    record,
+    ["profile_id", "model", "reasoning", "max_steps", "expected_revision"],
+    path,
+  );
+  const request: UpdateProductSessionModelConfigRequest = {
+    model: expectString(record.model, `${path}.model`, {
+      nonEmpty: true,
+      maxBytes: MAX_PRODUCT_TEXT_BYTES,
+    }),
+    reasoning:
+      record.reasoning === undefined || record.reasoning === null
+        ? "default"
+        : expectEnum(
+            record.reasoning,
+            PRODUCT_REASONING_PREFERENCES,
+            `${path}.reasoning`,
+          ),
+    max_steps:
+      record.max_steps === undefined || record.max_steps === null
+        ? 8
+        : expectInteger(record.max_steps, `${path}.max_steps`, {
+            min: 1,
+            max: MAX_PRODUCT_MAX_STEPS,
+          }),
+  };
+  assignOptional(
+    request,
+    "profile_id",
+    optionalString(record, "profile_id", path, { nonEmpty: true }),
+  );
+  assignOptional(
+    request,
+    "expected_revision",
+    optionalInteger(record, "expected_revision", path, { min: 0 }),
+  );
+  return request;
+}
+
+function parseProductModelDescriptor(
+  value: unknown,
+  path: string,
+): ProductModelDescriptor {
+  const record = expectRecord(value, path);
+  const descriptor: ProductModelDescriptor = {
+    id: expectString(record.id, `${path}.id`, {
+      nonEmpty: true,
+      maxBytes: MAX_PRODUCT_TEXT_BYTES,
+    }),
+    supports_reasoning: expectBoolean(
+      record.supports_reasoning,
+      `${path}.supports_reasoning`,
+    ),
+    supported_reasoning: expectArray(
+      record.supported_reasoning,
+      `${path}.supported_reasoning`,
+      (item, itemPath) =>
+        expectEnum(item, PRODUCT_REASONING_PREFERENCES, itemPath),
+      PRODUCT_REASONING_PREFERENCES.length,
+    ),
+  };
+  assignOptional(
+    descriptor,
+    "context_window",
+    optionalInteger(record, "context_window", path, { min: 1 }),
+  );
+  assignOptional(
+    descriptor,
+    "reasoning_unavailable_reason",
+    optionalString(record, "reasoning_unavailable_reason", path, {
+      nonEmpty: true,
+      maxBytes: MAX_PRODUCT_TEXT_BYTES,
+    }),
+  );
+  return descriptor;
+}
+
+export function parseProductProviderModelsResponse(
+  value: unknown,
+): ProductProviderModelsResponse {
+  const record = expectRecord(value, "product provider models response");
+  const response: ProductProviderModelsResponse = {
+    profile_id: expectId(
+      record.profile_id,
+      "product provider models response.profile_id",
+    ),
+    models: expectArray(
+      record.models,
+      "product provider models response.models",
+      parseProductModelDescriptor,
+      4_096,
+    ),
+  };
+  assignOptional(
+    response,
+    "default_model",
+    optionalString(record, "default_model", "product provider models response", {
+      nonEmpty: true,
+      maxBytes: MAX_PRODUCT_TEXT_BYTES,
+    }),
+  );
+  return response;
+}
+
+function parseProductSessionRunModelView(
+  value: unknown,
+  path: string,
+): ProductSessionRunModelView {
+  const record = expectRecord(value, path);
+  const run: ProductSessionRunModelView = {
+    product_session_id: expectId(
+      record.product_session_id,
+      `${path}.product_session_id`,
+    ),
+    ordinal: expectInteger(record.ordinal, `${path}.ordinal`, { min: 1 }),
+    runtime_run_id: expectId(record.runtime_run_id, `${path}.runtime_run_id`),
+    model: expectString(record.model, `${path}.model`, {
+      nonEmpty: true,
+      maxBytes: MAX_PRODUCT_TEXT_BYTES,
+    }),
+    reasoning: expectEnum(
+      record.reasoning,
+      PRODUCT_REASONING_PREFERENCES,
+      `${path}.reasoning`,
+    ),
+    max_steps: expectInteger(record.max_steps, `${path}.max_steps`, {
+      min: 1,
+      max: MAX_PRODUCT_MAX_STEPS,
+    }),
+  };
+  assignOptional(
+    run,
+    "profile_id",
+    optionalString(record, "profile_id", path, { nonEmpty: true }),
+  );
+  assignOptional(
+    run,
+    "context_window",
+    optionalInteger(record, "context_window", path, { min: 1 }),
+  );
+  assignOptional(
+    run,
+    "pricing_source",
+    optionalString(record, "pricing_source", path, { nonEmpty: true }),
+  );
+  assignOptional(
+    run,
+    "pricing_version",
+    optionalString(record, "pricing_version", path, { nonEmpty: true }),
+  );
+  assignOptional(
+    run,
+    "pricing_currency",
+    optionalString(record, "pricing_currency", path, { nonEmpty: true }),
+  );
+  if (
+    record.pricing_availability !== undefined &&
+    record.pricing_availability !== null
+  ) {
+    run.pricing_availability = expectEnum(
+      record.pricing_availability,
+      PRODUCT_PRICING_AVAILABILITIES,
+      `${path}.pricing_availability`,
+    );
+  }
+  assignOptional(
+    run,
+    "per_mtok_prompt",
+    optionalNumber(record, "per_mtok_prompt", path),
+  );
+  assignOptional(
+    run,
+    "per_mtok_completion",
+    optionalNumber(record, "per_mtok_completion", path),
+  );
+  assignOptional(
+    run,
+    "per_mtok_cache_read",
+    optionalNumber(record, "per_mtok_cache_read", path),
+  );
+  return run;
+}
+
+export function parseProductSessionRunModelsResponse(
+  value: unknown,
+): ProductSessionRunModelsResponse {
+  const record = expectRecord(value, "product session run models response");
+  return {
+    runs: expectArray(
+      record.runs,
+      "product session run models response.runs",
+      parseProductSessionRunModelView,
+      MAX_PRODUCT_SESSIONS,
+    ),
+  };
+}
+
+function parseProductUsage(value: unknown, path: string): ProductUsage {
+  const record = expectRecord(value, path);
+  return {
+    prompt_tokens: expectInteger(record.prompt_tokens, `${path}.prompt_tokens`, {
+      min: 0,
+    }),
+    completion_tokens: expectInteger(
+      record.completion_tokens,
+      `${path}.completion_tokens`,
+      { min: 0 },
+    ),
+    total_tokens: expectInteger(record.total_tokens, `${path}.total_tokens`, {
+      min: 0,
+    }),
+    cached_tokens: expectInteger(record.cached_tokens, `${path}.cached_tokens`, {
+      min: 0,
+    }),
+  };
+}
+
+function parseProductCostBreakdown(
+  value: unknown,
+  path: string,
+): ProductCostBreakdown {
+  const record = expectRecord(value, path);
+  const cost: ProductCostBreakdown = {
+    currency: expectString(record.currency, `${path}.currency`, {
+      nonEmpty: true,
+      maxBytes: 16,
+    }),
+    availability: expectEnum(
+      record.availability,
+      PRODUCT_PRICING_AVAILABILITIES,
+      `${path}.availability`,
+    ),
+  };
+  assignOptional(cost, "total_usd", optionalNumber(record, "total_usd", path));
+  assignOptional(cost, "prompt_usd", optionalNumber(record, "prompt_usd", path));
+  assignOptional(
+    cost,
+    "completion_usd",
+    optionalNumber(record, "completion_usd", path),
+  );
+  assignOptional(
+    cost,
+    "cache_read_usd",
+    optionalNumber(record, "cache_read_usd", path),
+  );
+  assignOptional(
+    cost,
+    "pricing_source",
+    optionalString(record, "pricing_source", path, { nonEmpty: true }),
+  );
+  assignOptional(
+    cost,
+    "pricing_version",
+    optionalString(record, "pricing_version", path, { nonEmpty: true }),
+  );
+  return cost;
+}
+
+function parseProductContextOccupancy(
+  value: unknown,
+  path: string,
+): ProductContextOccupancy {
+  const record = expectRecord(value, path);
+  const context: ProductContextOccupancy = {
+    token_estimate: expectInteger(
+      record.token_estimate,
+      `${path}.token_estimate`,
+      { min: 0 },
+    ),
+    estimate_kind: expectString(record.estimate_kind, `${path}.estimate_kind`, {
+      nonEmpty: true,
+      maxBytes: MAX_PRODUCT_TEXT_BYTES,
+    }),
+    included_history_messages: expectInteger(
+      record.included_history_messages,
+      `${path}.included_history_messages`,
+      { min: 0 },
+    ),
+    dropped_history_messages: expectInteger(
+      record.dropped_history_messages,
+      `${path}.dropped_history_messages`,
+      { min: 0 },
+    ),
+    compaction_degraded: expectBoolean(
+      record.compaction_degraded ?? false,
+      `${path}.compaction_degraded`,
+    ),
+    compaction_auto_triggered: expectBoolean(
+      record.compaction_auto_triggered ?? false,
+      `${path}.compaction_auto_triggered`,
+    ),
+    compacted_history_messages: expectInteger(
+      record.compacted_history_messages ?? 0,
+      `${path}.compacted_history_messages`,
+      { min: 0 },
+    ),
+    compaction_source_messages: expectInteger(
+      record.compaction_source_messages ?? 0,
+      `${path}.compaction_source_messages`,
+      { min: 0 },
+    ),
+  };
+  assignOptional(
+    context,
+    "context_window",
+    optionalInteger(record, "context_window", path, { min: 1 }),
+  );
+  assignOptional(
+    context,
+    "compaction_mode",
+    optionalString(record, "compaction_mode", path, { nonEmpty: true }),
+  );
+  assignOptional(
+    context,
+    "compaction_prompt_version",
+    optionalString(record, "compaction_prompt_version", path, {
+      nonEmpty: true,
+    }),
+  );
+  assignOptional(
+    context,
+    "prompt_hash",
+    optionalString(record, "prompt_hash", path, { nonEmpty: true }),
+  );
+  return context;
+}
+
+function parseProductRunUsage(value: unknown, path: string): ProductRunUsage {
+  const record = expectRecord(value, path);
+  const run: ProductRunUsage = {
+    runtime_run_id: expectId(record.runtime_run_id, `${path}.runtime_run_id`),
+    ordinal: expectInteger(record.ordinal, `${path}.ordinal`, { min: 1 }),
+    model: expectString(record.model, `${path}.model`, {
+      nonEmpty: true,
+      maxBytes: MAX_PRODUCT_TEXT_BYTES,
+    }),
+    usage: parseProductUsage(record.usage, `${path}.usage`),
+    steps: expectInteger(record.steps, `${path}.steps`, { min: 0 }),
+    tool_calls: expectInteger(record.tool_calls, `${path}.tool_calls`, {
+      min: 0,
+    }),
+  };
+  if (record.cost !== undefined && record.cost !== null) {
+    run.cost = parseProductCostBreakdown(record.cost, `${path}.cost`);
+  }
+  if (record.context !== undefined && record.context !== null) {
+    run.context = parseProductContextOccupancy(
+      record.context,
+      `${path}.context`,
+    );
+  }
+  return run;
+}
+
+export function parseProductSessionUsageResponse(
+  value: unknown,
+): ProductSessionUsageResponse {
+  const record = expectRecord(value, "product session usage response");
+  const response: ProductSessionUsageResponse = {
+    product_session_id: expectId(
+      record.product_session_id,
+      "product session usage response.product_session_id",
+    ),
+    totals: parseProductUsage(
+      record.totals,
+      "product session usage response.totals",
+    ),
+    runs: expectArray(
+      record.runs,
+      "product session usage response.runs",
+      parseProductRunUsage,
+      MAX_PRODUCT_SESSIONS,
+    ),
+    partial_reasons: expectArray(
+      record.partial_reasons,
+      "product session usage response.partial_reasons",
+      (item, path) =>
+        expectString(item, path, {
+          nonEmpty: true,
+          maxBytes: MAX_PRODUCT_TEXT_BYTES,
+        }),
+      512,
+    ),
+  };
+  if (record.totals_cost !== undefined && record.totals_cost !== null) {
+    response.totals_cost = parseProductCostBreakdown(
+      record.totals_cost,
+      "product session usage response.totals_cost",
+    );
+  }
+  if (record.latest_context !== undefined && record.latest_context !== null) {
+    response.latest_context = parseProductContextOccupancy(
+      record.latest_context,
+      "product session usage response.latest_context",
+    );
+  }
+  return response;
 }
 
 function parseProductProviderSelection(
@@ -1056,6 +1935,28 @@ export function parseCreateProductSessionRequest(
   return request;
 }
 
+export function parseCreateProductForkRequest(
+  value: unknown,
+  path = "create product fork request",
+): CreateProductForkRequest {
+  const record = expectRecord(value, path);
+  expectOnlyKeys(record, ["fork_at_run_id", "title", "idempotency_key"], path);
+  const request: CreateProductForkRequest = {
+    fork_at_run_id: expectId(record.fork_at_run_id, `${path}.fork_at_run_id`),
+    idempotency_key: expectString(record.idempotency_key, `${path}.idempotency_key`, {
+      nonEmpty: true,
+      maxBytes: MAX_MIGRATION_IDEMPOTENCY_KEY_BYTES,
+      noControlCharacters: true,
+    }),
+  };
+  assignOptional(
+    request,
+    "title",
+    optionalString(record, "title", path, { maxBytes: MAX_PRODUCT_TEXT_BYTES }),
+  );
+  return request;
+}
+
 export function parseUpdateProductSessionRequest(
   value: unknown,
   path = "update product session request",
@@ -1074,6 +1975,30 @@ export function parseUpdateProductSessionRequest(
     request,
     "archived",
     optionalBoolean(record, "archived", path),
+  );
+  return request;
+}
+
+export function parseCreateProductControlRequest(
+  value: unknown,
+  path = "create product control request",
+): CreateProductControlRequest {
+  const record = expectRecord(value, path);
+  expectOnlyKeys(record, ["content", "idempotency_key"], path);
+  const content = expectString(record.content, `${path}.content`, {
+    maxBytes: MAX_PRODUCT_CONTROL_CONTENT_BYTES,
+  }).trim();
+  if (!content) {
+    return schemaError(`${path}.content`, "a non-empty string");
+  }
+  const request: CreateProductControlRequest = { content };
+  assignOptional(
+    request,
+    "idempotency_key",
+    optionalString(record, "idempotency_key", path, {
+      nonEmpty: true,
+      maxBytes: MAX_PRODUCT_CONTROL_IDEMPOTENCY_KEY_BYTES,
+    }),
   );
   return request;
 }
@@ -1222,6 +2147,44 @@ export function parseProductSessionsResponse(
   };
 }
 
+export function parseProductForkResponse(
+  value: unknown,
+  path = "product fork response",
+): ProductForkResponse {
+  const record = expectRecord(value, path);
+  const response = {
+    fork: parseProductFork(record.fork, `${path}.fork`),
+    session: parseProductSession(record.session, `${path}.session`),
+  };
+  if (response.fork.child_product_session_id !== response.session.id) {
+    schemaError(`${path}.fork.child_product_session_id`, "the returned child session id");
+  }
+  if (response.session.parent_session_id !== response.fork.parent_product_session_id) {
+    schemaError(`${path}.session.parent_session_id`, "the fork parent session id");
+  }
+  if (response.session.fork_point_run_id !== response.fork.source_runtime_run_id) {
+    schemaError(`${path}.session.fork_point_run_id`, "the fork source runtime run id");
+  }
+  if (response.session.fork_point_seq !== response.fork.fork_at_event_seq) {
+    schemaError(`${path}.session.fork_point_seq`, "the fork terminal event sequence");
+  }
+  return response;
+}
+
+export function parseProductForksResponse(
+  value: unknown,
+): ProductForksResponse {
+  const record = expectRecord(value, "product forks response");
+  return {
+    forks: expectArray(
+      record.forks,
+      "product forks response.forks",
+      parseProductFork,
+      MAX_PRODUCT_SESSIONS,
+    ),
+  };
+}
+
 export function parseProductProviderProfilesResponse(
   value: unknown,
 ): ProductProviderProfilesResponse {
@@ -1232,6 +2195,72 @@ export function parseProductProviderProfilesResponse(
       "product provider profiles response.provider_profiles",
       parseProductProviderProfile,
       MAX_PRODUCT_PROVIDER_PROFILES,
+    ),
+  };
+}
+
+export function parseProductControl(
+  value: unknown,
+  path = "product control",
+): ProductControl {
+  const record = expectRecord(value, path);
+  const control: ProductControl = {
+    id: expectId(record.id, `${path}.id`),
+    product_session_id: expectId(
+      record.product_session_id,
+      `${path}.product_session_id`,
+    ),
+    kind: expectEnum(record.kind, PRODUCT_CONTROL_KINDS, `${path}.kind`),
+    content: expectString(record.content, `${path}.content`, {
+      nonEmpty: true,
+      maxBytes: MAX_PRODUCT_CONTROL_CONTENT_BYTES,
+    }),
+    status: expectEnum(
+      record.status,
+      PRODUCT_CONTROL_STATUSES,
+      `${path}.status`,
+    ),
+    seq: expectInteger(record.seq, `${path}.seq`, { min: 1 }),
+    created_at: expectRfc3339Timestamp(
+      record.created_at,
+      `${path}.created_at`,
+    ),
+  };
+  assignOptional(
+    control,
+    "idempotency_key",
+    optionalString(record, "idempotency_key", path, {
+      nonEmpty: true,
+      maxBytes: MAX_PRODUCT_CONTROL_IDEMPOTENCY_KEY_BYTES,
+    }),
+  );
+  assignOptional(
+    control,
+    "run_id",
+    optionalString(record, "run_id", path, { nonEmpty: true }),
+  );
+  const appliedAt = optionalString(record, "applied_at", path, {
+    nonEmpty: true,
+    maxBytes: MAX_PRODUCT_TEXT_BYTES,
+  });
+  if (appliedAt !== undefined) {
+    control.applied_at = expectRfc3339Timestamp(
+      appliedAt,
+      `${path}.applied_at`,
+    );
+  }
+  return control;
+}
+
+export function parseProductControlsResponse(
+  value: unknown,
+): ProductControlsResponse {
+  const record = expectRecord(value, "product controls response");
+  return {
+    controls: expectArray(
+      record.controls,
+      "product controls response.controls",
+      parseProductControl,
     ),
   };
 }
@@ -1923,6 +2952,52 @@ export function parseStreamEvent(
       }
       return event;
     }
+    case "steer_accepted":
+      return {
+        type,
+        id: expectId(record.id, `${path}.id`),
+        content: expectString(record.content, `${path}.content`, {
+          nonEmpty: true,
+          maxBytes: MAX_PRODUCT_CONTROL_CONTENT_BYTES,
+        }),
+      };
+    case "steer_applied":
+      return {
+        type,
+        id: expectId(record.id, `${path}.id`),
+      };
+    case "steer_dropped":
+      return {
+        type,
+        id: expectId(record.id, `${path}.id`),
+        reason: expectString(record.reason, `${path}.reason`, {
+          nonEmpty: true,
+          maxBytes: MAX_PRODUCT_TEXT_BYTES,
+        }),
+      };
+    case "followup_queued":
+      return {
+        type,
+        id: expectId(record.id, `${path}.id`),
+        content: expectString(record.content, `${path}.content`, {
+          nonEmpty: true,
+          maxBytes: MAX_PRODUCT_CONTROL_CONTENT_BYTES,
+        }),
+      };
+    case "followup_dequeued":
+      return {
+        type,
+        id: expectId(record.id, `${path}.id`),
+      };
+    case "followup_abandoned":
+      return {
+        type,
+        id: expectId(record.id, `${path}.id`),
+        reason: expectString(record.reason, `${path}.reason`, {
+          nonEmpty: true,
+          maxBytes: MAX_PRODUCT_TEXT_BYTES,
+        }),
+      };
   }
 }
 
@@ -1996,6 +3071,7 @@ function parseProductTranscriptRunSegment(
   const record = expectRecord(value, path);
   const segment: ProductTranscriptRunSegment = {
     binding: parseProductSessionRunBinding(record.binding, `${path}.binding`),
+    inherited: expectBoolean(record.inherited, `${path}.inherited`),
     run_status: expectRunStatus(record.run_status, `${path}.run_status`),
     observed_through_seq: expectInteger(
       record.observed_through_seq,
@@ -2009,6 +3085,11 @@ function parseProductTranscriptRunSegment(
     ),
     events: expectArray(record.events, `${path}.events`, parseJobStreamEvent),
   };
+  assignOptional(
+    segment,
+    "source_product_session_id",
+    optionalId(record, "source_product_session_id", path),
+  );
   if (record.fallback !== undefined && record.fallback !== null) {
     segment.fallback = parseProductTranscriptFallback(
       record.fallback,
@@ -2058,10 +3139,29 @@ export function parseProductTranscriptResponse(
   let previousOrdinal = 0;
   for (const [segmentIndex, segment] of response.segments.entries()) {
     const segmentPath = `${path}.segments[${segmentIndex}]`;
-    if (segment.binding.product_session_id !== response.product_session_id) {
+    if (
+      !segment.inherited &&
+      segment.binding.product_session_id !== response.product_session_id
+    ) {
       schemaError(
         `${segmentPath}.binding.product_session_id`,
         "the transcript product_session_id",
+      );
+    }
+    if (
+      segment.inherited &&
+      (!segment.source_product_session_id ||
+        segment.binding.product_session_id !== segment.source_product_session_id)
+    ) {
+      schemaError(
+        `${segmentPath}.source_product_session_id`,
+        "the source product session id for inherited history",
+      );
+    }
+    if (!segment.inherited && segment.source_product_session_id !== undefined) {
+      schemaError(
+        `${segmentPath}.source_product_session_id`,
+        "absent for local session history",
       );
     }
     if (segment.binding.ordinal <= previousOrdinal) {
@@ -2571,3 +3671,325 @@ export function parseApiErrorResponse(value: unknown): ApiErrorResponse | null {
   }
   return { code: value.code, error: value.error };
 }
+
+export function parseProductFilesResponse(value: unknown): ProductFilesResponse {
+  const record = expectRecord(value, "product files response");
+  const response: ProductFilesResponse = {
+    workspace_id: expectId(record.workspace_id, "product files response.workspace_id"),
+    prefix: expectString(record.prefix ?? "", "product files response.prefix", {
+      maxBytes: MAX_PRODUCT_PATH_BYTES,
+    }),
+    entries: expectArray(
+      record.entries,
+      "product files response.entries",
+      (item, path) => {
+        const entry = expectRecord(item, path);
+        const parsed: ProductFileEntry = {
+          path: expectString(entry.path, `${path}.path`, {
+            nonEmpty: true,
+            maxBytes: MAX_PRODUCT_PATH_BYTES,
+          }),
+          kind: expectEnum(entry.kind, PRODUCT_FILE_KINDS, `${path}.kind`),
+          size: expectInteger(entry.size, `${path}.size`, { min: 0 }),
+        };
+        assignOptional(
+          parsed,
+          "modified",
+          optionalString(entry, "modified", path, { nonEmpty: true }),
+        );
+        return parsed;
+      },
+      500,
+    ),
+    truncated: expectBoolean(record.truncated, "product files response.truncated"),
+    scan_limit_reached: expectBoolean(
+      record.scan_limit_reached ?? false,
+      "product files response.scan_limit_reached",
+    ),
+  };
+  assignOptional(
+    response,
+    "next_cursor",
+    optionalString(record, "next_cursor", "product files response", {
+      nonEmpty: true,
+    }),
+  );
+  return response;
+}
+
+export function parseProductFileContentEnvelope(
+  value: unknown,
+): ProductFileContentEnvelope {
+  const record = expectRecord(value, "product file content");
+  const envelope: ProductFileContentEnvelope = {
+    path: expectString(record.path, "product file content.path", {
+      nonEmpty: true,
+      maxBytes: MAX_PRODUCT_PATH_BYTES,
+    }),
+    mime: expectString(record.mime, "product file content.mime", {
+      nonEmpty: true,
+      maxBytes: MAX_PRODUCT_TEXT_BYTES,
+    }),
+    size: expectInteger(record.size, "product file content.size", { min: 0 }),
+    truncated: expectBoolean(record.truncated, "product file content.truncated"),
+    preview_allowed: expectBoolean(
+      record.preview_allowed ?? false,
+      "product file content.preview_allowed",
+    ),
+  };
+  assignOptional(
+    envelope,
+    "text",
+    optionalString(record, "text", "product file content"),
+  );
+  assignOptional(
+    envelope,
+    "encoding",
+    optionalString(record, "encoding", "product file content", {
+      nonEmpty: true,
+    }),
+  );
+  if (record.image !== undefined && record.image !== null) {
+    envelope.image = parseProductImageMetadata(
+      record.image,
+      "product file content.image",
+    );
+  }
+  assignOptional(
+    envelope,
+    "validation_error",
+    optionalString(record, "validation_error", "product file content", {
+      nonEmpty: true,
+    }),
+  );
+  return envelope;
+}
+
+function parseProductImageMetadata(
+  value: unknown,
+  path: string,
+): ProductImageMetadata {
+  const record = expectRecord(value, path);
+  return {
+    width: expectInteger(record.width, `${path}.width`, { min: 1 }),
+    height: expectInteger(record.height, `${path}.height`, { min: 1 }),
+    format: expectString(record.format, `${path}.format`, {
+      nonEmpty: true,
+      maxBytes: 16,
+    }),
+  };
+}
+
+export function parseProductArtifactsResponse(
+  value: unknown,
+): ProductArtifactsResponse {
+  const record = expectRecord(value, "product artifacts response");
+  return {
+    session_id: expectId(
+      record.session_id,
+      "product artifacts response.session_id",
+    ),
+    artifacts: expectArray(
+      record.artifacts,
+      "product artifacts response.artifacts",
+      (item, path) => {
+        const artifact = expectRecord(item, path);
+        const parsed: ProductArtifactView = {
+          artifact_id: expectString(artifact.artifact_id, `${path}.artifact_id`, {
+            nonEmpty: true,
+            maxBytes: MAX_PRODUCT_TEXT_BYTES,
+          }),
+          safe_name: expectString(artifact.safe_name, `${path}.safe_name`, {
+            nonEmpty: true,
+            maxBytes: MAX_PRODUCT_TEXT_BYTES,
+          }),
+          mime: expectString(artifact.mime, `${path}.mime`, {
+            nonEmpty: true,
+            maxBytes: MAX_PRODUCT_TEXT_BYTES,
+          }),
+          source_run_id: expectString(
+            artifact.source_run_id,
+            `${path}.source_run_id`,
+            { nonEmpty: true, maxBytes: MAX_PRODUCT_TEXT_BYTES },
+          ),
+          source_kind: expectEnum(
+            artifact.source_kind,
+            PRODUCT_ARTIFACT_SOURCE_KINDS,
+            `${path}.source_kind`,
+          ),
+          availability: expectEnum(
+            artifact.availability ?? "available",
+            PRODUCT_ARTIFACT_AVAILABILITIES,
+            `${path}.availability`,
+          ),
+          preview_kind: expectEnum(
+            artifact.preview_kind ?? "download_only",
+            PRODUCT_ARTIFACT_PREVIEW_KINDS,
+            `${path}.preview_kind`,
+          ),
+        };
+        assignOptional(
+          parsed,
+          "size",
+          optionalInteger(artifact, "size", path, { min: 0 }),
+        );
+        assignOptional(
+          parsed,
+          "sha256",
+          optionalString(artifact, "sha256", path, {
+            nonEmpty: true,
+            maxBytes: 64,
+          }),
+        );
+        if (artifact.image !== undefined && artifact.image !== null) {
+          parsed.image = parseProductImageMetadata(
+            artifact.image,
+            `${path}.image`,
+          );
+        }
+        assignOptional(
+          parsed,
+          "validation_error",
+          optionalString(artifact, "validation_error", path, {
+            nonEmpty: true,
+          }),
+        );
+        return parsed;
+      },
+      2048,
+    ),
+    partial_reasons: expectArray(
+      record.partial_reasons,
+      "product artifacts response.partial_reasons",
+      (item, path) =>
+        expectString(item, path, {
+          nonEmpty: true,
+          maxBytes: MAX_PRODUCT_TEXT_BYTES,
+        }),
+      512,
+    ),
+  };
+}
+
+export function parseProductArtifactContentEnvelope(
+  value: unknown,
+): ProductArtifactContentEnvelope {
+  const record = expectRecord(value, "product artifact content");
+  const envelope: ProductArtifactContentEnvelope = {
+    artifact_id: expectString(
+      record.artifact_id,
+      "product artifact content.artifact_id",
+      { nonEmpty: true, maxBytes: 64 },
+    ),
+    safe_name: expectString(
+      record.safe_name,
+      "product artifact content.safe_name",
+      { nonEmpty: true, maxBytes: MAX_PRODUCT_TEXT_BYTES },
+    ),
+    mime: expectString(record.mime, "product artifact content.mime", {
+      nonEmpty: true,
+      maxBytes: MAX_PRODUCT_TEXT_BYTES,
+    }),
+    size: expectInteger(record.size, "product artifact content.size", {
+      min: 0,
+    }),
+    truncated: expectBoolean(
+      record.truncated,
+      "product artifact content.truncated",
+    ),
+    preview_allowed: expectBoolean(
+      record.preview_allowed ?? false,
+      "product artifact content.preview_allowed",
+    ),
+  };
+  assignOptional(
+    envelope,
+    "text",
+    optionalString(record, "text", "product artifact content"),
+  );
+  assignOptional(
+    envelope,
+    "encoding",
+    optionalString(record, "encoding", "product artifact content", {
+      nonEmpty: true,
+    }),
+  );
+  if (record.image !== undefined && record.image !== null) {
+    envelope.image = parseProductImageMetadata(
+      record.image,
+      "product artifact content.image",
+    );
+  }
+  assignOptional(
+    envelope,
+    "validation_error",
+    optionalString(record, "validation_error", "product artifact content", {
+      nonEmpty: true,
+    }),
+  );
+  return envelope;
+}
+
+export function parseProductSessionDiffResponse(
+  value: unknown,
+): ProductSessionDiffResponse {
+  const record = expectRecord(value, "product session diff response");
+  return {
+    session_id: expectId(
+      record.session_id,
+      "product session diff response.session_id",
+    ),
+    scope: expectString(record.scope, "product session diff response.scope", {
+      nonEmpty: true,
+      maxBytes: 16,
+    }),
+    entries: expectArray(
+      record.entries,
+      "product session diff response.entries",
+      (item, path) => {
+        const entry = expectRecord(item, path);
+        const parsed: ProductDiffEntry = {
+          path: expectString(entry.path, `${path}.path`, {
+            nonEmpty: true,
+            maxBytes: MAX_PRODUCT_PATH_BYTES,
+          }),
+          op: expectEnum(entry.op, PRODUCT_DIFF_OPS, `${path}.op`),
+          source: expectEnum(
+            entry.source ?? "run",
+            PRODUCT_DIFF_SOURCES,
+            `${path}.source`,
+          ),
+          binary: expectBoolean(entry.binary ?? false, `${path}.binary`),
+          truncated: expectBoolean(entry.truncated ?? false, `${path}.truncated`),
+          reconstructable: expectBoolean(
+            entry.reconstructable ?? false,
+            `${path}.reconstructable`,
+          ),
+        };
+        assignOptional(
+          parsed,
+          "source_run_id",
+          optionalString(entry, "source_run_id", path, { nonEmpty: true }),
+        );
+        assignOptional(
+          parsed,
+          "diff",
+          optionalString(entry, "diff", path),
+        );
+        return parsed;
+      },
+      4096,
+    ),
+    partial_reasons: expectArray(
+      record.partial_reasons,
+      "product session diff response.partial_reasons",
+      (item, path) =>
+        expectString(item, path, {
+          nonEmpty: true,
+          maxBytes: MAX_PRODUCT_TEXT_BYTES,
+        }),
+      512,
+    ),
+  };
+}
+

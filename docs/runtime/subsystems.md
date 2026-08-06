@@ -209,6 +209,21 @@ runtime services.
 
 MCP stdio transport is bounded by per-server policy. Initialize, list, and call requests time out; stderr is captured up to the configured diagnostic limit; JSON-RPC errors are mapped to structured tool execution failures; and child processes are killed when their client is dropped. `runtime/tests/mcp_contract.rs` and `cargo test --test mcp` cover mock stdio registration, annotation safety, timeout/error/cleanup behavior, and include an opt-in real filesystem MCP smoke test gated by `ROVE_MCP_FILESYSTEM_SMOKE=1`.
 
+All MCP transports are byte-bounded by `MAX_MCP_RESPONSE_BYTES` (1 MiB): stdio
+JSON lines, legacy SSE endpoint discovery, and SSE JSON responses. HTTP bodies
+accumulate in chunks and honor a declared `Content-Length` before reading, so a
+hostile or broken server cannot force an unbounded read. Tools with an empty name
+are rejected. These conditions classify as protocol mismatch rather than a
+generic transport error.
+
+A remote `readOnlyHint` or `destructiveHint` describes intent only and is never a
+local policy grant: MCP proxy tools stay destructive and non-parallel locally, so
+they still require approval under an `Ask` policy. Product-managed catalogs are
+workspace-bounded and store only environment variable *names*; values resolve by
+name at spawn time. Catalog reads and writes are lock-guarded, and a corrupt,
+locked, symlinked, or non-regular-file catalog fails closed as a typed conflict
+instead of degrading to an empty tool list.
+
 Batch execution rules:
 
 - multiple non-destructive, parallel-safe calls may run concurrently;
@@ -378,6 +393,35 @@ a fresh completion can remap a legacy product route through server-issued IDs.
 C3 also completes responsive, focus, keyboard, reduced-motion, theme, and
 empty/loading/error/partial/success polish.
 
+The current CDH G1 control surface adds six canonical lifecycle events:
+`steer_accepted`, `steer_applied`, `steer_dropped`, `followup_queued`,
+`followup_dequeued`, and `followup_abandoned`. A product steer is persisted
+first and delivered through the live run's bounded control handle; the runtime
+accepts it only at a declared pre-model safe point and records a drop when a
+terminal outcome prevents application. Product follow-ups are server-owned,
+idempotent queue records. A final turn atomically claims the next queued item
+and launches a new exact product-session turn; a non-final or indeterminate
+turn abandons it for explicit confirmation or revoke. Startup recovery drains
+only idle sessions with safely pending work and does not replay a reserved
+side effect.
+
+The Composer exposes Steer and Follow-up modes while a run is active, retains
+the Stop action in either mode, and displays the server-backed control queue.
+The queue reflects durable status, supports revoke, and offers explicit
+confirmation for an abandoned follow-up. It does not synthesize a client-side
+follow-up run when the session appears idle.
+
+The current CDH G2 fork surface permits a branch only from an API-verified,
+terminal canonical run boundary. `product_session_forks` and its inherited-run
+records retain the parent identity, exact terminal sequence, and read-only
+source prefix even if the parent session metadata is deleted. A child begins
+with fresh runtime SessionId/JobId/RunId values: source TaskState is reused only
+to seed bounded history, not as a normal resume relation. Transcript projection
+marks the source prefix `inherited` and keeps child events in a separate local
+ledger. The product shell exposes Fork only for a completed latest turn and
+renders parent/child rows with the persisted fork point; catalog session loading
+has a fixed ProductStore collection limit rather than unbounded tree traversal.
+
 The web verification surface is:
 
 ```bash
@@ -403,7 +447,9 @@ recovery, and visual states with browser-boundary mocks. The gated
 `real-api.spec.ts` used by `local-full` exercises the default `/` product shell
 against the live Rust API and retains one bounded `/dev/workbench` smoke. The C3
 run passed migration, exact A/B continuation with refresh and product
-interactions, and the bounded advanced case (3/3). The provider runner now uses
+interactions, and the bounded advanced case (3/3). The current CDH G1/G2 run
+also passes a live wait-for-input steer, follow-up enqueue/revoke, final control
+status, and completed-session Fork/child-continuation case (5/5 total). The provider runner now uses
 the product shell and verifies exact browser-returned job/run IDs, but its
 external-provider Web gate was not run for C3.
 

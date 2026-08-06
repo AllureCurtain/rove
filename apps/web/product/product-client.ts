@@ -1,36 +1,69 @@
 import {
   ProductApiSchemaError,
   parseApiErrorResponse,
+  parseCreateProductControlRequest,
+  parseCreateProductForkRequest,
   parseCreateProductSessionRequest,
   parseCreateProductWorkspaceRequest,
   parseM1BrowserMigrationRequest,
   parseM1BrowserMigrationResponse,
   parseProductPreferences,
+  parseProductControl,
+  parseProductControlsResponse,
+  parseProductForkResponse,
+  parseProductForksResponse,
   parseProductProviderProfile,
+  parseProductProviderModelsResponse,
   parseProductProviderProfileRequest,
   parseProductProviderProfilesResponse,
   parseProductSession,
+  parseProductSessionModelConfigResponse,
+  parseProductSessionRunModelsResponse,
+  parseProductSessionUsageResponse,
+  parseProductFilesResponse,
+  parseProductFileContentEnvelope,
+  parseProductArtifactsResponse,
+  parseProductArtifactContentEnvelope,
+  parseProductSessionDiffResponse,
   parseProductSessionsResponse,
   parseProductTranscriptResponse,
   parseProductWorkspace,
+  parseUpdateProductSessionModelConfigRequest,
   parseProductWorkspacesResponse,
   parseUpdateProductPreferencesRequest,
   parseUpdateProductSessionRequest,
   type CreateProductProviderProfileRequest,
+  type CreateProductControlRequest,
+  type CreateProductForkRequest,
   type CreateProductSessionRequest,
   type CreateProductWorkspaceRequest,
   type M1BrowserMigrationRequest,
   type M1BrowserMigrationResponse,
   type ProductPreferences,
+  type ProductControl,
+  type ProductControlsResponse,
+  type ProductControlStatusFilter,
+  type ProductForkResponse,
+  type ProductForksResponse,
   type ProductProviderProfile,
+  type ProductProviderModelsResponse,
   type ProductProviderProfilesResponse,
   type ProductSession,
+  type ProductSessionModelConfig,
+  type ProductSessionRunModelsResponse,
+  type ProductSessionUsageResponse,
+  type ProductSessionDiffResponse,
+  type ProductArtifactsResponse,
+  type ProductArtifactContentEnvelope,
+  type ProductFileContentEnvelope,
+  type ProductFilesResponse,
   type ProductSessionsResponse,
   type ProductTranscriptResponse,
   type ProductWorkspace,
   type ProductWorkspacesResponse,
   type UpdateProductPreferencesRequest,
   type UpdateProductProviderProfileRequest,
+  type UpdateProductSessionModelConfigRequest,
   type UpdateProductSessionRequest,
 } from "./product-api-types";
 
@@ -63,6 +96,15 @@ export interface ProductApiRequestOptions {
   signal?: AbortSignal;
 }
 
+export const PRODUCT_EXPORT_FORMATS = ["json", "html", "markdown"] as const;
+export type ProductExportFormat = (typeof PRODUCT_EXPORT_FORMATS)[number];
+
+export interface ProductSessionEvidenceDownload {
+  filename: string;
+  mediaType: string;
+  content: Blob;
+}
+
 export interface ProductApiClient {
   listWorkspaces(): Promise<ProductWorkspacesResponse>;
   createWorkspace(
@@ -75,8 +117,47 @@ export interface ProductApiClient {
     sessionId: string,
     request: UpdateProductSessionRequest,
   ): Promise<ProductSession>;
+  getSessionModelConfig(sessionId: string): Promise<ProductSessionModelConfig>;
+  updateSessionModelConfig(
+    sessionId: string,
+    request: UpdateProductSessionModelConfigRequest,
+  ): Promise<ProductSessionModelConfig>;
+  listSessionRunModels(sessionId: string): Promise<ProductSessionRunModelsResponse>;
+  getSessionUsage(sessionId: string): Promise<ProductSessionUsageResponse>;
+  listWorkspaceFiles(workspaceId: string, query?: { prefix?: string; cursor?: string; limit?: number }): Promise<ProductFilesResponse>;
+  getWorkspaceFileContent(workspaceId: string, path: string): Promise<ProductFileContentEnvelope>;
+  workspaceFileDownloadUrl(workspaceId: string, path: string): string;
+  workspaceFilePreviewUrl(workspaceId: string, path: string): string;
+  listSessionArtifacts(sessionId: string, includeSystem?: boolean): Promise<ProductArtifactsResponse>;
+  getArtifactContent(sessionId: string, artifactId: string): Promise<ProductArtifactContentEnvelope>;
+  artifactDownloadUrl(sessionId: string, artifactId: string): string;
+  artifactPreviewUrl(sessionId: string, artifactId: string): string;
+  getSessionDiff(sessionId: string, scope?: "run" | "git" | "all"): Promise<ProductSessionDiffResponse>;
+  exportSessionEvidence(
+    sessionId: string,
+    format: ProductExportFormat,
+  ): Promise<ProductSessionEvidenceDownload>;
   deleteSession(sessionId: string): Promise<void>;
+  createFork(
+    sessionId: string,
+    request: CreateProductForkRequest,
+  ): Promise<ProductForkResponse>;
+  listForks(sessionId: string): Promise<ProductForksResponse>;
   getTranscript(sessionId: string): Promise<ProductTranscriptResponse>;
+  enqueueSteer(
+    sessionId: string,
+    request: CreateProductControlRequest,
+  ): Promise<ProductControl>;
+  enqueueFollowup(
+    sessionId: string,
+    request: CreateProductControlRequest,
+  ): Promise<ProductControl>;
+  listControls(
+    sessionId: string,
+    filter?: ProductControlStatusFilter,
+  ): Promise<ProductControlsResponse>;
+  revokeControl(sessionId: string, controlId: string): Promise<ProductControl>;
+  confirmFollowup(sessionId: string, controlId: string): Promise<ProductControl>;
   listProviderProfiles(): Promise<ProductProviderProfilesResponse>;
   createProviderProfile(
     request: CreateProductProviderProfileRequest,
@@ -86,6 +167,7 @@ export interface ProductApiClient {
     request: UpdateProductProviderProfileRequest,
   ): Promise<ProductProviderProfile>;
   deleteProviderProfile(profileId: string): Promise<void>;
+  listProviderModels(profileId: string): Promise<ProductProviderModelsResponse>;
   getPreferences(): Promise<ProductPreferences>;
   updatePreferences(
     request: UpdateProductPreferencesRequest,
@@ -165,6 +247,47 @@ async function requestNoContent(
       `product delete response must have status 204, received ${response.status}`,
     );
   }
+}
+
+async function requestEvidenceExport(
+  fetchImpl: typeof globalThis.fetch,
+  url: string,
+  sessionId: string,
+  format: ProductExportFormat,
+): Promise<ProductSessionEvidenceDownload> {
+  const response = await fetchImpl(url, { method: "POST", cache: "no-store" });
+  if (!response.ok) {
+    return throwProductApiError(response);
+  }
+  const expectedMediaType = {
+    json: "application/json",
+    html: "text/html",
+    markdown: "text/markdown",
+  }[format];
+  const mediaType = response.headers.get("content-type") ?? "";
+  if (!mediaType.toLowerCase().startsWith(expectedMediaType)) {
+    throw new ProductApiSchemaError(
+      `product evidence export must use ${expectedMediaType}`,
+    );
+  }
+  const content = await response.blob();
+  if (content.size > 16 * 1024 * 1024) {
+    throw new ProductApiSchemaError("product evidence export exceeds the 16 MiB client limit");
+  }
+  const extension = format === "markdown" ? "md" : format;
+  const fallback = `rove-session-${safeFilenamePart(sessionId)}-evidence.${extension}`;
+  const filename = attachmentFilename(response.headers.get("content-disposition")) ?? fallback;
+  return { filename, mediaType, content };
+}
+
+function attachmentFilename(value: string | null): string | null {
+  const match = value?.match(/(?:^|;)\s*filename="([A-Za-z0-9._-]+)"\s*(?:;|$)/i);
+  return match?.[1] ?? null;
+}
+
+function safeFilenamePart(value: string): string {
+  const safe = value.replace(/[^A-Za-z0-9_-]/g, "-").replace(/-+/g, "-").slice(0, 96);
+  return safe || "session";
 }
 
 function jsonRequest(
@@ -277,6 +400,176 @@ export function createProductApiClient(
       );
     },
 
+    async getSessionModelConfig(sessionId) {
+      return requestJson(
+        fetchImpl,
+        productUrl(
+          apiPrefix,
+          `/product/sessions/${encodeURIComponent(sessionId)}/model-config`,
+        ),
+        undefined,
+        parseProductSessionModelConfigResponse,
+      );
+    },
+
+    async updateSessionModelConfig(sessionId, input) {
+      const request = parseUpdateProductSessionModelConfigRequest(input);
+      return requestJson(
+        fetchImpl,
+        productUrl(
+          apiPrefix,
+          `/product/sessions/${encodeURIComponent(sessionId)}/model-config`,
+        ),
+        jsonRequest("PUT", JSON.stringify(request)),
+        parseProductSessionModelConfigResponse,
+      );
+    },
+
+    listSessionRunModels(sessionId) {
+      return requestJson(
+        fetchImpl,
+        productUrl(
+          apiPrefix,
+          `/product/sessions/${encodeURIComponent(sessionId)}/run-models`,
+        ),
+        undefined,
+        parseProductSessionRunModelsResponse,
+      );
+    },
+
+    
+    listWorkspaceFiles(workspaceId, query) {
+      const params = new URLSearchParams();
+      if (query?.prefix) params.set("prefix", query.prefix);
+      if (query?.cursor) params.set("cursor", query.cursor);
+      if (query?.limit !== undefined) params.set("limit", String(query.limit));
+      const suffix = params.size ? `?${params.toString()}` : "";
+      return requestJson(
+        fetchImpl,
+        productUrl(
+          apiPrefix,
+          `/product/workspaces/${encodeURIComponent(workspaceId)}/files${suffix}`,
+        ),
+        undefined,
+        parseProductFilesResponse,
+      );
+    },
+
+    getWorkspaceFileContent(workspaceId, path) {
+      const params = new URLSearchParams({ path });
+      return requestJson(
+        fetchImpl,
+        productUrl(
+          apiPrefix,
+          `/product/workspaces/${encodeURIComponent(workspaceId)}/files/content?${params.toString()}`,
+        ),
+        undefined,
+        parseProductFileContentEnvelope,
+      );
+    },
+
+    workspaceFileDownloadUrl(workspaceId, path) {
+      const params = new URLSearchParams({ path });
+      return productUrl(
+        apiPrefix,
+        `/product/workspaces/${encodeURIComponent(workspaceId)}/files/download?${params.toString()}`,
+      );
+    },
+
+    workspaceFilePreviewUrl(workspaceId, path) {
+      const params = new URLSearchParams({ path });
+      return productUrl(
+        apiPrefix,
+        `/product/workspaces/${encodeURIComponent(workspaceId)}/files/preview?${params.toString()}`,
+      );
+    },
+
+    listSessionArtifacts(sessionId, includeSystem) {
+      const params = new URLSearchParams();
+      if (includeSystem !== undefined) {
+        params.set("include_system", includeSystem ? "true" : "false");
+      }
+      const suffix = params.size ? `?${params.toString()}` : "";
+      return requestJson(
+        fetchImpl,
+        productUrl(
+          apiPrefix,
+          `/product/sessions/${encodeURIComponent(sessionId)}/artifacts${suffix}`,
+        ),
+        undefined,
+        parseProductArtifactsResponse,
+      );
+    },
+
+    getArtifactContent(sessionId, artifactId) {
+      return requestJson(
+        fetchImpl,
+        productUrl(
+          apiPrefix,
+          `/product/sessions/${encodeURIComponent(sessionId)}/artifacts/${encodeURIComponent(artifactId)}/content`,
+        ),
+        undefined,
+        parseProductArtifactContentEnvelope,
+      );
+    },
+
+    artifactDownloadUrl(sessionId, artifactId) {
+      return productUrl(
+        apiPrefix,
+        `/product/sessions/${encodeURIComponent(sessionId)}/artifacts/${encodeURIComponent(artifactId)}/download`,
+      );
+    },
+
+    artifactPreviewUrl(sessionId, artifactId) {
+      return productUrl(
+        apiPrefix,
+        `/product/sessions/${encodeURIComponent(sessionId)}/artifacts/${encodeURIComponent(artifactId)}/preview`,
+      );
+    },
+
+    getSessionDiff(sessionId, scope) {
+      const params = new URLSearchParams();
+      if (scope) params.set("scope", scope);
+      const suffix = params.size ? `?${params.toString()}` : "";
+      return requestJson(
+        fetchImpl,
+        productUrl(
+          apiPrefix,
+          `/product/sessions/${encodeURIComponent(sessionId)}/diff${suffix}`,
+        ),
+        undefined,
+        parseProductSessionDiffResponse,
+      );
+    },
+
+    exportSessionEvidence(sessionId, format) {
+      if (!PRODUCT_EXPORT_FORMATS.includes(format)) {
+        throw new ProductApiSchemaError("unsupported product evidence export format");
+      }
+      const query = new URLSearchParams({ format });
+      return requestEvidenceExport(
+        fetchImpl,
+        productUrl(
+          apiPrefix,
+          `/product/sessions/${encodeURIComponent(sessionId)}/export?${query.toString()}`,
+        ),
+        sessionId,
+        format,
+      );
+    },
+
+    getSessionUsage(sessionId) {
+      return requestJson(
+        fetchImpl,
+        productUrl(
+          apiPrefix,
+          `/product/sessions/${encodeURIComponent(sessionId)}/usage`,
+        ),
+        undefined,
+        parseProductSessionUsageResponse,
+      );
+    },
+
     deleteSession(sessionId) {
       return requestNoContent(
         fetchImpl,
@@ -284,6 +577,31 @@ export function createProductApiClient(
           apiPrefix,
           `/product/sessions/${encodeURIComponent(sessionId)}`,
         ),
+      );
+    },
+
+    async createFork(sessionId, input) {
+      const request = parseCreateProductForkRequest(input);
+      return requestJson(
+        fetchImpl,
+        productUrl(
+          apiPrefix,
+          `/product/sessions/${encodeURIComponent(sessionId)}/forks`,
+        ),
+        jsonRequest("POST", JSON.stringify(request)),
+        parseProductForkResponse,
+      );
+    },
+
+    listForks(sessionId) {
+      return requestJson(
+        fetchImpl,
+        productUrl(
+          apiPrefix,
+          `/product/sessions/${encodeURIComponent(sessionId)}/forks`,
+        ),
+        undefined,
+        parseProductForksResponse,
       );
     },
 
@@ -303,6 +621,63 @@ export function createProductApiClient(
         );
       }
       return transcript;
+    },
+
+    async enqueueSteer(sessionId, input) {
+      return createProductControl(
+        fetchImpl,
+        apiPrefix,
+        sessionId,
+        "steers",
+        input,
+      );
+    },
+
+    async enqueueFollowup(sessionId, input) {
+      return createProductControl(
+        fetchImpl,
+        apiPrefix,
+        sessionId,
+        "followups",
+        input,
+      );
+    },
+
+    listControls(sessionId, filter) {
+      const query = filter ? `?status=${encodeURIComponent(filter)}` : "";
+      return requestJson(
+        fetchImpl,
+        productUrl(
+          apiPrefix,
+          `/product/sessions/${encodeURIComponent(sessionId)}/controls${query}`,
+        ),
+        undefined,
+        parseProductControlsResponse,
+      );
+    },
+
+    revokeControl(sessionId, controlId) {
+      return requestJson(
+        fetchImpl,
+        productUrl(
+          apiPrefix,
+          `/product/sessions/${encodeURIComponent(sessionId)}/controls/${encodeURIComponent(controlId)}/revoke`,
+        ),
+        jsonRequest("POST", "{}"),
+        parseProductControl,
+      );
+    },
+
+    confirmFollowup(sessionId, controlId) {
+      return requestJson(
+        fetchImpl,
+        productUrl(
+          apiPrefix,
+          `/product/sessions/${encodeURIComponent(sessionId)}/controls/${encodeURIComponent(controlId)}/confirm`,
+        ),
+        jsonRequest("POST", "{}"),
+        parseProductControl,
+      );
     },
 
     listProviderProfiles() {
@@ -347,6 +722,18 @@ export function createProductApiClient(
       );
     },
 
+    listProviderModels(profileId) {
+      return requestJson(
+        fetchImpl,
+        productUrl(
+          apiPrefix,
+          `/product/provider-profiles/${encodeURIComponent(profileId)}/models`,
+        ),
+        undefined,
+        parseProductProviderModelsResponse,
+      );
+    },
+
     getPreferences() {
       return requestJson(
         fetchImpl,
@@ -376,4 +763,23 @@ export function createProductApiClient(
       );
     },
   };
+}
+
+async function createProductControl(
+  fetchImpl: typeof globalThis.fetch,
+  apiPrefix: string,
+  sessionId: string,
+  endpoint: "steers" | "followups",
+  input: CreateProductControlRequest,
+): Promise<ProductControl> {
+  const request = parseCreateProductControlRequest(input);
+  return requestJson(
+    fetchImpl,
+    productUrl(
+      apiPrefix,
+      `/product/sessions/${encodeURIComponent(sessionId)}/${endpoint}`,
+    ),
+    jsonRequest("POST", JSON.stringify(request)),
+    parseProductControl,
+  );
 }

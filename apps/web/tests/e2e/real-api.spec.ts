@@ -37,6 +37,8 @@ interface ProductTranscriptSnapshot {
   product_session_id: string;
   status: "complete" | "partial";
   segments: Array<{
+    inherited?: boolean;
+    source_product_session_id?: string;
     binding: {
       ordinal: number;
       runtime_job_id: string;
@@ -262,7 +264,7 @@ test.describe("real API product shell integration", () => {
       await expect
         .poll(async () => (await readPreferences(request)).default_approval_policy)
         .toBe("ask");
-      await page.getByLabel("Maximum steps per job").fill("1");
+      await page.getByLabel("Default maximum steps for new sessions").fill("1");
       await Promise.all([
         page.waitForResponse((response) => {
           if (
@@ -281,7 +283,7 @@ test.describe("real API product shell integration", () => {
             return false;
           }
         }),
-        page.getByRole("button", { name: "Save limit" }).click(),
+        page.getByRole("button", { name: "Save default" }).click(),
       ]);
 
       await page.goto("/settings/providers");
@@ -291,7 +293,14 @@ test.describe("real API product shell integration", () => {
       await expect(
         page
           .getByLabel("Message composer")
-          .getByRole("button", { name: "Change global next-run model default" })
+          .getByRole("button", { name: "Change session model settings" })
+          .getByText("fake-raw", { exact: true }),
+      ).not.toBeVisible();
+      await selectSessionModel(page, profileId, "fake-raw", 1);
+      await expect(
+        page
+          .getByLabel("Message composer")
+          .getByRole("button", { name: "Change session model settings" })
           .getByText("fake-raw", { exact: true }),
       ).toBeVisible();
 
@@ -303,7 +312,7 @@ test.describe("real API product shell integration", () => {
       await expect(
         page
           .getByLabel("Message composer")
-          .getByRole("button", { name: "Change global next-run model default" })
+          .getByRole("button", { name: "Change session model settings" })
           .getByText("fake-raw", { exact: true }),
       ).toBeVisible();
 
@@ -317,7 +326,7 @@ test.describe("real API product shell integration", () => {
         }),
         created,
       );
-      expect(approvalTurn.body.max_steps).toBe(1);
+      expectServerOwnedProductJobRequest(approvalTurn);
       const approval = page.getByLabel("Pending approval");
       await expect(approval.getByText(/Approval needed.*write_file/u)).toBeVisible();
       await Promise.all([
@@ -347,7 +356,7 @@ test.describe("real API product shell integration", () => {
         }),
         created,
       );
-      expect(inputTurn.body.max_steps).toBe(1);
+      expectServerOwnedProductJobRequest(inputTurn);
       const inputCard = page.locator(".input-card").filter({ hasText: inputPrompt });
       await expect(inputCard.getByText("Input requested")).toBeVisible();
       await inputCard.getByRole("textbox", { name: inputPrompt }).fill("main");
@@ -375,7 +384,7 @@ test.describe("real API product shell integration", () => {
         }),
         created,
       );
-      expect(cancelTurn.body.max_steps).toBe(1);
+      expectServerOwnedProductJobRequest(cancelTurn);
       await expect(
         page.locator(".input-card").filter({ hasText: cancelPrompt }),
       ).toBeVisible();
@@ -406,6 +415,228 @@ test.describe("real API product shell integration", () => {
       await expect(page.getByRole("textbox", { name: "Message" })).toBeEnabled();
       await page.keyboard.press("/");
       await expect(page.getByRole("textbox", { name: "Message" })).toBeFocused();
+    } catch (error) {
+      primaryError = error;
+    } finally {
+      await finalizeProductTest(
+        page,
+        request,
+        created,
+        baseline,
+        workspaceRoot,
+        primaryError,
+      );
+    }
+  });
+
+  test("applies steer and revokes a queued follow-up through the live product shell", async ({
+    page,
+    request,
+  }) => {
+    test.setTimeout(120_000);
+    const baseline = await readPreferences(request);
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "rove-real-api-controls-"));
+    const created = emptyCreatedRecords();
+    let primaryError: unknown | null = null;
+
+    try {
+      await detachActiveProductRoute(request, baseline);
+      await page.goto("/");
+      const { workspaceId, sessionId } = await openWorkspace(page, workspaceRoot, created);
+      const route = productSessionRoute(workspaceId, sessionId);
+
+      await page.goto("/settings/providers");
+      const profileId = await selectFakeRawProfile(page, created);
+      expect(profileId).toBeTruthy();
+      await page.goto(route);
+      await selectSessionModel(page, profileId, "fake-raw", 8);
+      await expect(
+        page
+          .getByLabel("Message composer")
+          .getByRole("button", { name: "Change session model settings" })
+          .getByText("fake-raw", { exact: true }),
+      ).toBeVisible();
+
+      const inputPrompt = "Which release branch should this control test use?";
+      const inputTurn = await sendMessage(
+        page,
+        JSON.stringify({
+          tool: "request_input",
+          args: { prompt: inputPrompt },
+        }),
+        created,
+      );
+      expectProductSessionRequest(inputTurn, sessionId);
+      expectServerOwnedProductJobRequest(inputTurn);
+      const inputCard = page.locator(".input-card").filter({ hasText: inputPrompt });
+      await expect(inputCard.getByText("Input requested")).toBeVisible();
+
+      const composer = page.getByLabel("Message composer");
+      const modes = composer.locator(".chat-composer__modes");
+      await expect(modes).toBeVisible();
+
+      const steerText = "Prioritize the release notes after the input.";
+      await modes.getByRole("button", { name: "Steer", exact: true }).click();
+      await composer.getByRole("textbox", { name: "Message" }).fill(steerText);
+      const steerResponse = page.waitForResponse(
+        (response) =>
+          response.request().method() === "POST" &&
+          new URL(response.url()).pathname ===
+            `/api/product/sessions/${sessionId}/steers`,
+      );
+      await composer
+        .locator(".chat-composer__row")
+        .getByRole("button", { name: "Steer", exact: true })
+        .click();
+      const steerId = await responseId(await steerResponse);
+      await expect(composer.getByText(steerText, { exact: true })).toBeVisible();
+
+      const followupText = "This follow-up must be revoked before completion.";
+      await modes.getByRole("button", { name: "Follow-up", exact: true }).click();
+      await composer.getByRole("textbox", { name: "Message" }).fill(followupText);
+      const followupResponse = page.waitForResponse(
+        (response) =>
+          response.request().method() === "POST" &&
+          new URL(response.url()).pathname ===
+            `/api/product/sessions/${sessionId}/followups`,
+      );
+      await composer
+        .locator(".chat-composer__row")
+        .getByRole("button", { name: "Queue", exact: true })
+        .click();
+      const followupId = await responseId(await followupResponse);
+      const queue = composer.getByLabel("Server-backed control queue");
+      const followupItem = queue.locator("li").filter({ hasText: followupText });
+      await expect(followupItem).toBeVisible();
+
+      const revokeResponse = page.waitForResponse(
+        (response) =>
+          response.request().method() === "POST" &&
+          new URL(response.url()).pathname ===
+            `/api/product/sessions/${sessionId}/controls/${followupId}/revoke`,
+      );
+      await followupItem
+        .getByRole("button", { name: "Revoke control" })
+        .click();
+      await revokeResponse;
+      await expect(followupItem).toHaveCount(0);
+
+      await inputCard.getByRole("textbox", { name: inputPrompt }).fill("main");
+      await Promise.all([
+        page.waitForResponse(
+          (response) =>
+            response.request().method() === "POST" &&
+            new URL(response.url()).pathname.includes("/api/jobs/") &&
+            new URL(response.url()).pathname.includes("/inputs/") &&
+            response.ok(),
+        ),
+        inputCard.getByRole("button", { name: "Send" }).click(),
+      ]);
+      await expectTurnCompleted(page, "main");
+      await expect
+        .poll(() => controlStatus(request, sessionId, steerId))
+        .toBe("applied");
+      await expect
+        .poll(() => controlStatus(request, sessionId, followupId))
+        .toBe("revoked");
+    } catch (error) {
+      primaryError = error;
+    } finally {
+      await finalizeProductTest(
+        page,
+        request,
+        created,
+        baseline,
+        workspaceRoot,
+        primaryError,
+      );
+    }
+  });
+
+  test("forks a completed session through the live product shell and keeps continuation independent", async ({
+    page,
+    request,
+  }) => {
+    test.setTimeout(120_000);
+    const baseline = await readPreferences(request);
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "rove-real-api-fork-"));
+    const created = emptyCreatedRecords();
+    let primaryError: unknown | null = null;
+
+    try {
+      await detachActiveProductRoute(request, baseline);
+      await page.goto("/");
+      const { workspaceId, sessionId: parentSessionId } = await openWorkspace(
+        page,
+        workspaceRoot,
+        created,
+      );
+      const parentRoute = productSessionRoute(workspaceId, parentSessionId);
+      const parentPrompt = `fork parent ${Date.now()}`;
+      const parentTurn = await sendMessage(page, parentPrompt, created);
+      expectProductSessionRequest(parentTurn, parentSessionId);
+      await expectTurnCompleted(page, `fake response: ${parentPrompt}`);
+
+      const parentTitle = await page.locator(".chat-pane__header h1").innerText();
+      const forkResponsePromise = page.waitForResponse(
+        (response) =>
+          response.request().method() === "POST" &&
+          new URL(response.url()).pathname ===
+            `/api/product/sessions/${parentSessionId}/forks` &&
+          response.status() === 201,
+      );
+      await page.getByRole("button", { name: "Fork", exact: true }).click();
+      const forkResponse = await forkResponsePromise;
+      const forkPayload = (await forkResponse.json()) as {
+        session?: { id?: unknown };
+      };
+      const childSessionId = forkPayload.session?.id;
+      if (typeof childSessionId !== "string" || !childSessionId) {
+        throw new Error("fork response did not include a child product session id");
+      }
+      created.sessionIds.push(childSessionId);
+      const childRoute = productSessionRoute(workspaceId, childSessionId);
+      await expect(page).toHaveURL(childRoute);
+      await expect(
+        page.getByRole("heading", { name: `Fork of ${parentTitle}` }),
+      ).toBeVisible();
+      const branches = page.getByLabel("Sessions and branches");
+      await expect(branches.locator('.session-branch[data-forked="true"]')).toHaveCount(1);
+      await expect(branches.locator(".session-item__lineage")).toContainText("Fork");
+
+      const childPrompt = `fork child ${Date.now()}`;
+      const childTurn = await sendMessage(page, childPrompt, created);
+      expectProductSessionRequest(childTurn, childSessionId);
+      expect(childTurn.resumedFromRunId).toBeNull();
+      await expectTurnCompleted(page, `fake response: ${childPrompt}`);
+
+      const childTranscript = await readTranscript(request, childSessionId);
+      expect(childTranscript.status).toBe("complete");
+      expect(childTranscript.segments).toHaveLength(2);
+      expect(childTranscript.segments[0].inherited).toBe(true);
+      expect(childTranscript.segments[0].source_product_session_id).toBe(parentSessionId);
+      expect(childTranscript.segments[0].binding.runtime_run_id).toBe(parentTurn.runId);
+      expect(childTranscript.segments[1].inherited).toBeFalsy();
+      expect(childTranscript.segments[1].binding.runtime_run_id).toBe(childTurn.runId);
+      expect(childTranscript.segments[1].binding.ordinal).toBe(2);
+
+      await page.reload();
+      await expect(page).toHaveURL(childRoute);
+      await expect(
+        page.getByLabel("Conversation").getByText(parentPrompt, { exact: true }),
+      ).toBeVisible();
+      await expect(
+        page.getByLabel("Conversation").getByText(childPrompt, { exact: true }),
+      ).toBeVisible();
+      await expect(branches.locator('.session-branch[data-forked="true"]')).toHaveCount(1);
+
+      await page.goto(parentRoute);
+      await expect(
+        page.getByLabel("Conversation").getByText(parentPrompt, { exact: true }),
+      ).toBeVisible();
+      await expect(
+        page.getByLabel("Conversation").getByText(childPrompt, { exact: true }),
+      ).toHaveCount(0);
     } catch (error) {
       primaryError = error;
     } finally {
@@ -585,6 +816,15 @@ function jobBody(request: Request): Record<string, unknown> {
 function expectProductSessionRequest(turn: StartedTurn, sessionId: string) {
   expect(turn.body.product_session_id).toBe(sessionId);
   expect(turn.body).not.toHaveProperty("resume");
+  expectServerOwnedProductJobRequest(turn);
+}
+
+function expectServerOwnedProductJobRequest(turn: StartedTurn) {
+  expect(turn.body).not.toHaveProperty("model");
+  expect(turn.body).not.toHaveProperty("max_steps");
+  expect(turn.body).not.toHaveProperty("provider");
+  expect(turn.body).not.toHaveProperty("approval");
+  expect(turn.body).not.toHaveProperty("resume");
 }
 
 async function expectTurnCompleted(page: Page, assistantText: string) {
@@ -611,11 +851,13 @@ async function cancelCurrentRun(page: Page) {
     ),
     page.getByRole("button", { name: "Stop run" }).click(),
   ]);
-  await expect(
-    page.getByLabel("Run inspector").getByText("Run cancelled", {
-      exact: true,
-    }),
-  ).toBeVisible({ timeout: 30_000 });
+  const inspector = page.getByLabel("Run inspector");
+  const status = inspector
+    .getByText("status", { exact: true })
+    .locator("xpath=following-sibling::strong");
+  await expect(status).toHaveText("Run cancelled", {
+    timeout: 30_000,
+  });
   await expect(page.getByRole("textbox", { name: "Message" })).toBeEnabled();
 }
 
@@ -630,6 +872,22 @@ async function readTranscript(
   const transcript = (await response.json()) as ProductTranscriptSnapshot;
   expect(transcript.product_session_id).toBe(sessionId);
   return transcript;
+}
+
+async function controlStatus(
+  request: APIRequestContext,
+  sessionId: string,
+  controlId: string,
+): Promise<string | null> {
+  const response = await request.get(
+    `/api/product/sessions/${encodeURIComponent(sessionId)}/controls`,
+  );
+  expect(response.ok()).toBe(true);
+  const body = (await response.json()) as {
+    controls?: Array<{ id?: unknown; status?: unknown }>;
+  };
+  const control = body.controls?.find((item) => item.id === controlId);
+  return typeof control?.status === "string" ? control.status : null;
 }
 
 async function selectFakeRawProfile(
@@ -679,6 +937,32 @@ async function selectFakeRawProfile(
     page.locator(".profile-row").filter({ hasText: "Real API fake raw" }),
   ).toBeVisible();
   return profileId;
+}
+
+async function selectSessionModel(
+  page: Page,
+  profileId: string,
+  model: string,
+  maxSteps: number,
+) {
+  const composer = page.getByLabel("Message composer");
+  await composer
+    .getByRole("button", { name: "Change session model settings" })
+    .click();
+  const dialog = composer.getByRole("dialog", { name: "Session model settings" });
+  await dialog.getByLabel("Session provider profile").selectOption(profileId);
+  await dialog.getByLabel("Session model").fill(model);
+  await dialog.getByLabel("Session max steps").fill(String(maxSteps));
+  await Promise.all([
+    page.waitForResponse(
+      (response) =>
+        response.request().method() === "PUT" &&
+        new URL(response.url()).pathname.endsWith("/model-config") &&
+        response.ok(),
+    ),
+    dialog.getByRole("button", { name: "Save session model" }).click(),
+  ]);
+  await expect(dialog).toHaveCount(0);
 }
 
 async function readPreferences(

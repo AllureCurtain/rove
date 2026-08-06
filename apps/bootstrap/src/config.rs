@@ -430,6 +430,23 @@ impl AppConfig {
         Ok(resolved)
     }
 
+    /// Resolve the product-managed MCP catalog only inside the selected workspace.
+    pub fn workspace_bounded_mcp_config_path(&self) -> anyhow::Result<PathBuf> {
+        let resolved = self.normalized_workspace_path(&self.tool.mcp_config_path);
+        if !resolved.starts_with(&self.source_summary.workspace_root) {
+            anyhow::bail!("tool.mcp_config_path resolves outside the selected workspace");
+        }
+        if let Some(parent) = resolved.parent()
+            && parent.exists()
+        {
+            let canonical_parent = parent.canonicalize()?;
+            if !canonical_parent.starts_with(&self.source_summary.workspace_root) {
+                anyhow::bail!("tool.mcp_config_path resolves outside the selected workspace");
+            }
+        }
+        Ok(resolved)
+    }
+
     pub fn rebase_to_workspace(&mut self, workspace_root: impl AsRef<Path>) {
         let workspace_root = workspace_root
             .as_ref()
@@ -1522,5 +1539,30 @@ system_prompt_path = "../outside/prompt.md"
             config.workspace_bounded_durable_memory_dir().unwrap(),
             inside.canonicalize().unwrap()
         );
+    }
+
+    #[test]
+    fn product_mcp_boundary_remains_strict_when_external_paths_are_enabled() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let workspace = tmp.path().join("workspace");
+        let outside = tmp.path().join("outside-mcp.json");
+        let inside = workspace.join(".rove/mcp_servers.json");
+        std::fs::create_dir_all(inside.parent().unwrap()).unwrap();
+
+        let mut config = AppConfig::default();
+        config.rebase_to_workspace(&workspace);
+        config.state.allow_external_paths = true;
+        config.tool.mcp_config_path = outside;
+        config.validate().unwrap();
+
+        let error = config.workspace_bounded_mcp_config_path().unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("tool.mcp_config_path resolves outside the selected workspace")
+        );
+
+        config.tool.mcp_config_path = inside.clone();
+        assert_eq!(config.workspace_bounded_mcp_config_path().unwrap(), inside);
     }
 }

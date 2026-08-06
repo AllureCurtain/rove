@@ -19,13 +19,44 @@ import type {
 
 const API_PREFIX = "/api";
 
+export class RoveApiError extends Error {
+  readonly status: number;
+  readonly code: string;
+
+  constructor(status: number, code: string, message: string) {
+    super(message);
+    this.name = "RoveApiError";
+    this.status = status;
+    this.code = code;
+  }
+}
+
 function apiUrl(path: string): string {
   return `${API_PREFIX}${path}`;
 }
 
 async function parseJson<T>(response: Response): Promise<T> {
   if (!response.ok) {
-    throw new Error(await response.text());
+    const text = await response.text();
+    let code = "http_error";
+    let message = `API request failed with status ${response.status}`;
+    try {
+      const payload: unknown = JSON.parse(text);
+      if (
+        typeof payload === "object" &&
+        payload !== null &&
+        "code" in payload &&
+        "error" in payload &&
+        typeof payload.code === "string" &&
+        typeof payload.error === "string"
+      ) {
+        code = payload.code;
+        message = payload.error;
+      }
+    } catch {
+      // Non-JSON error bodies are not safe UI diagnostics.
+    }
+    throw new RoveApiError(response.status, code, message);
   }
   return (await response.json()) as T;
 }

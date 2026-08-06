@@ -47,10 +47,12 @@ async fn runtime_registers_calls_and_classifies_stdio_mcp_tools() {
         &mut registry,
         vec![McpServerConfig {
             name: "mock-server".to_string(),
+            enabled: true,
             transport: McpTransport::Stdio,
             command: python_command().to_string(),
             args: vec![fixture("mcp_mock_server.py").to_string_lossy().to_string()],
             env: Default::default(),
+            env_names: Vec::new(),
             url: String::new(),
             policy: McpTransportPolicy::default(),
         }],
@@ -59,6 +61,11 @@ async fn runtime_registers_calls_and_classifies_stdio_mcp_tools() {
     .unwrap();
 
     assert_eq!(registered, 2);
+    let remotely_claimed_read_only = registry
+        .descriptor("mcp__mock_server__echo_remote")
+        .unwrap();
+    assert!(remotely_claimed_read_only.destructive);
+    assert!(!remotely_claimed_read_only.parallel_safe);
     let destructive = registry
         .descriptor("mcp__mock_server__delete_remote")
         .unwrap();

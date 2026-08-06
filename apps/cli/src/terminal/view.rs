@@ -1121,6 +1121,30 @@ impl From<&StreamEvent> for RunViewUpdate {
                 reason: reason.clone(),
                 output: output.clone(),
             },
+            StreamEvent::SteerAccepted { .. } => Self::ModelStatus {
+                status: "steer".to_string(),
+                message: "Steer accepted for the next model turn.".to_string(),
+            },
+            StreamEvent::SteerApplied { .. } => Self::ModelStatus {
+                status: "steer".to_string(),
+                message: "Steer applied to a model turn.".to_string(),
+            },
+            StreamEvent::SteerDropped { reason, .. } => Self::ModelStatus {
+                status: "steer".to_string(),
+                message: format!("Steer dropped: {reason}"),
+            },
+            StreamEvent::FollowupQueued { .. } => Self::ModelStatus {
+                status: "follow-up".to_string(),
+                message: "Follow-up queued for the next completed turn.".to_string(),
+            },
+            StreamEvent::FollowupDequeued { .. } => Self::ModelStatus {
+                status: "follow-up".to_string(),
+                message: "Follow-up dequeued to start its next turn.".to_string(),
+            },
+            StreamEvent::FollowupAbandoned { reason, .. } => Self::ModelStatus {
+                status: "follow-up".to_string(),
+                message: format!("Follow-up needs confirmation: {reason}"),
+            },
         }
     }
 }
@@ -1281,11 +1305,33 @@ mod tests {
                 reason: TerminationReason::Final,
                 output: Some("ok".to_string()),
             },
+            StreamEvent::SteerAccepted {
+                id: "steer-1".to_string(),
+                content: "focus on tests".to_string(),
+            },
+            StreamEvent::SteerApplied {
+                id: "steer-1".to_string(),
+            },
+            StreamEvent::SteerDropped {
+                id: "steer-2".to_string(),
+                reason: "run completed".to_string(),
+            },
+            StreamEvent::FollowupQueued {
+                id: "follow-up-1".to_string(),
+                content: "continue".to_string(),
+            },
+            StreamEvent::FollowupDequeued {
+                id: "follow-up-1".to_string(),
+            },
+            StreamEvent::FollowupAbandoned {
+                id: "follow-up-2".to_string(),
+                reason: "run cancelled".to_string(),
+            },
         ];
 
         let updates: Vec<RunViewUpdate> = events.iter().map(RunViewUpdate::from).collect();
 
-        assert_eq!(updates.len(), 16);
+        assert_eq!(updates.len(), 22);
         assert!(matches!(
             updates[0],
             RunViewUpdate::RunStarted {
@@ -1313,6 +1359,14 @@ mod tests {
                 reason: TerminationReason::Final,
                 ..
             }
+        ));
+        assert!(matches!(
+            updates[16],
+            RunViewUpdate::ModelStatus { ref status, .. } if status == "steer"
+        ));
+        assert!(matches!(
+            updates[19],
+            RunViewUpdate::ModelStatus { ref status, .. } if status == "follow-up"
         ));
     }
 

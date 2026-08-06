@@ -3,6 +3,9 @@ import { describe, expect, it, vi } from "vitest";
 import { ProductApiSchemaError } from "../product/product-api-types";
 import { ProductApiError } from "../product/product-client";
 import {
+  parseCreateProductMcpServerRequest,
+  parseProductMcpProbeResponse,
+  parseProductMcpServersResponse,
   parseProductMemoryTopicContentResponse,
   parseProductMemoryTopicsResponse,
   parseProductRuntimeInfo,
@@ -14,13 +17,39 @@ import { createSettingsPlatformClient } from "./settings-platform-client";
 const topic = {
   slug: "project-conventions",
   title: "Project Conventions",
+  layer: "durable",
   memory_type: "project",
   scope: "project",
+  source: "product_settings",
   confidence: 0.8,
   created_at: "2026-07-27T00:00:00Z",
   updated_at: "2026-07-27T01:00:00Z",
   description: "project memory",
   metadata_truncated: false,
+} as const;
+
+const mcpServer = {
+  name: "workspace_tools",
+  enabled: true,
+  transport: "stdio",
+  command: "python",
+  args: ["mcp_server.py"],
+  env_names: ["WORKSPACE_MCP_TOKEN"],
+  request_timeout_ms: 5_000,
+} as const;
+
+const mcpProbe = {
+  server_name: "workspace_tools",
+  transport: "stdio",
+  tools: [
+    {
+      name: "read_workspace",
+      description: "Read a workspace file",
+      destructive: true,
+      parallel_safe: false,
+    },
+  ],
+  tested_at: "2026-08-05T12:00:00Z",
 } as const;
 
 const preferences = {
@@ -152,6 +181,37 @@ describe("settings platform API types", () => {
       }),
     ).toThrow(ProductApiSchemaError);
   });
+
+  it("strictly validates secret-free MCP configs and local tool policy", () => {
+    expect(
+      parseProductMcpServersResponse({ servers: [mcpServer], total: 1 }),
+    ).toEqual({ servers: [mcpServer], total: 1 });
+    expect(parseProductMcpProbeResponse(mcpProbe)).toEqual(mcpProbe);
+    expect(() =>
+      parseCreateProductMcpServerRequest({
+        ...mcpServer,
+        env: { WORKSPACE_MCP_TOKEN: "raw-secret" },
+      }),
+    ).toThrow(ProductApiSchemaError);
+    expect(() =>
+      parseCreateProductMcpServerRequest({
+        ...mcpServer,
+        args: ["--token=raw-secret"],
+      }),
+    ).toThrow(ProductApiSchemaError);
+    expect(() =>
+      parseCreateProductMcpServerRequest({
+        ...mcpServer,
+        name: "unsafe-name",
+      }),
+    ).toThrow(ProductApiSchemaError);
+    expect(() =>
+      parseProductMcpProbeResponse({
+        ...mcpProbe,
+        tools: [{ ...mcpProbe.tools[0], destructive: false }],
+      }),
+    ).toThrow(ProductApiSchemaError);
+  });
 });
 
 describe("settings platform client", () => {
@@ -167,10 +227,59 @@ describe("settings platform client", () => {
           body: typeof init?.body === "string" ? init.body : undefined,
         });
         if (
-          url === "/api/product/memory/topics?workspace_id=workspace-1" &&
+          url ===
+            "/api/product/memory/topics?workspace_id=workspace-1&q=project+rules&memory_type=project&scope=project&source=product_settings" &&
           method === "GET"
         ) {
           return jsonResponse({ topics: [topic], total: 1 });
+        }
+        if (
+          url === "/api/product/memory/topics?workspace_id=workspace-1" &&
+          method === "POST"
+        ) {
+          const request = JSON.parse(String(init?.body)) as Record<
+            string,
+            unknown
+          >;
+          return jsonResponse(
+            {
+              topic: {
+                ...topic,
+                slug: request.slug,
+                title: request.title,
+                memory_type: request.memory_type,
+                scope: request.scope,
+                confidence: request.confidence,
+                description: request.description,
+              },
+              content: request.content,
+              truncated: false,
+            },
+            201,
+          );
+        }
+        if (
+          url ===
+            "/api/product/memory/topics/project-conventions?workspace_id=workspace-1" &&
+          method === "PUT"
+        ) {
+          const request = JSON.parse(String(init?.body)) as Record<
+            string,
+            unknown
+          >;
+          return jsonResponse({
+            topic: {
+              ...topic,
+              title: request.title,
+              memory_type: request.memory_type,
+              scope: request.scope,
+              confidence: request.confidence,
+              description: request.description,
+              updated_at: "2026-07-27T02:00:00Z",
+            },
+            content: request.content,
+            truncated: false,
+          });
         }
         if (
           url ===
@@ -216,7 +325,30 @@ describe("settings platform client", () => {
     );
     const client = createSettingsPlatformClient({ fetch: fetchMock });
 
-    await client.listMemoryTopics("workspace-1");
+    await client.listMemoryTopics("workspace-1", {
+      q: " project rules ",
+      memory_type: "project",
+      scope: "project",
+      source: "product_settings",
+    });
+    await client.createMemoryTopic("workspace-1", {
+      slug: "created-topic",
+      title: "Created Topic",
+      memory_type: "reference",
+      scope: "global",
+      confidence: 0.9,
+      description: "Created in Settings",
+      content: "Created durable fact.\n",
+    });
+    await client.updateMemoryTopic("workspace-1", "project-conventions", {
+      title: "Updated Conventions",
+      memory_type: "project",
+      scope: "project",
+      confidence: 0.95,
+      description: "Updated in Settings",
+      content: "Updated durable fact.\n",
+      expected_updated_at: topic.updated_at,
+    });
     await client.getMemoryTopic("workspace-1", "project-conventions");
     await client.deleteMemoryTopic("workspace-1", "project-conventions");
     await client.getRuntimeInfo();
@@ -226,7 +358,9 @@ describe("settings platform client", () => {
     expect(updated.default_approval_policy).toBe("never");
     expect(updated.provider_selection?.approval).toBe("never");
     expect(calls.map(({ url, method }) => `${method} ${url}`)).toEqual([
-      "GET /api/product/memory/topics?workspace_id=workspace-1",
+      "GET /api/product/memory/topics?workspace_id=workspace-1&q=project+rules&memory_type=project&scope=project&source=product_settings",
+      "POST /api/product/memory/topics?workspace_id=workspace-1",
+      "PUT /api/product/memory/topics/project-conventions?workspace_id=workspace-1",
       "GET /api/product/memory/topics/project-conventions?workspace_id=workspace-1",
       "DELETE /api/product/memory/topics/project-conventions?workspace_id=workspace-1",
       "GET /api/product/runtime",
@@ -257,6 +391,20 @@ describe("settings platform client", () => {
     await expect(
       client.getMemoryTopic("workspace-1", "../private"),
     ).rejects.toBeInstanceOf(ProductApiSchemaError);
+    await expect(
+      client.createMemoryTopic("workspace-1", {
+        slug: "unsafe-title",
+        title: "Unsafe](topics/escape.md)",
+        memory_type: "project",
+        scope: "project",
+        confidence: 0.8,
+        description: "must not send",
+        content: "content",
+      }),
+    ).rejects.toBeInstanceOf(ProductApiSchemaError);
+    expect(() =>
+      client.listMemoryTopics("workspace-1", { q: "line\nbreak" }),
+    ).toThrow(ProductApiSchemaError);
     expect(() => client.listMemoryTopics("\u0000workspace")).toThrow(
       ProductApiSchemaError,
     );
@@ -307,5 +455,111 @@ describe("settings platform client", () => {
     await expect(
       droppedSelectionClient.updateDefaultApprovalPolicy(preferences, "ask"),
     ).rejects.toBeInstanceOf(ProductApiSchemaError);
+  });
+
+  it("covers workspace MCP CRUD and probe without transmitting environment values", async () => {
+    const calls: Array<{ url: string; method: string; body?: string }> = [];
+    const fetchMock: typeof globalThis.fetch = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+        const body = typeof init?.body === "string" ? init.body : undefined;
+        calls.push({ url, method, body });
+        if (
+          url === "/api/product/mcp/servers?workspace_id=workspace-1" &&
+          method === "GET"
+        ) {
+          return jsonResponse({ servers: [mcpServer], total: 1 });
+        }
+        if (
+          url === "/api/product/mcp/servers?workspace_id=workspace-1" &&
+          method === "POST"
+        ) {
+          return jsonResponse(JSON.parse(body ?? "{}"), 201);
+        }
+        if (
+          url ===
+            "/api/product/mcp/servers/workspace_tools?workspace_id=workspace-1" &&
+          method === "PUT"
+        ) {
+          return jsonResponse({ name: "workspace_tools", ...JSON.parse(body ?? "{}") });
+        }
+        if (
+          url ===
+            "/api/product/mcp/servers/workspace_tools/probe?workspace_id=workspace-1" &&
+          method === "POST"
+        ) {
+          return jsonResponse(mcpProbe);
+        }
+        if (
+          url ===
+            "/api/product/mcp/servers/workspace_tools?workspace_id=workspace-1" &&
+          method === "DELETE"
+        ) {
+          return new Response(null, { status: 204 });
+        }
+        return jsonResponse({ code: "not_found", error: "unexpected route" }, 404);
+      },
+    );
+    const client = createSettingsPlatformClient({ fetch: fetchMock });
+
+    await client.listMcpServers("workspace-1");
+    await client.createMcpServer("workspace-1", {
+      ...mcpServer,
+      args: [...mcpServer.args],
+      env_names: [...mcpServer.env_names],
+    });
+    await client.updateMcpServer("workspace-1", "workspace_tools", {
+      enabled: false,
+      transport: "stdio",
+      command: "python",
+      args: ["mcp_server.py"],
+      env_names: ["WORKSPACE_MCP_TOKEN"],
+      request_timeout_ms: 9_000,
+    });
+    await client.probeMcpServer("workspace-1", "workspace_tools");
+    await client.deleteMcpServer("workspace-1", "workspace_tools");
+
+    expect(calls.map(({ method, url }) => `${method} ${url}`)).toEqual([
+      "GET /api/product/mcp/servers?workspace_id=workspace-1",
+      "POST /api/product/mcp/servers?workspace_id=workspace-1",
+      "PUT /api/product/mcp/servers/workspace_tools?workspace_id=workspace-1",
+      "POST /api/product/mcp/servers/workspace_tools/probe?workspace_id=workspace-1",
+      "DELETE /api/product/mcp/servers/workspace_tools?workspace_id=workspace-1",
+    ]);
+    const serializedBodies = calls
+      .map((call) => call.body ?? "")
+      .join("\n");
+    expect(serializedBodies).toContain('"env_names":["WORKSPACE_MCP_TOKEN"]');
+    expect(serializedBodies).not.toContain('"env"');
+    expect(serializedBodies).not.toContain("raw-secret");
+
+    const unsafeClient = createSettingsPlatformClient({ fetch: vi.fn() });
+    await expect(
+      unsafeClient.createMcpServer(
+        "workspace-1",
+        {
+          ...mcpServer,
+          env: { WORKSPACE_MCP_TOKEN: "raw-secret" },
+        } as never,
+      ),
+    ).rejects.toBeInstanceOf(ProductApiSchemaError);
+  });
+
+  it("preserves typed MCP probe failures", async () => {
+    const client = createSettingsPlatformClient({
+      fetch: vi.fn(async () =>
+        jsonResponse(
+          { code: "product_mcp_timeout", error: "the MCP probe timed out" },
+          504,
+        ),
+      ),
+    });
+    await expect(
+      client.probeMcpServer("workspace-1", "workspace_tools"),
+    ).rejects.toMatchObject({
+      status: 504,
+      code: "product_mcp_timeout",
+    } satisfies Partial<ProductApiError>);
   });
 });

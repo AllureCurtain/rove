@@ -5,6 +5,7 @@ import {
   fetchRunReport,
   listProviderModels,
   listRuns,
+  RoveApiError,
   submitApproval,
   testProvider,
 } from "./rove-client";
@@ -236,6 +237,31 @@ describe("rove client", () => {
       "official/gpt-compatible",
     ]);
     expect(result.models_count).toBe(2);
+  });
+
+  it("preserves typed provider failure codes without exposing arbitrary bodies", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 429,
+      text: async () => JSON.stringify({
+        code: "provider_rate_limited",
+        error: "provider rate limited the inventory request",
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const request = testProvider({
+      provider: {
+        provider_type: "fake",
+        api_base: "",
+      },
+    });
+    await expect(request).rejects.toMatchObject({
+      name: "RoveApiError",
+      status: 429,
+      code: "provider_rate_limited",
+      message: "provider rate limited the inventory request",
+    } satisfies Partial<RoveApiError>);
   });
 
   it("sends resume mode when creating a resumed job", async () => {

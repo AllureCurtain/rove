@@ -278,11 +278,40 @@ pub(crate) fn run_planned_loop<'a>(
             }
 
             if cancel_token.is_cancelled() {
+                if let Some(rx) = ctx.steer_rx.as_ref() {
+                    let mut r = rx.lock().await;
+                    while let Ok(msg) = r.try_recv() {
+                        yield LoopItem::Event(StreamEvent::SteerDropped {
+                            id: msg.id.0,
+                            reason: "cancelled".to_string(),
+                        });
+                    }
+                }
                 yield LoopItem::Complete {
                     reason: TerminationReason::Cancelled,
                     output: None,
                 };
                 return;
+            }
+
+            // SAFE POINT — drain queued steers at the step boundary, before the
+            // next step's prompt is assembled. Mirrors the drain in the
+            // unplanned loop.
+            let mut accepted_steer_ids = Vec::new();
+            if let Some(rx) = ctx.steer_rx.as_ref() {
+                let mut r = rx.lock().await;
+                while let Ok(msg) = r.try_recv() {
+                    let id = msg.id.0;
+                    state.working_memory.push(Message::user(msg.content.clone()));
+                    if let Some(lifecycle) = ctx.steer_lifecycle.as_ref() {
+                        lifecycle.accepted(id.clone()).await;
+                    }
+                    yield LoopItem::Event(StreamEvent::SteerAccepted {
+                        id: id.clone(),
+                        content: msg.content,
+                    });
+                    accepted_steer_ids.push(id);
+                }
             }
 
             if active_plan.is_complete() {
@@ -344,6 +373,7 @@ pub(crate) fn run_planned_loop<'a>(
                 compact_summary: state.compact_summary.take(),
                 history: std::mem::take(&mut state.history),
                 compaction: compaction.clone(),
+                accepted_steer_ids,
             };
             let mut runner = run_step(ctx.clone(), runner_input, cancel_token.clone());
             let runner_result = loop {

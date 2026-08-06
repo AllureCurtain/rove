@@ -242,6 +242,9 @@ approval/input/cancel/resume, or the API proxy. Follow the opt-in gates in
 ### Integration and real services
 
 - Use `scripts/integration-smoke.ps1` for the local full stack when appropriate.
+- Use `scripts/product-acceptance.ps1` or `scripts/product-acceptance.sh` for the
+  full gate sweep with a machine-readable `PRODUCT_ACCEPTANCE_REPORT.json`. Never
+  hand-edit that report: a status without a real exit code is a fake PASS.
 - Provider, real MCP, and real browser gates are opt-in. Never assume credentials
   or external services are available.
 - A skipped real-service test only proves the skip path, not interoperability.

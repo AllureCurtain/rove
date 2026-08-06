@@ -64,6 +64,7 @@ export function createRunController(
   dispatch: (action: WorkbenchAction) => void,
   options: {
     onTerminal?: () => void;
+    onStreamEvent?: (event: StreamEvent) => void;
   } = {},
 ): RunController {
   let eventSource: EventSource | null = null;
@@ -157,6 +158,7 @@ export function createRunController(
       event: payload,
       seq: parseEventSeq(message.lastEventId),
     });
+    options.onStreamEvent?.(payload);
     if (payload.type === "run_completed") {
       closeStream();
       options.onTerminal?.();

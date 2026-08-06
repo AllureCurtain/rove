@@ -5,20 +5,29 @@ import { type KeyboardEvent, useEffect, useRef } from "react";
 
 import type { ToolCallView, WorkbenchState } from "../lib/rove-state";
 import type { TranscriptRestoreState } from "../state/transcript-projection";
+import type { SessionUsageState } from "../state/use-session-usage";
+import { ArtifactPanel } from "./ArtifactPanel";
+import { DiffPanel } from "./DiffPanel";
+import { ExportPanel } from "./ExportPanel";
+import { FilesPanel } from "./FilesPanel";
 
 export function RunInspector({
   productSessionId,
+  workspaceId,
   collapsed,
   onToggle,
   runState,
   restoreState,
+  sessionUsage,
   dialogOpen = false,
 }: {
   productSessionId: string;
+  workspaceId?: string;
   collapsed: boolean;
   onToggle: () => void;
   runState: WorkbenchState;
   restoreState?: TranscriptRestoreState;
+  sessionUsage?: SessionUsageState;
   dialogOpen?: boolean;
 }) {
   const closeButtonRef = useRef<HTMLButtonElement>(null);
@@ -88,6 +97,7 @@ export function RunInspector({
         </button>
       </div>
       <div className="inspector-body">
+        <ExportPanel sessionId={productSessionId} />
         {phase === "empty" ? (
           <div className="inspector-state" data-tone="empty" role="status">
             <strong>No active run</strong>
@@ -172,12 +182,29 @@ export function RunInspector({
                 <div><span>cached</span><strong>{formatNumber(runState.runUsage.cached_tokens ?? 0)}</strong></div>
                 <div><span>total</span><strong>{formatNumber(runState.runUsage.total_tokens)}</strong></div>
                 <div>
+                  <span>session total</span>
+                  <strong>
+                    {sessionUsage?.status === "ready"
+                      ? formatNumber(sessionUsage.data.totals.total_tokens)
+                      : sessionUsage?.status === "loading"
+                        ? "Loading…"
+                        : "Not loaded"}
+                  </strong>
+                </div>
+                <div>
                   <span>context estimate</span>
-                  <strong>{runState.promptBuild ? `${formatNumber(runState.promptBuild.token_estimate)} tokens` : "Not emitted"}</strong>
+                  <strong>
+                    {sessionUsage?.status === "ready" &&
+                    sessionUsage.data.latest_context
+                      ? formatContextOccupancy(sessionUsage.data.latest_context)
+                      : runState.promptBuild
+                        ? `${formatNumber(runState.promptBuild.token_estimate)} tokens`
+                        : "Not emitted"}
+                  </strong>
                 </div>
                 <div>
                   <span>cost</span>
-                  <strong>Unavailable</strong>
+                  <strong>{formatSessionCost(sessionUsage)}</strong>
                 </div>
               </div>
               {runState.promptBuild ? (
@@ -193,11 +220,37 @@ export function RunInspector({
                   {runState.promptCompaction.degraded ? ", degraded fallback used" : ""}.
                 </p>
               ) : null}
+              {sessionUsage?.status === "ready" &&
+              sessionUsage.data.latest_context?.compaction_mode ? (
+                <p className="inspector-empty-line">
+                  Durable compaction: {sessionUsage.data.latest_context.compaction_mode.replaceAll("_", " ")}
+                  {sessionUsage.data.latest_context.compaction_auto_triggered ? ", automatic" : ""}
+                  {sessionUsage.data.latest_context.compaction_degraded ? ", degraded" : ""}; {formatNumber(sessionUsage.data.latest_context.compacted_history_messages)} messages compacted
+                  {sessionUsage.data.latest_context.compaction_source_messages > 0
+                    ? ` from ${formatNumber(sessionUsage.data.latest_context.compaction_source_messages)}`
+                    : ""}.
+                </p>
+              ) : null}
+              {sessionUsage?.status === "ready" &&
+              sessionUsage.data.partial_reasons.length > 0 ? (
+                <p className="inspector-empty-line">
+                  Partial usage: {sessionUsage.data.partial_reasons[0]}
+                  {sessionUsage.data.partial_reasons.length > 1
+                    ? ` (+${sessionUsage.data.partial_reasons.length - 1} more)`
+                    : ""}
+                </p>
+              ) : null}
+              {sessionUsage?.status === "error" ? (
+                <p className="inspector-empty-line">Session usage unavailable: {sessionUsage.message}</p>
+              ) : null}
               <p className="inspector-footnote">
-                Cost requires a trusted server pricing snapshot and is not inferred in the browser.
+                Cost uses the server pricing snapshot frozen per run. Unpriced models stay unavailable; local fake models report explicit zero cost.
               </p>
             </section>
 
+            {workspaceId ? <FilesPanel workspaceId={workspaceId} /> : null}
+            <ArtifactPanel sessionId={productSessionId} />
+            <DiffPanel sessionId={productSessionId} />
             <section className="inspector-section">
               <h3>Plan</h3>
               {runState.plan ? (
@@ -288,9 +341,7 @@ export function RunInspector({
                   ))}
                 </ul>
               )}
-              <p className="inspector-footnote">
-                References are canonical text only. The current product API does not expose artifact preview or download.
-              </p>
+              <p className="inspector-footnote">Opaque references resolve only through their bound product session.</p>
             </section>
 
             <section className="inspector-section">
@@ -429,3 +480,43 @@ function restoreStatusLabel(state: TranscriptRestoreState | undefined): string {
       return "Restore failed";
   }
 }
+
+function formatSessionCost(sessionUsage: SessionUsageState | undefined): string {
+  if (!sessionUsage || sessionUsage.status === "idle") {
+    return "Not loaded";
+  }
+  if (sessionUsage.status === "loading") {
+    return "Loading…";
+  }
+  if (sessionUsage.status === "error") {
+    return "Unavailable";
+  }
+  const cost = sessionUsage.data.totals_cost;
+  if (!cost) {
+    return "Unavailable";
+  }
+  if (cost.availability === "unpriced" || cost.total_usd === undefined || cost.total_usd === null) {
+    return "Unavailable";
+  }
+  if (cost.availability === "local_zero") {
+    return `${cost.currency} 0.00 (local)`;
+  }
+  const digits = cost.total_usd > 0 && cost.total_usd < 0.01 ? 6 : 2;
+  return `${cost.currency} ${cost.total_usd.toFixed(digits)}`;
+}
+
+function formatContextOccupancy(context: {
+  token_estimate: number;
+  context_window?: number;
+}): string {
+  const used = formatNumber(context.token_estimate);
+  if (!context.context_window) {
+    return `${used} tokens / window unavailable`;
+  }
+  const percentage = Math.min(
+    999,
+    Math.round((context.token_estimate / context.context_window) * 100),
+  );
+  return `${used} / ${formatNumber(context.context_window)} (${percentage}%)`;
+}
+

@@ -3,6 +3,8 @@ import { describe, expect, it, vi } from "vitest";
 import {
   ProductApiSchemaError,
   PRODUCT_ERROR_CODES,
+  parseCreateProductControlRequest,
+  parseProductControl,
   parseProductPreferences,
   parseProductProviderProfileRequest,
   parseProductTranscriptResponse,
@@ -31,6 +33,29 @@ const session = {
   updated_at: "2026-07-26T00:00:00.000Z",
 };
 
+const forkedSession = {
+  ...session,
+  id: "01J00000000000000000000008",
+  title: "Session fork",
+  parent_session_id: session.id,
+  fork_point_run_id: "01J00000000000000000000006",
+  fork_point_seq: 4,
+};
+
+const fork = {
+  id: "01J00000000000000000000009",
+  parent_product_session_id: session.id,
+  child_product_session_id: forkedSession.id,
+  parent_workspace_id: workspace.id,
+  parent_title: session.title,
+  source_runtime_session_id: "01J00000000000000000000004",
+  source_runtime_job_id: "01J00000000000000000000005",
+  source_runtime_run_id: "01J00000000000000000000006",
+  fork_at_event_seq: 4,
+  idempotency_key: "fork-session-1",
+  created_at: "2026-07-26T00:00:00.000Z",
+};
+
 const providerProfile = {
   id: "01J00000000000000000000003",
   label: "Gateway",
@@ -39,6 +64,16 @@ const providerProfile = {
   api_key_env: "GATEWAY_API_KEY",
   default_model: "test/model",
   created_at: "2026-07-26T00:00:00.000Z",
+  updated_at: "2026-07-26T00:00:00.000Z",
+};
+
+const sessionModelConfig = {
+  product_session_id: session.id,
+  profile_id: providerProfile.id,
+  model: "test/model",
+  reasoning: "default",
+  max_steps: 8,
+  revision: 1,
   updated_at: "2026-07-26T00:00:00.000Z",
 };
 
@@ -57,6 +92,17 @@ const preferences = {
   },
 };
 
+const control = {
+  id: "01J00000000000000000000007",
+  product_session_id: session.id,
+  kind: "steer",
+  idempotency_key: "control-1",
+  content: "use the safe path",
+  status: "pending",
+  seq: 1,
+  created_at: "2026-07-26T00:00:00.000Z",
+};
+
 function transcriptSegment(
   ordinal = 1,
   productSessionId = session.id,
@@ -70,6 +116,7 @@ function transcriptSegment(
       runtime_run_id: `01J0000000000000000000000${5 + ordinal}`,
       bound_at: "2026-07-26T00:00:00.000Z",
     },
+    inherited: false,
     run_status: "running",
     observed_through_seq: 1,
     last_event_seq: 1,
@@ -135,6 +182,12 @@ describe("product API client", () => {
         if (url === "/api/product/sessions" && method === "POST") {
           return jsonResponse(session, 201);
         }
+        if (url.endsWith(`/product/sessions/${session.id}/forks`) && method === "POST") {
+          return jsonResponse({ fork, session: forkedSession }, 201);
+        }
+        if (url.endsWith(`/product/sessions/${session.id}/forks`) && method === "GET") {
+          return jsonResponse({ forks: [fork] });
+        }
         if (url.endsWith(`/product/sessions/${session.id}`)) {
           return jsonResponse({ ...session, title: "Renamed" });
         }
@@ -147,6 +200,27 @@ describe("product API client", () => {
             segments: [],
           });
         }
+        if (url.endsWith(`/product/sessions/${session.id}/model-config`)) {
+          return jsonResponse(sessionModelConfig);
+        }
+        if (url.endsWith(`/product/sessions/${session.id}/run-models`)) {
+          return jsonResponse({ runs: [] });
+        }
+        if (url.endsWith(`/product/sessions/${session.id}/steers`)) {
+          return jsonResponse(control, 201);
+        }
+        if (url.endsWith(`/product/sessions/${session.id}/followups`)) {
+          return jsonResponse({ ...control, kind: "followup", seq: 2 }, 201);
+        }
+        if (url.endsWith(`/product/sessions/${session.id}/controls`)) {
+          return jsonResponse({ controls: [control] });
+        }
+        if (url.endsWith(`/controls/${control.id}/revoke`)) {
+          return jsonResponse({ ...control, status: "revoked" });
+        }
+        if (url.endsWith(`/controls/${control.id}/confirm`)) {
+          return jsonResponse({ ...control, kind: "followup", status: "pending" });
+        }
         if (url === "/api/product/provider-profiles" && method === "GET") {
           return jsonResponse({ provider_profiles: [providerProfile] });
         }
@@ -155,6 +229,21 @@ describe("product API client", () => {
         }
         if (url.endsWith(`/product/provider-profiles/${providerProfile.id}`)) {
           return jsonResponse({ ...providerProfile, label: "Updated" });
+        }
+        if (url.endsWith(`/product/provider-profiles/${providerProfile.id}/models`)) {
+          return jsonResponse({
+            profile_id: providerProfile.id,
+            default_model: providerProfile.default_model,
+            models: [
+              {
+                id: providerProfile.default_model,
+                supports_reasoning: false,
+                supported_reasoning: [],
+                reasoning_unavailable_reason:
+                  "Reasoning controls are only available for OpenAI Responses profiles.",
+              },
+            ],
+          });
         }
         if (url === "/api/product/preferences" && method === "GET") {
           return jsonResponse(preferences);
@@ -177,8 +266,33 @@ describe("product API client", () => {
     await client.deleteWorkspace(workspace.id);
     await client.listSessions(workspace.id);
     await client.createSession({ workspace_id: workspace.id, title: "Session" });
+    await client.createFork(session.id, {
+      fork_at_run_id: fork.source_runtime_run_id,
+      idempotency_key: fork.idempotency_key,
+    });
+    await client.listForks(session.id);
     await client.updateSession(session.id, { title: "Renamed" });
     await client.getTranscript(session.id);
+    await client.getSessionModelConfig(session.id);
+    await client.updateSessionModelConfig(session.id, {
+      profile_id: providerProfile.id,
+      model: "test/model",
+      reasoning: "default",
+      max_steps: 8,
+      expected_revision: 1,
+    });
+    await client.listSessionRunModels(session.id);
+    await client.enqueueSteer(session.id, {
+      content: control.content,
+      idempotency_key: control.idempotency_key,
+    });
+    await client.enqueueFollowup(session.id, {
+      content: "continue after the final answer",
+      idempotency_key: "control-2",
+    });
+    await client.listControls(session.id);
+    await client.revokeControl(session.id, control.id);
+    await client.confirmFollowup(session.id, control.id);
     await client.deleteSession(session.id);
     await client.listProviderProfiles();
     await client.createProviderProfile({
@@ -195,6 +309,7 @@ describe("product API client", () => {
       api_key_env: "GATEWAY_API_KEY",
       default_model: "test/model",
     });
+    await client.listProviderModels(providerProfile.id);
     await client.deleteProviderProfile(providerProfile.id);
     await client.getPreferences();
     await client.updatePreferences({
@@ -218,12 +333,23 @@ describe("product API client", () => {
       `DELETE /api/product/workspaces/${workspace.id}`,
       `GET /api/product/sessions?workspace_id=${workspace.id}`,
       "POST /api/product/sessions",
+      `POST /api/product/sessions/${session.id}/forks`,
+      `GET /api/product/sessions/${session.id}/forks`,
       `PATCH /api/product/sessions/${session.id}`,
       `GET /api/product/sessions/${session.id}/transcript`,
+      `GET /api/product/sessions/${session.id}/model-config`,
+      `PUT /api/product/sessions/${session.id}/model-config`,
+      `GET /api/product/sessions/${session.id}/run-models`,
+      `POST /api/product/sessions/${session.id}/steers`,
+      `POST /api/product/sessions/${session.id}/followups`,
+      `GET /api/product/sessions/${session.id}/controls`,
+      `POST /api/product/sessions/${session.id}/controls/${control.id}/revoke`,
+      `POST /api/product/sessions/${session.id}/controls/${control.id}/confirm`,
       `DELETE /api/product/sessions/${session.id}`,
       "GET /api/product/provider-profiles",
       "POST /api/product/provider-profiles",
       `PUT /api/product/provider-profiles/${providerProfile.id}`,
+      `GET /api/product/provider-profiles/${providerProfile.id}/models`,
       `DELETE /api/product/provider-profiles/${providerProfile.id}`,
       "GET /api/product/preferences",
       "PUT /api/product/preferences",
@@ -240,6 +366,46 @@ describe("product API client", () => {
     await expect(client.listWorkspaces()).rejects.toBeInstanceOf(
       ProductApiSchemaError,
     );
+  });
+
+  it("strictly validates control requests and responses before accepting them", () => {
+    expect(
+      parseCreateProductControlRequest({
+        content: "  keep the migration safe ",
+        idempotency_key: "control-1",
+      }),
+    ).toEqual({ content: "keep the migration safe", idempotency_key: "control-1" });
+    expect(() =>
+      parseCreateProductControlRequest({ content: "", unexpected: true }),
+    ).toThrow(ProductApiSchemaError);
+    expect(parseProductControl(control)).toEqual(control);
+    expect(() => parseProductControl({ ...control, seq: 0 })).toThrow(
+      ProductApiSchemaError,
+    );
+    expect(() => parseProductControl({ ...control, status: "unknown" })).toThrow(
+      ProductApiSchemaError,
+    );
+  });
+
+  it("surfaces typed control API failures instead of treating them as queued", async () => {
+    const client = createProductApiClient({
+      fetch: vi.fn(async () =>
+        jsonResponse(
+          { code: "product_control_conflict", error: "idempotency key differs" },
+          409,
+        ),
+      ),
+    });
+
+    await expect(
+      client.enqueueSteer(session.id, {
+        content: "safe path",
+        idempotency_key: "same-key",
+      }),
+    ).rejects.toMatchObject({
+      status: 409,
+      code: "product_control_conflict",
+    });
   });
 
   it("parses revisioned preferences strictly while retaining legacy write compatibility", () => {

@@ -35,12 +35,16 @@ import type {
   ProviderProfileInput,
   ProviderProfileRecord,
   SessionRecord,
+  SessionModelConfig,
+  SessionModelConfigInput,
   WorkspaceKind,
 } from "./product-types";
 import {
   fromProductProviderProfile,
   fromProductSession,
+  fromProductSessionModelConfig,
   fromProductWorkspace,
+  newId,
 } from "./product-types";
 
 export type ProductBootState =
@@ -59,6 +63,12 @@ export function useServerProductState() {
   const [catalog, setCatalog] = useState<ProductCatalog>(EMPTY_CATALOG);
   const [preferences, setPreferences] = useState<ProductPreferences | null>(null);
   const [profiles, setProfiles] = useState<ProviderProfileRecord[]>([]);
+  const [sessionModelConfig, setSessionModelConfig] =
+    useState<SessionModelConfig | null>(null);
+  const [sessionModelConfigLoading, setSessionModelConfigLoading] =
+    useState(false);
+  const [sessionModelConfigMutationBusy, setSessionModelConfigMutationBusy] =
+    useState(false);
   const [selection, setSelection] = useState<ActiveProviderSelection>(() => ({
     mode: "default",
     model: "fake",
@@ -77,16 +87,19 @@ export function useServerProductState() {
   );
   const catalogRef = useRef(catalog);
   const preferencesRef = useRef(preferences);
+  const sessionModelConfigRef = useRef(sessionModelConfig);
   const confirmedPreferencesRef = useRef<ProductPreferences | null>(null);
   const bootGenerationRef = useRef(0);
   const catalogGenerationRef = useRef(0);
   const preferencesGenerationRef = useRef(0);
+  const sessionModelConfigGenerationRef = useRef(0);
   const mutationGenerationRef = useRef(0);
   const sessionUpdateGenerationsRef = useRef(new Map<string, number>());
   const catalogMutationRef = useRef(false);
   const preferencesQueueRef = useRef<Promise<void>>(Promise.resolve());
   const deletingProviderProfileIdsRef = useRef(new Set<string>());
   const failedActiveRouteTargetRef = useRef<string | null>(null);
+  const forkIdempotencyRef = useRef(new Map<string, string>());
 
   useEffect(() => {
     catalogRef.current = catalog;
@@ -95,6 +108,10 @@ export function useServerProductState() {
   useEffect(() => {
     preferencesRef.current = preferences;
   }, [preferences]);
+
+  useEffect(() => {
+    sessionModelConfigRef.current = sessionModelConfig;
+  }, [sessionModelConfig]);
 
   useEffect(() => {
     applyDocumentTheme(theme);
@@ -212,6 +229,10 @@ export function useServerProductState() {
     const bootGeneration = ++bootGenerationRef.current;
     const catalogGeneration = ++catalogGenerationRef.current;
     const preferencesGeneration = ++preferencesGenerationRef.current;
+    ++sessionModelConfigGenerationRef.current;
+    sessionModelConfigRef.current = null;
+    setSessionModelConfig(null);
+    setSessionModelConfigLoading(false);
     setBootState({ status: "loading" });
     setCatalogError(null);
 
@@ -262,16 +283,70 @@ export function useServerProductState() {
     }
   }, [productClient]);
 
+  const loadSessionModelConfig = useCallback(
+    async (sessionId: string | null) => {
+      const generation = ++sessionModelConfigGenerationRef.current;
+      if (!sessionId) {
+        sessionModelConfigRef.current = null;
+        setSessionModelConfig(null);
+        setSessionModelConfigLoading(false);
+        return;
+      }
+      if (sessionModelConfigRef.current?.sessionId !== sessionId) {
+        sessionModelConfigRef.current = null;
+        setSessionModelConfig(null);
+      }
+      setSessionModelConfigLoading(true);
+      try {
+        const saved = await productClient.getSessionModelConfig(sessionId);
+        if (
+          sessionModelConfigGenerationRef.current !== generation ||
+          catalogRef.current.active.sessionId !== sessionId
+        ) {
+          return;
+        }
+        const record = fromProductSessionModelConfig(saved);
+        sessionModelConfigRef.current = record;
+        setSessionModelConfig(record);
+        setConnection("ok");
+      } catch (error) {
+        if (
+          sessionModelConfigGenerationRef.current !== generation ||
+          catalogRef.current.active.sessionId !== sessionId
+        ) {
+          return;
+        }
+        sessionModelConfigRef.current = null;
+        setSessionModelConfig(null);
+        setCatalogError(`Could not load session model settings: ${describeError(error)}`);
+        setConnection("error");
+      } finally {
+        if (sessionModelConfigGenerationRef.current === generation) {
+          setSessionModelConfigLoading(false);
+        }
+      }
+    },
+    [productClient],
+  );
+
   useEffect(() => {
     void loadInitialState();
     return () => {
       ++bootGenerationRef.current;
       ++catalogGenerationRef.current;
       ++preferencesGenerationRef.current;
+      ++sessionModelConfigGenerationRef.current;
       ++mutationGenerationRef.current;
       sessionUpdateGenerationsRef.current.clear();
     };
   }, [loadInitialState]);
+
+  useEffect(() => {
+    if (bootState.status !== "ready") {
+      return;
+    }
+    void loadSessionModelConfig(catalog.active.sessionId);
+  }, [bootState.status, catalog.active.sessionId, loadSessionModelConfig]);
 
   const refreshSessionStatuses = useCallback(async () => {
     if (catalogMutationRef.current) {
@@ -430,6 +505,51 @@ export function useServerProductState() {
           return null;
         }
         const session = fromProductSession(productSession);
+        patchCatalog((current) => ({
+          ...current,
+          sessions: [
+            session,
+            ...current.sessions.filter((item) => item.id !== session.id),
+          ],
+        }));
+        return session;
+      } catch (error) {
+        if (mutationGenerationRef.current === mutation) {
+          setCatalogError(describeError(error));
+        }
+        return null;
+      } finally {
+        finishCatalogMutation(mutation);
+      }
+    },
+    [beginCatalogMutation, finishCatalogMutation, patchCatalog, productClient],
+  );
+
+  const forkSession = useCallback(
+    async (sessionId: string): Promise<SessionRecord | null> => {
+      const parent = catalogRef.current.sessions.find((session) => session.id === sessionId);
+      if (!parent?.activeRunId || parent.status !== "idle") {
+        setCatalogError("A session can be forked only from its completed latest turn.");
+        return null;
+      }
+      const mutation = beginCatalogMutation();
+      if (mutation === null) {
+        return null;
+      }
+      const requestKey = `${sessionId}\u0000${parent.activeRunId}`;
+      const idempotencyKey =
+        forkIdempotencyRef.current.get(requestKey) ?? newId("fork");
+      forkIdempotencyRef.current.set(requestKey, idempotencyKey);
+      try {
+        const response = await productClient.createFork(sessionId, {
+          fork_at_run_id: parent.activeRunId,
+          idempotency_key: idempotencyKey,
+        });
+        if (mutationGenerationRef.current !== mutation) {
+          return null;
+        }
+        forkIdempotencyRef.current.delete(requestKey);
+        const session = fromProductSession(response.session);
         patchCatalog((current) => ({
           ...current,
           sessions: [
@@ -625,6 +745,52 @@ export function useServerProductState() {
     [queuePreferences],
   );
 
+  const changeSessionModelConfig = useCallback(
+    async (next: SessionModelConfigInput): Promise<boolean> => {
+      const sessionId = catalogRef.current.active.sessionId;
+      const current = sessionModelConfigRef.current;
+      if (!sessionId || !current || current.sessionId !== sessionId) {
+        setCatalogError("Session model settings are not loaded.");
+        return false;
+      }
+      if (next.profileId && deletingProviderProfileIdsRef.current.has(next.profileId)) {
+        setCatalogError("That provider profile is currently being removed.");
+        return false;
+      }
+      setSessionModelConfigMutationBusy(true);
+      try {
+        const saved = await productClient.updateSessionModelConfig(sessionId, {
+          ...(next.profileId ? { profile_id: next.profileId } : {}),
+          model: next.model.trim(),
+          reasoning: next.reasoning,
+          max_steps: next.maxSteps,
+          expected_revision: current.revision,
+        });
+        if (catalogRef.current.active.sessionId !== sessionId) {
+          return false;
+        }
+        const record = fromProductSessionModelConfig(saved);
+        sessionModelConfigRef.current = record;
+        setSessionModelConfig(record);
+        setCatalogError(null);
+        setConnection("ok");
+        return true;
+      } catch (error) {
+        if (
+          error instanceof ProductApiError &&
+          error.code === "product_session_model_config_conflict"
+        ) {
+          await loadSessionModelConfig(sessionId);
+        }
+        setCatalogError(`Could not persist session model settings: ${describeError(error)}`);
+        return false;
+      } finally {
+        setSessionModelConfigMutationBusy(false);
+      }
+    },
+    [catalogRef, loadSessionModelConfig, productClient],
+  );
+
   const changeSelection = useCallback(
     async (next: ActiveProviderSelection): Promise<boolean> => {
       if (
@@ -777,6 +943,10 @@ export function useServerProductState() {
     catalogRef,
     preferences,
     profiles,
+    sessionModelConfig,
+    sessionModelConfigLoading,
+    sessionModelConfigMutationBusy,
+    changeSessionModelConfig,
     createProviderProfile,
     updateProviderProfile,
     deleteProviderProfile,
@@ -797,6 +967,7 @@ export function useServerProductState() {
     refreshSessionStatuses,
     openWorkspace,
     createSession,
+    forkSession,
     togglePin,
     removeWorkspace,
     updateSessionTitle,

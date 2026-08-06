@@ -28,7 +28,9 @@ import { toApiProviderProfile } from "../state/product-types";
 import { SessionsSettings, WorkspaceSettings } from "./CatalogSettings";
 import { KeyboardSettings } from "./KeyboardSettings";
 import { MemorySettings } from "./MemorySettings";
+import { MCPSettings } from "./MCPSettings";
 import { RuntimeSettings } from "./RuntimeSettings";
+import { describeProviderProbeFailure } from "./provider-settings-model";
 import type { SettingsSectionId } from "./sections";
 import { SETTINGS_SECTIONS } from "./sections";
 import type { SettingsPlatformClient } from "./settings-platform-client";
@@ -145,6 +147,8 @@ export function SettingsShell(props: SettingsShellProps) {
         ) : null}
         {section === "tools" ? (
           <ToolsSettings
+            client={settingsClient}
+            workspaceId={activeWorkspaceId}
             selection={selection}
             defaultApprovalPolicy={defaultApprovalPolicy}
             onSelectionChange={onSelectionChange}
@@ -237,11 +241,15 @@ function GeneralSettings({
 }
 
 function ToolsSettings({
+  client,
+  workspaceId,
   selection,
   defaultApprovalPolicy,
   onSelectionChange,
   onDefaultApprovalPolicyChange,
 }: {
+  client: SettingsPlatformClient;
+  workspaceId: string | null;
   selection: ActiveProviderSelection;
   defaultApprovalPolicy: ProductApprovalPreference;
   onSelectionChange: (selection: ActiveProviderSelection) => void;
@@ -322,9 +330,11 @@ function ToolsSettings({
       </div>
 
       <form className="settings-card" onSubmit={handleMaxSteps}>
-        <h2>Execution limit</h2>
+        <h2>New-session execution limit</h2>
         <div className="field settings-number-field">
-          <label htmlFor="settings-max-steps">Maximum steps per job</label>
+          <label htmlFor="settings-max-steps">
+            Default maximum steps for new sessions
+          </label>
           <input
             id="settings-max-steps"
             type="number"
@@ -338,7 +348,7 @@ function ToolsSettings({
         </div>
         <div className="field-actions">
           <button type="submit">
-            <CheckIcon /> Save limit
+            <CheckIcon /> Save default
           </button>
         </div>
       </form>
@@ -348,6 +358,8 @@ function ToolsSettings({
           {error}
         </div>
       ) : null}
+
+      <MCPSettings client={client} workspaceId={workspaceId} />
     </section>
   );
 }
@@ -533,7 +545,7 @@ function ProvidersSettings({
         }),
       );
     } catch (testError) {
-      setError(testError instanceof Error ? testError.message : String(testError));
+      setError(describeProviderProbeFailure(testError));
     } finally {
       setTestBusy(false);
     }
@@ -552,9 +564,7 @@ function ProvidersSettings({
         setDefaultModel(result.models[0]);
       }
     } catch (modelsError) {
-      setError(
-        modelsError instanceof Error ? modelsError.message : String(modelsError),
-      );
+      setError(describeProviderProbeFailure(modelsError));
     } finally {
       setModelsBusy(false);
     }

@@ -121,6 +121,44 @@ pub enum StreamEvent {
         reason: TerminationReason,
         output: Option<String>,
     },
+
+    /// A steer message was accepted at a declared safe point and will shape
+    /// the next model turn. Emitted at the safe point, not at submission.
+    SteerAccepted {
+        /// Stable steer id (matches the control record idempotency key).
+        id: String,
+        /// The steer text supplied by the user. Not secret; persisted to trace.
+        content: String,
+    },
+
+    /// A previously accepted steer has been incorporated into a model request
+    /// whose stream has been successfully polled. This is deliberately
+    /// distinct from acceptance: a cancellation, token limit, or runtime
+    /// failure can still intervene after the safe point and before a model
+    /// turn begins.
+    SteerApplied { id: String },
+
+    /// A previously-queued steer was dropped without being applied, typically
+    /// because the run reached a terminal state (cancel/error) before the
+    /// next safe point.
+    SteerDropped { id: String, reason: String },
+
+    /// A follow-up message has been durably queued and will execute after the
+    /// current assistant final. If the run ends with `Final`, the follow-up's
+    /// content immediately starts the next turn; otherwise it remains in the
+    /// durable queue for explicit confirmation.
+    FollowupQueued { id: String, content: String },
+
+    /// A queued follow-up has been dequeued and is about to drive a new turn
+    /// (continuation of an existing job, or — on crash/restart — a freshly
+    /// claimed product turn).
+    FollowupDequeued { id: String },
+
+    /// A queued follow-up was abandoned because the run ended with a
+    /// non-final, potentially-indeterminate outcome. The control stays in
+    /// the ProductStore with status `abandoned` until the user revokes or
+    /// explicitly restarts.
+    FollowupAbandoned { id: String, reason: String },
 }
 
 impl StreamEvent {
@@ -145,6 +183,12 @@ impl StreamEvent {
             Self::MemoryFlushed { .. } => "memory_flushed",
             Self::PromptBuilt { .. } => "prompt_built",
             Self::RunCompleted { .. } => "run_completed",
+            Self::SteerAccepted { .. } => "steer_accepted",
+            Self::SteerApplied { .. } => "steer_applied",
+            Self::SteerDropped { .. } => "steer_dropped",
+            Self::FollowupQueued { .. } => "followup_queued",
+            Self::FollowupDequeued { .. } => "followup_dequeued",
+            Self::FollowupAbandoned { .. } => "followup_abandoned",
         }
     }
 }
