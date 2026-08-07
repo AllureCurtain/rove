@@ -81,22 +81,20 @@ fn execute(
     let all_digests = capability_digest_map(&workspace.root, None, Some(&provider_selector));
     let (decision, selected) = match command {
         TrustCommand::Query { capability } => {
+            let selected = selected_names(&capability)?;
             let resolution = repository
                 .resolve(&workspace.root, workspace.kind.clone(), &all_digests)
                 .map_err(authority_error)?;
-            return Ok(status_from_resolution(
-                resolution,
-                selected_names(&capability),
-            ));
+            return Ok(status_from_resolution(resolution, selected));
         }
         TrustCommand::Grant { capability } => {
-            (ProjectTrustDecision::Grant, selected_names(&capability))
+            (ProjectTrustDecision::Grant, selected_names(&capability)?)
         }
         TrustCommand::Deny { capability } => {
-            (ProjectTrustDecision::Deny, selected_names(&capability))
+            (ProjectTrustDecision::Deny, selected_names(&capability)?)
         }
         TrustCommand::Revoke { capability } => {
-            (ProjectTrustDecision::Revoke, selected_names(&capability))
+            (ProjectTrustDecision::Revoke, selected_names(&capability)?)
         }
     };
     let selected_digests = if selected.is_empty() {
@@ -125,11 +123,19 @@ fn execute(
     Ok(status_from_resolution(resolution, BTreeSet::new()))
 }
 
-fn selected_names(capabilities: &[CliProjectTrustCapability]) -> BTreeSet<String> {
-    capabilities
-        .iter()
-        .map(|capability| capability.as_str().to_string())
-        .collect()
+fn selected_names(
+    capabilities: &[CliProjectTrustCapability],
+) -> Result<BTreeSet<String>, TrustCommandError> {
+    let mut selected = BTreeSet::new();
+    for capability in capabilities {
+        if !selected.insert(capability.as_str().to_string()) {
+            return Err(TrustCommandError::new(
+                PROJECT_TRUST_INVALID_INPUT_CODE,
+                "project trust capability list contains duplicates",
+            ));
+        }
+    }
+    Ok(selected)
 }
 
 fn status_from_resolution(
@@ -226,5 +232,15 @@ mod tests {
         .unwrap();
         assert_eq!(denied.state, ProjectActivationState::Restricted);
         assert!(denied.granted_capabilities.is_empty());
+    }
+
+    #[test]
+    fn duplicate_cli_capabilities_use_the_shared_invalid_input_code() {
+        let error = selected_names(&[
+            CliProjectTrustCapability::McpProcesses,
+            CliProjectTrustCapability::McpProcesses,
+        ])
+        .unwrap_err();
+        assert_eq!(error.code, PROJECT_TRUST_INVALID_INPUT_CODE);
     }
 }
