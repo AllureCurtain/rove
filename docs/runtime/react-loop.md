@@ -174,3 +174,36 @@ and `HistoryProjector` are additive; they project canonical call/result pairs
 to target-valid wire IDs without mutating persisted history. Legacy tool
 results without native IDs are accepted only through the explicit deterministic
 compatibility policy. Provider-specific payloads remain inside `rove-models`.
+
+## Durable typed session boundary
+
+The first-wave typed session boundary is connected to the runtime artifact path.
+`rove-runtime::Session` uses schema version `1` and stores provider-neutral
+`SessionEntry` values for user content, assistant turns, and tool results. A
+`PromptCheckpoint` written by the current recorder always includes this
+canonical session. `TaskState.history` and `PromptCheckpoint.preserved_tail`
+remain serialized compatibility projections for older readers; new code does
+not treat either projection as an independent source of truth.
+
+Readers dual-read old `TaskState` and artifact snapshots that contain only
+`Vec<Message>`, converting them through the deterministic legacy projection.
+Once such a run is snapshotted again, the writer emits the schema-1 canonical
+session and derives the compatibility fields from it. Unknown additive fields
+are ignored, missing additive fields use defaults, and a future or invalid
+session schema is rejected before model execution. Rolling back the binary is
+safe for old snapshots because the derived legacy fields are still present; a
+newer session schema is fail-closed rather than replayed or silently downgraded.
+
+Resume and provider requests project canonical history through the selected
+`ModelClient::history_protocol()`. Internal call IDs, tool names, result status,
+and errors stay canonical while target-specific wire IDs are regenerated for
+each provider. Checkpoint suffixing keeps an assistant multi-tool round and all
+of its results together. A trailing in-flight round found at termination or
+resume is closed once with explicit `unknown_effect` / `interrupted` results so
+it cannot be replayed. Orphan, duplicate, non-trailing missing, or conflicting
+results cause projection to fail rather than entering `ToolRegistry`.
+
+The running loop still consumes the bounded derived `Vec<Message>` view at the
+existing context-manager boundary. Replacing that boundary with one shared
+typed Agent kernel, authoritative tool-schema compilation, and lifecycle
+finalization remains later work in the implementation brief.
