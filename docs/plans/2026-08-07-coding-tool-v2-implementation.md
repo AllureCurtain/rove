@@ -233,6 +233,10 @@ focused tool contracts, integration safety/API/E2E tests, and the deterministic
 zero tool failures and checks exact final files plus canonical
 `trace.jsonl`/`task_state.json`/`report.json` artifacts.
 
+Coordinator review additionally rejects in-workspace symlink/reparse mutation
+targets and preflights every selected rewind path, including duplicate and
+non-UTF-8 rejection, before applying any rewind mutation.
+
 Passing gates:
 
 ```powershell

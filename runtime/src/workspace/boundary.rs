@@ -45,6 +45,7 @@ pub fn resolve_workspace_write_path(root: &Path, raw_path: &str) -> Result<PathB
     let canonical_root = canonical_workspace_root(root)?;
     let relative = normalize_relative_path(raw_path)?;
     let candidate = canonical_root.join(&relative);
+    reject_symlinked_components(&canonical_root, &relative)?;
 
     if candidate.exists() {
         let canonical_target = candidate
@@ -69,6 +70,45 @@ pub fn resolve_workspace_write_path(root: &Path, raw_path: &str) -> Result<PathB
         })?;
     ensure_under_workspace(&canonical_root, &canonical_ancestor)?;
     Ok(candidate)
+}
+
+fn reject_symlinked_components(root: &Path, relative: &Path) -> Result<(), ToolError> {
+    let mut candidate = root.to_path_buf();
+    for component in relative.components() {
+        candidate.push(component.as_os_str());
+        match std::fs::symlink_metadata(&candidate) {
+            Ok(metadata) if is_symlink_or_reparse(&metadata) => {
+                return Err(ToolError::PermissionDenied {
+                    reason: "writes through symlink/reparse paths are not allowed".to_string(),
+                });
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+            Err(error) => {
+                return Err(ToolError::InvalidInput {
+                    reason: format!("invalid path metadata: {error}"),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+fn is_symlink_or_reparse(metadata: &std::fs::Metadata) -> bool {
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+        metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
 }
 
 fn canonical_workspace_root(root: &Path) -> Result<PathBuf, ToolError> {

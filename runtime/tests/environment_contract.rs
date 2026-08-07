@@ -110,6 +110,80 @@ async fn local_filesystem_rejects_symlink_escape_when_supported() {
 }
 
 #[tokio::test]
+async fn local_mutations_reject_in_workspace_symlink_targets_when_supported() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let workspace_root = temp.path().join("workspace");
+    std::fs::create_dir(&workspace_root).unwrap();
+    let target = workspace_root.join("target.txt");
+    std::fs::write(&target, "original").unwrap();
+    let link = workspace_root.join("alias.txt");
+    if !create_file_symlink(&target, &link) {
+        return;
+    }
+    let workspace = Workspace::detect(&workspace_root).unwrap();
+    let environment = LocalExecutionEnvironment::new(&workspace);
+
+    assert_eq!(
+        environment
+            .filesystem()
+            .read_utf8("alias.txt")
+            .await
+            .unwrap(),
+        "original"
+    );
+    assert!(
+        environment
+            .filesystem()
+            .write_utf8("alias.txt", "changed")
+            .await
+            .is_err()
+    );
+    assert!(
+        environment
+            .filesystem()
+            .delete_path("alias.txt", false)
+            .await
+            .is_err()
+    );
+    assert!(
+        environment
+            .filesystem()
+            .move_path("alias.txt", "moved.txt", false)
+            .await
+            .is_err()
+    );
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "original");
+    assert!(link.exists());
+    assert!(!workspace_root.join("moved.txt").exists());
+
+    let target_dir = workspace_root.join("target-dir");
+    std::fs::create_dir(&target_dir).unwrap();
+    std::fs::write(target_dir.join("kept.txt"), "kept").unwrap();
+    let dir_link = workspace_root.join("alias-dir");
+    if !create_directory_symlink(&target_dir, &dir_link) {
+        return;
+    }
+    assert!(
+        environment
+            .filesystem()
+            .delete_path("alias-dir", true)
+            .await
+            .is_err()
+    );
+    assert!(
+        environment
+            .filesystem()
+            .move_path("alias-dir", "moved-dir", false)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        std::fs::read_to_string(target_dir.join("kept.txt")).unwrap(),
+        "kept"
+    );
+}
+
+#[tokio::test]
 async fn in_memory_process_port_enforces_bounds_timeout_cancel_and_capability_absence() {
     let temp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(temp.path()).unwrap();
@@ -640,4 +714,14 @@ fn create_file_symlink(target: &Path, link: &Path) -> bool {
 #[cfg(windows)]
 fn create_file_symlink(target: &Path, link: &Path) -> bool {
     std::os::windows::fs::symlink_file(target, link).is_ok()
+}
+
+#[cfg(unix)]
+fn create_directory_symlink(target: &Path, link: &Path) -> bool {
+    std::os::unix::fs::symlink(target, link).is_ok()
+}
+
+#[cfg(windows)]
+fn create_directory_symlink(target: &Path, link: &Path) -> bool {
+    std::os::windows::fs::symlink_dir(target, link).is_ok()
 }

@@ -1,6 +1,6 @@
 # Project Trust, Execution Environment, and Coding Tools Implementation
 
-> Status: **First parallel wave implemented; Coding Tool V2 remains pending**
+> Status: **First parallel wave and Coding Tool V2 follow-up implemented**
 >
 > Prerequisite implementation: `d2cd822` (`feat(security): gate workspace
 > project activation`)
@@ -14,7 +14,8 @@
 >
 > The exact-root activation guard is retained as a process-scoped compatibility
 > floor. Persistent Project Trust and the first-wave Execution Environment are
-> implemented on this branch; Coding Tool V2 is not implemented.
+> implemented in the first wave. Coding Tool V2 is implemented by
+> [`2026-08-07-coding-tool-v2-implementation.md`](2026-08-07-coding-tool-v2-implementation.md).
 
 ### First-wave implementation status (2026-08-07)
 
@@ -46,9 +47,10 @@
 - **Implemented:** mocked Playwright trust coverage for all four states,
   capability selection, decisions, digest invalidation, and workspace-ID-only
   browser requests.
-- **Not implemented:** Coding Tool V2 (ranged Read/Edit/Write/delete/move,
-  foreground/background Shell, PTY, artifact projection, and coding
-  benchmarks). Streamable HTTP MCP and other later design work remain proposed.
+- **Implemented in the follow-up:** Coding Tool V2 (ranged
+  Read/Edit/Write/delete/move, foreground/background Shell, typed unsupported
+  PTY, transient artifact projection, and coding benchmarks). Streamable HTTP
+  MCP and other later design work remain proposed.
 
 ## 1. Objective
 
@@ -64,8 +66,9 @@ For the first parallel wave, complete only:
 3. parity migration of current foreground filesystem/search/Shell and stdio MCP
    authority onto the sealed ports.
 
-Stop after the first-wave exit gate. Coding Tool V2 requires the separately
-merged canonical Tool Schema and Runtime validation checkpoint.
+The first branch stopped after its exit gate. Its canonical Tool Schema and
+Runtime validation dependency later merged, and Coding Tool V2 was completed
+from that refreshed baseline in the linked follow-up plan.
 
 ## 2. Required orientation
 
@@ -331,12 +334,14 @@ At handoff report:
 - unresolved shared-hotspot requests;
 - clean `git status --short`.
 
-Do not begin Coding Tool V2 until the canonical Tool Schema/Runtime-validation
-dependency is merged into `main` and a refreshed baseline is supplied.
+The Coding Tool V2 start gate was satisfied by `acc82e2`, which merged the
+canonical Tool Schema/Runtime-validation dependency into `main` and supplied
+the refreshed implementation baseline.
 
-## 10. Later owned work after refresh
+## 10. Coding Tool V2 follow-up
 
-Coding Tool V2 remains assigned here after its dependency lands:
+The following assigned surface is implemented and verified by
+[`2026-08-07-coding-tool-v2-implementation.md`](2026-08-07-coding-tool-v2-implementation.md):
 
 - ranged, bounded Read with observations and continuation;
 - exact Edit with uniqueness and stale-version checks;

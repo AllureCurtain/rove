@@ -708,6 +708,33 @@ async fn directory_mutation_rejects_a_last_page_and_stale_discovery() {
     );
     assert!(workspace.root.exists());
 
+    #[cfg(windows)]
+    {
+        std::fs::create_dir(workspace.root.join("CaseSource")).unwrap();
+        std::fs::write(workspace.root.join("CaseSource/kept.txt"), "kept").unwrap();
+        let error = registry
+            .execute(
+                "move_path",
+                serde_json::json!({
+                    "from":"CaseSource",
+                    "to":"casesource/nested",
+                    "observation_id":"untrusted",
+                    "version":"untrusted"
+                }),
+                &context,
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, ToolError::InvalidInput { reason } if reason.contains("not be nested"))
+        );
+        assert!(!workspace.root.join("CaseSource/nested").exists());
+        assert_eq!(
+            std::fs::read_to_string(workspace.root.join("CaseSource/kept.txt")).unwrap(),
+            "kept"
+        );
+    }
+
     let first = registry
         .execute(
             "list_directory",
@@ -814,6 +841,65 @@ async fn checkpoint_diff_and_explicit_rewind_restore_selected_files() {
         "before\n"
     );
     assert!(!workspace.root.join("created.txt").exists());
+}
+
+#[tokio::test]
+async fn rewind_preflights_every_selected_path_before_mutating_any_file() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(temp.path()).unwrap();
+    std::fs::write(workspace.root.join("a.txt"), "before\n").unwrap();
+    std::fs::write(workspace.root.join("z.bin"), [0xff, 0xfe]).unwrap();
+    let context = tool_context(&workspace, MemoryPaths::from_workspace(&workspace, 8), None);
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(WorkspaceCheckpointTool::new()));
+    registry.register(Box::new(WorkspaceRewindTool::new()));
+
+    let checkpoint = registry
+        .execute(
+            "workspace_checkpoint",
+            serde_json::json!({"paths":["a.txt", "z.bin"]}),
+            &context,
+        )
+        .await
+        .unwrap();
+    let checkpoint: serde_json::Value = serde_json::from_str(&checkpoint.content).unwrap();
+    std::fs::write(workspace.root.join("a.txt"), "after\n").unwrap();
+
+    let duplicate = registry
+        .execute(
+            "workspace_rewind",
+            serde_json::json!({
+                "checkpoint_id":checkpoint["checkpoint_id"],
+                "paths":["a.txt", "a.txt"]
+            }),
+            &context,
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(duplicate, ToolError::InvalidInput { reason } if reason.contains("duplicated"))
+    );
+    assert_eq!(
+        std::fs::read_to_string(workspace.root.join("a.txt")).unwrap(),
+        "after\n"
+    );
+
+    let invalid = registry
+        .execute(
+            "workspace_rewind",
+            serde_json::json!({
+                "checkpoint_id":checkpoint["checkpoint_id"],
+                "paths":["a.txt", "z.bin"]
+            }),
+            &context,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(invalid, ToolError::InvalidInput { reason } if reason.contains("not UTF-8")));
+    assert_eq!(
+        std::fs::read_to_string(workspace.root.join("a.txt")).unwrap(),
+        "after\n"
+    );
 }
 
 #[tokio::test]

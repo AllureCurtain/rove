@@ -279,8 +279,10 @@ impl Tool for MovePathTool {
         let normalized_to = normalize_tool_path(to)?;
         reject_workspace_root_mutation(&normalized_from)?;
         reject_workspace_root_mutation(&normalized_to)?;
-        if normalized_to == normalized_from
-            || normalized_to.starts_with(&format!("{normalized_from}/"))
+        let comparison_from = path_comparison_key(&normalized_from);
+        let comparison_to = path_comparison_key(&normalized_to);
+        if comparison_to == comparison_from
+            || comparison_to.starts_with(&format!("{comparison_from}/"))
         {
             return Err(ToolError::InvalidInput {
                 reason: "move destination must differ from and not be nested under its source"
@@ -679,6 +681,12 @@ impl Tool for WorkspaceDiffTool {
 #[derive(Default)]
 pub struct WorkspaceRewindTool;
 
+struct RewindAction {
+    path: String,
+    baseline: Option<String>,
+    current: Option<Vec<u8>>,
+}
+
 impl WorkspaceRewindTool {
     pub fn new() -> Self {
         Self
@@ -717,52 +725,68 @@ impl Tool for WorkspaceRewindTool {
                 reason: "rewind path limit exceeded".to_string(),
             });
         }
-        let mut mutations = Vec::new();
+        let mut actions = Vec::with_capacity(selected.len());
         for path in selected {
             let baseline = checkpoint
                 .files
                 .get(&path)
                 .expect("selected checkpoint path exists");
             let current = read_optional_file(services, &path).await?;
-            match &baseline.content {
-                Some(bytes) => {
-                    let content =
-                        std::str::from_utf8(bytes).map_err(|_| ToolError::InvalidInput {
+            let baseline = baseline
+                .content
+                .as_deref()
+                .map(|bytes| {
+                    std::str::from_utf8(bytes).map(str::to_string).map_err(|_| {
+                        ToolError::InvalidInput {
                             reason: format!("checkpoint file is not UTF-8: {path}"),
-                        })?;
+                        }
+                    })
+                })
+                .transpose()?;
+            actions.push(RewindAction {
+                path,
+                baseline,
+                current: current.map(|file| file.bytes),
+            });
+        }
+
+        let mut mutations = Vec::new();
+        for action in actions {
+            match action.baseline {
+                Some(content) => {
                     services
                         .environment
                         .filesystem()
-                        .write_utf8(&path, content)
+                        .write_utf8(&action.path, &content)
                         .await
                         .map_err(map_environment_error)?;
                     mutations.push(ToolMutation {
-                        path: path.clone(),
-                        operation: if current.is_some() {
+                        path: action.path.clone(),
+                        operation: if action.current.is_some() {
                             ToolMutationOperation::Update
                         } else {
                             ToolMutationOperation::Create
                         },
                         diff: Some(localized_bytes_diff(
-                            &path,
-                            current.as_ref().map(|file| file.bytes.as_slice()),
-                            Some(bytes),
+                            &action.path,
+                            action.current.as_deref(),
+                            Some(content.as_bytes()),
                         )),
                     });
                 }
-                None if current.is_some() => {
+                None if action.current.is_some() => {
                     services
                         .environment
                         .filesystem()
-                        .delete_path(&path, false)
+                        .delete_path(&action.path, false)
                         .await
                         .map_err(map_environment_error)?;
                     mutations.push(ToolMutation {
-                        path: path.clone(),
+                        path: action.path.clone(),
                         operation: ToolMutationOperation::Delete,
                         diff: Some(localized_bytes_diff(
-                            &path,
-                            current.as_ref().map(|file| file.bytes.as_slice()),
+                            &action.path,
+                            action.current.as_deref(),
                             None,
                         )),
                     });
@@ -974,10 +998,20 @@ fn selected_checkpoint_paths(
     requested: Option<Vec<String>>,
 ) -> Result<Vec<String>, ToolError> {
     let selected = match requested {
-        Some(paths) => paths
-            .into_iter()
-            .map(|path| normalize_tool_path(&path))
-            .collect::<Result<Vec<_>, _>>()?,
+        Some(paths) => {
+            let mut selected = Vec::with_capacity(paths.len());
+            let mut seen = BTreeSet::new();
+            for path in paths {
+                let normalized = normalize_tool_path(&path)?;
+                if !seen.insert(normalized.clone()) {
+                    return Err(ToolError::InvalidInput {
+                        reason: format!("checkpoint path is duplicated: {normalized}"),
+                    });
+                }
+                selected.push(normalized);
+            }
+            selected
+        }
         None => files.keys().cloned().collect(),
     };
     for path in &selected {
@@ -1099,6 +1133,14 @@ fn reject_workspace_root_mutation(path: &str) -> Result<(), ToolError> {
         });
     }
     Ok(())
+}
+
+fn path_comparison_key(path: &str) -> String {
+    if cfg!(windows) {
+        path.to_lowercase()
+    } else {
+        path.to_string()
+    }
 }
 
 pub(crate) fn localized_diff(path: &str, before: &str, after: &str) -> String {

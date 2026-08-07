@@ -101,7 +101,7 @@ and updates its tests and current documentation:
 
 ## 5. Current implementation boundaries
 
-As of 2026-08-06:
+As of 2026-08-07:
 
 - rove is a local-first Rust runtime with CLI, API, Web, persisted run state,
   resume, provider routing, tools, layered memory, optional future external retrieval, and
@@ -126,6 +126,12 @@ As of 2026-08-06:
   are implemented. Project activation remains restricted by default, exact-root
   and capability-specific; workspace `.env`, `.rove/config.toml`, and MCP
   startup stay deferred until authorized.
+- Coding Tool V2 is implemented on the shared Execution Environment and
+  authoritative Tool Registry. It provides bounded ranged reads, observed
+  mutations, deterministic discovery continuation, process-local checkpoints,
+  transient artifact projection, and foreground/background Shell lifecycle.
+  Native PTY remains a typed unsupported capability; coding observations,
+  checkpoints, projected artifacts, and process identities are not durable.
 - Versioned AgentDefinition packages, `AGENTS.md` runtime discovery, typed
   procedural knowledge, and the OnCall reference evaluation suite are proposed,
   not implemented. The execution-lifecycle design is partially implemented:
@@ -184,6 +190,7 @@ The active implementation work follows these briefs:
 - `docs/plans/2026-08-06-kernel-message-provider-implementation.md`
 - `docs/plans/2026-08-06-project-trust-execution-tools-implementation.md`
 - `docs/plans/2026-08-07-authoritative-tool-schema-runtime-validation.md`
+- `docs/plans/2026-08-07-coding-tool-v2-implementation.md`
 
 The optional terminal-interface direction is documented separately in
 `docs/design/2026-07-16-grok-build-reference-and-tui-design.md`.

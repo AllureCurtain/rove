@@ -731,7 +731,8 @@ impl WorkspaceFileSystem for LocalFileSystem {
     }
 
     async fn delete_path(&self, raw_path: &str, recursive: bool) -> Result<(), EnvironmentError> {
-        let path = resolve_local_read_path(&self.root, raw_path)?;
+        let path = resolve_workspace_write_path(&self.root, raw_path)
+            .map_err(|error| EnvironmentError::InvalidPath(error.to_string()))?;
         let metadata = tokio::fs::metadata(&path)
             .await
             .map_err(map_file_read_error)?;
@@ -780,7 +781,8 @@ impl WorkspaceFileSystem for LocalFileSystem {
                     .to_string(),
             ));
         }
-        let source = resolve_local_read_path(&self.root, from)?;
+        let source = resolve_workspace_write_path(&self.root, from)
+            .map_err(|error| EnvironmentError::InvalidPath(error.to_string()))?;
         let destination = resolve_workspace_write_path(&self.root, to)
             .map_err(|error| EnvironmentError::InvalidPath(error.to_string()))?;
         if tokio::fs::try_exists(&destination)
