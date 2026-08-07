@@ -9681,7 +9681,7 @@ async fn create_product_job(
 
 async fn wait_for_done(app: axum::Router, job_id: String) -> JobStateResponse {
     let mut last_state = None;
-    for _ in 0..80 {
+    for _ in 0..400 {
         let response = app
             .clone()
             .oneshot(
