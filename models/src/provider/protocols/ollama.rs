@@ -7,7 +7,7 @@ use crate::provider::{
     AuthStyle, Framing, OLLAMA_PROTOCOL, StreamDecoder, WireProtocol, WireProtocolId, WireRequest,
     WireRequestInput,
 };
-use crate::{Message, ModelError, ModelEvent, ModelToolSchema, Role, Usage};
+use crate::{Message, ModelError, ModelEvent, ModelToolSchema, Role, StopReason, Usage};
 
 pub struct OllamaChatProtocol {
     id: WireProtocolId,
@@ -69,7 +69,7 @@ impl WireProtocol for OllamaChatProtocol {
     }
 
     fn decoder(&self) -> Box<dyn StreamDecoder> {
-        Box::new(OllamaChatDecoder)
+        Box::new(OllamaChatDecoder::default())
     }
 
     fn classify_error(&self, status: StatusCode, headers: &HeaderMap, body: &str) -> ModelError {
@@ -78,6 +78,14 @@ impl WireProtocol for OllamaChatProtocol {
 
     fn default_auth_style(&self) -> AuthStyle {
         AuthStyle::None
+    }
+
+    fn capabilities(&self) -> crate::ProviderCapabilities {
+        crate::ProviderCapabilities {
+            streaming: true,
+            tool_calls: true,
+            parallel_tool_calls: true,
+        }
     }
 }
 
@@ -190,7 +198,10 @@ fn is_ollama_context_length_error(body: &str) -> bool {
         || lower.contains("input too long")
 }
 
-struct OllamaChatDecoder;
+#[derive(Default)]
+struct OllamaChatDecoder {
+    saw_tool_calls: bool,
+}
 
 impl StreamDecoder for OllamaChatDecoder {
     fn push(&mut self, frame: &str) -> Result<Vec<ModelEvent>, ModelError> {
@@ -202,11 +213,11 @@ impl StreamDecoder for OllamaChatDecoder {
                 "Ollama Chat stream reported failure".to_string(),
             ));
         }
-        Ok(normalize_ollama_value(&json))
+        Ok(normalize_ollama_value(&mut self.saw_tool_calls, &json))
     }
 }
 
-fn normalize_ollama_value(json: &serde_json::Value) -> Vec<ModelEvent> {
+fn normalize_ollama_value(saw_tool_calls: &mut bool, json: &serde_json::Value) -> Vec<ModelEvent> {
     let mut events = Vec::new();
     if let Some(content) = json
         .get("message")
@@ -223,6 +234,7 @@ fn normalize_ollama_value(json: &serde_json::Value) -> Vec<ModelEvent> {
         .and_then(|message| message.get("tool_calls"))
         .and_then(|tool_calls| tool_calls.as_array())
     {
+        *saw_tool_calls |= !tool_calls.is_empty();
         for (index, tool_call) in tool_calls.iter().enumerate() {
             if let Some(function) = tool_call.get("function") {
                 let name = function
@@ -262,9 +274,25 @@ fn normalize_ollama_value(json: &serde_json::Value) -> Vec<ModelEvent> {
                 ..usage
             },
         });
+        let done_reason = json
+            .get("done_reason")
+            .and_then(|value| value.as_str())
+            .unwrap_or("stop");
+        events.push(ModelEvent::StopReason {
+            reason: ollama_stop_reason(done_reason, *saw_tool_calls),
+        });
         events.push(ModelEvent::Done);
     }
     events
+}
+
+fn ollama_stop_reason(value: &str, saw_tool_calls: bool) -> StopReason {
+    match value {
+        "stop" if saw_tool_calls => StopReason::ToolUse,
+        "stop" => StopReason::EndTurn,
+        "length" => StopReason::MaxTokens,
+        other => StopReason::Other(other.to_string()),
+    }
 }
 
 #[cfg(test)]
@@ -287,6 +315,27 @@ mod tests {
         ProviderClient, ProviderClientConfig, ResolvedAuth, Transport, TransportConfig,
     };
     use crate::{ModelClient, ProviderOptions, ToolCallRef};
+
+    #[test]
+    fn maps_ollama_done_reason() {
+        let mut decoder = OllamaChatProtocol::new().decoder();
+        let events = decoder
+            .push(
+                &serde_json::json!({
+                    "message": {"role":"assistant", "content":"partial"},
+                    "done": true,
+                    "done_reason": "length"
+                })
+                .to_string(),
+            )
+            .unwrap();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ModelEvent::StopReason {
+                reason: StopReason::MaxTokens
+            }
+        )));
+    }
 
     fn messages() -> Vec<Message> {
         vec![
@@ -398,7 +447,18 @@ mod tests {
             migrated_events.extend(migrated_decoder.push(line).unwrap());
         }
 
-        assert_eq!(migrated_events, legacy_events);
+        let legacy_projection = migrated_events
+            .iter()
+            .filter(|event| !matches!(event, ModelEvent::StopReason { .. }))
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(legacy_projection, legacy_events);
+        assert!(migrated_events.iter().any(|event| matches!(
+            event,
+            ModelEvent::StopReason {
+                reason: StopReason::ToolUse
+            }
+        )));
         assert!(
             migrated_events
                 .iter()

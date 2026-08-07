@@ -490,6 +490,7 @@ async fn generate_summary(
             | ModelEvent::ToolUseStart { .. }
             | ModelEvent::ToolUseDelta { .. }
             | ModelEvent::ToolUseDone { .. }
+            | ModelEvent::StopReason { .. }
             | ModelEvent::Usage { .. } => {}
         }
     }

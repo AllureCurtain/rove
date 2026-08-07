@@ -102,6 +102,10 @@ impl ModelClient for ProviderClient {
         self.protocol.capabilities()
     }
 
+    fn history_protocol(&self) -> String {
+        self.protocol.id().as_str().to_string()
+    }
+
     fn requires_terminal_event(&self) -> bool {
         true
     }

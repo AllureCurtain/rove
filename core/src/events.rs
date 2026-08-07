@@ -1,4 +1,4 @@
-use rove_models::{ToolCallRef, Usage};
+use rove_models::{AssistantTurn, ToolCallRef, Usage};
 
 use crate::{AgentError, ToolInvocation, ToolOutput};
 
@@ -16,6 +16,7 @@ pub enum AgentEvent {
         full: String,
         usage: Usage,
         tool_calls: Vec<ToolCallRef>,
+        assistant_turn: Box<AssistantTurn>,
     },
     ToolCallStarted {
         invocation: ToolInvocation,

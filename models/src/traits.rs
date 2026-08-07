@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use futures::stream::BoxStream;
 
-use crate::{Message, ModelError, ModelToolSchema, Usage};
+use crate::{AssistantTurn, Message, ModelError, ModelToolSchema, StopReason, Usage};
 
 /// Capabilities negotiated before a provider request is sent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,6 +31,21 @@ impl ProviderCapabilities {
         if !self.streaming {
             return Err(ModelError::InvalidConfiguration(
                 "selected provider does not support streaming".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn validate_assistant_turn(&self, turn: &AssistantTurn) -> Result<(), ModelError> {
+        if !turn.tool_calls.is_empty() && !self.tool_calls {
+            return Err(ModelError::InvalidConfiguration(
+                "provider returned tool calls but does not declare tool-call support".to_string(),
+            ));
+        }
+        if turn.tool_calls.len() > 1 && !self.parallel_tool_calls {
+            return Err(ModelError::InvalidConfiguration(
+                "provider returned parallel tool calls but does not declare parallel support"
+                    .to_string(),
             ));
         }
         Ok(())
@@ -90,6 +105,9 @@ pub enum ModelEvent {
     Usage {
         usage: Usage,
     },
+    StopReason {
+        reason: StopReason,
+    },
     Done,
 }
 
@@ -113,6 +131,13 @@ pub trait ModelClient: Send + Sync {
 
     fn capabilities(&self) -> ProviderCapabilities {
         ProviderCapabilities::default()
+    }
+
+    /// Protocol namespace used when a canonical session is projected into a
+    /// request history. The default preserves source compatibility for custom
+    /// clients and intentionally avoids reusing a provider wire id.
+    fn history_protocol(&self) -> String {
+        "legacy".to_string()
     }
 
     /// Whether this client participates in the explicit terminal-event

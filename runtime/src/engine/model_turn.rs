@@ -67,10 +67,12 @@ fn durable_model_event(event: AgentEvent) -> Option<StreamEvent> {
             full,
             usage,
             tool_calls,
+            assistant_turn,
         } => Some(StreamEvent::LlmMessage {
             full,
             usage,
             tool_calls,
+            assistant_turn: Some(assistant_turn),
         }),
         _ => None,
     }

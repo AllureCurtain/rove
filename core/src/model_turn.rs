@@ -4,8 +4,8 @@ use futures::stream::BoxStream;
 use tokio_util::sync::CancellationToken;
 
 use rove_models::{
-    AssistantTurn, Message, ModelClient, ModelError, ModelEvent, ModelToolSchema, StopReason,
-    ToolCallRef, TurnAssembler, Usage,
+    AssistantTurn, InternalCallId, Message, ModelClient, ModelError, ModelEvent, ModelToolSchema,
+    StopReason, ToolCall as CanonicalToolCall, ToolCallRef, TurnAssembler, Usage,
 };
 
 use crate::{Action, AgentEvent, CallId, ToolCallAction, parse_action};
@@ -74,6 +74,12 @@ pub fn run_model_turn<'a>(
                         return;
                     }
                 }
+                Ok(ModelEvent::StopReason { reason }) => {
+                    if let Err(error) = assembler.push(ModelEvent::StopReason { reason }) {
+                        yield ModelTurnItem::Failed(error);
+                        return;
+                    }
+                }
                 Ok(ModelEvent::Done) => {
                     saw_terminal_event = true;
                     if let Err(error) = assembler.push(ModelEvent::Done) {
@@ -135,13 +141,19 @@ pub fn run_model_turn<'a>(
             }
         }
 
-        let assistant_turn = match assembler.finish() {
+        let mut assistant_turn = match assembler.finish() {
             Ok(turn) => turn,
             Err(error) => {
                 yield ModelTurnItem::Failed(error);
                 return;
             }
         };
+        let history_protocol = model.history_protocol();
+        for call in &mut assistant_turn.tool_calls {
+            if let Some(reference) = call.wire_reference.as_mut() {
+                reference.protocol.clone_from(&history_protocol);
+            }
+        }
         full_response = assistant_turn
             .content
             .iter()
@@ -161,13 +173,29 @@ pub fn run_model_turn<'a>(
             })
             .collect::<Vec<_>>();
         let tool_calls = tool_refs_from_actions(&native_tool_calls);
+        let action = build_action_from_model_output(native_tool_calls, &full_response);
+        if assistant_turn.tool_calls.is_empty() {
+            assistant_turn.tool_calls = canonical_calls_from_compatibility_action(&action);
+            if !assistant_turn.tool_calls.is_empty() {
+                assistant_turn.stop_reason = StopReason::ToolUse;
+            }
+        }
+        if let Err(error) = assistant_turn
+            .validate()
+            .map_err(|error| ModelError::StreamInterrupted(error.to_string()))
+            .and_then(|_| model.capabilities().validate_assistant_turn(&assistant_turn))
+        {
+            yield ModelTurnItem::Failed(error);
+            return;
+        }
         yield ModelTurnItem::Event(AgentEvent::ModelMessage {
             full: full_response.clone(),
             usage: assistant_turn.usage.clone(),
             tool_calls: tool_calls.clone(),
+            assistant_turn: Box::new(assistant_turn.clone()),
         });
         yield ModelTurnItem::Finished(ModelTurn {
-            action: build_action_from_model_output(native_tool_calls, &full_response),
+            action,
             full_response,
             usage: assistant_turn.usage.clone(),
             tool_calls,
@@ -175,6 +203,46 @@ pub fn run_model_turn<'a>(
             assistant_turn: Box::new(assistant_turn),
         });
     })
+}
+
+fn canonical_calls_from_compatibility_action(action: &Action) -> Vec<CanonicalToolCall> {
+    let calls = match action {
+        Action::ToolCall {
+            call_id,
+            tool_use_id,
+            name,
+            args,
+        } => vec![ToolCallAction {
+            call_id: *call_id,
+            tool_use_id: tool_use_id.clone(),
+            name: name.clone(),
+            args: args.clone(),
+        }],
+        Action::ToolBatch { calls } => calls.clone(),
+        Action::Final { .. } | Action::Malformed { .. } => Vec::new(),
+    };
+    calls
+        .into_iter()
+        .map(|call| CanonicalToolCall {
+            internal_call_id: InternalCallId::new(call.call_id.to_string())
+                .expect("runtime call ids are valid canonical ids"),
+            // Compatibility JSON actions are validated again by the runtime
+            // tool boundary. Keep a bounded canonical identity even when the
+            // legacy payload is malformed so the recoverable ToolCallFailed
+            // result can still correlate during persistence.
+            name: if call.name.trim().is_empty() {
+                "invalid_tool".to_string()
+            } else {
+                call.name
+            },
+            arguments: if call.args.is_object() {
+                call.args
+            } else {
+                serde_json::json!({})
+            },
+            wire_reference: None,
+        })
+        .collect()
 }
 
 fn tool_refs_from_actions(calls: &[ToolCallAction]) -> Vec<ToolCallRef> {

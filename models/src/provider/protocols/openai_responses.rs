@@ -9,7 +9,7 @@ use crate::provider::{
     AuthStyle, Framing, OPENAI_RESPONSES_PROTOCOL, StreamDecoder, WireProtocol, WireProtocolId,
     WireRequest, WireRequestInput,
 };
-use crate::{Message, ModelError, ModelEvent, ModelToolSchema, Role, Usage};
+use crate::{Message, ModelError, ModelEvent, ModelToolSchema, Role, StopReason, Usage};
 
 pub struct OpenAiResponsesProtocol {
     id: WireProtocolId,
@@ -67,7 +67,7 @@ impl WireProtocol for OpenAiResponsesProtocol {
             "input": messages,
             "stream": true,
             "store": false,
-            "parallel_tool_calls": true,
+            "parallel_tool_calls": self.capabilities().parallel_tool_calls,
         })
         .as_object()
         .cloned()
@@ -134,6 +134,14 @@ impl WireProtocol for OpenAiResponsesProtocol {
 
     fn default_auth_style(&self) -> AuthStyle {
         AuthStyle::Bearer
+    }
+
+    fn capabilities(&self) -> crate::ProviderCapabilities {
+        crate::ProviderCapabilities {
+            streaming: true,
+            tool_calls: true,
+            parallel_tool_calls: true,
+        }
     }
 }
 
@@ -396,6 +404,13 @@ fn normalize_responses_event(
                     usage: parse_responses_usage(usage),
                 });
             }
+            events.push(ModelEvent::StopReason {
+                reason: if function_calls.is_empty() {
+                    StopReason::EndTurn
+                } else {
+                    StopReason::ToolUse
+                },
+            });
             events.push(ModelEvent::Done);
         }
         Some("response.failed") => fatal_error = Some(ResponsesFatalError::Failed),
@@ -579,6 +594,26 @@ mod tests {
         ProviderClient, ProviderClientConfig, ResolvedAuth, Transport, TransportConfig,
     };
     use crate::{ModelClient, ProviderOptions, ToolCallRef};
+
+    #[test]
+    fn completed_response_maps_to_end_turn_stop_reason() {
+        let mut decoder = OpenAiResponsesProtocol::new().decoder();
+        let events = decoder
+            .push(
+                &serde_json::json!({
+                    "type": "response.completed",
+                    "response": {"usage": {}}
+                })
+                .to_string(),
+            )
+            .unwrap();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ModelEvent::StopReason {
+                reason: StopReason::EndTurn
+            }
+        )));
+    }
 
     fn messages() -> Vec<Message> {
         vec![
@@ -766,7 +801,18 @@ mod tests {
             migrated_events.extend(migrated_decoder.push(frame).unwrap());
         }
 
-        assert_eq!(migrated_events, legacy_events);
+        let legacy_projection = migrated_events
+            .iter()
+            .filter(|event| !matches!(event, ModelEvent::StopReason { .. }))
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(legacy_projection, legacy_events);
+        assert!(migrated_events.iter().any(|event| matches!(
+            event,
+            ModelEvent::StopReason {
+                reason: StopReason::ToolUse
+            }
+        )));
         assert!(migrated_events.iter().any(|event| matches!(event, ModelEvent::ToolUseDone { id, name, args } if id == "call_1" && name == "read_file" && args["path"] == "Cargo.toml")));
         assert!(migrated_events.iter().any(|event| matches!(event, ModelEvent::Usage { usage } if usage.total_tokens == 15 && usage.cached_tokens == 4)));
         assert!(

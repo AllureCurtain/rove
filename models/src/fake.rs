@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use futures::stream::BoxStream;
 
 use crate::traits::{ModelClient, ModelClientId, ModelEvent};
-use crate::{Message, ModelError, ModelToolSchema, Role, Usage};
+use crate::{Message, ModelError, ModelToolSchema, Role, StopReason, Usage};
 
 /// Scripted turn for a `FakeModelClient` — one entry per LLM call.
 #[derive(Debug, Clone)]
@@ -54,6 +54,9 @@ fn turn_events(turn: FakeTurn) -> Vec<Result<ModelEvent, ModelError>> {
             Ok(ModelEvent::Usage {
                 usage: Usage::default(),
             }),
+            Ok(ModelEvent::StopReason {
+                reason: StopReason::EndTurn,
+            }),
             Ok(ModelEvent::Done),
         ],
         FakeTurn::ToolUse { id, name, args } => vec![
@@ -64,6 +67,9 @@ fn turn_events(turn: FakeTurn) -> Vec<Result<ModelEvent, ModelError>> {
             Ok(ModelEvent::ToolUseDone { id, name, args }),
             Ok(ModelEvent::Usage {
                 usage: Usage::default(),
+            }),
+            Ok(ModelEvent::StopReason {
+                reason: StopReason::ToolUse,
             }),
             Ok(ModelEvent::Done),
         ],
@@ -78,6 +84,9 @@ fn turn_events(turn: FakeTurn) -> Vec<Result<ModelEvent, ModelError>> {
             }
             events.push(Ok(ModelEvent::Usage {
                 usage: Usage::default(),
+            }));
+            events.push(Ok(ModelEvent::StopReason {
+                reason: StopReason::ToolUse,
             }));
             events.push(Ok(ModelEvent::Done));
             events
@@ -131,6 +140,9 @@ impl ModelClient for FakeModelClient {
                     cached_tokens: 0,
                 },
             }),
+            Ok(ModelEvent::StopReason {
+                reason: StopReason::EndTurn,
+            }),
             Ok(ModelEvent::Done),
         ]))
     }
@@ -139,8 +151,20 @@ impl ModelClient for FakeModelClient {
         "fake"
     }
 
+    fn capabilities(&self) -> crate::ProviderCapabilities {
+        crate::ProviderCapabilities {
+            streaming: true,
+            tool_calls: true,
+            parallel_tool_calls: true,
+        }
+    }
+
     fn requires_terminal_event(&self) -> bool {
         true
+    }
+
+    fn history_protocol(&self) -> String {
+        "fake".to_string()
     }
 
     fn client_id(&self) -> ModelClientId {
@@ -153,7 +177,10 @@ fn latest_unconcluded_tool_result(messages: &[Message]) -> Option<&str> {
         .iter()
         .rposition(|message| message.role == Role::Tool)?;
     let tool_message = &messages[tool_index];
-    if tool_message.content.trim_start().starts_with("Error:")
+    if !matches!(
+        tool_message.tool_result_status,
+        None | Some(crate::ToolResultStatus::Ok)
+    ) || tool_message.content.trim_start().starts_with("Error:")
         || messages[tool_index + 1..]
             .iter()
             .any(|message| message.role == Role::Assistant)
@@ -183,6 +210,28 @@ mod tests {
     use futures::StreamExt;
 
     use super::*;
+
+    #[test]
+    fn scripted_fake_turns_emit_real_normalized_stop_reasons() {
+        let text = turn_events(FakeTurn::Text("done".to_string()));
+        let tool = turn_events(FakeTurn::ToolUse {
+            id: "call-1".to_string(),
+            name: "echo".to_string(),
+            args: serde_json::json!({}),
+        });
+        assert!(text.iter().any(|event| matches!(
+            event,
+            Ok(ModelEvent::StopReason {
+                reason: StopReason::EndTurn
+            })
+        )));
+        assert!(tool.iter().any(|event| matches!(
+            event,
+            Ok(ModelEvent::StopReason {
+                reason: StopReason::ToolUse
+            })
+        )));
+    }
 
     #[tokio::test]
     async fn static_fake_response_concludes_an_unanswered_successful_tool_result() {

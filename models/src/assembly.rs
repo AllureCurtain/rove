@@ -1,4 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::{
     AssistantTurn, ContentBlock, InternalCallId, MAX_CONTENT_BYTES, MAX_TOOL_ARGUMENT_BYTES,
@@ -21,6 +23,7 @@ pub struct TurnAssembler {
     call_order: Vec<String>,
     completed: BTreeSet<String>,
     terminal: Option<StopReason>,
+    declared_stop_reason: Option<StopReason>,
     event_count: usize,
 }
 
@@ -65,6 +68,16 @@ impl TurnAssembler {
             }
             ModelEvent::ToolUseDone { id, name, args } => self.finish_call(id, name, args)?,
             ModelEvent::Usage { usage } => self.usage = usage,
+            ModelEvent::StopReason { reason } => {
+                if self.terminal.is_some() || self.declared_stop_reason.is_some() {
+                    return Err(protocol_error(
+                        ProtocolValidationError::DuplicateCompletion {
+                            id: "stop_reason".to_string(),
+                        },
+                    ));
+                }
+                self.declared_stop_reason = Some(reason);
+            }
             ModelEvent::Done => self.set_terminal(StopReason::default())?,
         }
         Ok(())
@@ -159,7 +172,7 @@ impl TurnAssembler {
         if self.calls.contains_key(&id) || self.completed.contains(&id) {
             return Err(protocol_error(ProtocolValidationError::DuplicateId { id }));
         }
-        let internal_id = InternalCallId::new(id.clone()).map_err(protocol_error)?;
+        let internal_id = next_internal_call_id().map_err(protocol_error)?;
         self.calls.insert(
             id.clone(),
             PartialCall {
@@ -236,9 +249,19 @@ impl TurnAssembler {
                 id: call.internal_id.to_string(),
             }));
         }
-        self.terminal = Some(reason);
+        self.terminal = Some(self.declared_stop_reason.take().unwrap_or(reason));
         Ok(())
     }
+}
+
+fn next_internal_call_id() -> Result<InternalCallId, ProtocolValidationError> {
+    static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let sequence = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    InternalCallId::new(format!("call-{timestamp:x}-{sequence:x}"))
 }
 
 pub fn assemble_turn<I>(events: I) -> Result<AssistantTurn, ModelError>

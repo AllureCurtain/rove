@@ -570,6 +570,7 @@ mod tests {
             checkpoint: Some(PromptCheckpoint {
                 summary: Some("summary".to_string()),
                 preserved_tail: Vec::new(),
+                session: None,
                 plan: None,
                 session_memory_pointer: None,
                 durable_memory_pointer: None,

@@ -149,6 +149,7 @@ impl Session {
     }
 
     pub fn append(&mut self, entry: SessionEntry) -> Result<(), SessionError> {
+        self.validate_schema_version()?;
         if self.entries.len() >= MAX_SESSION_ENTRIES {
             return Err(SessionError::TooManyEntries {
                 max: MAX_SESSION_ENTRIES,
@@ -194,6 +195,122 @@ impl Session {
         Ok(messages)
     }
 
+    /// Project canonical history into the legacy `Message` shape for the
+    /// existing context/runtime boundary. The canonical entries remain the
+    /// source; the returned messages are a target-specific derived view.
+    pub fn messages_for_provider(&self, protocol: &str) -> Result<Vec<Message>, SessionError> {
+        self.project_for_provider(protocol)
+            .map(|projected| projected.messages)
+    }
+
+    /// Project the derived `Message` fields retained for pre-session artifact
+    /// readers. Provider requests must use `messages_for_provider` so a switch
+    /// cannot reuse another provider's wire IDs.
+    pub fn messages_for_compatibility_artifact(&self) -> Result<Vec<Message>, SessionError> {
+        self.validate_projection()?;
+        let messages = self.model_messages()?;
+        HistoryProjector::compatibility_artifact()
+            .project(&messages)
+            .map(|projected| projected.messages)
+            .map_err(SessionError::Projection)
+    }
+
+    /// Close a trailing in-flight tool round conservatively before resume.
+    /// The explicit unknown-effect result prevents replay while retaining the
+    /// canonical call identity for audit and provider projection.
+    pub fn close_unresolved_tool_calls(&mut self) -> Result<usize, SessionError> {
+        self.validate_schema_version()?;
+        let completed = self
+            .entries
+            .iter()
+            .filter_map(|entry| match entry {
+                SessionEntry::ToolResult { result, .. } => Some(result.internal_call_id.clone()),
+                _ => None,
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        let mut seen = std::collections::BTreeSet::new();
+        let mut unresolved = Vec::new();
+        for entry in &self.entries {
+            if let SessionEntry::Assistant { turn, .. } = entry {
+                for call in &turn.tool_calls {
+                    if !seen.insert(call.internal_call_id.clone()) {
+                        return Err(SessionError::InvalidEntry(format!(
+                            "duplicate canonical tool call id `{}`",
+                            call.internal_call_id
+                        )));
+                    }
+                    if !completed.contains(&call.internal_call_id) {
+                        unresolved.push(call.clone());
+                    }
+                }
+            }
+        }
+        if unresolved.is_empty() {
+            self.validate_projection()?;
+            return Ok(0);
+        }
+
+        let mut repaired = self.clone();
+        for call in &unresolved {
+            let mut recovery_id = format!("interrupted-tool-result-{}", call.internal_call_id);
+            let mut suffix = 1usize;
+            while repaired
+                .entries
+                .iter()
+                .any(|entry| recovery_id == entry_id(entry))
+            {
+                suffix = suffix.saturating_add(1);
+                recovery_id = format!("interrupted-tool-result-{}-{suffix}", call.internal_call_id);
+            }
+            repaired.append(SessionEntry::tool_result(
+                recovery_id,
+                ToolResult {
+                    internal_call_id: call.internal_call_id.clone(),
+                    tool_name: call.name.clone(),
+                    content: vec![ContentBlock::text(
+                        "tool result unavailable; external effect is unknown",
+                    )],
+                    status: ToolResultStatus::UnknownEffect,
+                    error_code: Some("interrupted".to_string()),
+                },
+            ))?;
+        }
+        repaired.validate_projection()?;
+        *self = repaired;
+        Ok(unresolved.len())
+    }
+
+    /// Return a bounded, correlation-safe suffix for prompt checkpoints.
+    /// Tool-call/result rounds are kept atomic even when the message limit
+    /// would otherwise cut between the assistant call and its results.
+    pub fn suffix(&self, max_entries: usize) -> Self {
+        if self.entries.len() <= max_entries {
+            return self.clone();
+        }
+        let first_candidate = self.entries.len().saturating_sub(max_entries);
+        for start in first_candidate..self.entries.len() {
+            let candidate = Self {
+                id: self.id,
+                schema_version: self.schema_version,
+                entries: self.entries[start..].to_vec(),
+            };
+            if candidate.project_for_provider("checkpoint").is_ok() {
+                return candidate;
+            }
+        }
+        for start in (0..first_candidate).rev() {
+            let candidate = Self {
+                id: self.id,
+                schema_version: self.schema_version,
+                entries: self.entries[start..].to_vec(),
+            };
+            if candidate.project_for_provider("checkpoint").is_ok() {
+                return candidate;
+            }
+        }
+        Self::with_id(self.id)
+    }
+
     pub fn project_for_provider(
         &self,
         protocol: &str,
@@ -223,6 +340,7 @@ impl Session {
     }
 
     fn validate_projection(&self) -> Result<(), SessionError> {
+        self.validate_schema_version()?;
         let messages = self.model_messages()?;
         for message in &messages {
             message
@@ -236,11 +354,47 @@ impl Session {
         Ok(())
     }
 
+    fn validate_schema_version(&self) -> Result<(), SessionError> {
+        if self.schema_version == 0 || self.schema_version > SESSION_SCHEMA_VERSION {
+            return Err(SessionError::UnsupportedVersion {
+                version: self.schema_version,
+            });
+        }
+        Ok(())
+    }
+
     fn validate_entry_append(&self, entry: &SessionEntry) -> Result<(), SessionError> {
         match entry {
-            SessionEntry::Assistant { turn, .. } => turn
-                .validate()
-                .map_err(|error| SessionError::InvalidEntry(error.to_string())),
+            SessionEntry::Assistant { turn, .. } => {
+                turn.validate()
+                    .map_err(|error| SessionError::InvalidEntry(error.to_string()))?;
+                if let Some(id) = first_unresolved_call(&self.entries) {
+                    return Err(SessionError::Projection(
+                        HistoryProjectionError::MissingResult { id },
+                    ));
+                }
+                let existing_ids = self
+                    .entries
+                    .iter()
+                    .filter_map(|entry| match entry {
+                        SessionEntry::Assistant { turn, .. } => Some(&turn.tool_calls),
+                        _ => None,
+                    })
+                    .flatten()
+                    .map(|call| &call.internal_call_id)
+                    .collect::<std::collections::BTreeSet<_>>();
+                if let Some(call) = turn
+                    .tool_calls
+                    .iter()
+                    .find(|call| existing_ids.contains(&call.internal_call_id))
+                {
+                    return Err(SessionError::InvalidEntry(format!(
+                        "duplicate canonical tool call id `{}`",
+                        call.internal_call_id
+                    )));
+                }
+                Ok(())
+            }
             SessionEntry::ToolResult { result, .. } => {
                 result
                     .validate()
@@ -311,6 +465,8 @@ impl Session {
 
 #[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
 pub enum SessionError {
+    #[error("unsupported session schema version {version}")]
+    UnsupportedVersion { version: u16 },
     #[error("session contains too many entries (maximum {max})")]
     TooManyEntries { max: usize },
     #[error("session entry id must not be empty")]
@@ -370,14 +526,15 @@ fn legacy_history_to_model(history: &[Message]) -> Vec<ModelMessage> {
             });
         } else if message.role == Role::Tool {
             let id = message
-                .internal_call_id
-                .clone()
+                .tool_call_id
+                .as_ref()
+                .and_then(|id| pending.get(id).cloned())
                 .or_else(|| {
-                    message
-                        .tool_call_id
-                        .as_ref()
-                        .and_then(|id| pending.get(id).cloned())
+                    message.internal_call_id.clone().filter(|candidate| {
+                        pending.values().any(|pending_id| pending_id == candidate)
+                    })
                 })
+                .or_else(|| message.internal_call_id.clone())
                 .or_else(|| pending.values().next().cloned())
                 .unwrap_or_else(|| {
                     InternalCallId::new(format!("legacy-result-{index}"))
@@ -505,5 +662,127 @@ mod tests {
         let messages = session.model_messages().unwrap();
         assert_eq!(messages.len(), history.len());
         assert_eq!(messages[0].role, Role::User);
+    }
+
+    #[test]
+    fn legacy_additive_identity_prefers_wire_correlation_during_migration() {
+        let history = vec![
+            Message::assistant_with_tool_calls(
+                "calling",
+                vec![rove_models::ToolCallRef {
+                    id: "wire-call".to_string(),
+                    name: "echo".to_string(),
+                    args: serde_json::json!({"message":"ok"}),
+                }],
+            ),
+            Message::tool_with_status(
+                "ok",
+                Some("wire-call".to_string()),
+                Some(InternalCallId::new("runtime-call-id").unwrap()),
+                Some("echo".to_string()),
+                ToolResultStatus::Ok,
+            ),
+        ];
+        let session = Session::from_legacy_history(SessionId::new(), &history);
+        let projected = session.messages_for_provider("anthropic-messages").unwrap();
+        assert_eq!(
+            projected[0].tool_calls[0].id,
+            projected[1].tool_call_id.clone().unwrap()
+        );
+    }
+
+    #[test]
+    fn future_session_schema_fails_closed_while_unknown_fields_are_ignored() {
+        let mut value = serde_json::to_value(Session::new()).unwrap();
+        value["future_additive_field"] = serde_json::json!({"ignored": true});
+        let decoded: Session = serde_json::from_value(value).unwrap();
+        assert!(decoded.messages_for_provider("fake").is_ok());
+
+        let mut future = decoded;
+        future.schema_version = SESSION_SCHEMA_VERSION + 1;
+        assert!(matches!(
+            future.messages_for_provider("fake"),
+            Err(SessionError::UnsupportedVersion { .. })
+        ));
+    }
+
+    #[test]
+    fn bounded_suffix_keeps_native_multi_tool_round_atomic() {
+        let first = InternalCallId::new("multi-1").unwrap();
+        let second = InternalCallId::new("multi-2").unwrap();
+        let mut session = Session::new();
+        session
+            .append(SessionEntry::user("u-1", "inspect"))
+            .unwrap();
+        session
+            .append(SessionEntry::assistant(
+                "a-1",
+                AssistantTurn {
+                    tool_calls: vec![
+                        ToolCall::new(first.clone(), "echo", serde_json::json!({"value":1})),
+                        ToolCall::new(second.clone(), "echo", serde_json::json!({"value":2})),
+                    ],
+                    stop_reason: rove_models::StopReason::ToolUse,
+                    ..AssistantTurn::default()
+                },
+            ))
+            .unwrap();
+        session
+            .append(SessionEntry::tool_result(
+                "r-1",
+                ToolResult::text(first, "echo", "one"),
+            ))
+            .unwrap();
+        session
+            .append(SessionEntry::tool_result(
+                "r-2",
+                ToolResult::text(second, "echo", "two"),
+            ))
+            .unwrap();
+
+        let suffix = session.suffix(1);
+        let projected = suffix.messages_for_provider("fake").unwrap();
+        assert_eq!(projected.len(), 3);
+        assert_eq!(projected[0].tool_calls.len(), 2);
+        assert_eq!(
+            projected[0].tool_calls[0].id,
+            projected[1].tool_call_id.clone().unwrap()
+        );
+        assert_eq!(
+            projected[0].tool_calls[1].id,
+            projected[2].tool_call_id.clone().unwrap()
+        );
+    }
+
+    #[test]
+    fn interrupted_tail_closes_once_with_unknown_effect() {
+        let id = InternalCallId::new("in-flight").unwrap();
+        let mut session = Session::new();
+        session
+            .append(SessionEntry::user("u-1", "inspect"))
+            .unwrap();
+        session
+            .append(SessionEntry::assistant(
+                "a-1",
+                AssistantTurn {
+                    tool_calls: vec![ToolCall::new(id.clone(), "echo", serde_json::json!({}))],
+                    stop_reason: rove_models::StopReason::ToolUse,
+                    ..AssistantTurn::default()
+                },
+            ))
+            .unwrap();
+
+        assert_eq!(session.close_unresolved_tool_calls().unwrap(), 1);
+        assert_eq!(session.close_unresolved_tool_calls().unwrap(), 0);
+        let projected = session.messages_for_provider("fake").unwrap();
+        assert_eq!(projected.len(), 3);
+        assert_eq!(
+            projected[1].tool_calls[0].id,
+            projected[2].tool_call_id.clone().unwrap(),
+        );
+        assert_eq!(
+            projected[2].tool_result_status,
+            Some(ToolResultStatus::UnknownEffect),
+        );
     }
 }

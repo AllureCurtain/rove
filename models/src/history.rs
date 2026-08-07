@@ -55,6 +55,7 @@ pub struct ProjectedHistory {
 pub struct HistoryProjector {
     target_protocol: String,
     policy: HistoryProjectionPolicy,
+    preserve_source_wire_ids: bool,
 }
 
 impl HistoryProjector {
@@ -62,6 +63,19 @@ impl HistoryProjector {
         Self {
             target_protocol: protocol.into(),
             policy: HistoryProjectionPolicy::default(),
+            preserve_source_wire_ids: false,
+        }
+    }
+
+    /// Build the derived legacy-artifact projection. This is never used for a
+    /// provider request: it retains the source wire ID only so older readers
+    /// observe the same `Message` shape while canonical identity remains in
+    /// the typed session.
+    pub fn compatibility_artifact() -> Self {
+        Self {
+            target_protocol: "compatibility-artifact".to_string(),
+            policy: HistoryProjectionPolicy::default(),
+            preserve_source_wire_ids: true,
         }
     }
 
@@ -75,7 +89,7 @@ impl HistoryProjector {
         source: &[ModelMessage],
     ) -> Result<ProjectedHistory, HistoryProjectionError> {
         let mut output = Vec::with_capacity(source.len());
-        let mut aliases = AliasMap::new(&self.target_protocol);
+        let mut aliases = AliasMap::new(&self.target_protocol, self.preserve_source_wire_ids);
         let mut pending = BTreeMap::<InternalCallId, String>::new();
         let mut completed = BTreeSet::<InternalCallId>::new();
         let mut diagnostics = Vec::new();
@@ -91,6 +105,17 @@ impl HistoryProjector {
             if !message.tool_calls.is_empty() {
                 let mut refs = Vec::with_capacity(message.tool_calls.len());
                 for call in &message.tool_calls {
+                    if pending.contains_key(&call.internal_call_id)
+                        || completed.contains(&call.internal_call_id)
+                    {
+                        return Err(HistoryProjectionError::InvalidMessage {
+                            index,
+                            reason: format!(
+                                "duplicate canonical tool call id `{}`",
+                                call.internal_call_id
+                            ),
+                        });
+                    }
                     let wire_id = aliases.alias(call)?;
                     pending.insert(call.internal_call_id.clone(), call.name.clone());
                     refs.push(ToolCallRef {
@@ -237,16 +262,23 @@ impl HistoryProjector {
                     tool_result: None,
                 });
             } else if message.role == Role::Tool {
-                let id = if let Some(id) = &message.internal_call_id {
-                    id.clone()
-                } else if let Some(wire_id) = &message.tool_call_id {
+                let id = if let Some(wire_id) = &message.tool_call_id {
                     pending
                         .get(wire_id)
                         .map(|(id, _)| id.clone())
+                        .or_else(|| {
+                            message.internal_call_id.clone().filter(|candidate| {
+                                pending
+                                    .values()
+                                    .any(|(pending_id, _)| pending_id == candidate)
+                            })
+                        })
                         .unwrap_or_else(|| {
                             InternalCallId::new(format!("legacy-result-{index}"))
                                 .expect("deterministic legacy id is valid")
                         })
+                } else if let Some(id) = &message.internal_call_id {
+                    id.clone()
                 } else if self.policy.allow_legacy_tool_results {
                     let id = pending
                         .values()
@@ -322,14 +354,16 @@ impl HistoryProjector {
 #[derive(Debug, Default)]
 struct AliasMap {
     target_protocol: String,
+    preserve_source_wire_ids: bool,
     ids: BTreeMap<InternalCallId, String>,
     used: BTreeSet<String>,
 }
 
 impl AliasMap {
-    fn new(target_protocol: &str) -> Self {
+    fn new(target_protocol: &str, preserve_source_wire_ids: bool) -> Self {
         Self {
             target_protocol: target_protocol.to_string(),
+            preserve_source_wire_ids,
             ..Self::default()
         }
     }
@@ -341,7 +375,9 @@ impl AliasMap {
         let candidate = call
             .wire_reference
             .as_ref()
-            .filter(|reference| reference.protocol == self.target_protocol)
+            .filter(|reference| {
+                self.preserve_source_wire_ids || reference.protocol == self.target_protocol
+            })
             .map(|reference| reference.value.clone())
             .unwrap_or_else(|| deterministic_alias(call.internal_call_id.as_str()));
         self.insert(call.internal_call_id.clone(), candidate)

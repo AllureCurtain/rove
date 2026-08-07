@@ -9,7 +9,7 @@ use crate::provider::{
     AuthStyle, Framing, OPENAI_COMPLETIONS_PROTOCOL, StreamDecoder, WireProtocol, WireProtocolId,
     WireRequest, WireRequestInput,
 };
-use crate::{Message, ModelError, ModelEvent, ModelToolSchema, Role, Usage};
+use crate::{Message, ModelError, ModelEvent, ModelToolSchema, Role, StopReason, Usage};
 
 pub struct OpenAiCompletionsProtocol {
     id: WireProtocolId,
@@ -106,6 +106,14 @@ impl WireProtocol for OpenAiCompletionsProtocol {
 
     fn default_auth_style(&self) -> AuthStyle {
         AuthStyle::Bearer
+    }
+
+    fn capabilities(&self) -> crate::ProviderCapabilities {
+        crate::ProviderCapabilities {
+            streaming: true,
+            tool_calls: true,
+            parallel_tool_calls: true,
+        }
     }
 }
 
@@ -257,19 +265,26 @@ fn normalize_chat_chunk(
                 }
             }
         }
-        if choice.get("finish_reason").and_then(|value| value.as_str()) == Some("tool_calls") {
-            for (index, partial) in calls.iter() {
-                if let Some(name) = &partial.name {
-                    let args = serde_json::from_str::<serde_json::Value>(&partial.arguments)
-                        .unwrap_or_else(|_| serde_json::Value::String(partial.arguments.clone()));
-                    events.push(ModelEvent::ToolUseDone {
-                        id: tool_call_id(*index, partial),
-                        name: name.clone(),
-                        args,
-                    });
+        if let Some(finish_reason) = choice.get("finish_reason").and_then(|value| value.as_str()) {
+            if finish_reason == "tool_calls" {
+                for (index, partial) in calls.iter() {
+                    if let Some(name) = &partial.name {
+                        let args = serde_json::from_str::<serde_json::Value>(&partial.arguments)
+                            .unwrap_or_else(|_| {
+                                serde_json::Value::String(partial.arguments.clone())
+                            });
+                        events.push(ModelEvent::ToolUseDone {
+                            id: tool_call_id(*index, partial),
+                            name: name.clone(),
+                            args,
+                        });
+                    }
                 }
+                calls.clear();
             }
-            calls.clear();
+            events.push(ModelEvent::StopReason {
+                reason: openai_stop_reason(finish_reason),
+            });
         }
     }
 
@@ -293,6 +308,16 @@ fn normalize_chat_chunk(
         });
     }
     events
+}
+
+fn openai_stop_reason(value: &str) -> StopReason {
+    match value {
+        "stop" => StopReason::EndTurn,
+        "tool_calls" | "function_call" => StopReason::ToolUse,
+        "length" => StopReason::MaxTokens,
+        "content_filter" => StopReason::ContentFilter,
+        other => StopReason::Other(other.to_string()),
+    }
 }
 
 fn tool_call_id(index: u64, partial: &OpenAiPartialToolCall) -> String {
@@ -398,6 +423,29 @@ mod tests {
         ProviderClient, ProviderClientConfig, ResolvedAuth, Transport, TransportConfig,
     };
     use crate::{ModelClient, ProviderOptions, ToolCallRef};
+
+    #[test]
+    fn maps_openai_finish_reasons_to_normalized_stop_reasons() {
+        for (wire, expected) in [
+            ("stop", StopReason::EndTurn),
+            ("tool_calls", StopReason::ToolUse),
+            ("length", StopReason::MaxTokens),
+            ("content_filter", StopReason::ContentFilter),
+        ] {
+            let mut decoder = OpenAiCompletionsProtocol::new().decoder();
+            let events = decoder
+                .push(
+                    &serde_json::json!({
+                        "choices": [{"delta": {}, "finish_reason": wire}]
+                    })
+                    .to_string(),
+                )
+                .unwrap();
+            assert!(events.iter().any(
+                |event| matches!(event, ModelEvent::StopReason { reason } if reason == &expected)
+            ));
+        }
+    }
 
     #[test]
     fn request_contains_native_tools_options_and_history() {
@@ -548,7 +596,18 @@ mod tests {
             migrated_events.extend(migrated_decoder.push(frame).unwrap());
         }
 
-        assert_eq!(migrated_events, legacy_events);
+        let legacy_projection = migrated_events
+            .iter()
+            .filter(|event| !matches!(event, ModelEvent::StopReason { .. }))
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(legacy_projection, legacy_events);
+        assert!(migrated_events.iter().any(|event| matches!(
+            event,
+            ModelEvent::StopReason {
+                reason: StopReason::ToolUse
+            }
+        )));
         assert!(migrated_events.iter().any(|event| matches!(event, ModelEvent::ToolUseDone { id, name, args } if id == "call_1" && name == "echo" && args["message"] == "ok")));
         assert!(
             migrated_events.iter().any(

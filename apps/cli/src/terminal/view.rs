@@ -1047,6 +1047,7 @@ impl From<&StreamEvent> for RunViewUpdate {
                 full,
                 usage,
                 tool_calls,
+                ..
             } => Self::LlmMessage {
                 full: full.clone(),
                 usage: usage.clone(),
@@ -1245,6 +1246,7 @@ mod tests {
                 full: "full".to_string(),
                 usage: usage(),
                 tool_calls: Vec::new(),
+                assistant_turn: None,
             },
             StreamEvent::ToolCallStarted {
                 call_id,
