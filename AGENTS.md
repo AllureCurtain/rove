@@ -191,6 +191,9 @@ The active implementation work follows these briefs:
 - `docs/plans/2026-08-06-project-trust-execution-tools-implementation.md`
 - `docs/plans/2026-08-07-authoritative-tool-schema-runtime-validation.md`
 - `docs/plans/2026-08-07-coding-tool-v2-implementation.md`
+- `docs/plans/2026-08-07-post-coding-tool-v2-master-program.md`
+- `docs/plans/2026-08-07-runtime-intelligence-program.md`
+- `docs/plans/2026-08-07-protocol-platform-program.md`
 
 The optional terminal-interface direction is documented separately in
 `docs/design/2026-07-16-grok-build-reference-and-tui-design.md`.
