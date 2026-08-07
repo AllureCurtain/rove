@@ -7,7 +7,7 @@ use futures::StreamExt;
 use rove_core::{CallId, ToolRegistry};
 use rove_models::{FakeModelClient, FakeTurn};
 use rove_runtime::context::ContextManager;
-use rove_runtime::engine::{Engine, EngineConfig};
+use rove_runtime::engine::{Engine, EngineConfig, EngineEnvironmentOptions};
 use rove_runtime::environment::{
     EnvironmentError, ExecutionCapabilities, ExecutionEnvironment, InMemoryExecutionEnvironment,
     LocalExecutionEnvironment, Observation, ObservationStore, ProcessHost, ProcessOutput,
@@ -375,9 +375,11 @@ async fn engine_reuses_one_injected_environment_for_file_and_shell_tools() {
             plan_enabled: false,
         },
         workspace.clone(),
-        ApprovalPolicy::Auto,
-        ApprovalDecision::Approve,
-        injected.clone(),
+        EngineEnvironmentOptions {
+            approval_policy: ApprovalPolicy::Auto,
+            approval_decision: ApprovalDecision::Approve,
+            environment: injected.clone(),
+        },
     );
 
     let events = engine

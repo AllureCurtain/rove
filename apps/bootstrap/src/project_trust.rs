@@ -599,11 +599,10 @@ fn migrate_legacy_json(source: &Path, destination: &Path) -> anyhow::Result<()> 
     if bytes.len() > 512 * 1024 {
         anyhow::bail!("legacy project trust store exceeds the supported size");
     }
-    if !bytes
+    if bytes
         .iter()
-        .skip_while(|byte| byte.is_ascii_whitespace())
-        .next()
-        .is_some_and(|byte| *byte == b'{')
+        .find(|byte| !byte.is_ascii_whitespace())
+        .is_none_or(|byte| *byte != b'{')
     {
         return Ok(());
     }

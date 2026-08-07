@@ -3,7 +3,7 @@ use std::sync::Arc;
 use rove_core::ToolRegistry;
 use rove_models::ModelClient;
 use rove_runtime::context::{ContextBudget, ContextManager};
-use rove_runtime::engine::{Engine, EngineConfig};
+use rove_runtime::engine::{Engine, EngineConfig, EngineEnvironmentOptions};
 use rove_runtime::environment::{ExecutionEnvironment, local_environment};
 use rove_runtime::types::{
     ApprovalDecision, ApprovalPolicy, ToolApprovalProvider, UserInputProvider,
@@ -64,9 +64,11 @@ pub fn build_engine_with_registry(options: EngineOptions<'_>, registry: ToolRegi
             plan_enabled: true,
         },
         options.workspace.clone(),
-        options.approval_policy,
-        ApprovalDecision::Reject,
-        environment,
+        EngineEnvironmentOptions {
+            approval_policy: options.approval_policy,
+            approval_decision: ApprovalDecision::Reject,
+            environment,
+        },
     )
     .with_planner_prompt(options.config.load_planner_prompt())
     .with_memory_paths(options.config.memory_paths())

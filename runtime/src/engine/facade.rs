@@ -108,6 +108,15 @@ pub struct EngineConfig {
     pub plan_enabled: bool,
 }
 
+/// Invocation-scoped authority used when constructing an Engine for a
+/// workspace. Keeping the environment beside the approval settings makes it
+/// explicit that both are shared by the entire run.
+pub struct EngineEnvironmentOptions {
+    pub approval_policy: ApprovalPolicy,
+    pub approval_decision: ApprovalDecision,
+    pub environment: Arc<dyn ExecutionEnvironment>,
+}
+
 impl EngineConfig {
     /// Project sugar fields into the typed policy used by the engine.
     ///
@@ -209,9 +218,11 @@ impl Engine {
             context_manager,
             config,
             workspace,
-            approval_policy,
-            approval_decision,
-            environment,
+            EngineEnvironmentOptions {
+                approval_policy,
+                approval_decision,
+                environment,
+            },
         )
     }
 
@@ -221,9 +232,7 @@ impl Engine {
         context_manager: ContextManager,
         config: EngineConfig,
         workspace: Workspace,
-        approval_policy: ApprovalPolicy,
-        approval_decision: ApprovalDecision,
-        environment: Arc<dyn ExecutionEnvironment>,
+        options: EngineEnvironmentOptions,
     ) -> Self {
         let memory_paths = MemoryPaths::from_workspace(&workspace, 8);
         Self {
@@ -233,9 +242,9 @@ impl Engine {
             config,
             planner: Planner::default(),
             workspace,
-            environment,
-            approval_policy,
-            approval_decision,
+            environment: options.environment,
+            approval_policy: options.approval_policy,
+            approval_decision: options.approval_decision,
             approval_provider: None,
             input_provider: None,
             hooks: HookRegistry::with_default_post_run_hooks(),
