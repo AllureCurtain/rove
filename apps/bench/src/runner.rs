@@ -159,6 +159,17 @@ async fn run_benchmark_task(
         let path = workspace_root.join(&expected.path);
         if !tokio::fs::try_exists(&path).await.unwrap_or(false) {
             failures.push(format!("expected file missing: {}", expected.path));
+        } else if !expected.content.is_empty() {
+            match tokio::fs::read_to_string(&path).await {
+                Ok(actual) if actual == expected.content => {}
+                Ok(_) => {
+                    failures.push(format!("expected file content mismatch: {}", expected.path))
+                }
+                Err(error) => failures.push(format!(
+                    "failed to read expected file {}: {error}",
+                    expected.path
+                )),
+            }
         }
     }
     if !task.expected_summary_contains.is_empty() {

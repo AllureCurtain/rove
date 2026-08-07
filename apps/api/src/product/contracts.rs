@@ -1017,6 +1017,10 @@ pub struct ProductExecutionCapabilities {
     pub process_run: bool,
     pub process_stdio: bool,
     pub observations: bool,
+    pub process_background: bool,
+    pub process_pty: bool,
+    pub workspace_checkpoints: bool,
+    pub artifact_projection: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]

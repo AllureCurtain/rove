@@ -3,12 +3,18 @@ use std::sync::Arc;
 
 use rove_core::{Tool, ToolRegistry};
 use rove_runtime::environment::{ExecutionEnvironment, local_environment};
+use rove_runtime::tools::coding::{
+    DeletePathTool, EditFileTool, GlobPathsTool, ListDirectoryTool, MovePathTool,
+    WorkspaceCheckpointTool, WorkspaceDiffTool, WorkspaceRewindTool,
+};
 use rove_runtime::tools::fs::{FsReadTool, FsWriteTool};
 use rove_runtime::tools::mcp_proxy::register_mcp_tools_from_file_with_environment;
 use rove_runtime::tools::memory::{ReadMemoryTopicTool, SaveMemoryTool, UpdateMemoryIndexTool};
 use rove_runtime::tools::request_input::RequestInputTool;
 use rove_runtime::tools::search::SearchCodeTool;
-use rove_runtime::tools::shell::{ShellPolicy, ShellTool};
+use rove_runtime::tools::shell::{
+    ShellOutputTool, ShellPolicy, ShellPtyTool, ShellTerminateTool, ShellTool,
+};
 use rove_runtime::workspace::Workspace;
 
 use crate::config::AppConfig;
@@ -28,6 +34,14 @@ pub fn tool_registry_with_shell_policy(
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(FsReadTool::new(workspace.root.clone())));
     registry.register(Box::new(FsWriteTool::new(workspace.root.clone())));
+    registry.register(Box::new(EditFileTool::new()));
+    registry.register(Box::new(DeletePathTool::new()));
+    registry.register(Box::new(MovePathTool::new()));
+    registry.register(Box::new(ListDirectoryTool::new()));
+    registry.register(Box::new(GlobPathsTool::new()));
+    registry.register(Box::new(WorkspaceCheckpointTool::new()));
+    registry.register(Box::new(WorkspaceDiffTool::new()));
+    registry.register(Box::new(WorkspaceRewindTool::new()));
     registry.register(Box::new(SearchCodeTool::new(workspace.root.clone())));
     registry.register(Box::new(ReadMemoryTopicTool::new()));
     registry.register(Box::new(SaveMemoryTool::new()));
@@ -37,6 +51,9 @@ pub fn tool_registry_with_shell_policy(
         workspace.root.clone(),
         shell_policy,
     )));
+    registry.register(Box::new(ShellOutputTool::new()));
+    registry.register(Box::new(ShellTerminateTool::new()));
+    registry.register(Box::new(ShellPtyTool::new()));
     registry
 }
 

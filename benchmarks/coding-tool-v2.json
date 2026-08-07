@@ -1,0 +1,205 @@
+{
+  "name": "coding-tool-v2",
+  "description": "Deterministic no-network coverage for bounded coding tools and canonical run artifacts.",
+  "tasks": [
+    {
+      "name": "observed_coding_workflow",
+      "message": "Apply the deterministic Coding Tool V2 workflow.",
+      "requires_network": false,
+      "max_steps": 20,
+      "setup_files": [
+        {
+          "path": "README.md",
+          "content": "coding v2 benchmark\n"
+        },
+        {
+          "path": "src/extra.rs",
+          "content": "pub fn extra() {}\n"
+        },
+        {
+          "path": "src/lib.rs",
+          "content": "pub fn answer() -> i32 {\n    41\n}\n"
+        }
+      ],
+      "turns": [
+        {
+          "type": "tool_use",
+          "id": "coding_read",
+          "name": "read_file",
+          "args": {
+            "path": "src/lib.rs",
+            "limit": 256
+          }
+        },
+        {
+          "type": "tool_use",
+          "id": "coding_edit",
+          "name": "edit_file",
+          "args": {
+            "path": "src/lib.rs",
+            "old_text": "41",
+            "new_text": "42",
+            "observation_id": "sha256:c75ee5791043a0c998634e83f2322301cca132975481178bf57adf7001a7b178",
+            "version": "sha256:f24fc452db70dcabbc6f8c949712c67ac96337c9f6b8962b2bf0692fa9b6056a"
+          }
+        },
+        {
+          "type": "tool_use",
+          "id": "coding_create",
+          "name": "write_file",
+          "args": {
+            "path": "notes.txt",
+            "content": "first\n"
+          }
+        },
+        {
+          "type": "tool_use",
+          "id": "coding_overwrite",
+          "name": "write_file",
+          "args": {
+            "path": "notes.txt",
+            "content": "second\n",
+            "mode": "overwrite"
+          }
+        },
+        {
+          "type": "tool_use",
+          "id": "coding_list_first",
+          "name": "list_directory",
+          "args": {
+            "path": ".",
+            "recursive": true,
+            "limit": 2
+          }
+        },
+        {
+          "type": "tool_use",
+          "id": "coding_list_continue",
+          "name": "list_directory",
+          "args": {
+            "path": ".",
+            "recursive": true,
+            "limit": 2,
+            "continuation": "page:sha256:850b3568c1e68abbae0146964e8b38c40eeb15e9ccd95d1b82f7e9b4b6449ce1:2"
+          }
+        },
+        {
+          "type": "tool_use",
+          "id": "coding_search_first",
+          "name": "search_code",
+          "args": {
+            "query": "pub fn",
+            "path": "src",
+            "limit": 1
+          }
+        },
+        {
+          "type": "tool_use",
+          "id": "coding_search_continue",
+          "name": "search_code",
+          "args": {
+            "query": "pub fn",
+            "path": "src",
+            "limit": 1,
+            "continuation": "search:sha256:8c4a14d345ed52e9dea79895ec13d3e7b247357847b8e88ac5566a5fe6b6fdca:1"
+          }
+        },
+        {
+          "type": "tool_use",
+          "id": "coding_checkpoint",
+          "name": "workspace_checkpoint",
+          "args": {
+            "paths": ["src/lib.rs", "notes.txt"]
+          }
+        },
+        {
+          "type": "tool_use",
+          "id": "coding_mutate_after_checkpoint",
+          "name": "write_file",
+          "args": {
+            "path": "notes.txt",
+            "content": "third\n",
+            "mode": "overwrite"
+          }
+        },
+        {
+          "type": "tool_use",
+          "id": "coding_diff",
+          "name": "workspace_diff",
+          "args": {
+            "checkpoint_id": "sha256:8d3ceb8d32214e56cf244f01d148775ef0993d7004b15f78e3df14897983f51d"
+          }
+        },
+        {
+          "type": "tool_use",
+          "id": "coding_rewind",
+          "name": "workspace_rewind",
+          "args": {
+            "checkpoint_id": "sha256:8d3ceb8d32214e56cf244f01d148775ef0993d7004b15f78e3df14897983f51d",
+            "paths": ["notes.txt"]
+          }
+        },
+        {
+          "type": "tool_use",
+          "id": "coding_background_shell",
+          "name": "run_shell",
+          "args": {
+            "command": "echo coding-tool-v2-background",
+            "background": true
+          }
+        },
+        {
+          "type": "text",
+          "text": "Coding Tool V2 benchmark completed with bounded observations, deterministic continuations, rewind, and background process identity."
+        }
+      ],
+      "expected_output_contains": [
+        "Coding Tool V2 benchmark completed"
+      ],
+      "expected_files": [
+        {
+          "path": "src/lib.rs",
+          "content": "pub fn answer() -> i32 {\n    42\n}\n"
+        },
+        {
+          "path": "notes.txt",
+          "content": "second\n"
+        }
+      ],
+      "checks": [
+        {
+          "kind": "trace_has_event",
+          "event_type": "run_completed",
+          "description": "Canonical trace records successful completion."
+        },
+        {
+          "kind": "report_field",
+          "field": "tool_calls",
+          "min": 13,
+          "description": "Report records the complete Coding Tool V2 sequence."
+        },
+        {
+          "kind": "report_field",
+          "field": "tool_failures",
+          "equals": "0",
+          "description": "Every deterministic tool call succeeds."
+        },
+        {
+          "kind": "artifact_exists",
+          "name": "trace.jsonl",
+          "description": "Canonical event trace exists."
+        },
+        {
+          "kind": "artifact_exists",
+          "name": "task_state.json",
+          "description": "Resumable task state exists."
+        },
+        {
+          "kind": "artifact_exists",
+          "name": "report.json",
+          "description": "Derived report exists."
+        }
+      ]
+    }
+  ]
+}

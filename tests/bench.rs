@@ -168,6 +168,32 @@ fn resolve_suite_supports_dataprep_and_agent_smoke() {
     let smoke = resolve_suite("agent-smoke", "default").unwrap();
     assert_eq!(smoke.name, "agent-smoke");
     assert!(smoke.tasks.len() >= 3);
+
+    let coding = resolve_suite("coding-tool-v2", "default").unwrap();
+    assert_eq!(coding.name, "coding-tool-v2");
+    assert_eq!(coding.tasks.len(), 1);
+}
+
+#[tokio::test]
+async fn coding_tool_v2_benchmark_passes_with_exact_workspace_and_artifacts() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let suite = load_benchmark_suite(workspace_path("benchmarks/coding-tool-v2.json"))
+        .await
+        .unwrap();
+
+    let report = run_benchmark_suite(&suite, tmp.path(), "default")
+        .await
+        .unwrap();
+
+    assert!(report.passed, "{report:#?}");
+    assert_eq!(report.tasks.len(), 1);
+    let task = &report.tasks[0];
+    assert_eq!(task.outcome, BenchmarkOutcome::Passed, "{task:#?}");
+    assert_eq!(task.tool_failures, 0, "{task:#?}");
+    assert!(task.tool_calls >= 13, "{task:#?}");
+    assert!(task.artifacts.trace_jsonl.is_file());
+    assert!(task.artifacts.task_state_json.is_file());
+    assert!(task.artifacts.report_json.is_file());
 }
 
 #[test]

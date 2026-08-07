@@ -51,6 +51,11 @@ pub fn available_suites() -> Vec<SuiteInfo> {
                 .to_string(),
             profiles: vec!["default".to_string()],
         },
+        SuiteInfo {
+            name: "coding-tool-v2".to_string(),
+            description: "Deterministic bounded coding-tool workflow with observations, continuations, checkpoint rewind, and background shell.".to_string(),
+            profiles: vec!["default".to_string()],
+        },
     ]
 }
 

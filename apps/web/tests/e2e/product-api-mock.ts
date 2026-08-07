@@ -1152,6 +1152,10 @@ export async function installMockProductApi(
             process_run: true,
             process_stdio: true,
             observations: true,
+            process_background: true,
+            process_pty: false,
+            workspace_checkpoints: true,
+            artifact_projection: true,
           },
         },
         resume_health: {

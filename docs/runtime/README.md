@@ -90,9 +90,11 @@ The Web product line is tracked separately:
 - Authoritative bounded Tool Schema validation, atomic registry/MCP catalogs,
   and the Runtime capability snapshot foundation follow the
   [`Tool Schema and Runtime validation plan`](../plans/2026-08-07-authoritative-tool-schema-runtime-validation.md).
-- Active Project Trust/execution/coding-tool work follows the
+- Project Trust and Execution Environment work follows the
   [`Project Trust, Execution Environment, and Coding Tools implementation
   brief`](../plans/2026-08-06-project-trust-execution-tools-implementation.md).
+- Coding Tool V2 is implemented and verified by the
+  [`Coding Tool V2 implementation plan`](../plans/2026-08-07-coding-tool-v2-implementation.md).
 - No Tauri Desktop host exists. `desktop-workspace-spec.md` is an automation
   workspace note, not the Desktop product-shell design.
 

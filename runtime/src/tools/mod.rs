@@ -1,5 +1,6 @@
 //! Built-in tools, tool executor pipeline, hooks, and input registration.
 
+pub mod coding;
 pub mod echo;
 pub mod executor;
 pub mod fs;

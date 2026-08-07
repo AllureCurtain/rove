@@ -184,6 +184,10 @@ export interface ProductExecutionCapabilities {
   process_run: boolean;
   process_stdio: boolean;
   observations: boolean;
+  process_background: boolean;
+  process_pty: boolean;
+  workspace_checkpoints: boolean;
+  artifact_projection: boolean;
 }
 
 export interface ProductExecutionEnvironmentInfo {
@@ -1139,6 +1143,10 @@ export function parseProductRuntimeInfo(
       "process_run",
       "process_stdio",
       "observations",
+      "process_background",
+      "process_pty",
+      "workspace_checkpoints",
+      "artifact_projection",
     ],
     capabilitiesPath,
   );
@@ -1205,6 +1213,22 @@ export function parseProductRuntimeInfo(
         observations: expectBoolean(
           capabilities.observations,
           `${capabilitiesPath}.observations`,
+        ),
+        process_background: expectBoolean(
+          capabilities.process_background,
+          `${capabilitiesPath}.process_background`,
+        ),
+        process_pty: expectBoolean(
+          capabilities.process_pty,
+          `${capabilitiesPath}.process_pty`,
+        ),
+        workspace_checkpoints: expectBoolean(
+          capabilities.workspace_checkpoints,
+          `${capabilitiesPath}.workspace_checkpoints`,
+        ),
+        artifact_projection: expectBoolean(
+          capabilities.artifact_projection,
+          `${capabilitiesPath}.artifact_projection`,
         ),
       },
     },

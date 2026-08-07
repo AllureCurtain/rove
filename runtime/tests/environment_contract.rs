@@ -9,9 +9,10 @@ use rove_models::{FakeModelClient, FakeTurn};
 use rove_runtime::context::ContextManager;
 use rove_runtime::engine::{Engine, EngineConfig, EngineEnvironmentOptions};
 use rove_runtime::environment::{
-    EnvironmentError, ExecutionCapabilities, ExecutionEnvironment, InMemoryExecutionEnvironment,
-    LocalExecutionEnvironment, Observation, ObservationStore, ProcessHost, ProcessOutput,
-    ProcessRequest, WorkspaceFileSystem, local_environment,
+    ArtifactSink, BackgroundProcessStatus, EnvironmentError, ExecutionCapabilities,
+    ExecutionEnvironment, InMemoryExecutionEnvironment, LocalExecutionEnvironment, Observation,
+    ObservationStore, ProcessHost, ProcessOutput, ProcessRequest, TransientArtifactStore,
+    WorkspaceFileSystem, local_environment,
 };
 use rove_runtime::memory::paths::MemoryPaths;
 use rove_runtime::tools::fs::FsWriteTool;
@@ -23,6 +24,21 @@ use rove_runtime::workspace::Workspace;
 use tokio_util::sync::CancellationToken;
 
 async fn filesystem_conformance(filesystem: &dyn WorkspaceFileSystem) {
+    filesystem
+        .create_utf8("src/create-only.txt", "original")
+        .await
+        .unwrap();
+    assert!(matches!(
+        filesystem
+            .create_utf8("src/create-only.txt", "replacement")
+            .await,
+        Err(EnvironmentError::Conflict(_))
+    ));
+    assert_eq!(
+        filesystem.read_utf8("src/create-only.txt").await.unwrap(),
+        "original"
+    );
+
     let created = filesystem
         .write_utf8("src/note.txt", "first")
         .await
@@ -43,7 +59,7 @@ async fn filesystem_conformance(filesystem: &dyn WorkspaceFileSystem) {
             .into_iter()
             .map(|entry| entry.relative_path)
             .collect::<Vec<_>>(),
-        vec!["src/note.txt"]
+        vec!["src/create-only.txt", "src/note.txt"]
     );
 
     assert!(matches!(
@@ -69,7 +85,7 @@ async fn local_and_in_memory_filesystems_share_the_workspace_contract() {
             .await
             .unwrap()
             .len(),
-        1
+        2
     );
 }
 
@@ -233,6 +249,63 @@ async fn local_process_port_bounds_output_and_cleans_up_timeout_and_cancel() {
 }
 
 #[tokio::test]
+async fn local_background_process_pages_progress_to_a_bounded_terminal_result() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(temp.path()).unwrap();
+    let environment = LocalExecutionEnvironment::new(&workspace);
+    let (program, args) = large_output_command();
+    let mut request = process_request(&workspace, &program, 5_000, 32);
+    request.args = args;
+    let started = environment
+        .processes()
+        .spawn_background(request, CancellationToken::new())
+        .await
+        .unwrap();
+    assert!(!started.process_id.is_empty());
+
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    let mut stdout_cursor = 0;
+    let mut stderr_cursor = 0;
+    let mut terminal = None;
+    let mut stdout_truncated = false;
+    let mut stderr_truncated = false;
+    for _ in 0..250 {
+        let page = environment
+            .processes()
+            .poll_background(&started.process_id, stdout_cursor, stderr_cursor, 8)
+            .await
+            .unwrap();
+        stdout.extend_from_slice(&page.stdout);
+        stderr.extend_from_slice(&page.stderr);
+        stdout_cursor = page.stdout_cursor;
+        stderr_cursor = page.stderr_cursor;
+        stdout_truncated |= page.stdout_truncated;
+        stderr_truncated |= page.stderr_truncated;
+        if page.status != BackgroundProcessStatus::Running {
+            terminal = Some(page.status);
+            if page.output_complete && stdout_cursor == 32 && stderr_cursor == 32 {
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    assert_eq!(terminal, Some(BackgroundProcessStatus::Exited));
+    assert_eq!(stdout, vec![b'x'; 32]);
+    assert_eq!(stderr, vec![b'y'; 32]);
+    assert!(stdout_truncated);
+    assert!(stderr_truncated);
+    assert!(matches!(
+        environment
+            .processes()
+            .poll_background(&started.process_id, 0, 0, 8)
+            .await,
+        Err(EnvironmentError::ResourceNotFound("background_process"))
+    ));
+}
+
+#[tokio::test]
 async fn observations_are_bounded_stable_and_version_checked() {
     let store = ObservationStore::default();
     let first = Observation::from_bytes("file:src/lib.rs", 0, b"content", "v1", false, None);
@@ -270,7 +343,25 @@ async fn observations_are_bounded_stable_and_version_checked() {
                 None,
             ))
             .await,
-        Err(EnvironmentError::Host(_))
+        Err(EnvironmentError::ResourceLimit("observations"))
+    ));
+}
+
+#[tokio::test]
+async fn transient_artifact_projections_are_item_bounded() {
+    let store = TransientArtifactStore::default();
+    for index in 0..512 {
+        assert!(
+            store
+                .put(&format!("source:{index}"), b"x")
+                .await
+                .unwrap()
+                .is_some()
+        );
+    }
+    assert!(matches!(
+        store.put("source:overflow", b"x").await,
+        Err(EnvironmentError::ResourceLimit("artifact_projections"))
     ));
 }
 

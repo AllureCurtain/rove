@@ -1096,10 +1096,21 @@ Current built-in tools:
 
 | Tool | Purpose |
 |---|---|
-| `read_file` | Read UTF-8 workspace file |
-| `write_file` | Write UTF-8 workspace file |
-| `search_code` | Structured workspace text/regex search (workspace-bounded; not vector RAG) |
-| `run_shell` | Run shell command in workspace |
+| `read_file` | Read a bounded UTF-8 range with versioned observation/continuation metadata |
+| `write_file` | Create a UTF-8 file by default; existing files require explicit `mode = "overwrite"` |
+| `edit_file` | Replace one exact uniquely observed text occurrence after stale-version validation |
+| `delete_path` | Delete an observed file or completely observed bounded directory |
+| `move_path` | Move/rename an observed path without overwriting an unobserved destination |
+| `list_directory` | Deterministic bounded directory pages with continuation |
+| `glob_paths` | Deterministic bounded glob pages with continuation |
+| `search_code` | Structured bounded text/regex search with deterministic continuation (not vector RAG) |
+| `workspace_checkpoint` | Create a bounded Engine-local file checkpoint |
+| `workspace_diff` | Return localized bounded diffs against a checkpoint |
+| `workspace_rewind` | Restore explicitly selected bounded checkpoint paths |
+| `run_shell` | Run a foreground command or start an identified background process |
+| `shell_output` | Read bounded progressive background stdout/stderr pages |
+| `shell_terminate` | Terminate and wait for a Runtime-owned background process |
+| `run_shell_pty` | Typed unsupported PTY capability stub |
 | `save_memory` | Save durable memory topic |
 | `reindex_memory` | Rebuild durable memory index |
 | `read_memory` | Read durable memory topic |
@@ -1117,20 +1128,27 @@ input provider are attached to the invocation through `RuntimeToolServices`;
 they are not fields on the minimal `rove_core::ToolContext`.
 
 The same services inject a Runtime-owned `ExecutionEnvironment`. Its
-`WorkspaceFileSystem` port handles current file read/write and search; its
-`ProcessHost` handles foreground Shell and stdio MCP. Only the local adapter
-uses host filesystem/process APIs. The in-memory adapter runs the same
-filesystem/process contract without host side effects. Capability checks occur
-before tool effects, and the process adapter owns timeout, cancellation,
-bounded stdout/stderr, and child cleanup.
+`WorkspaceFileSystem` port handles versioned/ranged reads, atomic create-first
+writes, deterministic enumeration, and bounded path mutation; its `ProcessHost`
+handles foreground/background Shell and stdio MCP. Engine-local observation,
+artifact-projection, and checkpoint stores bind continuations and destructive
+operations to the data that was actually observed. Only the local adapter uses
+host filesystem/process APIs. The in-memory adapter runs the same contract
+without host side effects. Capability checks occur before tool effects, and the
+process adapter owns timeout, cancellation, bounded stdout/stderr, opaque
+process identity, and child cleanup.
 
 `ExecutionEnvironmentIdentity` contains only adapter, workspace kind, and the
 redacted SHA-256 workspace digest. The digest equals the existing persisted
 `RuntimeIdentity.workspace_fingerprint`, so resume diagnostics gain
 environment identity without a `TaskState` migration. `GET /product/runtime`
-returns this redacted identity and boolean capabilities. The bounded
-`ObservationStore` foundation is available, but first-wave tool schemas and
-outputs remain unchanged; it is not Coding Tool V2.
+returns this redacted identity and boolean capabilities. Old runtime identity
+artifacts deserialize the additive Coding Tool V2 capability fields as false.
+Observations, projected artifacts, background process IDs, and workspace
+checkpoints are intentionally transient and cannot be recovered after Engine
+recreation. Native PTY execution is not implemented; `run_shell_pty` advertises
+and returns typed unsupported status rather than making an interoperability
+claim.
 
 Operational Tool descriptors include:
 
@@ -1153,11 +1171,20 @@ registration validation/pinning -> schema lookup -> argument validation -> pre-t
 
 Argument validation supports the JSON Schema subset used by built-in tools: object, array, string, number, integer, boolean, and null type checks; required fields; enum values; nested properties; array `items`, `minItems`, and `maxItems`; numeric `minimum` and `maximum`; string `minLength` and `maxLength`; and `additionalProperties: false`. Validation failures preserve `ToolError::InvalidArgs` and happen before tool execution.
 
-Filesystem tools resolve paths through `runtime/src/workspace/boundary.rs`. Reads canonicalize the final target; writes canonicalize existing targets or the nearest existing ancestor for new files. Both paths reject absolute paths, lexical workspace escapes, and symlink/reparse-point escapes that resolve outside the workspace.
+Filesystem tools resolve paths through `runtime/src/workspace/boundary.rs`. Reads canonicalize the final target; writes canonicalize existing targets or the nearest existing ancestor for new files. Both paths reject absolute paths, lexical workspace escapes, and symlink/reparse-point escapes that resolve outside the workspace. Delete/move reject the workspace root, and move rejects identical or source-descendant destinations.
 
-`write_file` returns structured mutation metadata for deterministic file writes. The metadata includes path, operation type, and a textual diff; it is exposed on `ToolCallCompleted.result.mutations` and persisted to `report.json` as `tool_mutations`. Shell commands are bounded by policy and return structured stdout/stderr/exit metadata, but shell write-sets are intentionally not inferred or snapshotted.
+`write_file`, `edit_file`, observed delete/move, and checkpoint rewind return
+structured mutation metadata with localized bounded diffs where content is
+available. Metadata is exposed on `ToolCallCompleted.result.mutations` and
+persisted to `report.json` as `tool_mutations`. Exact edits reject missing or
+ambiguous text, mismatched observation sources, and stale versions before a
+write. Recursive directory delete/move requires a single complete recursive
+directory observation; paginated last-page observations are not sufficient.
+Shell commands are bounded by policy and return structured
+stdout/stderr/exit/process metadata, but shell write-sets are intentionally not
+inferred or snapshotted.
 
-Shell policy comes from `tool.shell`: timeout, max output bytes per stream, environment inheritance, and a denylist. The shell working directory is fixed to the workspace root. Empty commands, NUL bytes, denied substrings, timeouts, and output truncation are handled before unbounded history growth.
+Shell policy comes from `tool.shell`: timeout, max output bytes per stream, environment inheritance, and a denylist. The shell working directory is fixed to the workspace root. Empty commands, NUL bytes, denied substrings, timeouts, and output truncation are handled before unbounded history growth. Background polling reports per-stream `has_more` plus `output_complete`; a terminal process identity is released after both closed streams are drained, while explicit termination kills, waits, and releases immediately.
 
 Tool-call parallelism is conservative and batch-scoped. When a model turn
 returns multiple tool calls at once, the runtime runs them concurrently only if
@@ -1512,7 +1539,8 @@ Deterministic local benchmark checks:
 
 ```powershell
 cargo test -p rove-integration-tests --test bench
-cargo run -p rove-bench -- --suite benchmarks/agent-smoke.json --output-dir .rove/bench
+cargo run -p rove-bench -- --suite agent-smoke --output-dir .rove/bench
+cargo run -p rove-bench -- --suite coding-tool-v2 --output-dir .rove/bench
 ```
 
 `rove-bench` reads JSON benchmark task definitions, creates isolated local
@@ -1520,7 +1548,11 @@ workspaces under the output directory, runs scripted fake-model tasks through
 the real engine/tool/state paths, and prints a JSON report with pass/fail state
 and artifact paths. The default `benchmarks/agent-smoke.json` suite has no
 network credential requirement and covers echo/tool smoke, file writing, and
-resume context behavior.
+resume context behavior. `benchmarks/coding-tool-v2.json` deterministically
+exercises observed read/edit, explicit overwrite, list/search continuation,
+checkpoint/diff/rewind, and background Shell through the same runtime. It
+requires exact final file content, zero tool failures, canonical trace/state/
+report artifacts, and no provider key or network.
 
 The current M0-M6 milestone proof map lives in
 `docs/runtime/acceptance-matrix.md`.

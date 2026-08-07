@@ -278,15 +278,16 @@ They are not fields on the minimal `rove-core` context, so an embedded custom
 Tool needs only call identity and cancellation unless it explicitly opts into
 runtime services.
 
-`runtime/src/environment.rs` owns the first-wave Execution Environment ports:
+`runtime/src/environment.rs` owns the Execution Environment ports:
 `ExecutionEnvironment`, `WorkspaceFileSystem`, `ProcessHost`, redacted
 identity/capabilities, local and in-memory adapters, and a bounded observation
-store. File read/write, code search, foreground Shell, MCP config reads, and
-stdio MCP spawn/cleanup use these ports through `RuntimeToolServices`. The
-local adapter owns canonical path enforcement, output bounds, timeouts,
-cancellation, kill-and-wait cleanup, and process cwd. The in-memory adapter
-supports deterministic parity tests and typed missing-capability failures
-before side effects.
+and transient artifact store. File read/write/edit/discovery, code search,
+foreground/background Shell, workspace checkpoints, MCP config reads, and stdio
+MCP spawn/cleanup use these ports through `RuntimeToolServices`. The local
+adapter owns canonical path enforcement, output bounds, timeouts, cancellation,
+kill-and-wait cleanup, opaque background process identity, and process cwd. The
+in-memory adapter supports deterministic parity tests and typed
+missing-capability failures before side effects.
 
 The environment workspace digest is the existing redacted
 `RuntimeIdentity.workspace_fingerprint`. New runtime identities also persist
@@ -294,11 +295,20 @@ optional `execution_environment` and `execution_capabilities` fields containing
 the adapter kind, workspace kind/digest, and boolean capabilities. No raw path
 is added, and old artifacts without these additive fields remain readable. The
 Product runtime endpoint exposes only adapter kind, workspace kind, the digest,
-and boolean capability availability. `ObservationStore` provides stable identity,
-source/range, byte count, digest/version, truncation, optional artifact
-reference, bounded retention, and stale-version rejection. First-wave tools
-preserve their existing request/output contracts; ranged reads, exact edits,
-background Shell, and other Coding Tool V2 behavior remain unimplemented.
+and boolean capability availability. `ObservationStore` provides stable
+identity, source/range, byte count, digest/version, truncation, optional artifact
+reference, bounded retention, and stale-version rejection. Coding Tool V2 adds
+bounded ranged `read_file`; exact observed `edit_file`; create-first
+`write_file` with explicit `mode = "overwrite"`; observed file/directory delete
+and move; deterministic `list_directory`, `glob_paths`, and continued
+`search_code`; localized checkpoint diff/rewind; and progressive background
+Shell output/termination. Directory mutation requires one complete recursive
+observation, rejects the workspace root, and move never overwrites an unobserved
+destination. Terminal background identities are reclaimed after closed output
+streams are drained or explicit termination completes. PTY is a
+registered typed unsupported capability. Observations, artifact projections,
+process identities, and workspace checkpoints are Engine-local and do not
+survive recreation or resume.
 
 MCP stdio transport is bounded by per-server policy. Initialize, list, and call requests time out; stderr is captured up to the configured diagnostic limit; JSON-RPC errors are mapped to structured tool execution failures; and child processes are killed when their client is dropped. `tests/mcp.rs` and `cargo test -p rove-integration-tests --test mcp` cover mock stdio registration, annotation safety, timeout/error/cleanup behavior, and include an opt-in real filesystem MCP smoke test gated by `ROVE_MCP_FILESYSTEM_SMOKE=1`.
 
@@ -575,10 +585,10 @@ CI is split by dependency weight:
 - `.github/workflows/ci.yml`: Rust default fmt/clippy/test and web test/typecheck/build.
 
 Default feedback loops stay free of heavy retrieval dependencies. Workspace
-retrieval is tool-based (`read_file` / `search_code` / `run_shell`) plus layered
-session/durable file memory; there is no built-in vector database. Prefer
-`search_code` for structured code search and reserve `run_shell` for arbitrary
-commands.
+retrieval is tool-based (`read_file` / `list_directory` / `glob_paths` /
+`search_code` / `run_shell`) plus layered session/durable file memory; there is
+no built-in vector database. Prefer `search_code` for structured code search
+and reserve `run_shell` for arbitrary commands.
 
 ## Benchmark And Acceptance
 

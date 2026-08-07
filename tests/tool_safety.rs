@@ -139,7 +139,7 @@ async fn write_file_records_diff_metadata_in_report() {
     let engine = Engine::with_workspace(
         Box::new(FakeModelClient::new(vec![
             r#"{"tool":"write_file","args":{"path":"note.txt","content":"hello"}}"#.to_string(),
-            r#"{"tool":"write_file","args":{"path":"note.txt","content":"goodbye"}}"#.to_string(),
+            r#"{"tool":"write_file","args":{"path":"note.txt","content":"goodbye","mode":"overwrite"}}"#.to_string(),
             "done".to_string(),
         ])),
         registry,

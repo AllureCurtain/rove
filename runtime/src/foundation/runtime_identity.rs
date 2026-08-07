@@ -363,6 +363,10 @@ mod tests {
                 process_run: true,
                 process_stdio: true,
                 observations: true,
+                process_background: true,
+                process_pty: false,
+                workspace_checkpoints: true,
+                artifact_projection: true,
             }),
         });
         let mut legacy_value = serde_json::to_value(&current).unwrap();

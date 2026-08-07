@@ -6,7 +6,8 @@ use regex::{Regex, RegexBuilder};
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::environment::EnvironmentError;
+use crate::environment::{EnvironmentError, Observation};
+use crate::tools::coding::map_environment_error;
 use crate::tools::runtime_context::runtime_tool_services;
 use rove_core::ToolDescriptor;
 use rove_core::{Tool, ToolContext, ToolError, ToolOutput};
@@ -38,7 +39,7 @@ impl Default for SearchCodePolicy {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct SearchMatch {
     path: String,
     line: usize,
@@ -55,6 +56,18 @@ struct SearchOutput {
     files_scanned: usize,
     truncated: bool,
     truncated_reason: Option<String>,
+    observation_id: String,
+    version: String,
+    continuation: Option<String>,
+    artifact_ref: Option<String>,
+}
+
+struct SearchScan {
+    matches: Vec<SearchMatch>,
+    files_scanned: usize,
+    complete: bool,
+    truncated_reason: Option<String>,
+    version: String,
 }
 
 impl SearchCodeTool {
@@ -95,9 +108,23 @@ impl Tool for SearchCodeTool {
                     "case_insensitive": {
                         "type": "boolean",
                         "description": "Case-insensitive search (default false)"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 50,
+                        "default": 50,
+                        "description": "Maximum matches returned in this page"
+                    },
+                    "continuation": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 512,
+                        "description": "Continuation returned by an earlier unchanged search"
                     }
                 },
-                "required": ["query"]
+                "required": ["query"],
+                "additionalProperties": false
             }),
             destructive: false,
             parallel_safe: true,
@@ -147,6 +174,19 @@ impl Tool for SearchCodeTool {
             .get("case_insensitive")
             .and_then(|value| value.as_bool())
             .unwrap_or(false);
+        let limit = args
+            .get("limit")
+            .and_then(Value::as_u64)
+            .unwrap_or(self.policy.max_matches.min(50) as u64) as usize;
+        if limit == 0 || limit > self.policy.max_matches.min(50) {
+            return Err(ToolError::InvalidInput {
+                reason: format!(
+                    "search page limit must be between 1 and {}",
+                    self.policy.max_matches.min(50)
+                ),
+            });
+        }
+        let continuation = args.get("continuation").and_then(Value::as_str);
 
         let pattern = compile_query(query, use_regex, case_insensitive)?;
         let glob_pattern = match glob {
@@ -165,16 +205,14 @@ impl Tool for SearchCodeTool {
             ));
         }
         let filesystem = services.environment.filesystem();
-        let result = tokio::time::timeout(
+        let scan = tokio::time::timeout(
             Duration::from_millis(policy.timeout_ms),
-            search_filesystem(
+            scan_filesystem(
                 filesystem,
                 search_path.as_deref(),
                 &pattern,
                 glob_pattern.as_ref(),
                 &policy,
-                &query_owned,
-                &path_label,
             ),
         )
         .await
@@ -183,6 +221,86 @@ impl Tool for SearchCodeTool {
         })?
         .map_err(map_environment_error)?;
 
+        let source = format!(
+            "search:{}|{}|{}|{}|{}",
+            path_label,
+            query_owned,
+            glob.unwrap_or(""),
+            use_regex,
+            case_insensitive
+        );
+        let start = search_continuation_start(
+            services,
+            continuation,
+            &source,
+            &scan.version,
+            scan.matches.len(),
+        )
+        .await?;
+        let end = start.saturating_add(limit).min(scan.matches.len());
+        let mut page = scan.matches[start..end].to_vec();
+        let mut truncated = end < scan.matches.len() || !scan.complete;
+        let mut truncated_reason = if end < scan.matches.len() {
+            Some("page_limit".to_string())
+        } else {
+            scan.truncated_reason.clone()
+        };
+        while !page.is_empty()
+            && estimate_output_bytes(
+                &query_owned,
+                &path_label,
+                &page,
+                scan.files_scanned,
+                truncated,
+            ) > policy.max_output_bytes
+        {
+            page.pop();
+            truncated = true;
+            truncated_reason = Some("max_output_bytes".to_string());
+        }
+        let page_end = start + page.len();
+        let payload = serde_json::to_vec(&page).map_err(|error| ToolError::ExecutionFailed {
+            reason: error.to_string(),
+        })?;
+        let artifact_ref = if truncated && services.environment.capabilities().artifact_projection {
+            match services.environment.artifacts() {
+                Some(sink) => sink.put(&source, &payload).await.ok().flatten(),
+                None => None,
+            }
+        } else {
+            None
+        };
+        let has_more_page = page_end < scan.matches.len();
+        let mut observation = Observation::from_bytes(
+            source,
+            start,
+            &payload,
+            scan.version.clone(),
+            has_more_page,
+            artifact_ref.clone(),
+        );
+        observation.start = start;
+        observation.end = page_end;
+        services
+            .environment
+            .observations()
+            .put_with_payload(observation.clone(), payload)
+            .await
+            .map_err(map_environment_error)?;
+        let result = SearchOutput {
+            query: query_owned,
+            path: path_label,
+            match_count: page.len(),
+            matches: page,
+            files_scanned: scan.files_scanned,
+            truncated,
+            truncated_reason,
+            observation_id: observation.id.clone(),
+            version: scan.version,
+            continuation: has_more_page.then(|| format!("search:{}:{page_end}", observation.id)),
+            artifact_ref,
+        };
+
         let content = serde_json::to_string(&result).map_err(|err| ToolError::ExecutionFailed {
             reason: err.to_string(),
         })?;
@@ -190,25 +308,24 @@ impl Tool for SearchCodeTool {
     }
 }
 
-async fn search_filesystem(
+async fn scan_filesystem(
     filesystem: &dyn crate::environment::WorkspaceFileSystem,
     raw_path: Option<&str>,
     pattern: &Regex,
     glob: Option<&Regex>,
     policy: &SearchCodePolicy,
-    query: &str,
-    path_label: &str,
-) -> Result<SearchOutput, EnvironmentError> {
+) -> Result<SearchScan, EnvironmentError> {
     let entries = filesystem
         .list_files(raw_path, policy.max_files_scanned.saturating_add(1))
         .await?;
     let mut matches = Vec::new();
     let mut files_scanned = 0usize;
-    let mut truncated = false;
+    let mut complete = true;
     let mut truncated_reason = None;
+    let mut version_material = String::new();
     for entry in entries {
         if files_scanned >= policy.max_files_scanned {
-            truncated = true;
+            complete = false;
             truncated_reason = Some("max_files_scanned".to_string());
             break;
         }
@@ -224,6 +341,15 @@ async fn search_filesystem(
         let read = filesystem
             .read_relative_bytes(&entry.relative_path, policy.max_file_bytes)
             .await?;
+        version_material.push_str(&entry.relative_path);
+        version_material.push('|');
+        version_material.push_str(&entry.byte_len.to_string());
+        version_material.push('|');
+        version_material.push_str(&format!(
+            "sha256:{:x}",
+            <sha2::Sha256 as sha2::Digest>::digest(&read.bytes)
+        ));
+        version_material.push('\n');
         if read.truncated || read.bytes.contains(&0) {
             continue;
         }
@@ -240,73 +366,69 @@ async fn search_filesystem(
                     text: truncate_line(line, 400),
                 });
                 if matches.len() >= policy.max_matches {
-                    truncated = true;
+                    complete = false;
                     truncated_reason = Some("max_matches".to_string());
                     break;
                 }
             }
         }
-        if matches.len() >= policy.max_matches
-            || estimate_output_bytes(query, path_label, &matches, files_scanned, truncated)
-                > policy.max_output_bytes
-        {
-            truncated = true;
-            truncated_reason = Some(if matches.len() >= policy.max_matches {
-                "max_matches".to_string()
-            } else {
-                "max_output_bytes".to_string()
-            });
+        if matches.len() >= policy.max_matches {
+            complete = false;
+            truncated_reason = Some("max_matches".to_string());
             break;
         }
     }
-    if estimate_output_bytes(query, path_label, &matches, files_scanned, truncated)
-        > policy.max_output_bytes
-    {
-        while !matches.is_empty()
-            && estimate_output_bytes(query, path_label, &matches, files_scanned, true)
-                > policy.max_output_bytes
-        {
-            matches.pop();
-        }
-        truncated = true;
-        truncated_reason = Some("max_output_bytes".to_string());
-    }
-    Ok(SearchOutput {
-        query: query.to_string(),
-        path: path_label.to_string(),
-        match_count: matches.len(),
+    Ok(SearchScan {
         matches,
         files_scanned,
-        truncated,
+        complete,
         truncated_reason,
+        version: crate::context::prompt_metadata::stable_hash(&version_material),
     })
 }
 
-fn map_environment_error(error: EnvironmentError) -> ToolError {
-    match error {
-        EnvironmentError::Timeout(timeout_ms) => ToolError::Timeout { timeout_ms },
-        EnvironmentError::Cancelled => ToolError::ExecutionFailed {
-            reason: "execution cancelled".to_string(),
-        },
-        EnvironmentError::CapabilityUnavailable(capability) => ToolError::PermissionDenied {
-            reason: format!("execution capability unavailable: {capability}"),
-        },
-        EnvironmentError::StaleObservation => ToolError::InvalidInput {
-            reason: "observation version is stale".to_string(),
-        },
-        EnvironmentError::NotFound => ToolError::ExecutionFailed {
-            reason: "workspace file was not found".to_string(),
-        },
-        EnvironmentError::Boundary => ToolError::PermissionDenied {
-            reason: "path escapes workspace".to_string(),
-        },
-        EnvironmentError::InvalidPath(reason) if reason.contains("escapes workspace") => {
-            ToolError::PermissionDenied { reason }
-        }
-        EnvironmentError::InvalidPath(reason) | EnvironmentError::Host(reason) => {
-            ToolError::ExecutionFailed { reason }
-        }
+async fn search_continuation_start(
+    services: &crate::tools::runtime_context::RuntimeToolServices,
+    continuation: Option<&str>,
+    source: &str,
+    version: &str,
+    total: usize,
+) -> Result<usize, ToolError> {
+    let Some(token) = continuation else {
+        return Ok(0);
+    };
+    let Some(rest) = token.strip_prefix("search:") else {
+        return Err(ToolError::InvalidInput {
+            reason: "invalid search continuation".to_string(),
+        });
+    };
+    let Some((observation_id, raw_start)) = rest.rsplit_once(':') else {
+        return Err(ToolError::InvalidInput {
+            reason: "invalid search continuation".to_string(),
+        });
+    };
+    let start = raw_start
+        .parse::<usize>()
+        .map_err(|_| ToolError::InvalidInput {
+            reason: "invalid search continuation cursor".to_string(),
+        })?;
+    if start > total {
+        return Err(ToolError::InvalidInput {
+            reason: "search continuation exceeds the current result set".to_string(),
+        });
     }
+    let observation = services
+        .environment
+        .observations()
+        .require_version(observation_id, version)
+        .await
+        .map_err(map_environment_error)?;
+    if observation.source != source || observation.end != start || !observation.truncated {
+        return Err(ToolError::InvalidInput {
+            reason: "search continuation does not match the current request".to_string(),
+        });
+    }
+    Ok(start)
 }
 
 fn compile_query(query: &str, use_regex: bool, case_insensitive: bool) -> Result<Regex, ToolError> {

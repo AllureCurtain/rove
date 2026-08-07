@@ -1686,12 +1686,19 @@ async fn product_runtime_reports_bounded_health_without_paths_or_secrets() {
         "process_run",
         "process_stdio",
         "observations",
+        "process_background",
+        "workspace_checkpoints",
+        "artifact_projection",
     ] {
         assert_eq!(
             runtime["execution_environment"]["capabilities"][capability],
             true
         );
     }
+    assert_eq!(
+        runtime["execution_environment"]["capabilities"]["process_pty"],
+        false
+    );
     assert_eq!(runtime["resume_health"]["status"], "healthy");
     assert_eq!(runtime["resume_health"]["workspace_count"], 1);
     assert_eq!(runtime["resume_health"]["session_count"], 1);
