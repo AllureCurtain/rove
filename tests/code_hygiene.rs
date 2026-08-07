@@ -30,6 +30,31 @@ fn package_libs_do_not_hide_dead_code_globally() {
 }
 
 #[test]
+fn web_production_build_does_not_fetch_remote_fonts() {
+    let layout = std::fs::read_to_string(workspace_path("apps/web/app/layout.tsx"))
+        .expect("Web root layout should exist");
+    let web_files = [
+        "apps/web/app/layout.tsx",
+        "apps/web/app/globals.css",
+        "apps/web/styles/tokens.css",
+        "apps/web/app/dev/product-ui-v2/product-ui-v2.module.css",
+    ];
+
+    assert!(
+        !layout.contains("next/font/google"),
+        "the deterministic local Web build must not fetch Google Fonts"
+    );
+    for rel in web_files {
+        let source = std::fs::read_to_string(workspace_path(rel))
+            .unwrap_or_else(|error| panic!("failed to read {rel}: {error}"));
+        assert!(
+            !source.contains("--font-geist"),
+            "{rel} must use the local system font stack"
+        );
+    }
+}
+
+#[test]
 fn runtime_docs_record_phase_12_hygiene_and_source_of_truth_status() {
     let status =
         std::fs::read_to_string(workspace_path("docs/runtime/implementation-status.md")).unwrap();
