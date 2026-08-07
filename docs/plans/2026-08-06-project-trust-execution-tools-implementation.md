@@ -1,6 +1,6 @@
 # Project Trust, Execution Environment, and Coding Tools Implementation
 
-> Status: **Active implementation brief - contracts sealed, first parallel wave ready**
+> Status: **First parallel wave implemented; Coding Tool V2 remains pending**
 >
 > Prerequisite implementation: `d2cd822` (`feat(security): gate workspace
 > project activation`)
@@ -12,8 +12,31 @@
 > Start gate: the branch must be created from the current `origin/main`, must
 > contain prerequisite `d2cd822` and this brief, and must have a clean worktree.
 >
-> This document describes target work. The exact-root activation guard is
-> implemented; persistent Project Trust and the Execution Environment are not.
+> The exact-root activation guard is retained as a process-scoped compatibility
+> floor. Persistent Project Trust and the first-wave Execution Environment are
+> implemented on this branch; Coding Tool V2 is not implemented.
+
+### First-wave implementation status (2026-08-07)
+
+- **Implemented:** one operator-owned SQLite Project Trust authority shared by
+  bootstrap, CLI, API, and Web; ProductStore v11 rows are a one-way startup
+  import only; legacy JSON is migrated with a retained `.json.legacy` backup.
+- **Implemented:** CLI `trust query|grant|deny|revoke` with repeated capability
+  selectors and stable trust error codes. `--trust-project` remains temporary
+  and is never persisted.
+- **Implemented:** capability-specific digests for project config, `.env`, MCP,
+  hooks/extensions, provider profile/endpoint/options/credential selectors, and
+  external paths. Provider and project grants are invalidated by `.env` changes
+  without revoking unrelated grants.
+- **Implemented:** explicit `Arc<dyn ExecutionEnvironment>` injection through
+  `EngineOptions`, registry/MCP assembly, the Engine loop, and every tool call;
+  local and in-memory adapters share the conformance contract.
+- **Implemented:** mocked Playwright trust coverage for all four states,
+  capability selection, decisions, digest invalidation, and workspace-ID-only
+  browser requests.
+- **Not implemented:** Coding Tool V2 (ranged Read/Edit/Write/delete/move,
+  foreground/background Shell, PTY, artifact projection, and coding
+  benchmarks). Streamable HTTP MCP and other later design work remain proposed.
 
 ## 1. Objective
 

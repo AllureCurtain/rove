@@ -14,14 +14,20 @@ digest per capability. A changed executable input invalidates only its matching
 capability; a parent grant does not cover a nested repository, and replacement,
 symlink, junction, and alias resolution is conservative.
 
-Bootstrap/CLI trust records live in an operator-owned JSON store selected by
-`ROVE_PROJECT_TRUST_STORE` or the platform user-state directory. Product API
-trust records live in the API-global ProductStore `project_trust_records` table
-added by schema v11 and are addressed by server-owned workspace IDs. Removing a
-workspace from the product catalog does not delete its trust record. The v11
-migration is forward-only and transactional: a failed migration rolls back its
-schema and migration row; a database newer than v11 is rejected without an
-automatic downgrade.
+Bootstrap, CLI, API, and runtime all use the same operator-owned SQLite
+authority selected by `ROVE_PROJECT_TRUST_STORE` or the platform user-state
+directory (`project-trust.sqlite` by default). Product Web sends a server-owned
+workspace ID; the API resolves that ID to the canonical root before calling the
+same repository. ProductStore schema v11 retains `project_trust_records` only
+as a one-way compatibility import source. It is not written by the API and is
+not a second live authority. Missing canonical records are imported at API
+startup without overwriting an existing canonical decision.
+
+An old JSON authority is read once, validated, renamed to
+`project-trust.json.legacy`, and imported into SQLite in one transaction. The
+legacy backup is retained for rollback: remove the new SQLite file and restore
+the backup only after an operator review. A failed import leaves the backup in
+place and never grants trust implicitly.
 
 CLI `--trust-project` and process-level `ROVE_TRUSTED_WORKSPACES` remain exact-
 root temporary grants. They grant only the current process and are never
@@ -29,6 +35,11 @@ silently converted into durable records. Only an allowed project-configuration
 capability loads local `.env` and `.rove/config.toml`; both files must resolve
 inside the workspace and stay within the bootstrap size limit. Repository text
 cannot grant or widen trust, and trust never replaces per-tool approval.
+
+`rove trust query|grant|deny|revoke` exposes durable CLI operations with
+repeated `--capability` selectors and the same stable trust error codes as the
+API. `--trust-project` remains a process-only compatibility grant and is never
+persisted.
 
 Merge order for an explicitly trusted workspace:
 

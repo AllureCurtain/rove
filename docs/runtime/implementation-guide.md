@@ -189,11 +189,25 @@ defaults < trusted .rove/config.toml < environment < CLI/API overrides
 
 Workspace project config and local `.env` are deferred by default. Persistent
 Project Trust binds an exact canonical root, workspace kind, stable platform
-identity, and per-capability executable digests. Bootstrap/CLI records are
-operator-owned JSON outside the workspace (`ROVE_PROJECT_TRUST_STORE` can
-override its location); Product API records are ProductStore schema v11 rows
-addressed through `/product/workspaces/{workspace_id}/trust`. Product Web sends
-the workspace ID and explicit capability decision only.
+identity, and per-capability executable digests. Bootstrap, CLI, API, and
+runtime use one operator-owned SQLite authority (`project-trust.sqlite` in the
+platform user-state directory, or `ROVE_PROJECT_TRUST_STORE`). Product Web
+sends only the workspace ID and explicit capability decision; the API resolves
+that ID and calls the same repository. ProductStore schema v11 trust rows are a
+one-way compatibility import source only, never a second write authority.
+
+Legacy `project-trust.json` is validated and imported once, then retained as
+`project-trust.json.legacy` so an operator can roll back by removing the new
+SQLite file and restoring the reviewed backup. Failed imports do not grant
+trust. The CLI has durable `trust query`, `trust grant`, `trust deny`, and
+`trust revoke` commands with repeated `--capability` selectors. `--trust-project`
+and `ROVE_TRUSTED_WORKSPACES` remain process-scoped and are never persisted.
+
+Capability digests are projections rather than a whole-file hash: `.env` is
+included in project-configuration and provider selectors; provider endpoint,
+profile, options, and credential env-name/file selectors affect only provider;
+MCP path/definition, hook/extension sections, and external-path selectors affect
+their own capabilities. Workspace identity replacement remains fail-closed.
 
 Use `--trust-project` for one explicit CLI process, or set
 `ROVE_TRUSTED_WORKSPACES` to an OS path-list of exact canonical roots. These
@@ -1266,8 +1280,9 @@ Web Complete C0 adds a separate API-global SQLite database at
 - immutable ordered runtime session/job/run bindings;
 - secret-reference-only provider profiles;
 - safe product preferences;
-- operator-owned Project Trust records keyed by canonical root and workspace
-  kind (schema v11), independent of catalog row deletion;
+- legacy v11 trust rows accepted as a one-way compatibility import into the
+  operator-owned canonical SQLite authority; catalog deletion cannot revoke or
+  rewrite that authority;
 - schema versions, durable M1 migration preparations, and migration
   receipts/mappings/issues.
 

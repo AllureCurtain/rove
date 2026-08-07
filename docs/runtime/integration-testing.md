@@ -387,15 +387,17 @@ process lifecycle so failures can preserve both logs. The suite:
 - attach screenshots or traces when assertions fail.
 
 Project Trust Settings changes additionally require the normal mocked browser
-suite (`pnpm test:e2e`). It covers the workspace-ID-only trust client and the
-unknown/restricted/trusted/revoked UI without granting authority through a
-browser-supplied path. Real provider and official filesystem MCP checks remain
-optional and must not be reported as passed when their environment gates are
-unset.
+suite (`pnpm test:e2e`). `tests/e2e/project-trust.spec.ts` covers
+unknown/restricted/trusted/revoked, capability selection, grant/deny/revoke,
+digest invalidation, and asserts that browser requests contain only the
+server-owned workspace ID, never a local authority path. Real provider and
+official filesystem MCP checks remain optional and must not be reported as
+passed when their environment gates are unset.
 
-The latest C3 `local-full` run passed these three cases. That deterministic fake
-provider evidence does not substitute for the optional external-provider gate,
-which has not been run.
+The targeted Project Trust Playwright case passes against the deterministic mock
+API. A full `local-full` acceptance run is separate evidence; deterministic fake
+provider coverage does not substitute for the optional external-provider gate,
+which remains unrun.
 
 ## Optional Gates
 
