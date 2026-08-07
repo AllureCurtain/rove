@@ -1,6 +1,12 @@
 # Runtime Intelligence Program
 
-> Status: **Ready for execution / Wave 1 active**
+> Status: **Superseded before execution / Do not use**
+>
+> Replacement:
+> [`2026-08-07-post-coding-tool-v2-full-delivery.md`](2026-08-07-post-coding-tool-v2-full-delivery.md)
+>
+> This two-worker brief was retired before implementation began. It is retained
+> only as decision history and must not be used to start or continue work.
 >
 > Branch: `program/runtime-intelligence`
 >
