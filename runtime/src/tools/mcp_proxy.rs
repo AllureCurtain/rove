@@ -183,7 +183,7 @@ pub async fn register_mcp_tools_with_environment(
     servers: Vec<McpServerConfig>,
     environment: Arc<dyn ExecutionEnvironment>,
 ) -> anyhow::Result<usize> {
-    let mut registered = 0;
+    let mut pending: Vec<Box<dyn Tool>> = Vec::new();
     for server in servers {
         if !server.enabled {
             continue;
@@ -199,26 +199,26 @@ pub async fn register_mcp_tools_with_environment(
                         .await?,
                 );
                 for tool in client.list_tools().await? {
-                    registry.register(Box::new(McpProxyTool {
+                    pending.push(Box::new(McpProxyTool {
                         client: client.clone(),
                         tool,
                     }));
-                    registered += 1;
                 }
             }
             McpTransport::Sse => {
                 let client = Arc::new(SseMcpClient::connect(server).await?);
                 for tool in client.list_tools().await? {
-                    registry.register(Box::new(McpSseProxyTool {
+                    pending.push(Box::new(McpSseProxyTool {
                         client: client.clone(),
                         tool,
                     }));
-                    registered += 1;
                 }
             }
         }
     }
-    Ok(registered)
+    registry
+        .try_register_batch(pending)
+        .map_err(anyhow::Error::from)
 }
 
 pub fn resolve_mcp_server_environment(
@@ -517,7 +517,7 @@ impl StdioMcpClient {
         // Remote annotations describe intent; they are not a trusted local policy grant.
         let destructive = true;
         let parallel_safe = false;
-        let name = format!("mcp__{}__{}", sanitize_name(&self.server_name), remote_name);
+        let (name, capability_id) = mcp_tool_identity(&self.server_name, &remote_name);
 
         Ok(McpToolInfo {
             server_name: self.server_name.clone(),
@@ -528,6 +528,7 @@ impl StdioMcpClient {
                 parameters,
                 destructive,
                 parallel_safe,
+                capability_id: Some(capability_id),
                 capability: None,
             },
         })
@@ -758,7 +759,7 @@ impl SseMcpClient {
         // Remote annotations describe intent; they are not a trusted local policy grant.
         let destructive = true;
         let parallel_safe = false;
-        let name = format!("mcp__{}__{}", sanitize_name(&self.server_name), remote_name);
+        let (name, capability_id) = mcp_tool_identity(&self.server_name, &remote_name);
 
         Ok(McpToolInfo {
             server_name: self.server_name.clone(),
@@ -769,6 +770,7 @@ impl SseMcpClient {
                 parameters,
                 destructive,
                 parallel_safe,
+                capability_id: Some(capability_id),
                 capability: None,
             },
         })
@@ -887,6 +889,33 @@ fn sanitize_name(value: &str) -> String {
             }
         })
         .collect()
+}
+
+fn mcp_tool_identity(server_name: &str, remote_name: &str) -> (String, String) {
+    let server = bounded_identity_component(server_name, "server");
+    let remote = bounded_identity_component(remote_name, "tool");
+    let identity_hash =
+        crate::prompt_metadata::stable_hash(&format!("mcp-tool:v1:{server_name}\0{remote_name}"));
+    let short_hash = identity_hash
+        .strip_prefix("sha256:")
+        .unwrap_or(&identity_hash)
+        .chars()
+        .take(12)
+        .collect::<String>();
+    (
+        format!("mcp__{server}__{remote}"),
+        format!("mcp.{server}.{remote}.{short_hash}"),
+    )
+}
+
+fn bounded_identity_component(value: &str, fallback: &str) -> String {
+    let sanitized = sanitize_name(value);
+    let bounded = sanitized.chars().take(64).collect::<String>();
+    if bounded.is_empty() {
+        fallback.to_string()
+    } else {
+        bounded
+    }
 }
 
 fn spawn_stderr_capture(stderr: tokio::process::ChildStderr, capture: Arc<Mutex<StderrCapture>>) {

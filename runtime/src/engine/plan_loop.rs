@@ -10,7 +10,7 @@ use crate::execution::{
     planned_step_failure_message,
 };
 use crate::plan_evaluator::{RECOVERABLE_STEP_FAILURE_CODE, evaluate_step_record};
-use crate::planner::Planner;
+use crate::planner::{Planner, PlannerContext};
 use crate::run_loop::{LoopContext, LoopItem};
 use crate::step_runner::{
     StepRunMetrics, StepRunnerInput, StepRunnerItem, StepRunnerOutcome, run_step,
@@ -39,6 +39,10 @@ pub(crate) fn run_planned_loop<'a>(
         let mut compaction = ctx.compaction.clone();
         let mut ledger = std::mem::take(&mut state.step_ledger);
         let mut plan_identity = ledger.plan_identity().unwrap_or_else(PlanIdentity::fresh);
+        let capability_summary = ctx.capability_snapshot.planner_summary();
+        let planner_context = PlannerContext {
+            capability_snapshot_summary: Some(&capability_summary),
+        };
 
         if state.plan.is_none() {
             let draft_result = tokio::select! {
@@ -50,7 +54,12 @@ pub(crate) fn run_planned_loop<'a>(
                     };
                     return;
                 }
-                result = planner.draft(ctx.model, &state.user_message, &state.history) => result,
+                result = planner.draft_with_context(
+                    ctx.model,
+                    &state.user_message,
+                    &state.history,
+                    planner_context,
+                ) => result,
             };
             match draft_result {
                 Ok(drafted) => {
@@ -60,6 +69,7 @@ pub(crate) fn run_planned_loop<'a>(
                         &drafted,
                         &plan_identity,
                         "planner_draft",
+                        &ctx.capability_snapshot.snapshot_id,
                     ) {
                         Ok(revision) => revision,
                         Err(reason) => {
@@ -101,6 +111,7 @@ pub(crate) fn run_planned_loop<'a>(
                 active_plan,
                 &plan_identity,
                 "legacy_plan_migrated",
+                &ctx.capability_snapshot.snapshot_id,
             ) {
                 Ok(revision) => revision,
                 Err(reason) => {
@@ -189,6 +200,8 @@ pub(crate) fn run_planned_loop<'a>(
                             &record,
                             &decision,
                             &plan_identity,
+                            &ctx.capability_snapshot.snapshot_id,
+                            planner_context,
                             &mut state.history,
                             cancel_token.clone(),
                         )
@@ -257,6 +270,8 @@ pub(crate) fn run_planned_loop<'a>(
                     &record,
                     &decision,
                     &plan_identity,
+                    &ctx.capability_snapshot.snapshot_id,
+                    planner_context,
                     &mut state.history,
                     cancel_token.clone(),
                 ).await {
@@ -426,6 +441,7 @@ fn initial_plan_revision(
     plan: &TaskPlan,
     identity: &PlanIdentity,
     reason_code: &str,
+    capability_snapshot_id: &str,
 ) -> Result<PlanRevision, String> {
     let revision = PlanRevision {
         plan_id: identity.plan_id.clone(),
@@ -444,7 +460,7 @@ fn initial_plan_revision(
             .filter(|step| !step.done)
             .cloned()
             .collect(),
-        capability_snapshot_id: None,
+        capability_snapshot_id: Some(capability_snapshot_id.to_string()),
         budget_snapshot: ExecutionBudgetUsage::default(),
     };
     revision
@@ -464,19 +480,33 @@ async fn replan_and_build_revision(
     record: &StepRecord,
     decision: &PlanDecisionRecord,
     parent_identity: &PlanIdentity,
+    capability_snapshot_id: &str,
+    planner_context: PlannerContext<'_>,
     history: &mut Vec<Message>,
     cancel_token: CancellationToken,
 ) -> Result<(TaskPlan, PlanRevision), LoopItem> {
-    let replacement = replan_after_step_failure(
-        planner,
-        model,
-        &active_plan.goal,
+    history.push(Message::user(planned_step_failure_message(
         trigger_step_title,
         reason,
-        history,
-        cancel_token,
-    )
-    .await?;
+    )));
+    let replacement = tokio::select! {
+        biased;
+        _ = cancel_token.cancelled() => Err(LoopItem::Complete {
+            reason: TerminationReason::Cancelled,
+            output: None,
+        }),
+        result = planner.draft_with_context(
+            model,
+            &active_plan.goal,
+            history,
+            planner_context,
+        ) => {
+            result.map_err(|err| LoopItem::Complete {
+                reason: TerminationReason::Error,
+                output: Some(format!("Planner error: {err}")),
+            })
+        }
+    }?;
     let parent_remaining_ids: Vec<_> = active_plan
         .steps
         .iter()
@@ -517,7 +547,7 @@ async fn replan_and_build_revision(
             .filter(|step| !step.done)
             .cloned()
             .collect(),
-        capability_snapshot_id: None,
+        capability_snapshot_id: Some(capability_snapshot_id.to_string()),
         budget_snapshot: ExecutionBudgetUsage::default(),
     };
     revision.validate().map_err(|err| LoopItem::Complete {
@@ -876,31 +906,4 @@ fn bounded_step_summary(value: &str, fallback: &str) -> String {
 
 fn is_permission_denied(reason: &str) -> bool {
     reason.starts_with("Permission denied:")
-}
-
-async fn replan_after_step_failure(
-    planner: &Planner,
-    model: &dyn rove_models::ModelClient,
-    goal: &str,
-    step_title: &str,
-    reason: &str,
-    history: &mut Vec<Message>,
-    cancel_token: CancellationToken,
-) -> Result<TaskPlan, LoopItem> {
-    history.push(Message::user(planned_step_failure_message(
-        step_title, reason,
-    )));
-    tokio::select! {
-        biased;
-        _ = cancel_token.cancelled() => Err(LoopItem::Complete {
-            reason: TerminationReason::Cancelled,
-            output: None,
-        }),
-        result = planner.draft(model, goal, history) => {
-            result.map_err(|err| LoopItem::Complete {
-                reason: TerminationReason::Error,
-                output: Some(format!("Planner error: {err}")),
-            })
-        }
-    }
 }

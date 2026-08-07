@@ -13,7 +13,9 @@ pub use error::{AgentError, ToolError};
 pub use events::{AgentEvent, AgentOutcome, AgentStopReason};
 pub use parser::parse_action;
 pub use policy::{AllowAllToolPolicy, ToolInvocation, ToolPolicy};
-pub use tools::{Tool, ToolContext, ToolOutput, ToolRegistry};
+pub use tools::{
+    MAX_CAPABILITY_ID_BYTES, Tool, ToolContext, ToolOutput, ToolRegistrationError, ToolRegistry,
+};
 pub use types::{
     Action, CallId, ToolCallAction, ToolCapability, ToolDescriptor, ToolExecutionMetadata,
     ToolExecutionStatus, ToolMutation, ToolMutationOperation, ToolResult, ToolRiskLevel,

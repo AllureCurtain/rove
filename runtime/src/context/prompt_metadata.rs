@@ -103,6 +103,7 @@ mod tests {
             parameters: serde_json::json!({ "type": "object" }),
             destructive: false,
             parallel_safe: true,
+            capability_id: None,
             capability: None,
         };
         let write = ToolDescriptor {
@@ -111,6 +112,7 @@ mod tests {
             parameters: serde_json::json!({ "type": "object" }),
             destructive: true,
             parallel_safe: false,
+            capability_id: None,
             capability: None,
         };
 
@@ -130,6 +132,7 @@ mod tests {
             parameters: serde_json::json!({ "type": "object" }),
             destructive: false,
             parallel_safe: true,
+            capability_id: None,
             capability: None,
         }]);
 

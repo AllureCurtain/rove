@@ -63,6 +63,8 @@ pub struct ToolDescriptor {
     pub destructive: bool,
     pub parallel_safe: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capability_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capability: Option<ToolCapability>,
 }
 
@@ -158,6 +160,7 @@ mod tests {
             parameters: serde_json::json!({"type":"object"}),
             destructive: true,
             parallel_safe: false,
+            capability_id: Some("workspace.fs.write".to_string()),
             capability: Some(ToolCapability {
                 status: "enabled".to_string(),
                 feature: None,
@@ -171,6 +174,7 @@ mod tests {
         assert_eq!(value["parameters"]["type"], "object");
         assert!(value.get("destructive").is_none());
         assert!(value.get("parallel_safe").is_none());
+        assert!(value.get("capability_id").is_none());
         assert!(value.get("capability").is_none());
     }
 }

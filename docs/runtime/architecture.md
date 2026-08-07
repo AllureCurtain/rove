@@ -77,7 +77,11 @@ cannot supply trustworthy interaction events fail closed.
    workspace files. Restricted workspaces defer `.env` and `.rove/config.toml`;
    trusted workspaces merge defaults, project config, environment variables,
    and explicit CLI/API overrides.
-3. The interface builds a `ModelClient`, `ToolRegistry`, `ContextManager`, and `StateStore`.
+3. The interface builds a `ModelClient`, validated `ToolRegistry`,
+   `ContextManager`, and `StateStore`. Registration pins one descriptor/schema
+   per tool, rejects duplicate names/capability IDs, and exposes the catalog in
+   lexical order. Engine construction derives one immutable capability snapshot
+   from that registry.
 4. `StateStore::start_run` creates a run directory and indexes session/job/run identity in SQLite.
 5. `Engine::run` emits `StreamEvent` values while model events, tool calls,
    approvals, inputs, planner state, cancellation, and bounded in-flight steer
@@ -152,6 +156,15 @@ are committed.
   services. Its only local dependencies are `rove-models` and `rove-core`.
 - Model-visible `rove_models::ModelToolSchema` is separate from operational
   `rove_core::ToolDescriptor`; provider payloads receive only the model schema.
+  `rove-models` validates the bounded executable JSON Schema subset and the
+  complete catalog before any model stream is dispatched. Core execution uses
+  the same registration-pinned schema rather than calling `Tool::schema()`
+  again.
+- Runtime capability snapshots are derived from the actual registry, not a
+  prompt-maintained list. Their stable ID is part of new runtime identities and
+  every newly created plan revision; Planner receives only a bounded safe
+  summary. Dynamic refresh and full snapshot artifact persistence remain
+  future work.
 - Local built-in tool implementations, runtime-specific Workspace, Memory,
   policy and input invocation services, MCP proxy, `Executor`, hooks, tool
   turns, planning, and Engine live in `rove-runtime`. Product registry assembly

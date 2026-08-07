@@ -78,6 +78,7 @@ impl Tool for SaveMemoryTool {
             }),
             destructive: false,
             parallel_safe: false,
+            capability_id: Some("memory.entry.save".to_string()),
             capability: None,
         }
     }
@@ -156,6 +157,7 @@ impl Tool for UpdateMemoryIndexTool {
             }),
             destructive: false,
             parallel_safe: false,
+            capability_id: Some("memory.index.rebuild".to_string()),
             capability: None,
         }
     }
@@ -205,6 +207,7 @@ impl Tool for ReadMemoryTopicTool {
             }),
             destructive: false,
             parallel_safe: true,
+            capability_id: Some("memory.topic.read".to_string()),
             capability: None,
         }
     }

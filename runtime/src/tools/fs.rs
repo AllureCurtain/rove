@@ -35,6 +35,7 @@ impl Tool for FsReadTool {
             }),
             destructive: false,
             parallel_safe: true,
+            capability_id: Some("workspace.fs.read".to_string()),
             capability: None,
         }
     }
@@ -93,6 +94,7 @@ impl Tool for FsWriteTool {
             }),
             destructive: true,
             parallel_safe: false,
+            capability_id: Some("workspace.fs.write".to_string()),
             capability: None,
         }
     }

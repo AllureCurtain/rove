@@ -246,8 +246,14 @@ Native provider tool-use and JSON text action parsing are both supported. Native
 
 `rove-core` owns `Tool`, `ToolOutput`, `ToolRegistry`, invocation-scoped
 `ToolContext`, argument validation, and `ToolDescriptor`. The descriptor holds
-`destructive`, `parallel_safe`, and capability fields while its model-schema
-projection omits them. Local built-in tool implementations and their typed
+`destructive`, `parallel_safe`, stable optional `capability_id`, and availability
+fields while its model-schema projection omits them. Registration reads the
+descriptor once, validates the bounded provider-neutral JSON Schema subset,
+and pins the descriptor plus model projection for later lookup and execution.
+The registry is lexically ordered; duplicate names, duplicate capability IDs,
+invalid schemas, and excessive catalogs fail without overwriting an existing
+entry. The compatibility `register` wrapper is for trusted built-ins, while
+dynamic catalogs use fallible atomic batch registration. Local built-in tool implementations and their typed
 invocation adapters live in `runtime/src/tools/`. The tool `Executor`
 pipeline, pre/post-tool plus post-run hooks (including session-summary), and the
 durable tool-turn coordinator live in `runtime/src/tools/executor.rs`,
@@ -257,6 +263,14 @@ CLI and API assemble tools through the same product registry builder. The
 config-aware `tool_registry_for_config` always registers runtime built-ins but
 loads configured MCP tools only when the exact workspace has explicit project
 activation. A restricted workspace never reads or spawns its MCP definitions.
+
+Core validates tool schemas and provider streaming/tool-call capabilities
+before invoking `ModelClient::stream`, including for custom clients. Runtime
+then derives an immutable `CapabilitySnapshot` from the pinned registry. New
+runtime identities and plan revisions carry its stable ID, and Planner receives
+a bounded summary that labels metadata as data rather than permission. Tool
+policy, approval, workspace, and execution-environment checks remain mandatory
+at invocation time.
 
 Workspace, resolved Memory paths, approval policy, and input providers are
 runtime-owned services attached to a tool invocation through a typed extension.
@@ -287,6 +301,13 @@ preserve their existing request/output contracts; ranged reads, exact edits,
 background Shell, and other Coding Tool V2 behavior remain unimplemented.
 
 MCP stdio transport is bounded by per-server policy. Initialize, list, and call requests time out; stderr is captured up to the configured diagnostic limit; JSON-RPC errors are mapped to structured tool execution failures; and child processes are killed when their client is dropped. `tests/mcp.rs` and `cargo test -p rove-integration-tests --test mcp` cover mock stdio registration, annotation safety, timeout/error/cleanup behavior, and include an opt-in real filesystem MCP smoke test gated by `ROVE_MCP_FILESYSTEM_SMOKE=1`.
+
+An MCP discovery request accumulates the enabled-server catalog before one
+atomic registry commit. Invalid schemas, aliases, or capability bindings leave
+the prior registry unchanged. MCP tools receive stable namespaced capability
+IDs derived from the configured server and exact remote identity, while local
+safety remains conservative (`destructive`, non-parallel). This is catalog
+pinning for the current Engine, not live MCP capability refresh.
 
 All MCP transports are byte-bounded by `MAX_MCP_RESPONSE_BYTES` (1 MiB): stdio
 JSON lines, legacy SSE endpoint discovery, and SSE JSON responses. HTTP bodies

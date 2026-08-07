@@ -40,10 +40,11 @@ Implemented in this branch:
   that must execute zero tools.
 
 The runtime still uses the typed session's bounded `Vec<Message>` projection at
-the existing context-manager boundary. The one shared Agent-kernel cutover,
-authoritative tool-schema compilation, lifecycle finalization/evaluator work,
-and AgentDefinition/procedural-knowledge work are **Proposed / Not Implemented**
-by this branch and remain under the later-stage stop condition.
+the existing context-manager boundary. The follow-up authoritative Tool Schema
+and Runtime capability snapshot foundation is implemented by
+[`2026-08-07-authoritative-tool-schema-runtime-validation.md`](2026-08-07-authoritative-tool-schema-runtime-validation.md).
+The one shared Agent-kernel cutover, lifecycle finalization/evaluator work, and
+AgentDefinition/procedural-knowledge work remain **Proposed / Not Implemented**.
 
 ## 1. Objective
 
@@ -297,17 +298,19 @@ Produce separate commits for the three checkpoints. At handoff report:
 - unresolved risks and any requested shared-hotspot change;
 - clean `git status --short`.
 
-Do not begin tool-schema compilation, the Runtime-to-Core loop cutover,
-Finalizer/evaluator work, or AgentDefinition/Skill implementation before the
-required preceding work is merged into `main` and a refreshed baseline is
-supplied.
+This first-wave stop condition required a refreshed merged baseline before any
+tool-schema work. That prerequisite was satisfied at `559bc1e`; the bounded
+Tool Schema/capability snapshot follow-up is tracked separately. The
+Runtime-to-Core loop cutover, Finalizer/evaluator work, and AgentDefinition/Skill
+implementation remain stopped.
 
 ## 8. Later owned work after refresh
 
 Later checkpoints remain assigned here but are not part of the first handoff:
 
-- authoritative Tool Schema compilation/capability negotiation and rich
-  content/replay metadata;
+- rich content/replay metadata beyond the implemented authoritative bounded
+  Tool Schema validation, registration pinning, pre-dispatch negotiation, and
+  Runtime capability snapshot foundation;
 - one shared Agent kernel and extension plane;
 - rule-first ambiguity evaluation, independent Finalizer, global budgets, and
   trace-tail reconciliation;

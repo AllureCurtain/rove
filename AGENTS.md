@@ -120,17 +120,20 @@ As of 2026-08-06:
   CDH G1-G7 control, evidence, and Settings completion merged through PR #29.
 - MCP currently supports stdio and the existing legacy SSE path. Streamable
   HTTP, negotiated sessions, rich MCP result envelopes, and Tool Artifacts are
-  proposed, not implemented.
-- Project activation is restricted by default. Commit `d2cd822` defers
-  workspace `.env`, `.rove/config.toml`, and workspace MCP startup until an
-  exact canonical root is explicitly activated. Durable granular Project Trust
-  and the Runtime-owned Execution Environment remain proposed.
+  proposed, not implemented. Existing MCP catalogs are registration-time
+  schema validated and committed atomically to the shared tool registry.
+- Durable granular Project Trust and the Runtime-owned Execution Environment
+  are implemented. Project activation remains restricted by default, exact-root
+  and capability-specific; workspace `.env`, `.rove/config.toml`, and MCP
+  startup stay deferred until authorized.
 - Versioned AgentDefinition packages, `AGENTS.md` runtime discovery, typed
   procedural knowledge, and the OnCall reference evaluation suite are proposed,
   not implemented. The execution-lifecycle design is partially implemented:
   bounded planned StepRunner, append-only StepRecord ledger, immutable plan
-  revisions, and rule-first decisions exist; model-on-ambiguity evaluation,
-  independent Finalizer, and full budget surfaces remain proposed.
+  revisions, rule-first decisions, registration-pinned bounded Tool Schemas,
+  pre-dispatch provider/tool validation, and Runtime-owned capability snapshots
+  exist; model-on-ambiguity evaluation, independent Finalizer, live capability
+  refresh, and full budget surfaces remain proposed.
 - Web M1 is implemented: explicit Folder/Repo roots, fail-closed hard resume,
   and the Workspace → Session → Chat product shell are implemented. Web
   Complete C0 adds an API-global SQLite ProductStore,
@@ -176,10 +179,11 @@ The active future/runtime-evolution design chain is:
 Use those documents to plan future implementation, not to describe current
 runtime behavior.
 
-The active implementation work is split between two independent briefs:
+The active implementation work follows these briefs:
 
 - `docs/plans/2026-08-06-kernel-message-provider-implementation.md`
 - `docs/plans/2026-08-06-project-trust-execution-tools-implementation.md`
+- `docs/plans/2026-08-07-authoritative-tool-schema-runtime-validation.md`
 
 The optional terminal-interface direction is documented separately in
 `docs/design/2026-07-16-grok-build-reference-and-tui-design.md`.

@@ -392,6 +392,7 @@ mod tests {
                 parameters: serde_json::json!({"type": "object"}),
                 destructive: true,
                 parallel_safe: false,
+                capability_id: None,
                 capability: None,
             }
         }

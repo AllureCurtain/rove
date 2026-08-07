@@ -29,6 +29,7 @@ impl Tool for RequestInputTool {
             }),
             destructive: false,
             parallel_safe: false,
+            capability_id: Some("interaction.user.request-input".to_string()),
             capability: None,
         }
     }

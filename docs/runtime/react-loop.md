@@ -37,7 +37,9 @@ The planned coordinator, `run_planned_loop` in `runtime/src/engine/plan_loop.rs`
 delegates each current plan step to the bounded runner in
 `runtime/src/engine/step_runner.rs`:
 
-1. Draft or resume a `TaskPlan`.
+1. Build or reuse the Engine-pinned capability snapshot, then draft or resume a
+   `TaskPlan`. Planner receives its bounded metadata summary and cannot invoke
+   tools.
 2. Convert the current plan step into a focused user prompt.
 3. Build context with prior global history plus a step-local message prefix.
 4. Run a model turn through the shared `run_model_turn` helper.
@@ -76,7 +78,8 @@ Planned execution also maintains an append-only terminal-attempt ledger:
 
 1. `PlanCreated` includes a stable logical `plan_id`, a
    `plan_revision_id`, a monotonic compatibility revision number, and the full
-   immutable initial `PlanRevision`.
+   immutable initial `PlanRevision`; the revision pins the current capability
+   snapshot ID.
 2. `PlanStepStarted` includes the matching plan/revision identity, stable step
    ID, attempt number, and start time.
 3. The bounded runner derives model-turn, tool-call, mutation, and token usage
@@ -211,6 +214,8 @@ missing, or conflicting results cause projection to fail rather than entering
 `ToolRegistry`.
 
 The running loop still consumes the bounded derived `Vec<Message>` view at the
-existing context-manager boundary. Replacing that boundary with one shared
-typed Agent kernel, authoritative tool-schema compilation, and lifecycle
-finalization remains later work in the implementation brief.
+existing context-manager boundary. Authoritative bounded tool-schema validation,
+registration-time descriptor pinning, pre-dispatch provider capability checks,
+and Runtime-owned capability snapshot binding are implemented. Replacing the
+message boundary with one shared typed Agent kernel and adding independent
+lifecycle finalization remain later work in the implementation brief.

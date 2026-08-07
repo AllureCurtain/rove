@@ -783,6 +783,7 @@ The core type model is centered on explicit IDs and serializable runtime state:
 | `Message` | Provider-facing conversation message; owned by `rove-models` |
 | `rove_models::ModelToolSchema` | Model-visible name, description, and input schema |
 | `rove_core::ToolDescriptor` | Operational schema plus destructive/parallel/capability metadata |
+| `CapabilitySnapshot` | Immutable registry-derived catalog identity and bounded Planner metadata |
 | `RunStatus` | API/job status |
 | `TerminationReason` | Engine completion reason |
 
@@ -1052,6 +1053,13 @@ unreleased product has no public compatibility window for removed config.
 
 Provider-native tool use is the preferred path for real providers. Provider adapters emit `ToolUseStart` and `ToolUseDone`, `core/src/model_turn.rs` converts those into `ToolCallAction` and `AgentEvent` values, and the root adapter maps the latter to durable `StreamEvent` values. `LlmMessage.tool_calls` plus `tool_call_id` preserve structured history for provider replay. OpenAI, Anthropic, and Ollama formatters replay that history in their native request shapes.
 
+`ModelToolSchema::validate` and `validate_model_tools` enforce explicit name,
+description, encoded-size, depth, node, property, required-field, enum, and
+catalog limits for the JSON Schema subset that Core can execute. Core and the
+Planner validate the selected provider capabilities before constructing a
+model stream. An invalid schema or a provider without required streaming/tool
+support therefore performs zero model dispatches.
+
 The JSON text action path remains for compatibility and fake-model tests. It is used only when no native tool calls were emitted, flows through `parse_action`, and produces no provider-native `tool_use_id`. Planned and unplanned loops both call the same `run_model_turn` helper, whose `build_action_from_model_output` boundary chooses native tool calls before text fallback.
 
 `RoutingModelClient` wraps a primary model plus fallback models/providers. It can fall back only before committed visible output or committed tool-use. Provider target identity is provider plus endpoint plus model, exposed as `ModelClientId`, so two providers using the same model name do not share a health bucket.
@@ -1075,8 +1083,11 @@ Relevant code:
 ## 12. Tool System
 
 Tools implement the `rove-core` `Tool` contract and are registered in its
-`ToolRegistry`. The registry projects operational `ToolDescriptor` values into
-model-visible schemas and dispatches validated execution by name. Local
+`ToolRegistry`. Registration calls `Tool::schema()` once, validates and pins
+the operational descriptor/model projection, and rejects duplicate names or
+stable capability IDs. The registry exposes deterministic lexical ordering,
+supports atomic fallible batches for dynamic catalogs, and dispatches argument
+validation against the pinned schema. Local
 built-in implementations and invocation adapters live in `runtime/src/tools/`.
 Product shells assemble the default registry through
 `apps/bootstrap::tool_registry` / `tool_registry_with_mcp`.
@@ -1126,11 +1137,18 @@ Operational Tool descriptors include:
 - `destructive`: requires approval unless policy allows it;
 - `parallel_safe`: allows concurrent batch execution if every call is non-destructive and safe.
 - optional `capability`: lets interfaces distinguish enabled tools from feature-gated disabled stubs.
+- optional `capability_id`: stable semantic identity used for snapshot binding,
+  never permission or approval.
+
+Engine construction derives a `CapabilitySnapshot` from the real registry.
+Its stable ID is additive in `RuntimeIdentity`, and all newly created initial
+or replacement `PlanRevision` records pin that ID. Planner sees a bounded,
+redacted summary; active Engines do not live-refresh their catalog.
 
 The executor pipeline is currently:
 
 ```text
-schema lookup -> argument validation -> pre-tool hooks -> permission -> execute -> result wrapping with mutations -> post-tool hooks
+registration validation/pinning -> schema lookup -> argument validation -> pre-tool hooks -> permission -> execute -> result wrapping with mutations -> post-tool hooks
 ```
 
 Argument validation supports the JSON Schema subset used by built-in tools: object, array, string, number, integer, boolean, and null type checks; required fields; enum values; nested properties; array `items`, `minItems`, and `maxItems`; numeric `minimum` and `maximum`; string `minLength` and `maxLength`; and `additionalProperties: false`. Validation failures preserve `ToolError::InvalidArgs` and happen before tool execution.

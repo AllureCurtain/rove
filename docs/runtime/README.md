@@ -87,6 +87,9 @@ The Web product line is tracked separately:
   [`completed CDH plan`](../plans/2026-08-03-cdh-alder-merge.md).
 - Active post-CDH kernel/message/provider work follows the
   [`Kernel, Message, and Provider implementation brief`](../plans/2026-08-06-kernel-message-provider-implementation.md).
+- Authoritative bounded Tool Schema validation, atomic registry/MCP catalogs,
+  and the Runtime capability snapshot foundation follow the
+  [`Tool Schema and Runtime validation plan`](../plans/2026-08-07-authoritative-tool-schema-runtime-validation.md).
 - Active Project Trust/execution/coding-tool work follows the
   [`Project Trust, Execution Environment, and Coding Tools implementation
   brief`](../plans/2026-08-06-project-trust-execution-tools-implementation.md).

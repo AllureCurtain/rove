@@ -455,6 +455,7 @@ impl Tool for FakeDestructiveTool {
             }),
             destructive: true,
             parallel_safe: false,
+            capability_id: None,
             capability: None,
         }
     }
@@ -487,6 +488,7 @@ impl Tool for CountingTool {
             }),
             destructive: false,
             parallel_safe: false,
+            capability_id: None,
             capability: None,
         }
     }
@@ -515,6 +517,7 @@ impl Tool for NeverCompletesTool {
             }),
             destructive: false,
             parallel_safe: false,
+            capability_id: None,
             capability: None,
         }
     }
@@ -568,6 +571,7 @@ impl Tool for ProbeTool {
             }),
             destructive: false,
             parallel_safe: self.parallel_safe,
+            capability_id: None,
             capability: None,
         }
     }
@@ -744,6 +748,7 @@ impl Tool for PublicProviderInputTool {
             }),
             destructive: false,
             parallel_safe: false,
+            capability_id: None,
             capability: None,
         }
     }
@@ -2695,6 +2700,10 @@ async fn planner_persists_steps_and_resumes_mid_plan() {
         "step 1 done".to_string(),
         "step 2 done".to_string(),
     ]);
+    let capability_snapshot_id = engine
+        .runtime_identity()
+        .capability_snapshot_id
+        .expect("engine should pin a capability snapshot");
 
     let events = collect_events(&engine, "fix the docs").await;
 
@@ -2704,6 +2713,16 @@ async fn planner_persists_steps_and_resumes_mid_plan() {
             .any(|event| matches!(event, StreamEvent::PlanCreated { .. })),
         "missing PlanCreated event"
     );
+    assert!(events.iter().any(|event| {
+        matches!(
+            event,
+            StreamEvent::PlanCreated {
+                plan_revision: Some(revision),
+                ..
+            } if revision.capability_snapshot_id.as_deref()
+                == Some(capability_snapshot_id.as_str())
+        )
+    }));
     assert_eq!(
         events
             .iter()
@@ -3265,6 +3284,10 @@ async fn planned_step_emits_complete_step_record_before_compatibility_completion
 #[tokio::test]
 async fn replanning_retains_failed_record_and_advances_revision_identity() {
     let engine = build_replanning_test_engine();
+    let capability_snapshot_id = engine
+        .runtime_identity()
+        .capability_snapshot_id
+        .expect("engine should pin a capability snapshot");
 
     let events = collect_events(&engine, "fix the docs").await;
     let initial_revision = events
@@ -3304,6 +3327,14 @@ async fn replanning_retains_failed_record_and_advances_revision_identity() {
         .expect("recoverable failure should emit a replace decision");
 
     assert_eq!(initial_revision.plan_id, revised.plan_id);
+    assert_eq!(
+        initial_revision.capability_snapshot_id.as_deref(),
+        Some(capability_snapshot_id.as_str())
+    );
+    assert_eq!(
+        revised.capability_snapshot_id.as_deref(),
+        Some(capability_snapshot_id.as_str())
+    );
     assert_ne!(initial_revision.revision_id, revised.revision_id);
     assert_eq!(initial_revision.revision, 0);
     assert_eq!(revised.revision, 1);

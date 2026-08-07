@@ -1,7 +1,9 @@
 use async_trait::async_trait;
 use futures::stream::BoxStream;
 
-use crate::{AssistantTurn, Message, ModelError, ModelToolSchema, StopReason, Usage};
+use crate::{
+    AssistantTurn, Message, ModelError, ModelToolSchema, StopReason, Usage, validate_model_tools,
+};
 
 /// Capabilities negotiated before a provider request is sent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,6 +25,8 @@ impl Default for ProviderCapabilities {
 
 impl ProviderCapabilities {
     pub fn validate_tools(&self, tools: &[ModelToolSchema]) -> Result<(), ModelError> {
+        validate_model_tools(tools)
+            .map_err(|error| ModelError::InvalidConfiguration(error.to_string()))?;
         if !tools.is_empty() && !self.tool_calls {
             return Err(ModelError::InvalidConfiguration(
                 "selected provider does not support tool calls".to_string(),

@@ -1226,6 +1226,7 @@ mod tests {
                     planner_prompt_hash: "planner".to_string(),
                     workspace_fingerprint: "workspace".to_string(),
                     tool_signature: "tools".to_string(),
+                    capability_snapshot_id: None,
                     execution_environment: None,
                     execution_capabilities: None,
                 }),

@@ -41,6 +41,7 @@ fn workspace_paths_and_destructive_policy_remain_fail_closed() {
         parameters: serde_json::json!({"type": "object"}),
         destructive: true,
         parallel_safe: false,
+        capability_id: None,
         capability: None,
     };
     assert!(matches!(

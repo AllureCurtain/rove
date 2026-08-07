@@ -637,6 +637,10 @@ documents remain proposed/not implemented.
 - [Kernel, Message, and Provider Implementation](plans/2026-08-06-kernel-message-provider-implementation.md)
   — active brief for typed message/session projection, provider protocol
   normalization, and the later shared-kernel migration.
+- [Authoritative Tool Schema and Runtime Validation](plans/2026-08-07-authoritative-tool-schema-runtime-validation.md)
+  — bounded schema compilation, deterministic/atomic tool catalogs, model
+  preflight, and Runtime capability snapshot binding; Coding Tool V2 is a
+  later dependent wave.
 - [Project Trust, Execution Environment, and Coding Tools Implementation](plans/2026-08-06-project-trust-execution-tools-implementation.md)
   — active brief for persistent Project Trust, Runtime-owned execution
   adapters, and the later Coding Tool V2 work.

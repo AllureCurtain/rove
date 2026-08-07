@@ -109,6 +109,7 @@ impl Tool for NestedFixtureTool {
             }),
             destructive: false,
             parallel_safe: false,
+            capability_id: None,
             capability: None,
         }
     }

@@ -72,6 +72,7 @@ impl Tool for ShellTool {
             }),
             destructive: true,
             parallel_safe: false,
+            capability_id: Some("execution.shell.run".to_string()),
             capability: None,
         }
     }

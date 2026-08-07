@@ -35,6 +35,11 @@ pub fn run_model_turn<'a>(
     cancel_token: CancellationToken,
 ) -> BoxStream<'a, ModelTurnItem> {
     Box::pin(stream! {
+        let capabilities = model.capabilities();
+        if let Err(error) = capabilities.validate_tools(&tools) {
+            yield ModelTurnItem::Failed(error);
+            return;
+        }
         let mut full_response = String::new();
         let mut assembler = TurnAssembler::new();
         let requires_terminal_event = model.requires_terminal_event();
@@ -183,7 +188,7 @@ pub fn run_model_turn<'a>(
         if let Err(error) = assistant_turn
             .validate()
             .map_err(|error| ModelError::StreamInterrupted(error.to_string()))
-            .and_then(|_| model.capabilities().validate_assistant_turn(&assistant_turn))
+            .and_then(|_| capabilities.validate_assistant_turn(&assistant_turn))
         {
             yield ModelTurnItem::Failed(error);
             return;
@@ -276,6 +281,9 @@ fn build_action_from_model_output(calls: Vec<ToolCallAction>, full_response: &st
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use async_trait::async_trait;
     use futures::StreamExt;
     use futures::stream::BoxStream;
@@ -361,6 +369,26 @@ mod tests {
         }
     }
 
+    struct DispatchCountingModel {
+        dispatches: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl ModelClient for DispatchCountingModel {
+        fn stream(
+            &self,
+            _messages: &[Message],
+            _tools: &[ModelToolSchema],
+        ) -> BoxStream<'_, Result<ModelEvent, ModelError>> {
+            self.dispatches.fetch_add(1, Ordering::SeqCst);
+            Box::pin(futures::stream::empty())
+        }
+
+        fn model_id(&self) -> &str {
+            "dispatch-counting"
+        }
+    }
+
     #[test]
     fn native_tool_use_wins_over_text_fallback() {
         let action = build_action_from_model_output(
@@ -438,6 +466,34 @@ mod tests {
         }
         assert!(!finished);
         assert!(failed);
+    }
+
+    #[tokio::test]
+    async fn invalid_tool_schema_fails_before_model_dispatch() {
+        let dispatches = Arc::new(AtomicUsize::new(0));
+        let model = DispatchCountingModel {
+            dispatches: dispatches.clone(),
+        };
+        let mut stream = run_model_turn(
+            &model,
+            vec![Message::user("hello")],
+            vec![ModelToolSchema {
+                name: "invalid".to_string(),
+                description: String::new(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {},
+                    "oneOf": []
+                }),
+            }],
+            CancellationToken::new(),
+        );
+
+        assert!(matches!(
+            stream.next().await,
+            Some(ModelTurnItem::Failed(ModelError::InvalidConfiguration(_)))
+        ));
+        assert_eq!(dispatches.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]

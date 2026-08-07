@@ -61,6 +61,14 @@ async fn runtime_registers_calls_and_classifies_stdio_mcp_tools() {
     .unwrap();
 
     assert_eq!(registered, 2);
+    let echo = registry
+        .descriptor("mcp__mock_server__echo_remote")
+        .unwrap();
+    assert!(
+        echo.capability_id
+            .as_deref()
+            .is_some_and(|id| id.starts_with("mcp.mock_server.echo_remote."))
+    );
     let remotely_claimed_read_only = registry
         .descriptor("mcp__mock_server__echo_remote")
         .unwrap();

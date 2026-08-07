@@ -608,7 +608,7 @@ pub struct Usage {
 }
 
 /// Provider-neutral tool schema sent to a model.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ModelToolSchema {
     pub name: String,
     pub description: String,

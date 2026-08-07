@@ -30,6 +30,7 @@ impl Tool for UppercaseTool {
             }),
             destructive: false,
             parallel_safe: true,
+            capability_id: None,
             capability: None,
         }
     }

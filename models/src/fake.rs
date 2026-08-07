@@ -111,10 +111,7 @@ impl ModelClient for FakeModelClient {
             .unwrap_or(false)
         {
             serde_json::json!({
-                "goal": messages
-                    .get(1)
-                    .map(|message| message.content.trim_start_matches("Goal: ").to_string())
-                    .unwrap_or_else(|| "fake goal".to_string()),
+                "goal": current_user_goal(messages).unwrap_or("fake goal"),
                 "steps": [
                     { "id": "1", "title": "answer the request" }
                 ]

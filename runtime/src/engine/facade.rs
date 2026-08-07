@@ -9,6 +9,7 @@ use futures::stream::{BoxStream, Stream, StreamExt};
 use tokio::sync::Mutex as AsyncMutex;
 use tokio_util::sync::CancellationToken;
 
+use crate::capability::CapabilitySnapshot;
 use crate::compaction::CompactionRuntime;
 use crate::context::{ContextManager, durable_memory_message, session_summary_message};
 use crate::engine::control::{RunControlHandle, SteerLifecycle, control_channel};
@@ -144,6 +145,7 @@ impl Default for EngineConfig {
 pub struct Engine {
     model: Box<dyn ModelClient>,
     registry: ToolRegistry,
+    capability_snapshot: CapabilitySnapshot,
     context_manager: ContextManager,
     config: EngineConfig,
     planner: Planner,
@@ -236,9 +238,11 @@ impl Engine {
         options: EngineEnvironmentOptions,
     ) -> Self {
         let memory_paths = MemoryPaths::from_workspace(&workspace, 8);
+        let capability_snapshot = CapabilitySnapshot::from_registry(&registry);
         Self {
             model,
             registry,
+            capability_snapshot,
             context_manager,
             config,
             planner: Planner::default(),
@@ -318,6 +322,7 @@ impl Engine {
             system_prompt: self.context_manager.system_prompt(),
             planner_prompt: self.planner.prompt(),
             tools: &tools,
+            capability_snapshot_id: Some(&self.capability_snapshot.snapshot_id),
             execution_environment: Some(self.environment.identity()),
             execution_capabilities: Some(self.environment.capabilities()),
         })
@@ -533,6 +538,7 @@ impl Engine {
                 let loop_context = LoopContext {
                     model: self.model.as_ref(),
                     registry: &self.registry,
+                    capability_snapshot: &self.capability_snapshot,
                     context_manager: &self.context_manager,
                     workspace: &self.workspace,
                     environment: self.environment.clone(),

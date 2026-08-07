@@ -344,6 +344,7 @@ mod tests {
                 }),
                 destructive: false,
                 parallel_safe: true,
+                capability_id: None,
                 capability: None,
             }
         }

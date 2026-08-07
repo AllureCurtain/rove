@@ -19,6 +19,7 @@ mod options;
 mod protocol;
 pub mod provider;
 pub mod routing;
+mod tool_schema;
 pub mod traits;
 
 pub use assembly::{TurnAssembler, assemble_turn};
@@ -35,5 +36,11 @@ pub use protocol::{
     MAX_TOOL_ID_BYTES, MAX_TOOL_NAME_BYTES, Message, ModelMessage, ModelToolSchema,
     ProtocolValidationError, Role, StopReason, ToolCall, ToolCallRef, ToolResult, ToolResultStatus,
     TurnProvenance, Usage, WireCallReference,
+};
+pub use tool_schema::{
+    MAX_MODEL_TOOLS, MAX_TOOL_DESCRIPTION_BYTES, MAX_TOOL_SCHEMA_BYTES, MAX_TOOL_SCHEMA_DEPTH,
+    MAX_TOOL_SCHEMA_ENUM_VALUES, MAX_TOOL_SCHEMA_NODES, MAX_TOOL_SCHEMA_PROPERTIES,
+    MAX_TOOL_SCHEMA_PROPERTY_NAME_BYTES, MAX_TOOL_SCHEMA_REQUIRED_FIELDS,
+    ToolSchemaValidationError, validate_model_tools,
 };
 pub use traits::{ModelClient, ModelClientId, ModelEvent, ProviderCapabilities};

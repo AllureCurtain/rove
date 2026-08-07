@@ -5,6 +5,7 @@ use futures::StreamExt;
 use futures::stream::BoxStream;
 use tokio_util::sync::CancellationToken;
 
+use crate::capability::CapabilitySnapshot;
 use crate::compaction::{CompactionRuntime, maybe_compact_history};
 use crate::context::ContextManager;
 use crate::engine::control::{SteerLifecycle, SteerMessage};
@@ -38,6 +39,7 @@ pub(crate) type SteerReceiver = Arc<AsyncMutex<tokio::sync::mpsc::Receiver<Steer
 pub(crate) struct LoopContext<'a> {
     pub model: &'a dyn ModelClient,
     pub registry: &'a ToolRegistry,
+    pub capability_snapshot: &'a CapabilitySnapshot,
     pub context_manager: &'a ContextManager,
     pub workspace: &'a Workspace,
     pub environment: Arc<dyn ExecutionEnvironment>,

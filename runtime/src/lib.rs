@@ -32,6 +32,7 @@ pub mod workspace;
 // Stable public path aliases (pre-W2b flat module names)
 // ---------------------------------------------------------------------------
 
+pub use foundation::capability;
 pub use foundation::events;
 pub use foundation::runtime_identity;
 pub use foundation::session;

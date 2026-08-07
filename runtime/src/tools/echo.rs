@@ -26,6 +26,7 @@ impl Tool for EchoTool {
             }),
             destructive: false,
             parallel_safe: true,
+            capability_id: Some("testing.echo.text".to_string()),
             capability: None,
         }
     }

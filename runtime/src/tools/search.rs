@@ -101,6 +101,7 @@ impl Tool for SearchCodeTool {
             }),
             destructive: false,
             parallel_safe: true,
+            capability_id: Some("workspace.search.text".to_string()),
             capability: None,
         }
     }

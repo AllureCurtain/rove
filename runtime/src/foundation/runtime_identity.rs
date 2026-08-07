@@ -21,6 +21,8 @@ pub struct RuntimeIdentity {
     pub workspace_fingerprint: String,
     pub tool_signature: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capability_snapshot_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_environment: Option<ExecutionEnvironmentIdentity>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_capabilities: Option<ExecutionCapabilities>,
@@ -59,6 +61,7 @@ pub struct RuntimeIdentityInput<'a> {
     pub system_prompt: &'a str,
     pub planner_prompt: &'a str,
     pub tools: &'a [ToolDescriptor],
+    pub capability_snapshot_id: Option<&'a str>,
     pub execution_environment: Option<&'a ExecutionEnvironmentIdentity>,
     pub execution_capabilities: Option<&'a ExecutionCapabilities>,
 }
@@ -86,6 +89,7 @@ pub fn build_runtime_identity(input: RuntimeIdentityInput<'_>) -> RuntimeIdentit
         planner_prompt_hash: stable_hash(input.planner_prompt),
         workspace_fingerprint: workspace_fingerprint(input.workspace),
         tool_signature: tool_signature(input.tools),
+        capability_snapshot_id: input.capability_snapshot_id.map(str::to_string),
         execution_environment: input.execution_environment.cloned(),
         execution_capabilities: input.execution_capabilities.copied(),
     }
@@ -135,6 +139,11 @@ pub fn evaluate_runtime_identity(
     }
     if saved.tool_signature != current.tool_signature {
         mismatch_fields.push("tool_signature".to_string());
+    }
+    if saved.capability_snapshot_id.is_some()
+        && saved.capability_snapshot_id != current.capability_snapshot_id
+    {
+        mismatch_fields.push("capability_snapshot_id".to_string());
     }
     // Missing fields identify pre-environment artifacts and remain compatible.
     // Once persisted, the adapter identity and capability set are part of the
@@ -188,6 +197,7 @@ mod tests {
             parameters: serde_json::json!({"type": "object"}),
             destructive: false,
             parallel_safe: true,
+            capability_id: None,
             capability: None,
         }]
     }
@@ -207,6 +217,7 @@ mod tests {
             system_prompt: "system prompt",
             planner_prompt: "planner prompt",
             tools: &tools,
+            capability_snapshot_id: Some("sha256:capabilities"),
             execution_environment: None,
             execution_capabilities: None,
         });
@@ -233,6 +244,10 @@ mod tests {
         assert!(identity.planner_prompt_hash.starts_with("sha256:"));
         assert!(identity.workspace_fingerprint.starts_with("sha256:"));
         assert_eq!(identity.tool_signature, tool_signature(&tools));
+        assert_eq!(
+            identity.capability_snapshot_id.as_deref(),
+            Some("sha256:capabilities")
+        );
     }
 
     #[test]
@@ -249,6 +264,7 @@ mod tests {
             system_prompt: "system prompt",
             planner_prompt: "planner prompt",
             tools: &tools,
+            capability_snapshot_id: Some("sha256:saved-capabilities"),
             execution_environment: None,
             execution_capabilities: None,
         });
@@ -262,6 +278,7 @@ mod tests {
             system_prompt: "changed system prompt",
             planner_prompt: "planner prompt",
             tools: &[],
+            capability_snapshot_id: Some("sha256:current-capabilities"),
             execution_environment: None,
             execution_capabilities: None,
         });
@@ -290,6 +307,11 @@ mod tests {
                 .mismatch_fields
                 .contains(&"tool_signature".to_string())
         );
+        assert!(
+            evaluation
+                .mismatch_fields
+                .contains(&"capability_snapshot_id".to_string())
+        );
     }
 
     #[test]
@@ -305,6 +327,7 @@ mod tests {
             system_prompt: "system",
             planner_prompt: "planner",
             tools: &[],
+            capability_snapshot_id: None,
             execution_environment: None,
             execution_capabilities: None,
         });
@@ -328,6 +351,7 @@ mod tests {
             system_prompt: "system",
             planner_prompt: "planner",
             tools: &[],
+            capability_snapshot_id: Some("sha256:current-capabilities"),
             execution_environment: Some(&crate::environment::ExecutionEnvironmentIdentity {
                 adapter: "local".to_string(),
                 workspace_kind: workspace.kind.clone(),
