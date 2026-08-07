@@ -8,7 +8,10 @@ import type {
   ProductMcpToolDescriptor,
   UpdateProductMcpServerRequest,
   UpdateProductMemoryTopicRequest,
+  ProductTrustDecisionRequest,
+  ProductTrustStatus,
 } from "../../settings/settings-platform-api-types";
+import { PRODUCT_TRUST_CAPABILITIES } from "../../settings/settings-platform-api-types";
 import type {
   M1BrowserMigrationRequest,
   M1BrowserMigrationResponse,
@@ -103,6 +106,7 @@ export interface MockProductApiOptions {
   preferenceUpdateDelayMs?: number;
   migrationFailures?: number;
   migrationIssues?: M1MigrationIssue[];
+  trustStatuses?: Record<string, ProductTrustStatus>;
 }
 
 export interface MockProductApiState {
@@ -145,6 +149,12 @@ export interface MockProductApiState {
   migrationRequestBodies: string[];
   remainingMigrationFailures: number;
   initialStateReadRequests: number;
+  trustStatuses: Record<string, ProductTrustStatus>;
+  trustRequests: Array<{
+    method: "GET" | "PUT";
+    workspaceId: string;
+    body?: string;
+  }>;
 }
 
 interface MockJob {
@@ -220,6 +230,8 @@ export async function installMockProductApi(
     migrationRequestBodies: [],
     remainingMigrationFailures: options.migrationFailures ?? 0,
     initialStateReadRequests: 0,
+    trustStatuses: structuredClone(options.trustStatuses ?? {}),
+    trustRequests: [],
   };
   const jobs = new Map<string, MockJob>();
   const delayedSessionVisibility = new Map<string, DelayedSessionVisibility>();
@@ -383,6 +395,44 @@ export async function installMockProductApi(
     if (path === "/product/workspaces" && method === "GET") {
       state.initialStateReadRequests += 1;
       return json(route, { workspaces: state.workspaces });
+    }
+
+    const trustMatch = path.match(/^\/product\/workspaces\/([^/]+)\/trust$/u);
+    if (trustMatch && (method === "GET" || method === "PUT")) {
+      const workspaceId = decodeURIComponent(trustMatch[1]!);
+      if (!state.workspaces.some((workspace) => workspace.id === workspaceId)) {
+        return json(
+          route,
+          { code: "product_not_found", error: "product workspace was not found" },
+          404,
+        );
+      }
+      const current =
+        state.trustStatuses[workspaceId] ?? createMockTrustStatus(workspaceId);
+      state.trustStatuses[workspaceId] = current;
+      if (method === "GET") {
+        state.trustRequests.push({ method, workspaceId });
+        return json(route, current);
+      }
+      const rawBody = request.postData() ?? "";
+      state.trustRequests.push({ method, workspaceId, body: rawBody });
+      const body = request.postDataJSON() as ProductTrustDecisionRequest;
+      const capabilities =
+        body.capabilities.length > 0
+          ? body.capabilities
+          : body.decision === "grant"
+            ? [...PRODUCT_TRUST_CAPABILITIES]
+            : [];
+      current.state =
+        body.decision === "grant"
+          ? "trusted"
+          : body.decision === "deny"
+            ? "restricted"
+            : "revoked";
+      current.granted_capabilities =
+        body.decision === "grant" ? capabilities : [];
+      current.invalidated_capabilities = [];
+      return json(route, current);
     }
     if (path === "/product/workspaces" && method === "POST") {
       const body = request.postDataJSON() as {
@@ -1398,6 +1448,17 @@ export function createMockWorkspace(
     last_opened_at: NOW,
     created_at: NOW,
     updated_at: NOW,
+  };
+}
+
+function createMockTrustStatus(workspaceId: string): ProductTrustStatus {
+  return {
+    workspace_id: workspaceId,
+    state: "unknown",
+    identity_digest:
+      "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    invalidated_capabilities: [],
+    granted_capabilities: [],
   };
 }
 
