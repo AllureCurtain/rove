@@ -208,6 +208,11 @@ included in project-configuration and provider selectors; provider endpoint,
 profile, options, and credential env-name/file selectors affect only provider;
 MCP path/definition, hook/extension sections, and external-path selectors affect
 their own capabilities. Workspace identity replacement remains fail-closed.
+Product provider selectors additionally include the stable, sorted profiles
+referenced by sessions in that workspace: profile ID, provider type, endpoint,
+credential environment name, and selected model. Secret values are excluded.
+Changing any selected authority invalidates `provider_credentials`, and a
+non-fake Product job returns `project_trust_required` before secret resolution.
 
 Use `--trust-project` for one explicit CLI process, or set
 `ROVE_TRUSTED_WORKSPACES` to an OS path-list of exact canonical roots. These
@@ -215,6 +220,12 @@ compatibility grants are process-scoped and never create durable history.
 Project files cannot create or widen either temporary or persistent grants.
 Project config and `.env` must resolve inside the workspace and be no larger
 than 256 KiB before bootstrap reads them.
+Workspace `.env` is parsed into one `AppConfig`-scoped map and never writes to
+the process environment. TOML and `.env` values are filtered by their matching
+project-configuration, provider, MCP, or external-path capability before merge;
+operator environment and explicit CLI/API overrides retain precedence. Active
+API jobs poll the canonical trust authority at a bounded interval, so a CLI or
+other-process revocation cancels the run even when it bypasses the API route.
 
 The config is grouped by runtime, provider, tool, memory, state, API, web, and
 routing. Provider configuration supports named profiles with explicit wire

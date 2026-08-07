@@ -32,8 +32,8 @@ use rove_runtime::events::StreamEvent;
 use rove_runtime::execution::StepRecordStatus;
 use rove_runtime::state::store::StateStore;
 use rove_runtime::types::{
-    Message, Role, RunId, RunStatus, SessionId, TaskState, ToolCallRef, ToolMutation,
-    ToolMutationOperation,
+    Message, Role, RunId, RunStatus, SessionId, TaskState, TerminationReason, ToolCallRef,
+    ToolMutation, ToolMutationOperation,
 };
 use rove_runtime::workspace::Workspace;
 use std::sync::{
@@ -3260,6 +3260,18 @@ async fn product_steer_submitted_during_generation_applies_after_the_tool_safe_p
     .await;
     assert_eq!(configured.status(), StatusCode::OK);
 
+    let provider_trust = request_json(
+        &app,
+        "PUT",
+        &format!("/product/workspaces/{workspace_id}/trust"),
+        serde_json::json!({
+            "decision": "grant",
+            "capabilities": ["provider_credentials"]
+        }),
+    )
+    .await;
+    assert_eq!(provider_trust.status(), StatusCode::OK);
+
     let active = post_json(
         &app,
         "/jobs",
@@ -3775,6 +3787,181 @@ async fn project_trust_is_exact_root_digest_bound_and_revocable() {
     let revoked: serde_json::Value = decode_json(revoked).await;
     assert_eq!(revoked["state"], "revoked");
     assert_eq!(revoked["granted_capabilities"], serde_json::json!([]));
+
+    let session = create_product_session(&app, workspace_id, "Revoked workspace").await;
+    let blocked = post_json(
+        &app,
+        "/jobs",
+        serde_json::json!({
+            "message": "must remain blocked after revocation",
+            "product_session_id": session["id"]
+        }),
+    )
+    .await;
+    assert_eq!(blocked.status(), StatusCode::CONFLICT);
+    let blocked: serde_json::Value = decode_json(blocked).await;
+    assert_eq!(blocked["code"], "project_trust_required");
+}
+
+#[tokio::test]
+async fn product_provider_selection_is_part_of_trust_and_non_fake_jobs_fail_closed() {
+    let server = tempfile::TempDir::new().unwrap();
+    let target = tempfile::TempDir::new().unwrap();
+    let mut config = AppConfig::load(server.path(), AppConfigOverrides::default()).unwrap();
+    config.state.state_dir = "api-state".into();
+    let app = router(ApiState::new(
+        Workspace::detect(server.path()).unwrap(),
+        config,
+    ));
+    let workspace = create_product_workspace(&app, target.path()).await;
+    let workspace_id = workspace["id"].as_str().unwrap();
+    let session = create_product_session(&app, workspace_id, "Provider trust selector").await;
+    let session_id = session["id"].as_str().unwrap();
+    let profile = post_json(
+        &app,
+        "/product/provider-profiles",
+        serde_json::json!({
+            "label": "Trust selector provider",
+            "provider_type": "openai",
+            "api_base": "https://provider-a.example.test/v1",
+            "api_key_env": "PROJECT_PROVIDER_SECRET",
+            "default_model": "model-a"
+        }),
+    )
+    .await;
+    assert_eq!(profile.status(), StatusCode::CREATED);
+    let profile: serde_json::Value = decode_json(profile).await;
+    let profile_id = profile["id"].as_str().unwrap();
+    let initial = get_response(
+        &app,
+        &format!("/product/sessions/{session_id}/model-config"),
+    )
+    .await;
+    let initial: serde_json::Value = decode_json(initial).await;
+    let configured = request_json(
+        &app,
+        "PUT",
+        &format!("/product/sessions/{session_id}/model-config"),
+        serde_json::json!({
+            "profile_id": profile_id,
+            "model": "model-a",
+            "reasoning": "default",
+            "max_steps": 1,
+            "expected_revision": initial["revision"]
+        }),
+    )
+    .await;
+    assert_eq!(configured.status(), StatusCode::OK);
+
+    let blocked = post_json(
+        &app,
+        "/jobs",
+        serde_json::json!({
+            "message": "must not contact the provider",
+            "product_session_id": session_id
+        }),
+    )
+    .await;
+    let blocked_status = blocked.status();
+    let blocked: serde_json::Value = decode_json(blocked).await;
+    assert_eq!(blocked_status, StatusCode::CONFLICT, "{blocked}");
+    assert_eq!(blocked["code"], "project_trust_required");
+
+    let trust_uri = format!("/product/workspaces/{workspace_id}/trust");
+    let granted = request_json(
+        &app,
+        "PUT",
+        &trust_uri,
+        serde_json::json!({
+            "decision": "grant",
+            "capabilities": ["provider_credentials"]
+        }),
+    )
+    .await;
+    assert_eq!(granted.status(), StatusCode::OK);
+    let granted: serde_json::Value = decode_json(granted).await;
+    assert_eq!(
+        granted["granted_capabilities"],
+        serde_json::json!(["provider_credentials"])
+    );
+    assert!(!granted.to_string().contains("PROJECT_PROVIDER_SECRET"));
+
+    let updated_profile = request_json(
+        &app,
+        "PUT",
+        &format!("/product/provider-profiles/{profile_id}"),
+        serde_json::json!({
+            "label": "Trust selector provider",
+            "provider_type": "openai",
+            "api_base": "https://provider-b.example.test/v1",
+            "api_key_env": "PROJECT_PROVIDER_SECRET",
+            "default_model": "model-a"
+        }),
+    )
+    .await;
+    assert_eq!(updated_profile.status(), StatusCode::OK);
+    let invalidated = get_response(&app, &trust_uri).await;
+    assert_eq!(invalidated.status(), StatusCode::OK);
+    let invalidated: serde_json::Value = decode_json(invalidated).await;
+    assert_eq!(
+        invalidated["invalidated_capabilities"],
+        serde_json::json!(["provider_credentials"])
+    );
+    assert_eq!(invalidated["granted_capabilities"], serde_json::json!([]));
+}
+
+#[tokio::test]
+async fn operator_store_revocation_cancels_an_active_api_job() {
+    let server = tempfile::TempDir::new().unwrap();
+    let target = tempfile::TempDir::new().unwrap();
+    let authority_path = server.path().join("operator-project-trust.sqlite");
+    let authority = Arc::new(ProjectTrustRepository::new(&authority_path));
+    let mut config = AppConfig::load(server.path(), AppConfigOverrides::default()).unwrap();
+    config.state.state_dir = "api-state".into();
+    let app = router(ApiState::with_project_trust_repository(
+        Workspace::detect(server.path()).unwrap(),
+        config,
+        authority,
+    ));
+    let workspace = create_product_workspace(&app, target.path()).await;
+    let workspace_id = workspace["id"].as_str().unwrap();
+    let session = create_product_session(&app, workspace_id, "External revocation").await;
+    let session_id = session["id"].as_str().unwrap();
+    configure_product_session_model(&app, session_id, "fake-raw", 1).await;
+    let granted = request_json(
+        &app,
+        "PUT",
+        &format!("/product/workspaces/{workspace_id}/trust"),
+        serde_json::json!({"decision": "grant", "capabilities": []}),
+    )
+    .await;
+    assert_eq!(granted.status(), StatusCode::OK);
+
+    let message = serde_json::json!({
+        "tool": "request_input",
+        "args": {"prompt": "wait for an external trust decision"}
+    })
+    .to_string();
+    let job = create_product_job(&app, session_id, &message).await;
+    let pending = wait_for_pending_input(app.clone(), job.job_id.to_string()).await;
+    assert_eq!(pending.status, RunStatus::Running);
+
+    ProjectTrustRepository::new(authority_path)
+        .revoke(
+            target.path(),
+            Workspace::detect(target.path()).unwrap().kind,
+        )
+        .unwrap();
+
+    let cancelled = wait_for_status(app, job.job_id.to_string(), RunStatus::Cancelled).await;
+    assert!(cancelled.pending_inputs.is_empty());
+    assert!(cancelled.events.iter().any(|stored| matches!(
+        stored.event,
+        StreamEvent::RunCompleted {
+            reason: TerminationReason::Cancelled,
+            ..
+        }
+    )));
 }
 
 #[tokio::test]

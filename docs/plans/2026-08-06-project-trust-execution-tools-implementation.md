@@ -28,9 +28,21 @@
   hooks/extensions, provider profile/endpoint/options/credential selectors, and
   external paths. Provider and project grants are invalidated by `.env` changes
   without revoking unrelated grants.
+- **Implemented:** workspace TOML and `.env` values are applied per capability.
+  Project `.env` values remain scoped to one `AppConfig` load and never mutate
+  the process environment; operator environment values keep higher precedence.
+  ProductStore session/profile selectors participate in the provider digest,
+  and non-fake Product jobs fail before secret lookup when that grant is absent
+  or stale.
+- **Implemented:** active API jobs monitor the canonical operator trust store at
+  a bounded interval. A CLI/other-process revocation, or removal of a capability
+  used when the job started, cancels the existing run through its normal
+  cancellation token.
 - **Implemented:** explicit `Arc<dyn ExecutionEnvironment>` injection through
   `EngineOptions`, registry/MCP assembly, the Engine loop, and every tool call;
-  local and in-memory adapters share the conformance contract.
+  local and in-memory adapters share the conformance contract. New runtime
+  identities persist the redacted adapter identity and capability set; old
+  artifacts without these additive fields remain readable.
 - **Implemented:** mocked Playwright trust coverage for all four states,
   capability selection, decisions, digest invalidation, and workspace-ID-only
   browser requests.
@@ -222,6 +234,13 @@ Do not modify during the first wave:
 - root `Cargo.toml` or `Cargo.lock`
 - `PRODUCT_ACCEPTANCE_REPORT.json`
 - current runtime documents other than the three explicitly owned above
+
+Implemented dependency exception: the canonical operator-owned trust
+repository lives in `rove-app-bootstrap` and directly uses the workspace's
+existing `rusqlite` dependency. Adding that direct package dependency required
+the already-landed changes to `apps/bootstrap/Cargo.toml` and `Cargo.lock`.
+Those two files are therefore an explicit, narrowly scoped exception to the
+original ownership list; no unrelated dependency was added.
 
 Trust-specific public API/OpenAPI/Web fields and trust-store migrations are
 assigned here. If an audit event requires a new canonical event family, stop

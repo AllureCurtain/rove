@@ -317,6 +317,8 @@ impl Engine {
             system_prompt: self.context_manager.system_prompt(),
             planner_prompt: self.planner.prompt(),
             tools: &tools,
+            execution_environment: Some(self.environment.identity()),
+            execution_capabilities: Some(self.environment.capabilities()),
         })
     }
 

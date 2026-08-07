@@ -10,8 +10,9 @@ use rove_app_bootstrap::{
 use rove_runtime::workspace::{Workspace, WorkspaceKind};
 
 use super::{
-    ProductErrorCode, ProductStoreError, ProductTrustDecisionRequest, ProductTrustState,
-    ProductTrustStatus, ProductWorkspaceId, ProductWorkspaceKind,
+    ProductErrorCode, ProductProviderType, ProductStore, ProductStoreError,
+    ProductTrustDecisionRequest, ProductTrustState, ProductTrustStatus, ProductWorkspaceId,
+    ProductWorkspaceKind,
 };
 use crate::docs;
 use crate::{ApiError, ApiErrorResponse, ApiState};
@@ -39,7 +40,7 @@ pub(crate) async fn get_project_trust(
     let workspace = store.get_workspace(&workspace_id).await?;
     let (root, kind) = open_workspace(&workspace)?;
     Ok(Json(
-        trust_status(&authority, &workspace_id, &root, kind).await?,
+        trust_status(&authority, &store, &workspace_id, &root, kind).await?,
     ))
 }
 
@@ -75,7 +76,8 @@ pub(crate) async fn decide_project_trust(
     let store = state.product_store()?;
     let workspace = store.get_workspace(&workspace_id).await?;
     let (root, kind) = open_workspace(&workspace)?;
-    let provider_selector = provider_capability_selector_for_workspace(&root);
+    let provider_selector =
+        product_provider_capability_selector(&store, &workspace_id, &root).await?;
     let all_digests = capability_digest_map(&root, None, Some(&provider_selector));
     let requested = selected_capability_digests(&request, all_digests)?;
     let trust_state = match request.decision {
@@ -104,7 +106,7 @@ pub(crate) async fn decide_project_trust(
         state.quarantine_workspace_jobs(&root).await;
     }
     Ok(Json(
-        trust_status(&authority, &workspace_id, &root, kind).await?,
+        trust_status(&authority, &store, &workspace_id, &root, kind).await?,
     ))
 }
 
@@ -158,11 +160,12 @@ pub(crate) async fn resolve_product_workspace_trust(
 
 async fn trust_status(
     authority: &Arc<ProjectTrustRepository>,
+    store: &Arc<dyn ProductStore>,
     workspace_id: &ProductWorkspaceId,
     root: &std::path::Path,
     kind: WorkspaceKind,
 ) -> Result<ProductTrustStatus, ApiError> {
-    let provider_selector = provider_capability_selector_for_workspace(root);
+    let provider_selector = product_provider_capability_selector(store, workspace_id, root).await?;
     let resolution =
         resolve_product_workspace_trust(authority, root, kind, &provider_selector).await?;
     Ok(ProductTrustStatus {
@@ -172,6 +175,49 @@ async fn trust_status(
         invalidated_capabilities: resolution.invalidated_capabilities,
         granted_capabilities: resolution.granted_capabilities.into_iter().collect(),
     })
+}
+
+pub(crate) async fn product_provider_capability_selector(
+    store: &Arc<dyn ProductStore>,
+    workspace_id: &ProductWorkspaceId,
+    root: &std::path::Path,
+) -> Result<String, ApiError> {
+    let mut selectors = BTreeSet::new();
+    selectors.insert(format!(
+        "workspace_config:{}",
+        provider_capability_selector_for_workspace(root)
+    ));
+    for session in store.list_sessions(workspace_id).await? {
+        let model_config = store.get_session_model_config(&session.id).await?;
+        let selector = if let Some(profile_id) = &model_config.profile_id {
+            let profile = store.get_provider_profile(profile_id).await?;
+            format!(
+                "profile={};type={};endpoint={};credential_env={};model={}",
+                profile.id,
+                product_provider_type_name(profile.provider_type),
+                profile.api_base.trim().trim_end_matches('/'),
+                profile.api_key_env.as_deref().unwrap_or_default(),
+                model_config.model.trim(),
+            )
+        } else {
+            format!(
+                "profile=none;type=fake;endpoint=;credential_env=;model={}",
+                model_config.model.trim()
+            )
+        };
+        selectors.insert(selector);
+    }
+    Ok(selectors.into_iter().collect::<Vec<_>>().join("|"))
+}
+
+fn product_provider_type_name(provider_type: ProductProviderType) -> &'static str {
+    match provider_type {
+        ProductProviderType::Openai => "openai",
+        ProductProviderType::OpenaiResponses => "openai-responses",
+        ProductProviderType::Anthropic => "anthropic",
+        ProductProviderType::Ollama => "ollama",
+        ProductProviderType::Fake => "fake",
+    }
 }
 
 fn activation_state_to_product(state: ProjectActivationState) -> ProductTrustState {

@@ -31,10 +31,15 @@ place and never grants trust implicitly.
 
 CLI `--trust-project` and process-level `ROVE_TRUSTED_WORKSPACES` remain exact-
 root temporary grants. They grant only the current process and are never
-silently converted into durable records. Only an allowed project-configuration
-capability loads local `.env` and `.rove/config.toml`; both files must resolve
-inside the workspace and stay within the bootstrap size limit. Repository text
-cannot grant or widen trust, and trust never replaces per-tool approval.
+silently converted into durable records. Workspace `.rove/config.toml` and
+`.env` must resolve inside the workspace and stay within the bootstrap size
+limit. Their values are filtered before merge: provider fields and referenced
+secret values require `provider_credentials`, the MCP path requires
+`mcp_processes`, external path fields require `external_paths`, and other
+configuration requires `project_configuration`. Project `.env` values are held
+in a redacted, invocation-scoped map and never mutate the process environment;
+operator environment values retain higher precedence. Repository text cannot
+grant or widen trust, and trust never replaces per-tool approval.
 
 `rove trust query|grant|deny|revoke` exposes durable CLI operations with
 repeated `--capability` selectors and the same stable trust error codes as the
@@ -53,9 +58,14 @@ over defaults. `rove dump-config` exposes the non-secret activation source,
 identity digest, invalidated/granted capability names, and whether project
 config was present or loaded. Product Web Settings exposes explicit grant,
 deny, and revoke controls; browser requests send only workspace IDs. Revocation
-blocks new activation and cancels matching live API jobs. Their existing
-cancellation path terminates foreground child work and records the normal
-canonical cancellation lifecycle; no new event family was introduced.
+blocks new activation and cancels matching live API jobs. Each job uses a
+bounded trust-store monitor, so a CLI or other-process write to the canonical
+operator database is observed without relying on the API decision route.
+Product provider digests include stable, sorted ProductStore session/profile
+selectors (provider type, endpoint, credential environment name, and model),
+never credential values. The existing cancellation path terminates foreground
+child work and records the normal canonical cancellation lifecycle; no new
+event family was introduced.
 
 Validation covers legacy and named provider selection, profile/fallback
 references, endpoints, model and protocol-option bounds, auth/header names,
@@ -265,10 +275,12 @@ supports deterministic parity tests and typed missing-capability failures
 before side effects.
 
 The environment workspace digest is the existing redacted
-`RuntimeIdentity.workspace_fingerprint`, which is already persisted in resume
-state; no new raw path field or broad `TaskState` schema was added. The Product
-runtime endpoint exposes only adapter kind, workspace kind, the digest, and
-boolean capability availability. `ObservationStore` provides stable identity,
+`RuntimeIdentity.workspace_fingerprint`. New runtime identities also persist
+optional `execution_environment` and `execution_capabilities` fields containing
+the adapter kind, workspace kind/digest, and boolean capabilities. No raw path
+is added, and old artifacts without these additive fields remain readable. The
+Product runtime endpoint exposes only adapter kind, workspace kind, the digest,
+and boolean capability availability. `ObservationStore` provides stable identity,
 source/range, byte count, digest/version, truncation, optional artifact
 reference, bounded retention, and stale-version rejection. First-wave tools
 preserve their existing request/output contracts; ranged reads, exact edits,

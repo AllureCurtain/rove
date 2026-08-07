@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashSet};
+use std::fmt;
 use std::net::SocketAddr;
 use std::path::{Component, Path, PathBuf};
 
@@ -30,6 +31,10 @@ pub struct AppConfig {
     pub routing: RoutingConfig,
     #[serde(skip)]
     pub source_summary: ConfigSourceSummary,
+    /// Workspace-owned environment values scoped to this configuration load.
+    /// Values are never serialized or exposed through `Debug`.
+    #[serde(skip)]
+    pub project_environment: ProjectEnvironment,
 }
 
 impl Default for AppConfig {
@@ -44,12 +49,33 @@ impl Default for AppConfig {
             web: WebConfig::default(),
             routing: RoutingConfig::default(),
             source_summary: ConfigSourceSummary::default(),
+            project_environment: ProjectEnvironment::default(),
         };
         // In-memory defaults used by tests and ad-hoc construction include a
         // usable fake profile. Figment loading uses empty profiles so project
         // TOML maps do not merge with built-in defaults.
         ensure_default_provider_profile(&mut config.provider);
         config
+    }
+}
+
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct ProjectEnvironment {
+    values: BTreeMap<String, String>,
+}
+
+impl ProjectEnvironment {
+    pub(crate) fn values(&self) -> &BTreeMap<String, String> {
+        &self.values
+    }
+}
+
+impl fmt::Debug for ProjectEnvironment {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ProjectEnvironment")
+            .field("keys", &self.values.keys().collect::<Vec<_>>())
+            .finish()
     }
 }
 
@@ -348,6 +374,7 @@ impl AppConfig {
             web: WebConfig::default(),
             routing: RoutingConfig::default(),
             source_summary: ConfigSourceSummary::default(),
+            project_environment: ProjectEnvironment::default(),
         }
     }
 
@@ -422,30 +449,52 @@ impl AppConfig {
         } else {
             ProjectActivation::durable(durable_resolution.clone(), Vec::new())
         };
-        let project_config_granted = activation.state == ProjectActivationState::Trusted
-            && (activation.source != Some(ProjectActivationSource::Durable)
-                || activation
-                    .granted_capabilities
-                    .contains(crate::project_trust::CAP_PROJECT_CONFIGURATION));
-        if project_config_granted
-            && let Some(path) = bounded_workspace_config_path(&workspace_root, ".env")
-        {
-            let _ = dotenvy::from_path(path);
-        }
+        let capability_allowed = |capability: &str| {
+            activation.state == ProjectActivationState::Trusted
+                && (activation.source != Some(ProjectActivationSource::Durable)
+                    || activation.granted_capabilities.contains(capability))
+        };
+        let project_config_granted =
+            capability_allowed(crate::project_trust::CAP_PROJECT_CONFIGURATION);
+        let provider_credentials_granted =
+            capability_allowed(crate::project_trust::CAP_PROVIDER_CREDENTIALS);
+        let mcp_processes_granted = capability_allowed(crate::project_trust::CAP_MCP_PROCESSES);
+        let external_paths_granted = capability_allowed(crate::project_trust::CAP_EXTERNAL_PATHS);
+        let project_environment_values = load_project_environment(
+            &workspace_root,
+            project_config_granted
+                || provider_credentials_granted
+                || mcp_processes_granted
+                || external_paths_granted,
+        )?;
         let project_config_path = workspace_root.join(".rove/config.toml");
         let project_config_present = project_config_path.exists();
         let safe_project_config_path =
             bounded_workspace_config_path(&workspace_root, ".rove/config.toml");
         let project_config_loaded = project_config_granted && safe_project_config_path.is_some();
 
-        let env_layer = env_layer()?;
+        let env_layer = env_layer(
+            &project_environment_values,
+            ProjectEnvironmentCapabilities {
+                project_configuration: project_config_granted,
+                provider_credentials: provider_credentials_granted,
+                mcp_processes: mcp_processes_granted,
+                external_paths: external_paths_granted,
+            },
+        )?;
         let env_keys = env_layer.keys.clone();
         let cli_layer = overrides.into_layer();
         let cli_keys = cli_layer.keys.clone();
 
         let mut figment = Figment::from(Serialized::defaults(AppConfig::defaults()));
         if let Some(path) = safe_project_config_path.filter(|_| project_config_loaded) {
-            figment = figment.merge(Toml::file(path));
+            let project_layer = filtered_project_config(
+                &path,
+                provider_credentials_granted,
+                mcp_processes_granted,
+                external_paths_granted,
+            )?;
+            figment = figment.merge(Serialized::defaults(project_layer));
         }
         figment = figment.merge(Serialized::defaults(env_layer.config));
         figment = figment.merge(Serialized::defaults(cli_layer.config));
@@ -469,6 +518,13 @@ impl AppConfig {
                 .collect(),
             env_keys,
             cli_keys,
+        };
+        config.project_environment = ProjectEnvironment {
+            values: if provider_credentials_granted {
+                project_environment_values
+            } else {
+                BTreeMap::new()
+            },
         };
         config.normalize_active_profile_model();
         config.validate()?;
@@ -1027,6 +1083,14 @@ struct NamedConfigLayer {
     keys: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct ProjectEnvironmentCapabilities {
+    project_configuration: bool,
+    provider_credentials: bool,
+    mcp_processes: bool,
+    external_paths: bool,
+}
+
 impl AppConfigOverrides {
     fn into_layer(self) -> NamedConfigLayer {
         let mut keys = Vec::new();
@@ -1063,7 +1127,18 @@ impl AppConfigOverrides {
     }
 }
 
-fn env_layer() -> anyhow::Result<NamedConfigLayer> {
+fn env_layer(
+    project_environment: &BTreeMap<String, String>,
+    capabilities: ProjectEnvironmentCapabilities,
+) -> anyhow::Result<NamedConfigLayer> {
+    let env_string = |name: &str| {
+        process_env_string(name).or_else(|| {
+            project_environment_value_allowed(name, capabilities)
+                .then(|| project_environment.get(name).cloned())
+                .flatten()
+                .filter(|value| !value.trim().is_empty())
+        })
+    };
     let mut keys = Vec::new();
     let mut runtime = RuntimeConfigLayer::default();
     if let Some(value) = env_string("ROVE_MAX_STEPS") {
@@ -1257,10 +1332,94 @@ fn env_layer() -> anyhow::Result<NamedConfigLayer> {
     })
 }
 
-fn env_string(name: &str) -> Option<String> {
+fn process_env_string(name: &str) -> Option<String> {
     std::env::var(name)
         .ok()
         .filter(|value| !value.trim().is_empty())
+}
+
+fn project_environment_value_allowed(
+    name: &str,
+    capabilities: ProjectEnvironmentCapabilities,
+) -> bool {
+    match name {
+        "ROVE_PROVIDER_ACTIVE"
+        | "ROVE_PROVIDER_PROFILES"
+        | "ROVE_PROVIDER_FALLBACK_PROFILES"
+        | "ROVE_MODEL"
+        | "ROVE_FALLBACK_MODELS" => capabilities.provider_credentials,
+        "ROVE_MCP_CONFIG" => capabilities.mcp_processes,
+        "ROVE_SYSTEM_PROMPT"
+        | "ROVE_PLANNER_PROMPT"
+        | "ROVE_MEMORY_SESSION_DIR"
+        | "ROVE_MEMORY_DURABLE_DIR"
+        | "ROVE_STATE_DIR"
+        | "ROVE_STATE_SQLITE"
+        | "ROVE_STATE_ALLOW_EXTERNAL_PATHS" => capabilities.external_paths,
+        _ => capabilities.project_configuration,
+    }
+}
+
+fn load_project_environment(
+    workspace_root: &Path,
+    enabled: bool,
+) -> anyhow::Result<BTreeMap<String, String>> {
+    if !enabled {
+        return Ok(BTreeMap::new());
+    }
+    let Some(path) = bounded_workspace_config_path(workspace_root, ".env") else {
+        return Ok(BTreeMap::new());
+    };
+    dotenvy::from_path_iter(&path)?
+        .collect::<Result<BTreeMap<_, _>, _>>()
+        .map_err(anyhow::Error::from)
+}
+
+fn filtered_project_config(
+    path: &Path,
+    provider_credentials_granted: bool,
+    mcp_processes_granted: bool,
+    external_paths_granted: bool,
+) -> anyhow::Result<serde_json::Value> {
+    let mut value = Figment::new()
+        .merge(Toml::file(path))
+        .extract::<serde_json::Value>()?;
+    if !provider_credentials_granted {
+        remove_project_config_value(&mut value, &["provider"]);
+    }
+    if !mcp_processes_granted {
+        remove_project_config_value(&mut value, &["tool", "mcp_config_path"]);
+    }
+    if !external_paths_granted {
+        for path in [
+            &["runtime", "system_prompt_path"][..],
+            &["runtime", "planner_prompt_path"][..],
+            &["memory", "session_dir"][..],
+            &["memory", "durable_dir"][..],
+            &["state", "state_dir"][..],
+            &["state", "sqlite_path"][..],
+            &["state", "allow_external_paths"][..],
+        ] {
+            remove_project_config_value(&mut value, path);
+        }
+    }
+    Ok(value)
+}
+
+fn remove_project_config_value(value: &mut serde_json::Value, path: &[&str]) {
+    let Some((last, parents)) = path.split_last() else {
+        return;
+    };
+    let mut current = value;
+    for parent in parents {
+        let Some(next) = current.get_mut(*parent) else {
+            return;
+        };
+        current = next;
+    }
+    if let Some(object) = current.as_object_mut() {
+        object.remove(*last);
+    }
 }
 
 fn parse_env<T>(name: &str, value: &str) -> anyhow::Result<T>
@@ -1394,6 +1553,7 @@ mod tests {
             "OPENAI_BASE_URL",
             "OPENAI_API_KEY",
             "ANTHROPIC_API_KEY",
+            "PROJECT_PROVIDER_SECRET",
             "ROVE_MODEL",
             "ROVE_FALLBACK_MODELS",
             "ROVE_FALLBACK_PROVIDERS",
@@ -1566,6 +1726,143 @@ model = "untrusted-model"
         assert!(trusted.source_summary.project_config_loaded);
         assert_eq!(trusted.runtime.max_steps, 9);
         assert_eq!(trusted.provider.model, "untrusted-model");
+        clear_config_env();
+    }
+
+    #[test]
+    fn durable_capabilities_filter_project_toml_and_scoped_environment_independently() {
+        let _guard = env_lock();
+        clear_config_env();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let config_dir = tmp.path().join(".rove");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::write(
+            config_dir.join("config.toml"),
+            r#"
+[runtime]
+max_steps = 9
+system_prompt_path = "../outside-system.md"
+
+[provider]
+active = "external"
+
+[provider.profiles.external]
+provider_type = "openai"
+base_url = "https://project.example.test/v1"
+model = "project-model"
+auth = { style = "bearer", secret = { env = "PROJECT_PROVIDER_SECRET" } }
+
+[tool]
+mcp_config_path = "custom-mcp.json"
+
+[state]
+allow_external_paths = true
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.path().join(".env"),
+            "ROVE_MODEL=project-env-model\nPROJECT_PROVIDER_SECRET=project-secret\n",
+        )
+        .unwrap();
+        let repository = ProjectTrustRepository::new(tmp.path().join("operator-trust.sqlite"));
+        let digests = capability_digest_map(tmp.path(), None, None);
+        let selected = |names: &[&str]| {
+            names
+                .iter()
+                .map(|name| ((*name).to_string(), digests.get(*name).unwrap().clone()))
+                .collect::<BTreeMap<_, _>>()
+        };
+
+        repository
+            .decide(
+                tmp.path(),
+                WorkspaceKind::Folder,
+                crate::project_trust::ProjectTrustDecision::Grant,
+                selected(&[crate::project_trust::CAP_PROJECT_CONFIGURATION]),
+            )
+            .unwrap();
+        let project_only = AppConfig::load_with_project_trust_repository(
+            tmp.path(),
+            AppConfigOverrides::default(),
+            &repository,
+        )
+        .unwrap();
+
+        assert_eq!(project_only.runtime.max_steps, 9);
+        assert_eq!(project_only.provider.model, "fake");
+        assert_eq!(
+            project_only.runtime.system_prompt_path,
+            RuntimeConfig::default().system_prompt_path
+        );
+        assert_eq!(
+            project_only.tool.mcp_config_path,
+            ToolConfig::default().mcp_config_path
+        );
+        assert!(!project_only.state.allow_external_paths);
+        assert!(project_only.project_environment.values().is_empty());
+        assert!(std::env::var_os("PROJECT_PROVIDER_SECRET").is_none());
+        assert!(std::env::var_os("ROVE_MODEL").is_none());
+
+        repository
+            .decide(
+                tmp.path(),
+                WorkspaceKind::Folder,
+                crate::project_trust::ProjectTrustDecision::Grant,
+                selected(&[crate::project_trust::CAP_PROVIDER_CREDENTIALS]),
+            )
+            .unwrap();
+        let provider_enabled = AppConfig::load_with_project_trust_repository(
+            tmp.path(),
+            AppConfigOverrides::default(),
+            &repository,
+        )
+        .unwrap();
+
+        assert_eq!(provider_enabled.provider.model, "project-env-model");
+        assert_eq!(
+            provider_enabled
+                .project_environment
+                .values()
+                .get("PROJECT_PROVIDER_SECRET")
+                .map(String::as_str),
+            Some("project-secret")
+        );
+        assert!(std::env::var_os("PROJECT_PROVIDER_SECRET").is_none());
+        assert!(!format!("{provider_enabled:?}").contains("project-secret"));
+        let model = crate::factory::try_build_model_client(
+            &provider_enabled,
+            provider_enabled.provider.model.clone(),
+        )
+        .unwrap();
+        assert!(model.client_id().as_str().contains("project.example.test"));
+
+        repository
+            .decide(
+                tmp.path(),
+                WorkspaceKind::Folder,
+                crate::project_trust::ProjectTrustDecision::Grant,
+                selected(&[
+                    crate::project_trust::CAP_MCP_PROCESSES,
+                    crate::project_trust::CAP_EXTERNAL_PATHS,
+                ]),
+            )
+            .unwrap();
+        let all_enabled = AppConfig::load_with_project_trust_repository(
+            tmp.path(),
+            AppConfigOverrides::default(),
+            &repository,
+        )
+        .unwrap();
+        assert_eq!(
+            all_enabled.runtime.system_prompt_path,
+            PathBuf::from("../outside-system.md")
+        );
+        assert_eq!(
+            all_enabled.tool.mcp_config_path,
+            PathBuf::from("custom-mcp.json")
+        );
+        assert!(all_enabled.state.allow_external_paths);
         clear_config_env();
     }
 

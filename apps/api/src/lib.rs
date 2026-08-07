@@ -21,7 +21,9 @@ use utoipa_axum::{router::OpenApiRouter, routes};
 use utoipa_swagger_ui::SwaggerUi;
 
 use rove_app_bootstrap::build_model_client_with_health;
-use rove_app_bootstrap::{AppConfig, AppConfigOverrides, ProjectTrustRepository};
+use rove_app_bootstrap::{
+    AppConfig, AppConfigOverrides, ProjectActivationState, ProjectTrustRepository,
+};
 use rove_app_bootstrap::{EngineOptions, build_engine};
 use rove_core::ToolError;
 use rove_models::ModelClient;
@@ -2051,6 +2053,7 @@ async fn run_job_supervisor(
     product_turn: Option<ProductTurnSupervisor>,
     startup_events: Vec<StreamEvent>,
 ) {
+    let trust_monitor = start_project_trust_monitor(&state, &record).await;
     let state_store = state_store_for_record(&record);
     let mut recorder = RunArtifactRecorder::new(
         record.session_id,
@@ -2070,6 +2073,7 @@ async fn run_job_supervisor(
     ))
     .catch_unwind()
     .await;
+    stop_project_trust_monitor(trust_monitor).await;
     let (terminal, mut needs_attention, mut stream_trace_complete) = match stream_outcome {
         Ok(Some((terminal, trace_complete))) => (terminal, false, trace_complete),
         Ok(None) => (
@@ -2185,6 +2189,112 @@ async fn run_job_supervisor(
     // it must never observe the old product turn still claimed, so publish
     // only after ProductStore has released or atomically replaced that claim.
     publish_terminal_event(&record, terminal).await;
+}
+
+struct ProjectTrustMonitor {
+    stop: CancellationToken,
+    handle: tokio::task::JoinHandle<()>,
+}
+
+async fn start_project_trust_monitor(
+    state: &ApiState,
+    record: &Arc<JobRecord>,
+) -> Option<ProjectTrustMonitor> {
+    let authority = state.project_trust().ok()?;
+    let provider_selector = if let (Some(store), Some(product_session_id)) =
+        (&record.product_store, &record.product_session_id)
+    {
+        match store.get_session_context(product_session_id).await {
+            Ok(context) => product::trust::product_provider_capability_selector(
+                store,
+                &context.workspace.id,
+                &record.workspace.root,
+            )
+            .await
+            .ok()?,
+            Err(error) => {
+                tracing::warn!(
+                    job_id = %record.job_id,
+                    "project trust monitor could not resolve the product session: {error}"
+                );
+                return None;
+            }
+        }
+    } else {
+        rove_app_bootstrap::provider_capability_selector_for_workspace(&record.workspace.root)
+    };
+    let digests = rove_app_bootstrap::capability_digest_map(
+        &record.workspace.root,
+        None,
+        Some(&provider_selector),
+    );
+    let initial = match authority.resolve(
+        &record.workspace.root,
+        record.workspace.kind.clone(),
+        &digests,
+    ) {
+        Ok(resolution) => resolution,
+        Err(error) => {
+            tracing::warn!(
+                job_id = %record.job_id,
+                "project trust monitor could not read its initial state: {error}"
+            );
+            return None;
+        }
+    };
+    let initially_trusted = initial.state == ProjectActivationState::Trusted;
+    let initially_granted = initial.granted_capabilities;
+    let root = record.workspace.root.clone();
+    let kind = record.workspace.kind.clone();
+    let cancel = record.cancel_token.clone();
+    let job_id = record.job_id;
+    let stop = CancellationToken::new();
+    let monitor_stop = stop.clone();
+    let handle = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_millis(100));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        // The initial state was captured above; wait one interval before the
+        // first comparison instead of performing an immediate duplicate read.
+        interval.tick().await;
+        loop {
+            tokio::select! {
+                _ = monitor_stop.cancelled() => break,
+                _ = interval.tick() => {
+                    let resolution = match authority.resolve(&root, kind.clone(), &digests) {
+                        Ok(resolution) => resolution,
+                        Err(error) => {
+                            tracing::warn!(job_id = %job_id, "project trust monitor failed closed: {error}");
+                            cancel.cancel();
+                            break;
+                        }
+                    };
+                    let revoked = resolution.state == ProjectActivationState::Revoked;
+                    let trusted_authority_lost = initially_trusted
+                        && (resolution.state != ProjectActivationState::Trusted
+                            || !initially_granted.is_subset(&resolution.granted_capabilities));
+                    if revoked || trusted_authority_lost {
+                        tracing::warn!(job_id = %job_id, "project trust changed while the job was active; cancelling the run");
+                        cancel.cancel();
+                        break;
+                    }
+                }
+            }
+        }
+    });
+    Some(ProjectTrustMonitor { stop, handle })
+}
+
+async fn stop_project_trust_monitor(monitor: Option<ProjectTrustMonitor>) {
+    let Some(ProjectTrustMonitor { stop, mut handle }) = monitor else {
+        return;
+    };
+    stop.cancel();
+    if tokio::time::timeout(std::time::Duration::from_secs(1), &mut handle)
+        .await
+        .is_err()
+    {
+        handle.abort();
+    }
 }
 
 async fn consume_job_stream(
@@ -3099,8 +3209,12 @@ async fn workspace_and_config_for_product_job(
     }
     let (workspace, mut config) = rebased_workspace_config(state, workspace)?;
     let authority = state.project_trust()?;
-    let provider_selector =
-        rove_app_bootstrap::provider_capability_selector_for_workspace(&workspace.root);
+    let provider_selector = product::trust::product_provider_capability_selector(
+        store,
+        &product_workspace.id,
+        &workspace.root,
+    )
+    .await?;
     let trust = product::trust::resolve_product_workspace_trust(
         &authority,
         &workspace.root,
@@ -3108,10 +3222,17 @@ async fn workspace_and_config_for_product_job(
         &provider_selector,
     )
     .await?;
+    if trust.state == ProjectActivationState::Revoked {
+        return Err(ApiError::conflict_with_code(
+            ProductErrorCode::ProjectTrustRequired.as_str(),
+            "project trust was revoked for this workspace",
+        ));
+    }
     config.apply_project_trust_resolution(trust);
     let provider_type = if let Some(profile_id) = &model_config.profile_id {
         let stored = store.get_provider_profile(profile_id).await?;
         let provider_type = product_provider_type_name(stored.provider_type);
+        require_product_provider_trust(&config, provider_type)?;
         let profile = ProviderProfileRequest {
             provider_type: Some(provider_type.to_string()),
             name: stored.label,
@@ -3130,8 +3251,21 @@ async fn workspace_and_config_for_product_job(
             .map(|profile| profile.provider_type.clone())
             .unwrap_or_else(|| "fake".to_string())
     };
+    require_product_provider_trust(&config, &provider_type)?;
     apply_product_reasoning(&mut config, &provider_type, model_config.reasoning)?;
     Ok((workspace, config))
+}
+
+fn require_product_provider_trust(config: &AppConfig, provider_type: &str) -> Result<(), ApiError> {
+    if provider_type == "fake"
+        || config.project_capability_allowed(rove_app_bootstrap::CAP_PROVIDER_CREDENTIALS)
+    {
+        return Ok(());
+    }
+    Err(ApiError::conflict_with_code(
+        ProductErrorCode::ProjectTrustRequired.as_str(),
+        "project trust for the selected provider endpoint and credential selector is required",
+    ))
 }
 
 fn apply_product_reasoning(

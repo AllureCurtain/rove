@@ -381,6 +381,18 @@ async fn engine_reuses_one_injected_environment_for_file_and_shell_tools() {
             environment: injected.clone(),
         },
     );
+    let runtime_identity = engine.runtime_identity();
+    assert_eq!(
+        runtime_identity
+            .execution_environment
+            .as_ref()
+            .map(|identity| identity.adapter.as_str()),
+        Some("in_memory")
+    );
+    assert_eq!(
+        runtime_identity.execution_capabilities,
+        Some(*injected.capabilities())
+    );
 
     let events = engine
         .ask("exercise injected environment".to_string(), None)

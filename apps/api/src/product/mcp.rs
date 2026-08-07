@@ -264,7 +264,8 @@ async fn product_mcp_config_path_with_activation(
     let (workspace, mut config) = crate::rebased_workspace_config(state, workspace)?;
     let authority = state.project_trust()?;
     let provider_selector =
-        rove_app_bootstrap::provider_capability_selector_for_workspace(&workspace.root);
+        super::trust::product_provider_capability_selector(&store, workspace_id, &workspace.root)
+            .await?;
     let trust = super::trust::resolve_product_workspace_trust(
         &authority,
         &workspace.root,
