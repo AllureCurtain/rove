@@ -7,7 +7,7 @@ use crate::execution::{
 };
 use crate::prompt_metadata::{PromptBuildMetadata, estimate_messages_tokens};
 use crate::runtime_identity::RuntimeIdentity;
-use crate::session::{Session, SessionEntry};
+use crate::session::{CHECKPOINT_SESSION_TAIL_ENTRIES, Session, SessionEntry};
 use crate::types::{
     JobId, PromptCheckpoint, PromptCompactionMode, PromptCompactionState, RunId, SessionId,
     TaskPlan, TaskState, TerminationReason,
@@ -22,7 +22,6 @@ use rove_models::{
 use super::report::{RunReport, write_report};
 use super::store::StateStore;
 
-const CHECKPOINT_TAIL_MESSAGES: usize = 12;
 const CHECKPOINT_SUMMARY_CHARS: usize = 180;
 
 pub struct RunArtifactRecorder {
@@ -549,7 +548,7 @@ impl RunArtifactRecorder {
 
     fn prompt_checkpoint(&self) -> PromptCheckpoint {
         let step = self.initial_step + self.steps;
-        let checkpoint_session = self.session.suffix(CHECKPOINT_TAIL_MESSAGES);
+        let checkpoint_session = self.session.suffix(CHECKPOINT_SESSION_TAIL_ENTRIES);
         let preserved_tail = checkpoint_session
             .messages_for_compatibility_artifact()
             .unwrap_or_else(|_| {
@@ -557,7 +556,7 @@ impl RunArtifactRecorder {
                     .history
                     .iter()
                     .rev()
-                    .take(CHECKPOINT_TAIL_MESSAGES)
+                    .take(CHECKPOINT_SESSION_TAIL_ENTRIES)
                     .cloned()
                     .collect();
                 tail.reverse();

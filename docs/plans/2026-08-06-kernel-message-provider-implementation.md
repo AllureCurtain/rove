@@ -26,14 +26,18 @@ Implemented in this branch:
   provider-wire identity, validation, deterministic legacy migration, and
   bounded atomic suffix projection;
 - canonical session persistence in `PromptCheckpoint`/`TaskState` snapshots,
-  artifact dual-read for old `Vec<Message>` histories, and resume projection
-  through the selected provider protocol;
+  artifact dual-read for old `Vec<Message>` histories, and bounded resume
+  projection through the selected provider protocol. The full canonical
+  session remains durable truth, while resumed prompts receive only the
+  correlation-safe canonical suffix with a 12-entry target (expanded only to
+  keep a tool round atomic) plus the checkpoint summary;
 - normalized assistant turns, usage, stop reasons, stream assembly, capability
   checks, and provider-specific wire-ID projection for OpenAI Chat, OpenAI
   Responses, Anthropic, Ollama, and Fake;
 - runtime and integration coverage for restart/resume, provider switching,
-  native multi-tool compaction/trim, legacy artifacts, stop-reason mapping, and
-  malformed streams that must execute zero tools.
+  native multi-tool compaction/trim, canonical sessions longer than the
+  checkpoint tail, legacy artifacts, stop-reason mapping, and malformed streams
+  that must execute zero tools.
 
 The runtime still uses the typed session's bounded `Vec<Message>` projection at
 the existing context-manager boundary. The one shared Agent-kernel cutover,

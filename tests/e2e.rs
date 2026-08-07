@@ -5645,6 +5645,150 @@ async fn engine_resume_reprojects_canonical_openai_history_for_anthropic() {
 }
 
 #[tokio::test]
+async fn engine_resume_projects_only_the_bounded_canonical_suffix_after_compaction() {
+    let mut session = Session::new();
+    let session_id = session.id;
+    for index in 0..15 {
+        let entry = if index % 2 == 0 {
+            SessionEntry::user(format!("history-{index}"), format!("history-{index}"))
+        } else {
+            SessionEntry::assistant(
+                format!("history-{index}"),
+                AssistantTurn::text(format!("history-{index}")),
+            )
+        };
+        session.append(entry).unwrap();
+    }
+    let internal_call_id = InternalCallId::new("bounded-resume-call").unwrap();
+    session
+        .append(SessionEntry::assistant(
+            "bounded-tool-assistant",
+            AssistantTurn {
+                tool_calls: vec![CanonicalToolCall {
+                    internal_call_id: internal_call_id.clone(),
+                    name: "echo".to_string(),
+                    arguments: serde_json::json!({"message":"bounded"}),
+                    wire_reference: Some(
+                        WireCallReference::new("openai-completions", "old-openai-bounded-call")
+                            .unwrap(),
+                    ),
+                }],
+                stop_reason: StopReason::ToolUse,
+                ..AssistantTurn::default()
+            },
+        ))
+        .unwrap();
+    session
+        .append(SessionEntry::tool_result(
+            "bounded-tool-result",
+            CanonicalToolResult::text(internal_call_id, "echo", "bounded-result"),
+        ))
+        .unwrap();
+    let full_history = session.messages_for_provider("openai-completions").unwrap();
+    assert!(full_history.len() > 12);
+    let preserved_tail = session
+        .suffix(12)
+        .messages_for_provider("openai-completions")
+        .unwrap();
+    let compaction = rove_runtime::types::PromptCompactionState {
+        auto_triggered: true,
+        source_message_count: full_history.len() - preserved_tail.len(),
+        ..Default::default()
+    };
+    let checkpoint = PromptCheckpoint {
+        summary: Some("bounded compact summary".to_string()),
+        preserved_tail,
+        session: Some(session),
+        plan: None,
+        session_memory_pointer: None,
+        durable_memory_pointer: None,
+        last_step: 1,
+        last_event_seq: None,
+        token_estimate: 0,
+        compacted_history_messages: 6,
+        compaction,
+        runtime_identity: None,
+        step_ledger: Default::default(),
+    };
+    let resume_state = TaskState {
+        schema_version: 1,
+        session_id,
+        job_id: JobId::new(),
+        run_id: RunId::new(),
+        goal: "bounded resume".to_string(),
+        step: 1,
+        history: full_history,
+        summary: Some("bounded compact summary".to_string()),
+        checkpoint: Some(checkpoint),
+        plan: None,
+        runtime_identity: None,
+        step_ledger: Default::default(),
+    };
+    let captured = Arc::new(Mutex::new(None));
+    let tmp = tempfile::TempDir::new().unwrap();
+    let engine = Engine::with_workspace(
+        Box::new(ProtocolRecordingModelClient {
+            protocol: "anthropic-messages",
+            captured_messages: captured.clone(),
+        }),
+        ToolRegistry::new(),
+        ContextManager::new("system".to_string()),
+        EngineConfig {
+            max_steps: 3,
+            plan_enabled: false,
+        },
+        Workspace::detect(tmp.path()).unwrap(),
+        ApprovalPolicy::Auto,
+    );
+    let request = RunRequest {
+        session_id,
+        job_id: JobId::new(),
+        run_id: RunId::new(),
+        user_message: "continue".to_string(),
+        resume_state: Some(resume_state),
+    };
+
+    let events = collect_events_with_request(&engine, request).await;
+
+    assert!(matches!(
+        events.last(),
+        Some(StreamEvent::RunCompleted {
+            reason: TerminationReason::Final,
+            ..
+        })
+    ));
+    let messages = captured.lock().unwrap().take().unwrap();
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.content.contains("bounded compact summary"))
+    );
+    assert!(
+        !messages
+            .iter()
+            .any(|message| message.content == "history-0")
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.content == "history-5")
+    );
+    let assistant = messages
+        .iter()
+        .find(|message| !message.tool_calls.is_empty())
+        .unwrap();
+    let result = messages
+        .iter()
+        .find(|message| message.role == Role::Tool)
+        .unwrap();
+    assert_ne!(assistant.tool_calls[0].id, "old-openai-bounded-call");
+    assert_eq!(
+        assistant.tool_calls[0].id,
+        result.tool_call_id.clone().unwrap()
+    );
+}
+
+#[tokio::test]
 async fn malformed_truncated_oversized_and_unsupported_parallel_turns_execute_zero_tools() {
     let default_capabilities = ProviderCapabilities::default();
     let no_parallel = ProviderCapabilities {

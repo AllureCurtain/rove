@@ -197,11 +197,18 @@ newer session schema is fail-closed rather than replayed or silently downgraded.
 Resume and provider requests project canonical history through the selected
 `ModelClient::history_protocol()`. Internal call IDs, tool names, result status,
 and errors stay canonical while target-specific wire IDs are regenerated for
-each provider. Checkpoint suffixing keeps an assistant multi-tool round and all
-of its results together. A trailing in-flight round found at termination or
-resume is closed once with explicit `unknown_effect` / `interrupted` results so
-it cannot be replayed. Orphan, duplicate, non-trailing missing, or conflicting
-results cause projection to fail rather than entering `ToolRegistry`.
+each provider. The complete canonical session remains persisted for audit and
+future derivation, but resume never projects that full history into the prompt.
+It first closes a trailing in-flight round, then takes a correlation-safe
+canonical suffix with a 12-entry target and projects only that suffix beside
+the checkpoint summary. The suffix may expand only as needed to keep an
+assistant multi-tool round and all of its results together. Old checkpoints
+with no canonical `session` continue to use
+their already bounded `preserved_tail`. A trailing in-flight round found at
+termination or resume is closed once with explicit `unknown_effect` /
+`interrupted` results so it cannot be replayed. Orphan, duplicate, non-trailing
+missing, or conflicting results cause projection to fail rather than entering
+`ToolRegistry`.
 
 The running loop still consumes the bounded derived `Vec<Message>` view at the
 existing context-manager boundary. Replacing that boundary with one shared

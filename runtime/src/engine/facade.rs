@@ -23,6 +23,7 @@ use crate::run_loop::{LoopContext, LoopItem, RunLoopState, SteerReceiver, run_un
 use crate::runtime_identity::{
     RuntimeIdentity, RuntimeIdentityInput, RuntimeIdentityStatus, build_runtime_identity,
 };
+use crate::session::CHECKPOINT_SESSION_TAIL_ENTRIES;
 use crate::state::trace::TraceWriter;
 use crate::types::{
     ApprovalDecision, ApprovalPolicy, JobId, Message, RunId, RunRequest, SessionId,
@@ -429,7 +430,9 @@ impl Engine {
                         let projection = session
                             .close_unresolved_tool_calls()
                             .and_then(|_| {
-                                session.messages_for_provider(&self.model.history_protocol())
+                                session
+                                    .suffix(CHECKPOINT_SESSION_TAIL_ENTRIES)
+                                    .messages_for_provider(&self.model.history_protocol())
                             });
                         match projection {
                             Ok(messages) => messages,

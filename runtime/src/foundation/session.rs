@@ -8,6 +8,7 @@ use crate::types::SessionId;
 
 pub const SESSION_SCHEMA_VERSION: u16 = 1;
 pub const MAX_SESSION_ENTRIES: usize = 4096;
+pub const CHECKPOINT_SESSION_TAIL_ENTRIES: usize = 12;
 
 /// Provenance retained on application/session entries.  It identifies where
 /// an entry came from without copying canonical provider payloads into the
