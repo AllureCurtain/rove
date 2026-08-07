@@ -196,6 +196,34 @@ function RuntimeHealthCards({
         ) : null}
       </div>
 
+      <div className="settings-card">
+        <h2>Execution environment</h2>
+        <div className="inspector-kv">
+          <div>
+            <span>adapter</span>
+            <strong>{statusLabel(info.execution_environment.adapter)}</strong>
+          </div>
+          <div>
+            <span>workspace kind</span>
+            <strong>{statusLabel(info.execution_environment.workspace_kind)}</strong>
+          </div>
+          <div>
+            <span>workspace identity</span>
+            <strong className="settings-digest">
+              {info.execution_environment.workspace_digest}
+            </strong>
+          </div>
+          {Object.entries(info.execution_environment.capabilities).map(
+            ([capability, enabled]) => (
+              <div key={capability}>
+                <span>{statusLabel(capability)}</span>
+                <strong>{enabled ? "available" : "unavailable"}</strong>
+              </div>
+            ),
+          )}
+        </div>
+      </div>
+
       {info.resume_health ? (
         <div className="settings-card" aria-live="polite">
           <h2>Resume health</h2>

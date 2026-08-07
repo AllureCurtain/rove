@@ -91,6 +91,11 @@ pub enum Command {
         #[command(subcommand)]
         command: StateCommand,
     },
+    /// Query or change durable Project Trust for the selected workspace.
+    Trust {
+        #[command(subcommand)]
+        command: TrustCommand,
+    },
 }
 
 #[derive(Clone, Debug, Subcommand)]
@@ -101,13 +106,66 @@ pub enum StateCommand {
     Cleanup,
 }
 
+#[derive(Clone, Debug, Subcommand)]
+pub enum TrustCommand {
+    /// Query durable trust without applying temporary --trust-project grants.
+    Query {
+        #[arg(long, value_enum)]
+        capability: Vec<CliProjectTrustCapability>,
+    },
+    /// Persist grants for all or selected capabilities.
+    Grant {
+        #[arg(long, value_enum)]
+        capability: Vec<CliProjectTrustCapability>,
+    },
+    /// Persist a denial for all or selected capabilities.
+    Deny {
+        #[arg(long, value_enum)]
+        capability: Vec<CliProjectTrustCapability>,
+    },
+    /// Revoke all or selected durable capability grants.
+    Revoke {
+        #[arg(long, value_enum)]
+        capability: Vec<CliProjectTrustCapability>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum, PartialEq, Eq)]
+pub enum CliProjectTrustCapability {
+    #[value(name = "project_configuration", alias = "project-configuration")]
+    ProjectConfiguration,
+    #[value(name = "workspace_instructions", alias = "workspace-instructions")]
+    WorkspaceInstructions,
+    #[value(name = "mcp_processes", alias = "mcp-processes")]
+    McpProcesses,
+    #[value(name = "hooks_extensions", alias = "hooks-extensions")]
+    HooksExtensions,
+    #[value(name = "provider_credentials", alias = "provider-credentials")]
+    ProviderCredentials,
+    #[value(name = "external_paths", alias = "external-paths")]
+    ExternalPaths,
+}
+
+impl CliProjectTrustCapability {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ProjectConfiguration => "project_configuration",
+            Self::WorkspaceInstructions => "workspace_instructions",
+            Self::McpProcesses => "mcp_processes",
+            Self::HooksExtensions => "hooks_extensions",
+            Self::ProviderCredentials => "provider_credentials",
+            Self::ExternalPaths => "external_paths",
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
 
     use clap::Parser;
 
-    use super::{Args, CliApprovalPolicy, Command};
+    use super::{Args, CliApprovalPolicy, CliProjectTrustCapability, Command, TrustCommand};
 
     #[test]
     fn approval_defaults_to_ask() {
@@ -275,5 +333,29 @@ mod tests {
 
         assert_eq!(args.task_workspace.as_deref(), Some("standalone"));
         assert_eq!(args.task_base, Some(PathBuf::from("D:/rove-tasks")));
+    }
+
+    #[test]
+    fn trust_subcommands_parse_capability_scoped_operations() {
+        let args = Args::parse_from([
+            "rove",
+            "trust",
+            "grant",
+            "--capability",
+            "provider_credentials",
+            "--capability",
+            "mcp-processes",
+        ]);
+
+        assert!(matches!(
+            args.command,
+            Some(Command::Trust {
+                command: TrustCommand::Grant { capability }
+            }) if capability == vec![
+                CliProjectTrustCapability::ProviderCredentials,
+                CliProjectTrustCapability::McpProcesses,
+            ]
+        ));
+        assert!(!args.trust_project);
     }
 }

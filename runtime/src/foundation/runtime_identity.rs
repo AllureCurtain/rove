@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use crate::environment::{ExecutionCapabilities, ExecutionEnvironmentIdentity};
 use crate::execution::ExecutionPolicy;
 use crate::prompt_metadata::{stable_hash, tool_signature};
 use crate::types::ApprovalPolicy;
@@ -19,6 +20,10 @@ pub struct RuntimeIdentity {
     pub planner_prompt_hash: String,
     pub workspace_fingerprint: String,
     pub tool_signature: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_environment: Option<ExecutionEnvironmentIdentity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_capabilities: Option<ExecutionCapabilities>,
 }
 
 impl RuntimeIdentity {
@@ -54,6 +59,8 @@ pub struct RuntimeIdentityInput<'a> {
     pub system_prompt: &'a str,
     pub planner_prompt: &'a str,
     pub tools: &'a [ToolDescriptor],
+    pub execution_environment: Option<&'a ExecutionEnvironmentIdentity>,
+    pub execution_capabilities: Option<&'a ExecutionCapabilities>,
 }
 
 pub fn workspace_fingerprint(workspace: &Workspace) -> String {
@@ -79,6 +86,8 @@ pub fn build_runtime_identity(input: RuntimeIdentityInput<'_>) -> RuntimeIdentit
         planner_prompt_hash: stable_hash(input.planner_prompt),
         workspace_fingerprint: workspace_fingerprint(input.workspace),
         tool_signature: tool_signature(input.tools),
+        execution_environment: input.execution_environment.cloned(),
+        execution_capabilities: input.execution_capabilities.copied(),
     }
 }
 
@@ -127,6 +136,19 @@ pub fn evaluate_runtime_identity(
     if saved.tool_signature != current.tool_signature {
         mismatch_fields.push("tool_signature".to_string());
     }
+    // Missing fields identify pre-environment artifacts and remain compatible.
+    // Once persisted, the adapter identity and capability set are part of the
+    // resume contract and must match exactly.
+    if saved.execution_environment.is_some()
+        && saved.execution_environment != current.execution_environment
+    {
+        mismatch_fields.push("execution_environment".to_string());
+    }
+    if saved.execution_capabilities.is_some()
+        && saved.execution_capabilities != current.execution_capabilities
+    {
+        mismatch_fields.push("execution_capabilities".to_string());
+    }
 
     RuntimeIdentityEvaluation {
         status: if mismatch_fields.is_empty() {
@@ -146,8 +168,8 @@ mod tests {
     use rove_core::ToolDescriptor;
 
     use super::{
-        RuntimeIdentityInput, RuntimeIdentityStatus, build_runtime_identity,
-        evaluate_runtime_identity,
+        RuntimeIdentity, RuntimeIdentityInput, RuntimeIdentityStatus, build_runtime_identity,
+        evaluate_runtime_identity, workspace_fingerprint,
     };
 
     fn workspace() -> Workspace {
@@ -185,6 +207,8 @@ mod tests {
             system_prompt: "system prompt",
             planner_prompt: "planner prompt",
             tools: &tools,
+            execution_environment: None,
+            execution_capabilities: None,
         });
 
         assert_eq!(identity.cwd, workspace.root.display().to_string());
@@ -225,6 +249,8 @@ mod tests {
             system_prompt: "system prompt",
             planner_prompt: "planner prompt",
             tools: &tools,
+            execution_environment: None,
+            execution_capabilities: None,
         });
         let current = build_runtime_identity(RuntimeIdentityInput {
             workspace: &workspace,
@@ -236,6 +262,8 @@ mod tests {
             system_prompt: "changed system prompt",
             planner_prompt: "planner prompt",
             tools: &[],
+            execution_environment: None,
+            execution_capabilities: None,
         });
 
         let evaluation = evaluate_runtime_identity(Some(&saved), &current);
@@ -277,11 +305,56 @@ mod tests {
             system_prompt: "system",
             planner_prompt: "planner",
             tools: &[],
+            execution_environment: None,
+            execution_capabilities: None,
         });
 
         let evaluation = evaluate_runtime_identity(None, &current);
 
         assert_eq!(evaluation.status, RuntimeIdentityStatus::Missing);
+        assert!(evaluation.mismatch_fields.is_empty());
+    }
+
+    #[test]
+    fn legacy_identity_without_environment_fields_remains_compatible() {
+        let workspace = workspace();
+        let current = build_runtime_identity(RuntimeIdentityInput {
+            workspace: &workspace,
+            model_id: "fake",
+            provider_target: "fake:local:fake",
+            approval_policy: ApprovalPolicy::Auto,
+            max_steps: 20,
+            plan_enabled: false,
+            system_prompt: "system",
+            planner_prompt: "planner",
+            tools: &[],
+            execution_environment: Some(&crate::environment::ExecutionEnvironmentIdentity {
+                adapter: "local".to_string(),
+                workspace_kind: workspace.kind.clone(),
+                workspace_digest: workspace_fingerprint(&workspace),
+            }),
+            execution_capabilities: Some(&crate::environment::ExecutionCapabilities {
+                filesystem_read: true,
+                filesystem_write: true,
+                process_run: true,
+                process_stdio: true,
+                observations: true,
+            }),
+        });
+        let mut legacy_value = serde_json::to_value(&current).unwrap();
+        legacy_value
+            .as_object_mut()
+            .unwrap()
+            .remove("execution_environment");
+        legacy_value
+            .as_object_mut()
+            .unwrap()
+            .remove("execution_capabilities");
+        let legacy: RuntimeIdentity = serde_json::from_value(legacy_value).unwrap();
+
+        let evaluation = evaluate_runtime_identity(Some(&legacy), &current);
+
+        assert_eq!(evaluation.status, RuntimeIdentityStatus::FullValid);
         assert!(evaluation.mismatch_fields.is_empty());
     }
 }

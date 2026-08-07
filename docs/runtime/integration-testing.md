@@ -85,6 +85,8 @@ Web/API request
 | History consistency | After all scenarios | `/runs`, `/runs/{run_id}/report`, product transcript bindings, and Web assertions agree on exact run ids, statuses, and important tool/input/approval records. |
 | Product migration | Seed safe M1 browser state, then open a legacy deep route | Migration completes before product catalog reads, imports no raw key, remaps the route, and does not replay after refresh. |
 | Exact product continuity | Interleave turns in product sessions A and B, refresh A, then continue A | A resumes its own exact prior run rather than B's workspace-global latest; transcript, approval, input, cancellation, Settings, and deep routes remain usable. |
+| Project Trust | Open an unknown workspace, inspect it, then grant selected capabilities, deny, and revoke through Settings | No workspace-owned process starts before MCP/process trust; requests contain only the workspace ID; digest changes invalidate only the affected grant; revocation cancels matching work and blocks new activation. |
+| Execution Environment | Run file/search/Shell and deterministic stdio MCP through local adapters, then run adapter conformance tests | Tool names, schemas, approval, output, timeout, and cancellation remain compatible; traversal/symlink escape, missing capabilities, output limits, and child cleanup fail closed; runtime info contains only a redacted digest. |
 | Product Fork | Complete a parent ProductSession turn, click Fork in the live shell, continue the child, refresh, then switch back to the parent | API returns one idempotent child with fresh runtime identities; child transcript has an inherited read-only parent segment followed by its local segment; branch tree and parent/child isolation survive refresh. |
 
 ## Manual API Smoke Commands
@@ -384,9 +386,18 @@ process lifecycle so failures can preserve both logs. The suite:
 - opens `/dev/workbench` only for a bounded direct-run smoke;
 - attach screenshots or traces when assertions fail.
 
-The latest C3 `local-full` run passed these three cases. That deterministic fake
-provider evidence does not substitute for the optional external-provider gate,
-which has not been run.
+Project Trust Settings changes additionally require the normal mocked browser
+suite (`pnpm test:e2e`). `tests/e2e/project-trust.spec.ts` covers
+unknown/restricted/trusted/revoked, capability selection, grant/deny/revoke,
+digest invalidation, and asserts that browser requests contain only the
+server-owned workspace ID, never a local authority path. Real provider and
+official filesystem MCP checks remain optional and must not be reported as
+passed when their environment gates are unset.
+
+The targeted Project Trust Playwright case passes against the deterministic mock
+API. A full `local-full` acceptance run is separate evidence; deterministic fake
+provider coverage does not substitute for the optional external-provider gate,
+which remains unrun.
 
 ## Optional Gates
 
@@ -440,6 +451,24 @@ Default verification remains:
 
 ```powershell
 cargo test -p rove-integration-tests --test mcp
+```
+
+First-wave deterministic environment/trust verification is:
+
+```powershell
+cargo test -p rove-app-bootstrap
+cargo test -p rove-runtime --test environment_contract
+cargo test -p rove-runtime --test tool_contract
+cargo test -p rove-runtime --test mcp_contract
+cargo test -p rove-integration-tests --test tool_safety
+cargo test -p rove-integration-tests --test mcp
+cargo test -p rove-integration-tests --test api
+
+Set-Location apps/web
+pnpm test
+pnpm typecheck
+pnpm build
+pnpm test:e2e
 ```
 
 The official filesystem MCP smoke remains opt-in:

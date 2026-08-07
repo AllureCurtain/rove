@@ -2109,6 +2109,7 @@ dependencies = [
  "rove-core",
  "rove-models",
  "rove-runtime",
+ "rusqlite",
  "serde",
  "serde_json",
  "tempfile",

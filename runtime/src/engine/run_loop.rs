@@ -8,6 +8,7 @@ use tokio_util::sync::CancellationToken;
 use crate::compaction::{CompactionRuntime, maybe_compact_history};
 use crate::context::ContextManager;
 use crate::engine::control::{SteerLifecycle, SteerMessage};
+use crate::environment::ExecutionEnvironment;
 use crate::events::StreamEvent;
 use crate::hooks::HookRegistry;
 use crate::memory::paths::MemoryPaths;
@@ -39,6 +40,7 @@ pub(crate) struct LoopContext<'a> {
     pub registry: &'a ToolRegistry,
     pub context_manager: &'a ContextManager,
     pub workspace: &'a Workspace,
+    pub environment: Arc<dyn ExecutionEnvironment>,
     pub memory_paths: &'a MemoryPaths,
     pub session_id: SessionId,
     pub max_steps: u32,
@@ -63,6 +65,7 @@ impl<'a> LoopContext<'a> {
         ToolTurnContext {
             registry: self.registry,
             workspace: self.workspace,
+            environment: self.environment.clone(),
             memory_paths: self.memory_paths,
             approval_policy: self.approval_policy,
             approval_decision: self.approval_decision,

@@ -1,7 +1,7 @@
 //! Named provider profiles, secret references, and protocol assembly helpers.
 
 use std::{
-    collections::HashSet,
+    collections::{BTreeMap, HashSet},
     fmt,
     io::Read,
     path::{Component, Path, PathBuf},
@@ -202,6 +202,21 @@ impl ProviderProfileConfig {
         allow_external_paths: bool,
         model_override: Option<&str>,
     ) -> anyhow::Result<ResolvedProviderProfile> {
+        self.resolve_with_environment(
+            workspace_root,
+            allow_external_paths,
+            model_override,
+            &BTreeMap::new(),
+        )
+    }
+
+    pub fn resolve_with_environment(
+        &self,
+        workspace_root: &Path,
+        allow_external_paths: bool,
+        model_override: Option<&str>,
+        project_environment: &BTreeMap<String, String>,
+    ) -> anyhow::Result<ResolvedProviderProfile> {
         self.validate(workspace_root, allow_external_paths)?;
         let model = model_override
             .filter(|model| !model.trim().is_empty())
@@ -209,12 +224,24 @@ impl ProviderProfileConfig {
             .trim()
             .to_string();
         validate_model(&model, "resolved profile model")?;
-        let auth = resolve_auth(&self.auth, workspace_root, allow_external_paths)?;
+        let auth = resolve_auth(
+            &self.auth,
+            workspace_root,
+            allow_external_paths,
+            project_environment,
+        )?;
         let mut headers = Vec::with_capacity(self.headers.len());
         for (name, value) in &self.headers {
             let resolved = value
                 .as_secret_source()
-                .map(|source| resolve_secret(&source, workspace_root, allow_external_paths))
+                .map(|source| {
+                    resolve_secret(
+                        &source,
+                        workspace_root,
+                        allow_external_paths,
+                        project_environment,
+                    )
+                })
                 .transpose()?
                 .or_else(|| value.literal_value().map(str::to_string))
                 .ok_or_else(|| anyhow::anyhow!("profile header `{name}` has no value"))?;
@@ -434,9 +461,12 @@ fn resolve_secret(
     source: &SecretSource,
     workspace_root: &Path,
     allow_external_paths: bool,
+    project_environment: &BTreeMap<String, String>,
 ) -> anyhow::Result<String> {
     let value = match source {
         SecretSource::Env { env } => std::env::var(env)
+            .ok()
+            .or_else(|| project_environment.get(env).cloned())
             .with_context(|| format!("profile secret environment variable `{env}` is not set"))?,
         SecretSource::File { file } => read_secret_file(
             &resolve_secret_path(file, workspace_root),
@@ -517,6 +547,7 @@ fn resolve_auth(
     auth: &ProviderAuthConfig,
     workspace_root: &Path,
     allow_external_paths: bool,
+    project_environment: &BTreeMap<String, String>,
 ) -> anyhow::Result<ResolvedAuth> {
     match auth {
         ProviderAuthConfig::None => Ok(ResolvedAuth::none()),
@@ -524,13 +555,19 @@ fn resolve_auth(
             secret,
             workspace_root,
             allow_external_paths,
+            project_environment,
         )?)?),
         ProviderAuthConfig::Header { header, secret } => {
             let name = HeaderName::from_bytes(header.trim().as_bytes())
                 .map_err(|_| anyhow::anyhow!("profile auth header `{header}` is invalid"))?;
             Ok(ResolvedAuth::header(
                 name,
-                resolve_secret(secret, workspace_root, allow_external_paths)?,
+                resolve_secret(
+                    secret,
+                    workspace_root,
+                    allow_external_paths,
+                    project_environment,
+                )?,
             )?)
         }
     }

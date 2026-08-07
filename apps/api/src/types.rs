@@ -20,16 +20,20 @@ use crate::product::ProductSessionId;
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkspaceActivationState {
+    Unknown,
     #[default]
     Restricted,
     Trusted,
+    Revoked,
 }
 
 impl From<rove_app_bootstrap::ProjectActivationState> for WorkspaceActivationState {
     fn from(value: rove_app_bootstrap::ProjectActivationState) -> Self {
         match value {
+            rove_app_bootstrap::ProjectActivationState::Unknown => Self::Unknown,
             rove_app_bootstrap::ProjectActivationState::Restricted => Self::Restricted,
             rove_app_bootstrap::ProjectActivationState::Trusted => Self::Trusted,
+            rove_app_bootstrap::ProjectActivationState::Revoked => Self::Revoked,
         }
     }
 }

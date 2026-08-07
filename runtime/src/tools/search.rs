@@ -1,19 +1,18 @@
-use std::path::{Component, Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::path::PathBuf;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use regex::{Regex, RegexBuilder};
 use serde::Serialize;
 use serde_json::Value;
-use walkdir::WalkDir;
 
-use crate::boundary::resolve_workspace_read_path;
+use crate::environment::EnvironmentError;
+use crate::tools::runtime_context::runtime_tool_services;
 use rove_core::ToolDescriptor;
 use rove_core::{Tool, ToolContext, ToolError, ToolOutput};
 
 /// Built-in structured workspace search (not shell `rg`, not vector RAG).
 pub struct SearchCodeTool {
-    root: PathBuf,
     policy: SearchCodePolicy,
 }
 
@@ -63,8 +62,8 @@ impl SearchCodeTool {
         Self::with_policy(root, SearchCodePolicy::default())
     }
 
-    pub fn with_policy(root: PathBuf, policy: SearchCodePolicy) -> Self {
-        Self { root, policy }
+    pub fn with_policy(_root: PathBuf, policy: SearchCodePolicy) -> Self {
+        Self { policy }
     }
 }
 
@@ -106,7 +105,7 @@ impl Tool for SearchCodeTool {
         }
     }
 
-    async fn execute(&self, args: Value, _ctx: &ToolContext<'_>) -> Result<ToolOutput, ToolError> {
+    async fn execute(&self, args: Value, ctx: &ToolContext<'_>) -> Result<ToolOutput, ToolError> {
         let query = args
             .get("query")
             .and_then(|value| value.as_str())
@@ -154,32 +153,158 @@ impl Tool for SearchCodeTool {
             None => None,
         };
 
-        let root = self.root.clone();
         let policy = self.policy.clone();
         let query_owned = query.to_string();
         let path_label = raw_path.unwrap_or(".").to_string();
         let search_path = raw_path.map(str::to_string);
-
-        let result = tokio::task::spawn_blocking(move || {
-            search_workspace(
-                &root,
+        let services = runtime_tool_services(ctx)?;
+        if !services.environment.capabilities().filesystem_read {
+            return Err(map_environment_error(
+                EnvironmentError::CapabilityUnavailable("filesystem_read"),
+            ));
+        }
+        let filesystem = services.environment.filesystem();
+        let result = tokio::time::timeout(
+            Duration::from_millis(policy.timeout_ms),
+            search_filesystem(
+                filesystem,
                 search_path.as_deref(),
                 &pattern,
                 glob_pattern.as_ref(),
                 &policy,
                 &query_owned,
                 &path_label,
-            )
-        })
+            ),
+        )
         .await
-        .map_err(|err| ToolError::ExecutionFailed {
-            reason: format!("search task failed: {err}"),
-        })??;
+        .map_err(|_| ToolError::Timeout {
+            timeout_ms: policy.timeout_ms,
+        })?
+        .map_err(map_environment_error)?;
 
         let content = serde_json::to_string(&result).map_err(|err| ToolError::ExecutionFailed {
             reason: err.to_string(),
         })?;
         Ok(ToolOutput::text(content))
+    }
+}
+
+async fn search_filesystem(
+    filesystem: &dyn crate::environment::WorkspaceFileSystem,
+    raw_path: Option<&str>,
+    pattern: &Regex,
+    glob: Option<&Regex>,
+    policy: &SearchCodePolicy,
+    query: &str,
+    path_label: &str,
+) -> Result<SearchOutput, EnvironmentError> {
+    let entries = filesystem
+        .list_files(raw_path, policy.max_files_scanned.saturating_add(1))
+        .await?;
+    let mut matches = Vec::new();
+    let mut files_scanned = 0usize;
+    let mut truncated = false;
+    let mut truncated_reason = None;
+    for entry in entries {
+        if files_scanned >= policy.max_files_scanned {
+            truncated = true;
+            truncated_reason = Some("max_files_scanned".to_string());
+            break;
+        }
+        files_scanned += 1;
+        if entry.byte_len > policy.max_file_bytes {
+            continue;
+        }
+        if let Some(glob) = glob
+            && !glob.is_match(&entry.relative_path)
+        {
+            continue;
+        }
+        let read = filesystem
+            .read_relative_bytes(&entry.relative_path, policy.max_file_bytes)
+            .await?;
+        if read.truncated || read.bytes.contains(&0) {
+            continue;
+        }
+        let content = match String::from_utf8(read.bytes) {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        for (index, line) in content.lines().enumerate() {
+            if let Some(found) = pattern.find(line) {
+                matches.push(SearchMatch {
+                    path: entry.relative_path.clone(),
+                    line: index + 1,
+                    column: found.start() + 1,
+                    text: truncate_line(line, 400),
+                });
+                if matches.len() >= policy.max_matches {
+                    truncated = true;
+                    truncated_reason = Some("max_matches".to_string());
+                    break;
+                }
+            }
+        }
+        if matches.len() >= policy.max_matches
+            || estimate_output_bytes(query, path_label, &matches, files_scanned, truncated)
+                > policy.max_output_bytes
+        {
+            truncated = true;
+            truncated_reason = Some(if matches.len() >= policy.max_matches {
+                "max_matches".to_string()
+            } else {
+                "max_output_bytes".to_string()
+            });
+            break;
+        }
+    }
+    if estimate_output_bytes(query, path_label, &matches, files_scanned, truncated)
+        > policy.max_output_bytes
+    {
+        while !matches.is_empty()
+            && estimate_output_bytes(query, path_label, &matches, files_scanned, true)
+                > policy.max_output_bytes
+        {
+            matches.pop();
+        }
+        truncated = true;
+        truncated_reason = Some("max_output_bytes".to_string());
+    }
+    Ok(SearchOutput {
+        query: query.to_string(),
+        path: path_label.to_string(),
+        match_count: matches.len(),
+        matches,
+        files_scanned,
+        truncated,
+        truncated_reason,
+    })
+}
+
+fn map_environment_error(error: EnvironmentError) -> ToolError {
+    match error {
+        EnvironmentError::Timeout(timeout_ms) => ToolError::Timeout { timeout_ms },
+        EnvironmentError::Cancelled => ToolError::ExecutionFailed {
+            reason: "execution cancelled".to_string(),
+        },
+        EnvironmentError::CapabilityUnavailable(capability) => ToolError::PermissionDenied {
+            reason: format!("execution capability unavailable: {capability}"),
+        },
+        EnvironmentError::StaleObservation => ToolError::InvalidInput {
+            reason: "observation version is stale".to_string(),
+        },
+        EnvironmentError::NotFound => ToolError::ExecutionFailed {
+            reason: "workspace file was not found".to_string(),
+        },
+        EnvironmentError::Boundary => ToolError::PermissionDenied {
+            reason: "path escapes workspace".to_string(),
+        },
+        EnvironmentError::InvalidPath(reason) if reason.contains("escapes workspace") => {
+            ToolError::PermissionDenied { reason }
+        }
+        EnvironmentError::InvalidPath(reason) | EnvironmentError::Host(reason) => {
+            ToolError::ExecutionFailed { reason }
+        }
     }
 }
 
@@ -221,267 +346,12 @@ fn compile_glob(pattern: &str) -> Result<Regex, ToolError> {
         })
 }
 
-fn search_workspace(
-    root: &Path,
-    raw_path: Option<&str>,
-    pattern: &Regex,
-    glob: Option<&Regex>,
-    policy: &SearchCodePolicy,
-    query: &str,
-    path_label: &str,
-) -> Result<SearchOutput, ToolError> {
-    let started = Instant::now();
-    let timeout = Duration::from_millis(policy.timeout_ms);
-    let (canonical_root, search_root) = resolve_search_root(root, raw_path)?;
-
-    let mut matches = Vec::new();
-    let mut files_scanned = 0usize;
-    let mut truncated = false;
-    let mut truncated_reason = None;
-
-    if search_root.is_file() {
-        files_scanned = 1;
-        if let Some(file_matches) = search_file(
-            &canonical_root,
-            &search_root,
-            pattern,
-            glob,
-            policy.max_file_bytes,
-            policy.max_matches.saturating_sub(matches.len()),
-        )? {
-            matches.extend(file_matches);
-        }
-    } else {
-        for entry in WalkDir::new(&search_root)
-            .follow_links(false)
-            .into_iter()
-            .filter_entry(should_descend)
-        {
-            if started.elapsed() > timeout {
-                return Err(ToolError::Timeout {
-                    timeout_ms: policy.timeout_ms,
-                });
-            }
-
-            let entry = match entry {
-                Ok(value) => value,
-                Err(_) => continue,
-            };
-            if !entry.file_type().is_file() {
-                continue;
-            }
-            if files_scanned >= policy.max_files_scanned {
-                truncated = true;
-                truncated_reason = Some("max_files_scanned".to_string());
-                break;
-            }
-            files_scanned += 1;
-
-            let remaining = policy.max_matches.saturating_sub(matches.len());
-            if remaining == 0 {
-                truncated = true;
-                truncated_reason = Some("max_matches".to_string());
-                break;
-            }
-
-            match search_file(
-                &canonical_root,
-                entry.path(),
-                pattern,
-                glob,
-                policy.max_file_bytes,
-                remaining,
-            ) {
-                Ok(Some(file_matches)) => {
-                    matches.extend(file_matches);
-                    if matches.len() >= policy.max_matches {
-                        truncated = true;
-                        truncated_reason = Some("max_matches".to_string());
-                        break;
-                    }
-                }
-                Ok(None) => {}
-                Err(ToolError::PermissionDenied { .. }) => continue,
-                Err(err) => return Err(err),
-            }
-
-            if estimate_output_bytes(query, path_label, &matches, files_scanned, truncated)
-                > policy.max_output_bytes
-            {
-                while !matches.is_empty()
-                    && estimate_output_bytes(query, path_label, &matches, files_scanned, true)
-                        > policy.max_output_bytes
-                {
-                    matches.pop();
-                }
-                truncated = true;
-                truncated_reason = Some("max_output_bytes".to_string());
-                break;
-            }
-        }
-    }
-
-    if started.elapsed() > timeout {
-        return Err(ToolError::Timeout {
-            timeout_ms: policy.timeout_ms,
-        });
-    }
-
-    // Final byte cap even for single-file searches.
-    if estimate_output_bytes(query, path_label, &matches, files_scanned, truncated)
-        > policy.max_output_bytes
-    {
-        while !matches.is_empty()
-            && estimate_output_bytes(query, path_label, &matches, files_scanned, true)
-                > policy.max_output_bytes
-        {
-            matches.pop();
-        }
-        truncated = true;
-        truncated_reason = Some("max_output_bytes".to_string());
-    }
-
-    Ok(SearchOutput {
-        query: query.to_string(),
-        path: path_label.to_string(),
-        match_count: matches.len(),
-        matches,
-        files_scanned,
-        truncated,
-        truncated_reason,
-    })
-}
-
-fn resolve_search_root(
-    root: &Path,
-    raw_path: Option<&str>,
-) -> Result<(PathBuf, PathBuf), ToolError> {
-    let canonical_root = root.canonicalize().map_err(|err| ToolError::InvalidInput {
-        reason: format!("invalid workspace root: {err}"),
-    })?;
-
-    let search_root = match raw_path {
-        None | Some("") | Some(".") => canonical_root.clone(),
-        Some(path) => resolve_workspace_read_path(root, path)?,
-    };
-
-    ensure_under_workspace(&canonical_root, &search_root)?;
-    Ok((canonical_root, search_root))
-}
-
-fn should_descend(entry: &walkdir::DirEntry) -> bool {
-    // Always keep the walk root (depth 0), even if the user pointed path at a
-    // normally-pruned directory such as `target/`.
-    if entry.depth() == 0 {
-        return true;
-    }
-    !is_noise_dir_name(&entry.file_name().to_string_lossy())
-}
-
+#[allow(dead_code)]
 fn is_noise_dir_name(name: &str) -> bool {
     matches!(
         name,
         ".git" | "target" | "node_modules" | ".next" | "dist" | "build" | "__pycache__" | ".rove"
     )
-}
-
-fn search_file(
-    canonical_root: &Path,
-    path: &Path,
-    pattern: &Regex,
-    glob: Option<&Regex>,
-    max_file_bytes: usize,
-    max_matches: usize,
-) -> Result<Option<Vec<SearchMatch>>, ToolError> {
-    if max_matches == 0 {
-        return Ok(None);
-    }
-
-    let canonical_path = match path.canonicalize() {
-        Ok(value) => value,
-        Err(_) => return Ok(None),
-    };
-    ensure_under_workspace(canonical_root, &canonical_path)?;
-
-    let relative = path_relative_to(canonical_root, &canonical_path)?;
-    let relative_str = relative.to_string_lossy().replace('\\', "/");
-    if let Some(glob) = glob
-        && !glob.is_match(&relative_str)
-    {
-        return Ok(None);
-    }
-
-    let metadata = match std::fs::metadata(&canonical_path) {
-        Ok(value) => value,
-        Err(_) => return Ok(None),
-    };
-    if metadata.len() as usize > max_file_bytes {
-        return Ok(None);
-    }
-
-    let bytes = match std::fs::read(&canonical_path) {
-        Ok(value) => value,
-        Err(_) => return Ok(None),
-    };
-    if bytes.contains(&0) {
-        return Ok(None);
-    }
-    let content = match String::from_utf8(bytes) {
-        Ok(value) => value,
-        Err(_) => return Ok(None),
-    };
-
-    let mut matches = Vec::new();
-    for (idx, line) in content.lines().enumerate() {
-        if let Some(found) = pattern.find(line) {
-            matches.push(SearchMatch {
-                path: relative_str.clone(),
-                line: idx + 1,
-                column: found.start() + 1,
-                text: truncate_line(line, 400),
-            });
-            if matches.len() >= max_matches {
-                break;
-            }
-        }
-    }
-
-    if matches.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(matches))
-    }
-}
-
-fn path_relative_to(root: &Path, target: &Path) -> Result<PathBuf, ToolError> {
-    let relative = target
-        .strip_prefix(root)
-        .map_err(|_| ToolError::PermissionDenied {
-            reason: "path escapes workspace".to_string(),
-        })?;
-    let mut normalized = PathBuf::new();
-    for component in relative.components() {
-        match component {
-            Component::Normal(value) => normalized.push(value),
-            Component::CurDir => {}
-            _ => {
-                return Err(ToolError::PermissionDenied {
-                    reason: "path escapes workspace".to_string(),
-                });
-            }
-        }
-    }
-    Ok(normalized)
-}
-
-fn ensure_under_workspace(root: &Path, target: &Path) -> Result<(), ToolError> {
-    if target.starts_with(root) {
-        Ok(())
-    } else {
-        Err(ToolError::PermissionDenied {
-            reason: "path escapes workspace".to_string(),
-        })
-    }
 }
 
 fn truncate_line(line: &str, max_chars: usize) -> String {

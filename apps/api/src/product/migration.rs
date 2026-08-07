@@ -1226,6 +1226,8 @@ mod tests {
                     planner_prompt_hash: "planner".to_string(),
                     workspace_fingerprint: "workspace".to_string(),
                     tool_signature: "tools".to_string(),
+                    execution_environment: None,
+                    execution_capabilities: None,
                 }),
                 step_ledger: StepLedgerState::default(),
             };

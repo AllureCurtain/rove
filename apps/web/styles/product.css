@@ -1097,6 +1097,47 @@ textarea:focus {
   flex-wrap: wrap;
 }
 
+.trust-capabilities {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 16px;
+  margin: 16px 0;
+  padding: 0;
+  border: 0;
+}
+
+.trust-capabilities legend {
+  margin-bottom: 10px;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.trust-capabilities label {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.trust-capabilities input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+}
+
+.trust-capabilities small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.settings-digest {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
 .settings-segmented {
   display: inline-grid;
   grid-auto-flow: column;
@@ -2163,6 +2204,10 @@ textarea:focus {
 
   .settings-card {
     padding: 14px;
+  }
+
+  .trust-capabilities {
+    grid-template-columns: 1fr;
   }
 
   .settings-policy-grid {

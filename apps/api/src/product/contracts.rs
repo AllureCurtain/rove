@@ -35,6 +35,7 @@ pub const MAX_PRODUCT_MAX_STEPS: u32 = 256;
 /// payloads. Keep that ancestry bounded so a deeply branched catalog cannot
 /// turn one fork or transcript read into an unbounded operation.
 pub const MAX_PRODUCT_FORK_INHERITED_RUNS: usize = 512;
+pub const MAX_PROJECT_TRUST_CAPABILITIES: usize = 6;
 
 macro_rules! product_id {
     ($name:ident, $description:literal) => {
@@ -281,6 +282,64 @@ pub struct ProductWorkspace {
     pub last_opened_at: String,
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductTrustState {
+    Unknown,
+    Restricted,
+    Trusted,
+    Revoked,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductTrustCapability {
+    ProjectConfiguration,
+    WorkspaceInstructions,
+    McpProcesses,
+    HooksExtensions,
+    ProviderCredentials,
+    ExternalPaths,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductTrustDecision {
+    Grant,
+    Deny,
+    Revoke,
+}
+
+impl ProductTrustCapability {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ProjectConfiguration => "project_configuration",
+            Self::WorkspaceInstructions => "workspace_instructions",
+            Self::McpProcesses => "mcp_processes",
+            Self::HooksExtensions => "hooks_extensions",
+            Self::ProviderCredentials => "provider_credentials",
+            Self::ExternalPaths => "external_paths",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ProductTrustDecisionRequest {
+    pub decision: ProductTrustDecision,
+    #[serde(default)]
+    pub capabilities: Vec<ProductTrustCapability>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductTrustStatus {
+    pub workspace_id: ProductWorkspaceId,
+    pub state: ProductTrustState,
+    pub identity_digest: String,
+    pub invalidated_capabilities: Vec<String>,
+    pub granted_capabilities: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -937,11 +996,43 @@ pub struct ProductResumeHealth {
     pub needs_attention_session_count: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductExecutionAdapter {
+    Local,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductExecutionWorkspaceKind {
+    Folder,
+    Repo,
+    Task,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ProductExecutionCapabilities {
+    pub filesystem_read: bool,
+    pub filesystem_write: bool,
+    pub process_run: bool,
+    pub process_stdio: bool,
+    pub observations: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductExecutionEnvironmentInfo {
+    pub adapter: ProductExecutionAdapter,
+    pub workspace_kind: ProductExecutionWorkspaceKind,
+    pub workspace_digest: String,
+    pub capabilities: ProductExecutionCapabilities,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ProductRuntimeInfo {
     pub api_version: String,
     pub connection: ProductConnectionStatus,
     pub product_store: ProductStoreStatus,
+    pub execution_environment: ProductExecutionEnvironmentInfo,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resume_health: Option<ProductResumeHealth>,
 }
@@ -1292,6 +1383,8 @@ pub enum ProductErrorCode {
     ProductMcpInvalidInput,
     ProductMcpNotFound,
     ProductMcpConflict,
+    ProjectTrustInvalidInput,
+    ProjectTrustUnavailable,
     ProjectTrustRequired,
     MigrationIdempotencyConflict,
     ProductControlConflict,
@@ -1322,7 +1415,9 @@ impl ProductErrorCode {
             Self::ProductMcpInvalidInput => "product_mcp_invalid_input",
             Self::ProductMcpNotFound => "product_mcp_not_found",
             Self::ProductMcpConflict => "product_mcp_conflict",
-            Self::ProjectTrustRequired => "project_trust_required",
+            Self::ProjectTrustInvalidInput => rove_app_bootstrap::PROJECT_TRUST_INVALID_INPUT_CODE,
+            Self::ProjectTrustUnavailable => rove_app_bootstrap::PROJECT_TRUST_UNAVAILABLE_CODE,
+            Self::ProjectTrustRequired => rove_app_bootstrap::PROJECT_TRUST_REQUIRED_CODE,
             Self::MigrationIdempotencyConflict => "migration_idempotency_conflict",
             Self::ProductControlConflict => "product_control_conflict",
             Self::ProductControlRejected => "product_control_rejected",
@@ -1383,7 +1478,6 @@ pub trait ProductStore: Send + Sync {
         &self,
         workspace_id: &ProductWorkspaceId,
     ) -> Result<(), ProductStoreError>;
-
     async fn list_sessions(
         &self,
         workspace_id: &ProductWorkspaceId,

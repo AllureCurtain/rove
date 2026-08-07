@@ -5,12 +5,46 @@
 Configuration is typed in `apps/bootstrap/src/config.rs` and grouped by
 runtime, provider, tool, memory, state, API, web, and routing.
 
-Project activation is fail-closed. A newly selected workspace is `restricted`
-unless the operator passes CLI `--trust-project` for that exact workspace or
-lists its canonical path in the process-level `ROVE_TRUSTED_WORKSPACES`
-variable. Only a trusted workspace loads its local `.env` and
-`.rove/config.toml`. The repository cannot grant itself activation through
-either file.
+Project Trust is persistent, granular, and fail-closed. It has `unknown`,
+`restricted`, `trusted`, and `revoked` states and independently grants project
+configuration, workspace instructions, MCP/process definitions, hooks or
+extensions, provider/credential selectors, and external paths. Records bind an
+exact canonical root and workspace kind to a stable platform identity plus one
+digest per capability. A changed executable input invalidates only its matching
+capability; a parent grant does not cover a nested repository, and replacement,
+symlink, junction, and alias resolution is conservative.
+
+Bootstrap, CLI, API, and runtime all use the same operator-owned SQLite
+authority selected by `ROVE_PROJECT_TRUST_STORE` or the platform user-state
+directory (`project-trust.sqlite` by default). Product Web sends a server-owned
+workspace ID; the API resolves that ID to the canonical root before calling the
+same repository. ProductStore schema v11 retains `project_trust_records` only
+as a one-way compatibility import source. It is not written by the API and is
+not a second live authority. Missing canonical records are imported at API
+startup without overwriting an existing canonical decision.
+
+An old JSON authority is read once, validated, renamed to
+`project-trust.json.legacy`, and imported into SQLite in one transaction. The
+legacy backup is retained for rollback: remove the new SQLite file and restore
+the backup only after an operator review. A failed import leaves the backup in
+place and never grants trust implicitly.
+
+CLI `--trust-project` and process-level `ROVE_TRUSTED_WORKSPACES` remain exact-
+root temporary grants. They grant only the current process and are never
+silently converted into durable records. Workspace `.rove/config.toml` and
+`.env` must resolve inside the workspace and stay within the bootstrap size
+limit. Their values are filtered before merge: provider fields and referenced
+secret values require `provider_credentials`, the MCP path requires
+`mcp_processes`, external path fields require `external_paths`, and other
+configuration requires `project_configuration`. Project `.env` values are held
+in a redacted, invocation-scoped map and never mutate the process environment;
+operator environment values retain higher precedence. Repository text cannot
+grant or widen trust, and trust never replaces per-tool approval.
+
+`rove trust query|grant|deny|revoke` exposes durable CLI operations with
+repeated `--capability` selectors and the same stable trust error codes as the
+API. `--trust-project` remains a process-only compatibility grant and is never
+persisted.
 
 Merge order for an explicitly trusted workspace:
 
@@ -18,12 +52,20 @@ Merge order for an explicitly trusted workspace:
 defaults < .rove/config.toml < environment < CLI/API overrides
 ```
 
-For a restricted workspace, the project-config layer is reported as present
-but deferred, and process environment plus explicit overrides apply over
-defaults. `rove dump-config` exposes `project_activation`, its non-secret
-source, and whether project config was present or loaded. This temporary guard
-is replaced, rather than silently weakened, by the future persistent Project
-Trust store and granular grants.
+For a restricted or revoked workspace, the project-config layer is reported as
+present but deferred, and process environment plus explicit overrides apply
+over defaults. `rove dump-config` exposes the non-secret activation source,
+identity digest, invalidated/granted capability names, and whether project
+config was present or loaded. Product Web Settings exposes explicit grant,
+deny, and revoke controls; browser requests send only workspace IDs. Revocation
+blocks new activation and cancels matching live API jobs. Each job uses a
+bounded trust-store monitor, so a CLI or other-process write to the canonical
+operator database is observed without relying on the API decision route.
+Product provider digests include stable, sorted ProductStore session/profile
+selectors (provider type, endpoint, credential environment name, and model),
+never credential values. The existing cancellation path terminates foreground
+child work and records the normal canonical cancellation lifecycle; no new
+event family was introduced.
 
 Validation covers legacy and named provider selection, profile/fallback
 references, endpoints, model and protocol-option bounds, auth/header names,
@@ -221,6 +263,28 @@ runtime-owned services attached to a tool invocation through a typed extension.
 They are not fields on the minimal `rove-core` context, so an embedded custom
 Tool needs only call identity and cancellation unless it explicitly opts into
 runtime services.
+
+`runtime/src/environment.rs` owns the first-wave Execution Environment ports:
+`ExecutionEnvironment`, `WorkspaceFileSystem`, `ProcessHost`, redacted
+identity/capabilities, local and in-memory adapters, and a bounded observation
+store. File read/write, code search, foreground Shell, MCP config reads, and
+stdio MCP spawn/cleanup use these ports through `RuntimeToolServices`. The
+local adapter owns canonical path enforcement, output bounds, timeouts,
+cancellation, kill-and-wait cleanup, and process cwd. The in-memory adapter
+supports deterministic parity tests and typed missing-capability failures
+before side effects.
+
+The environment workspace digest is the existing redacted
+`RuntimeIdentity.workspace_fingerprint`. New runtime identities also persist
+optional `execution_environment` and `execution_capabilities` fields containing
+the adapter kind, workspace kind/digest, and boolean capabilities. No raw path
+is added, and old artifacts without these additive fields remain readable. The
+Product runtime endpoint exposes only adapter kind, workspace kind, the digest,
+and boolean capability availability. `ObservationStore` provides stable identity,
+source/range, byte count, digest/version, truncation, optional artifact
+reference, bounded retention, and stale-version rejection. First-wave tools
+preserve their existing request/output contracts; ranged reads, exact edits,
+background Shell, and other Coding Tool V2 behavior remain unimplemented.
 
 MCP stdio transport is bounded by per-server policy. Initialize, list, and call requests time out; stderr is captured up to the configured diagnostic limit; JSON-RPC errors are mapped to structured tool execution failures; and child processes are killed when their client is dropped. `tests/mcp.rs` and `cargo test -p rove-integration-tests --test mcp` cover mock stdio registration, annotation safety, timeout/error/cleanup behavior, and include an opt-in real filesystem MCP smoke test gated by `ROVE_MCP_FILESYSTEM_SMOKE=1`.
 

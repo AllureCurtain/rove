@@ -11,6 +11,7 @@ use rove_cli::cli::repl;
 use rove_cli::cli::runtime::{CliRuntimeInteraction, CliRuntimeOptions, build_cli_runtime};
 use rove_cli::cli::sessions;
 use rove_cli::cli::state as cli_state;
+use rove_cli::cli::trust as cli_trust;
 use rove_cli::tui::app as tui_app;
 use rove_cli::tui::providers::TuiInteractionBroker;
 use rove_runtime::state::resume::resolve_resume_state;
@@ -65,6 +66,7 @@ async fn async_main(args: Args) -> anyhow::Result<()> {
     match args.command.clone() {
         Some(Command::Sessions) => return sessions::run(args.cwd.clone()).await,
         Some(Command::State { command }) => return cli_state::run(args.cwd.clone(), command).await,
+        Some(Command::Trust { command }) => return cli_trust::run(args.cwd.clone(), command),
         Some(Command::Tui) => {
             let (interaction, interaction_rx) = TuiInteractionBroker::default().into_parts();
             let runtime = build_runtime_with_interaction(

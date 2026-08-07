@@ -12,6 +12,7 @@ use tokio_util::sync::CancellationToken;
 use crate::compaction::CompactionRuntime;
 use crate::context::{ContextManager, durable_memory_message, session_summary_message};
 use crate::engine::control::{RunControlHandle, SteerLifecycle, control_channel};
+use crate::environment::{ExecutionEnvironment, local_environment};
 use crate::events::StreamEvent;
 use crate::execution::{DEFAULT_MAX_MODEL_TURNS_PER_STEP, ExecutionPolicy, ExecutionStrategy};
 use crate::hooks::{HookRegistry, PostRunHookContext, RunSummary};
@@ -107,6 +108,15 @@ pub struct EngineConfig {
     pub plan_enabled: bool,
 }
 
+/// Invocation-scoped authority used when constructing an Engine for a
+/// workspace. Keeping the environment beside the approval settings makes it
+/// explicit that both are shared by the entire run.
+pub struct EngineEnvironmentOptions {
+    pub approval_policy: ApprovalPolicy,
+    pub approval_decision: ApprovalDecision,
+    pub environment: Arc<dyn ExecutionEnvironment>,
+}
+
 impl EngineConfig {
     /// Project sugar fields into the typed policy used by the engine.
     ///
@@ -137,6 +147,7 @@ pub struct Engine {
     config: EngineConfig,
     planner: Planner,
     workspace: Workspace,
+    environment: Arc<dyn ExecutionEnvironment>,
     approval_policy: ApprovalPolicy,
     approval_decision: ApprovalDecision,
     approval_provider: Option<Arc<dyn ToolApprovalProvider>>,
@@ -200,6 +211,29 @@ impl Engine {
         approval_policy: ApprovalPolicy,
         approval_decision: ApprovalDecision,
     ) -> Self {
+        let environment = local_environment(&workspace);
+        Self::with_workspace_and_approval_decision_and_environment(
+            model,
+            registry,
+            context_manager,
+            config,
+            workspace,
+            EngineEnvironmentOptions {
+                approval_policy,
+                approval_decision,
+                environment,
+            },
+        )
+    }
+
+    pub fn with_workspace_and_approval_decision_and_environment(
+        model: Box<dyn ModelClient>,
+        registry: ToolRegistry,
+        context_manager: ContextManager,
+        config: EngineConfig,
+        workspace: Workspace,
+        options: EngineEnvironmentOptions,
+    ) -> Self {
         let memory_paths = MemoryPaths::from_workspace(&workspace, 8);
         Self {
             model,
@@ -208,8 +242,9 @@ impl Engine {
             config,
             planner: Planner::default(),
             workspace,
-            approval_policy,
-            approval_decision,
+            environment: options.environment,
+            approval_policy: options.approval_policy,
+            approval_decision: options.approval_decision,
             approval_provider: None,
             input_provider: None,
             hooks: HookRegistry::with_default_post_run_hooks(),
@@ -266,6 +301,10 @@ impl Engine {
         &self.workspace
     }
 
+    pub fn execution_environment(&self) -> &Arc<dyn ExecutionEnvironment> {
+        &self.environment
+    }
+
     pub fn runtime_identity(&self) -> RuntimeIdentity {
         let tools = self.registry.descriptors();
         build_runtime_identity(RuntimeIdentityInput {
@@ -278,6 +317,8 @@ impl Engine {
             system_prompt: self.context_manager.system_prompt(),
             planner_prompt: self.planner.prompt(),
             tools: &tools,
+            execution_environment: Some(self.environment.identity()),
+            execution_capabilities: Some(self.environment.capabilities()),
         })
     }
 
@@ -464,6 +505,7 @@ impl Engine {
                     registry: &self.registry,
                     context_manager: &self.context_manager,
                     workspace: &self.workspace,
+                    environment: self.environment.clone(),
                     memory_paths: &self.memory_paths,
                     session_id,
                     max_steps: self.config.max_steps,

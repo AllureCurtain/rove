@@ -187,10 +187,45 @@ Relevant code:
 defaults < trusted .rove/config.toml < environment < CLI/API overrides
 ```
 
-Workspace project config and local `.env` are deferred by default. Use
-`--trust-project` for an explicit CLI run, or set `ROVE_TRUSTED_WORKSPACES` to
-an OS path-list of exact canonical roots before starting the API. This is an
-operator activation grant; project files cannot set it for themselves.
+Workspace project config and local `.env` are deferred by default. Persistent
+Project Trust binds an exact canonical root, workspace kind, stable platform
+identity, and per-capability executable digests. Bootstrap, CLI, API, and
+runtime use one operator-owned SQLite authority (`project-trust.sqlite` in the
+platform user-state directory, or `ROVE_PROJECT_TRUST_STORE`). Product Web
+sends only the workspace ID and explicit capability decision; the API resolves
+that ID and calls the same repository. ProductStore schema v11 trust rows are a
+one-way compatibility import source only, never a second write authority.
+
+Legacy `project-trust.json` is validated and imported once, then retained as
+`project-trust.json.legacy` so an operator can roll back by removing the new
+SQLite file and restoring the reviewed backup. Failed imports do not grant
+trust. The CLI has durable `trust query`, `trust grant`, `trust deny`, and
+`trust revoke` commands with repeated `--capability` selectors. `--trust-project`
+and `ROVE_TRUSTED_WORKSPACES` remain process-scoped and are never persisted.
+
+Capability digests are projections rather than a whole-file hash: `.env` is
+included in project-configuration and provider selectors; provider endpoint,
+profile, options, and credential env-name/file selectors affect only provider;
+MCP path/definition, hook/extension sections, and external-path selectors affect
+their own capabilities. Workspace identity replacement remains fail-closed.
+Product provider selectors additionally include the stable, sorted profiles
+referenced by sessions in that workspace: profile ID, provider type, endpoint,
+credential environment name, and selected model. Secret values are excluded.
+Changing any selected authority invalidates `provider_credentials`, and a
+non-fake Product job returns `project_trust_required` before secret resolution.
+
+Use `--trust-project` for one explicit CLI process, or set
+`ROVE_TRUSTED_WORKSPACES` to an OS path-list of exact canonical roots. These
+compatibility grants are process-scoped and never create durable history.
+Project files cannot create or widen either temporary or persistent grants.
+Project config and `.env` must resolve inside the workspace and be no larger
+than 256 KiB before bootstrap reads them.
+Workspace `.env` is parsed into one `AppConfig`-scoped map and never writes to
+the process environment. TOML and `.env` values are filtered by their matching
+project-configuration, provider, MCP, or external-path capability before merge;
+operator environment and explicit CLI/API overrides retain precedence. Active
+API jobs poll the canonical trust authority at a bounded interval, so a CLI or
+other-process revocation cancels the run even when it bypasses the API route.
 
 The config is grouped by runtime, provider, tool, memory, state, API, web, and
 routing. Provider configuration supports named profiles with explicit wire
@@ -261,7 +296,7 @@ High-level flow in `src/main.rs`:
    config paths to the task root.
 8. Construct the model client.
 9. Register the shared runtime tool registry; configured MCP tools are included
-   only for an explicitly activated workspace.
+   only when the exact workspace has a valid `mcp_processes` capability.
 10. Build `ContextManager`.
 11. Build `Engine`.
 12. Create `StateStore`.
@@ -1058,19 +1093,33 @@ Current built-in tools:
 | `reindex_memory` | Rebuild durable memory index |
 | `read_memory` | Read durable memory topic |
 | `request_input` | Ask user/interface for mid-run input |
+| `mcp__<server>__<tool>` | MCP-proxied remote tools |
 
 Division of labor: prefer `search_code` for repo/text search; use `run_shell` for arbitrary commands.
 
-
-| `mcp__<server>__<tool>` | MCP-proxied remote tools |
-
 CLI and API construct runtime tools through the shared async
 `tool_registry_for_config(&Workspace, &AppConfig)` builder. It registers
-built-ins and loads configured MCP tools only for an explicitly activated
-workspace. Root-bound tools receive the workspace root
+built-ins and loads configured MCP tools only for a workspace with a valid
+`mcp_processes` grant. Root-bound tools receive the workspace root
 at construction. Runtime-specific Workspace, Memory paths, approval policy, and
 input provider are attached to the invocation through `RuntimeToolServices`;
 they are not fields on the minimal `rove_core::ToolContext`.
+
+The same services inject a Runtime-owned `ExecutionEnvironment`. Its
+`WorkspaceFileSystem` port handles current file read/write and search; its
+`ProcessHost` handles foreground Shell and stdio MCP. Only the local adapter
+uses host filesystem/process APIs. The in-memory adapter runs the same
+filesystem/process contract without host side effects. Capability checks occur
+before tool effects, and the process adapter owns timeout, cancellation,
+bounded stdout/stderr, and child cleanup.
+
+`ExecutionEnvironmentIdentity` contains only adapter, workspace kind, and the
+redacted SHA-256 workspace digest. The digest equals the existing persisted
+`RuntimeIdentity.workspace_fingerprint`, so resume diagnostics gain
+environment identity without a `TaskState` migration. `GET /product/runtime`
+returns this redacted identity and boolean capabilities. The bounded
+`ObservationStore` foundation is available, but first-wave tool schemas and
+outputs remain unchanged; it is not Coding Tool V2.
 
 Operational Tool descriptors include:
 
@@ -1242,8 +1291,15 @@ Web Complete C0 adds a separate API-global SQLite database at
 - immutable ordered runtime session/job/run bindings;
 - secret-reference-only provider profiles;
 - safe product preferences;
+- legacy v11 trust rows accepted as a one-way compatibility import into the
+  operator-owned canonical SQLite authority; catalog deletion cannot revoke or
+  rewrite that authority;
 - schema versions, durable M1 migration preparations, and migration
   receipts/mappings/issues.
+
+Schema v11 is an additive, transaction-scoped migration. Startup rolls back a
+failed v11 attempt, refuses a database with a future schema version, and does
+not implement automatic downgrade after a successful migration.
 
 It intentionally does not copy canonical runtime event payloads, task state, or
 reports. Those facts remain in each execution workspace's `StateStore` and are
@@ -1286,7 +1342,7 @@ Relevant code:
 
 MCP integration registers remote server tools into the local `ToolRegistry`.
 Both CLI and API jobs use the same config-aware registry builder, so configured
-MCP tools are available only after exact-root project activation. Product MCP
+MCP tools are available only after exact-root `mcp_processes` trust. Product MCP
 catalogs may be listed and edited while restricted, but `probe` fails with
 `project_trust_required` before environment resolution or process spawn.
 
@@ -1305,7 +1361,10 @@ Supported transports:
 - `stdio`;
 - `sse`.
 
-For stdio, rove spawns the configured command, sends JSON-RPC messages over stdin, reads stdout lines, initializes the MCP session, calls `tools/list`, and registers each returned tool as:
+For stdio, the Execution Environment reads the bounded workspace config and its
+process port spawns the configured command, sends JSON-RPC messages over stdin,
+reads stdout lines, initializes the MCP session, calls `tools/list`, and
+registers each returned tool as:
 
 ```text
 mcp__<sanitized_server_name>__<remote_tool_name>

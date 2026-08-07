@@ -535,6 +535,8 @@ mod tests {
             planner_prompt_hash: "sha256:planner".to_string(),
             workspace_fingerprint: "sha256:workspace".to_string(),
             tool_signature: "sha256:tools".to_string(),
+            execution_environment: None,
+            execution_capabilities: None,
         }
     }
 

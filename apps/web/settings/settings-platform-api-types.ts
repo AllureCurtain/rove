@@ -137,10 +137,61 @@ export interface ProductMcpProbeResponse {
   tested_at: string;
 }
 
+export const PRODUCT_TRUST_STATES = [
+  "unknown",
+  "restricted",
+  "trusted",
+  "revoked",
+] as const;
+export type ProductTrustState = (typeof PRODUCT_TRUST_STATES)[number];
+
+export const PRODUCT_TRUST_CAPABILITIES = [
+  "project_configuration",
+  "workspace_instructions",
+  "mcp_processes",
+  "hooks_extensions",
+  "provider_credentials",
+  "external_paths",
+] as const;
+export type ProductTrustCapability =
+  (typeof PRODUCT_TRUST_CAPABILITIES)[number];
+
+export const PRODUCT_TRUST_DECISIONS = ["grant", "deny", "revoke"] as const;
+export type ProductTrustDecision = (typeof PRODUCT_TRUST_DECISIONS)[number];
+
+export interface ProductTrustStatus {
+  workspace_id: ProductWorkspaceId;
+  state: ProductTrustState;
+  identity_digest: string;
+  invalidated_capabilities: ProductTrustCapability[];
+  granted_capabilities: ProductTrustCapability[];
+}
+
+export interface ProductTrustDecisionRequest {
+  decision: ProductTrustDecision;
+  capabilities: ProductTrustCapability[];
+}
+
 export type ProductConnectionStatus = "connected";
 export type ProductStoreStatus = "ready" | "unavailable";
 export type ProductResumeHealthStatus = "healthy" | "needs_attention";
+export type ProductExecutionAdapter = "local";
+export type ProductExecutionWorkspaceKind = "folder" | "repo" | "task";
 
+export interface ProductExecutionCapabilities {
+  filesystem_read: boolean;
+  filesystem_write: boolean;
+  process_run: boolean;
+  process_stdio: boolean;
+  observations: boolean;
+}
+
+export interface ProductExecutionEnvironmentInfo {
+  adapter: ProductExecutionAdapter;
+  workspace_kind: ProductExecutionWorkspaceKind;
+  workspace_digest: string;
+  capabilities: ProductExecutionCapabilities;
+}
 export interface ProductResumeHealth {
   status: ProductResumeHealthStatus;
   workspace_count: number;
@@ -154,6 +205,7 @@ export interface ProductRuntimeInfo {
   api_version: string;
   connection: ProductConnectionStatus;
   product_store: ProductStoreStatus;
+  execution_environment: ProductExecutionEnvironmentInfo;
   resume_health?: ProductResumeHealth;
 }
 
@@ -180,6 +232,8 @@ const MAX_MCP_ARGUMENTS = 64;
 const MAX_MCP_ARGUMENT_BYTES = 2_048;
 const MAX_MCP_ENV_NAMES = 32;
 const MAX_MCP_TOOLS = 128;
+const MAX_TRUST_DIGEST_BYTES = 256;
+const SHA256_DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/u;
 const MIN_MCP_TIMEOUT_MS = 100;
 const MAX_MCP_TIMEOUT_MS = 120_000;
 const MEMORY_TOPIC_SLUG_PATTERN =
@@ -338,6 +392,95 @@ export function validateProductMemoryWorkspaceId(
     maxBytes: MAX_PRODUCT_TEXT_BYTES,
     noControls: true,
   });
+}
+
+function expectTrustCapabilities(
+  value: unknown,
+  path: string,
+): ProductTrustCapability[] {
+  if (!Array.isArray(value) || value.length > PRODUCT_TRUST_CAPABILITIES.length) {
+    return schemaError(
+      path,
+      `an array with at most ${PRODUCT_TRUST_CAPABILITIES.length} items`,
+    );
+  }
+  const capabilities = value.map((entry, index) =>
+    expectEnum(
+      entry,
+      PRODUCT_TRUST_CAPABILITIES,
+      `${path}[${index}]`,
+    ),
+  );
+  if (new Set(capabilities).size !== capabilities.length) {
+    return schemaError(path, "free of duplicate capabilities");
+  }
+  return capabilities;
+}
+
+export function parseProductTrustStatus(
+  value: unknown,
+  path = "product trust status",
+): ProductTrustStatus {
+  const record = expectRecord(value, path);
+  expectOnlyKeys(
+    record,
+    [
+      "workspace_id",
+      "state",
+      "identity_digest",
+      "invalidated_capabilities",
+      "granted_capabilities",
+    ],
+    path,
+  );
+  const identityDigest = expectString(
+    record.identity_digest,
+    `${path}.identity_digest`,
+    {
+      nonEmpty: true,
+      maxBytes: MAX_TRUST_DIGEST_BYTES,
+      noControls: true,
+    },
+  );
+  if (!SHA256_DIGEST_PATTERN.test(identityDigest)) {
+    return schemaError(`${path}.identity_digest`, "a redacted sha256 digest");
+  }
+  return {
+    workspace_id: expectString(record.workspace_id, `${path}.workspace_id`, {
+      nonEmpty: true,
+      maxBytes: MAX_PRODUCT_TEXT_BYTES,
+      noControls: true,
+    }),
+    state: expectEnum(record.state, PRODUCT_TRUST_STATES, `${path}.state`),
+    identity_digest: identityDigest,
+    invalidated_capabilities: expectTrustCapabilities(
+      record.invalidated_capabilities,
+      `${path}.invalidated_capabilities`,
+    ),
+    granted_capabilities: expectTrustCapabilities(
+      record.granted_capabilities,
+      `${path}.granted_capabilities`,
+    ),
+  };
+}
+
+export function parseProductTrustDecisionRequest(
+  value: ProductTrustDecisionRequest,
+  path = "product trust decision request",
+): ProductTrustDecisionRequest {
+  const record = expectRecord(value, path);
+  expectOnlyKeys(record, ["decision", "capabilities"], path);
+  return {
+    decision: expectEnum(
+      record.decision,
+      PRODUCT_TRUST_DECISIONS,
+      `${path}.decision`,
+    ),
+    capabilities: expectTrustCapabilities(
+      record.capabilities,
+      `${path}.capabilities`,
+    ),
+  };
 }
 
 function expectMemoryTitle(value: unknown, path: string): string {
@@ -970,9 +1113,50 @@ export function parseProductRuntimeInfo(
   const record = expectRecord(value, path);
   expectOnlyKeys(
     record,
-    ["api_version", "connection", "product_store", "resume_health"],
+    [
+      "api_version",
+      "connection",
+      "product_store",
+      "execution_environment",
+      "resume_health",
+    ],
     path,
   );
+  const environmentPath = `${path}.execution_environment`;
+  const environment = expectRecord(record.execution_environment, environmentPath);
+  expectOnlyKeys(
+    environment,
+    ["adapter", "workspace_kind", "workspace_digest", "capabilities"],
+    environmentPath,
+  );
+  const capabilitiesPath = `${environmentPath}.capabilities`;
+  const capabilities = expectRecord(environment.capabilities, capabilitiesPath);
+  expectOnlyKeys(
+    capabilities,
+    [
+      "filesystem_read",
+      "filesystem_write",
+      "process_run",
+      "process_stdio",
+      "observations",
+    ],
+    capabilitiesPath,
+  );
+  const workspaceDigest = expectString(
+    environment.workspace_digest,
+    `${environmentPath}.workspace_digest`,
+    {
+      nonEmpty: true,
+      maxBytes: MAX_TRUST_DIGEST_BYTES,
+      noControls: true,
+    },
+  );
+  if (!SHA256_DIGEST_PATTERN.test(workspaceDigest)) {
+    return schemaError(
+      `${environmentPath}.workspace_digest`,
+      "a redacted sha256 digest",
+    );
+  }
   const info: ProductRuntimeInfo = {
     api_version: expectString(record.api_version, `${path}.api_version`, {
       nonEmpty: true,
@@ -989,6 +1173,41 @@ export function parseProductRuntimeInfo(
       ["ready", "unavailable"] as const,
       `${path}.product_store`,
     ),
+    execution_environment: {
+      adapter: expectEnum(
+        environment.adapter,
+        ["local"] as const,
+        `${environmentPath}.adapter`,
+      ),
+      workspace_kind: expectEnum(
+        environment.workspace_kind,
+        ["folder", "repo", "task"] as const,
+        `${environmentPath}.workspace_kind`,
+      ),
+      workspace_digest: workspaceDigest,
+      capabilities: {
+        filesystem_read: expectBoolean(
+          capabilities.filesystem_read,
+          `${capabilitiesPath}.filesystem_read`,
+        ),
+        filesystem_write: expectBoolean(
+          capabilities.filesystem_write,
+          `${capabilitiesPath}.filesystem_write`,
+        ),
+        process_run: expectBoolean(
+          capabilities.process_run,
+          `${capabilitiesPath}.process_run`,
+        ),
+        process_stdio: expectBoolean(
+          capabilities.process_stdio,
+          `${capabilitiesPath}.process_stdio`,
+        ),
+        observations: expectBoolean(
+          capabilities.observations,
+          `${capabilitiesPath}.observations`,
+        ),
+      },
+    },
   };
   if (record.resume_health !== undefined) {
     info.resume_health = parseProductResumeHealth(

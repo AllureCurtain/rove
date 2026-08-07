@@ -141,6 +141,7 @@ pub async fn build_cli_runtime(options: CliRuntimeOptions) -> anyhow::Result<Cli
         approval_policy,
         input_provider: providers.input_provider,
         approval_provider: providers.approval_provider,
+        environment: None,
     })
     .await?;
 

@@ -3,18 +3,17 @@ use std::path::PathBuf;
 use async_trait::async_trait;
 use serde_json::Value;
 
-use crate::boundary::{resolve_workspace_read_path, resolve_workspace_write_path};
+use crate::environment::{EnvironmentError, FileMutationOperation};
+use crate::tools::runtime_context::runtime_tool_services;
 use rove_core::ToolDescriptor;
 use rove_core::{Tool, ToolContext, ToolError, ToolMutation, ToolMutationOperation, ToolOutput};
 
 /// Read a UTF-8 file inside the workspace.
-pub struct FsReadTool {
-    root: PathBuf,
-}
+pub struct FsReadTool;
 
 impl FsReadTool {
-    pub fn new(root: PathBuf) -> Self {
-        Self { root }
+    pub fn new(_root: PathBuf) -> Self {
+        Self
     }
 }
 
@@ -40,32 +39,35 @@ impl Tool for FsReadTool {
         }
     }
 
-    async fn execute(&self, args: Value, _ctx: &ToolContext<'_>) -> Result<ToolOutput, ToolError> {
+    async fn execute(&self, args: Value, ctx: &ToolContext<'_>) -> Result<ToolOutput, ToolError> {
         let raw_path = args
             .get("path")
             .and_then(|value| value.as_str())
             .ok_or_else(|| ToolError::InvalidArgs {
                 reason: "Missing required argument: path".to_string(),
             })?;
-        let path = resolve_workspace_read_path(&self.root, raw_path)?;
-        let content =
-            tokio::fs::read_to_string(path)
-                .await
-                .map_err(|e| ToolError::ExecutionFailed {
-                    reason: e.to_string(),
-                })?;
+        let services = runtime_tool_services(ctx)?;
+        if !services.environment.capabilities().filesystem_read {
+            return Err(map_environment_error(
+                EnvironmentError::CapabilityUnavailable("filesystem_read"),
+            ));
+        }
+        let content = services
+            .environment
+            .filesystem()
+            .read_utf8(raw_path)
+            .await
+            .map_err(map_environment_error)?;
         Ok(ToolOutput::text(content))
     }
 }
 
 /// Write a UTF-8 file inside the workspace.
-pub struct FsWriteTool {
-    root: PathBuf,
-}
+pub struct FsWriteTool;
 
 impl FsWriteTool {
-    pub fn new(root: PathBuf) -> Self {
-        Self { root }
+    pub fn new(_root: PathBuf) -> Self {
+        Self
     }
 }
 
@@ -95,7 +97,7 @@ impl Tool for FsWriteTool {
         }
     }
 
-    async fn execute(&self, args: Value, _ctx: &ToolContext<'_>) -> Result<ToolOutput, ToolError> {
+    async fn execute(&self, args: Value, ctx: &ToolContext<'_>) -> Result<ToolOutput, ToolError> {
         let raw_path = args
             .get("path")
             .and_then(|value| value.as_str())
@@ -108,34 +110,23 @@ impl Tool for FsWriteTool {
             .ok_or_else(|| ToolError::InvalidArgs {
                 reason: "Missing required argument: content".to_string(),
             })?;
-        let path = resolve_workspace_write_path(&self.root, raw_path)?;
-        let before = match tokio::fs::read_to_string(&path).await {
-            Ok(content) => Some(content),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
-            Err(err) => {
-                return Err(ToolError::ExecutionFailed {
-                    reason: err.to_string(),
-                });
-            }
-        };
-        if let Some(parent) = path.parent() {
-            tokio::fs::create_dir_all(parent)
-                .await
-                .map_err(|e| ToolError::ExecutionFailed {
-                    reason: e.to_string(),
-                })?;
+        let services = runtime_tool_services(ctx)?;
+        if !services.environment.capabilities().filesystem_write {
+            return Err(map_environment_error(
+                EnvironmentError::CapabilityUnavailable("filesystem_write"),
+            ));
         }
-        tokio::fs::write(&path, content)
+        let mutation = services
+            .environment
+            .filesystem()
+            .write_utf8(raw_path, content)
             .await
-            .map_err(|e| ToolError::ExecutionFailed {
-                reason: e.to_string(),
-            })?;
-        let operation = if before.is_some() {
-            ToolMutationOperation::Update
-        } else {
-            ToolMutationOperation::Create
+            .map_err(map_environment_error)?;
+        let operation = match mutation.operation {
+            FileMutationOperation::Create => ToolMutationOperation::Create,
+            FileMutationOperation::Update => ToolMutationOperation::Update,
         };
-        let diff = unified_diff(raw_path, before.as_deref().unwrap_or(""), content);
+        let diff = unified_diff(raw_path, mutation.before.as_deref().unwrap_or(""), content);
         Ok(ToolOutput {
             content: format!("wrote {}", raw_path),
             mutations: vec![ToolMutation {
@@ -144,6 +135,32 @@ impl Tool for FsWriteTool {
                 diff: Some(diff),
             }],
         })
+    }
+}
+
+fn map_environment_error(error: EnvironmentError) -> ToolError {
+    match error {
+        EnvironmentError::Boundary => ToolError::PermissionDenied {
+            reason: "path escapes workspace".to_string(),
+        },
+        EnvironmentError::InvalidPath(reason) if reason.contains("escapes workspace") => {
+            ToolError::PermissionDenied { reason }
+        }
+        EnvironmentError::InvalidPath(reason) => ToolError::InvalidInput { reason },
+        EnvironmentError::Cancelled => ToolError::ExecutionFailed {
+            reason: "execution cancelled".to_string(),
+        },
+        EnvironmentError::Timeout(timeout_ms) => ToolError::Timeout { timeout_ms },
+        EnvironmentError::CapabilityUnavailable(capability) => ToolError::PermissionDenied {
+            reason: format!("execution capability unavailable: {capability}"),
+        },
+        EnvironmentError::StaleObservation => ToolError::InvalidInput {
+            reason: "observation version is stale".to_string(),
+        },
+        EnvironmentError::NotFound => ToolError::ExecutionFailed {
+            reason: "workspace file was not found".to_string(),
+        },
+        EnvironmentError::Host(reason) => ToolError::ExecutionFailed { reason },
     }
 }
 

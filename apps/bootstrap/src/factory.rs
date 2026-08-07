@@ -184,10 +184,11 @@ fn named_targets(
             anyhow::anyhow!("provider.active references unknown profile `{active}`")
         })?;
     let primary = active_profile
-        .resolve(
+        .resolve_with_environment(
             &config.source_summary.workspace_root,
             config.state.allow_external_paths,
             Some(model_id),
+            config.project_environment.values(),
         )
         .map_err(|error| {
             anyhow::anyhow!("provider profile `{active}` could not be resolved: {error}")
@@ -216,10 +217,11 @@ fn named_targets(
         })?;
         fallbacks.push(
             profile
-                .resolve(
+                .resolve_with_environment(
                     &config.source_summary.workspace_root,
                     config.state.allow_external_paths,
                     None,
+                    config.project_environment.values(),
                 )
                 .map_err(|error| {
                     anyhow::anyhow!("provider profile `{name}` could not be resolved: {error}")

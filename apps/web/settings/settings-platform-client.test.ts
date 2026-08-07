@@ -9,6 +9,8 @@ import {
   parseProductMemoryTopicContentResponse,
   parseProductMemoryTopicsResponse,
   parseProductRuntimeInfo,
+  parseProductTrustDecisionRequest,
+  parseProductTrustStatus,
   parseSettingsPreferencesUpdateRequest,
   type SettingsPreferencesUpdateRequest,
 } from "./settings-platform-api-types";
@@ -71,6 +73,19 @@ const runtimeInfo = {
   api_version: "0.1.0",
   connection: "connected",
   product_store: "ready",
+  execution_environment: {
+    adapter: "local",
+    workspace_kind: "repo",
+    workspace_digest:
+      "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    capabilities: {
+      filesystem_read: true,
+      filesystem_write: true,
+      process_run: true,
+      process_stdio: true,
+      observations: true,
+    },
+  },
   resume_health: {
     status: "healthy",
     workspace_count: 1,
@@ -79,6 +94,15 @@ const runtimeInfo = {
     running_session_count: 0,
     needs_attention_session_count: 0,
   },
+} as const;
+
+const trustStatus = {
+  workspace_id: "workspace-1",
+  state: "trusted",
+  identity_digest:
+    "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  invalidated_capabilities: ["mcp_processes"],
+  granted_capabilities: ["project_configuration"],
 } as const;
 
 function jsonResponse(value: unknown, status = 200): Response {
@@ -112,11 +136,13 @@ describe("settings platform API types", () => {
         api_version: "0.1.0",
         connection: "connected",
         product_store: "unavailable",
+        execution_environment: runtimeInfo.execution_environment,
       }),
     ).toEqual({
       api_version: "0.1.0",
       connection: "connected",
       product_store: "unavailable",
+      execution_environment: runtimeInfo.execution_environment,
     });
   });
 
@@ -144,6 +170,15 @@ describe("settings platform API types", () => {
           ...runtimeInfo.resume_health,
           status: "healthy",
           needs_attention_session_count: 1,
+        },
+      }),
+    ).toThrow(ProductApiSchemaError);
+    expect(() =>
+      parseProductRuntimeInfo({
+        ...runtimeInfo,
+        execution_environment: {
+          ...runtimeInfo.execution_environment,
+          workspace_digest: "D:\\private\\workspace",
         },
       }),
     ).toThrow(ProductApiSchemaError);
@@ -212,9 +247,78 @@ describe("settings platform API types", () => {
       }),
     ).toThrow(ProductApiSchemaError);
   });
+
+  it("strictly parses project trust states and explicit decisions", () => {
+    expect(parseProductTrustStatus(trustStatus)).toEqual(trustStatus);
+    expect(
+      parseProductTrustDecisionRequest({
+        decision: "grant",
+        capabilities: ["project_configuration", "mcp_processes"],
+      }),
+    ).toEqual({
+      decision: "grant",
+      capabilities: ["project_configuration", "mcp_processes"],
+    });
+    expect(() =>
+      parseProductTrustStatus({
+        ...trustStatus,
+        granted_capabilities: ["project_configuration", "project_configuration"],
+      }),
+    ).toThrow(ProductApiSchemaError);
+    expect(() =>
+      parseProductTrustStatus({ ...trustStatus, canonical_root: "D:/private" }),
+    ).toThrow(ProductApiSchemaError);
+    expect(() =>
+      parseProductTrustStatus({
+        ...trustStatus,
+        identity_digest: "D:\\private\\workspace",
+      }),
+    ).toThrow(ProductApiSchemaError);
+  });
 });
 
 describe("settings platform client", () => {
+  it("uses only the server-owned workspace id for trust decisions", async () => {
+    const calls: Array<{ url: string; method: string; body?: string }> = [];
+    const fetchMock: typeof globalThis.fetch = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const method = init?.method ?? "GET";
+        const body = typeof init?.body === "string" ? init.body : undefined;
+        calls.push({ url: String(input), method, body });
+        return jsonResponse(
+          method === "PUT"
+            ? { ...trustStatus, invalidated_capabilities: [], granted_capabilities: ["mcp_processes"] }
+            : trustStatus,
+        );
+      },
+    );
+    const client = createSettingsPlatformClient({ fetch: fetchMock });
+
+    await client.getProjectTrust("workspace-1");
+    await client.decideProjectTrust("workspace-1", {
+      decision: "grant",
+      capabilities: ["mcp_processes"],
+    });
+
+    expect(calls).toEqual([
+      {
+        url: "/api/product/workspaces/workspace-1/trust",
+        method: "GET",
+        body: undefined,
+      },
+      {
+        url: "/api/product/workspaces/workspace-1/trust",
+        method: "PUT",
+        body: JSON.stringify({
+          decision: "grant",
+          capabilities: ["mcp_processes"],
+        }),
+      },
+    ]);
+    expect(calls[1]?.body).not.toContain("root");
+    expect(calls[1]?.body).not.toContain("path");
+  });
+
   it("covers memory, runtime, preferences, and an atomic policy update", async () => {
     const calls: Array<{ url: string; method: string; body?: string }> = [];
     const fetchMock: typeof globalThis.fetch = vi.fn(

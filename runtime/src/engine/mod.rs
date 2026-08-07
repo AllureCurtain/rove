@@ -9,4 +9,4 @@ pub(crate) mod step_runner;
 pub(crate) mod tool_turn;
 
 pub use control::{RunControlHandle, SteerId, SteerMessage};
-pub use facade::{Engine, EngineConfig, RunStream};
+pub use facade::{Engine, EngineConfig, EngineEnvironmentOptions, RunStream};

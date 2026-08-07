@@ -1,17 +1,21 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
-use std::process::Stdio;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdin, ChildStdout, Command};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::process::{ChildStdin, ChildStdout};
 use tokio::sync::Mutex;
 use tokio::time::timeout;
+
+use crate::environment::{
+    EnvironmentError, ExecutionEnvironment, StdioProcessGuard, local_environment,
+};
+use crate::workspace::Workspace;
 
 use rove_core::ToolDescriptor;
 use rove_core::{Tool, ToolContext, ToolError, ToolOutput, ToolRegistry};
@@ -19,7 +23,7 @@ use rove_core::{Tool, ToolContext, ToolError, ToolOutput, ToolRegistry};
 const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
 const DEFAULT_MCP_REQUEST_TIMEOUT_MS: u64 = 30_000;
 const DEFAULT_MCP_STDERR_CAPTURE_BYTES: usize = 16 * 1024;
-const MAX_MCP_CONFIG_BYTES: u64 = 256 * 1024;
+const MAX_MCP_CONFIG_BYTES: usize = 256 * 1024;
 const MAX_MCP_TOOLS_PER_SERVER: usize = 128;
 pub const MAX_MCP_RESPONSE_BYTES: usize = 1024 * 1024;
 const MAX_MCP_ENDPOINT_BYTES: usize = 2_048;
@@ -118,23 +122,66 @@ pub async fn register_mcp_tools_from_file(
     registry: &mut ToolRegistry,
     path: impl Into<PathBuf>,
 ) -> anyhow::Result<usize> {
-    let path = path.into();
-    if !path.exists() {
-        return Ok(0);
-    }
+    let workspace = Workspace::detect(&std::env::current_dir()?)?;
+    register_mcp_tools_from_file_with_environment(registry, path, local_environment(&workspace))
+        .await
+}
 
-    let metadata = tokio::fs::metadata(&path).await?;
-    if metadata.len() > MAX_MCP_CONFIG_BYTES {
+pub async fn register_mcp_tools_from_file_with_environment(
+    registry: &mut ToolRegistry,
+    path: impl Into<PathBuf>,
+    environment: Arc<dyn ExecutionEnvironment>,
+) -> anyhow::Result<usize> {
+    let path = path.into();
+    if !environment.capabilities().filesystem_read {
+        anyhow::bail!("execution capability unavailable: filesystem_read");
+    }
+    let relative_path = environment_relative_path(environment.as_ref(), &path)?;
+    let read = match environment
+        .filesystem()
+        .read_relative_bytes(&relative_path, MAX_MCP_CONFIG_BYTES)
+        .await
+    {
+        Ok(read) => read,
+        Err(EnvironmentError::NotFound) => return Ok(0),
+        Err(error) => return Err(anyhow::anyhow!(error.to_string())),
+    };
+    if read.truncated {
         anyhow::bail!("MCP config exceeds the supported size");
     }
-    let bytes = tokio::fs::read(path).await?;
-    let config: McpConfigFile = serde_json::from_slice(&bytes)?;
-    register_mcp_tools(registry, config.servers).await
+    let config: McpConfigFile = serde_json::from_slice(&read.bytes)?;
+    register_mcp_tools_with_environment(registry, config.servers, environment).await
+}
+
+fn environment_relative_path(
+    environment: &dyn ExecutionEnvironment,
+    path: &Path,
+) -> anyhow::Result<String> {
+    let relative = if path.is_absolute() {
+        path.strip_prefix(environment.filesystem().root())
+            .map_err(|_| anyhow::anyhow!("MCP config path is outside the execution workspace"))?
+    } else {
+        path
+    };
+    let relative = relative.to_string_lossy().replace('\\', "/");
+    if relative.is_empty() {
+        anyhow::bail!("MCP config path must name a workspace file");
+    }
+    Ok(relative)
 }
 
 pub async fn register_mcp_tools(
     registry: &mut ToolRegistry,
     servers: Vec<McpServerConfig>,
+) -> anyhow::Result<usize> {
+    let workspace = Workspace::detect(&std::env::current_dir()?)?;
+    register_mcp_tools_with_environment(registry, servers, local_environment(&workspace)).await
+}
+
+pub async fn register_mcp_tools_with_environment(
+    registry: &mut ToolRegistry,
+    servers: Vec<McpServerConfig>,
+    environment: Arc<dyn ExecutionEnvironment>,
 ) -> anyhow::Result<usize> {
     let mut registered = 0;
     for server in servers {
@@ -144,7 +191,13 @@ pub async fn register_mcp_tools(
         let server = resolve_mcp_server_environment(server)?;
         match server.transport {
             McpTransport::Stdio => {
-                let client = Arc::new(StdioMcpClient::connect(server).await?);
+                if !environment.capabilities().process_stdio {
+                    anyhow::bail!("execution capability unavailable: process_stdio");
+                }
+                let client = Arc::new(
+                    StdioMcpClient::connect_with_environment(server, Arc::clone(&environment))
+                        .await?,
+                );
                 for tool in client.list_tools().await? {
                     registry.register(Box::new(McpProxyTool {
                         client: client.clone(),
@@ -185,6 +238,19 @@ pub fn resolve_mcp_server_environment(
 pub async fn probe_mcp_server(
     server: McpServerConfig,
 ) -> Result<Vec<McpToolInfo>, McpProbeFailure> {
+    let cwd = std::env::current_dir().map_err(|_| McpProbeFailure {
+        kind: McpProbeFailureKind::Spawn,
+    })?;
+    let workspace = Workspace::detect(&cwd).map_err(|_| McpProbeFailure {
+        kind: McpProbeFailureKind::Spawn,
+    })?;
+    probe_mcp_server_with_environment(server, local_environment(&workspace)).await
+}
+
+pub async fn probe_mcp_server_with_environment(
+    server: McpServerConfig,
+    environment: Arc<dyn ExecutionEnvironment>,
+) -> Result<Vec<McpToolInfo>, McpProbeFailure> {
     let timeout_ms = server.policy.request_timeout_ms;
     let server = resolve_mcp_server_environment(server).map_err(|_| McpProbeFailure {
         kind: McpProbeFailureKind::EnvironmentMissing,
@@ -192,7 +258,12 @@ pub async fn probe_mcp_server(
     let probe = async move {
         let tools = match server.transport {
             McpTransport::Stdio => {
-                let client = StdioMcpClient::spawn(server)
+                if !environment.capabilities().process_stdio {
+                    return Err(McpProbeFailure {
+                        kind: McpProbeFailureKind::Spawn,
+                    });
+                }
+                let client = StdioMcpClient::spawn_with_environment(server, environment)
                     .await
                     .map_err(|_| McpProbeFailure {
                         kind: McpProbeFailureKind::Spawn,
@@ -288,41 +359,44 @@ pub struct StdioMcpClient {
     server_name: String,
     next_id: AtomicU64,
     policy: McpTransportPolicy,
-    child: StdMutex<Option<Child>>,
+    _child: StdMutex<Option<StdioProcessGuard>>,
     transport: Mutex<StdioTransport>,
     stderr: Arc<Mutex<StderrCapture>>,
 }
 
 impl StdioMcpClient {
     pub async fn connect(config: McpServerConfig) -> anyhow::Result<Self> {
-        let client = Self::spawn(config).await?;
+        let workspace = Workspace::detect(&std::env::current_dir()?)?;
+        Self::connect_with_environment(config, local_environment(&workspace)).await
+    }
+
+    pub async fn connect_with_environment(
+        config: McpServerConfig,
+        environment: Arc<dyn ExecutionEnvironment>,
+    ) -> anyhow::Result<Self> {
+        let client = Self::spawn_with_environment(config, environment).await?;
         client.initialize().await?;
         Ok(client)
     }
 
-    async fn spawn(config: McpServerConfig) -> anyhow::Result<Self> {
-        let mut command = Command::new(&config.command);
-        command
-            .args(&config.args)
-            .envs(&config.env)
-            .kill_on_drop(true)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-
-        let mut child = command.spawn()?;
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| anyhow::anyhow!("MCP server stdin unavailable"))?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| anyhow::anyhow!("MCP server stdout unavailable"))?;
-        let stderr = child
-            .stderr
-            .take()
-            .ok_or_else(|| anyhow::anyhow!("MCP server stderr unavailable"))?;
+    async fn spawn_with_environment(
+        config: McpServerConfig,
+        environment: Arc<dyn ExecutionEnvironment>,
+    ) -> anyhow::Result<Self> {
+        let process = environment
+            .processes()
+            .spawn_stdio(
+                &config.command,
+                &config.args,
+                &config
+                    .env
+                    .iter()
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect::<Vec<_>>(),
+            )
+            .await
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        let (stdin, stdout, stderr, child) = process.into_parts();
         let stderr_capture = Arc::new(Mutex::new(StderrCapture::new(
             config.policy.stderr_capture_bytes,
         )));
@@ -332,7 +406,7 @@ impl StdioMcpClient {
             server_name: config.name,
             next_id: AtomicU64::new(1),
             policy: config.policy,
-            child: StdMutex::new(Some(child)),
+            _child: StdMutex::new(Some(child)),
             transport: Mutex::new(StdioTransport {
                 stdin,
                 stdout: BufReader::new(stdout),
@@ -460,35 +534,9 @@ impl StdioMcpClient {
     }
 }
 
-impl Drop for StdioMcpClient {
-    fn drop(&mut self) {
-        if let Ok(mut child) = self.child.lock()
-            && let Some(mut child) = child.take()
-        {
-            let _ = child.start_kill();
-            reap_stdio_child(child);
-        }
-    }
-}
-
 struct StdioTransport {
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
-}
-
-fn reap_stdio_child(mut child: Child) {
-    std::thread::spawn(move || {
-        let deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            match child.try_wait() {
-                Ok(Some(_)) => return,
-                Ok(None) if Instant::now() < deadline => {
-                    std::thread::sleep(Duration::from_millis(20));
-                }
-                Ok(None) | Err(_) => return,
-            }
-        }
-    });
 }
 
 impl StdioTransport {
@@ -518,8 +566,8 @@ impl StdioTransport {
     }
 }
 
-async fn read_bounded_json_line(
-    reader: &mut BufReader<ChildStdout>,
+async fn read_bounded_json_line<R: AsyncBufRead + Unpin>(
+    reader: &mut R,
 ) -> anyhow::Result<Option<Vec<u8>>> {
     let mut line = Vec::new();
     loop {

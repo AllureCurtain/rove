@@ -20,6 +20,7 @@
 
 pub mod context;
 pub mod engine;
+pub mod environment;
 pub mod foundation;
 pub mod memory;
 pub mod planning;

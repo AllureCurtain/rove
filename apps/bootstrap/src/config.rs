@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashSet};
+use std::fmt;
 use std::net::SocketAddr;
 use std::path::{Component, Path, PathBuf};
 
@@ -7,9 +8,11 @@ use figment::providers::{Format, Serialized, Toml};
 use serde::{Deserialize, Serialize};
 
 use rove_runtime::memory::paths::MemoryPaths;
+use rove_runtime::workspace::WorkspaceKind;
 
 use crate::project_trust::{
-    ProjectActivation, ProjectActivationSource, ProjectActivationState, TRUSTED_WORKSPACES_ENV,
+    ProjectActivation, ProjectActivationSource, ProjectActivationState, ProjectTrustRepository,
+    TRUSTED_WORKSPACES_ENV, capability_digest_map,
 };
 use crate::provider::ProviderProfileConfig;
 
@@ -28,6 +31,10 @@ pub struct AppConfig {
     pub routing: RoutingConfig,
     #[serde(skip)]
     pub source_summary: ConfigSourceSummary,
+    /// Workspace-owned environment values scoped to this configuration load.
+    /// Values are never serialized or exposed through `Debug`.
+    #[serde(skip)]
+    pub project_environment: ProjectEnvironment,
 }
 
 impl Default for AppConfig {
@@ -42,12 +49,33 @@ impl Default for AppConfig {
             web: WebConfig::default(),
             routing: RoutingConfig::default(),
             source_summary: ConfigSourceSummary::default(),
+            project_environment: ProjectEnvironment::default(),
         };
         // In-memory defaults used by tests and ad-hoc construction include a
         // usable fake profile. Figment loading uses empty profiles so project
         // TOML maps do not merge with built-in defaults.
         ensure_default_provider_profile(&mut config.provider);
         config
+    }
+}
+
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct ProjectEnvironment {
+    values: BTreeMap<String, String>,
+}
+
+impl ProjectEnvironment {
+    pub(crate) fn values(&self) -> &BTreeMap<String, String> {
+        &self.values
+    }
+}
+
+impl fmt::Debug for ProjectEnvironment {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ProjectEnvironment")
+            .field("keys", &self.values.keys().collect::<Vec<_>>())
+            .finish()
     }
 }
 
@@ -165,6 +193,9 @@ pub struct ConfigSourceSummary {
     pub project_activation: ProjectActivationState,
     pub project_activation_source: Option<ProjectActivationSource>,
     pub trusted_workspace_roots: Vec<PathBuf>,
+    pub project_trust_identity_digest: Option<String>,
+    pub project_trust_invalidated_capabilities: Vec<String>,
+    pub project_trust_granted_capabilities: Vec<String>,
     pub env_keys: Vec<String>,
     pub cli_keys: Vec<String>,
 }
@@ -317,6 +348,12 @@ impl Default for ConfigSourceSummary {
             project_activation: activation.state,
             project_activation_source: activation.source,
             trusted_workspace_roots: activation.trusted_workspace_roots,
+            project_trust_identity_digest: None,
+            project_trust_invalidated_capabilities: Vec::new(),
+            project_trust_granted_capabilities: activation
+                .granted_capabilities
+                .into_iter()
+                .collect(),
             env_keys: Vec::new(),
             cli_keys: Vec::new(),
         }
@@ -337,6 +374,7 @@ impl AppConfig {
             web: WebConfig::default(),
             routing: RoutingConfig::default(),
             source_summary: ConfigSourceSummary::default(),
+            project_environment: ProjectEnvironment::default(),
         }
     }
 
@@ -344,34 +382,119 @@ impl AppConfig {
         workspace_root: impl AsRef<Path>,
         overrides: AppConfigOverrides,
     ) -> anyhow::Result<Self> {
+        let repository = ProjectTrustRepository::operator_default().ok();
+        Self::load_with_optional_project_trust_repository(
+            workspace_root,
+            overrides,
+            repository.as_ref(),
+        )
+    }
+
+    /// Load configuration against an explicit canonical trust authority.
+    /// First-party processes normally use [`Self::load`]; this entry point lets
+    /// embedders share the exact repository instance with an API coordinator.
+    pub fn load_with_project_trust_repository(
+        workspace_root: impl AsRef<Path>,
+        overrides: AppConfigOverrides,
+        repository: &ProjectTrustRepository,
+    ) -> anyhow::Result<Self> {
+        Self::load_with_optional_project_trust_repository(
+            workspace_root,
+            overrides,
+            Some(repository),
+        )
+    }
+
+    fn load_with_optional_project_trust_repository(
+        workspace_root: impl AsRef<Path>,
+        overrides: AppConfigOverrides,
+        repository: Option<&ProjectTrustRepository>,
+    ) -> anyhow::Result<Self> {
         let workspace_root = workspace_root
             .as_ref()
             .canonicalize()
             .unwrap_or_else(|_| workspace_root.as_ref().to_path_buf());
-        // Resolve the grant before reading a workspace-owned .env file so the
-        // repository cannot grant trust to itself.
+        // Resolve temporary grants and durable operator trust before reading a
+        // workspace-owned .env file so the repository cannot grant trust to
+        // itself. Temporary grants remain process-scoped and are never written
+        // to the durable repository implicitly.
         let trusted_workspaces = std::env::var_os(TRUSTED_WORKSPACES_ENV);
-        let activation = ProjectActivation::resolve(
+        let temporary_activation = ProjectActivation::resolve(
             &workspace_root,
             overrides.trust_project,
             trusted_workspaces,
         )?;
-        if activation.state == ProjectActivationState::Trusted {
-            let _ = dotenvy::from_path(workspace_root.join(".env"));
-        }
+        let capability_digests = capability_digest_map(&workspace_root, None, None);
+        let durable_resolution = repository
+            .and_then(|repository| {
+                repository
+                    .resolve(
+                        &workspace_root,
+                        workspace_kind_for_root(&workspace_root),
+                        &capability_digests,
+                    )
+                    .ok()
+            })
+            .unwrap_or_else(|| crate::project_trust::ProjectTrustResolution {
+                state: ProjectActivationState::Restricted,
+                identity_digest: crate::project_trust::workspace_identity_digest(
+                    &workspace_root,
+                    workspace_kind_for_root(&workspace_root),
+                ),
+                invalidated_capabilities: Vec::new(),
+                granted_capabilities: Default::default(),
+            });
+        let activation = if temporary_activation.state == ProjectActivationState::Trusted {
+            temporary_activation
+        } else {
+            ProjectActivation::durable(durable_resolution.clone(), Vec::new())
+        };
+        let capability_allowed = |capability: &str| {
+            activation.state == ProjectActivationState::Trusted
+                && (activation.source != Some(ProjectActivationSource::Durable)
+                    || activation.granted_capabilities.contains(capability))
+        };
+        let project_config_granted =
+            capability_allowed(crate::project_trust::CAP_PROJECT_CONFIGURATION);
+        let provider_credentials_granted =
+            capability_allowed(crate::project_trust::CAP_PROVIDER_CREDENTIALS);
+        let mcp_processes_granted = capability_allowed(crate::project_trust::CAP_MCP_PROCESSES);
+        let external_paths_granted = capability_allowed(crate::project_trust::CAP_EXTERNAL_PATHS);
+        let project_environment_values = load_project_environment(
+            &workspace_root,
+            project_config_granted
+                || provider_credentials_granted
+                || mcp_processes_granted
+                || external_paths_granted,
+        )?;
         let project_config_path = workspace_root.join(".rove/config.toml");
         let project_config_present = project_config_path.exists();
-        let project_config_loaded =
-            project_config_present && activation.state == ProjectActivationState::Trusted;
+        let safe_project_config_path =
+            bounded_workspace_config_path(&workspace_root, ".rove/config.toml");
+        let project_config_loaded = project_config_granted && safe_project_config_path.is_some();
 
-        let env_layer = env_layer()?;
+        let env_layer = env_layer(
+            &project_environment_values,
+            ProjectEnvironmentCapabilities {
+                project_configuration: project_config_granted,
+                provider_credentials: provider_credentials_granted,
+                mcp_processes: mcp_processes_granted,
+                external_paths: external_paths_granted,
+            },
+        )?;
         let env_keys = env_layer.keys.clone();
         let cli_layer = overrides.into_layer();
         let cli_keys = cli_layer.keys.clone();
 
         let mut figment = Figment::from(Serialized::defaults(AppConfig::defaults()));
-        if project_config_loaded {
-            figment = figment.merge(Toml::file(&project_config_path));
+        if let Some(path) = safe_project_config_path.filter(|_| project_config_loaded) {
+            let project_layer = filtered_project_config(
+                &path,
+                provider_credentials_granted,
+                mcp_processes_granted,
+                external_paths_granted,
+            )?;
+            figment = figment.merge(Serialized::defaults(project_layer));
         }
         figment = figment.merge(Serialized::defaults(env_layer.config));
         figment = figment.merge(Serialized::defaults(cli_layer.config));
@@ -387,8 +510,21 @@ impl AppConfig {
             project_activation: activation.state,
             project_activation_source: activation.source,
             trusted_workspace_roots: activation.trusted_workspace_roots,
+            project_trust_identity_digest: Some(durable_resolution.identity_digest),
+            project_trust_invalidated_capabilities: durable_resolution.invalidated_capabilities,
+            project_trust_granted_capabilities: activation
+                .granted_capabilities
+                .into_iter()
+                .collect(),
             env_keys,
             cli_keys,
+        };
+        config.project_environment = ProjectEnvironment {
+            values: if provider_credentials_granted {
+                project_environment_values
+            } else {
+                BTreeMap::new()
+            },
         };
         config.normalize_active_profile_model();
         config.validate()?;
@@ -487,15 +623,43 @@ impl AppConfig {
         self.source_summary.project_config_present =
             self.source_summary.project_config_path.exists();
         self.source_summary.project_config_loaded = false;
-        let activation = ProjectActivation {
+        let temporary = ProjectActivation {
             state: self.source_summary.project_activation,
             source: self.source_summary.project_activation_source,
             trusted_workspace_roots: self.source_summary.trusted_workspace_roots.clone(),
+            granted_capabilities: crate::project_trust::all_capability_names()
+                .into_iter()
+                .collect(),
         }
         .for_workspace(&workspace_root);
+        let durable = ProjectTrustRepository::operator_default()
+            .and_then(|repository| {
+                repository.resolve(
+                    &workspace_root,
+                    workspace_kind_for_root(&workspace_root),
+                    &capability_digest_map(&workspace_root, None, None),
+                )
+            })
+            .ok();
+        let activation = if temporary.state == ProjectActivationState::Trusted {
+            temporary
+        } else if let Some(resolution) = durable.clone() {
+            ProjectActivation::durable(resolution, Vec::new())
+        } else {
+            temporary
+        };
         self.source_summary.project_activation = activation.state;
         self.source_summary.project_activation_source = activation.source;
         self.source_summary.trusted_workspace_roots = activation.trusted_workspace_roots;
+        self.source_summary.project_trust_identity_digest = durable
+            .as_ref()
+            .map(|resolution| resolution.identity_digest.clone());
+        self.source_summary.project_trust_invalidated_capabilities = durable
+            .as_ref()
+            .map(|resolution| resolution.invalidated_capabilities.clone())
+            .unwrap_or_default();
+        self.source_summary.project_trust_granted_capabilities =
+            activation.granted_capabilities.into_iter().collect();
     }
 
     pub fn project_activation_state(&self) -> ProjectActivationState {
@@ -504,6 +668,52 @@ impl AppConfig {
 
     pub fn project_activation_allowed(&self) -> bool {
         self.project_activation_state() == ProjectActivationState::Trusted
+    }
+
+    pub fn project_capability_allowed(&self, capability: &str) -> bool {
+        self.project_activation_allowed()
+            && (self.source_summary.project_activation_source
+                != Some(ProjectActivationSource::Durable)
+                || self
+                    .source_summary
+                    .project_trust_granted_capabilities
+                    .iter()
+                    .any(|granted| granted == capability))
+    }
+
+    pub fn apply_project_trust_resolution(
+        &mut self,
+        resolution: crate::project_trust::ProjectTrustResolution,
+    ) {
+        let temporary_grant = self.project_activation_allowed()
+            && self.source_summary.project_activation_source
+                != Some(ProjectActivationSource::Durable);
+        if temporary_grant
+            && matches!(
+                resolution.state,
+                ProjectActivationState::Unknown | ProjectActivationState::Restricted
+            )
+        {
+            self.source_summary.project_trust_identity_digest = Some(resolution.identity_digest);
+            self.source_summary.project_trust_invalidated_capabilities =
+                resolution.invalidated_capabilities;
+            return;
+        }
+        let activation_state = match resolution.state {
+            // `unknown` is the operator-store truth exposed by the trust API;
+            // execution remains fail-closed until an explicit grant exists.
+            ProjectActivationState::Unknown => ProjectActivationState::Restricted,
+            state => state,
+        };
+        self.source_summary.project_activation = activation_state;
+        self.source_summary.project_activation_source = (activation_state
+            == ProjectActivationState::Trusted)
+            .then_some(ProjectActivationSource::Durable);
+        self.source_summary.project_trust_identity_digest = Some(resolution.identity_digest);
+        self.source_summary.project_trust_invalidated_capabilities =
+            resolution.invalidated_capabilities;
+        self.source_summary.project_trust_granted_capabilities =
+            resolution.granted_capabilities.into_iter().collect();
     }
 
     fn normalize_active_profile_model(&mut self) {
@@ -711,6 +921,14 @@ fn normalize_path(path: impl AsRef<Path>) -> PathBuf {
     }
 }
 
+fn workspace_kind_for_root(root: &Path) -> WorkspaceKind {
+    if root.join(".git").exists() {
+        WorkspaceKind::Repo
+    } else {
+        WorkspaceKind::Folder
+    }
+}
+
 fn normalize_lexical_path(path: &Path) -> PathBuf {
     let mut normalized = PathBuf::new();
     for component in path.components() {
@@ -865,6 +1083,14 @@ struct NamedConfigLayer {
     keys: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct ProjectEnvironmentCapabilities {
+    project_configuration: bool,
+    provider_credentials: bool,
+    mcp_processes: bool,
+    external_paths: bool,
+}
+
 impl AppConfigOverrides {
     fn into_layer(self) -> NamedConfigLayer {
         let mut keys = Vec::new();
@@ -901,7 +1127,18 @@ impl AppConfigOverrides {
     }
 }
 
-fn env_layer() -> anyhow::Result<NamedConfigLayer> {
+fn env_layer(
+    project_environment: &BTreeMap<String, String>,
+    capabilities: ProjectEnvironmentCapabilities,
+) -> anyhow::Result<NamedConfigLayer> {
+    let env_string = |name: &str| {
+        process_env_string(name).or_else(|| {
+            project_environment_value_allowed(name, capabilities)
+                .then(|| project_environment.get(name).cloned())
+                .flatten()
+                .filter(|value| !value.trim().is_empty())
+        })
+    };
     let mut keys = Vec::new();
     let mut runtime = RuntimeConfigLayer::default();
     if let Some(value) = env_string("ROVE_MAX_STEPS") {
@@ -1095,10 +1332,94 @@ fn env_layer() -> anyhow::Result<NamedConfigLayer> {
     })
 }
 
-fn env_string(name: &str) -> Option<String> {
+fn process_env_string(name: &str) -> Option<String> {
     std::env::var(name)
         .ok()
         .filter(|value| !value.trim().is_empty())
+}
+
+fn project_environment_value_allowed(
+    name: &str,
+    capabilities: ProjectEnvironmentCapabilities,
+) -> bool {
+    match name {
+        "ROVE_PROVIDER_ACTIVE"
+        | "ROVE_PROVIDER_PROFILES"
+        | "ROVE_PROVIDER_FALLBACK_PROFILES"
+        | "ROVE_MODEL"
+        | "ROVE_FALLBACK_MODELS" => capabilities.provider_credentials,
+        "ROVE_MCP_CONFIG" => capabilities.mcp_processes,
+        "ROVE_SYSTEM_PROMPT"
+        | "ROVE_PLANNER_PROMPT"
+        | "ROVE_MEMORY_SESSION_DIR"
+        | "ROVE_MEMORY_DURABLE_DIR"
+        | "ROVE_STATE_DIR"
+        | "ROVE_STATE_SQLITE"
+        | "ROVE_STATE_ALLOW_EXTERNAL_PATHS" => capabilities.external_paths,
+        _ => capabilities.project_configuration,
+    }
+}
+
+fn load_project_environment(
+    workspace_root: &Path,
+    enabled: bool,
+) -> anyhow::Result<BTreeMap<String, String>> {
+    if !enabled {
+        return Ok(BTreeMap::new());
+    }
+    let Some(path) = bounded_workspace_config_path(workspace_root, ".env") else {
+        return Ok(BTreeMap::new());
+    };
+    dotenvy::from_path_iter(&path)?
+        .collect::<Result<BTreeMap<_, _>, _>>()
+        .map_err(anyhow::Error::from)
+}
+
+fn filtered_project_config(
+    path: &Path,
+    provider_credentials_granted: bool,
+    mcp_processes_granted: bool,
+    external_paths_granted: bool,
+) -> anyhow::Result<serde_json::Value> {
+    let mut value = Figment::new()
+        .merge(Toml::file(path))
+        .extract::<serde_json::Value>()?;
+    if !provider_credentials_granted {
+        remove_project_config_value(&mut value, &["provider"]);
+    }
+    if !mcp_processes_granted {
+        remove_project_config_value(&mut value, &["tool", "mcp_config_path"]);
+    }
+    if !external_paths_granted {
+        for path in [
+            &["runtime", "system_prompt_path"][..],
+            &["runtime", "planner_prompt_path"][..],
+            &["memory", "session_dir"][..],
+            &["memory", "durable_dir"][..],
+            &["state", "state_dir"][..],
+            &["state", "sqlite_path"][..],
+            &["state", "allow_external_paths"][..],
+        ] {
+            remove_project_config_value(&mut value, path);
+        }
+    }
+    Ok(value)
+}
+
+fn remove_project_config_value(value: &mut serde_json::Value, path: &[&str]) {
+    let Some((last, parents)) = path.split_last() else {
+        return;
+    };
+    let mut current = value;
+    for parent in parents {
+        let Some(next) = current.get_mut(*parent) else {
+            return;
+        };
+        current = next;
+    }
+    if let Some(object) = current.as_object_mut() {
+        object.remove(*last);
+    }
 }
 
 fn parse_env<T>(name: &str, value: &str) -> anyhow::Result<T>
@@ -1190,6 +1511,15 @@ fn has_routing_values(layer: &RoutingConfigLayer) -> bool {
         || layer.retry_backoff_max_ms.is_some()
 }
 
+fn bounded_workspace_config_path(workspace_root: &Path, raw_path: &str) -> Option<PathBuf> {
+    const MAX_BOOTSTRAP_CONFIG_BYTES: u64 = 256 * 1024;
+
+    let path =
+        rove_runtime::workspace::boundary::resolve_workspace_read_path(workspace_root, raw_path)
+            .ok()?;
+    (std::fs::metadata(&path).ok()?.len() <= MAX_BOOTSTRAP_CONFIG_BYTES).then_some(path)
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::{Mutex, OnceLock};
@@ -1223,6 +1553,7 @@ mod tests {
             "OPENAI_BASE_URL",
             "OPENAI_API_KEY",
             "ANTHROPIC_API_KEY",
+            "PROJECT_PROVIDER_SECRET",
             "ROVE_MODEL",
             "ROVE_FALLBACK_MODELS",
             "ROVE_FALLBACK_PROVIDERS",
@@ -1260,6 +1591,7 @@ mod tests {
             "ROVE_API_CORS_ORIGINS",
             "ROVE_API_RATE_LIMIT_PER_MINUTE",
             "ROVE_WEB_API_BASE",
+            crate::project_trust::PROJECT_TRUST_STORE_ENV,
             TRUSTED_WORKSPACES_ENV,
         ] {
             unsafe {
@@ -1398,6 +1730,176 @@ model = "untrusted-model"
     }
 
     #[test]
+    fn durable_capabilities_filter_project_toml_and_scoped_environment_independently() {
+        let _guard = env_lock();
+        clear_config_env();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let config_dir = tmp.path().join(".rove");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::write(
+            config_dir.join("config.toml"),
+            r#"
+[runtime]
+max_steps = 9
+system_prompt_path = "../outside-system.md"
+
+[provider]
+active = "external"
+
+[provider.profiles.external]
+provider_type = "openai"
+base_url = "https://project.example.test/v1"
+model = "project-model"
+auth = { style = "bearer", secret = { env = "PROJECT_PROVIDER_SECRET" } }
+
+[tool]
+mcp_config_path = "custom-mcp.json"
+
+[state]
+allow_external_paths = true
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.path().join(".env"),
+            "ROVE_MODEL=project-env-model\nPROJECT_PROVIDER_SECRET=project-secret\n",
+        )
+        .unwrap();
+        let repository = ProjectTrustRepository::new(tmp.path().join("operator-trust.sqlite"));
+        let digests = capability_digest_map(tmp.path(), None, None);
+        let selected = |names: &[&str]| {
+            names
+                .iter()
+                .map(|name| ((*name).to_string(), digests.get(*name).unwrap().clone()))
+                .collect::<BTreeMap<_, _>>()
+        };
+
+        repository
+            .decide(
+                tmp.path(),
+                WorkspaceKind::Folder,
+                crate::project_trust::ProjectTrustDecision::Grant,
+                selected(&[crate::project_trust::CAP_PROJECT_CONFIGURATION]),
+            )
+            .unwrap();
+        let project_only = AppConfig::load_with_project_trust_repository(
+            tmp.path(),
+            AppConfigOverrides::default(),
+            &repository,
+        )
+        .unwrap();
+
+        assert_eq!(project_only.runtime.max_steps, 9);
+        assert_eq!(project_only.provider.model, "fake");
+        assert_eq!(
+            project_only.runtime.system_prompt_path,
+            RuntimeConfig::default().system_prompt_path
+        );
+        assert_eq!(
+            project_only.tool.mcp_config_path,
+            ToolConfig::default().mcp_config_path
+        );
+        assert!(!project_only.state.allow_external_paths);
+        assert!(project_only.project_environment.values().is_empty());
+        assert!(std::env::var_os("PROJECT_PROVIDER_SECRET").is_none());
+        assert!(std::env::var_os("ROVE_MODEL").is_none());
+
+        repository
+            .decide(
+                tmp.path(),
+                WorkspaceKind::Folder,
+                crate::project_trust::ProjectTrustDecision::Grant,
+                selected(&[crate::project_trust::CAP_PROVIDER_CREDENTIALS]),
+            )
+            .unwrap();
+        let provider_enabled = AppConfig::load_with_project_trust_repository(
+            tmp.path(),
+            AppConfigOverrides::default(),
+            &repository,
+        )
+        .unwrap();
+
+        assert_eq!(provider_enabled.provider.model, "project-env-model");
+        assert_eq!(
+            provider_enabled
+                .project_environment
+                .values()
+                .get("PROJECT_PROVIDER_SECRET")
+                .map(String::as_str),
+            Some("project-secret")
+        );
+        assert!(std::env::var_os("PROJECT_PROVIDER_SECRET").is_none());
+        assert!(!format!("{provider_enabled:?}").contains("project-secret"));
+        let model = crate::factory::try_build_model_client(
+            &provider_enabled,
+            provider_enabled.provider.model.clone(),
+        )
+        .unwrap();
+        assert!(model.client_id().as_str().contains("project.example.test"));
+
+        repository
+            .decide(
+                tmp.path(),
+                WorkspaceKind::Folder,
+                crate::project_trust::ProjectTrustDecision::Grant,
+                selected(&[
+                    crate::project_trust::CAP_MCP_PROCESSES,
+                    crate::project_trust::CAP_EXTERNAL_PATHS,
+                ]),
+            )
+            .unwrap();
+        let all_enabled = AppConfig::load_with_project_trust_repository(
+            tmp.path(),
+            AppConfigOverrides::default(),
+            &repository,
+        )
+        .unwrap();
+        assert_eq!(
+            all_enabled.runtime.system_prompt_path,
+            PathBuf::from("../outside-system.md")
+        );
+        assert_eq!(
+            all_enabled.tool.mcp_config_path,
+            PathBuf::from("custom-mcp.json")
+        );
+        assert!(all_enabled.state.allow_external_paths);
+        clear_config_env();
+    }
+
+    #[test]
+    fn trusted_bootstrap_rejects_external_project_config_and_env_symlinks_when_supported() {
+        let _guard = env_lock();
+        clear_config_env();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let workspace = tmp.path().join("workspace");
+        let config_dir = workspace.join(".rove");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        let outside_config = tmp.path().join("outside-config.toml");
+        let outside_env = tmp.path().join("outside.env");
+        std::fs::write(
+            &outside_config,
+            "[runtime]\nmax_steps = 99\n[provider]\nmodel = \"poisoned\"\n",
+        )
+        .unwrap();
+        std::fs::write(&outside_env, "ROVE_MODEL=poisoned-from-env\n").unwrap();
+        if !create_file_symlink(&outside_config, &config_dir.join("config.toml"))
+            || !create_file_symlink(&outside_env, &workspace.join(".env"))
+        {
+            clear_config_env();
+            return;
+        }
+
+        let config = AppConfig::load(&workspace, trusted_overrides()).unwrap();
+
+        assert!(config.source_summary.project_config_present);
+        assert!(!config.source_summary.project_config_loaded);
+        assert_eq!(config.runtime.max_steps, RuntimeConfig::default().max_steps);
+        assert_eq!(config.provider.model, "fake");
+        assert!(std::env::var_os("ROVE_MODEL").is_none());
+        clear_config_env();
+    }
+
+    #[test]
     fn environment_grant_is_exact_and_rebase_does_not_inherit_it() {
         let _guard = env_lock();
         clear_config_env();
@@ -1420,6 +1922,56 @@ model = "untrusted-model"
         );
         assert!(!config.project_activation_allowed());
         clear_config_env();
+    }
+
+    #[test]
+    fn product_trust_resolution_preserves_temporary_grants_but_not_revocation() {
+        let mut config = AppConfig::default();
+        assert_eq!(
+            config.source_summary.project_activation_source,
+            Some(ProjectActivationSource::Programmatic)
+        );
+        config.apply_project_trust_resolution(crate::project_trust::ProjectTrustResolution {
+            state: ProjectActivationState::Restricted,
+            identity_digest: "sha256:restricted".to_string(),
+            invalidated_capabilities: Vec::new(),
+            granted_capabilities: Default::default(),
+        });
+        assert!(config.project_activation_allowed());
+        assert_eq!(
+            config.source_summary.project_activation_source,
+            Some(ProjectActivationSource::Programmatic)
+        );
+
+        config.apply_project_trust_resolution(crate::project_trust::ProjectTrustResolution {
+            state: ProjectActivationState::Revoked,
+            identity_digest: "sha256:revoked".to_string(),
+            invalidated_capabilities: Vec::new(),
+            granted_capabilities: Default::default(),
+        });
+        assert_eq!(
+            config.project_activation_state(),
+            ProjectActivationState::Revoked
+        );
+        assert!(!config.project_activation_allowed());
+    }
+
+    #[test]
+    fn unknown_product_trust_resolution_is_restricted_for_runtime_activation() {
+        let mut config = AppConfig::default();
+        config.source_summary.project_activation = ProjectActivationState::Restricted;
+        config.source_summary.project_activation_source = None;
+        config.apply_project_trust_resolution(crate::project_trust::ProjectTrustResolution {
+            state: ProjectActivationState::Unknown,
+            identity_digest: "sha256:unknown".to_string(),
+            invalidated_capabilities: Vec::new(),
+            granted_capabilities: Default::default(),
+        });
+        assert_eq!(
+            config.project_activation_state(),
+            ProjectActivationState::Restricted
+        );
+        assert!(!config.project_activation_allowed());
     }
 
     #[test]
@@ -1703,5 +2255,20 @@ system_prompt_path = "../outside/prompt.md"
 
         config.tool.mcp_config_path = inside.clone();
         assert_eq!(config.workspace_bounded_mcp_config_path().unwrap(), inside);
+    }
+
+    #[cfg(unix)]
+    fn create_file_symlink(target: &Path, link: &Path) -> bool {
+        std::os::unix::fs::symlink(target, link).is_ok()
+    }
+
+    #[cfg(windows)]
+    fn create_file_symlink(target: &Path, link: &Path) -> bool {
+        std::os::windows::fs::symlink_file(target, link).is_ok()
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    fn create_file_symlink(_target: &Path, _link: &Path) -> bool {
+        false
     }
 }
