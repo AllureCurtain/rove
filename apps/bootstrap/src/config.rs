@@ -643,8 +643,14 @@ impl AppConfig {
                 resolution.invalidated_capabilities;
             return;
         }
-        self.source_summary.project_activation = resolution.state;
-        self.source_summary.project_activation_source = (resolution.state
+        let activation_state = match resolution.state {
+            // `unknown` is the operator-store truth exposed by the trust API;
+            // execution remains fail-closed until an explicit grant exists.
+            ProjectActivationState::Unknown => ProjectActivationState::Restricted,
+            state => state,
+        };
+        self.source_summary.project_activation = activation_state;
+        self.source_summary.project_activation_source = (activation_state
             == ProjectActivationState::Trusted)
             .then_some(ProjectActivationSource::Durable);
         self.source_summary.project_trust_identity_digest = Some(resolution.identity_digest);
@@ -1649,6 +1655,24 @@ model = "untrusted-model"
         assert_eq!(
             config.project_activation_state(),
             ProjectActivationState::Revoked
+        );
+        assert!(!config.project_activation_allowed());
+    }
+
+    #[test]
+    fn unknown_product_trust_resolution_is_restricted_for_runtime_activation() {
+        let mut config = AppConfig::default();
+        config.source_summary.project_activation = ProjectActivationState::Restricted;
+        config.source_summary.project_activation_source = None;
+        config.apply_project_trust_resolution(crate::project_trust::ProjectTrustResolution {
+            state: ProjectActivationState::Unknown,
+            identity_digest: "sha256:unknown".to_string(),
+            invalidated_capabilities: Vec::new(),
+            granted_capabilities: Default::default(),
+        });
+        assert_eq!(
+            config.project_activation_state(),
+            ProjectActivationState::Restricted
         );
         assert!(!config.project_activation_allowed());
     }
