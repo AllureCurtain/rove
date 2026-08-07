@@ -1,6 +1,6 @@
 use rove_models::{
     AssistantTurn, ContentBlock, HistoryProjectionError, HistoryProjector, InternalCallId, Message,
-    ModelMessage, Role, ToolCall, ToolResult, ToolResultStatus,
+    ModelMessage, Role, ToolCall, ToolResult, ToolResultStatus, WireCallReference,
 };
 use serde::{Deserialize, Serialize};
 
@@ -513,7 +513,7 @@ fn legacy_history_to_model(history: &[Message]) -> Vec<ModelMessage> {
                         internal_call_id: id,
                         name: call.name.clone(),
                         arguments: call.args.clone(),
-                        wire_reference: None,
+                        wire_reference: WireCallReference::new("legacy", call.id.clone()).ok(),
                     }
                 })
                 .collect();
@@ -689,6 +689,8 @@ mod tests {
             projected[0].tool_calls[0].id,
             projected[1].tool_call_id.clone().unwrap()
         );
+        let compatibility = session.messages_for_compatibility_artifact().unwrap();
+        assert_eq!(compatibility[0].tool_calls[0].id, "wire-call");
     }
 
     #[test]
