@@ -224,6 +224,31 @@ can be reached, stream events can be normalized, native tool-use events can
 round trip through the engine, and the engine can complete or step-limit the
 minimal tool run without losing the tool call or tool result.
 
+All deterministic provider paths now pass their decoded events through the
+shared `TurnAssembler` in Core. Strict provider clients require a terminal
+stream event and reject malformed, duplicate, truncated, or oversized calls
+before ToolRegistry execution. Capability checks are performed at the provider
+client boundary before HTTP request dispatch. Existing embedded clients retain
+the legacy EOF marker until they opt into `requires_terminal_event()`. These
+guarantees are covered by the local models/core tests; the smoke commands below
+remain opt-in interoperability evidence only.
+
+The normalized stop reason is preserved in the canonical assistant turn. The
+current protocol mappings are: OpenAI Chat `stop`, `tool_calls`, `length`, and
+`content_filter`; OpenAI Responses completed/end-turn and function-call
+completion; Anthropic `end_turn`, `tool_use`, `max_tokens`, and
+`stop_sequence`/refusal; Ollama `done_reason` values; and the corresponding
+Fake text/tool scripted turns. A plain `Done` is only a legacy terminal marker;
+it does not overwrite an already decoded stop reason.
+
+`ProviderCapabilities` is checked before a provider request is dispatched and
+again at the normalized assistant-turn boundary. Tool calls from a provider
+that does not declare tool support, or multiple calls from one that does not
+declare parallel support, fail before any tool action is created. The built-in
+native protocols currently declare streaming and tool-call support; their
+parallel-call declaration is used by request construction and validation, not
+as an unused compatibility hint.
+
 Some OpenAI Chat Completions models keep calling the same tool after receiving a valid
 tool result instead of producing the requested final text. The smoke therefore
 requires the separate direct final-answer check for text generation, and the

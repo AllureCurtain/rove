@@ -9,7 +9,7 @@ use crate::provider::{
     ANTHROPIC_MESSAGES_PROTOCOL, AuthStyle, Framing, StreamDecoder, WireProtocol, WireProtocolId,
     WireRequest, WireRequestInput,
 };
-use crate::{Message, ModelError, ModelEvent, ModelToolSchema, Role, Usage};
+use crate::{Message, ModelError, ModelEvent, ModelToolSchema, Role, StopReason, Usage};
 
 const DEFAULT_MAX_TOKENS: u32 = 4096;
 const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -89,6 +89,14 @@ impl WireProtocol for AnthropicMessagesProtocol {
 
     fn default_auth_style(&self) -> AuthStyle {
         AuthStyle::Header(HeaderName::from_static("x-api-key"))
+    }
+
+    fn capabilities(&self) -> crate::ProviderCapabilities {
+        crate::ProviderCapabilities {
+            streaming: true,
+            tool_calls: true,
+            parallel_tool_calls: true,
+        }
     }
 }
 
@@ -326,6 +334,15 @@ fn normalize_anthropic_value(
             }
         }
         Some("message_delta") => {
+            if let Some(stop_reason) = json
+                .get("delta")
+                .and_then(|delta| delta.get("stop_reason"))
+                .and_then(|value| value.as_str())
+            {
+                events.push(ModelEvent::StopReason {
+                    reason: anthropic_stop_reason(stop_reason),
+                });
+            }
             if let Some(usage) = json.get("usage") {
                 state.usage.completion_tokens = usage
                     .get("output_tokens")
@@ -345,6 +362,16 @@ fn normalize_anthropic_value(
     }
 
     events
+}
+
+fn anthropic_stop_reason(value: &str) -> StopReason {
+    match value {
+        "end_turn" | "stop_sequence" | "pause_turn" => StopReason::EndTurn,
+        "tool_use" => StopReason::ToolUse,
+        "max_tokens" | "model_context_window_exceeded" => StopReason::MaxTokens,
+        "refusal" => StopReason::ContentFilter,
+        other => StopReason::Other(other.to_string()),
+    }
 }
 
 #[cfg(test)]
@@ -368,6 +395,27 @@ mod tests {
         ProviderClient, ProviderClientConfig, ResolvedAuth, Transport, TransportConfig,
     };
     use crate::{ModelClient, ProviderOptions, ToolCallRef};
+
+    #[test]
+    fn maps_anthropic_stop_reasons() {
+        let mut decoder = AnthropicMessagesProtocol::new().decoder();
+        let events = decoder
+            .push(
+                &serde_json::json!({
+                    "type": "message_delta",
+                    "delta": {"stop_reason": "max_tokens"},
+                    "usage": {"output_tokens": 4}
+                })
+                .to_string(),
+            )
+            .unwrap();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ModelEvent::StopReason {
+                reason: StopReason::MaxTokens
+            }
+        )));
+    }
 
     fn messages() -> Vec<Message> {
         vec![

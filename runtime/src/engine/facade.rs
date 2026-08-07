@@ -24,6 +24,7 @@ use crate::run_loop::{LoopContext, LoopItem, RunLoopState, SteerReceiver, run_un
 use crate::runtime_identity::{
     RuntimeIdentity, RuntimeIdentityInput, RuntimeIdentityStatus, build_runtime_identity,
 };
+use crate::session::CHECKPOINT_SESSION_TAIL_ENTRIES;
 use crate::state::trace::TraceWriter;
 use crate::types::{
     ApprovalDecision, ApprovalPolicy, JobId, Message, RunId, RunRequest, SessionId,
@@ -464,10 +465,39 @@ impl Engine {
                 let resume_checkpoint = resume_state
                     .as_ref()
                     .and_then(|state| state.checkpoint.as_ref());
-                let history: Vec<Message> = resume_checkpoint
-                    .map(|checkpoint| checkpoint.preserved_tail.clone())
-                    .or_else(|| resume_state.as_ref().map(|state| state.history.clone()))
-                    .unwrap_or_default();
+                let history: Vec<Message> = if let Some(checkpoint) = resume_checkpoint {
+                    if let Some(session) = checkpoint.session.as_ref() {
+                        let mut session = session.clone();
+                        let projection = session
+                            .close_unresolved_tool_calls()
+                            .and_then(|_| {
+                                session
+                                    .suffix(CHECKPOINT_SESSION_TAIL_ENTRIES)
+                                    .messages_for_provider(&self.model.history_protocol())
+                            });
+                        match projection {
+                            Ok(messages) => messages,
+                            Err(error) => {
+                                let message = StreamEvent::ModelStatus {
+                                    status: "resume_rejected".to_string(),
+                                    message: format!("canonical session cannot be projected safely: {error}"),
+                                };
+                                yield_traced!(message);
+                                complete_run!(
+                                    TerminationReason::Error,
+                                    Some("resume rejected due to invalid canonical session history".to_string())
+                                );
+                            }
+                        }
+                    } else {
+                        checkpoint.preserved_tail.clone()
+                    }
+                } else {
+                    resume_state
+                        .as_ref()
+                        .map(|state| state.history.clone())
+                        .unwrap_or_default()
+                };
                 let compact_summary = resume_checkpoint
                     .and_then(|checkpoint| checkpoint.summary.clone());
                 let resume_summary = resume_state

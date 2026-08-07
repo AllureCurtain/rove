@@ -1,6 +1,6 @@
 # Kernel, Message, and Provider Implementation
 
-> Status: **Active implementation brief - contracts sealed, first parallel wave ready**
+> Status: **First parallel wave implemented on this branch; later stages remain proposed**
 >
 > Prerequisite implementation: `d2cd822` (`feat(security): gate workspace
 > project activation`)
@@ -12,8 +12,38 @@
 > Start gate: the branch must be created from the current `origin/main`, must
 > contain prerequisite `d2cd822` and this brief, and must have a clean worktree.
 >
-> This document describes target work. Only the prerequisite implementation
-> named above is already present in the runtime.
+> This document describes the target work and the stop boundary for this branch.
+> The prerequisite implementation named above is present, and the first parallel
+> wave below is implemented here. The implementation notes distinguish the
+> runtime-connected behavior from the foundation-only and later work that must
+> wait for a refreshed `main` baseline.
+
+### First-wave implementation status
+
+Implemented in this branch:
+
+- schema-1 provider-neutral `Session` entries with explicit internal-call and
+  provider-wire identity, validation, deterministic legacy migration, and
+  bounded atomic suffix projection;
+- canonical session persistence in `PromptCheckpoint`/`TaskState` snapshots,
+  artifact dual-read for old `Vec<Message>` histories, and bounded resume
+  projection through the selected provider protocol. The full canonical
+  session remains durable truth, while resumed prompts receive only the
+  correlation-safe canonical suffix with a 12-entry target (expanded only to
+  keep a tool round atomic) plus the checkpoint summary;
+- normalized assistant turns, usage, stop reasons, stream assembly, capability
+  checks, and provider-specific wire-ID projection for OpenAI Chat, OpenAI
+  Responses, Anthropic, Ollama, and Fake;
+- runtime and integration coverage for restart/resume, provider switching,
+  native multi-tool compaction/trim, canonical sessions longer than the
+  checkpoint tail, legacy artifacts, stop-reason mapping, and malformed streams
+  that must execute zero tools.
+
+The runtime still uses the typed session's bounded `Vec<Message>` projection at
+the existing context-manager boundary. The one shared Agent-kernel cutover,
+authoritative tool-schema compilation, lifecycle finalization/evaluator work,
+and AgentDefinition/procedural-knowledge work are **Proposed / Not Implemented**
+by this branch and remain under the later-stage stop condition.
 
 ## 1. Objective
 

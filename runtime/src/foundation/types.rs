@@ -11,6 +11,8 @@ pub use rove_models::{Message, ModelToolSchema, Role, ToolCallRef, Usage};
 use serde::{Deserialize, Serialize};
 use ulid::Ulid;
 
+use crate::session::Session;
+
 /// Unique identifier for a session (user-level, spans multiple jobs).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SessionId(pub Ulid);
@@ -58,10 +60,15 @@ pub struct TaskState {
 }
 
 /// Resumable prompt checkpoint used to rebuild context without replaying the full audit history.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PromptCheckpoint {
     pub summary: Option<String>,
     pub preserved_tail: Vec<Message>,
+    /// Canonical session is the durable conversation source for new writers.
+    /// `preserved_tail` remains a derived compatibility projection for older
+    /// readers and is dual-read when this field is absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<Session>,
     pub plan: Option<TaskPlan>,
     pub session_memory_pointer: Option<String>,
     pub durable_memory_pointer: Option<String>,

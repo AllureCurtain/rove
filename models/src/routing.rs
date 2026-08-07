@@ -324,13 +324,29 @@ impl ModelClient for RoutingModelClient {
     fn model_id(&self) -> &str {
         &self.model_id
     }
+
+    fn history_protocol(&self) -> String {
+        // A routing client may switch targets before a stream commits. Use a
+        // routing namespace so aliases are regenerated instead of treating a
+        // selected provider's wire IDs as canonical state.
+        "routing".to_string()
+    }
+
+    fn requires_terminal_event(&self) -> bool {
+        self.clients
+            .iter()
+            .all(|client| client.requires_terminal_event())
+    }
 }
 
 fn is_commit_event(event: &ModelEvent) -> bool {
     match event {
         ModelEvent::TextDelta { text } | ModelEvent::ThinkingDelta { text } => !text.is_empty(),
         ModelEvent::ToolUseStart { .. } | ModelEvent::ToolUseDone { .. } => true,
-        ModelEvent::ToolUseDelta { .. } | ModelEvent::Usage { .. } | ModelEvent::Done => false,
+        ModelEvent::ToolUseDelta { .. }
+        | ModelEvent::Usage { .. }
+        | ModelEvent::StopReason { .. }
+        | ModelEvent::Done => false,
     }
 }
 

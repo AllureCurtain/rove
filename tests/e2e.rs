@@ -12,7 +12,10 @@ use rove_core::ToolError;
 use rove_core::ToolRegistry;
 use rove_core::{Tool, ToolOutput};
 use rove_models::ModelError;
-use rove_models::{ModelClient, ModelEvent};
+use rove_models::{
+    AssistantTurn, InternalCallId, ModelClient, ModelEvent, ProviderCapabilities, StopReason,
+    ToolCall as CanonicalToolCall, ToolResult as CanonicalToolResult, WireCallReference,
+};
 use rove_runtime::context::{ContextBudget, ContextManager};
 use rove_runtime::engine::{Engine, EngineConfig};
 use rove_runtime::events::StreamEvent;
@@ -25,6 +28,7 @@ use rove_runtime::hooks::{
 };
 use rove_runtime::memory::durable::read_memory_index_sync;
 use rove_runtime::memory::paths::MemoryPaths;
+use rove_runtime::session::{Session, SessionEntry};
 use rove_runtime::state::report::RunReport;
 use rove_runtime::state::store::StateStore;
 use rove_runtime::tools::echo::EchoTool;
@@ -256,6 +260,73 @@ impl ModelClient for CapturingFakeModelClient {
 
 struct RecordingModelClient {
     captured_messages: Arc<Mutex<Option<Vec<Message>>>>,
+}
+
+struct ProtocolRecordingModelClient {
+    protocol: &'static str,
+    captured_messages: Arc<Mutex<Option<Vec<Message>>>>,
+}
+
+#[async_trait]
+impl ModelClient for ProtocolRecordingModelClient {
+    fn stream(
+        &self,
+        messages: &[Message],
+        _tools: &[ModelToolSchema],
+    ) -> BoxStream<'_, Result<ModelEvent, ModelError>> {
+        *self.captured_messages.lock().unwrap() = Some(messages.to_vec());
+        Box::pin(futures::stream::iter([
+            Ok(ModelEvent::TextDelta {
+                text: "switched".to_string(),
+            }),
+            Ok(ModelEvent::StopReason {
+                reason: StopReason::EndTurn,
+            }),
+            Ok(ModelEvent::Done),
+        ]))
+    }
+
+    fn model_id(&self) -> &str {
+        "protocol-recording-model"
+    }
+
+    fn history_protocol(&self) -> String {
+        self.protocol.to_string()
+    }
+
+    fn requires_terminal_event(&self) -> bool {
+        true
+    }
+}
+
+struct StrictEventModelClient {
+    events: Vec<ModelEvent>,
+    capabilities: ProviderCapabilities,
+}
+
+#[async_trait]
+impl ModelClient for StrictEventModelClient {
+    fn stream(
+        &self,
+        _messages: &[Message],
+        _tools: &[ModelToolSchema],
+    ) -> BoxStream<'_, Result<ModelEvent, ModelError>> {
+        Box::pin(futures::stream::iter(
+            self.events.clone().into_iter().map(Ok),
+        ))
+    }
+
+    fn model_id(&self) -> &str {
+        "strict-event-model"
+    }
+
+    fn requires_terminal_event(&self) -> bool {
+        true
+    }
+
+    fn capabilities(&self) -> ProviderCapabilities {
+        self.capabilities
+    }
 }
 
 impl RecordingModelClient {
@@ -2876,6 +2947,7 @@ async fn planner_resume_checkpoint_does_not_repeat_completed_steps() {
             checkpoint: Some(PromptCheckpoint {
                 summary: None,
                 preserved_tail: vec![Message::user("previous plan work")],
+                session: None,
                 plan: Some(checkpoint_plan),
                 session_memory_pointer: None,
                 durable_memory_pointer: None,
@@ -4513,6 +4585,7 @@ async fn resumed_run_prefers_prompt_checkpoint_tail_and_summary() {
         checkpoint: Some(PromptCheckpoint {
             summary: Some("checkpoint summary".to_string()),
             preserved_tail: vec![user_message("checkpoint tail")],
+            session: None,
             plan: Some(checkpoint_plan),
             session_memory_pointer: Some(".rove/memory/sessions/test.md".to_string()),
             durable_memory_pointer: Some(".rove/memory/MEMORY.md".to_string()),
@@ -5456,4 +5529,416 @@ async fn native_multi_tool_call_executes_concurrently_and_round_trips() {
         .collect();
     assert!(result_ids.contains(&"batch_call_1"));
     assert!(result_ids.contains(&"batch_call_2"));
+}
+
+#[tokio::test]
+async fn engine_resume_reprojects_canonical_openai_history_for_anthropic() {
+    let internal_call_id = InternalCallId::new("resume-call-1").unwrap();
+    let mut session = Session::new();
+    let session_id = session.id;
+    session
+        .append(SessionEntry::user("user-1", "inspect"))
+        .unwrap();
+    session
+        .append(SessionEntry::assistant(
+            "assistant-1",
+            AssistantTurn {
+                tool_calls: vec![CanonicalToolCall {
+                    internal_call_id: internal_call_id.clone(),
+                    name: "echo".to_string(),
+                    arguments: serde_json::json!({"message":"ok"}),
+                    wire_reference: Some(
+                        WireCallReference::new("openai-completions", "openai-call-1").unwrap(),
+                    ),
+                }],
+                stop_reason: StopReason::ToolUse,
+                ..AssistantTurn::default()
+            },
+        ))
+        .unwrap();
+    session
+        .append(SessionEntry::tool_result(
+            "result-1",
+            CanonicalToolResult::text(internal_call_id, "echo", "ok"),
+        ))
+        .unwrap();
+    let old_openai_history = session.messages_for_provider("openai-completions").unwrap();
+    let checkpoint = PromptCheckpoint {
+        summary: None,
+        preserved_tail: old_openai_history.clone(),
+        session: Some(session),
+        plan: None,
+        session_memory_pointer: None,
+        durable_memory_pointer: None,
+        last_step: 1,
+        last_event_seq: None,
+        token_estimate: 0,
+        compacted_history_messages: 0,
+        compaction: Default::default(),
+        runtime_identity: None,
+        step_ledger: Default::default(),
+    };
+    let resume_state = TaskState {
+        schema_version: 1,
+        session_id,
+        job_id: JobId::new(),
+        run_id: RunId::new(),
+        goal: "inspect".to_string(),
+        step: 1,
+        history: old_openai_history,
+        summary: None,
+        checkpoint: Some(checkpoint),
+        plan: None,
+        runtime_identity: None,
+        step_ledger: Default::default(),
+    };
+    let captured = Arc::new(Mutex::new(None));
+    let tmp = tempfile::TempDir::new().unwrap();
+    let engine = Engine::with_workspace(
+        Box::new(ProtocolRecordingModelClient {
+            protocol: "anthropic-messages",
+            captured_messages: captured.clone(),
+        }),
+        ToolRegistry::new(),
+        ContextManager::new("system".to_string()),
+        EngineConfig {
+            max_steps: 3,
+            plan_enabled: false,
+        },
+        Workspace::detect(tmp.path()).unwrap(),
+        ApprovalPolicy::Auto,
+    );
+    let request = RunRequest {
+        session_id,
+        job_id: JobId::new(),
+        run_id: RunId::new(),
+        user_message: "continue".to_string(),
+        resume_state: Some(resume_state),
+    };
+
+    let events = collect_events_with_request(&engine, request).await;
+    assert!(matches!(
+        events.last(),
+        Some(StreamEvent::RunCompleted {
+            reason: TerminationReason::Final,
+            ..
+        })
+    ));
+    let messages = captured.lock().unwrap().take().unwrap();
+    let assistant = messages
+        .iter()
+        .find(|message| !message.tool_calls.is_empty())
+        .unwrap();
+    let result = messages
+        .iter()
+        .find(|message| message.role == Role::Tool)
+        .unwrap();
+    assert_ne!(assistant.tool_calls[0].id, "openai-call-1");
+    assert_eq!(
+        assistant.tool_calls[0].id,
+        result.tool_call_id.clone().unwrap()
+    );
+    assert_eq!(
+        result.internal_call_id.as_ref().map(ToString::to_string),
+        Some("resume-call-1".to_string())
+    );
+}
+
+#[tokio::test]
+async fn engine_resume_projects_only_the_bounded_canonical_suffix_after_compaction() {
+    let mut session = Session::new();
+    let session_id = session.id;
+    for index in 0..15 {
+        let entry = if index % 2 == 0 {
+            SessionEntry::user(format!("history-{index}"), format!("history-{index}"))
+        } else {
+            SessionEntry::assistant(
+                format!("history-{index}"),
+                AssistantTurn::text(format!("history-{index}")),
+            )
+        };
+        session.append(entry).unwrap();
+    }
+    let internal_call_id = InternalCallId::new("bounded-resume-call").unwrap();
+    session
+        .append(SessionEntry::assistant(
+            "bounded-tool-assistant",
+            AssistantTurn {
+                tool_calls: vec![CanonicalToolCall {
+                    internal_call_id: internal_call_id.clone(),
+                    name: "echo".to_string(),
+                    arguments: serde_json::json!({"message":"bounded"}),
+                    wire_reference: Some(
+                        WireCallReference::new("openai-completions", "old-openai-bounded-call")
+                            .unwrap(),
+                    ),
+                }],
+                stop_reason: StopReason::ToolUse,
+                ..AssistantTurn::default()
+            },
+        ))
+        .unwrap();
+    session
+        .append(SessionEntry::tool_result(
+            "bounded-tool-result",
+            CanonicalToolResult::text(internal_call_id, "echo", "bounded-result"),
+        ))
+        .unwrap();
+    let full_history = session.messages_for_provider("openai-completions").unwrap();
+    assert!(full_history.len() > 12);
+    let preserved_tail = session
+        .suffix(12)
+        .messages_for_provider("openai-completions")
+        .unwrap();
+    let compaction = rove_runtime::types::PromptCompactionState {
+        auto_triggered: true,
+        source_message_count: full_history.len() - preserved_tail.len(),
+        ..Default::default()
+    };
+    let checkpoint = PromptCheckpoint {
+        summary: Some("bounded compact summary".to_string()),
+        preserved_tail,
+        session: Some(session),
+        plan: None,
+        session_memory_pointer: None,
+        durable_memory_pointer: None,
+        last_step: 1,
+        last_event_seq: None,
+        token_estimate: 0,
+        compacted_history_messages: 6,
+        compaction,
+        runtime_identity: None,
+        step_ledger: Default::default(),
+    };
+    let resume_state = TaskState {
+        schema_version: 1,
+        session_id,
+        job_id: JobId::new(),
+        run_id: RunId::new(),
+        goal: "bounded resume".to_string(),
+        step: 1,
+        history: full_history,
+        summary: Some("bounded compact summary".to_string()),
+        checkpoint: Some(checkpoint),
+        plan: None,
+        runtime_identity: None,
+        step_ledger: Default::default(),
+    };
+    let captured = Arc::new(Mutex::new(None));
+    let tmp = tempfile::TempDir::new().unwrap();
+    let engine = Engine::with_workspace(
+        Box::new(ProtocolRecordingModelClient {
+            protocol: "anthropic-messages",
+            captured_messages: captured.clone(),
+        }),
+        ToolRegistry::new(),
+        ContextManager::new("system".to_string()),
+        EngineConfig {
+            max_steps: 3,
+            plan_enabled: false,
+        },
+        Workspace::detect(tmp.path()).unwrap(),
+        ApprovalPolicy::Auto,
+    );
+    let request = RunRequest {
+        session_id,
+        job_id: JobId::new(),
+        run_id: RunId::new(),
+        user_message: "continue".to_string(),
+        resume_state: Some(resume_state),
+    };
+
+    let events = collect_events_with_request(&engine, request).await;
+
+    assert!(matches!(
+        events.last(),
+        Some(StreamEvent::RunCompleted {
+            reason: TerminationReason::Final,
+            ..
+        })
+    ));
+    let messages = captured.lock().unwrap().take().unwrap();
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.content.contains("bounded compact summary"))
+    );
+    assert!(
+        !messages
+            .iter()
+            .any(|message| message.content == "history-0")
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.content == "history-5")
+    );
+    let assistant = messages
+        .iter()
+        .find(|message| !message.tool_calls.is_empty())
+        .unwrap();
+    let result = messages
+        .iter()
+        .find(|message| message.role == Role::Tool)
+        .unwrap();
+    assert_ne!(assistant.tool_calls[0].id, "old-openai-bounded-call");
+    assert_eq!(
+        assistant.tool_calls[0].id,
+        result.tool_call_id.clone().unwrap()
+    );
+}
+
+#[tokio::test]
+async fn malformed_truncated_oversized_and_unsupported_parallel_turns_execute_zero_tools() {
+    let default_capabilities = ProviderCapabilities::default();
+    let no_parallel = ProviderCapabilities {
+        parallel_tool_calls: false,
+        ..default_capabilities
+    };
+    let cases = vec![
+        (
+            "duplicate",
+            vec![
+                ModelEvent::ToolUseStart {
+                    id: "duplicate".to_string(),
+                    name: "counting".to_string(),
+                },
+                ModelEvent::ToolUseStart {
+                    id: "duplicate".to_string(),
+                    name: "counting".to_string(),
+                },
+                ModelEvent::Done,
+            ],
+            default_capabilities,
+        ),
+        (
+            "conflicting",
+            vec![
+                ModelEvent::ToolUseStart {
+                    id: "conflict".to_string(),
+                    name: "counting".to_string(),
+                },
+                ModelEvent::ToolUseDone {
+                    id: "conflict".to_string(),
+                    name: "other".to_string(),
+                    args: serde_json::json!({}),
+                },
+                ModelEvent::Done,
+            ],
+            default_capabilities,
+        ),
+        (
+            "malformed",
+            vec![
+                ModelEvent::ToolUseStart {
+                    id: "malformed".to_string(),
+                    name: "counting".to_string(),
+                },
+                ModelEvent::ToolUseDone {
+                    id: "malformed".to_string(),
+                    name: "counting".to_string(),
+                    args: serde_json::Value::String("not-an-object".to_string()),
+                },
+                ModelEvent::Done,
+            ],
+            default_capabilities,
+        ),
+        (
+            "truncated",
+            vec![
+                ModelEvent::ToolUseStart {
+                    id: "truncated".to_string(),
+                    name: "counting".to_string(),
+                },
+                ModelEvent::ToolUseDone {
+                    id: "truncated".to_string(),
+                    name: "counting".to_string(),
+                    args: serde_json::json!({"path":"src/lib.rs"}),
+                },
+            ],
+            default_capabilities,
+        ),
+        (
+            "oversized",
+            vec![
+                ModelEvent::ToolUseStart {
+                    id: "oversized".to_string(),
+                    name: "counting".to_string(),
+                },
+                ModelEvent::ToolUseDelta {
+                    id: "oversized".to_string(),
+                    args_delta: "x".repeat(rove_models::MAX_TOOL_ARGUMENT_BYTES + 1),
+                },
+            ],
+            default_capabilities,
+        ),
+        (
+            "unsupported_parallel",
+            vec![
+                ModelEvent::ToolUseStart {
+                    id: "parallel-1".to_string(),
+                    name: "counting".to_string(),
+                },
+                ModelEvent::ToolUseDone {
+                    id: "parallel-1".to_string(),
+                    name: "counting".to_string(),
+                    args: serde_json::json!({"path":"one"}),
+                },
+                ModelEvent::ToolUseStart {
+                    id: "parallel-2".to_string(),
+                    name: "counting".to_string(),
+                },
+                ModelEvent::ToolUseDone {
+                    id: "parallel-2".to_string(),
+                    name: "counting".to_string(),
+                    args: serde_json::json!({"path":"two"}),
+                },
+                ModelEvent::Done,
+            ],
+            no_parallel,
+        ),
+    ];
+
+    for (name, events, capabilities) in cases {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(CountingTool {
+            calls: calls.clone(),
+        }));
+        let engine = Engine::with_workspace(
+            Box::new(StrictEventModelClient {
+                events,
+                capabilities,
+            }),
+            registry,
+            ContextManager::new("system".to_string()),
+            EngineConfig {
+                max_steps: 2,
+                plan_enabled: false,
+            },
+            Workspace::detect(tmp.path()).unwrap(),
+            ApprovalPolicy::Auto,
+        );
+
+        let events = collect_events(&engine, name).await;
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "{name} executed a tool"
+        );
+        assert!(
+            events
+                .iter()
+                .all(|event| !matches!(event, StreamEvent::ToolCallStarted { .. })),
+            "{name} reached ToolRegistry"
+        );
+        assert!(matches!(
+            events.last(),
+            Some(StreamEvent::RunCompleted {
+                reason: TerminationReason::Error,
+                ..
+            })
+        ));
+    }
 }

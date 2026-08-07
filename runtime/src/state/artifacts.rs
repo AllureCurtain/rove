@@ -7,18 +7,21 @@ use crate::execution::{
 };
 use crate::prompt_metadata::{PromptBuildMetadata, estimate_messages_tokens};
 use crate::runtime_identity::RuntimeIdentity;
+use crate::session::{CHECKPOINT_SESSION_TAIL_ENTRIES, Session, SessionEntry};
 use crate::types::{
     JobId, PromptCheckpoint, PromptCompactionMode, PromptCompactionState, RunId, SessionId,
     TaskPlan, TaskState, TerminationReason,
 };
 use crate::workspace::Workspace;
 use rove_core::{CallId, ToolExecutionMetadata, ToolMutation};
-use rove_models::{Message, Role, Usage};
+use rove_models::{
+    AssistantTurn, ContentBlock, InternalCallId, Message, Role, ToolCall,
+    ToolResult as CanonicalToolResult, ToolResultStatus, Usage, WireCallReference,
+};
 
 use super::report::{RunReport, write_report};
 use super::store::StateStore;
 
-const CHECKPOINT_TAIL_MESSAGES: usize = 12;
 const CHECKPOINT_SUMMARY_CHARS: usize = 180;
 
 pub struct RunArtifactRecorder {
@@ -45,6 +48,11 @@ pub struct RunArtifactRecorder {
     pending_steers: HashMap<String, String>,
     last_event_seq: Option<u64>,
     compaction: PromptCompactionState,
+    /// Canonical provider-neutral conversation. `history` is derived from it
+    /// when snapshots are written; it remains only for legacy readers.
+    session: Session,
+    pending_tool_calls: HashMap<CallId, ToolCall>,
+    unassigned_tool_calls: Vec<ToolCall>,
 }
 
 impl RunArtifactRecorder {
@@ -59,12 +67,23 @@ impl RunArtifactRecorder {
         let mut history = resume_state
             .map(|state| state.history.clone())
             .unwrap_or_default();
+        let mut session = resume_state
+            .and_then(|state| state.checkpoint.as_ref())
+            .and_then(|checkpoint| checkpoint.session.clone())
+            .unwrap_or_else(|| Session::from_legacy_history(session_id, &history));
+        if let Err(error) = session.close_unresolved_tool_calls() {
+            tracing::warn!(%error, "canonical resume session could not close in-flight tools");
+        }
         let needs_current_user_message = history
             .last()
             .map(|message| message.role != Role::User || message.content != goal)
             .unwrap_or(true);
         if needs_current_user_message {
             history.push(Message::user(goal.clone()));
+            let entry_id = format!("user-{run_id}");
+            if let Err(error) = session.append(SessionEntry::user(&entry_id, goal.clone())) {
+                tracing::debug!(%error, "legacy session could not append current user message");
+            }
         }
         Self {
             session_id,
@@ -93,6 +112,9 @@ impl RunArtifactRecorder {
             pending_steers: HashMap::new(),
             last_event_seq: None,
             compaction: PromptCompactionState::default(),
+            session,
+            pending_tool_calls: HashMap::new(),
+            unassigned_tool_calls: Vec::new(),
         }
     }
 
@@ -106,16 +128,22 @@ impl RunArtifactRecorder {
                 full,
                 usage,
                 tool_calls,
+                assistant_turn,
             } => {
                 self.steps += 1;
-                if tool_calls.is_empty() {
-                    self.history.push(Message::assistant(full.clone()));
-                } else {
-                    self.history.push(Message::assistant_with_tool_calls(
-                        full.clone(),
-                        tool_calls.clone(),
-                    ));
+                let turn = assistant_turn
+                    .as_deref()
+                    .cloned()
+                    .unwrap_or_else(|| fallback_assistant_turn(full, tool_calls, self.steps));
+                self.unassigned_tool_calls = turn.tool_calls.clone();
+                let entry_id = format!("assistant-{}-{}", self.run_id, self.steps);
+                if let Err(error) = self
+                    .session
+                    .append(SessionEntry::assistant(entry_id, turn.clone()))
+                {
+                    tracing::warn!(%error, "failed to append canonical assistant turn");
                 }
+                self.sync_history_from_session();
                 self.total_usage.prompt_tokens += usage.prompt_tokens;
                 self.total_usage.completion_tokens += usage.completion_tokens;
                 self.total_usage.total_tokens += usage.total_tokens;
@@ -135,6 +163,17 @@ impl RunArtifactRecorder {
             StreamEvent::SteerApplied { id } => {
                 if let Some(content) = self.pending_steers.remove(id) {
                     self.history.push(Message::user(content));
+                    let entry_id = format!("steer-{id}");
+                    if let Err(error) = self.session.append(SessionEntry::user(
+                        entry_id,
+                        self.history
+                            .last()
+                            .map(|m| m.content.clone())
+                            .unwrap_or_default(),
+                    )) {
+                        tracing::warn!(%error, "failed to append canonical steer");
+                    }
+                    self.sync_history_from_session();
                     self.write_snapshot(state_store).await;
                 }
             }
@@ -144,17 +183,77 @@ impl RunArtifactRecorder {
             StreamEvent::ToolCallStarted {
                 call_id,
                 tool_use_id,
-                ..
+                name,
+                args,
             } => {
                 self.tool_calls += 1;
+                let selected = self
+                    .unassigned_tool_calls
+                    .iter()
+                    .position(|call| {
+                        tool_use_id.as_deref().is_some_and(|wire| {
+                            call.wire_reference
+                                .as_ref()
+                                .is_some_and(|reference| reference.value == wire)
+                        }) || call.name == *name
+                    })
+                    .map(|index| self.unassigned_tool_calls.remove(index));
+                let canonical_call = selected.unwrap_or_else(|| ToolCall {
+                    internal_call_id: InternalCallId::new(call_id.to_string()).unwrap_or_else(
+                        |_| {
+                            InternalCallId::new(format!("runtime-call-{}", call_id))
+                                .expect("runtime call id is bounded")
+                        },
+                    ),
+                    name: name.clone(),
+                    arguments: args.clone(),
+                    wire_reference: tool_use_id
+                        .as_ref()
+                        .and_then(|wire| WireCallReference::new("runtime", wire.clone()).ok()),
+                });
+                self.pending_tool_calls
+                    .insert(*call_id, canonical_call.clone());
                 self.pending_tool_use_ids
                     .insert(*call_id, tool_use_id.clone());
                 self.write_snapshot(state_store).await;
             }
             StreamEvent::ToolCallCompleted { call_id, result } => {
                 let tool_use_id = self.pending_tool_use_ids.remove(call_id).flatten();
-                self.history
-                    .push(Message::tool(result.output.clone(), tool_use_id));
+                let call = self
+                    .pending_tool_calls
+                    .remove(call_id)
+                    .unwrap_or_else(|| ToolCall {
+                        internal_call_id: InternalCallId::new(call_id.to_string())
+                            .expect("runtime call id is bounded"),
+                        name: "unknown_tool".to_string(),
+                        arguments: serde_json::json!({}),
+                        wire_reference: tool_use_id
+                            .clone()
+                            .and_then(|wire| WireCallReference::new("runtime", wire).ok()),
+                    });
+                self.history.push(Message::tool_with_status(
+                    result.output.clone(),
+                    tool_use_id,
+                    Some(call.internal_call_id.clone()),
+                    Some(call.name.clone()),
+                    canonical_status(&result.metadata.status),
+                ));
+                let canonical = CanonicalToolResult::text(
+                    call.internal_call_id.clone(),
+                    call.name.clone(),
+                    result.output.clone(),
+                );
+                let canonical = CanonicalToolResult {
+                    status: canonical_status(&result.metadata.status),
+                    ..canonical
+                };
+                if let Err(error) = self.session.append(SessionEntry::tool_result(
+                    format!("tool-result-{}", call_id),
+                    canonical,
+                )) {
+                    tracing::warn!(%error, "failed to append canonical tool result");
+                }
+                self.sync_history_from_session();
                 self.tool_mutations.extend(result.mutations.clone());
                 self.tool_execution_metadata.push(result.metadata.clone());
                 self.write_snapshot(state_store).await;
@@ -166,8 +265,39 @@ impl RunArtifactRecorder {
             } => {
                 self.tool_failures += 1;
                 let tool_use_id = self.pending_tool_use_ids.remove(call_id).flatten();
-                self.history
-                    .push(Message::tool(format!("Error: {error}"), tool_use_id));
+                let call = self
+                    .pending_tool_calls
+                    .remove(call_id)
+                    .unwrap_or_else(|| ToolCall {
+                        internal_call_id: InternalCallId::new(call_id.to_string())
+                            .expect("runtime call id is bounded"),
+                        name: "unknown_tool".to_string(),
+                        arguments: serde_json::json!({}),
+                        wire_reference: tool_use_id
+                            .clone()
+                            .and_then(|wire| WireCallReference::new("runtime", wire).ok()),
+                    });
+                self.history.push(Message::tool_with_status(
+                    format!("Error: {error}"),
+                    tool_use_id,
+                    Some(call.internal_call_id.clone()),
+                    Some(call.name.clone()),
+                    canonical_failure_status(metadata),
+                ));
+                let canonical = CanonicalToolResult {
+                    internal_call_id: call.internal_call_id.clone(),
+                    tool_name: call.name.clone(),
+                    content: vec![ContentBlock::text(format!("Error: {error}"))],
+                    status: canonical_failure_status(metadata),
+                    error_code: metadata.error_code.clone(),
+                };
+                if let Err(error) = self.session.append(SessionEntry::tool_result(
+                    format!("tool-result-{}", call_id),
+                    canonical,
+                )) {
+                    tracing::warn!(%error, "failed to append canonical failed tool result");
+                }
+                self.sync_history_from_session();
                 self.tool_execution_metadata.push(metadata.clone());
                 self.write_snapshot(state_store).await;
             }
@@ -269,11 +399,15 @@ impl RunArtifactRecorder {
                         .safe_error_summary
                         .as_deref()
                         .unwrap_or(record.summary.as_str());
-                    self.history
-                        .push(Message::user(planned_step_failure_message(
-                            &step_title,
-                            reason,
-                        )));
+                    let failure_message = planned_step_failure_message(&step_title, reason);
+                    if let Err(error) = self.session.append(SessionEntry::user(
+                        format!("step-failure-{}", record.record_id),
+                        failure_message.clone(),
+                    )) {
+                        tracing::warn!(%error, "failed to append canonical step failure");
+                    }
+                    self.history.push(Message::user(failure_message));
+                    self.sync_history_from_session();
                 }
                 self.write_snapshot(state_store).await;
             }
@@ -287,6 +421,13 @@ impl RunArtifactRecorder {
             StreamEvent::RunCompleted { reason, output } => {
                 self.final_reason = reason.clone();
                 self.final_output = output.clone();
+                if let Err(error) = self.session.close_unresolved_tool_calls() {
+                    tracing::warn!(%error, "canonical session could not close in-flight tools");
+                }
+                self.pending_tool_calls.clear();
+                self.unassigned_tool_calls.clear();
+                self.pending_tool_use_ids.clear();
+                self.sync_history_from_session();
                 if self.summary.is_none() {
                     self.summary = self
                         .final_output
@@ -318,14 +459,21 @@ impl RunArtifactRecorder {
     }
 
     async fn write_snapshot(&self, state_store: &StateStore) {
+        let history = self
+            .session
+            .messages_for_compatibility_artifact()
+            .unwrap_or_else(|_| self.history.clone());
         let state = TaskState {
+            // TaskState schema 1 remains readable by existing consumers. The
+            // typed session lives in the additive checkpoint field and is
+            // authoritative for new snapshots.
             schema_version: 1,
             session_id: self.session_id,
             job_id: self.job_id,
             run_id: self.run_id,
             goal: self.goal.clone(),
             step: self.initial_step + self.steps,
-            history: self.history.clone(),
+            history,
             summary: self.summary.clone(),
             checkpoint: Some(self.prompt_checkpoint()),
             plan: self.plan.clone(),
@@ -400,17 +548,26 @@ impl RunArtifactRecorder {
 
     fn prompt_checkpoint(&self) -> PromptCheckpoint {
         let step = self.initial_step + self.steps;
-        let compacted_history_messages =
-            self.history.len().saturating_sub(CHECKPOINT_TAIL_MESSAGES);
-        let mut preserved_tail: Vec<_> = self
-            .history
-            .iter()
-            .rev()
-            .take(CHECKPOINT_TAIL_MESSAGES)
-            .cloned()
-            .collect();
-        preserved_tail.reverse();
-        let compacted = &self.history[..compacted_history_messages];
+        let checkpoint_session = self.session.suffix(CHECKPOINT_SESSION_TAIL_ENTRIES);
+        let preserved_tail = checkpoint_session
+            .messages_for_compatibility_artifact()
+            .unwrap_or_else(|_| {
+                let mut tail: Vec<_> = self
+                    .history
+                    .iter()
+                    .rev()
+                    .take(CHECKPOINT_SESSION_TAIL_ENTRIES)
+                    .cloned()
+                    .collect();
+                tail.reverse();
+                tail
+            });
+        let full_history = self
+            .session
+            .messages_for_compatibility_artifact()
+            .unwrap_or_else(|_| self.history.clone());
+        let compacted_history_messages = full_history.len().saturating_sub(preserved_tail.len());
+        let compacted = &full_history[..compacted_history_messages];
         let summary = self
             .summary
             .clone()
@@ -434,6 +591,7 @@ impl RunArtifactRecorder {
             compaction: self.checkpoint_compaction_state(compacted_history_messages),
             runtime_identity: self.runtime_identity.clone(),
             step_ledger: self.step_ledger.checkpoint(),
+            session: Some(self.session.clone()),
         }
     }
 
@@ -458,6 +616,12 @@ impl RunArtifactRecorder {
             prompt_version: None,
             source_message_count: compacted_history_messages,
             last_error: None,
+        }
+    }
+
+    fn sync_history_from_session(&mut self) {
+        if let Ok(history) = self.session.messages_for_compatibility_artifact() {
+            self.history = history;
         }
     }
 }
@@ -508,6 +672,55 @@ fn termination_reason_label(reason: &TerminationReason) -> &'static str {
         TerminationReason::TimeLimit => "time_limit",
         TerminationReason::Error => "error",
         TerminationReason::Cancelled => "cancelled",
+    }
+}
+
+fn fallback_assistant_turn(
+    full: &str,
+    tool_calls: &[rove_models::ToolCallRef],
+    step: u32,
+) -> AssistantTurn {
+    let calls = tool_calls
+        .iter()
+        .enumerate()
+        .map(|(index, reference)| {
+            let internal_call_id = InternalCallId::new(reference.id.clone()).unwrap_or_else(|_| {
+                InternalCallId::new(format!("legacy-call-{step}-{index}"))
+                    .expect("fallback call id is bounded")
+            });
+            ToolCall {
+                internal_call_id,
+                name: reference.name.clone(),
+                arguments: reference.args.clone(),
+                wire_reference: WireCallReference::new("legacy", reference.id.clone()).ok(),
+            }
+        })
+        .collect();
+    AssistantTurn {
+        content: if full.is_empty() {
+            Vec::new()
+        } else {
+            vec![ContentBlock::text(full)]
+        },
+        tool_calls: calls,
+        ..AssistantTurn::default()
+    }
+}
+
+fn canonical_status(status: &rove_core::ToolExecutionStatus) -> ToolResultStatus {
+    match status {
+        rove_core::ToolExecutionStatus::Ok => ToolResultStatus::Ok,
+        rove_core::ToolExecutionStatus::Rejected => ToolResultStatus::Rejected,
+        rove_core::ToolExecutionStatus::PartialSuccess => ToolResultStatus::Partial,
+        rove_core::ToolExecutionStatus::Error => ToolResultStatus::Error,
+    }
+}
+
+fn canonical_failure_status(metadata: &rove_core::ToolExecutionMetadata) -> ToolResultStatus {
+    match metadata.status {
+        rove_core::ToolExecutionStatus::Rejected => ToolResultStatus::Rejected,
+        rove_core::ToolExecutionStatus::PartialSuccess => ToolResultStatus::Partial,
+        _ => ToolResultStatus::Error,
     }
 }
 

@@ -21,6 +21,7 @@ use crate::types::{
 use crate::workspace::Workspace;
 use rove_core::ToolError;
 use rove_core::ToolRegistry;
+use rove_models::{InternalCallId, ToolResultStatus};
 
 const APPROVAL_REASON: &str = "destructive tool requires explicit approval";
 
@@ -470,9 +471,26 @@ pub(crate) fn append_tool_history(
         ));
     }
     for record in &outcome.records {
-        history.push(Message::tool(
+        let internal_call_id = record
+            .call
+            .tool_use_id
+            .as_deref()
+            .and_then(|id| InternalCallId::new(id.to_string()).ok())
+            .unwrap_or_else(|| {
+                InternalCallId::new(record.call.call_id.to_string())
+                    .expect("runtime call id is bounded")
+            });
+        let status = if record.error_reason.is_some() {
+            ToolResultStatus::Error
+        } else {
+            ToolResultStatus::Ok
+        };
+        history.push(Message::tool_with_status(
             record.history_output.clone(),
             record.call.tool_use_id.clone(),
+            Some(internal_call_id),
+            Some(record.call.name.clone()),
+            status,
         ));
     }
 }

@@ -18,7 +18,7 @@ use tokio::time::{Instant, timeout};
 
 use crate::{
     Message, ModelClient, ModelClientId, ModelError, ModelEvent, ModelToolSchema, ProviderOptions,
-    Usage,
+    StopReason, Usage,
 };
 
 use super::{AuthStyle, EXTERNAL_ADAPTER_V1_PROTOCOL, ResolvedAuth, ResolvedHeader};
@@ -246,6 +246,18 @@ impl ModelClient for ExternalAdapterClient {
         &self.config.model
     }
 
+    fn capabilities(&self) -> crate::ProviderCapabilities {
+        crate::ProviderCapabilities {
+            streaming: true,
+            tool_calls: true,
+            parallel_tool_calls: true,
+        }
+    }
+
+    fn history_protocol(&self) -> String {
+        "external-adapter-v1".to_string()
+    }
+
     fn client_id(&self) -> ModelClientId {
         let endpoint = if self.config.base_url.is_empty() {
             self.config
@@ -257,6 +269,10 @@ impl ModelClient for ExternalAdapterClient {
             self.config.base_url.as_str()
         };
         ModelClientId::new(EXTERNAL_ADAPTER_V1_PROTOCOL, endpoint, &self.config.model)
+    }
+
+    fn requires_terminal_event(&self) -> bool {
+        true
     }
 }
 
@@ -557,6 +573,15 @@ fn decode_adapter_event(
                 completion_tokens: optional_u32(&value, "completion_tokens")?,
                 total_tokens: optional_u32(&value, "total_tokens")?,
                 cached_tokens: optional_u32(&value, "cached_tokens")?,
+            },
+        }),
+        "stop_reason" => Ok(ModelEvent::StopReason {
+            reason: match required_string(&value, "reason")?.as_str() {
+                "stop" | "end_turn" => StopReason::EndTurn,
+                "tool_use" | "tool_calls" => StopReason::ToolUse,
+                "length" | "max_tokens" => StopReason::MaxTokens,
+                "content_filter" => StopReason::ContentFilter,
+                other => StopReason::Other(other.to_string()),
             },
         }),
         "done" => {

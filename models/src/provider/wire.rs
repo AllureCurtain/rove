@@ -3,7 +3,9 @@ use reqwest::{
     header::{HeaderMap, HeaderName},
 };
 
-use crate::{Message, ModelError, ModelEvent, ModelToolSchema, ProviderOptions};
+use crate::{
+    Message, ModelError, ModelEvent, ModelToolSchema, ProviderCapabilities, ProviderOptions,
+};
 
 use super::WireProtocolId;
 
@@ -64,4 +66,8 @@ pub trait WireProtocol: Send + Sync {
     fn classify_error(&self, status: StatusCode, headers: &HeaderMap, body: &str) -> ModelError;
 
     fn default_auth_style(&self) -> AuthStyle;
+
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities::default()
+    }
 }

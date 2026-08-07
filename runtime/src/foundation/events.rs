@@ -4,7 +4,7 @@ use crate::execution::{PlanDecisionRecord, PlanIdentity, PlanRevision, StepAttem
 use crate::prompt_metadata::PromptBuildMetadata;
 use crate::types::{JobId, PlanStep, PromptCompactionState, RunId, TaskPlan, TerminationReason};
 use rove_core::{CallId, ToolError, ToolExecutionMetadata, ToolResult};
-use rove_models::{ToolCallRef, Usage};
+use rove_models::{AssistantTurn, ToolCallRef, Usage};
 
 /// All events emitted by the engine's streaming main loop.
 ///
@@ -32,6 +32,10 @@ pub enum StreamEvent {
         usage: Usage,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         tool_calls: Vec<ToolCallRef>,
+        /// Canonical assistant turn. Older traces omit this additive field
+        /// and are reconstructed through the legacy message projection.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        assistant_turn: Option<Box<AssistantTurn>>,
     },
 
     /// A tool call has been requested by the LLM.

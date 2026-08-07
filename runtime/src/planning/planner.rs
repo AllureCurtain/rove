@@ -66,6 +66,7 @@ impl Planner {
                 | ModelEvent::ToolUseStart { .. }
                 | ModelEvent::ToolUseDelta { .. }
                 | ModelEvent::ToolUseDone { .. }
+                | ModelEvent::StopReason { .. }
                 | ModelEvent::Usage { .. } => {}
             }
         }
