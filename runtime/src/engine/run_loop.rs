@@ -2,7 +2,9 @@ use std::sync::Arc;
 
 use async_stream::stream;
 use futures::StreamExt;
+use futures::future::BoxFuture;
 use futures::stream::BoxStream;
+use tokio::sync::Mutex as AsyncMutex;
 use tokio_util::sync::CancellationToken;
 
 use crate::capability::CapabilitySnapshot;
@@ -19,16 +21,19 @@ use crate::prompt_metadata::{
     PromptBuildMetadata, prompt_cache_key, tool_signature, workspace_fingerprint,
 };
 use crate::tool_turn::{
-    ToolAction, ToolTurnContext, ToolTurnItem, append_tool_history, run_tool_turn,
+    ToolAction, ToolTurnContext, ToolTurnItem, ToolTurnOutcome, append_tool_history, run_tool_turn,
 };
 use crate::types::{
-    Action, ApprovalDecision, ApprovalPolicy, Message, SessionId, TerminationReason,
-    ToolApprovalProvider, ToolDescriptor, UserInputProvider,
+    ApprovalDecision, ApprovalPolicy, Message, SessionId, TerminationReason, ToolApprovalProvider,
+    ToolDescriptor, UserInputProvider,
 };
 use crate::workspace::Workspace;
-use rove_core::ToolRegistry;
+use rove_core::{
+    AgentKernelHost, KernelBeforeModelTurnItem, KernelFinalAction, KernelHook, KernelItem,
+    KernelLimits, KernelModelTurnItem, KernelState, KernelTermination, KernelToolAction,
+    KernelToolTurnItem, ToolRegistry, run_agent_kernel,
+};
 use rove_models::ModelClient;
-use tokio::sync::Mutex as AsyncMutex;
 
 /// Shared receiver for in-flight steer messages. Wrapped in Arc<AsyncMutex> so
 /// it can be cloned into LoopContext and polled at each safe point without
@@ -94,10 +99,6 @@ pub(crate) fn enrich_prompt_metadata(
 }
 
 /// Extract durable-worthy notes from messages that are about to be compacted.
-///
-/// Looks for tool results that report file modifications, and assistant
-/// messages that state decisions or plans, returning a deduplicated list of
-/// short notes suitable for the session-summary flush.
 pub(crate) fn extract_session_memory_notes(messages: &[Message]) -> Vec<String> {
     let mut notes = Vec::new();
 
@@ -106,7 +107,6 @@ pub(crate) fn extract_session_memory_notes(messages: &[Message]) -> Vec<String> 
         if content.is_empty() {
             continue;
         }
-        // Tool results that mention file modifications.
         if msg.role == crate::types::Role::Tool {
             let lower = content.to_ascii_lowercase();
             if lower.contains("created")
@@ -118,7 +118,6 @@ pub(crate) fn extract_session_memory_notes(messages: &[Message]) -> Vec<String> 
                 notes.push(format!("tool result: {snippet}"));
             }
         }
-        // Assistant messages that state decisions or intent.
         if msg.role == crate::types::Role::Assistant {
             let lower = content.to_ascii_lowercase();
             if lower.contains("i decided")
@@ -157,266 +156,310 @@ pub(crate) enum LoopItem {
 
 pub(crate) fn run_unplanned_loop<'a>(
     ctx: LoopContext<'a>,
-    mut state: RunLoopState,
+    state: RunLoopState,
     cancel_token: CancellationToken,
 ) -> BoxStream<'a, LoopItem> {
     Box::pin(stream! {
-        let mut compaction = ctx.compaction.clone();
-        loop {
-            if cancel_token.is_cancelled() {
-                // Drain and surface dropped steers so the API/product store
-                // can reconcile them as never-applied.
-                if let Some(rx) = ctx.steer_rx.as_ref() {
-                    let mut r = rx.lock().await;
-                    while let Ok(msg) = r.try_recv() {
-                        yield LoopItem::Event(StreamEvent::SteerDropped {
-                            id: msg.id.0,
-                            reason: "cancelled".to_string(),
-                        });
-                    }
-                }
-                yield LoopItem::Complete {
-                    reason: TerminationReason::Cancelled,
-                    output: None,
-                };
-                return;
-            }
+        let remaining_turns = ctx.max_steps.saturating_sub(state.step);
+        let kernel_state = KernelState::new(state.history);
+        let host = UnplannedKernelHost {
+            ctx,
+            user_message: state.user_message,
+            working_memory: state.working_memory,
+            compact_summary: state.compact_summary,
+            compaction: None,
+            pending_steer_ids: Vec::new(),
+        };
+        let mut kernel = run_agent_kernel(
+            host,
+            kernel_state,
+            KernelLimits {
+                max_model_turns: Some(remaining_turns),
+                max_tool_calls: None,
+            },
+            cancel_token,
+        );
 
-            // SAFE POINT — drain any steers queued since the last turn. Runs
-            // *before* prompt assembly for the next model call so the injected
-            // message is visible on the next turn. Never runs mid-turn.
-            let mut accepted_steer_ids = Vec::new();
-            if let Some(rx) = ctx.steer_rx.as_ref() {
-                let mut r = rx.lock().await;
-                while let Ok(msg) = r.try_recv() {
-                    let id = msg.id.0;
-                    state.working_memory.push(Message::user(msg.content.clone()));
-                    if let Some(lifecycle) = ctx.steer_lifecycle.as_ref() {
+        while let Some(item) = kernel.next().await {
+            match item {
+                KernelItem::Event(event) => yield LoopItem::Event(event),
+                KernelItem::Finished(result) => {
+                    let (reason, output) = match result.termination {
+                        KernelTermination::Final { output } => {
+                            (TerminationReason::Final, Some(output))
+                        }
+                        KernelTermination::ModelTurnLimit
+                        | KernelTermination::ToolCallLimit => {
+                            (TerminationReason::StepLimit, None)
+                        }
+                        KernelTermination::Cancelled => (TerminationReason::Cancelled, None),
+                        KernelTermination::ModelFailed(error) => (
+                            TerminationReason::Error,
+                            Some(format!("Model error: {error}")),
+                        ),
+                        KernelTermination::IncompleteBeforeModelTurn => (
+                            TerminationReason::Error,
+                            Some("before-model extension ended without a request".to_string()),
+                        ),
+                        KernelTermination::IncompleteModelTurn => (
+                            TerminationReason::Error,
+                            Some("model turn ended without a response".to_string()),
+                        ),
+                        KernelTermination::IncompleteToolTurn => (
+                            TerminationReason::Error,
+                            Some("tool turn ended without a result".to_string()),
+                        ),
+                        KernelTermination::Extension {
+                            reason: RuntimeKernelStop::TokenLimit,
+                            output,
+                        } => (TerminationReason::TokenLimit, output),
+                    };
+                    yield LoopItem::Complete { reason, output };
+                    return;
+                }
+            }
+        }
+
+        yield LoopItem::Complete {
+            reason: TerminationReason::Error,
+            output: Some("shared Agent kernel ended without completion".to_string()),
+        };
+    })
+}
+
+#[derive(Debug)]
+enum RuntimeKernelStop {
+    TokenLimit,
+}
+
+struct UnplannedKernelHost<'a> {
+    ctx: LoopContext<'a>,
+    user_message: String,
+    working_memory: Vec<Message>,
+    compact_summary: Option<String>,
+    compaction: Option<CompactionRuntime>,
+    pending_steer_ids: Vec<String>,
+}
+
+impl AgentKernelHost for UnplannedKernelHost<'_> {
+    type Event = StreamEvent;
+    type Stop = RuntimeKernelStop;
+    type ToolOutcome = ToolTurnOutcome;
+    type Output = ();
+
+    fn before_model_turn<'a>(
+        &'a mut self,
+        state: &'a mut KernelState,
+        cancel_token: CancellationToken,
+    ) -> BoxStream<'a, KernelBeforeModelTurnItem<Self::Event, Self::Stop>> {
+        Box::pin(stream! {
+            if let Some(rx) = self.ctx.steer_rx.as_ref() {
+                let mut receiver = rx.lock().await;
+                while let Ok(steer) = receiver.try_recv() {
+                    let id = steer.id.0;
+                    self.working_memory
+                        .push(Message::user(steer.content.clone()));
+                    if let Some(lifecycle) = self.ctx.steer_lifecycle.as_ref() {
                         lifecycle.accepted(id.clone()).await;
                     }
-                    yield LoopItem::Event(StreamEvent::SteerAccepted {
+                    yield KernelBeforeModelTurnItem::Event(StreamEvent::SteerAccepted {
                         id: id.clone(),
-                        content: msg.content,
+                        content: steer.content,
                     });
-                    accepted_steer_ids.push(id);
+                    self.pending_steer_ids.push(id);
                 }
             }
 
-            if state.step >= ctx.max_steps {
-                yield LoopItem::Complete {
-                    reason: TerminationReason::StepLimit,
-                    output: None,
-                };
-                return;
-            }
-            state.step += 1;
-
-            let context = ctx.context_manager.build_with_checkpoint(
-                &state.user_message,
-                &state.working_memory,
-                state.compact_summary.as_deref(),
+            let context = self.ctx.context_manager.build_with_checkpoint(
+                &self.user_message,
+                &self.working_memory,
+                self.compact_summary.as_deref(),
                 &state.history,
             );
-            let tool_schemas = ctx.registry.descriptors();
-            yield LoopItem::Event(StreamEvent::PromptBuilt {
-                metadata: enrich_prompt_metadata(&ctx, context.metadata.clone(), &tool_schemas),
+            let tool_schemas = self.ctx.registry.descriptors();
+            yield KernelBeforeModelTurnItem::Event(StreamEvent::PromptBuilt {
+                metadata: enrich_prompt_metadata(
+                    &self.ctx,
+                    context.metadata.clone(),
+                    &tool_schemas,
+                ),
             });
             if context.over_hard_limit {
-                yield LoopItem::Complete {
-                    reason: TerminationReason::TokenLimit,
+                yield KernelBeforeModelTurnItem::Stop {
+                    reason: RuntimeKernelStop::TokenLimit,
                     output: Some("context exceeds configured hard token budget".to_string()),
                 };
                 return;
             }
+
             if context.auto_compaction_needed && context.dropped_history_messages > 0 {
                 let compacted_count = context.dropped_history_messages.min(state.history.len());
-
-                // Pre-compaction flush: extract durable-worthy notes from the
-                // messages about to be compacted and persist them to session
-                // memory before the detail is summarized away.
                 let mut flush_notes = Vec::new();
                 if compacted_count > 0 {
-                    let candidate_notes = extract_session_memory_notes(&state.history[..compacted_count]);
+                    let candidate_notes =
+                        extract_session_memory_notes(&state.history[..compacted_count]);
                     if !candidate_notes.is_empty()
                         && append_session_notes_to_dir_sync(
-                            &ctx.memory_paths.session_dir,
-                            ctx.session_id,
+                            &self.ctx.memory_paths.session_dir,
+                            self.ctx.session_id,
                             &candidate_notes,
                         )
                         .is_ok()
                     {
                         flush_notes = candidate_notes;
-                        yield LoopItem::Event(StreamEvent::MemoryFlushed {
+                        yield KernelBeforeModelTurnItem::Event(StreamEvent::MemoryFlushed {
                             notes: flush_notes.clone(),
                         });
                     }
                 }
 
+                let compaction = self
+                    .compaction
+                    .get_or_insert_with(|| self.ctx.compaction.clone());
                 if let Some(update) = maybe_compact_history(
-                    &mut compaction,
-                    ctx.model,
+                    compaction,
+                    self.ctx.model,
                     &state.history[..compacted_count],
                     flush_notes,
-                    cancel_token.clone(),
+                    cancel_token,
                 )
                 .await
                 {
                     let summary_for_event = update.summary.clone();
                     if let Some(summary) = update.summary {
-                        state.compact_summary = Some(summary);
+                        self.compact_summary = Some(summary);
                     }
-                    yield LoopItem::Event(StreamEvent::PromptCompacted {
+                    yield KernelBeforeModelTurnItem::Event(StreamEvent::PromptCompacted {
                         summary: summary_for_event,
                         state: update.state,
                     });
                 }
             }
 
-            let mut turn_stream = run_model_turn(
-                ctx.model,
-                context.messages,
-                ctx.registry.model_schemas(),
-                cancel_token.clone(),
-            );
-            let mut steers_applied = false;
-            let model_turn = loop {
-                match turn_stream.next().await {
-                    Some(ModelTurnItem::Event(event)) => {
-                        // `run_model_turn` has now been successfully polled and
-                        // constructed its provider stream. This is the earliest
-                        // durable lifecycle boundary at which a steer can claim
-                        // to have entered a model turn rather than merely a
-                        // prepared prompt.
-                        if !steers_applied {
-                            for id in accepted_steer_ids.drain(..) {
-                                if let Some(lifecycle) = ctx.steer_lifecycle.as_ref() {
-                                    lifecycle.applied(&id).await;
-                                }
-                                yield LoopItem::Event(StreamEvent::SteerApplied { id });
-                            }
-                            steers_applied = true;
-                        }
-                        yield LoopItem::Event(event);
-                    }
-                    Some(ModelTurnItem::Finished(turn)) => {
-                        // The current implementation emits a status event first,
-                        // but keep the lifecycle correct if a future adapter
-                        // produces a finished turn as its first item.
-                        if !steers_applied {
-                            for id in accepted_steer_ids.drain(..) {
-                                if let Some(lifecycle) = ctx.steer_lifecycle.as_ref() {
-                                    lifecycle.applied(&id).await;
-                                }
-                                yield LoopItem::Event(StreamEvent::SteerApplied { id });
-                            }
-                        }
-                        break turn;
-                    }
-                    Some(ModelTurnItem::Cancelled) => {
-                        yield LoopItem::Complete {
-                            reason: TerminationReason::Cancelled,
-                            output: None,
-                        };
+            yield KernelBeforeModelTurnItem::Ready(context.messages);
+        })
+    }
+
+    fn model_turn<'a>(
+        &'a mut self,
+        messages: Vec<Message>,
+        cancel_token: CancellationToken,
+    ) -> BoxStream<'a, KernelModelTurnItem<Self::Event>> {
+        let accepted = std::mem::take(&mut self.pending_steer_ids);
+        run_kernel_model_turn(
+            self.ctx.model,
+            self.ctx.registry,
+            messages,
+            cancel_token,
+            accepted,
+            self.ctx.steer_lifecycle.clone(),
+        )
+    }
+
+    fn after_model_turn<'a>(
+        &'a mut self,
+        _state: &'a mut KernelState,
+        _turn: &'a crate::model_turn::ModelTurn,
+        _cancel_token: CancellationToken,
+    ) -> BoxFuture<'a, KernelHook<(), Self::Event, Self::Stop>> {
+        Box::pin(async { KernelHook::continue_with(()) })
+    }
+
+    fn tool_turn<'a>(
+        &'a mut self,
+        action: KernelToolAction,
+        cancel_token: CancellationToken,
+    ) -> BoxStream<'a, KernelToolTurnItem<Self::Event, Self::ToolOutcome>> {
+        let action = match action {
+            KernelToolAction::Call(call) => ToolAction::Call(call),
+            KernelToolAction::Batch(calls) => ToolAction::Batch(calls),
+        };
+        Box::pin(stream! {
+            let mut inner = run_tool_turn(self.ctx.tool_turn_context(cancel_token), action);
+            while let Some(item) = inner.next().await {
+                match item {
+                    ToolTurnItem::Event(event) => yield KernelToolTurnItem::Event(event),
+                    ToolTurnItem::Finished(outcome) => {
+                        yield KernelToolTurnItem::Finished(outcome);
                         return;
                     }
-                    Some(ModelTurnItem::Failed(err)) => {
-                        yield LoopItem::Complete {
-                            reason: TerminationReason::Error,
-                            output: Some(format!("Model error: {err}")),
-                        };
-                        return;
-                    }
-                    None => {
-                        yield LoopItem::Complete {
-                            reason: TerminationReason::Error,
-                            output: Some("model turn ended without a response".to_string()),
-                        };
+                    ToolTurnItem::Cancelled => {
+                        yield KernelToolTurnItem::Cancelled;
                         return;
                     }
                 }
-            };
+            }
+        })
+    }
 
-            match model_turn.action {
-                Action::Final { text } => {
-                    yield LoopItem::Complete {
-                        reason: TerminationReason::Final,
-                        output: Some(text),
-                    };
+    fn tool_history(&mut self, full_response: &str, outcome: &Self::ToolOutcome) -> Vec<Message> {
+        let mut history = Vec::new();
+        append_tool_history(&mut history, full_response, outcome);
+        history
+    }
+
+    fn after_tool_turn<'a>(
+        &'a mut self,
+        _state: &'a mut KernelState,
+        _outcome: &'a Self::ToolOutcome,
+        _cancel_token: CancellationToken,
+    ) -> BoxFuture<'a, KernelHook<(), Self::Event, Self::Stop>> {
+        Box::pin(async { KernelHook::continue_with(()) })
+    }
+
+    fn after_final<'a>(
+        &'a mut self,
+        _state: &'a mut KernelState,
+        _output: &'a str,
+        _cancel_token: CancellationToken,
+    ) -> BoxFuture<'a, KernelHook<KernelFinalAction, Self::Event, Self::Stop>> {
+        Box::pin(async { KernelHook::continue_with(KernelFinalAction::Complete) })
+    }
+
+    fn finish_output(&mut self, _state: &KernelState) -> Self::Output {}
+}
+
+pub(crate) fn run_kernel_model_turn<'a>(
+    model: &'a dyn ModelClient,
+    registry: &'a ToolRegistry,
+    messages: Vec<Message>,
+    cancel_token: CancellationToken,
+    accepted_steer_ids: Vec<String>,
+    steer_lifecycle: Option<SteerLifecycle>,
+) -> BoxStream<'a, KernelModelTurnItem<StreamEvent>> {
+    Box::pin(stream! {
+        let mut inner = run_model_turn(
+            model,
+            messages,
+            registry.model_schemas(),
+            cancel_token,
+        );
+        let mut applied = false;
+        while let Some(item) = inner.next().await {
+            if !applied {
+                for id in &accepted_steer_ids {
+                    if let Some(lifecycle) = steer_lifecycle.as_ref() {
+                        lifecycle.applied(id).await;
+                    }
+                    yield KernelModelTurnItem::Event(StreamEvent::SteerApplied {
+                        id: id.clone(),
+                    });
+                }
+                applied = true;
+            }
+            match item {
+                ModelTurnItem::Event(event) => yield KernelModelTurnItem::Event(event),
+                ModelTurnItem::Finished(turn) => {
+                    yield KernelModelTurnItem::Finished(turn);
                     return;
                 }
-                Action::ToolCall {
-                    call_id,
-                    tool_use_id,
-                    name,
-                    args,
-                } => {
-                    let action = ToolAction::Call(crate::types::ToolCallAction {
-                        call_id,
-                        tool_use_id,
-                        name,
-                        args,
-                    });
-                    let mut tool_stream = run_tool_turn(
-                        ctx.tool_turn_context(cancel_token.clone()),
-                        action,
-                    );
-                    let outcome = loop {
-                        match tool_stream.next().await {
-                            Some(ToolTurnItem::Event(event)) => yield LoopItem::Event(event),
-                            Some(ToolTurnItem::Finished(outcome)) => break outcome,
-                            Some(ToolTurnItem::Cancelled) => {
-                                drop(tool_stream);
-                                yield LoopItem::Complete {
-                                    reason: TerminationReason::Cancelled,
-                                    output: None,
-                                };
-                                return;
-                            }
-                            None => {
-                                yield LoopItem::Complete {
-                                    reason: TerminationReason::Error,
-                                    output: Some("tool turn ended without a result".to_string()),
-                                };
-                                return;
-                            }
-                        }
-                    };
-                    append_tool_history(&mut state.history, &model_turn.full_response, &outcome);
+                ModelTurnItem::Cancelled => {
+                    yield KernelModelTurnItem::Cancelled;
+                    return;
                 }
-                Action::ToolBatch { calls } => {
-                    let mut tool_stream = run_tool_turn(
-                        ctx.tool_turn_context(cancel_token.clone()),
-                        ToolAction::Batch(calls),
-                    );
-                    let outcome = loop {
-                        match tool_stream.next().await {
-                            Some(ToolTurnItem::Event(event)) => yield LoopItem::Event(event),
-                            Some(ToolTurnItem::Finished(outcome)) => break outcome,
-                            Some(ToolTurnItem::Cancelled) => {
-                                drop(tool_stream);
-                                yield LoopItem::Complete {
-                                    reason: TerminationReason::Cancelled,
-                                    output: None,
-                                };
-                                return;
-                            }
-                            None => {
-                                yield LoopItem::Complete {
-                                    reason: TerminationReason::Error,
-                                    output: Some("tool turn ended without a result".to_string()),
-                                };
-                                return;
-                            }
-                        }
-                    };
-                    append_tool_history(&mut state.history, &model_turn.full_response, &outcome);
-                }
-                Action::Malformed { reason } => {
-                    state.history.push(Message::assistant(model_turn.full_response));
-                    state.history.push(Message::user(format!(
-                        "Your previous output could not be parsed: {}. Please try again.",
-                        reason
-                    )));
+                ModelTurnItem::Failed(error) => {
+                    yield KernelModelTurnItem::Failed(error);
+                    return;
                 }
             }
         }

@@ -135,11 +135,14 @@ As of 2026-08-07:
 - Versioned AgentDefinition packages, `AGENTS.md` runtime discovery, typed
   procedural knowledge, and the OnCall reference evaluation suite are proposed,
   not implemented. The execution-lifecycle design is partially implemented:
-  bounded planned StepRunner, append-only StepRecord ledger, immutable plan
-  revisions, rule-first decisions, registration-pinned bounded Tool Schemas,
-  pre-dispatch provider/tool validation, and Runtime-owned capability snapshots
-  exist; model-on-ambiguity evaluation, independent Finalizer, live capability
-  refresh, and full budget surfaces remain proposed.
+  one Runtime-neutral Agent kernel drives embedded, unplanned, and planned-step
+  model/tool coordination; Runtime hosts retain context, persistence, planning,
+  approval/input, hooks, memory, and canonical events. Bounded planned
+  StepRunner, append-only StepRecord ledger, immutable plan revisions,
+  rule-first decisions, registration-pinned bounded Tool Schemas, pre-dispatch
+  provider/tool validation, and Runtime-owned capability snapshots exist;
+  model-on-ambiguity evaluation, independent Finalizer, live capability refresh,
+  and full budget surfaces remain proposed.
 - Web M1 is implemented: explicit Folder/Repo roots, fail-closed hard resume,
   and the Workspace → Session → Chat product shell are implemented. Web
   Complete C0 adds an API-global SQLite ProductStore,

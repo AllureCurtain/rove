@@ -856,9 +856,10 @@ workspace, approval policy, hooks, resolved memory paths, planner prompt, and
 optional interface providers for approval/input. IDs, task/execution data,
 Workspace/path safety, runtime identity, approval/input contracts,
 context/compaction, memory, events, state services, the tool `Executor`
-pipeline, hooks, runtime-specific tool turns, planning/run coordination, and
-durable event translation live in `rove-runtime`; the normalized model turn and
-action parser live in `rove-core`. Product registry assembly and first-party
+pipeline, hooks, Runtime kernel hosts/tool turns, planning coordination, and
+durable event translation live in `rove-runtime`; the shared multi-turn Agent
+kernel, normalized model turn, and action parser live in `rove-core`. Product
+registry assembly and first-party
 `AppConfig` live in product bootstrap and app shells.
 
 The high-level run flow:
@@ -871,8 +872,8 @@ The high-level run flow:
    - emit `PlanCreated` with an immutable revision for an initial plan, or wrap
      a legacy persisted mutable plan once as revision zero;
    - loop over plan steps;
-   - run each step through `step_runner.rs` with a four-model-turn compatibility
-     ceiling;
+   - run each step through the shared Core Agent kernel using the Runtime host
+     in `step_runner.rs`, with a four-model-turn compatibility ceiling;
    - build step-specific context while preserving current-step tool history;
    - call the model and execute tools through the shared turn helpers;
    - append tool results and return to the model in the same step;
@@ -886,7 +887,8 @@ The high-level run flow:
    - repair malformed/recoverable tool output within the step before creating
      a terminal failure.
 5. If planning is disabled:
-   - run the simpler ReAct loop over the original user message.
+   - run the same Core Agent kernel through the unplanned Runtime host over the
+     original user message.
 6. Emit `RunCompleted`.
 7. Run post-run hooks before the stream closes.
 
@@ -899,7 +901,7 @@ Termination can happen because of:
 - planner error;
 - cancellation.
 
-The planned and unplanned paths share model-turn and tool-turn helpers. If you are changing model streaming, native tool-use conversion, approval, batch execution, or history mutation, start in `model_turn.rs` or `tool_turn.rs`. `step_runner.rs` owns bounded within-step iteration, scoped history, and event-derived attempt metrics; `plan_evaluator.rs` owns replay-safe rule-first decisions; `plan_loop.rs` owns plan/revision identity, attempt closure, the append-only terminal record, decision ordering, plan cursor, and replacement revisions. Current planned execution emits only the canonical lifecycle events; compatibility plan-step dual-fire was removed.
+Embedded, planned, and unplanned execution share `core/src/kernel.rs` for model/action/tool repetition, cancellation, limits, batch reservation, final/follow-up transitions, and history progression. If you are changing model streaming or native tool-use conversion, start in the Core model-turn boundary. Runtime approval/input, tool safety, hooks, and execution remain in `runtime/src/engine/tool_turn.rs`; the unplanned and step hosts adapt those services to the kernel. `step_runner.rs` owns step-specific prompt/compaction state and event-derived attempt metrics; `plan_evaluator.rs` owns replay-safe rule-first decisions; `plan_loop.rs` owns plan/revision identity, attempt closure, the append-only terminal record, decision ordering, plan cursor, and replacement revisions. Current planned execution emits only the canonical lifecycle events; compatibility plan-step dual-fire was removed.
 
 Plan mutation semantics:
 
@@ -924,6 +926,7 @@ Plan mutation semantics:
 Relevant code:
 
 - `runtime/src/engine/facade.rs`
+- `core/src/kernel.rs`
 - `core/src/agent.rs`
 - `core/src/model_turn.rs`
 - `core/src/parser.rs`

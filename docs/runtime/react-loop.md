@@ -2,17 +2,19 @@
 
 rove uses a Plan + ReAct runtime shape.
 
-The reusable in-memory mechanics begin in `rove-core`: `core/src/agent.rs`
-owns the embeddable Agent loop, `core/src/model_turn.rs` converts normalized
-`ModelEvent` values into `AgentEvent` plus `Action`, and
-`core/src/parser.rs` owns the compatibility JSON action parser.
+The reusable execution mechanics begin in `rove-core`:
+`core/src/kernel.rs` owns the callback-driven, Runtime-neutral multi-turn Agent
+kernel; `core/src/agent.rs` supplies its in-memory embedding host;
+`core/src/model_turn.rs` converts normalized `ModelEvent` values into
+`AgentEvent` plus `Action`; and `core/src/parser.rs` owns the compatibility JSON
+action parser.
 
 `rove-runtime` owns the durable execution surface: IDs, resumable
 task/checkpoint and execution-policy data, Workspace/path safety,
 prompt/runtime identity, approval/input contracts, canonical `StreamEvent`,
 state/trace/artifact/SQLite/repair/resume, context/compaction,
 session/durable memory, local tools/MCP, the tool `Executor` and hooks,
-runtime-specific tool turns, planning/step coordination, durable event
+Runtime kernel hosts and tool turns, planning/step coordination, durable event
 translation, and the persistent `Engine` facade.
 `runtime/src/engine/model_turn.rs` is the synchronous translator from in-memory
 `AgentEvent` values into durable `StreamEvent` values. The product default
@@ -22,16 +24,20 @@ live in product bootstrap and app shells. Runtime tool turns
 consume the `rove-core` Tool contract and registry without placing
 Workspace, Memory, approval, or input fields on the minimal core `ToolContext`.
 
-The unplanned loop in `runtime/src/engine/run_loop.rs` is the pure ReAct loop
-implemented by `run_unplanned_loop`:
+The `run_unplanned_loop` host in `runtime/src/engine/run_loop.rs` delegates the
+ReAct state machine to `rove_core::run_agent_kernel`:
 
 1. Build context with `ContextManager::build_with_checkpoint`.
 2. Compact old history when the token budget requires it.
-3. Run one model turn through the `rove-core` `run_model_turn` adapter.
-4. Normalize native OpenAI, Anthropic, Ollama, and Responses tool-use into `Action`.
-5. Run one tool turn through `run_tool_turn`.
-6. Append assistant tool calls and tool results back into history.
-7. Repeat until final answer, cancellation, token limit, step limit, or error.
+3. Let the Core kernel run one normalized model turn and interpret its `Action`.
+4. Normalize native OpenAI, Anthropic, Ollama, and Responses tool-use through
+   the existing Core `run_model_turn` boundary.
+5. Let the kernel dispatch one Runtime `run_tool_turn` callback, forwarding
+   approval/input events while the tool is waiting.
+6. Append the host-produced canonical assistant/tool messages to kernel-owned
+   history.
+7. Let the kernel repeat until final answer, cancellation, token limit, step
+   limit, or error.
 
 The planned coordinator, `run_planned_loop` in `runtime/src/engine/plan_loop.rs`,
 delegates each current plan step to the bounded runner in
@@ -41,10 +47,11 @@ delegates each current plan step to the bounded runner in
    `TaskPlan`. Planner receives its bounded metadata summary and cannot invoke
    tools.
 2. Convert the current plan step into a focused user prompt.
-3. Build context with prior global history plus a step-local message prefix.
-4. Run a model turn through the shared `run_model_turn` helper.
-5. Execute a tool call or batch through the existing safety, approval, input,
-   hook, and `run_tool_turn` path.
+3. Build context with prior global history plus a step-local message prefix in
+   the StepRunner kernel host.
+4. Run the same Core kernel used by embedded and unplanned execution.
+5. Execute each kernel tool action through the existing safety, approval,
+   input, hook, and `run_tool_turn` path.
 6. Append the assistant tool call and tool result to step-local history, then
    return that result to the model within the same plan step.
 7. Keep recoverable tool errors in the same bounded step so the model can
@@ -144,8 +151,13 @@ StepRunner =
   -> Continue / PlanRevised / Finish
 ```
 
-`Engine` is the orchestration shell. It loads resume state and memory, chooses
-planned or unplanned mode, streams events, and writes run artifacts.
+`Engine` is the durable orchestration shell. It loads resume state and memory,
+chooses planned or unplanned Runtime hosts, streams events, and writes run
+artifacts. The Core kernel owns model/action/tool repetition, cancellation and
+limits, whole-batch reservation, final/follow-up transitions, and history
+progression. Runtime hosts own prompt construction, compaction, durable steer
+lifecycle facts, approvals/input, Runtime hooks, tool execution, and canonical
+event translation.
 
 ## Typed model-turn boundary
 
@@ -213,9 +225,9 @@ termination or resume is closed once with explicit `unknown_effect` /
 missing, or conflicting results cause projection to fail rather than entering
 `ToolRegistry`.
 
-The running loop still consumes the bounded derived `Vec<Message>` view at the
-existing context-manager boundary. Authoritative bounded tool-schema validation,
-registration-time descriptor pinning, pre-dispatch provider capability checks,
-and Runtime-owned capability snapshot binding are implemented. Replacing the
-message boundary with one shared typed Agent kernel and adding independent
-lifecycle finalization remain later work in the implementation brief.
+The shared kernel consumes the bounded derived `Vec<Message>` view produced by
+each host at the existing context-manager boundary. Authoritative bounded
+tool-schema validation, registration-time descriptor pinning, pre-dispatch
+provider capability checks, Runtime-owned capability snapshot binding, and the
+single shared Agent kernel are implemented. An independent lifecycle Finalizer
+remains later work in the implementation brief.

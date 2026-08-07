@@ -162,7 +162,7 @@ not secret values.
 
 | Area | Implemented behavior |
 |---|---|
-| Execution | Planned and unplanned loops share normalized model turns, tool turns, context checkpoints, history writeback, and canonical lifecycle events. |
+| Execution | One Runtime-neutral Core kernel drives embedded, unplanned, and planned-step model/tool coordination; Runtime hosts retain context checkpoints, safety, persistence, and canonical lifecycle events. |
 | Tools | Filesystem and shell access are workspace-bounded. Shell timeout, output limits, environment policy, denylist, and approval controls are configurable. |
 | Human control | Tool approval, `request_input`, cancellation, resume, Steer/Follow-up, session Fork, and terminal-visible status are part of the shared runtime/product contract. |
 | Providers | Provider-specific payloads stay behind the model boundary. Routing supports retries and fallback models where configured. |

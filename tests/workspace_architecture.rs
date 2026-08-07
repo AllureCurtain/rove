@@ -157,6 +157,28 @@ fn runtime_model_turns_use_the_core_normalization_boundary() {
     }
 }
 
+#[test]
+fn embedded_and_durable_execution_share_the_core_agent_kernel() {
+    let root = workspace_root();
+    for relative in [
+        "core/src/agent.rs",
+        "runtime/src/engine/run_loop.rs",
+        "runtime/src/engine/step_runner.rs",
+    ] {
+        let path = root.join(relative);
+        let source = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()));
+        assert!(
+            source.contains("run_agent_kernel"),
+            "{relative} must delegate multi-turn coordination to the shared Core kernel"
+        );
+        assert!(
+            !source.contains("match model_turn.action") && !source.contains("match turn.action"),
+            "{relative} must not retain a private model-action coordinator"
+        );
+    }
+}
+
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()

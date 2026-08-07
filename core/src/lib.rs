@@ -1,6 +1,7 @@
 mod agent;
 mod error;
 mod events;
+pub mod kernel;
 pub mod model_turn;
 mod parser;
 mod policy;
@@ -11,6 +12,11 @@ mod validation;
 pub use agent::{Agent, AgentConfig, AgentControl, AgentRequest};
 pub use error::{AgentError, ToolError};
 pub use events::{AgentEvent, AgentOutcome, AgentStopReason};
+pub use kernel::{
+    AgentKernelHost, KernelBeforeModelTurnItem, KernelFinalAction, KernelHook, KernelItem,
+    KernelLimits, KernelModelTurnItem, KernelResult, KernelState, KernelTermination,
+    KernelToolAction, KernelToolTurnItem, run_agent_kernel,
+};
 pub use parser::parse_action;
 pub use policy::{AllowAllToolPolicy, ToolInvocation, ToolPolicy};
 pub use tools::{

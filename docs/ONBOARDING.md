@@ -15,7 +15,8 @@ The repository is a virtual Cargo Workspace. The dependency chain is
 {rove-cli, rove-api, rove-bench}` plus `rove-integration-tests`.
 
 - `rove-models` owns the normalized model protocol, providers, and routing.
-- `rove-core` is the implemented in-memory embedding layer.
+- `rove-core` is the implemented in-memory embedding layer and shared
+  Runtime-neutral Agent kernel.
 - `rove-runtime` owns durable execution, state, memory, tools/MCP, planning, and
   the Engine facade.
 - `rove-app-bootstrap` owns first-party AppConfig, provider factory, product
@@ -195,7 +196,7 @@ OnCall reference Agent.
 | API | `apps/api` | HTTP/SSE surface |
 | Benchmark | `apps/bench` | Deterministic benchmark runner |
 | Web | `apps/web/` | API proxy, state hooks, components, tests |
-| Agent core | `core/` | in-memory Agent/model/tool loop, control, core events, contracts |
+| Agent core | `core/` | shared Agent kernel, in-memory embedding host, control, core events, contracts |
 | Persistent runtime | `runtime/` | contracts/events, workspace, context/compaction, memory, local built-in tools, MCP proxy, StateStore, artifacts/SQLite, repair and resume |
 | Persistent coordinator | `runtime/` | Engine, planning/run coordination, tool turns, memory-flush ordering, durable event translation |
 | Models | `models/` | independent protocol, provider adapters, routing, fake provider |
@@ -617,10 +618,11 @@ A skipped external smoke is not evidence that the external integration works.
 3. [MCP Streamable HTTP and Tool Artifacts](design/2026-07-15-mcp-streamable-http-and-tool-artifacts-design.md)
 4. [OnCall Reference Agent and Evaluation](design/2026-07-15-oncall-reference-agent-evaluation-plan.md)
 
-The execution lifecycle is partially implemented through bounded StepRunner,
-StepRecord ledger, PlanRevision, and rule-first PlanDecision. Its Finalizer,
-model-on-ambiguity, and full budget target remain proposed. The other three
-documents remain proposed/not implemented.
+The execution lifecycle is partially implemented through one Runtime-neutral
+Agent kernel, bounded StepRunner, StepRecord ledger, PlanRevision, and
+rule-first PlanDecision. Its Finalizer, model-on-ambiguity, and full budget
+target remain proposed. The other three documents remain proposed/not
+implemented.
 
 ### Active product delivery
 
@@ -636,7 +638,7 @@ documents remain proposed/not implemented.
   PR #29; G8 Desktop was out of scope.
 - [Kernel, Message, and Provider Implementation](plans/2026-08-06-kernel-message-provider-implementation.md)
   — active brief for typed message/session projection, provider protocol
-  normalization, and the later shared-kernel migration.
+  normalization, and the implemented shared-kernel migration.
 - [Authoritative Tool Schema and Runtime Validation](plans/2026-08-07-authoritative-tool-schema-runtime-validation.md)
   — bounded schema compilation, deterministic/atomic tool catalogs, model
   preflight, and Runtime capability snapshot binding; Coding Tool V2 is a
