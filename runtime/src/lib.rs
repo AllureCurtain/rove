@@ -60,6 +60,7 @@ pub(crate) use engine::plan_loop;
 pub(crate) use engine::run_loop;
 pub(crate) use engine::step_runner;
 pub(crate) use engine::tool_turn;
+pub(crate) use planning::finalizer;
 pub(crate) use planning::plan_evaluator;
 
 // ---------------------------------------------------------------------------

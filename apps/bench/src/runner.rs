@@ -248,6 +248,7 @@ fn build_resume_state(
         plan: None,
         runtime_identity: None,
         step_ledger: Default::default(),
+        execution_lifecycle: Default::default(),
     }
 }
 
@@ -457,10 +458,7 @@ fn benchmark_engine(workspace: &Workspace, turns: Vec<FakeTurn>, max_steps: u32)
         model,
         registry,
         ContextManager::new("You are the rove benchmark runner.".to_string()),
-        EngineConfig {
-            max_steps,
-            plan_enabled: false,
-        },
+        EngineConfig::new(max_steps, false),
         workspace.clone(),
         ApprovalPolicy::Auto,
     )

@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::time::Instant;
 use thiserror::Error;
 
 use crate::types::PlanStep;
@@ -16,6 +17,14 @@ pub const EXECUTION_POLICY_VERSION: u32 = 1;
 /// single step from consuming that entire run budget while the multidimensional
 /// config is still being introduced.
 pub const DEFAULT_MAX_MODEL_TURNS_PER_STEP: u32 = 4;
+
+/// Default repair ceiling for malformed structured lifecycle model output.
+pub const DEFAULT_MAX_MODEL_REPAIRS: u32 = 1;
+
+/// A planned run reserves one model turn for final synthesis when model
+/// finalization is enabled. Compatibility policies use deterministic
+/// finalization and therefore reserve no turn.
+pub const DEFAULT_MAX_FINALIZATION_TURNS: u32 = 1;
 
 pub fn planned_step_failure_message(step_title: &str, reason: &str) -> String {
     format!("Planned step failed: {step_title}. Reason: {reason}. Re-plan the remaining work.")
@@ -45,15 +54,43 @@ impl ExecutionStrategy {
 }
 
 /// Where the selected strategy came from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StrategySelectionSource {
     Request,
     Session,
     Config,
+    /// Older records and unset callers deserialize to this value.
+    #[default]
     CompatibilityDefault,
     /// Derived from the sugar `plan_enabled` / `max_steps` fields.
     MaxStepsAndPlanFlag,
+}
+
+/// Whether semantic plan ambiguity may invoke the model evaluator.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EvaluatorMode {
+    /// Deterministic decision table only. This is retained for legacy embedded
+    /// policies and tests that intentionally avoid additional model calls.
+    RuleOnly,
+    /// Deterministic rules first; a model call is allowed only when a terminal
+    /// record carries a validated [`PlanAmbiguity`].
+    #[default]
+    RuleFirstModelOnAmbiguity,
+}
+
+/// How the independent run finalizer is allowed to synthesize the user answer.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FinalizerPolicy {
+    /// Use a deterministic evidence-grounded answer. React finals remain
+    /// direct because the model already produced the user-facing answer.
+    #[default]
+    Deterministic,
+    /// Prefer a bounded model synthesis and fall back deterministically on any
+    /// error, invalid result, cancellation, or budget boundary.
+    ModelPreferred,
 }
 
 /// Independent limits for the lifecycle phases and their observable work.
@@ -68,6 +105,8 @@ pub struct ExecutionBudgetLimits {
     pub max_tool_calls: Option<u32>,
     pub max_tool_calls_per_step: Option<u32>,
     pub max_plan_revisions: Option<u32>,
+    pub max_model_repairs: Option<u32>,
+    pub max_finalization_turns: Option<u32>,
     pub max_wall_time_ms: Option<u64>,
     pub max_total_tokens: Option<u64>,
     /// Cost enforcement is deferred until provider price metadata exists.
@@ -101,6 +140,8 @@ impl ExecutionBudgetLimits {
             ("max_tool_calls", self.max_tool_calls),
             ("max_tool_calls_per_step", self.max_tool_calls_per_step),
             ("max_plan_revisions", self.max_plan_revisions),
+            ("max_model_repairs", self.max_model_repairs),
+            ("max_finalization_turns", self.max_finalization_turns),
         ];
         for (field, value) in limits {
             if value == Some(0) {
@@ -124,6 +165,15 @@ impl ExecutionBudgetLimits {
                 global: "max_tool_calls",
             });
         }
+        if let (Some(finalization), Some(global)) =
+            (self.max_finalization_turns, self.max_model_turns)
+            && finalization > global
+        {
+            return Err(ExecutionValidationError::PerStepLimitExceedsGlobal {
+                per_step: "max_finalization_turns",
+                global: "max_model_turns",
+            });
+        }
         Ok(())
     }
 }
@@ -137,6 +187,11 @@ pub struct ExecutionBudgetUsage {
     pub model_turns: u32,
     pub tool_calls: u32,
     pub plan_revisions: u32,
+    pub model_repairs: u32,
+    pub planner_turns: u32,
+    pub evaluator_turns: u32,
+    pub replanner_turns: u32,
+    pub finalization_turns: u32,
     pub wall_time_ms: u64,
     pub total_tokens: u64,
     pub cost_microunits: u64,
@@ -149,6 +204,10 @@ pub struct ExecutionPolicy {
     pub strategy: ExecutionStrategy,
     pub selection_source: StrategySelectionSource,
     pub budgets: ExecutionBudgetLimits,
+    #[serde(default)]
+    pub evaluator_mode: EvaluatorMode,
+    #[serde(default)]
+    pub finalizer_policy: FinalizerPolicy,
 }
 
 impl ExecutionPolicy {
@@ -163,11 +222,356 @@ impl ExecutionPolicy {
             strategy,
             selection_source: StrategySelectionSource::MaxStepsAndPlanFlag,
             budgets: ExecutionBudgetLimits::from_max_steps(max_steps, strategy),
+            evaluator_mode: EvaluatorMode::RuleOnly,
+            finalizer_policy: FinalizerPolicy::Deterministic,
         }
     }
 
     pub fn validate(&self) -> Result<(), ExecutionValidationError> {
         self.budgets.validate()
+    }
+}
+
+/// Lifecycle phases used in budget and degradation facts. These values are
+/// safe diagnostics; they do not contain model reasoning.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionPhase {
+    Planner,
+    Step,
+    Evaluator,
+    Replanner,
+    Finalizer,
+    Run,
+}
+
+/// A specific exhausted execution dimension.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionBudgetDimension {
+    PlanSteps,
+    StepAttempts,
+    ModelTurns,
+    ModelTurnsPerStep,
+    ToolCalls,
+    ToolCallsPerStep,
+    PlanRevisions,
+    ModelRepairs,
+    FinalizationTurns,
+    WallTime,
+    TotalTokens,
+    Cost,
+}
+
+/// Typed budget refusal emitted before new work begins, or immediately after
+/// an indivisible model response crosses a token/cost boundary.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExecutionBudgetExhaustion {
+    pub dimension: ExecutionBudgetDimension,
+    pub phase: ExecutionPhase,
+    pub limit: u64,
+    pub consumed: u64,
+    pub safe_summary: String,
+}
+
+/// Public resolved budget snapshot used by events, checkpoints, state, API,
+/// reports, and UIs.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ExecutionBudgetSnapshot {
+    pub limits: ExecutionBudgetLimits,
+    pub consumed: ExecutionBudgetUsage,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exhausted: Option<ExecutionBudgetExhaustion>,
+    /// Cost is enforceable only when priced usage has been supplied. Generic
+    /// provider clients expose zero here rather than claiming enforcement.
+    pub cost_enforced: bool,
+}
+
+/// In-memory accounting authority for one run. Persisted callers store the
+/// serializable snapshot, then reconstruct the tracker with consumed usage on
+/// explicit resume.
+pub struct ExecutionBudgetTracker {
+    limits: ExecutionBudgetLimits,
+    usage: ExecutionBudgetUsage,
+    started: Instant,
+    exhausted: Option<ExecutionBudgetExhaustion>,
+    cost_enforced: bool,
+}
+
+impl ExecutionBudgetTracker {
+    pub fn new(
+        limits: ExecutionBudgetLimits,
+        usage: ExecutionBudgetUsage,
+        cost_enforced: bool,
+    ) -> Self {
+        Self {
+            limits,
+            usage,
+            started: Instant::now(),
+            exhausted: None,
+            cost_enforced,
+        }
+    }
+
+    pub fn usage(&self) -> &ExecutionBudgetUsage {
+        &self.usage
+    }
+
+    pub fn limits(&self) -> &ExecutionBudgetLimits {
+        &self.limits
+    }
+
+    pub fn snapshot(&self) -> ExecutionBudgetSnapshot {
+        ExecutionBudgetSnapshot {
+            limits: self.limits.clone(),
+            consumed: self.usage.clone(),
+            exhausted: self.exhausted.clone(),
+            cost_enforced: self.cost_enforced,
+        }
+    }
+
+    pub fn refresh_wall_time(
+        &mut self,
+        phase: ExecutionPhase,
+    ) -> Result<(), ExecutionBudgetExhaustion> {
+        self.usage.wall_time_ms =
+            u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        self.check_limit(
+            ExecutionBudgetDimension::WallTime,
+            phase,
+            self.limits.max_wall_time_ms,
+            self.usage.wall_time_ms,
+        )
+    }
+
+    pub fn validate_plan_steps(
+        &mut self,
+        steps: usize,
+        phase: ExecutionPhase,
+    ) -> Result<(), ExecutionBudgetExhaustion> {
+        let steps = u32::try_from(steps).unwrap_or(u32::MAX);
+        self.check_limit(
+            ExecutionBudgetDimension::PlanSteps,
+            phase,
+            self.limits.max_plan_steps.map(u64::from),
+            u64::from(steps),
+        )?;
+        self.usage.plan_steps = steps;
+        Ok(())
+    }
+
+    pub fn reserve_step_attempt(&mut self) -> Result<(), ExecutionBudgetExhaustion> {
+        let next = self.usage.step_attempts.saturating_add(1);
+        self.check_limit(
+            ExecutionBudgetDimension::StepAttempts,
+            ExecutionPhase::Step,
+            self.limits.max_step_attempts.map(u64::from),
+            u64::from(next),
+        )?;
+        self.usage.step_attempts = next;
+        Ok(())
+    }
+
+    pub fn reserve_plan_revision(&mut self) -> Result<(), ExecutionBudgetExhaustion> {
+        let next = self.usage.plan_revisions.saturating_add(1);
+        self.check_limit(
+            ExecutionBudgetDimension::PlanRevisions,
+            ExecutionPhase::Replanner,
+            self.limits.max_plan_revisions.map(u64::from),
+            u64::from(next),
+        )?;
+        self.usage.plan_revisions = next;
+        Ok(())
+    }
+
+    pub fn reserve_repair(
+        &mut self,
+        phase: ExecutionPhase,
+    ) -> Result<(), ExecutionBudgetExhaustion> {
+        let next = self.usage.model_repairs.saturating_add(1);
+        self.check_limit(
+            ExecutionBudgetDimension::ModelRepairs,
+            phase,
+            self.limits.max_model_repairs.map(u64::from),
+            u64::from(next),
+        )?;
+        self.usage.model_repairs = next;
+        Ok(())
+    }
+
+    pub fn reserve_model_turn(
+        &mut self,
+        phase: ExecutionPhase,
+    ) -> Result<(), ExecutionBudgetExhaustion> {
+        self.refresh_wall_time(phase)?;
+        let next = self.usage.model_turns.saturating_add(1);
+        let effective_limit = if phase == ExecutionPhase::Finalizer {
+            self.limits.max_model_turns
+        } else {
+            self.limits.max_model_turns.map(|limit| {
+                limit.saturating_sub(self.limits.max_finalization_turns.unwrap_or_default())
+            })
+        };
+        self.check_limit(
+            ExecutionBudgetDimension::ModelTurns,
+            phase,
+            effective_limit.map(u64::from),
+            u64::from(next),
+        )?;
+        if phase == ExecutionPhase::Finalizer {
+            let finalization = self.usage.finalization_turns.saturating_add(1);
+            self.check_limit(
+                ExecutionBudgetDimension::FinalizationTurns,
+                phase,
+                self.limits.max_finalization_turns.map(u64::from),
+                u64::from(finalization),
+            )?;
+            self.usage.finalization_turns = finalization;
+        }
+        self.usage.model_turns = next;
+        match phase {
+            ExecutionPhase::Planner => {
+                self.usage.planner_turns = self.usage.planner_turns.saturating_add(1)
+            }
+            ExecutionPhase::Evaluator => {
+                self.usage.evaluator_turns = self.usage.evaluator_turns.saturating_add(1)
+            }
+            ExecutionPhase::Replanner => {
+                self.usage.replanner_turns = self.usage.replanner_turns.saturating_add(1)
+            }
+            ExecutionPhase::Finalizer | ExecutionPhase::Step | ExecutionPhase::Run => {}
+        }
+        Ok(())
+    }
+
+    pub fn remaining_model_turns_for_step(&mut self) -> Result<u32, ExecutionBudgetExhaustion> {
+        self.refresh_wall_time(ExecutionPhase::Step)?;
+        let per_step = self
+            .limits
+            .max_model_turns_per_step
+            .unwrap_or(DEFAULT_MAX_MODEL_TURNS_PER_STEP);
+        let global = self
+            .limits
+            .max_model_turns
+            .map(|limit| {
+                limit
+                    .saturating_sub(self.usage.model_turns)
+                    .saturating_sub(self.limits.max_finalization_turns.unwrap_or_default())
+            })
+            .unwrap_or(u32::MAX);
+        let remaining = per_step.min(global);
+        if remaining == 0 {
+            return Err(self.exhaustion(
+                ExecutionBudgetDimension::ModelTurns,
+                ExecutionPhase::Step,
+                self.limits.max_model_turns.unwrap_or_default().into(),
+                self.usage.model_turns.into(),
+            ));
+        }
+        Ok(remaining)
+    }
+
+    pub fn remaining_tool_calls_for_step(&self) -> Result<u32, ExecutionBudgetExhaustion> {
+        let per_step = self.limits.max_tool_calls_per_step.unwrap_or(u32::MAX);
+        let global = self
+            .limits
+            .max_tool_calls
+            .map(|limit| limit.saturating_sub(self.usage.tool_calls))
+            .unwrap_or(u32::MAX);
+        let remaining = per_step.min(global);
+        if remaining == 0 {
+            return Err(ExecutionBudgetExhaustion {
+                dimension: ExecutionBudgetDimension::ToolCalls,
+                phase: ExecutionPhase::Step,
+                limit: self.limits.max_tool_calls.unwrap_or_default().into(),
+                consumed: self.usage.tool_calls.into(),
+                safe_summary: "The configured tool-call budget is exhausted.".to_string(),
+            });
+        }
+        Ok(remaining)
+    }
+
+    pub fn remaining_tokens(&self) -> Option<u64> {
+        self.limits
+            .max_total_tokens
+            .map(|limit| limit.saturating_sub(self.usage.total_tokens))
+    }
+
+    pub fn record_step_usage(
+        &mut self,
+        model_turns: u32,
+        tool_calls: u32,
+        repairs: u32,
+        usage: &rove_models::Usage,
+    ) -> Result<(), ExecutionBudgetExhaustion> {
+        self.usage.model_turns = self.usage.model_turns.saturating_add(model_turns);
+        self.usage.tool_calls = self.usage.tool_calls.saturating_add(tool_calls);
+        self.usage.model_repairs = self.usage.model_repairs.saturating_add(repairs);
+        self.record_tokens(usage, ExecutionPhase::Step)?;
+        self.check_limit(
+            ExecutionBudgetDimension::ModelRepairs,
+            ExecutionPhase::Step,
+            self.limits.max_model_repairs.map(u64::from),
+            self.usage.model_repairs.into(),
+        )
+    }
+
+    pub fn record_tokens(
+        &mut self,
+        usage: &rove_models::Usage,
+        phase: ExecutionPhase,
+    ) -> Result<(), ExecutionBudgetExhaustion> {
+        self.usage.total_tokens = self
+            .usage
+            .total_tokens
+            .saturating_add(u64::from(usage.total_tokens));
+        self.check_limit(
+            ExecutionBudgetDimension::TotalTokens,
+            phase,
+            self.limits.max_total_tokens,
+            self.usage.total_tokens,
+        )
+    }
+
+    pub fn mark_exhausted(&mut self, exhaustion: ExecutionBudgetExhaustion) {
+        self.exhausted = Some(exhaustion);
+    }
+
+    fn check_limit(
+        &mut self,
+        dimension: ExecutionBudgetDimension,
+        phase: ExecutionPhase,
+        limit: Option<u64>,
+        consumed: u64,
+    ) -> Result<(), ExecutionBudgetExhaustion> {
+        if let Some(limit) = limit
+            && consumed > limit
+        {
+            let exhaustion = self.exhaustion(dimension, phase, limit, consumed);
+            return Err(exhaustion);
+        }
+        Ok(())
+    }
+
+    fn exhaustion(
+        &mut self,
+        dimension: ExecutionBudgetDimension,
+        phase: ExecutionPhase,
+        limit: u64,
+        consumed: u64,
+    ) -> ExecutionBudgetExhaustion {
+        let exhaustion = ExecutionBudgetExhaustion {
+            dimension,
+            phase,
+            limit,
+            consumed,
+            safe_summary: format!(
+                "The {dimension:?} execution budget is exhausted (limit {limit}, consumed {consumed})."
+            ),
+        };
+        self.exhausted = Some(exhaustion.clone());
+        exhaustion
     }
 }
 
@@ -179,10 +583,12 @@ pub enum StepRecordStatus {
     Partial,
     Failed,
     Blocked,
+    Rejected,
     Skipped,
     BudgetExhausted,
     Cancelled,
     Interrupted,
+    Indeterminate,
 }
 
 /// Safe explanation for how a step was concluded.
@@ -193,6 +599,47 @@ pub enum StepCompletionBasis {
     DeterministicRule,
     UserDecision,
     RuntimeFailure,
+}
+
+/// Semantic uncertainty that deterministic lifecycle rules cannot resolve.
+/// This marker is produced only from a validated structured step conclusion;
+/// arbitrary prose never grants access to the model evaluator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanAmbiguityKind {
+    RemainingWorkMayBeUnnecessary,
+    PlanAssumptionMayBeInvalid,
+    RecoverableAlternativeMayExist,
+    GoalMayBePartiallySatisfied,
+    RemainingDependenciesMayNeedReordering,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlanAmbiguity {
+    pub kind: PlanAmbiguityKind,
+    pub safe_summary: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evidence_refs: Vec<String>,
+}
+
+impl PlanAmbiguity {
+    pub fn validate(&self) -> Result<(), ExecutionValidationError> {
+        if self.safe_summary.trim().is_empty() {
+            return Err(ExecutionValidationError::MissingAmbiguitySummary);
+        }
+        if self.safe_summary.chars().count() > 500 {
+            return Err(ExecutionValidationError::AmbiguitySummaryTooLong);
+        }
+        if self.evidence_refs.len() > 32
+            || self
+                .evidence_refs
+                .iter()
+                .any(|reference| reference.trim().is_empty() || reference.chars().count() > 256)
+        {
+            return Err(ExecutionValidationError::InvalidAmbiguityEvidence);
+        }
+        Ok(())
+    }
 }
 
 /// Append-only facts for a terminal step attempt.
@@ -226,6 +673,8 @@ pub struct StepRecord {
     pub safe_error_summary: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub supersedes_record_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ambiguity: Option<PlanAmbiguity>,
 }
 
 impl StepRecord {
@@ -244,6 +693,9 @@ impl StepRecord {
         }
         if self.attempt == 0 {
             return Err(ExecutionValidationError::ZeroAttempt);
+        }
+        if let Some(ambiguity) = &self.ambiguity {
+            ambiguity.validate()?;
         }
         Ok(())
     }
@@ -469,6 +921,17 @@ pub enum PlanFinishReason {
     Failed,
     Cancelled,
     Interrupted,
+    Rejected,
+    Indeterminate,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanDecisionSource {
+    #[default]
+    Rule,
+    Model,
+    SafeFallback,
 }
 
 /// Rule-first decision made after a terminal step record.
@@ -526,6 +989,14 @@ pub struct PlanDecisionRecord {
     pub trigger_step_record_id: String,
     pub decided_at: String,
     pub decision: PlanDecision,
+    #[serde(default)]
+    pub source: PlanDecisionSource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evaluation_key: Option<String>,
+    #[serde(default)]
+    pub model_turns_used: u32,
+    #[serde(default)]
+    pub repairs_used: u32,
 }
 
 impl PlanDecisionRecord {
@@ -615,6 +1086,120 @@ pub struct PlanLifecycleCheckpoint {
     pub decision_count: usize,
 }
 
+/// User-visible terminal classification. This is deliberately separate from
+/// process-level `RunStatus` and compatibility `TerminationReason`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FinalOutcomeStatus {
+    Success,
+    Partial,
+    Blocked,
+    Rejected,
+    Cancelled,
+    Interrupted,
+    Exhausted,
+    Indeterminate,
+    Failed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FinalizationMode {
+    Direct,
+    Model,
+    Deterministic,
+    DeterministicFallback,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FinalizationPhase {
+    Started,
+    Completed,
+}
+
+/// Durable finalization record. The output is bounded before persistence by
+/// the Finalizer and contains only user-visible synthesis, never hidden model
+/// reasoning.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FinalizationRecord {
+    pub finalization_id: String,
+    pub phase: FinalizationPhase,
+    pub finish_reason: PlanFinishReason,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<FinalOutcomeStatus>,
+    pub mode: FinalizationMode,
+    pub started_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evidence_refs: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub incomplete_step_ids: Vec<String>,
+    #[serde(default)]
+    pub budget_before: ExecutionBudgetUsage,
+    #[serde(default)]
+    pub budget_after: ExecutionBudgetUsage,
+}
+
+/// Explicit, safe degradation fact. Fallbacks are never silent and do not
+/// change permissions or erase previously recorded evidence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExecutionDegradation {
+    pub degradation_id: String,
+    pub phase: ExecutionPhase,
+    pub code: String,
+    pub safe_summary: String,
+    pub occurred_at: String,
+}
+
+/// Materialized run lifecycle projection stored in task state and checkpoints.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ExecutionLifecycleState {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy: Option<ExecutionPolicy>,
+    pub budget_usage: ExecutionBudgetUsage,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_exhaustion: Option<ExecutionBudgetExhaustion>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finalization: Option<FinalizationRecord>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub degradations: Vec<ExecutionDegradation>,
+}
+
+impl ExecutionLifecycleState {
+    pub fn is_empty(&self) -> bool {
+        self.policy.is_none()
+            && self.budget_usage == ExecutionBudgetUsage::default()
+            && self.budget_exhaustion.is_none()
+            && self.finalization.is_none()
+            && self.degradations.is_empty()
+    }
+
+    pub fn checkpoint(&self) -> ExecutionLifecycleCheckpoint {
+        ExecutionLifecycleCheckpoint {
+            policy: self.policy.clone(),
+            budget_usage: self.budget_usage.clone(),
+            budget_exhaustion: self.budget_exhaustion.clone(),
+            finalization: self.finalization.clone(),
+            degradation_count: self.degradations.len(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ExecutionLifecycleCheckpoint {
+    pub policy: Option<ExecutionPolicy>,
+    pub budget_usage: ExecutionBudgetUsage,
+    pub budget_exhaustion: Option<ExecutionBudgetExhaustion>,
+    pub finalization: Option<FinalizationRecord>,
+    pub degradation_count: usize,
+}
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ExecutionValidationError {
     #[error("{field} must be greater than zero")]
@@ -648,6 +1233,12 @@ pub enum ExecutionValidationError {
     MissingPlanDecisionRecordField { field: &'static str },
     #[error("invalid {kind} plan decision shape")]
     InvalidDecisionShape { kind: &'static str },
+    #[error("plan ambiguity summary must not be empty")]
+    MissingAmbiguitySummary,
+    #[error("plan ambiguity summary exceeds 500 characters")]
+    AmbiguitySummaryTooLong,
+    #[error("plan ambiguity evidence references are invalid or exceed bounds")]
+    InvalidAmbiguityEvidence,
 }
 
 #[cfg(test)]

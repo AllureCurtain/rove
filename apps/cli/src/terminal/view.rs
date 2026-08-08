@@ -1036,6 +1036,21 @@ impl From<&StreamEvent> for RunViewUpdate {
                 job_id: *job_id,
                 user_message: user_message.clone(),
             },
+            StreamEvent::ExecutionStrategySelected { policy } => Self::ModelStatus {
+                status: "execution".to_string(),
+                message: format!("Execution strategy selected: {:?}.", policy.strategy),
+            },
+            StreamEvent::ExecutionBudgetUpdated { phase, snapshot } => Self::ModelStatus {
+                status: "budget".to_string(),
+                message: snapshot.exhausted.as_ref().map_or_else(
+                    || format!("Execution budget updated after {phase:?}."),
+                    |exhaustion| exhaustion.safe_summary.clone(),
+                ),
+            },
+            StreamEvent::ExecutionDegraded { record } => Self::ModelStatus {
+                status: "degraded".to_string(),
+                message: record.safe_summary.clone(),
+            },
             StreamEvent::LlmChunk { delta } => Self::AssistantDelta {
                 delta: delta.clone(),
             },
@@ -1100,6 +1115,17 @@ impl From<&StreamEvent> for RunViewUpdate {
             StreamEvent::PlanRevised { plan, revision } => Self::PlanRevised {
                 plan: plan.clone(),
                 revision: revision.as_ref().clone(),
+            },
+            StreamEvent::FinalizationStarted { .. } => Self::ModelStatus {
+                status: "finalizing".to_string(),
+                message: "Finalizing the run from recorded evidence.".to_string(),
+            },
+            StreamEvent::FinalizationCompleted { record } => Self::ModelStatus {
+                status: "finalized".to_string(),
+                message: record.outcome.map_or_else(
+                    || "Run finalization completed.".to_string(),
+                    |outcome| format!("Run finalization completed: {outcome:?}."),
+                ),
             },
             StreamEvent::PlanStepStarted { step, index, .. } => Self::PlanStepStarted {
                 step: step.clone(),
@@ -1204,6 +1230,7 @@ mod tests {
             error_code: None,
             safe_error_summary: None,
             supersedes_record_id: None,
+            ambiguity: None,
         }
     }
 
@@ -1289,6 +1316,7 @@ mod tests {
                 step: step(),
                 index: 0,
                 attempt: Default::default(),
+                budget: Default::default(),
             },
             StreamEvent::StepResult {
                 record: Box::new(step_record()),
@@ -1473,6 +1501,7 @@ mod tests {
                 error_code: None,
                 safe_error_summary: None,
                 supersedes_record_id: None,
+                ambiguity: None,
             },
         });
 

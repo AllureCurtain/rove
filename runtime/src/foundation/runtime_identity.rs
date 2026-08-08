@@ -18,8 +18,16 @@ pub struct RuntimeIdentity {
     pub plan_enabled: bool,
     pub system_prompt_hash: String,
     pub planner_prompt_hash: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evaluator_prompt_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finalizer_prompt_hash: Option<String>,
     pub workspace_fingerprint: String,
     pub tool_signature: String,
+    /// Fully resolved execution policy. Absent in older snapshots, which fall
+    /// back to the `max_steps` / `plan_enabled` projection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_policy: Option<ExecutionPolicy>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capability_snapshot_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -31,7 +39,9 @@ pub struct RuntimeIdentity {
 impl RuntimeIdentity {
     /// Project sugar fields into the typed policy without changing wire schema.
     pub fn to_execution_policy(&self) -> ExecutionPolicy {
-        ExecutionPolicy::from_max_steps_and_plan_flag(self.max_steps, self.plan_enabled)
+        self.execution_policy.clone().unwrap_or_else(|| {
+            ExecutionPolicy::from_max_steps_and_plan_flag(self.max_steps, self.plan_enabled)
+        })
     }
 }
 
@@ -60,6 +70,13 @@ pub struct RuntimeIdentityInput<'a> {
     pub plan_enabled: bool,
     pub system_prompt: &'a str,
     pub planner_prompt: &'a str,
+    /// Bounded evaluator prompt. Recorded so a resumed run can detect that the
+    /// text driving ambiguity decisions changed underneath it.
+    pub evaluator_prompt: &'a str,
+    /// Independent finalizer prompt, recorded for the same reason.
+    pub finalizer_prompt: &'a str,
+    /// Fully resolved execution policy for this run.
+    pub execution_policy: ExecutionPolicy,
     pub tools: &'a [ToolDescriptor],
     pub capability_snapshot_id: Option<&'a str>,
     pub execution_environment: Option<&'a ExecutionEnvironmentIdentity>,
@@ -87,8 +104,11 @@ pub fn build_runtime_identity(input: RuntimeIdentityInput<'_>) -> RuntimeIdentit
         plan_enabled: input.plan_enabled,
         system_prompt_hash: stable_hash(input.system_prompt),
         planner_prompt_hash: stable_hash(input.planner_prompt),
+        evaluator_prompt_hash: Some(stable_hash(input.evaluator_prompt)),
+        finalizer_prompt_hash: Some(stable_hash(input.finalizer_prompt)),
         workspace_fingerprint: workspace_fingerprint(input.workspace),
         tool_signature: tool_signature(input.tools),
+        execution_policy: Some(input.execution_policy),
         capability_snapshot_id: input.capability_snapshot_id.map(str::to_string),
         execution_environment: input.execution_environment.cloned(),
         execution_capabilities: input.execution_capabilities.copied(),
@@ -134,11 +154,24 @@ pub fn evaluate_runtime_identity(
     if saved.planner_prompt_hash != current.planner_prompt_hash {
         mismatch_fields.push("planner_prompt_hash".to_string());
     }
+    if saved.evaluator_prompt_hash.is_some()
+        && saved.evaluator_prompt_hash != current.evaluator_prompt_hash
+    {
+        mismatch_fields.push("evaluator_prompt_hash".to_string());
+    }
+    if saved.finalizer_prompt_hash.is_some()
+        && saved.finalizer_prompt_hash != current.finalizer_prompt_hash
+    {
+        mismatch_fields.push("finalizer_prompt_hash".to_string());
+    }
     if saved.workspace_fingerprint != current.workspace_fingerprint {
         mismatch_fields.push("workspace_fingerprint".to_string());
     }
     if saved.tool_signature != current.tool_signature {
         mismatch_fields.push("tool_signature".to_string());
+    }
+    if saved.execution_policy.is_some() && saved.execution_policy != current.execution_policy {
+        mismatch_fields.push("execution_policy".to_string());
     }
     if saved.capability_snapshot_id.is_some()
         && saved.capability_snapshot_id != current.capability_snapshot_id
@@ -171,6 +204,7 @@ pub fn evaluate_runtime_identity(
 
 #[cfg(test)]
 mod tests {
+    use crate::execution::ExecutionPolicy;
     use crate::prompt_metadata::tool_signature;
     use crate::types::ApprovalPolicy;
     use crate::workspace::{Workspace, WorkspaceKind};
@@ -216,6 +250,9 @@ mod tests {
             plan_enabled: true,
             system_prompt: "system prompt",
             planner_prompt: "planner prompt",
+            evaluator_prompt: "evaluator prompt",
+            finalizer_prompt: "finalizer prompt",
+            execution_policy: ExecutionPolicy::from_max_steps_and_plan_flag(12, true),
             tools: &tools,
             capability_snapshot_id: Some("sha256:capabilities"),
             execution_environment: None,
@@ -263,6 +300,9 @@ mod tests {
             plan_enabled: true,
             system_prompt: "system prompt",
             planner_prompt: "planner prompt",
+            evaluator_prompt: "evaluator prompt",
+            finalizer_prompt: "finalizer prompt",
+            execution_policy: ExecutionPolicy::from_max_steps_and_plan_flag(12, true),
             tools: &tools,
             capability_snapshot_id: Some("sha256:saved-capabilities"),
             execution_environment: None,
@@ -277,6 +317,9 @@ mod tests {
             plan_enabled: false,
             system_prompt: "changed system prompt",
             planner_prompt: "planner prompt",
+            evaluator_prompt: "evaluator prompt",
+            finalizer_prompt: "finalizer prompt",
+            execution_policy: ExecutionPolicy::from_max_steps_and_plan_flag(12, true),
             tools: &[],
             capability_snapshot_id: Some("sha256:current-capabilities"),
             execution_environment: None,
@@ -326,6 +369,9 @@ mod tests {
             plan_enabled: false,
             system_prompt: "system",
             planner_prompt: "planner",
+            evaluator_prompt: "evaluator",
+            finalizer_prompt: "finalizer",
+            execution_policy: ExecutionPolicy::from_max_steps_and_plan_flag(4, true),
             tools: &[],
             capability_snapshot_id: None,
             execution_environment: None,
@@ -350,6 +396,9 @@ mod tests {
             plan_enabled: false,
             system_prompt: "system",
             planner_prompt: "planner",
+            evaluator_prompt: "evaluator",
+            finalizer_prompt: "finalizer",
+            execution_policy: ExecutionPolicy::from_max_steps_and_plan_flag(4, true),
             tools: &[],
             capability_snapshot_id: Some("sha256:current-capabilities"),
             execution_environment: Some(&crate::environment::ExecutionEnvironmentIdentity {
@@ -384,5 +433,118 @@ mod tests {
 
         assert_eq!(evaluation.status, RuntimeIdentityStatus::FullValid);
         assert!(evaluation.mismatch_fields.is_empty());
+    }
+
+    fn lifecycle_identity(
+        evaluator_prompt: &str,
+        finalizer_prompt: &str,
+        policy: ExecutionPolicy,
+        workspace: &Workspace,
+    ) -> RuntimeIdentity {
+        build_runtime_identity(RuntimeIdentityInput {
+            workspace,
+            model_id: "fake",
+            provider_target: "fake:local:fake",
+            approval_policy: ApprovalPolicy::Auto,
+            max_steps: 20,
+            plan_enabled: true,
+            system_prompt: "system",
+            planner_prompt: "planner",
+            evaluator_prompt,
+            finalizer_prompt,
+            execution_policy: policy,
+            tools: &[],
+            capability_snapshot_id: None,
+            execution_environment: None,
+            execution_capabilities: None,
+        })
+    }
+
+    /// A resumed run must notice that the text or policy driving lifecycle
+    /// decisions changed underneath it, otherwise the recorded identity is
+    /// decorative.
+    #[test]
+    fn changed_lifecycle_prompts_and_policy_are_reported_as_mismatches() {
+        let workspace = workspace();
+        let baseline_policy = ExecutionPolicy::from_max_steps_and_plan_flag(20, true);
+        let saved = lifecycle_identity(
+            "evaluator v1",
+            "finalizer v1",
+            baseline_policy.clone(),
+            &workspace,
+        );
+
+        let changed_evaluator = lifecycle_identity(
+            "evaluator v2",
+            "finalizer v1",
+            baseline_policy.clone(),
+            &workspace,
+        );
+        assert!(
+            evaluate_runtime_identity(Some(&saved), &changed_evaluator)
+                .mismatch_fields
+                .contains(&"evaluator_prompt_hash".to_string())
+        );
+
+        let changed_finalizer = lifecycle_identity(
+            "evaluator v1",
+            "finalizer v2",
+            baseline_policy.clone(),
+            &workspace,
+        );
+        assert!(
+            evaluate_runtime_identity(Some(&saved), &changed_finalizer)
+                .mismatch_fields
+                .contains(&"finalizer_prompt_hash".to_string())
+        );
+
+        let mut tightened = baseline_policy.clone();
+        tightened.budgets.max_tool_calls = Some(3);
+        let changed_policy =
+            lifecycle_identity("evaluator v1", "finalizer v1", tightened, &workspace);
+        assert!(
+            evaluate_runtime_identity(Some(&saved), &changed_policy)
+                .mismatch_fields
+                .contains(&"execution_policy".to_string())
+        );
+
+        // An identical lifecycle contract must not be reported as drift.
+        let same = lifecycle_identity("evaluator v1", "finalizer v1", baseline_policy, &workspace);
+        assert!(
+            evaluate_runtime_identity(Some(&saved), &same)
+                .mismatch_fields
+                .is_empty()
+        );
+    }
+
+    /// Older snapshots predate these fields entirely and must stay resumable.
+    #[test]
+    fn an_identity_without_lifecycle_fields_is_not_treated_as_drift() {
+        let workspace = workspace();
+        let current = lifecycle_identity(
+            "evaluator v1",
+            "finalizer v1",
+            ExecutionPolicy::from_max_steps_and_plan_flag(20, true),
+            &workspace,
+        );
+        let mut legacy_value = serde_json::to_value(&current).unwrap();
+        let object = legacy_value.as_object_mut().unwrap();
+        object.remove("evaluator_prompt_hash");
+        object.remove("finalizer_prompt_hash");
+        object.remove("execution_policy");
+        let legacy: RuntimeIdentity = serde_json::from_value(legacy_value).unwrap();
+
+        let evaluation = evaluate_runtime_identity(Some(&legacy), &current);
+
+        assert!(
+            evaluation.mismatch_fields.is_empty(),
+            "absent lifecycle identity is unknown, not changed: {:?}",
+            evaluation.mismatch_fields
+        );
+        // The projection still resolves a usable policy for an old snapshot.
+        assert_eq!(
+            legacy.to_execution_policy(),
+            ExecutionPolicy::from_max_steps_and_plan_flag(20, true)
+        );
     }
 }

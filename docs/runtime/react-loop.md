@@ -77,9 +77,35 @@ the sole execution-config truth.
 to `max_step_attempts`. Planned execution separately resolves
 `max_model_turns_per_step = 4` as a named compatibility default; it does not
 reinterpret `max_steps` as a second budget unit. Exhausting this step-local
-ceiling emits a terminal `step_result` and completes the run with
-`TerminationReason::StepLimit` plus an explicit
-`max_model_turns_per_step=4` reason.
+ceiling emits a terminal `step_result` whose `error_code` names the exhausted
+dimension (`model_turns_per_step_budget_exhausted`) and completes the run with
+`TerminationReason::StepLimit`.
+
+Operators can configure the remaining dimensions directly under
+`[runtime.execution]` in project configuration. Every field is optional: an unset
+dimension keeps the value the `max_steps` projection derived, so an existing
+config behaves exactly as before. Configured values overlay the derived policy
+and the resolved result is validated at startup, so a zero limit or a per-step
+ceiling above its global ceiling fails as a configuration error rather than a
+mid-run refusal. Available keys are `evaluator_mode`, `finalizer_policy`,
+`max_plan_steps`, `max_step_attempts`, `max_model_turns`,
+`max_model_turns_per_step`, `max_tool_calls`, `max_tool_calls_per_step`,
+`max_plan_revisions`, `max_model_repairs`, `max_finalization_turns`,
+`max_wall_time_ms`, `max_total_tokens`, and `max_cost_microunits`. Cost is
+enforced only when the active provider supplies priced usage; the
+`cost_enforced` flag on a budget snapshot reports whether that is true rather
+than implying enforcement that does not exist.
+
+Budgets are per-run accounting. Restarting the *same* run restores its consumed
+usage so a crash-restart loop cannot hand out a fresh allowance on every
+attempt, while a new turn that continues a session starts from zero. Carrying
+usage across turns would progressively starve a long session until no further
+work could run.
+
+`ExecutionStrategySelected`, `ExecutionBudgetUpdated`, and `ExecutionDegraded`
+are canonical events. A degradation record is always explicit: a fallback never
+changes permissions, never erases recorded evidence, and carries a safe summary
+rather than model reasoning.
 
 Planned execution also maintains an append-only terminal-attempt ledger:
 
@@ -94,8 +120,10 @@ Planned execution also maintains an append-only terminal-attempt ledger:
 4. Every terminal attempt emits `step_result` with a `StepRecord`, followed by
    exactly one `plan_decision`. Compatibility dual-fire
    `PlanStepCompleted` / `PlanStepFailed` events are not emitted. The runtime
-   currently produces `succeeded`, `failed`, `blocked`, `budget_exhausted`,
-   `cancelled`, and `interrupted` records.
+   currently produces `succeeded`, `failed`, `blocked`, `rejected`,
+   `budget_exhausted`, `cancelled`, `interrupted`, and `indeterminate` records.
+   A tool dispatch that stopped without a recorded outcome is classified
+   `indeterminate` rather than treated as safely replayable.
 5. A recoverable failure emits `plan_revised` with an immutable child revision
    linked to its parent revision, triggering step record, and decision. It does
    not masquerade as another initial `plan_created` event.
@@ -115,12 +143,34 @@ because an external side effect may already have occurred. Older snapshots
 that contain only a mutable plan are wrapped once as revision zero with the
 `legacy_plan_migrated` reason code.
 
-The current evaluator is deterministic and provider-free: it maps terminal
-status plus explicit recoverability to `continue`, `replace_remaining`, or
-`finish`. Model-on-ambiguity evaluation, an independent Finalizer, public
-multidimensional budget configuration, global model/tool/token accounting,
-structured budget events, and reconciliation of canonical trace events newer
-than the latest `TaskState` snapshot remain future work.
+The evaluator remains rule-first: deterministic rules map terminal status plus
+explicit recoverability to `continue`, `replace_remaining`, or `finish`. A model
+evaluation is reachable only when a terminal record carries a validated
+`PlanAmbiguity` produced from a structured step conclusion; arbitrary prose never
+grants access to the evaluator. Model evaluation is bounded by repair and
+model-turn budgets, rejects a no-op replan, and falls back to the deterministic
+decision on any error, invalid result, cancellation, or budget boundary. Set
+`evaluator_mode = "rule_only"` to disable it entirely.
+
+An independent Finalizer owns the user-facing answer. It is evidence-grounded:
+it synthesizes from recorded step facts and cites the evidence that produced
+them, and it never labels a non-success terminal state as completed. Every
+outcome is explained — `success`, `partial`, `blocked`, `rejected`, `cancelled`,
+`interrupted`, `exhausted`, `indeterminate`, and `failed` — so a cancelled or
+exhausted run reports what happened instead of returning no answer. React finals
+stay direct because the model already produced the user-facing answer; planned
+runs use the deterministic synthesis by default. `finalizer_policy =
+"model_preferred"` prefers a bounded model synthesis and falls back
+deterministically, emitting an `ExecutionDegraded` record when it does.
+
+Resume reconciles the canonical trace tail with the snapshot. Because
+`task_state.json` is written after the `trace.jsonl` line, a crash between those
+writes leaves durable facts only in the trace. On resume, events newer than
+`checkpoint.last_event_seq` are replayed into the snapshot as a projection: no
+tool call, model turn, or mutation is re-dispatched, application is idempotent,
+an exhaustion boundary and a resolved finalization outcome are sticky, only a
+successful record advances plan progress, and a truncated tail line is counted
+and skipped rather than failing the resume.
 
 This differs from pico's `pico/agent_loop.py`, where prompt build, model call,
 parse, tool execution, checkpoint, and trace recording live in one readable loop.
@@ -228,6 +278,5 @@ missing, or conflicting results cause projection to fail rather than entering
 The shared kernel consumes the bounded derived `Vec<Message>` view produced by
 each host at the existing context-manager boundary. Authoritative bounded
 tool-schema validation, registration-time descriptor pinning, pre-dispatch
-provider capability checks, Runtime-owned capability snapshot binding, and the
-single shared Agent kernel are implemented. An independent lifecycle Finalizer
-remains later work in the implementation brief.
+provider capability checks, Runtime-owned capability snapshot binding, the single
+shared Agent kernel, and the independent lifecycle Finalizer are implemented.

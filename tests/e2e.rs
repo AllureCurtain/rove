@@ -76,6 +76,7 @@ fn sample_step_record(
         error_code: None,
         safe_error_summary: None,
         supersedes_record_id: None,
+        ambiguity: None,
     }
 }
 
@@ -839,10 +840,7 @@ fn build_test_engine(responses: Vec<String>) -> Engine {
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(EchoTool));
     let context_manager = ContextManager::new("You are a test agent.".to_string());
-    let config = EngineConfig {
-        max_steps: 5,
-        plan_enabled: false,
-    };
+    let config = EngineConfig::new(5, false);
     Engine::new(model, registry, context_manager, config)
 }
 
@@ -851,10 +849,7 @@ fn build_planner_test_engine(responses: Vec<String>) -> Engine {
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(EchoTool));
     let context_manager = ContextManager::new("You are a test agent.".to_string());
-    let config = EngineConfig {
-        max_steps: 5,
-        plan_enabled: true,
-    };
+    let config = EngineConfig::new(5, true);
     Engine::new(model, registry, context_manager, config)
 }
 
@@ -866,10 +861,7 @@ fn build_replanning_test_engine() -> Engine {
         model,
         registry,
         ContextManager::new("You are a test agent.".to_string()),
-        EngineConfig {
-            max_steps: 5,
-            plan_enabled: true,
-        },
+        EngineConfig::new(5, true),
     )
 }
 
@@ -878,10 +870,7 @@ fn build_test_engine_with_workspace(responses: Vec<String>, workspace: Workspace
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(EchoTool));
     let context_manager = ContextManager::new("You are a test agent.".to_string());
-    let config = EngineConfig {
-        max_steps: 5,
-        plan_enabled: false,
-    };
+    let config = EngineConfig::new(5, false);
     Engine::with_workspace(
         model,
         registry,
@@ -913,10 +902,7 @@ fn build_engine_with_destructive_tool(
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(FakeDestructiveTool));
     let context_manager = ContextManager::new("You are a test agent.".to_string());
-    let config = EngineConfig {
-        max_steps: 2,
-        plan_enabled: false,
-    };
+    let config = EngineConfig::new(2, false);
     Engine::with_workspace_and_approval_decision(
         model,
         registry,
@@ -938,10 +924,7 @@ fn build_engine_with_counting_tool_and_hooks(
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(CountingTool { calls }));
     let context_manager = ContextManager::new("You are a test agent.".to_string());
-    let config = EngineConfig {
-        max_steps: 2,
-        plan_enabled: false,
-    };
+    let config = EngineConfig::new(2, false);
     Engine::with_workspace(
         model,
         registry,
@@ -1094,10 +1077,7 @@ async fn failed_approval_registration_emits_no_actionable_event_and_runs_no_tool
         model,
         registry,
         ContextManager::new("You are a test agent.".to_string()),
-        EngineConfig {
-            max_steps: 2,
-            plan_enabled: false,
-        },
+        EngineConfig::new(2, false),
         workspace,
         ApprovalPolicy::Ask,
     )
@@ -1564,6 +1544,7 @@ async fn latest_task_state_is_loaded_for_resume() {
         plan: None,
         runtime_identity: None,
         step_ledger: Default::default(),
+        execution_lifecycle: Default::default(),
     };
 
     store.write_task_state(&state).await.unwrap();
@@ -1590,6 +1571,7 @@ async fn latest_task_state_rejects_unsupported_schema_version() {
         plan: None,
         runtime_identity: None,
         step_ledger: Default::default(),
+        execution_lifecycle: Default::default(),
     };
 
     store.write_task_state(&state).await.unwrap();
@@ -1622,6 +1604,7 @@ async fn list_resumable_task_states_filters_by_session_and_newest_first() {
         plan: None,
         runtime_identity: None,
         step_ledger: Default::default(),
+        execution_lifecycle: Default::default(),
     };
     let unrelated = TaskState {
         schema_version: 1,
@@ -1636,6 +1619,7 @@ async fn list_resumable_task_states_filters_by_session_and_newest_first() {
         plan: None,
         runtime_identity: None,
         step_ledger: Default::default(),
+        execution_lifecycle: Default::default(),
     };
     let newer = TaskState {
         schema_version: 1,
@@ -1650,6 +1634,7 @@ async fn list_resumable_task_states_filters_by_session_and_newest_first() {
         plan: None,
         runtime_identity: None,
         step_ledger: Default::default(),
+        execution_lifecycle: Default::default(),
     };
 
     store.write_task_state(&older).await.unwrap();
@@ -1691,6 +1676,7 @@ async fn list_task_states_returns_all_snapshots_newest_first() {
         plan: None,
         runtime_identity: None,
         step_ledger: Default::default(),
+        execution_lifecycle: Default::default(),
     };
     let newer = TaskState {
         schema_version: 1,
@@ -1705,6 +1691,7 @@ async fn list_task_states_returns_all_snapshots_newest_first() {
         plan: None,
         runtime_identity: None,
         step_ledger: Default::default(),
+        execution_lifecycle: Default::default(),
     };
 
     store.write_task_state(&older).await.unwrap();
@@ -1739,6 +1726,7 @@ async fn load_task_state_reads_exact_run_id() {
         plan: None,
         runtime_identity: None,
         step_ledger: Default::default(),
+        execution_lifecycle: Default::default(),
     };
     let other = TaskState {
         schema_version: 1,
@@ -1753,6 +1741,7 @@ async fn load_task_state_reads_exact_run_id() {
         plan: None,
         runtime_identity: None,
         step_ledger: Default::default(),
+        execution_lifecycle: Default::default(),
     };
 
     store.write_task_state(&target).await.unwrap();
@@ -1835,6 +1824,7 @@ async fn lazy_import_indexes_existing_task_state_artifacts() {
         plan: None,
         runtime_identity: None,
         step_ledger: Default::default(),
+        execution_lifecycle: Default::default(),
     };
     let run_dir = tmp.path().join("runs").join(state.run_id.to_string());
     std::fs::create_dir_all(&run_dir).unwrap();
@@ -1879,6 +1869,7 @@ async fn repair_index_explicitly_imports_legacy_task_state_artifacts() {
         plan: None,
         runtime_identity: None,
         step_ledger: Default::default(),
+        execution_lifecycle: Default::default(),
     };
     let run_dir = tmp.path().join("runs").join(state.run_id.to_string());
     std::fs::create_dir_all(&run_dir).unwrap();
@@ -1946,6 +1937,7 @@ async fn repair_index_rebuilds_events_and_report_from_artifacts() {
         plan: None,
         runtime_identity: None,
         step_ledger,
+        execution_lifecycle: Default::default(),
     };
     store.write_task_state(&state).await.unwrap();
     let mut report = RunReport::new(
@@ -2001,6 +1993,7 @@ async fn repair_index_reports_corrupted_trace_lines_without_aborting() {
         plan: None,
         runtime_identity: None,
         step_ledger: Default::default(),
+        execution_lifecycle: Default::default(),
     };
     std::fs::write(
         run_dir.join("task_state.json"),
@@ -2084,6 +2077,7 @@ async fn cleanup_expired_state_rows_removes_only_expired_entries() {
         plan: None,
         runtime_identity: None,
         step_ledger: Default::default(),
+        execution_lifecycle: Default::default(),
     };
     store.write_task_state(&expired_state).await.unwrap();
     let run_dir = tmp.path().join("runs").join(active_run.to_string());
@@ -2227,10 +2221,7 @@ async fn oneshot_persists_native_tool_use_structured_history() {
         Box::new(NativeToolUseModelClient::new()),
         registry,
         ContextManager::new("You are a test agent.".to_string()),
-        EngineConfig {
-            max_steps: 5,
-            plan_enabled: false,
-        },
+        EngineConfig::new(5, false),
         workspace.clone(),
         ApprovalPolicy::Auto,
     );
@@ -2275,10 +2266,7 @@ async fn resumed_run_includes_session_summary_in_prompt() {
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(EchoTool));
     let context_manager = ContextManager::with_max_history("system".to_string(), 2);
-    let config = EngineConfig {
-        max_steps: 1,
-        plan_enabled: false,
-    };
+    let config = EngineConfig::new(1, false);
     let engine = Engine::with_workspace(
         model,
         registry,
@@ -2306,6 +2294,7 @@ async fn resumed_run_includes_session_summary_in_prompt() {
             plan: None,
             runtime_identity: None,
             step_ledger: Default::default(),
+            execution_lifecycle: Default::default(),
         }),
     };
 
@@ -2345,10 +2334,7 @@ async fn engine_includes_session_memory_file_in_prompt() {
         model,
         registry,
         ContextManager::with_max_history("system".to_string(), 2),
-        EngineConfig {
-            max_steps: 1,
-            plan_enabled: false,
-        },
+        EngineConfig::new(1, false),
         workspace,
         ApprovalPolicy::Auto,
     );
@@ -2396,10 +2382,7 @@ async fn engine_honors_configured_session_memory_dir_for_read_and_write() {
         model,
         registry,
         ContextManager::with_max_history("system".to_string(), 2),
-        EngineConfig {
-            max_steps: 1,
-            plan_enabled: false,
-        },
+        EngineConfig::new(1, false),
         workspace.clone(),
         ApprovalPolicy::Auto,
     )
@@ -2495,10 +2478,7 @@ async fn engine_writes_deterministic_session_summary_with_tool_activity() {
         ])),
         registry,
         ContextManager::new("system".to_string()),
-        EngineConfig {
-            max_steps: 3,
-            plan_enabled: false,
-        },
+        EngineConfig::new(3, false),
         workspace.clone(),
         ApprovalPolicy::Auto,
     );
@@ -2534,10 +2514,7 @@ async fn engine_writes_deterministic_session_summary_with_tool_activity() {
         Box::new(RecordingModelClient::new(captured_messages.clone())),
         ToolRegistry::new(),
         ContextManager::with_max_history("system".to_string(), 2),
-        EngineConfig {
-            max_steps: 1,
-            plan_enabled: false,
-        },
+        EngineConfig::new(1, false),
         workspace,
         ApprovalPolicy::Auto,
     );
@@ -2589,10 +2566,7 @@ async fn engine_includes_relevant_durable_memory_in_prompt() {
         model,
         registry,
         ContextManager::with_max_history("system".to_string(), 2),
-        EngineConfig {
-            max_steps: 1,
-            plan_enabled: false,
-        },
+        EngineConfig::new(1, false),
         workspace,
         ApprovalPolicy::Auto,
     );
@@ -2643,10 +2617,7 @@ async fn engine_honors_configured_durable_memory_dir_for_prompt_recall() {
         model,
         registry,
         ContextManager::with_max_history("system".to_string(), 2),
-        EngineConfig {
-            max_steps: 1,
-            plan_enabled: false,
-        },
+        EngineConfig::new(1, false),
         workspace.clone(),
         ApprovalPolicy::Auto,
     )
@@ -2752,10 +2723,7 @@ async fn engine_writes_completed_plan_steps_to_session_summary() {
         ])),
         ToolRegistry::new(),
         ContextManager::new("system".to_string()),
-        EngineConfig {
-            max_steps: 5,
-            plan_enabled: true,
-        },
+        EngineConfig::new(5, true),
         workspace.clone(),
         ApprovalPolicy::Auto,
     );
@@ -2849,10 +2817,7 @@ async fn planner_uses_engine_configured_prompt() {
         model,
         registry,
         ContextManager::new("You are a test agent.".to_string()),
-        EngineConfig {
-            max_steps: 3,
-            plan_enabled: true,
-        },
+        EngineConfig::new(3, true),
         workspace,
         ApprovalPolicy::Auto,
     )
@@ -2908,6 +2873,7 @@ async fn planner_resumes_at_current_step() {
             plan: Some(plan),
             runtime_identity: None,
             step_ledger: Default::default(),
+            execution_lifecycle: Default::default(),
         }),
     };
     let engine = build_planner_test_engine(vec!["step 2 done".to_string()]);
@@ -2977,10 +2943,12 @@ async fn planner_resume_checkpoint_does_not_repeat_completed_steps() {
                 compaction: Default::default(),
                 runtime_identity: None,
                 step_ledger: Default::default(),
+                execution_lifecycle: Default::default(),
             }),
             plan: None,
             runtime_identity: None,
             step_ledger: Default::default(),
+            execution_lifecycle: Default::default(),
         }),
     };
     let engine = build_planner_test_engine(vec!["step 2 done".to_string()]);
@@ -3053,6 +3021,7 @@ async fn planner_resume_closes_unknown_in_flight_attempt_without_replay() {
             plan: Some(plan),
             runtime_identity: None,
             step_ledger,
+            execution_lifecycle: Default::default(),
         }),
     };
     let engine = build_planner_test_engine(vec!["must not be called".to_string()]);
@@ -3128,6 +3097,7 @@ async fn planner_resume_applies_terminal_success_without_replaying_the_step() {
             plan: Some(plan),
             runtime_identity: None,
             step_ledger,
+            execution_lifecycle: Default::default(),
         }),
     };
     let engine = build_planner_test_engine(vec!["must not be called".to_string()]);
@@ -3163,6 +3133,171 @@ async fn planner_resume_applies_terminal_success_without_replaying_the_step() {
     ));
 }
 
+/// A new turn that continues a session must start with a fresh execution
+/// budget. Budgets are per-run accounting, so inheriting a previous run's
+/// consumed usage would progressively starve a long session until no further
+/// work could run.
+#[tokio::test]
+async fn a_new_turn_continuing_a_session_starts_with_a_fresh_execution_budget() {
+    let exhausted_usage = rove_runtime::execution::ExecutionBudgetUsage {
+        step_attempts: 5,
+        model_turns: 40,
+        tool_calls: 100,
+        ..Default::default()
+    };
+    let req = RunRequest {
+        session_id: SessionId::new(),
+        job_id: JobId::new(),
+        // A distinct run id marks this as a new turn rather than a resume of
+        // the run that consumed the budget above.
+        run_id: RunId::new(),
+        user_message: "start a follow-up turn".to_string(),
+        resume_state: Some(TaskState {
+            schema_version: 1,
+            session_id: SessionId::new(),
+            job_id: JobId::new(),
+            run_id: RunId::new(),
+            goal: "earlier turn".to_string(),
+            step: 40,
+            history: vec![],
+            summary: None,
+            checkpoint: None,
+            plan: None,
+            runtime_identity: None,
+            step_ledger: Default::default(),
+            execution_lifecycle: rove_runtime::execution::ExecutionLifecycleState {
+                budget_usage: exhausted_usage.clone(),
+                ..Default::default()
+            },
+        }),
+    };
+    let engine = build_planner_test_engine(vec![
+        r#"{"goal":"follow up","steps":[{"id":"1","title":"answer"}]}"#.to_string(),
+        "follow-up answer".to_string(),
+    ]);
+
+    let events = collect_events_with_request(&engine, req).await;
+
+    let first = events
+        .iter()
+        .find_map(|event| match event {
+            StreamEvent::ExecutionBudgetUpdated { snapshot, .. } => Some(snapshot.clone()),
+            _ => None,
+        })
+        .expect("a budget projection should be emitted");
+    assert_eq!(
+        first.consumed.step_attempts, 0,
+        "the first projection precedes any step attempt in this turn"
+    );
+    assert!(
+        first.consumed.model_turns < exhausted_usage.model_turns,
+        "a new turn must not inherit prior model turns: {:?}",
+        first.consumed
+    );
+    assert_eq!(
+        first.consumed.tool_calls, 0,
+        "a new turn must not inherit prior tool calls"
+    );
+
+    // Once this turn does reserve a step attempt, it must be its own first.
+    let step_phase = events
+        .iter()
+        .find_map(|event| match event {
+            StreamEvent::ExecutionBudgetUpdated { phase, snapshot }
+                if *phase == rove_runtime::execution::ExecutionPhase::Step =>
+            {
+                Some(snapshot.clone())
+            }
+            _ => None,
+        })
+        .expect("a step-phase budget projection should be emitted");
+    assert_eq!(
+        step_phase.consumed.step_attempts, 1,
+        "the follow-up turn's first step attempt must be counted from zero"
+    );
+    assert!(
+        step_phase.consumed.step_attempts < exhausted_usage.step_attempts,
+        "a new turn must not inherit prior step attempts: {:?}",
+        step_phase.consumed
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, StreamEvent::PlanStepStarted { .. })),
+        "the follow-up turn must be able to run real work"
+    );
+    assert!(
+        !events.iter().any(|event| matches!(
+            event,
+            StreamEvent::FinalizationCompleted { record }
+                if record.finish_reason == rove_runtime::execution::PlanFinishReason::BudgetExhausted
+        )),
+        "a fresh turn must not finish as budget exhausted"
+    );
+}
+
+/// The complement of the rule above: restarting the *same* run must restore
+/// consumed usage so a crash-restart loop cannot hand out a new allowance on
+/// every attempt.
+#[tokio::test]
+async fn resuming_the_same_run_restores_its_consumed_execution_budget() {
+    let run_id = RunId::new();
+    let consumed = rove_runtime::execution::ExecutionBudgetUsage {
+        step_attempts: 3,
+        model_turns: 7,
+        tool_calls: 11,
+        ..Default::default()
+    };
+    let req = RunRequest {
+        session_id: SessionId::new(),
+        job_id: JobId::new(),
+        run_id,
+        user_message: "resume the same run".to_string(),
+        resume_state: Some(TaskState {
+            schema_version: 1,
+            session_id: SessionId::new(),
+            job_id: JobId::new(),
+            // Same run id: this is an explicit resume of interrupted work.
+            run_id,
+            goal: "resume the same run".to_string(),
+            step: 7,
+            history: vec![],
+            summary: None,
+            checkpoint: None,
+            plan: None,
+            runtime_identity: None,
+            step_ledger: Default::default(),
+            execution_lifecycle: rove_runtime::execution::ExecutionLifecycleState {
+                budget_usage: consumed.clone(),
+                ..Default::default()
+            },
+        }),
+    };
+    let engine = build_planner_test_engine(vec![
+        r#"{"goal":"resume","steps":[{"id":"1","title":"answer"}]}"#.to_string(),
+        "resumed answer".to_string(),
+    ]);
+
+    let events = collect_events_with_request(&engine, req).await;
+
+    let first = events
+        .iter()
+        .find_map(|event| match event {
+            StreamEvent::ExecutionBudgetUpdated { snapshot, .. } => Some(snapshot.clone()),
+            _ => None,
+        })
+        .expect("a budget projection should be emitted");
+    assert!(
+        first.consumed.model_turns > consumed.model_turns,
+        "a same-run resume keeps prior model turns and adds its own: {:?}",
+        first.consumed
+    );
+    assert_eq!(
+        first.consumed.tool_calls, consumed.tool_calls,
+        "a same-run resume keeps prior tool-call accounting"
+    );
+}
+
 #[tokio::test]
 async fn planned_step_returns_tool_result_to_model_before_completion() {
     let captured = Arc::new(Mutex::new(Vec::new()));
@@ -3180,10 +3315,7 @@ async fn planned_step_returns_tool_result_to_model_before_completion() {
         model,
         registry,
         ContextManager::with_max_history("You are a test agent.".to_string(), 0),
-        EngineConfig {
-            max_steps: 5,
-            plan_enabled: true,
-        },
+        EngineConfig::new(5, true),
     );
 
     let events = collect_events(&engine, "echo ping").await;
@@ -3397,6 +3529,14 @@ async fn planned_step_model_turn_budget_exhaustion_is_explicit() {
     ]);
 
     let events = collect_events(&engine, "run a bounded step").await;
+    for e in &events {
+        if let StreamEvent::StepResult { record } = e {
+            eprintln!(
+                "DBGSR status={:?} code={:?} summary={}",
+                record.status, record.error_code, record.summary
+            );
+        }
+    }
 
     assert_eq!(
         events
@@ -3410,31 +3550,33 @@ async fn planned_step_model_turn_budget_exhaustion_is_explicit() {
             .iter()
             .any(|event| matches!(event, StreamEvent::StepResult { record } if matches!(record.status, rove_runtime::execution::StepRecordStatus::Succeeded | rove_runtime::execution::StepRecordStatus::Skipped)))
     );
-    assert!(events.iter().any(|event| {
-        matches!(
-            event,
-            StreamEvent::StepResult { record }
-                if record.summary.contains(
-                    "step model-turn budget exhausted (max_model_turns_per_step=4)"
-                ) || record
-                    .safe_error_summary
-                    .as_deref()
-                    .is_some_and(|summary| {
-                        summary.contains(
-                            "step model-turn budget exhausted (max_model_turns_per_step=4)",
-                        )
-                    })
-        )
-    }));
-    assert!(events.iter().any(|event| {
-        matches!(
-            event,
-            StreamEvent::StepResult { record }
-                if record.status == StepRecordStatus::BudgetExhausted
-                    && record.error_code.as_deref()
-                        == Some("step_model_turn_budget_exhausted")
-        )
-    }));
+    // The exhausted dimension is now named explicitly by the typed budget,
+    // so the record identifies which per-step ceiling stopped the work.
+    assert!(
+        events.iter().any(|event| {
+            matches!(
+                event,
+                StreamEvent::StepResult { record }
+                    if record.status == StepRecordStatus::BudgetExhausted
+                        && record.error_code.as_deref()
+                            == Some("model_turns_per_step_budget_exhausted")
+            )
+        }),
+        "the step record must name the exhausted per-step model-turn dimension"
+    );
+    assert!(
+        events.iter().any(|event| {
+            matches!(
+                event,
+                StreamEvent::StepResult { record }
+                    if record.summary.contains("ModelTurnsPerStep")
+                        || record.safe_error_summary.as_deref().is_some_and(|summary| {
+                            summary.contains("per-step execution budget")
+                        })
+            )
+        }),
+        "the safe summary must explain the per-step budget boundary"
+    );
     assert!(matches!(
         events.last(),
         Some(StreamEvent::RunCompleted {
@@ -3458,10 +3600,7 @@ async fn planned_permission_denial_emits_blocked_step_record() {
         model,
         registry,
         ContextManager::new("You are a test agent.".to_string()),
-        EngineConfig {
-            max_steps: 3,
-            plan_enabled: true,
-        },
+        EngineConfig::new(3, true),
         workspace,
         ApprovalPolicy::Ask,
         ApprovalDecision::Reject,
@@ -3505,10 +3644,7 @@ async fn planned_context_limit_emits_budget_exhausted_step_record() {
                 reserved_tokens: 0,
             },
         ),
-        EngineConfig {
-            max_steps: 3,
-            plan_enabled: true,
-        },
+        EngineConfig::new(3, true),
     );
 
     let events = collect_events(&engine, "bounded context").await;
@@ -3744,6 +3880,7 @@ async fn resumed_run_uses_persisted_replanned_task_state() {
             plan: Some(plan),
             runtime_identity: None,
             step_ledger: Default::default(),
+            execution_lifecycle: Default::default(),
         }),
     };
     let engine = build_planner_test_engine(vec!["resumed replanned step done".to_string()]);
@@ -3930,10 +4067,7 @@ async fn run_with_cancel_completes_cancelled_while_tool_is_waiting() {
         model,
         registry,
         ContextManager::new("You are a test agent.".to_string()),
-        EngineConfig {
-            max_steps: 2,
-            plan_enabled: false,
-        },
+        EngineConfig::new(2, false),
         workspace,
         ApprovalPolicy::Auto,
     );
@@ -3961,17 +4095,35 @@ async fn run_with_cancel_completes_cancelled_while_tool_is_waiting() {
     }
 
     assert!(saw_tool_start, "tool call should start before cancellation");
-    let event = tokio::time::timeout(Duration::from_secs(2), stream.next())
-        .await
-        .expect("cancelled run should finish promptly")
-        .expect("cancelled run should emit a terminal event");
-    assert!(matches!(
-        event,
-        StreamEvent::RunCompleted {
-            reason: rove_runtime::types::TerminationReason::Cancelled,
-            output: None,
+    // Cancellation still emits its canonical lifecycle facts (such as a final
+    // budget projection) before the terminal event, so drain to the terminal
+    // fact instead of assuming it is the very next event.
+    let mut terminal = None;
+    while let Ok(Some(event)) = tokio::time::timeout(Duration::from_secs(2), stream.next()).await {
+        if matches!(event, StreamEvent::RunCompleted { .. }) {
+            terminal = Some(event);
+            break;
         }
-    ));
+    }
+    let terminal = terminal.expect("cancelled run should emit a terminal event promptly");
+    let StreamEvent::RunCompleted { reason, output } = &terminal else {
+        panic!("expected a terminal run event, got {terminal:?}");
+    };
+    assert!(
+        matches!(reason, rove_runtime::types::TerminationReason::Cancelled),
+        "a cancelled run must report cancellation: {reason:?}"
+    );
+    // The independent finalizer explains every non-success outcome rather than
+    // leaving the user with no answer, and must never imply the work succeeded.
+    let output = output.as_deref().expect("cancellation should be explained");
+    assert!(
+        output.contains("outcome: cancelled"),
+        "the finalized answer must name the cancelled outcome: {output}"
+    );
+    assert!(
+        !output.contains("outcome: success"),
+        "a cancelled run must never be labelled successful: {output}"
+    );
 }
 
 #[tokio::test]
@@ -3988,10 +4140,7 @@ async fn planned_cancellation_closes_the_in_flight_step_record() {
         model,
         registry,
         ContextManager::new("You are a test agent.".to_string()),
-        EngineConfig {
-            max_steps: 3,
-            plan_enabled: true,
-        },
+        EngineConfig::new(3, true),
         workspace,
         ApprovalPolicy::Auto,
     );
@@ -4115,10 +4264,7 @@ async fn run_stream_cancel_completes_cancelled_while_tool_is_waiting() {
         model,
         registry,
         ContextManager::new("You are a test agent.".to_string()),
-        EngineConfig {
-            max_steps: 2,
-            plan_enabled: false,
-        },
+        EngineConfig::new(2, false),
         workspace,
         ApprovalPolicy::Auto,
     );
@@ -4144,17 +4290,35 @@ async fn run_stream_cancel_completes_cancelled_while_tool_is_waiting() {
     }
 
     assert!(saw_tool_start, "tool call should start before cancellation");
-    let event = tokio::time::timeout(Duration::from_secs(2), stream.next())
-        .await
-        .expect("cancelled run should finish promptly")
-        .expect("cancelled run should emit a terminal event");
-    assert!(matches!(
-        event,
-        StreamEvent::RunCompleted {
-            reason: rove_runtime::types::TerminationReason::Cancelled,
-            output: None,
+    // Cancellation still emits its canonical lifecycle facts (such as a final
+    // budget projection) before the terminal event, so drain to the terminal
+    // fact instead of assuming it is the very next event.
+    let mut terminal = None;
+    while let Ok(Some(event)) = tokio::time::timeout(Duration::from_secs(2), stream.next()).await {
+        if matches!(event, StreamEvent::RunCompleted { .. }) {
+            terminal = Some(event);
+            break;
         }
-    ));
+    }
+    let terminal = terminal.expect("cancelled run should emit a terminal event promptly");
+    let StreamEvent::RunCompleted { reason, output } = &terminal else {
+        panic!("expected a terminal run event, got {terminal:?}");
+    };
+    assert!(
+        matches!(reason, rove_runtime::types::TerminationReason::Cancelled),
+        "a cancelled run must report cancellation: {reason:?}"
+    );
+    // The independent finalizer explains every non-success outcome rather than
+    // leaving the user with no answer, and must never imply the work succeeded.
+    let output = output.as_deref().expect("cancellation should be explained");
+    assert!(
+        output.contains("outcome: cancelled"),
+        "the finalized answer must name the cancelled outcome: {output}"
+    );
+    assert!(
+        !output.contains("outcome: success"),
+        "a cancelled run must never be labelled successful: {output}"
+    );
 }
 
 #[test]
@@ -4275,10 +4439,7 @@ async fn oneshot_persists_prompt_checkpoint() {
         model,
         registry,
         ContextManager::new("You are a test agent.".to_string()),
-        EngineConfig {
-            max_steps: 8,
-            plan_enabled: false,
-        },
+        EngineConfig::new(8, false),
         workspace.clone(),
         ApprovalPolicy::Auto,
     );
@@ -4342,10 +4503,7 @@ async fn model_compaction_stores_generated_summary_in_checkpoint() {
         model,
         registry,
         ContextManager::with_max_history("You are a test agent.".to_string(), 2),
-        EngineConfig {
-            max_steps: 4,
-            plan_enabled: false,
-        },
+        EngineConfig::new(4, false),
         workspace.clone(),
         ApprovalPolicy::Auto,
     )
@@ -4405,10 +4563,7 @@ async fn compaction_flushes_tool_notes_to_session_memory_before_summarizing() {
         model,
         registry,
         ContextManager::with_max_history("You are a test agent.".to_string(), 0),
-        EngineConfig {
-            max_steps: 3,
-            plan_enabled: false,
-        },
+        EngineConfig::new(3, false),
         workspace.clone(),
         ApprovalPolicy::Auto,
     )
@@ -4457,10 +4612,7 @@ async fn planned_compaction_flushes_tool_notes_to_session_memory_before_summariz
         model,
         registry,
         ContextManager::with_max_history("You are a test agent.".to_string(), 0),
-        EngineConfig {
-            max_steps: 4,
-            plan_enabled: true,
-        },
+        EngineConfig::new(4, true),
         workspace.clone(),
         ApprovalPolicy::Auto,
     )
@@ -4519,10 +4671,7 @@ async fn failing_model_compaction_falls_back_to_deterministic_summary_with_circu
         model,
         registry,
         ContextManager::with_max_history("You are a test agent.".to_string(), 1),
-        EngineConfig {
-            max_steps: 2,
-            plan_enabled: false,
-        },
+        EngineConfig::new(2, false),
         workspace.clone(),
         ApprovalPolicy::Auto,
     )
@@ -4588,10 +4737,7 @@ async fn resumed_run_prefers_prompt_checkpoint_tail_and_summary() {
         model,
         registry,
         ContextManager::with_max_history("system".to_string(), 20),
-        EngineConfig {
-            max_steps: 1,
-            plan_enabled: false,
-        },
+        EngineConfig::new(1, false),
         workspace,
         ApprovalPolicy::Auto,
     );
@@ -4627,10 +4773,12 @@ async fn resumed_run_prefers_prompt_checkpoint_tail_and_summary() {
             compaction: Default::default(),
             runtime_identity: None,
             step_ledger: Default::default(),
+            execution_lifecycle: Default::default(),
         }),
         plan: None,
         runtime_identity: None,
         step_ledger: Default::default(),
+        execution_lifecycle: Default::default(),
     };
     let req = RunRequest {
         session_id: SessionId::new(),
@@ -4908,10 +5056,7 @@ async fn engine_runs_parallel_safe_tool_batch_concurrently_with_ordered_writebac
         ])),
         registry,
         ContextManager::new("You are a test agent.".to_string()),
-        EngineConfig {
-            max_steps: 3,
-            plan_enabled: false,
-        },
+        EngineConfig::new(3, false),
         workspace,
         ApprovalPolicy::Auto,
     );
@@ -4958,10 +5103,7 @@ async fn engine_runs_non_parallel_safe_tool_batch_serially() {
         ])),
         registry,
         ContextManager::new("You are a test agent.".to_string()),
-        EngineConfig {
-            max_steps: 3,
-            plan_enabled: false,
-        },
+        EngineConfig::new(3, false),
         workspace,
         ApprovalPolicy::Auto,
     );
@@ -4997,10 +5139,7 @@ async fn engine_executes_native_model_tool_use() {
         Box::new(NativeToolUseModelClient::new()),
         registry,
         ContextManager::new("You are a test agent.".to_string()),
-        EngineConfig {
-            max_steps: 3,
-            plan_enabled: false,
-        },
+        EngineConfig::new(3, false),
         workspace,
         ApprovalPolicy::Auto,
     );
@@ -5040,10 +5179,7 @@ async fn engine_routes_request_input_tool_to_input_provider() {
         model,
         registry,
         ContextManager::new("You are a test agent.".to_string()),
-        EngineConfig {
-            max_steps: 5,
-            plan_enabled: false,
-        },
+        EngineConfig::new(5, false),
         workspace,
         ApprovalPolicy::Auto,
     )
@@ -5127,10 +5263,7 @@ async fn custom_tool_public_input_provider_call_uses_canonical_lifecycle() {
         model,
         registry,
         ContextManager::new("You are a test agent.".to_string()),
-        EngineConfig {
-            max_steps: 5,
-            plan_enabled: false,
-        },
+        EngineConfig::new(5, false),
         workspace,
         ApprovalPolicy::Auto,
     )
@@ -5173,10 +5306,7 @@ async fn cancelling_after_input_needed_drops_the_pending_responder() {
         model,
         registry,
         ContextManager::new("You are a test agent.".to_string()),
-        EngineConfig {
-            max_steps: 2,
-            plan_enabled: false,
-        },
+        EngineConfig::new(2, false),
         workspace,
         ApprovalPolicy::Auto,
     )
@@ -5356,10 +5486,7 @@ async fn native_tool_use_populates_structured_history_fields() {
         model,
         registry,
         ContextManager::new("test".to_string()),
-        EngineConfig {
-            max_steps: 5,
-            plan_enabled: false,
-        },
+        EngineConfig::new(5, false),
         workspace,
         ApprovalPolicy::Auto,
     );
@@ -5496,10 +5623,7 @@ async fn native_multi_tool_call_executes_concurrently_and_round_trips() {
         Box::new(NativeBatchModel::new(captured.clone())),
         registry,
         ContextManager::new("test".to_string()),
-        EngineConfig {
-            max_steps: 5,
-            plan_enabled: false,
-        },
+        EngineConfig::new(5, false),
         workspace,
         ApprovalPolicy::Auto,
     );
@@ -5608,6 +5732,7 @@ async fn engine_resume_reprojects_canonical_openai_history_for_anthropic() {
         compaction: Default::default(),
         runtime_identity: None,
         step_ledger: Default::default(),
+        execution_lifecycle: Default::default(),
     };
     let resume_state = TaskState {
         schema_version: 1,
@@ -5622,6 +5747,7 @@ async fn engine_resume_reprojects_canonical_openai_history_for_anthropic() {
         plan: None,
         runtime_identity: None,
         step_ledger: Default::default(),
+        execution_lifecycle: Default::default(),
     };
     let captured = Arc::new(Mutex::new(None));
     let tmp = tempfile::TempDir::new().unwrap();
@@ -5632,10 +5758,7 @@ async fn engine_resume_reprojects_canonical_openai_history_for_anthropic() {
         }),
         ToolRegistry::new(),
         ContextManager::new("system".to_string()),
-        EngineConfig {
-            max_steps: 3,
-            plan_enabled: false,
-        },
+        EngineConfig::new(3, false),
         Workspace::detect(tmp.path()).unwrap(),
         ApprovalPolicy::Auto,
     );
@@ -5740,6 +5863,7 @@ async fn engine_resume_projects_only_the_bounded_canonical_suffix_after_compacti
         compaction,
         runtime_identity: None,
         step_ledger: Default::default(),
+        execution_lifecycle: Default::default(),
     };
     let resume_state = TaskState {
         schema_version: 1,
@@ -5754,6 +5878,7 @@ async fn engine_resume_projects_only_the_bounded_canonical_suffix_after_compacti
         plan: None,
         runtime_identity: None,
         step_ledger: Default::default(),
+        execution_lifecycle: Default::default(),
     };
     let captured = Arc::new(Mutex::new(None));
     let tmp = tempfile::TempDir::new().unwrap();
@@ -5764,10 +5889,7 @@ async fn engine_resume_projects_only_the_bounded_canonical_suffix_after_compacti
         }),
         ToolRegistry::new(),
         ContextManager::new("system".to_string()),
-        EngineConfig {
-            max_steps: 3,
-            plan_enabled: false,
-        },
+        EngineConfig::new(3, false),
         Workspace::detect(tmp.path()).unwrap(),
         ApprovalPolicy::Auto,
     );
@@ -5944,10 +6066,7 @@ async fn malformed_truncated_oversized_and_unsupported_parallel_turns_execute_ze
             }),
             registry,
             ContextManager::new("system".to_string()),
-            EngineConfig {
-                max_steps: 2,
-                plan_enabled: false,
-            },
+            EngineConfig::new(2, false),
             Workspace::detect(tmp.path()).unwrap(),
             ApprovalPolicy::Auto,
         );

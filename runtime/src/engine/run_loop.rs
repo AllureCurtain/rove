@@ -13,6 +13,11 @@ use crate::context::ContextManager;
 use crate::engine::control::{SteerLifecycle, SteerMessage};
 use crate::environment::ExecutionEnvironment;
 use crate::events::StreamEvent;
+use crate::execution::{
+    ExecutionBudgetTracker, ExecutionLifecycleState, ExecutionPhase, ExecutionPolicy,
+    ExecutionStrategy, FinalizationMode, PlanFinishReason,
+};
+use crate::finalizer::{FinalizationContext, Finalizer};
 use crate::hooks::HookRegistry;
 use crate::memory::paths::MemoryPaths;
 use crate::memory::session::append_session_notes_to_dir_sync;
@@ -51,7 +56,8 @@ pub(crate) struct LoopContext<'a> {
     pub memory_paths: &'a MemoryPaths,
     pub session_id: SessionId,
     pub max_steps: u32,
-    pub max_model_turns_per_step: u32,
+    pub execution_policy: ExecutionPolicy,
+    pub finalizer: &'a Finalizer,
     pub approval_policy: ApprovalPolicy,
     pub approval_decision: ApprovalDecision,
     pub approval_provider: Option<Arc<dyn ToolApprovalProvider>>,
@@ -143,6 +149,7 @@ pub(crate) struct RunLoopState {
     pub compact_summary: Option<String>,
     pub history: Vec<Message>,
     pub step: u32,
+    pub execution_lifecycle: ExecutionLifecycleState,
 }
 
 #[derive(Debug)]
@@ -160,7 +167,33 @@ pub(crate) fn run_unplanned_loop<'a>(
     cancel_token: CancellationToken,
 ) -> BoxStream<'a, LoopItem> {
     Box::pin(stream! {
-        let remaining_turns = ctx.max_steps.saturating_sub(state.step);
+        let policy = ctx.execution_policy.clone();
+        let finalizer = ctx.finalizer;
+        let original_goal = state.user_message.clone();
+        let mut consumed = state.execution_lifecycle.budget_usage.clone();
+        // Old snapshots recorded the React model-turn count only as `step`.
+        // Migrate it once without inventing tool/token usage.
+        consumed.model_turns = consumed.model_turns.max(state.step);
+        let mut budget = ExecutionBudgetTracker::new(
+            policy.budgets.clone(),
+            consumed,
+            false,
+        );
+        let remaining_turns = policy
+            .budgets
+            .max_model_turns
+            .map(|limit| limit.saturating_sub(budget.usage().model_turns))
+            .unwrap_or_else(|| ctx.max_steps.saturating_sub(state.step));
+        let remaining_tools = policy
+            .budgets
+            .max_tool_calls
+            .map(|limit| limit.saturating_sub(budget.usage().tool_calls));
+        let remaining_repairs = policy
+            .budgets
+            .max_model_repairs
+            .map(|limit| limit.saturating_sub(budget.usage().model_repairs))
+            .unwrap_or(remaining_turns);
+        let initial_total_tokens = budget.usage().total_tokens;
         let kernel_state = KernelState::new(state.history);
         let host = UnplannedKernelHost {
             ctx,
@@ -169,13 +202,16 @@ pub(crate) fn run_unplanned_loop<'a>(
             compact_summary: state.compact_summary,
             compaction: None,
             pending_steer_ids: Vec::new(),
+            initial_total_tokens,
+            max_total_tokens: policy.budgets.max_total_tokens,
         };
         let mut kernel = run_agent_kernel(
             host,
             kernel_state,
             KernelLimits {
                 max_model_turns: Some(remaining_turns),
-                max_tool_calls: None,
+                max_tool_calls: remaining_tools,
+                max_repairs: Some(remaining_repairs),
             },
             cancel_token,
         );
@@ -184,36 +220,96 @@ pub(crate) fn run_unplanned_loop<'a>(
             match item {
                 KernelItem::Event(event) => yield LoopItem::Event(event),
                 KernelItem::Finished(result) => {
-                    let (reason, output) = match result.termination {
+                    let (mut reason, direct_output, mut finish_reason) = match result.termination {
                         KernelTermination::Final { output } => {
-                            (TerminationReason::Final, Some(output))
+                            (TerminationReason::Final, Some(output), PlanFinishReason::Completed)
                         }
                         KernelTermination::ModelTurnLimit
-                        | KernelTermination::ToolCallLimit => {
-                            (TerminationReason::StepLimit, None)
+                        | KernelTermination::ToolCallLimit
+                        | KernelTermination::RepairLimit => {
+                            (TerminationReason::StepLimit, None, PlanFinishReason::BudgetExhausted)
                         }
-                        KernelTermination::Cancelled => (TerminationReason::Cancelled, None),
+                        KernelTermination::Cancelled => (
+                            TerminationReason::Cancelled,
+                            None,
+                            PlanFinishReason::Cancelled,
+                        ),
                         KernelTermination::ModelFailed(error) => (
                             TerminationReason::Error,
                             Some(format!("Model error: {error}")),
+                            PlanFinishReason::Failed,
                         ),
                         KernelTermination::IncompleteBeforeModelTurn => (
                             TerminationReason::Error,
                             Some("before-model extension ended without a request".to_string()),
+                            PlanFinishReason::Failed,
                         ),
                         KernelTermination::IncompleteModelTurn => (
                             TerminationReason::Error,
                             Some("model turn ended without a response".to_string()),
+                            PlanFinishReason::Failed,
                         ),
                         KernelTermination::IncompleteToolTurn => (
                             TerminationReason::Error,
                             Some("tool turn ended without a result".to_string()),
+                            PlanFinishReason::Indeterminate,
                         ),
                         KernelTermination::Extension {
                             reason: RuntimeKernelStop::TokenLimit,
                             output,
-                        } => (TerminationReason::TokenLimit, output),
+                        } => (
+                            TerminationReason::TokenLimit,
+                            output,
+                            PlanFinishReason::BudgetExhausted,
+                        ),
                     };
+                    if let Err(exhaustion) = budget.record_step_usage(
+                        result.state.model_turns,
+                        result.state.tool_calls,
+                        result.state.repairs,
+                        &result.state.usage,
+                    ) {
+                        budget.mark_exhausted(exhaustion);
+                        reason = TerminationReason::TokenLimit;
+                        finish_reason = PlanFinishReason::BudgetExhausted;
+                    }
+                    yield LoopItem::Event(StreamEvent::ExecutionBudgetUpdated {
+                        phase: ExecutionPhase::Run,
+                        snapshot: Box::new(budget.snapshot()),
+                    });
+
+                    let context = FinalizationContext {
+                        original_goal: &original_goal,
+                        strategy: ExecutionStrategy::React,
+                        finish_reason,
+                        revisions: &[],
+                        records: &[],
+                        budget: budget.usage(),
+                        direct_output: direct_output.as_deref(),
+                    };
+                    let mode = if finish_reason == PlanFinishReason::Completed {
+                        FinalizationMode::Direct
+                    } else {
+                        FinalizationMode::Deterministic
+                    };
+                    let started = finalizer.started_record(&context, mode);
+                    yield LoopItem::Event(StreamEvent::FinalizationStarted {
+                        record: Box::new(started.clone()),
+                    });
+                    let finalized = if mode == FinalizationMode::Direct {
+                        finalizer.direct(&context, started, budget.usage().clone())
+                    } else {
+                        finalizer.deterministic(
+                            &context,
+                            started,
+                            false,
+                            budget.usage().clone(),
+                        )
+                    };
+                    let output = finalized.record.output.clone();
+                    yield LoopItem::Event(StreamEvent::FinalizationCompleted {
+                        record: Box::new(finalized.record),
+                    });
                     yield LoopItem::Complete { reason, output };
                     return;
                 }
@@ -239,6 +335,8 @@ struct UnplannedKernelHost<'a> {
     compact_summary: Option<String>,
     compaction: Option<CompactionRuntime>,
     pending_steer_ids: Vec<String>,
+    initial_total_tokens: u64,
+    max_total_tokens: Option<u64>,
 }
 
 impl AgentKernelHost for UnplannedKernelHost<'_> {
@@ -253,6 +351,17 @@ impl AgentKernelHost for UnplannedKernelHost<'_> {
         cancel_token: CancellationToken,
     ) -> BoxStream<'a, KernelBeforeModelTurnItem<Self::Event, Self::Stop>> {
         Box::pin(stream! {
+            if self.max_total_tokens.is_some_and(|limit| {
+                self.initial_total_tokens
+                    .saturating_add(u64::from(state.usage.total_tokens))
+                    >= limit
+            }) {
+                yield KernelBeforeModelTurnItem::Stop {
+                    reason: RuntimeKernelStop::TokenLimit,
+                    output: Some("global model token budget exhausted".to_string()),
+                };
+                return;
+            }
             if let Some(rx) = self.ctx.steer_rx.as_ref() {
                 let mut receiver = rx.lock().await;
                 while let Ok(steer) = receiver.try_recv() {

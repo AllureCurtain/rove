@@ -143,6 +143,7 @@ impl Agent {
             let limits = KernelLimits {
                 max_model_turns: Some(self.config.max_model_turns),
                 max_tool_calls: Some(self.config.max_tool_calls),
+                max_repairs: Some(self.config.max_model_turns),
             };
             let mut kernel = run_agent_kernel(
                 host,
@@ -163,6 +164,9 @@ impl Agent {
                             }
                             KernelTermination::ToolCallLimit => {
                                 (AgentStopReason::ToolCallLimit, None, None)
+                            }
+                            KernelTermination::RepairLimit => {
+                                (AgentStopReason::ModelTurnLimit, None, None)
                             }
                             KernelTermination::Cancelled => {
                                 (AgentStopReason::Cancelled, None, None)

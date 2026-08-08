@@ -1632,12 +1632,16 @@ When changing provider tool-use:
 
 These are implementation-level issues to keep in mind before extending the system.
 
-1. The implemented lifecycle evaluator is deterministic and rule-first; it
-   does not call a model for ambiguous evidence. An independent Finalizer,
-   public and globally enforced multidimensional budgets, structured budget and
-   finalization events, and model-on-ambiguity evaluation remain unimplemented.
-   Resume uses the materialized `TaskState` lifecycle projection and does not
-   yet reconcile a canonical trace tail written after the latest snapshot.
+1. The lifecycle evaluator is rule-first. A model evaluation is reachable only
+   from a validated typed `PlanAmbiguity`, is bounded by repair and model-turn
+   budgets, and falls back deterministically with an explicit degradation
+   record. An independent evidence-grounded Finalizer, public and globally
+   enforced multidimensional budgets, and structured budget/finalization events
+   are implemented. Resume reconciles a canonical trace tail written after the
+   latest snapshot as an idempotent projection that never re-dispatches work.
+   Remaining risk: cost enforcement is inert unless the active provider supplies
+   priced usage, and wall-time accounting is sampled at phase boundaries rather
+   than preempting an in-flight provider call.
 
 2. Built-in vector RAG is removed. Workspace retrieval is explicit bounded
    tools plus layered file memory; optional external semantic retrieval remains

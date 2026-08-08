@@ -3,7 +3,8 @@ use std::path::Path;
 
 use crate::events::StreamEvent;
 use crate::execution::{
-    PlanIdentity, StepLedgerState, StepRecordStatus, planned_step_failure_message,
+    ExecutionLifecycleState, PlanIdentity, StepLedgerState, StepRecordStatus,
+    planned_step_failure_message,
 };
 use crate::prompt_metadata::{PromptBuildMetadata, estimate_messages_tokens};
 use crate::runtime_identity::RuntimeIdentity;
@@ -41,6 +42,7 @@ pub struct RunArtifactRecorder {
     prompt_builds: Vec<PromptBuildMetadata>,
     runtime_identity: Option<RuntimeIdentity>,
     step_ledger: StepLedgerState,
+    execution_lifecycle: ExecutionLifecycleState,
     total_usage: Usage,
     final_reason: TerminationReason,
     final_output: Option<String>,
@@ -105,6 +107,9 @@ impl RunArtifactRecorder {
             step_ledger: resume_state
                 .map(|state| state.step_ledger.clone())
                 .unwrap_or_default(),
+            execution_lifecycle: resume_state
+                .map(|state| state.execution_lifecycle.clone())
+                .unwrap_or_default(),
             total_usage: Usage::default(),
             final_reason: TerminationReason::Error,
             final_output: None,
@@ -122,6 +127,26 @@ impl RunArtifactRecorder {
         self.refresh_last_event_seq(state_store).await;
         match event {
             StreamEvent::RunStarted { .. } => {
+                self.write_snapshot(state_store).await;
+            }
+            StreamEvent::ExecutionStrategySelected { policy } => {
+                self.execution_lifecycle.policy = Some(policy.clone());
+                self.write_snapshot(state_store).await;
+            }
+            StreamEvent::ExecutionBudgetUpdated { snapshot, .. } => {
+                self.execution_lifecycle.budget_usage = snapshot.consumed.clone();
+                self.execution_lifecycle.budget_exhaustion = snapshot.exhausted.clone();
+                self.write_snapshot(state_store).await;
+            }
+            StreamEvent::ExecutionDegraded { record } => {
+                if self
+                    .execution_lifecycle
+                    .degradations
+                    .iter()
+                    .all(|saved| saved.degradation_id != record.degradation_id)
+                {
+                    self.execution_lifecycle.degradations.push(record.clone());
+                }
                 self.write_snapshot(state_store).await;
             }
             StreamEvent::LlmMessage {
@@ -382,8 +407,12 @@ impl RunArtifactRecorder {
                     record.status,
                     StepRecordStatus::Failed
                         | StepRecordStatus::Blocked
+                        | StepRecordStatus::Rejected
                         | StepRecordStatus::Interrupted
                         | StepRecordStatus::BudgetExhausted
+                        | StepRecordStatus::Cancelled
+                        | StepRecordStatus::Indeterminate
+                        | StepRecordStatus::Partial
                 ) {
                     let step_title = self
                         .plan
@@ -409,6 +438,11 @@ impl RunArtifactRecorder {
                     self.history.push(Message::user(failure_message));
                     self.sync_history_from_session();
                 }
+                self.write_snapshot(state_store).await;
+            }
+            StreamEvent::FinalizationStarted { record }
+            | StreamEvent::FinalizationCompleted { record } => {
+                self.execution_lifecycle.finalization = Some(record.as_ref().clone());
                 self.write_snapshot(state_store).await;
             }
             StreamEvent::PromptCompacted { summary, state } => {
@@ -479,6 +513,7 @@ impl RunArtifactRecorder {
             plan: self.plan.clone(),
             runtime_identity: self.runtime_identity.clone(),
             step_ledger: self.step_ledger.clone(),
+            execution_lifecycle: self.execution_lifecycle.clone(),
         };
         if let Err(err) = state_store.write_task_state(&state).await {
             tracing::warn!("Failed to write task_state.json: {}", err);
@@ -524,6 +559,12 @@ impl RunArtifactRecorder {
         report.step_records = self.step_ledger.step_records.clone();
         report.plan_decisions = self.step_ledger.plan_lifecycle.decisions.clone();
         report.plan_revisions = self.step_ledger.plan_lifecycle.revisions.clone();
+        report.execution_lifecycle = self.execution_lifecycle.clone();
+        report.final_outcome = self
+            .execution_lifecycle
+            .finalization
+            .as_ref()
+            .and_then(|record| record.outcome);
         report.output = self.final_output.clone();
 
         match write_report(run_dir, &report) {
@@ -591,6 +632,7 @@ impl RunArtifactRecorder {
             compaction: self.checkpoint_compaction_state(compacted_history_messages),
             runtime_identity: self.runtime_identity.clone(),
             step_ledger: self.step_ledger.checkpoint(),
+            execution_lifecycle: self.execution_lifecycle.checkpoint(),
             session: Some(self.session.clone()),
         }
     }
@@ -746,8 +788,11 @@ mod tests {
             plan_enabled: true,
             system_prompt_hash: "sha256:system".to_string(),
             planner_prompt_hash: "sha256:planner".to_string(),
+            evaluator_prompt_hash: None,
+            finalizer_prompt_hash: None,
             workspace_fingerprint: "sha256:workspace".to_string(),
             tool_signature: "sha256:tools".to_string(),
+            execution_policy: None,
             capability_snapshot_id: Some("sha256:capabilities".to_string()),
             execution_environment: None,
             execution_capabilities: None,

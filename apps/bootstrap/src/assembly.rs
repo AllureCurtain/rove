@@ -5,6 +5,7 @@ use rove_models::ModelClient;
 use rove_runtime::context::{ContextBudget, ContextManager};
 use rove_runtime::engine::{Engine, EngineConfig, EngineEnvironmentOptions};
 use rove_runtime::environment::{ExecutionEnvironment, local_environment};
+use rove_runtime::execution::ExecutionPolicy;
 use rove_runtime::types::{
     ApprovalDecision, ApprovalPolicy, ToolApprovalProvider, UserInputProvider,
 };
@@ -62,6 +63,11 @@ pub fn build_engine_with_registry(options: EngineOptions<'_>, registry: ToolRegi
         EngineConfig {
             max_steps: options.max_steps,
             plan_enabled: true,
+            // Configured dimensions overlay the deterministic projection, so an
+            // unconfigured deployment keeps its existing behavior exactly.
+            execution_policy: Some(options.config.runtime.execution.apply_to(
+                ExecutionPolicy::from_max_steps_and_plan_flag(options.max_steps, true),
+            )),
         },
         options.workspace.clone(),
         EngineEnvironmentOptions {

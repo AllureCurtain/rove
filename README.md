@@ -311,9 +311,12 @@ Implemented on `main` does not include:
   Artifacts. The current proxy supports stdio and the existing legacy SSE path.
 - Versioned AgentDefinition packages, runtime `AGENTS.md` discovery, or the
   proposed OnCall reference evaluation suite.
-- One shared Core/Runtime Agent kernel, Project Trust activation, the shared
-  Execution Environment, Coding Tool V2, Subagents, independent Finalizer,
-  model-on-ambiguity plan evaluation, or public multidimensional budgets.
+- Subagents.
+
+The shared Core/Runtime Agent kernel, Project Trust activation, the shared
+Execution Environment, Coding Tool V2, the independent Finalizer,
+model-on-ambiguity plan evaluation, and public multidimensional execution
+budgets are implemented in the runtime.
 
 These boundaries are maintained explicitly in the current runtime docs and
 future designs. Worktree-only changes are not part of this README's product

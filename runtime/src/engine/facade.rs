@@ -15,10 +15,12 @@ use crate::context::{ContextManager, durable_memory_message, session_summary_mes
 use crate::engine::control::{RunControlHandle, SteerLifecycle, control_channel};
 use crate::environment::{ExecutionEnvironment, local_environment};
 use crate::events::StreamEvent;
-use crate::execution::{DEFAULT_MAX_MODEL_TURNS_PER_STEP, ExecutionPolicy, ExecutionStrategy};
+use crate::execution::{ExecutionPolicy, ExecutionStrategy};
+use crate::finalizer::Finalizer;
 use crate::hooks::{HookRegistry, PostRunHookContext, RunSummary};
 use crate::memory::layered::load_prompt_memory_from_paths_sync;
 use crate::memory::paths::MemoryPaths;
+use crate::plan_evaluator::PlanEvaluator;
 use crate::plan_loop::{PlanLoopState, run_planned_loop};
 use crate::planner::Planner;
 use crate::run_loop::{LoopContext, LoopItem, RunLoopState, SteerReceiver, run_unplanned_loop};
@@ -108,6 +110,10 @@ impl Drop for RunStream<'_> {
 pub struct EngineConfig {
     pub max_steps: u32,
     pub plan_enabled: bool,
+    /// Fully resolved execution policy. When present it is authoritative and
+    /// the `max_steps` / `plan_enabled` sugar is used only for compatibility
+    /// projections. When absent the policy is derived from that sugar.
+    pub execution_policy: Option<ExecutionPolicy>,
 }
 
 /// Invocation-scoped authority used when constructing an Engine for a
@@ -120,12 +126,34 @@ pub struct EngineEnvironmentOptions {
 }
 
 impl EngineConfig {
+    /// Build a config from the compatibility sugar fields, deriving the
+    /// execution policy deterministically.
+    ///
+    /// Callers that resolve a full policy (for example from operator
+    /// configuration) use [`EngineConfig::with_execution_policy`] instead.
+    pub fn new(max_steps: u32, plan_enabled: bool) -> Self {
+        Self {
+            max_steps,
+            plan_enabled,
+            execution_policy: None,
+        }
+    }
+
+    /// Attach a fully resolved policy, which then takes precedence over the
+    /// sugar fields.
+    pub fn with_execution_policy(mut self, policy: ExecutionPolicy) -> Self {
+        self.execution_policy = Some(policy);
+        self
+    }
+
     /// Project sugar fields into the typed policy used by the engine.
     ///
     /// `max_steps` / `plan_enabled` remain convenience inputs; `ExecutionPolicy`
     /// is the sole execution-config truth.
     pub fn to_execution_policy(&self) -> ExecutionPolicy {
-        ExecutionPolicy::from_max_steps_and_plan_flag(self.max_steps, self.plan_enabled)
+        self.execution_policy.clone().unwrap_or_else(|| {
+            ExecutionPolicy::from_max_steps_and_plan_flag(self.max_steps, self.plan_enabled)
+        })
     }
 }
 
@@ -134,6 +162,7 @@ impl Default for EngineConfig {
         Self {
             max_steps: 20,
             plan_enabled: false,
+            execution_policy: None,
         }
     }
 }
@@ -149,6 +178,9 @@ pub struct Engine {
     context_manager: ContextManager,
     config: EngineConfig,
     planner: Planner,
+    evaluator: PlanEvaluator,
+    finalizer: Finalizer,
+    execution_policy: ExecutionPolicy,
     workspace: Workspace,
     environment: Arc<dyn ExecutionEnvironment>,
     approval_policy: ApprovalPolicy,
@@ -239,6 +271,7 @@ impl Engine {
     ) -> Self {
         let memory_paths = MemoryPaths::from_workspace(&workspace, 8);
         let capability_snapshot = CapabilitySnapshot::from_registry(&registry);
+        let execution_policy = config.to_execution_policy();
         Self {
             model,
             registry,
@@ -246,6 +279,9 @@ impl Engine {
             context_manager,
             config,
             planner: Planner::default(),
+            evaluator: PlanEvaluator::default(),
+            finalizer: Finalizer::default(),
+            execution_policy,
             workspace,
             environment: options.environment,
             approval_policy: options.approval_policy,
@@ -267,6 +303,27 @@ impl Engine {
     pub fn with_planner_prompt(mut self, planner_prompt: impl Into<String>) -> Self {
         self.planner = Planner::new(planner_prompt);
         self
+    }
+
+    pub fn with_evaluator_prompt(mut self, evaluator_prompt: impl Into<String>) -> Self {
+        self.evaluator = PlanEvaluator::new(evaluator_prompt);
+        self
+    }
+
+    pub fn with_finalizer_prompt(mut self, finalizer_prompt: impl Into<String>) -> Self {
+        self.finalizer = Finalizer::new(finalizer_prompt);
+        self
+    }
+
+    /// Replace compatibility sugar with a fully resolved public execution
+    /// policy. Validation happens before the Engine can start a run.
+    pub fn with_execution_policy(
+        mut self,
+        policy: ExecutionPolicy,
+    ) -> Result<Self, crate::execution::ExecutionValidationError> {
+        policy.validate()?;
+        self.execution_policy = policy;
+        Ok(self)
     }
 
     pub fn with_approval_provider(
@@ -321,6 +378,9 @@ impl Engine {
             plan_enabled: self.config.plan_enabled,
             system_prompt: self.context_manager.system_prompt(),
             planner_prompt: self.planner.prompt(),
+            evaluator_prompt: self.evaluator.prompt(),
+            finalizer_prompt: self.finalizer.prompt(),
+            execution_policy: self.execution_policy.clone(),
             tools: &tools,
             capability_snapshot_id: Some(&self.capability_snapshot.snapshot_id),
             execution_environment: Some(self.environment.identity()),
@@ -461,6 +521,12 @@ impl Engine {
                 append_trace(&trace_writer, &start_event);
                 yield start_event;
 
+                let strategy_event = StreamEvent::ExecutionStrategySelected {
+                    policy: self.execution_policy.clone(),
+                };
+                append_trace(&trace_writer, &strategy_event);
+                yield strategy_event;
+
                 if stream_cancel.is_cancelled() {
                     complete_run!(TerminationReason::Cancelled, None);
                 }
@@ -530,11 +596,28 @@ impl Engine {
                     .and_then(|checkpoint| checkpoint.plan.clone())
                     .or_else(|| resume_state.as_ref().and_then(|state| state.plan.clone()));
 
-                let execution_policy = self.config.to_execution_policy();
-                let max_model_turns_per_step = execution_policy
-                    .budgets
-                    .max_model_turns_per_step
-                    .unwrap_or(DEFAULT_MAX_MODEL_TURNS_PER_STEP);
+                // Execution budgets are per-run accounting. A genuine resume of
+                // the same run must restore consumed usage so a restart cannot
+                // hand out a fresh allowance, but a new turn that merely
+                // continues a session starts from zero. Inheriting usage across
+                // turns would progressively starve a long session until no work
+                // could run at all.
+                let resumes_same_run = resume_state
+                    .as_ref()
+                    .is_some_and(|state| state.run_id == run_id);
+                let execution_lifecycle = if resumes_same_run {
+                    resume_state
+                        .as_ref()
+                        .map(|state| state.execution_lifecycle.clone())
+                        .unwrap_or_default()
+                } else {
+                    crate::execution::ExecutionLifecycleState::default()
+                };
+                // The React migration below reads `step` as a model-turn count.
+                // It applies only to the run that actually consumed those turns.
+                let budget_step = if resumes_same_run { step } else { 0 };
+
+                let execution_policy = self.execution_policy.clone();
                 let loop_context = LoopContext {
                     model: self.model.as_ref(),
                     registry: &self.registry,
@@ -545,7 +628,8 @@ impl Engine {
                     memory_paths: &self.memory_paths,
                     session_id,
                     max_steps: self.config.max_steps,
-                    max_model_turns_per_step,
+                    execution_policy: execution_policy.clone(),
+                    finalizer: &self.finalizer,
                     approval_policy: self.approval_policy,
                     approval_decision: self.approval_decision,
                     approval_provider: self.approval_provider.clone(),
@@ -563,17 +647,19 @@ impl Engine {
                     ExecutionStrategy::PlanReact => run_planned_loop(
                         loop_context,
                         &self.planner,
+                        &self.evaluator,
+                        &self.finalizer,
                         PlanLoopState {
                             user_message,
                             working_memory,
                             compact_summary,
                             history,
-                            step,
                             plan,
                             step_ledger: resume_state
                                 .as_ref()
                                 .map(|state| state.step_ledger.clone())
                                 .unwrap_or_default(),
+                            execution_lifecycle: execution_lifecycle.clone(),
                         },
                         stream_cancel.clone(),
                     ),
@@ -584,7 +670,8 @@ impl Engine {
                             working_memory,
                             compact_summary,
                             history,
-                            step,
+                            step: budget_step,
+                            execution_lifecycle,
                         },
                         stream_cancel.clone(),
                     ),

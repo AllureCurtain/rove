@@ -1613,10 +1613,7 @@ mod tests {
             )),
             tool_registry(&workspace),
             ContextManager::new("You are a test agent.".to_string()),
-            EngineConfig {
-                max_steps: 3,
-                plan_enabled: false,
-            },
+            EngineConfig::new(3, false),
             workspace,
             ApprovalPolicy::Ask,
         )
@@ -2205,10 +2202,7 @@ mod tests {
             }),
             tool_registry(&workspace),
             ContextManager::new("You are a test agent.".to_string()),
-            EngineConfig {
-                max_steps: 1,
-                plan_enabled: false,
-            },
+            EngineConfig::new(1, false),
             workspace.clone(),
             ApprovalPolicy::Never,
         );
@@ -2685,6 +2679,7 @@ mod tests {
             plan: None,
             runtime_identity: None,
             step_ledger: Default::default(),
+            execution_lifecycle: Default::default(),
         };
         let newer = TaskState {
             goal: "newer session".to_string(),

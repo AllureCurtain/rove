@@ -451,6 +451,7 @@ mod tests {
             plan: None,
             runtime_identity: None,
             step_ledger: Default::default(),
+            execution_lifecycle: Default::default(),
         }
     }
 }

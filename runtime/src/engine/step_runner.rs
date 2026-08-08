@@ -6,6 +6,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::compaction::maybe_compact_history;
 use crate::events::StreamEvent;
+use crate::execution::ExecutionBudgetDimension;
 use crate::memory::session::append_session_notes_to_dir_sync;
 use crate::run_loop::{
     LoopContext, enrich_prompt_metadata, extract_session_memory_notes, run_kernel_model_turn,
@@ -36,14 +37,31 @@ pub(crate) struct StepRunnerInput {
     /// Steers accepted before this runner started. Steers arriving while the
     /// step is running are accepted at its internal model-turn safe points.
     pub accepted_steer_ids: Vec<String>,
+    pub max_model_turns: u32,
+    pub max_tool_calls: u32,
+    pub max_repairs: u32,
+    pub max_total_tokens: Option<u64>,
 }
 
 #[derive(Debug)]
 pub(crate) enum StepRunnerOutcome {
-    Succeeded { output: String },
-    Failed { reason: String, replan: bool },
-    BudgetExhausted { reason: String },
-    TokenLimit { reason: String },
+    Succeeded {
+        output: String,
+    },
+    Failed {
+        reason: String,
+        replan: bool,
+    },
+    BudgetExhausted {
+        dimension: ExecutionBudgetDimension,
+        reason: String,
+    },
+    TokenLimit {
+        reason: String,
+    },
+    Indeterminate {
+        reason: String,
+    },
     Cancelled,
 }
 
@@ -56,6 +74,7 @@ pub(crate) struct StepRunMetrics {
     pub tool_call_ids: Vec<CallId>,
     pub mutations: Vec<ToolMutation>,
     pub token_usage: Usage,
+    pub repairs_used: u32,
 }
 
 #[derive(Debug)]
@@ -81,7 +100,9 @@ pub(crate) fn run_step<'a>(
     cancel_token: CancellationToken,
 ) -> BoxStream<'a, StepRunnerItem> {
     Box::pin(stream! {
-        let max_model_turns = ctx.max_model_turns_per_step;
+        let max_model_turns = input.max_model_turns;
+        let max_tool_calls = input.max_tool_calls;
+        let max_repairs = input.max_repairs;
         let step_prompt = format!(
             "Goal: {}\nCurrent step {}: {}\nComplete this step and report the result. A tool result is evidence, not step completion; continue this step until you can state its conclusion.",
             input.goal, input.step.id, input.step.title
@@ -94,6 +115,7 @@ pub(crate) fn run_step<'a>(
             history: input.history,
             compaction: Some(input.compaction),
             pending_steer_ids: input.accepted_steer_ids,
+            max_total_tokens: input.max_total_tokens,
         };
         let mut metrics = StepRunMetrics::default();
         let mut kernel = run_agent_kernel(
@@ -101,7 +123,8 @@ pub(crate) fn run_step<'a>(
             KernelState::default(),
             KernelLimits {
                 max_model_turns: Some(max_model_turns),
-                max_tool_calls: None,
+                max_tool_calls: Some(max_tool_calls),
+                max_repairs: Some(max_repairs),
             },
             cancel_token,
         );
@@ -120,6 +143,7 @@ pub(crate) fn run_step<'a>(
                         }
                         KernelTermination::ModelTurnLimit => {
                             StepRunnerOutcome::BudgetExhausted {
+                                dimension: ExecutionBudgetDimension::ModelTurnsPerStep,
                                 reason: format!(
                                     "step model-turn budget exhausted (max_model_turns_per_step={max_model_turns})"
                                 ),
@@ -127,9 +151,14 @@ pub(crate) fn run_step<'a>(
                         }
                         KernelTermination::ToolCallLimit => {
                             StepRunnerOutcome::BudgetExhausted {
+                                dimension: ExecutionBudgetDimension::ToolCallsPerStep,
                                 reason: "step tool-call budget exhausted".to_string(),
                             }
                         }
+                        KernelTermination::RepairLimit => StepRunnerOutcome::BudgetExhausted {
+                            dimension: ExecutionBudgetDimension::ModelRepairs,
+                            reason: "step structured-output repair budget exhausted".to_string(),
+                        },
                         KernelTermination::Cancelled => StepRunnerOutcome::Cancelled,
                         KernelTermination::ModelFailed(error) => StepRunnerOutcome::Failed {
                             reason: format!("Model error: {error}"),
@@ -145,9 +174,9 @@ pub(crate) fn run_step<'a>(
                             reason: "model turn ended without a response".to_string(),
                             replan: true,
                         },
-                        KernelTermination::IncompleteToolTurn => StepRunnerOutcome::Failed {
-                            reason: "tool turn ended without a result".to_string(),
-                            replan: true,
+                        KernelTermination::IncompleteToolTurn => StepRunnerOutcome::Indeterminate {
+                            reason: "tool turn ended without a result; external effect is unknown"
+                                .to_string(),
                         },
                         KernelTermination::Extension {
                             reason: StepKernelStop::TokenLimit,
@@ -158,6 +187,15 @@ pub(crate) fn run_step<'a>(
                             }),
                         },
                         KernelTermination::Extension {
+                            reason: StepKernelStop::GlobalTokenBudget,
+                            output,
+                        } => StepRunnerOutcome::BudgetExhausted {
+                            dimension: ExecutionBudgetDimension::TotalTokens,
+                            reason: output.unwrap_or_else(|| {
+                                "global model token budget exhausted".to_string()
+                            }),
+                        },
+                        KernelTermination::Extension {
                             reason: StepKernelStop::ToolFailure { replan },
                             output,
                         } => StepRunnerOutcome::Failed {
@@ -165,6 +203,7 @@ pub(crate) fn run_step<'a>(
                             replan,
                         },
                     };
+                    metrics.repairs_used = result.state.repairs;
                     let extension = result.extension;
                     yield StepRunnerItem::Finished(StepRunnerResult {
                         outcome,
@@ -183,6 +222,7 @@ pub(crate) fn run_step<'a>(
 #[derive(Debug)]
 enum StepKernelStop {
     TokenLimit,
+    GlobalTokenBudget,
     ToolFailure { replan: bool },
 }
 
@@ -200,6 +240,7 @@ struct StepKernelHost<'a> {
     history: Vec<Message>,
     compaction: Option<crate::compaction::CompactionRuntime>,
     pending_steer_ids: Vec<String>,
+    max_total_tokens: Option<u64>,
 }
 
 impl AgentKernelHost for StepKernelHost<'_> {
@@ -214,6 +255,16 @@ impl AgentKernelHost for StepKernelHost<'_> {
         cancel_token: CancellationToken,
     ) -> BoxStream<'a, KernelBeforeModelTurnItem<Self::Event, Self::Stop>> {
         Box::pin(stream! {
+            if self
+                .max_total_tokens
+                .is_some_and(|limit| u64::from(state.usage.total_tokens) >= limit)
+            {
+                yield KernelBeforeModelTurnItem::Stop {
+                    reason: StepKernelStop::GlobalTokenBudget,
+                    output: Some("global model token budget exhausted".to_string()),
+                };
+                return;
+            }
             if let Some(rx) = self.ctx.steer_rx.as_ref() {
                 let mut receiver = rx.lock().await;
                 while let Ok(steer) = receiver.try_recv() {

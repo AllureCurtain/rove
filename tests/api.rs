@@ -5665,7 +5665,24 @@ async fn api_writes_run_artifacts_for_completed_job() {
     assert_eq!(report["job_id"], created.job_id.to_string());
     assert_eq!(report["run_id"], created.run_id.to_string());
     assert_eq!(report["status"], "success");
-    assert_eq!(report["output"], "fake response: artifact api");
+    // A planned run's final answer comes from the independent finalizer, which
+    // synthesizes an evidence-grounded answer rather than forwarding the last
+    // model message verbatim. The model's conclusion is retained as the step
+    // summary so no answer content is lost.
+    let output = report["output"].as_str().expect("report output");
+    assert!(
+        output.contains("fake response: artifact api"),
+        "finalized output must retain the step conclusion: {output}"
+    );
+    assert!(
+        output.contains("outcome: success"),
+        "finalized output must state the resolved outcome: {output}"
+    );
+    assert_eq!(report["final_outcome"], "success");
+    assert_eq!(
+        report["execution_lifecycle"]["finalization"]["phase"],
+        "completed"
+    );
     let prompt_build = report["prompt_builds"][0]
         .as_object()
         .expect("report should include prompt build metadata");
@@ -6722,7 +6739,18 @@ async fn api_planned_tool_step_completes_after_successful_tool_call() {
     assert_eq!(report["status"], "success");
     assert_eq!(report["termination_reason"], "final");
     assert_eq!(report["tool_calls"], 1);
-    assert_eq!(report["output"], "planned tool done");
+    // The finalizer synthesizes the answer from recorded evidence and cites the
+    // tool call that produced it, instead of forwarding the raw model message.
+    let output = report["output"].as_str().expect("report output");
+    assert!(
+        output.contains("planned tool done"),
+        "finalized output must retain the step conclusion: {output}"
+    );
+    assert!(
+        output.contains("Evidence: tool_call:"),
+        "a tool-backed step must cite its evidence: {output}"
+    );
+    assert_eq!(report["final_outcome"], "success");
     assert_eq!(report["step_records"].as_array().unwrap().len(), 1);
     assert_eq!(report["step_records"][0]["status"], "succeeded");
 }
@@ -9835,7 +9863,10 @@ async fn wait_for_status(
     expected: RunStatus,
 ) -> JobStateResponse {
     let mut last_state = None;
-    for _ in 0..80 {
+    // Matches `wait_for_done`. The lifecycle finalizer adds real events to the
+    // terminal tail, so a shorter budget than the sibling helper only measures
+    // scheduler load under a parallel suite rather than the asserted status.
+    for _ in 0..400 {
         let response = app
             .clone()
             .oneshot(

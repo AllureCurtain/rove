@@ -104,10 +104,7 @@ async fn run_provider_smoke(
         model_client,
         tool_registry(&workspace),
         ContextManager::new(config.load_system_prompt()),
-        EngineConfig {
-            max_steps: 3,
-            plan_enabled: false,
-        },
+        EngineConfig::new(3, false),
         workspace,
         ApprovalPolicy::Never,
     );

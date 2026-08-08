@@ -535,10 +535,7 @@ async fn engine_reuses_one_injected_environment_for_file_and_shell_tools() {
         Box::new(model),
         registry,
         ContextManager::new("test system prompt".to_string()),
-        EngineConfig {
-            max_steps: 4,
-            plan_enabled: false,
-        },
+        EngineConfig::new(4, false),
         workspace.clone(),
         EngineEnvironmentOptions {
             approval_policy: ApprovalPolicy::Auto,

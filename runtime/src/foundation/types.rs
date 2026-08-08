@@ -57,6 +57,11 @@ pub struct TaskState {
         skip_serializing_if = "crate::execution::StepLedgerState::is_empty"
     )]
     pub step_ledger: crate::execution::StepLedgerState,
+    #[serde(
+        default,
+        skip_serializing_if = "crate::execution::ExecutionLifecycleState::is_empty"
+    )]
+    pub execution_lifecycle: crate::execution::ExecutionLifecycleState,
 }
 
 /// Resumable prompt checkpoint used to rebuild context without replaying the full audit history.
@@ -82,6 +87,8 @@ pub struct PromptCheckpoint {
     pub runtime_identity: Option<crate::runtime_identity::RuntimeIdentity>,
     #[serde(default)]
     pub step_ledger: crate::execution::StepLedgerCheckpoint,
+    #[serde(default)]
+    pub execution_lifecycle: crate::execution::ExecutionLifecycleCheckpoint,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

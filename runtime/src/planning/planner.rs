@@ -1,7 +1,7 @@
 use futures::StreamExt;
 use thiserror::Error;
 
-use crate::types::{Message, PlanStep, TaskPlan};
+use crate::types::{Message, PlanStep, TaskPlan, Usage};
 use rove_models::{ModelClient, ModelEvent};
 
 pub const DEFAULT_PLANNER_PROMPT: &str = r#"You are the planner for rove.
@@ -26,6 +26,12 @@ pub enum PlannerError {
 
 pub struct Planner {
     prompt: String,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PlannerDraft {
+    pub plan: TaskPlan,
+    pub usage: Usage,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -65,6 +71,18 @@ impl Planner {
         history: &[Message],
         context: PlannerContext<'_>,
     ) -> Result<TaskPlan, PlannerError> {
+        self.draft_accounted(model, goal, history, context)
+            .await
+            .map(|draft| draft.plan)
+    }
+
+    pub(crate) async fn draft_accounted(
+        &self,
+        model: &dyn ModelClient,
+        goal: &str,
+        history: &[Message],
+        context: PlannerContext<'_>,
+    ) -> Result<PlannerDraft, PlannerError> {
         model
             .capabilities()
             .validate_tools(&[])
@@ -79,23 +97,39 @@ impl Planner {
         messages.extend_from_slice(history);
 
         let mut full_response = String::new();
+        let mut usage = Usage::default();
         let mut stream = model.stream(&messages, &[]);
         while let Some(event) = stream.next().await {
             let event = event.map_err(|err| PlannerError::Model(err.to_string()))?;
             match event {
                 ModelEvent::TextDelta { text } => full_response.push_str(&text),
+                ModelEvent::Usage { usage: reported } => add_usage(&mut usage, &reported),
                 ModelEvent::Done => break,
-                ModelEvent::ThinkingDelta { .. }
-                | ModelEvent::ToolUseStart { .. }
+                ModelEvent::ThinkingDelta { .. } | ModelEvent::StopReason { .. } => {}
+                ModelEvent::ToolUseStart { .. }
                 | ModelEvent::ToolUseDelta { .. }
-                | ModelEvent::ToolUseDone { .. }
-                | ModelEvent::StopReason { .. }
-                | ModelEvent::Usage { .. } => {}
+                | ModelEvent::ToolUseDone { .. } => {
+                    return Err(PlannerError::InvalidJson(
+                        "planner tool calls are forbidden".to_string(),
+                    ));
+                }
             }
         }
 
-        parse_plan(&full_response)
+        Ok(PlannerDraft {
+            plan: parse_plan(&full_response)?,
+            usage,
+        })
     }
+}
+
+fn add_usage(total: &mut Usage, usage: &Usage) {
+    total.prompt_tokens = total.prompt_tokens.saturating_add(usage.prompt_tokens);
+    total.completion_tokens = total
+        .completion_tokens
+        .saturating_add(usage.completion_tokens);
+    total.total_tokens = total.total_tokens.saturating_add(usage.total_tokens);
+    total.cached_tokens = total.cached_tokens.saturating_add(usage.cached_tokens);
 }
 
 impl Default for Planner {

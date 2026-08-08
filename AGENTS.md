@@ -139,10 +139,12 @@ As of 2026-08-07:
   model/tool coordination; Runtime hosts retain context, persistence, planning,
   approval/input, hooks, memory, and canonical events. Bounded planned
   StepRunner, append-only StepRecord ledger, immutable plan revisions,
-  rule-first decisions, registration-pinned bounded Tool Schemas, pre-dispatch
-  provider/tool validation, and Runtime-owned capability snapshots exist;
-  model-on-ambiguity evaluation, independent Finalizer, live capability refresh,
-  and full budget surfaces remain proposed.
+  rule-first decisions with bounded model-on-ambiguity evaluation, an
+  independent evidence-grounded Finalizer, public multidimensional execution
+  budgets with per-run accounting, canonical lifecycle events, trace-tail
+  reconciliation on resume, registration-pinned bounded Tool Schemas,
+  pre-dispatch provider/tool validation, and Runtime-owned capability snapshots
+  exist; live capability refresh remains proposed.
 - Web M1 is implemented: explicit Folder/Repo roots, fail-closed hard resume,
   and the Workspace → Session → Chat product shell are implemented. Web
   Complete C0 adds an API-global SQLite ProductStore,

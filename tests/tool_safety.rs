@@ -144,10 +144,7 @@ async fn write_file_records_diff_metadata_in_report() {
         ])),
         registry,
         ContextManager::new("test".to_string()),
-        EngineConfig {
-            max_steps: 5,
-            plan_enabled: false,
-        },
+        EngineConfig::new(5, false),
         workspace.clone(),
         ApprovalPolicy::Auto,
     );

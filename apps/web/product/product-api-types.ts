@@ -1,6 +1,13 @@
 import {
   STREAM_EVENT_NAMES,
+  type ExecutionBudgetExhaustion,
+  type ExecutionBudgetLimits,
+  type ExecutionBudgetSnapshot,
   type ExecutionBudgetUsage,
+  type ExecutionDegradation,
+  type ExecutionPolicy,
+  type FinalizationRecord,
+  type PlanAmbiguity,
   type PlanDecision,
   type PlanDecisionRecord,
   type PlanRevision,
@@ -2433,6 +2440,14 @@ function parseToolError(value: unknown, path: string): ToolError {
   return error;
 }
 
+/** An additive counter that older payloads may omit entirely. */
+function optionalCounter(value: unknown, path: string): number {
+  if (value === undefined || value === null) {
+    return 0;
+  }
+  return expectInteger(value, path, { min: 0 });
+}
+
 function parseExecutionBudgetUsage(
   value: unknown,
   path: string,
@@ -2451,6 +2466,22 @@ function parseExecutionBudgetUsage(
       record.plan_revisions,
       `${path}.plan_revisions`,
       { min: 0 },
+    ),
+    // Additive per-phase counters. Older payloads omit them, so they default to
+    // zero rather than failing a snapshot that is otherwise valid.
+    model_repairs: optionalCounter(record.model_repairs, `${path}.model_repairs`),
+    planner_turns: optionalCounter(record.planner_turns, `${path}.planner_turns`),
+    evaluator_turns: optionalCounter(
+      record.evaluator_turns,
+      `${path}.evaluator_turns`,
+    ),
+    replanner_turns: optionalCounter(
+      record.replanner_turns,
+      `${path}.replanner_turns`,
+    ),
+    finalization_turns: optionalCounter(
+      record.finalization_turns,
+      `${path}.finalization_turns`,
     ),
     wall_time_ms: expectInteger(record.wall_time_ms, `${path}.wall_time_ms`, {
       min: 0,
@@ -2552,10 +2583,12 @@ function parseStepRecord(value: unknown, path: string): StepRecord {
         "partial",
         "failed",
         "blocked",
+        "rejected",
         "skipped",
         "budget_exhausted",
         "cancelled",
         "interrupted",
+        "indeterminate",
       ] as const,
       `${path}.status`,
     ),
@@ -2619,7 +2652,273 @@ function parseStepRecord(value: unknown, path: string): StepRecord {
     "supersedes_record_id",
     optionalString(record, "supersedes_record_id", path),
   );
+  if (record.ambiguity !== undefined && record.ambiguity !== null) {
+    stepRecord.ambiguity = parsePlanAmbiguity(
+      record.ambiguity,
+      `${path}.ambiguity`,
+    );
+  }
   return stepRecord;
+}
+
+function parsePlanAmbiguity(value: unknown, path: string): PlanAmbiguity {
+  const record = expectRecord(value, path);
+  const ambiguity: PlanAmbiguity = {
+    kind: expectEnum(
+      record.kind,
+      [
+        "remaining_work_may_be_unnecessary",
+        "plan_assumption_may_be_invalid",
+        "recoverable_alternative_may_exist",
+        "goal_may_be_partially_satisfied",
+        "remaining_dependencies_may_need_reordering",
+      ] as const,
+      `${path}.kind`,
+    ),
+    safe_summary: expectString(record.safe_summary, `${path}.safe_summary`),
+  };
+  if (record.evidence_refs !== undefined && record.evidence_refs !== null) {
+    ambiguity.evidence_refs = parseStringArray(
+      record.evidence_refs,
+      `${path}.evidence_refs`,
+    );
+  }
+  return ambiguity;
+}
+
+const EXECUTION_PHASES = [
+  "planner",
+  "step",
+  "evaluator",
+  "replanner",
+  "finalizer",
+  "run",
+] as const;
+
+const EXECUTION_BUDGET_DIMENSIONS = [
+  "plan_steps",
+  "step_attempts",
+  "model_turns",
+  "model_turns_per_step",
+  "tool_calls",
+  "tool_calls_per_step",
+  "plan_revisions",
+  "model_repairs",
+  "finalization_turns",
+  "wall_time",
+  "total_tokens",
+  "cost",
+] as const;
+
+const PLAN_FINISH_REASONS = [
+  "completed",
+  "partial",
+  "blocked",
+  "budget_exhausted",
+  "failed",
+  "cancelled",
+  "interrupted",
+  "rejected",
+  "indeterminate",
+] as const;
+
+function parseExecutionBudgetLimits(
+  value: unknown,
+  path: string,
+): ExecutionBudgetLimits {
+  const record = expectRecord(value, path);
+  const limits: ExecutionBudgetLimits = {};
+  for (const key of [
+    "max_plan_steps",
+    "max_step_attempts",
+    "max_model_turns",
+    "max_model_turns_per_step",
+    "max_tool_calls",
+    "max_tool_calls_per_step",
+    "max_plan_revisions",
+    "max_model_repairs",
+    "max_finalization_turns",
+    "max_wall_time_ms",
+    "max_total_tokens",
+    "max_cost_microunits",
+  ] as const) {
+    // An unset dimension stays absent rather than becoming a fabricated bound.
+    if (record[key] !== undefined && record[key] !== null) {
+      limits[key] = expectInteger(record[key], `${path}.${key}`, { min: 1 });
+    }
+  }
+  return limits;
+}
+
+function parseExecutionBudgetExhaustion(
+  value: unknown,
+  path: string,
+): ExecutionBudgetExhaustion {
+  const record = expectRecord(value, path);
+  return {
+    dimension: expectEnum(
+      record.dimension,
+      EXECUTION_BUDGET_DIMENSIONS,
+      `${path}.dimension`,
+    ),
+    phase: expectEnum(record.phase, EXECUTION_PHASES, `${path}.phase`),
+    limit: expectInteger(record.limit, `${path}.limit`, { min: 0 }),
+    consumed: expectInteger(record.consumed, `${path}.consumed`, { min: 0 }),
+    safe_summary: expectString(record.safe_summary, `${path}.safe_summary`),
+  };
+}
+
+function parseExecutionBudgetSnapshot(
+  value: unknown,
+  path: string,
+): ExecutionBudgetSnapshot {
+  const record = expectRecord(value, path);
+  const snapshot: ExecutionBudgetSnapshot = {
+    limits: parseExecutionBudgetLimits(record.limits ?? {}, `${path}.limits`),
+    consumed: parseExecutionBudgetUsage(record.consumed, `${path}.consumed`),
+    cost_enforced: optionalBoolean(record, "cost_enforced", path) ?? false,
+  };
+  if (record.exhausted !== undefined && record.exhausted !== null) {
+    snapshot.exhausted = parseExecutionBudgetExhaustion(
+      record.exhausted,
+      `${path}.exhausted`,
+    );
+  }
+  return snapshot;
+}
+
+function parseExecutionPolicy(value: unknown, path: string): ExecutionPolicy {
+  const record = expectRecord(value, path);
+  const policy: ExecutionPolicy = {
+    version: expectInteger(record.version, `${path}.version`, { min: 0 }),
+    strategy: expectEnum(
+      record.strategy,
+      ["react", "plan_react"] as const,
+      `${path}.strategy`,
+    ),
+    selection_source: expectEnum(
+      record.selection_source,
+      [
+        "request",
+        "session",
+        "config",
+        "compatibility_default",
+        "max_steps_and_plan_flag",
+      ] as const,
+      `${path}.selection_source`,
+    ),
+    budgets: parseExecutionBudgetLimits(
+      record.budgets ?? {},
+      `${path}.budgets`,
+    ),
+  };
+  if (record.evaluator_mode !== undefined && record.evaluator_mode !== null) {
+    policy.evaluator_mode = expectEnum(
+      record.evaluator_mode,
+      ["rule_only", "rule_first_model_on_ambiguity"] as const,
+      `${path}.evaluator_mode`,
+    );
+  }
+  if (record.finalizer_policy !== undefined && record.finalizer_policy !== null) {
+    policy.finalizer_policy = expectEnum(
+      record.finalizer_policy,
+      ["deterministic", "model_preferred"] as const,
+      `${path}.finalizer_policy`,
+    );
+  }
+  return policy;
+}
+
+function parseExecutionDegradation(
+  value: unknown,
+  path: string,
+): ExecutionDegradation {
+  const record = expectRecord(value, path);
+  return {
+    degradation_id: expectString(
+      record.degradation_id,
+      `${path}.degradation_id`,
+      { nonEmpty: true },
+    ),
+    phase: expectEnum(record.phase, EXECUTION_PHASES, `${path}.phase`),
+    code: expectString(record.code, `${path}.code`, { nonEmpty: true }),
+    safe_summary: expectString(record.safe_summary, `${path}.safe_summary`),
+    occurred_at: expectString(record.occurred_at, `${path}.occurred_at`, {
+      nonEmpty: true,
+    }),
+  };
+}
+
+function parseFinalizationRecord(
+  value: unknown,
+  path: string,
+): FinalizationRecord {
+  const record = expectRecord(value, path);
+  const finalization: FinalizationRecord = {
+    finalization_id: expectString(
+      record.finalization_id,
+      `${path}.finalization_id`,
+      { nonEmpty: true },
+    ),
+    phase: expectEnum(
+      record.phase,
+      ["started", "completed"] as const,
+      `${path}.phase`,
+    ),
+    finish_reason: expectEnum(
+      record.finish_reason,
+      PLAN_FINISH_REASONS,
+      `${path}.finish_reason`,
+    ),
+    mode: expectEnum(
+      record.mode,
+      ["direct", "model", "deterministic", "deterministic_fallback"] as const,
+      `${path}.mode`,
+    ),
+    started_at: expectString(record.started_at, `${path}.started_at`, {
+      nonEmpty: true,
+    }),
+  };
+  if (record.outcome !== undefined && record.outcome !== null) {
+    finalization.outcome = expectEnum(
+      record.outcome,
+      [
+        "success",
+        "partial",
+        "blocked",
+        "rejected",
+        "cancelled",
+        "interrupted",
+        "exhausted",
+        "indeterminate",
+        "failed",
+      ] as const,
+      `${path}.outcome`,
+    );
+  }
+  assignOptional(
+    finalization,
+    "completed_at",
+    optionalString(record, "completed_at", path, { nonEmpty: true }),
+  );
+  const output = optionalNullableString(record, "output", path);
+  if (output !== undefined) {
+    finalization.output = output;
+  }
+  for (const key of ["evidence_refs", "incomplete_step_ids"] as const) {
+    if (record[key] !== undefined && record[key] !== null) {
+      finalization[key] = parseStringArray(record[key], `${path}.${key}`);
+    }
+  }
+  for (const key of ["budget_before", "budget_after"] as const) {
+    if (record[key] !== undefined && record[key] !== null) {
+      finalization[key] = parseExecutionBudgetUsage(
+        record[key],
+        `${path}.${key}`,
+      );
+    }
+  }
+  return finalization;
 }
 
 function parsePlanDecision(value: unknown, path: string): PlanDecision {
@@ -2903,6 +3202,12 @@ export function parseStreamEvent(
         "started_at",
         optionalString(record, "started_at", path),
       );
+      if (record.budget !== undefined && record.budget !== null) {
+        event.budget = parseExecutionBudgetSnapshot(
+          record.budget,
+          `${path}.budget`,
+        );
+      }
       return event;
     }
     case "step_result":
@@ -2920,6 +3225,31 @@ export function parseStreamEvent(
         type,
         plan: parseTaskPlan(record.plan, `${path}.plan`),
         revision: parsePlanRevision(record.revision, `${path}.revision`),
+      };
+    case "execution_strategy_selected":
+      return {
+        type,
+        policy: parseExecutionPolicy(record.policy, `${path}.policy`),
+      };
+    case "execution_budget_updated":
+      return {
+        type,
+        phase: expectEnum(record.phase, EXECUTION_PHASES, `${path}.phase`),
+        snapshot: parseExecutionBudgetSnapshot(
+          record.snapshot,
+          `${path}.snapshot`,
+        ),
+      };
+    case "execution_degraded":
+      return {
+        type,
+        record: parseExecutionDegradation(record.record, `${path}.record`),
+      };
+    case "finalization_started":
+    case "finalization_completed":
+      return {
+        type,
+        record: parseFinalizationRecord(record.record, `${path}.record`),
       };
     case "prompt_compacted": {
       const event: Extract<ProductStreamEvent, { type: "prompt_compacted" }> = {

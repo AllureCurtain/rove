@@ -618,11 +618,12 @@ A skipped external smoke is not evidence that the external integration works.
 3. [MCP Streamable HTTP and Tool Artifacts](design/2026-07-15-mcp-streamable-http-and-tool-artifacts-design.md)
 4. [OnCall Reference Agent and Evaluation](design/2026-07-15-oncall-reference-agent-evaluation-plan.md)
 
-The execution lifecycle is partially implemented through one Runtime-neutral
-Agent kernel, bounded StepRunner, StepRecord ledger, PlanRevision, and
-rule-first PlanDecision. Its Finalizer, model-on-ambiguity, and full budget
-target remain proposed. The other three documents remain proposed/not
-implemented.
+The execution lifecycle is implemented through one Runtime-neutral Agent
+kernel, bounded StepRunner, StepRecord ledger, PlanRevision, rule-first
+PlanDecision with bounded model-on-ambiguity evaluation, an independent
+evidence-grounded Finalizer, public multidimensional execution budgets, and
+trace-tail reconciliation on resume. The other three documents remain
+proposed/not implemented.
 
 ### Active product delivery
 

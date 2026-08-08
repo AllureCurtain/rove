@@ -35,6 +35,7 @@ async fn runtime_state_store_round_trips_task_state_and_indexed_trace() {
         plan: None,
         runtime_identity: None,
         step_ledger: Default::default(),
+        execution_lifecycle: Default::default(),
     };
     store.write_task_state(&state).await.unwrap();
 

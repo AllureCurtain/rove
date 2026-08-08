@@ -3,7 +3,9 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::execution::{PlanDecisionRecord, PlanRevision, StepRecord};
+use crate::execution::{
+    ExecutionLifecycleState, FinalOutcomeStatus, PlanDecisionRecord, PlanRevision, StepRecord,
+};
 use crate::prompt_metadata::PromptBuildMetadata;
 use crate::runtime_identity::RuntimeIdentity;
 use crate::types::{JobId, RunId, SessionId, TerminationReason};
@@ -41,6 +43,10 @@ pub struct RunReport {
     pub plan_decisions: Vec<PlanDecisionRecord>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub plan_revisions: Vec<PlanRevision>,
+    #[serde(default)]
+    pub execution_lifecycle: ExecutionLifecycleState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub final_outcome: Option<FinalOutcomeStatus>,
     pub output: Option<String>,
     pub timestamp: String,
 }
@@ -80,6 +86,8 @@ impl RunReport {
             step_records: Vec::new(),
             plan_decisions: Vec::new(),
             plan_revisions: Vec::new(),
+            execution_lifecycle: ExecutionLifecycleState::default(),
+            final_outcome: None,
             output: None,
             timestamp: chrono::Utc::now().to_rfc3339(),
         }

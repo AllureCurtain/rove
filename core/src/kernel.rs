@@ -11,6 +11,7 @@ use crate::{Action, ToolCallAction};
 pub struct KernelLimits {
     pub max_model_turns: Option<u32>,
     pub max_tool_calls: Option<u32>,
+    pub max_repairs: Option<u32>,
 }
 
 /// Mutable conversation state owned by the shared Agent kernel.
@@ -20,6 +21,7 @@ pub struct KernelState {
     pub usage: Usage,
     pub model_turns: u32,
     pub tool_calls: u32,
+    pub repairs: u32,
 }
 
 impl KernelState {
@@ -36,6 +38,7 @@ pub enum KernelTermination<S> {
     Final { output: String },
     ModelTurnLimit,
     ToolCallLimit,
+    RepairLimit,
     Cancelled,
     ModelFailed(ModelError),
     IncompleteBeforeModelTurn,
@@ -386,6 +389,14 @@ where
                     }
                 }
                 Action::Malformed { reason } => {
+                    if limits
+                        .max_repairs
+                        .is_some_and(|limit| state.repairs >= limit)
+                    {
+                        yield finished_item(&mut host, state, KernelTermination::RepairLimit);
+                        return;
+                    }
+                    state.repairs = state.repairs.saturating_add(1);
                     state
                         .history
                         .push(Message::assistant(turn.full_response.clone()));

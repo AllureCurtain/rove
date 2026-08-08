@@ -24,16 +24,32 @@ export type StepRecordStatus =
   | "partial"
   | "failed"
   | "blocked"
+  | "rejected"
   | "skipped"
   | "budget_exhausted"
   | "cancelled"
-  | "interrupted";
+  | "interrupted"
+  | "indeterminate";
 
 export type StepCompletionBasis =
   | "model_conclusion"
   | "deterministic_rule"
   | "user_decision"
   | "runtime_failure";
+
+/** Semantic uncertainty that deterministic lifecycle rules cannot resolve. */
+export type PlanAmbiguityKind =
+  | "remaining_work_may_be_unnecessary"
+  | "plan_assumption_may_be_invalid"
+  | "recoverable_alternative_may_exist"
+  | "goal_may_be_partially_satisfied"
+  | "remaining_dependencies_may_need_reordering";
+
+export interface PlanAmbiguity {
+  kind: PlanAmbiguityKind;
+  safe_summary: string;
+  evidence_refs?: string[];
+}
 
 export interface StepRecord {
   record_id: string;
@@ -56,6 +72,7 @@ export interface StepRecord {
   error_code?: string;
   safe_error_summary?: string;
   supersedes_record_id?: string;
+  ambiguity?: PlanAmbiguity;
 }
 
 export interface ExecutionBudgetUsage {
@@ -64,9 +81,143 @@ export interface ExecutionBudgetUsage {
   model_turns: number;
   tool_calls: number;
   plan_revisions: number;
+  model_repairs: number;
+  planner_turns: number;
+  evaluator_turns: number;
+  replanner_turns: number;
+  finalization_turns: number;
   wall_time_ms: number;
   total_tokens: number;
   cost_microunits: number;
+}
+
+/** Independent per-dimension execution limits. Absent means unresolved. */
+export interface ExecutionBudgetLimits {
+  max_plan_steps?: number | null;
+  max_step_attempts?: number | null;
+  max_model_turns?: number | null;
+  max_model_turns_per_step?: number | null;
+  max_tool_calls?: number | null;
+  max_tool_calls_per_step?: number | null;
+  max_plan_revisions?: number | null;
+  max_model_repairs?: number | null;
+  max_finalization_turns?: number | null;
+  max_wall_time_ms?: number | null;
+  max_total_tokens?: number | null;
+  max_cost_microunits?: number | null;
+}
+
+export type ExecutionPhase =
+  | "planner"
+  | "step"
+  | "evaluator"
+  | "replanner"
+  | "finalizer"
+  | "run";
+
+export type ExecutionBudgetDimension =
+  | "plan_steps"
+  | "step_attempts"
+  | "model_turns"
+  | "model_turns_per_step"
+  | "tool_calls"
+  | "tool_calls_per_step"
+  | "plan_revisions"
+  | "model_repairs"
+  | "finalization_turns"
+  | "wall_time"
+  | "total_tokens"
+  | "cost";
+
+export interface ExecutionBudgetExhaustion {
+  dimension: ExecutionBudgetDimension;
+  phase: ExecutionPhase;
+  limit: number;
+  consumed: number;
+  safe_summary: string;
+}
+
+export interface ExecutionBudgetSnapshot {
+  limits: ExecutionBudgetLimits;
+  consumed: ExecutionBudgetUsage;
+  exhausted?: ExecutionBudgetExhaustion | null;
+  /** Cost is enforceable only when the provider supplies priced usage. */
+  cost_enforced: boolean;
+}
+
+export type ExecutionStrategy = "react" | "plan_react";
+
+export type StrategySelectionSource =
+  | "request"
+  | "session"
+  | "config"
+  | "compatibility_default"
+  | "max_steps_and_plan_flag";
+
+export type EvaluatorMode = "rule_only" | "rule_first_model_on_ambiguity";
+
+export type FinalizerPolicy = "deterministic" | "model_preferred";
+
+export interface ExecutionPolicy {
+  version: number;
+  strategy: ExecutionStrategy;
+  selection_source: StrategySelectionSource;
+  budgets: ExecutionBudgetLimits;
+  evaluator_mode?: EvaluatorMode;
+  finalizer_policy?: FinalizerPolicy;
+}
+
+/** Explicit, safe degradation fact. Fallbacks are never silent. */
+export interface ExecutionDegradation {
+  degradation_id: string;
+  phase: ExecutionPhase;
+  code: string;
+  safe_summary: string;
+  occurred_at: string;
+}
+
+/** User-visible terminal classification, distinct from `TerminationReason`. */
+export type FinalOutcomeStatus =
+  | "success"
+  | "partial"
+  | "blocked"
+  | "rejected"
+  | "cancelled"
+  | "interrupted"
+  | "exhausted"
+  | "indeterminate"
+  | "failed";
+
+export type FinalizationMode =
+  | "direct"
+  | "model"
+  | "deterministic"
+  | "deterministic_fallback";
+
+export type FinalizationPhase = "started" | "completed";
+
+export interface FinalizationRecord {
+  finalization_id: string;
+  phase: FinalizationPhase;
+  finish_reason: PlanFinishReason;
+  outcome?: FinalOutcomeStatus | null;
+  mode: FinalizationMode;
+  started_at: string;
+  completed_at?: string | null;
+  output?: string | null;
+  evidence_refs?: string[];
+  incomplete_step_ids?: string[];
+  budget_before?: ExecutionBudgetUsage;
+  budget_after?: ExecutionBudgetUsage;
+}
+
+/** Materialized run lifecycle projection stored in state and reports. */
+export interface ExecutionLifecycleState {
+  policy?: ExecutionPolicy | null;
+  budget_usage?: ExecutionBudgetUsage;
+  budget_exhaustion?: ExecutionBudgetExhaustion | null;
+  finalization?: FinalizationRecord | null;
+  degradations?: ExecutionDegradation[];
 }
 
 export type PlanDecisionKind = "continue" | "replace_remaining" | "finish";
@@ -78,7 +229,9 @@ export type PlanFinishReason =
   | "budget_exhausted"
   | "failed"
   | "cancelled"
-  | "interrupted";
+  | "interrupted"
+  | "rejected"
+  | "indeterminate";
 
 export interface PlanDecision {
   decision_id: string;
@@ -200,6 +353,19 @@ export type StreamEvent =
       user_message: string;
     }
   | {
+      type: "execution_strategy_selected";
+      policy: ExecutionPolicy;
+    }
+  | {
+      type: "execution_budget_updated";
+      phase: ExecutionPhase;
+      snapshot: ExecutionBudgetSnapshot;
+    }
+  | {
+      type: "execution_degraded";
+      record: ExecutionDegradation;
+    }
+  | {
       type: "llm_chunk";
       delta: string;
     }
@@ -261,6 +427,7 @@ export type StreamEvent =
       step_id?: string;
       attempt?: number;
       started_at?: string;
+      budget?: ExecutionBudgetSnapshot;
     }
   | {
       type: "step_result";
@@ -274,6 +441,14 @@ export type StreamEvent =
       type: "plan_revised";
       plan: TaskPlan;
       revision: PlanRevision;
+    }
+  | {
+      type: "finalization_started";
+      record: FinalizationRecord;
+    }
+  | {
+      type: "finalization_completed";
+      record: FinalizationRecord;
     }
   | {
       type: "prompt_compacted";
@@ -492,6 +667,9 @@ export type ResumeMode = "latest";
 
 export const STREAM_EVENT_NAMES = [
   "run_started",
+  "execution_strategy_selected",
+  "execution_budget_updated",
+  "execution_degraded",
   "llm_chunk",
   "model_status",
   "llm_message",
@@ -505,6 +683,8 @@ export const STREAM_EVENT_NAMES = [
   "step_result",
   "plan_decision",
   "plan_revised",
+  "finalization_started",
+  "finalization_completed",
   "prompt_compacted",
   "memory_flushed",
   "prompt_built",

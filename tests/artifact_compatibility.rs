@@ -299,6 +299,7 @@ async fn legacy_message_only_state_dual_reads_then_writes_one_canonical_session(
         plan: None,
         runtime_identity: None,
         step_ledger: Default::default(),
+        execution_lifecycle: Default::default(),
     };
     let legacy_json = serde_json::to_string(&legacy).unwrap();
     assert!(!legacy_json.contains("\"session\""));
