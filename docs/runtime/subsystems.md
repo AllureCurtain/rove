@@ -389,6 +389,80 @@ snapshot, but a planned step that was in flight is not replayed: the new run
 emits an `interrupted` `StepRecord` and terminates with an error so an unknown
 external side effect cannot be repeated automatically.
 
+## Tool Results And Durable Tool Artifacts
+
+A tool result is more than a string. `core/src/tool_result.rs` owns the shared
+result contract that the runtime, the finalizer, the CLI, the API, and the Web
+inspector all read from, so a rich remote result does not have to be flattened
+into text at the boundary and then re-parsed downstream.
+
+`ToolResultOutcome` separates the cases that callers must treat differently:
+`Success`, `Partial`, `Error`, `Rejected`, `Cancelled`, `TimedOutKnownNotSent`,
+and `Indeterminate`. Only the first five plus `TimedOutKnownNotSent` are
+retryable; `is_safely_retryable` returns false for `Indeterminate`, which is the
+state used when a call may have already produced an external effect that cannot
+be observed. A timeout is only reported as `TimedOutKnownNotSent` when the
+transport can prove the request never left the client.
+
+`ToolOutputEnvelope` carries the content blocks, optional structured content, the
+outcome, and artifact references. `enforce_bounds` is applied at construction,
+not at serialization time, so an oversized remote result is truncated once with a
+recorded reason rather than propagating to every consumer. The envelope exposes
+four deliberately different projections:
+
+- `model_projection`: what the model sees. Binary payloads never appear here, so
+  a large image cannot be smuggled into the prompt as base64.
+- `ui_projection`: what the inspector renders, including artifact references.
+- `finalizer_projection`: what the finalizer summarizes.
+- `audit_projection`: the fullest view, for trace and review.
+
+`ToolOutput.envelope` is boxed. A `ToolOutput` travels inline through several
+event and turn enums, and inlining the rich contract would make every variant of
+those enums pay for it even though the common tool returns plain text.
+
+Durable Tool Artifacts live in `runtime/src/state/tool_artifacts.rs` under the
+run's `tool_artifacts/` directory, as `tool_artifacts/<art_id>/{payload,
+metadata.json}`. This is deliberately **not** the run's `artifacts/` directory.
+`artifacts/` is a flat set of registered run files that the product manifest
+enumerates as regular files; Tool Artifacts are content-addressed directories
+holding a payload plus metadata, so sharing the directory would make every Tool
+Artifact look like a malformed registered artifact and would blur the
+transient/durable boundary the two stores exist to keep. The process-local
+projection store reachable through `environment.artifacts()` remains a separate,
+transient authority and is not a substitute for this one.
+
+Artifact identity is derived from the content hash, so a remote filename, `uri`,
+or `name` never steers a local path. Content types are matched against an
+explicit list rather than sniffed, and `mime_type_is_active_content` marks the
+types that must never be rendered inline. Remote annotations describe intent and
+grant nothing.
+
+Four quotas bound the store: 8 MiB per artifact, 16 MiB per tool call, 64 MiB per
+run, and 512 artifacts per run. Exceeding a quota rejects the artifact with a
+typed reason instead of failing the run. Every accepted or rejected artifact
+appends one entry to the append-only `tool_artifacts.jsonl` ledger, and
+`expire_payload` removes bytes while retaining metadata, so a cleaned artifact
+stays as evidence that it existed rather than silently disappearing.
+
+Two `StreamEvent` variants report this to consumers: `ToolArtifactStored` and
+`ToolArtifactRejected`. Because the stream enum is matched exhaustively, adding
+them forced every consumer to state what it does with them.
+
+The MCP Streamable HTTP proxy is the first live producer. It maps a real
+`tools/call` result into an envelope through
+`runtime/src/tools/mcp/result_mapping.rs`, storing binary content as durable
+artifacts and correlating the session by hash only, never by raw session ID. When
+no artifact store is available the mapper **refuses** binary payloads with
+`artifact_store_unavailable` rather than inlining them as base64.
+
+The product API exposes these through the existing session-scoped manifest,
+content, download, and preview routes under the `tool_artifact` source kind, so
+they inherit the existing session-to-run binding and path-safety checks. Download
+names are derived from the matched MIME type with a `bin` fallback and are never
+influenced by remote input. Active content is forced to download-only. Artifact
+resolution never builds a path from the requested ID: it enumerates the store,
+validates each entry, recomputes the public ID, and requires an exact match.
+
 ## Memory
 
 Memory paths, session storage, durable topic parsing/recall, layered prompt

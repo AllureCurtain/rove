@@ -703,6 +703,46 @@ fn delayed_marker_command(marker: &str) -> (String, Vec<String>) {
     )
 }
 
+/// `create_utf8` must not report a mutation before the bytes are readable.
+///
+/// A `tokio::fs::File` write is completed by an in-flight blocking operation, so
+/// dropping the handle without flushing leaves the bytes landing at an
+/// unspecified later moment. The read here deliberately uses `std::fs`, which
+/// does not queue behind that operation the way `filesystem().read_utf8()` does,
+/// so it observes the file the way an outside caller would.
+///
+/// This locks the contract; it does not by itself reproduce the original
+/// load-dependent race, which needed a saturated blocking pool to surface.
+#[test]
+fn create_utf8_bytes_are_durable_before_it_reports_success() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let root = temp.path().to_path_buf();
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .max_blocking_threads(1)
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async {
+        let workspace = Workspace::detect(&root).unwrap();
+        let environment = local_environment(&workspace);
+        let filesystem = environment.filesystem();
+
+        for index in 0..24 {
+            let relative = format!("durable/note-{index}.txt");
+            let content = format!("content-{index}");
+            filesystem.create_utf8(&relative, &content).await.unwrap();
+            assert_eq!(
+                std::fs::read_to_string(root.join("durable").join(format!("note-{index}.txt")))
+                    .unwrap(),
+                content,
+                "create_utf8 returned before {relative} held its bytes"
+            );
+        }
+    });
+}
+
 #[cfg(unix)]
 fn create_file_symlink(target: &Path, link: &Path) -> bool {
     std::os::unix::fs::symlink(target, link).is_ok()

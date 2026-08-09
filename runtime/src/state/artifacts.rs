@@ -14,14 +14,15 @@ use crate::types::{
     TaskPlan, TaskState, TerminationReason,
 };
 use crate::workspace::Workspace;
-use rove_core::{CallId, ToolExecutionMetadata, ToolMutation};
+use rove_core::{CallId, ToolArtifactRef, ToolExecutionMetadata, ToolMutation};
 use rove_models::{
     AssistantTurn, ContentBlock, InternalCallId, Message, Role, ToolCall,
     ToolResult as CanonicalToolResult, ToolResultStatus, Usage, WireCallReference,
 };
 
-use super::report::{RunReport, write_report};
+use super::report::{ReportArtifactEntry, ReportArtifactRejection, RunReport, write_report};
 use super::store::StateStore;
+use super::tool_artifacts::ToolArtifactStore;
 
 const CHECKPOINT_SUMMARY_CHARS: usize = 180;
 
@@ -39,6 +40,9 @@ pub struct RunArtifactRecorder {
     tool_failures: u32,
     tool_mutations: Vec<ToolMutation>,
     tool_execution_metadata: Vec<ToolExecutionMetadata>,
+    /// Artifact references seen this run, deduplicated by artifact and call.
+    tool_artifacts: Vec<ToolArtifactRef>,
+    rejected_tool_artifacts: Vec<ReportArtifactRejection>,
     prompt_builds: Vec<PromptBuildMetadata>,
     runtime_identity: Option<RuntimeIdentity>,
     step_ledger: StepLedgerState,
@@ -101,6 +105,8 @@ impl RunArtifactRecorder {
             tool_failures: 0,
             tool_mutations: Vec::new(),
             tool_execution_metadata: Vec::new(),
+            tool_artifacts: Vec::new(),
+            rejected_tool_artifacts: Vec::new(),
             prompt_builds: Vec::new(),
             runtime_identity: runtime_identity
                 .or_else(|| resume_state.and_then(|state| state.runtime_identity.clone())),
@@ -281,7 +287,34 @@ impl RunArtifactRecorder {
                 self.sync_history_from_session();
                 self.tool_mutations.extend(result.mutations.clone());
                 self.tool_execution_metadata.push(result.metadata.clone());
+                // The completed envelope is authoritative for this call's
+                // artifacts. Per-artifact events may have arrived first, so
+                // record by identity rather than appending blindly.
+                if let Some(envelope) = &result.envelope {
+                    for artifact in &envelope.artifacts {
+                        self.record_artifact(artifact);
+                    }
+                }
                 self.write_snapshot(state_store).await;
+            }
+            StreamEvent::ToolArtifactStored { artifact, .. } => {
+                self.record_artifact(artifact);
+            }
+            StreamEvent::ToolArtifactRejected {
+                call_id,
+                block_ordinal,
+                reason,
+                observed_bytes,
+            } => {
+                let rejection = ReportArtifactRejection {
+                    call_id: call_id.to_string(),
+                    block_ordinal: *block_ordinal,
+                    reason: reason.clone(),
+                    observed_bytes: *observed_bytes,
+                };
+                if !self.rejected_tool_artifacts.contains(&rejection) {
+                    self.rejected_tool_artifacts.push(rejection);
+                }
             }
             StreamEvent::ToolCallFailed {
                 call_id,
@@ -565,6 +598,18 @@ impl RunArtifactRecorder {
             .finalization
             .as_ref()
             .and_then(|record| record.outcome);
+        // Payload availability is read from disk rather than assumed, so a
+        // report written after retention cleanup says "expired" truthfully.
+        let artifact_store = ToolArtifactStore::new(run_dir);
+        let mut artifact_entries = Vec::with_capacity(self.tool_artifacts.len());
+        for artifact in &self.tool_artifacts {
+            let available = artifact_store
+                .payload_available(&artifact.artifact_id)
+                .await;
+            artifact_entries.push(ReportArtifactEntry::from_ref(artifact, available));
+        }
+        report.tool_artifacts = artifact_entries;
+        report.rejected_tool_artifacts = self.rejected_tool_artifacts.clone();
         report.output = self.final_output.clone();
 
         match write_report(run_dir, &report) {
@@ -658,6 +703,22 @@ impl RunArtifactRecorder {
             prompt_version: None,
             source_message_count: compacted_history_messages,
             last_error: None,
+        }
+    }
+
+    /// Records one artifact reference for the report.
+    ///
+    /// The same payload can be referenced by more than one call, so identity
+    /// is the pair of artifact and call: deduplicating on the artifact alone
+    /// would lose the fact that a second call produced the same bytes.
+    fn record_artifact(&mut self, artifact: &ToolArtifactRef) {
+        let already_recorded = self.tool_artifacts.iter().any(|saved| {
+            saved.artifact_id == artifact.artifact_id
+                && saved.source.call_id == artifact.source.call_id
+                && saved.source.block_ordinal == artifact.source.block_ordinal
+        });
+        if !already_recorded {
+            self.tool_artifacts.push(artifact.clone());
         }
     }
 
@@ -883,6 +944,7 @@ mod tests {
                         output: "done".to_string(),
                         mutations: Vec::new(),
                         metadata: metadata.clone(),
+                        envelope: None,
                     },
                 },
                 &state_store,

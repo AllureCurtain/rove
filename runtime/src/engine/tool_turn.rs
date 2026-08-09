@@ -11,8 +11,9 @@ use crate::events::StreamEvent;
 use crate::executor::Executor;
 use crate::hooks::HookRegistry;
 use crate::memory::paths::MemoryPaths;
+use crate::state::tool_artifacts::ToolArtifactStore;
 use crate::tool_input::RegisteredUserInput;
-use crate::tools::runtime_context::runtime_tool_context_with_environment;
+use crate::tools::runtime_context::runtime_tool_context_with_artifacts;
 use crate::types::{
     ApprovalDecision, ApprovalPolicy, CallId, Message, PendingToolApproval, ToolApprovalProvider,
     ToolApprovalRequest, ToolCallAction, ToolCallRef, ToolExecutionMetadata, ToolExecutionStatus,
@@ -43,6 +44,9 @@ pub(crate) struct ToolTurnContext<'a> {
     pub input_provider: Option<Arc<dyn UserInputProvider>>,
     pub hooks: HookRegistry,
     pub cancel_token: CancellationToken,
+    /// Durable artifact authority for this run, passed to every tool so a
+    /// rich result can retain its payloads.
+    pub tool_artifacts: Option<Arc<ToolArtifactStore>>,
 }
 
 #[derive(Debug)]
@@ -158,7 +162,7 @@ impl<'a> ToolTurnContext<'a> {
         input_events: Option<mpsc::Sender<RegisteredUserInput>>,
     ) -> ToolExecution {
         let executor = Executor::with_hooks(self.registry, self.hooks.clone());
-        let tool_context = runtime_tool_context_with_environment(
+        let tool_context = runtime_tool_context_with_artifacts(
             call.call_id,
             self.workspace,
             self.memory_paths.clone(),
@@ -166,6 +170,7 @@ impl<'a> ToolTurnContext<'a> {
             self.input_provider.clone(),
             self.cancel_token.clone(),
             self.environment.clone(),
+            self.tool_artifacts.clone(),
         );
         let result = executor
             .run_with_input_events(
@@ -561,6 +566,7 @@ mod tests {
             input_provider: None,
             hooks: HookRegistry::default(),
             cancel_token: CancellationToken::new(),
+            tool_artifacts: None,
         };
 
         assert!(base.can_run_parallel_batch(&calls));
@@ -590,6 +596,7 @@ mod tests {
             input_provider: None,
             hooks: HookRegistry::default(),
             cancel_token: CancellationToken::new(),
+            tool_artifacts: None,
         };
         let action = ToolAction::Call(ToolCallAction {
             call_id: CallId::new(),

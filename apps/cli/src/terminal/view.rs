@@ -1051,6 +1051,28 @@ impl From<&StreamEvent> for RunViewUpdate {
                 status: "degraded".to_string(),
                 message: record.safe_summary.clone(),
             },
+            // Artifact events render as status lines: the terminal shows that
+            // a payload was retained or refused, never the payload itself.
+            StreamEvent::ToolArtifactStored { artifact, .. } => Self::ModelStatus {
+                status: "artifact".to_string(),
+                message: format!(
+                    "Stored {} artifact {} ({} bytes).",
+                    artifact.mime_type.as_deref().unwrap_or("unknown-type"),
+                    artifact.artifact_id,
+                    artifact.byte_length
+                ),
+            },
+            StreamEvent::ToolArtifactRejected {
+                reason,
+                observed_bytes,
+                block_ordinal,
+                ..
+            } => Self::ModelStatus {
+                status: "artifact".to_string(),
+                message: format!(
+                    "Refused artifact from block {block_ordinal} after {observed_bytes} bytes: {reason}."
+                ),
+            },
             StreamEvent::LlmChunk { delta } => Self::AssistantDelta {
                 delta: delta.clone(),
             },
@@ -1294,6 +1316,7 @@ mod tests {
                     output: "done".to_string(),
                     mutations: Vec::new(),
                     metadata: Default::default(),
+                    envelope: None,
                 },
             },
             StreamEvent::ToolCallFailed {
@@ -1739,6 +1762,7 @@ mod tests {
                 output: "done".to_string(),
                 mutations: Vec::new(),
                 metadata: Default::default(),
+                envelope: None,
             },
         });
         state.apply_update(RunViewUpdate::PromptCompacted {

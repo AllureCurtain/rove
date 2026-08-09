@@ -20,5 +20,8 @@ pub mod dispatcher;
 pub mod fixture;
 pub mod http_safety;
 pub mod protocol;
+pub mod result_mapping;
+#[cfg(test)]
+mod result_mapping_tests;
 pub mod streamable_http;
 pub mod transport;

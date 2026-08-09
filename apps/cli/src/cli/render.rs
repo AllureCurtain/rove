@@ -629,6 +629,7 @@ mod tests {
                     output: "hello".to_string(),
                     mutations: Vec::new(),
                     metadata: Default::default(),
+                    envelope: None,
                 },
             },
             StreamEvent::RunCompleted {
@@ -797,6 +798,7 @@ mod tests {
             .to_string(),
             mutations: Vec::new(),
             metadata: Default::default(),
+            envelope: None,
         };
 
         let lines = super::run_shell_result_summary(&result).unwrap();
@@ -822,6 +824,7 @@ mod tests {
             .to_string(),
             mutations: Vec::new(),
             metadata: Default::default(),
+            envelope: None,
         };
 
         let lines = super::run_shell_result_summary(&result).unwrap();

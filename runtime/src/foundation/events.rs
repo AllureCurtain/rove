@@ -6,7 +6,7 @@ use crate::execution::{
 };
 use crate::prompt_metadata::PromptBuildMetadata;
 use crate::types::{JobId, PlanStep, PromptCompactionState, RunId, TaskPlan, TerminationReason};
-use rove_core::{CallId, ToolError, ToolExecutionMetadata, ToolResult};
+use rove_core::{CallId, ToolArtifactRef, ToolError, ToolExecutionMetadata, ToolResult};
 use rove_models::{AssistantTurn, ToolCallRef, Usage};
 
 /// All events emitted by the engine's streaming main loop.
@@ -82,6 +82,29 @@ pub enum StreamEvent {
         error: ToolError,
         #[serde(default)]
         metadata: ToolExecutionMetadata,
+    },
+
+    /// A tool payload became a durable artifact.
+    ///
+    /// Carries only the reference. The payload never travels on the event
+    /// stream, so a large artifact cannot bloat a trace or an SSE frame.
+    ToolArtifactStored {
+        call_id: CallId,
+        artifact: Box<ToolArtifactRef>,
+    },
+
+    /// A tool payload was refused by an artifact quota.
+    ///
+    /// Emitted so a quota event stays visible in the trace and in
+    /// diagnostics even though no payload was retained.
+    ToolArtifactRejected {
+        call_id: CallId,
+        /// Position of the originating content block.
+        block_ordinal: u32,
+        /// Stable machine-readable rejection code.
+        reason: String,
+        /// Bytes observed before the read was stopped.
+        observed_bytes: u64,
     },
 
     /// The `request_input` tool is waiting for user input.
@@ -207,6 +230,8 @@ impl StreamEvent {
             Self::ToolCallApprovalNeeded { .. } => "tool_call_approval_needed",
             Self::ToolCallCompleted { .. } => "tool_call_completed",
             Self::ToolCallFailed { .. } => "tool_call_failed",
+            Self::ToolArtifactStored { .. } => "tool_artifact_stored",
+            Self::ToolArtifactRejected { .. } => "tool_artifact_rejected",
             Self::InputNeeded { .. } => "input_needed",
             Self::PlanCreated { .. } => "plan_created",
             Self::PlanStepStarted { .. } => "plan_step_started",

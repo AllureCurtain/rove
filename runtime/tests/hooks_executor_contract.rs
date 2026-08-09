@@ -44,6 +44,7 @@ impl Tool for MutatingTool {
                 operation: ToolMutationOperation::Update,
                 diff: Some("+hello".to_string()),
             }],
+            envelope: None,
         })
     }
 }

@@ -15,6 +15,7 @@ use tokio::time::timeout;
 use crate::environment::{
     EnvironmentError, ExecutionEnvironment, StdioProcessGuard, local_environment,
 };
+use crate::state::tool_artifacts::ToolArtifactStore;
 use crate::workspace::Workspace;
 
 use rove_core::ToolDescriptor;
@@ -993,15 +994,79 @@ pub struct McpStreamableHttpProxyTool {
     tool: McpToolInfo,
 }
 
+/// Hashes a session identifier before it is recorded anywhere.
+///
+/// A Streamable HTTP session ID is credential-like: possessing it lets a caller
+/// speak as this client. It is therefore correlated by hash so a trace, report,
+/// or artifact ledger can prove two calls shared a session without carrying the
+/// value that would let a reader resume it.
+fn session_correlation_hash(session_id: &str) -> String {
+    crate::prompt_metadata::stable_hash(&format!("mcp-session:v1:{session_id}"))
+}
+
+impl McpStreamableHttpProxyTool {
+    /// Assembles the non-result inputs the envelope mapping needs.
+    ///
+    /// `duration_ms` is measured around the call so a slow server is visible in
+    /// the report without the mapping having to own a clock.
+    async fn result_context<'a>(
+        &self,
+        ctx: &ToolContext<'_>,
+        artifacts: Option<&'a ToolArtifactStore>,
+        duration_ms: u64,
+    ) -> crate::tools::mcp::result_mapping::McpResultContext<'a> {
+        crate::tools::mcp::result_mapping::McpResultContext {
+            call_id: ctx.call_id.to_string(),
+            remote_tool_name: self.tool.remote_name.clone(),
+            server_config_id: self.tool.server_name.clone(),
+            server_identity_hash: crate::prompt_metadata::stable_hash(&format!(
+                "mcp-server:v1:{}",
+                self.tool.server_name
+            )),
+            protocol_version: self
+                .client
+                .negotiated_version()
+                .await
+                .unwrap_or_else(|| "unknown".to_string()),
+            session_hash: self
+                .client
+                .session_id()
+                .await
+                .as_deref()
+                .map(session_correlation_hash),
+            attempt_count: 1,
+            duration_ms: Some(duration_ms),
+            artifacts,
+            captured_at: chrono::Utc::now().to_rfc3339(),
+        }
+    }
+}
+
 #[async_trait]
 impl Tool for McpStreamableHttpProxyTool {
     fn schema(&self) -> ToolDescriptor {
         self.tool.schema.clone()
     }
 
-    async fn execute(&self, args: Value, _ctx: &ToolContext<'_>) -> Result<ToolOutput, ToolError> {
-        match self.client.call_tool(&self.tool.remote_name, args).await {
-            Ok(result) => Ok(ToolOutput::text(mcp_call_result_to_text(result))),
+    async fn execute(&self, args: Value, ctx: &ToolContext<'_>) -> Result<ToolOutput, ToolError> {
+        // Services are optional here on purpose: an embedding without a run
+        // directory still gets a correct envelope, it just cannot retain binary
+        // payloads, and the mapping records that loss instead of inlining bytes.
+        let services = crate::tools::runtime_context::runtime_tool_services(ctx).ok();
+        let artifacts = services.and_then(|services| services.tool_artifacts.as_deref());
+
+        let started = std::time::Instant::now();
+        let outcome = self.client.call_tool(&self.tool.remote_name, args).await;
+        let duration_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+
+        match outcome {
+            Ok(result) => {
+                let context = self.result_context(ctx, artifacts, duration_ms).await;
+                let envelope =
+                    crate::tools::mcp::result_mapping::envelope_from_mcp_result(&result, &context)
+                        .await;
+                Ok(ToolOutput::from_envelope(envelope))
+            }
             // A committed request whose effect is unknown must not be presented
             // as a plain failure that a caller might safely retry.
             Err(error) if error.is_indeterminate() => Err(ToolError::ExecutionFailed {

@@ -116,6 +116,32 @@ const streamEventFixtures: StreamEvent[] = [
     },
   },
   {
+    type: "tool_artifact_stored",
+    call_id: "call-1",
+    artifact: {
+      artifact_id: "art_0123456789abcdef0123456789abcdef",
+      kind: "image",
+      mime_type: "image/png",
+      byte_length: 2048,
+      sha256: "a".repeat(64),
+      storage_ref:
+        "artifacts/art_0123456789abcdef0123456789abcdef/payload",
+      source: {
+        run_id: "run-1",
+        call_id: "call-1",
+        block_ordinal: 0,
+        captured_at: "2026-08-09T00:00:00Z",
+      },
+    },
+  },
+  {
+    type: "tool_artifact_rejected",
+    call_id: "call-1",
+    block_ordinal: 2,
+    reason: "artifact_single_bytes_exceeded",
+    observed_bytes: 9000000,
+  },
+  {
     type: "input_needed",
     input_id: "input-1",
     prompt: "Which branch?",

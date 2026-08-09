@@ -10,7 +10,10 @@ use crate::prompt_metadata::PromptBuildMetadata;
 use crate::runtime_identity::RuntimeIdentity;
 use crate::types::{JobId, RunId, SessionId, TerminationReason};
 use crate::workspace::WorkspaceKind;
-use rove_core::{ToolExecutionMetadata, ToolMutation};
+use rove_core::{
+    ArtifactValidation, Sensitivity, ToolArtifactKind, ToolArtifactRef, ToolExecutionMetadata,
+    ToolMutation,
+};
 use rove_models::Usage;
 
 /// Summary report for a completed run.
@@ -47,8 +50,66 @@ pub struct RunReport {
     pub execution_lifecycle: ExecutionLifecycleState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub final_outcome: Option<FinalOutcomeStatus>,
+    /// Artifacts this run produced, by reference only.
+    ///
+    /// The report never copies a payload: a large artifact stays on disk and
+    /// the report records how to find it and whether it is still there.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_artifacts: Vec<ReportArtifactEntry>,
+    /// Artifacts a quota refused, so a bounded run stays explainable after
+    /// the fact rather than looking like the tool returned nothing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rejected_tool_artifacts: Vec<ReportArtifactRejection>,
     pub output: Option<String>,
     pub timestamp: String,
+}
+
+/// One artifact as recorded in a report.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ReportArtifactEntry {
+    pub artifact_id: String,
+    pub call_id: String,
+    pub kind: ToolArtifactKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mime_type: Option<String>,
+    pub byte_length: u64,
+    pub sha256: String,
+    pub storage_ref: String,
+    /// False once retention has removed the payload. The record of the tool
+    /// outcome is never rewritten, so an expired artifact is shown as expired
+    /// rather than deleted from history.
+    pub payload_available: bool,
+    #[serde(default)]
+    pub sensitivity: Sensitivity,
+    #[serde(default)]
+    pub validation: ArtifactValidation,
+}
+
+impl ReportArtifactEntry {
+    /// Projects a reference into a report entry.
+    pub fn from_ref(artifact: &ToolArtifactRef, payload_available: bool) -> Self {
+        Self {
+            artifact_id: artifact.artifact_id.to_string(),
+            call_id: artifact.source.call_id.clone(),
+            kind: artifact.kind,
+            mime_type: artifact.mime_type.clone(),
+            byte_length: artifact.byte_length,
+            sha256: artifact.sha256.clone(),
+            storage_ref: artifact.storage_ref.clone(),
+            payload_available,
+            sensitivity: artifact.sensitivity,
+            validation: artifact.validation,
+        }
+    }
+}
+
+/// One refused artifact as recorded in a report.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReportArtifactRejection {
+    pub call_id: String,
+    pub block_ordinal: u32,
+    pub reason: String,
+    pub observed_bytes: u64,
 }
 
 impl RunReport {
@@ -88,6 +149,8 @@ impl RunReport {
             plan_revisions: Vec::new(),
             execution_lifecycle: ExecutionLifecycleState::default(),
             final_outcome: None,
+            tool_artifacts: Vec::new(),
+            rejected_tool_artifacts: Vec::new(),
             output: None,
             timestamp: chrono::Utc::now().to_rfc3339(),
         }

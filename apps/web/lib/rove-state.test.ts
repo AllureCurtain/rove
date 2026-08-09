@@ -1292,4 +1292,111 @@ describe("workbenchReducer", () => {
     expect(state.busy).toBe(false);
     expect(state.statusText).toBe("Run interrupted");
   });
+
+  it("accumulates stored and rejected artifacts onto the owning tool call", () => {
+    const artifact = {
+      artifact_id: "art_0123456789abcdef0123456789abcdef",
+      kind: "image" as const,
+      mime_type: "image/png",
+      byte_length: 2048,
+      sha256: "a".repeat(64),
+      storage_ref: "artifacts/art_0123456789abcdef0123456789abcdef/payload",
+      source: {
+        run_id: "run-1",
+        call_id: "call-art",
+        block_ordinal: 0,
+        captured_at: "2026-08-09T00:00:00Z",
+      },
+    };
+    const events: StreamEvent[] = [
+      {
+        type: "tool_call_started",
+        call_id: "call-art",
+        name: "render",
+        args: {},
+      },
+      { type: "tool_artifact_stored", call_id: "call-art", artifact },
+      // A replayed duplicate must not double-count.
+      { type: "tool_artifact_stored", call_id: "call-art", artifact },
+      {
+        type: "tool_artifact_rejected",
+        call_id: "call-art",
+        block_ordinal: 3,
+        reason: "artifact_single_bytes_exceeded",
+        observed_bytes: 9_000_000,
+      },
+      {
+        type: "tool_artifact_rejected",
+        call_id: "call-art",
+        block_ordinal: 3,
+        reason: "artifact_single_bytes_exceeded",
+        observed_bytes: 9_000_000,
+      },
+    ];
+
+    const state = events.reduce(
+      (current, event) => workbenchReducer(current, { type: "stream_event", event }),
+      createWorkbenchState(),
+    );
+
+    const tool = state.tools.find((entry) => entry.id === "call-art");
+    expect(tool?.artifacts).toHaveLength(1);
+    expect(tool?.artifacts?.[0]?.artifact_id).toBe(artifact.artifact_id);
+    expect(tool?.rejectedArtifacts).toEqual([
+      {
+        blockOrdinal: 3,
+        reason: "artifact_single_bytes_exceeded",
+        observedBytes: 9_000_000,
+      },
+    ]);
+    // An artifact is evidence about a call, never its status.
+    expect(tool?.status).toBe("running");
+  });
+
+  it("records the rich outcome and artifacts from a completed envelope", () => {
+    const state = workbenchReducer(createWorkbenchState(), {
+      type: "stream_event",
+      event: {
+        type: "tool_call_completed",
+        call_id: "call-env",
+        result: {
+          call_id: "call-env",
+          output: "called the remote tool",
+          metadata: {
+            status: "error",
+            risk_level: "high",
+            read_only: false,
+            workspace_changed: false,
+          },
+          envelope: {
+            outcome: "indeterminate",
+            summary_text: "called the remote tool",
+            external_effects: [
+              { kind: "mcp_tool_call", target: "deploy", indeterminate: true },
+            ],
+          },
+        },
+      },
+    });
+
+    const tool = state.tools.find((entry) => entry.id === "call-env");
+    expect(tool?.outcome).toBe("indeterminate");
+    expect(tool?.status).toBe("done");
+    expect(tool?.metadata?.status).toBe("error");
+  });
+
+  it("ignores an artifact event for a call it has never seen", () => {
+    const state = workbenchReducer(createWorkbenchState(), {
+      type: "stream_event",
+      event: {
+        type: "tool_artifact_rejected",
+        call_id: "call-unknown",
+        block_ordinal: 0,
+        reason: "artifact_run_bytes_exceeded",
+        observed_bytes: 1,
+      },
+    });
+
+    expect(state.tools).toHaveLength(0);
+  });
 });

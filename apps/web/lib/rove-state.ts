@@ -10,9 +10,11 @@ import type {
   StepRecord,
   StreamEvent,
   TaskPlan,
+  ToolArtifactRef,
   ToolExecutionMetadata,
   ToolError,
   ToolMutation,
+  ToolResultOutcome,
   Usage,
   JobStateResponse,
 } from "./rove-types";
@@ -49,6 +51,18 @@ export interface ToolCallView {
   metadata?: ToolExecutionViewMetadata;
   reason?: string;
   pendingApproval?: PendingApproval;
+  /** Durable artifacts this call produced, in the order they were stored. */
+  artifacts?: ToolArtifactRef[];
+  /** Artifacts a quota refused, kept so a UI can explain a missing payload. */
+  rejectedArtifacts?: RejectedArtifactView[];
+  /** Rich outcome when the tool produced an envelope. */
+  outcome?: ToolResultOutcome;
+}
+
+export interface RejectedArtifactView {
+  blockOrdinal: number;
+  reason: string;
+  observedBytes: number;
 }
 
 export interface TraceEntry {
@@ -989,6 +1003,10 @@ function applyStreamEvent(
           output: event.result.output,
           mutations: event.result.mutations,
           metadata: normalizeToolExecutionMetadata(event.result.metadata),
+          // The envelope's own artifacts are authoritative for the completed
+          // call. Per-artifact events may arrive first; both converge here.
+          artifacts: event.result.envelope?.artifacts,
+          outcome: event.result.envelope?.outcome,
         }),
         timeline: bindTimelineEntry(
           state.timeline,
@@ -1005,6 +1023,59 @@ function applyStreamEvent(
           state.trace,
           event.type,
           truncate(event.result.output, 220),
+        ),
+      };
+    }
+    // Artifact events accumulate onto the owning call. They never change its
+    // status: an artifact is evidence about a call, not its outcome.
+    case "tool_artifact_stored": {
+      const existing = state.tools.find((tool) => tool.id === event.call_id);
+      if (!existing) {
+        return next;
+      }
+      const alreadyRecorded = (existing.artifacts ?? []).some(
+        (artifact) => artifact.artifact_id === event.artifact.artifact_id,
+      );
+      return {
+        ...next,
+        tools: alreadyRecorded
+          ? state.tools
+          : upsertTool(state.tools, {
+              ...existing,
+              artifacts: [...(existing.artifacts ?? []), event.artifact],
+            }),
+      };
+    }
+    case "tool_artifact_rejected": {
+      const existing = state.tools.find((tool) => tool.id === event.call_id);
+      if (!existing) {
+        return next;
+      }
+      const rejection: RejectedArtifactView = {
+        blockOrdinal: event.block_ordinal,
+        reason: event.reason,
+        observedBytes: event.observed_bytes,
+      };
+      const alreadyRecorded = (existing.rejectedArtifacts ?? []).some(
+        (entry) =>
+          entry.blockOrdinal === rejection.blockOrdinal &&
+          entry.reason === rejection.reason,
+      );
+      return {
+        ...next,
+        tools: alreadyRecorded
+          ? state.tools
+          : upsertTool(state.tools, {
+              ...existing,
+              rejectedArtifacts: [
+                ...(existing.rejectedArtifacts ?? []),
+                rejection,
+              ],
+            }),
+        trace: prependTrace(
+          state.trace,
+          event.type,
+          `block ${event.block_ordinal}: ${event.reason}`,
         ),
       };
     }

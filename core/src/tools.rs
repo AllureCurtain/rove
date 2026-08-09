@@ -7,6 +7,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
+use crate::tool_result::{ToolArtifactRef, ToolOutputEnvelope, ToolResultOutcome};
 use crate::{CallId, ToolDescriptor, ToolError, ToolMutation, validate_tool_args};
 use rove_models::{ModelToolSchema, ToolSchemaValidationError, validate_model_tools};
 
@@ -65,10 +66,20 @@ impl std::fmt::Debug for ToolContext<'_> {
 }
 
 /// Result returned directly by a Tool implementation.
+///
+/// `content` and `mutations` remain the legacy surface every existing tool and
+/// consumer uses. `envelope` is the additive rich contract: it is `None` for a
+/// plain tool, and when present its `summary_text` is kept identical to
+/// `content` so there is exactly one text truth.
+///
+/// The envelope is boxed because a `ToolOutput` travels inline through several
+/// event and turn enums. Inlining it would make every variant of those enums
+/// pay for the rich contract even though the common tool returns plain text.
 #[derive(Debug, Clone)]
 pub struct ToolOutput {
     pub content: String,
     pub mutations: Vec<ToolMutation>,
+    pub envelope: Option<Box<ToolOutputEnvelope>>,
 }
 
 impl ToolOutput {
@@ -76,7 +87,38 @@ impl ToolOutput {
         Self {
             content: content.into(),
             mutations: Vec::new(),
+            envelope: None,
         }
+    }
+
+    /// Builds an output from a rich envelope.
+    ///
+    /// The legacy `content` and `mutations` are projected from the envelope, so
+    /// a consumer that knows nothing about envelopes still sees a correct text
+    /// result and the same mutations.
+    pub fn from_envelope(envelope: ToolOutputEnvelope) -> Self {
+        let envelope = envelope.enforce_bounds();
+        Self {
+            content: envelope.model_projection(),
+            mutations: envelope.mutations.clone(),
+            envelope: Some(Box::new(envelope)),
+        }
+    }
+
+    /// The rich outcome, or the `Success` implied by a legacy text result.
+    pub fn outcome(&self) -> ToolResultOutcome {
+        self.envelope
+            .as_ref()
+            .map(|envelope| envelope.outcome)
+            .unwrap_or_default()
+    }
+
+    /// Artifacts this result references, empty for a legacy result.
+    pub fn artifacts(&self) -> &[ToolArtifactRef] {
+        self.envelope
+            .as_ref()
+            .map(|envelope| envelope.artifacts.as_slice())
+            .unwrap_or_default()
     }
 }
 

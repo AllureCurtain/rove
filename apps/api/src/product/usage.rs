@@ -423,6 +423,8 @@ mod tests {
             plan_revisions: Vec::new(),
             execution_lifecycle: Default::default(),
             final_outcome: None,
+            tool_artifacts: Vec::new(),
+            rejected_tool_artifacts: Vec::new(),
             output: None,
             timestamp: "2026-08-04T00:00:00Z".to_string(),
         }

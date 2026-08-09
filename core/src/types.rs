@@ -95,6 +95,13 @@ pub struct ToolResult {
     pub mutations: Vec<ToolMutation>,
     #[serde(default)]
     pub metadata: ToolExecutionMetadata,
+    /// Rich result detail, when the tool produced one.
+    ///
+    /// Additive and skipped when absent, so an artifact written by an older
+    /// build still deserializes and a consumer that only reads `output` and
+    /// `metadata` is unaffected. Boxed to keep `ToolResult` small.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub envelope: Option<Box<crate::tool_result::ToolOutputEnvelope>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -250,6 +250,11 @@ fn apply_event(state: &mut TaskState, event: &StreamEvent) -> bool {
         // finalization record is the outcome authority, and a non-success
         // reason must not be projected as completed work.
         StreamEvent::RunCompleted { .. } => false,
+        // Artifact facts are durable in the artifact ledger and the report,
+        // not in the resumable snapshot. Replaying them must not mutate
+        // TaskState: the payloads are already on disk, and re-projecting them
+        // into resume state would invite a re-dispatch of finished work.
+        StreamEvent::ToolArtifactStored { .. } | StreamEvent::ToolArtifactRejected { .. } => false,
         _ => false,
     }
 }

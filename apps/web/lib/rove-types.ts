@@ -300,6 +300,147 @@ export interface ToolResult {
   output: string;
   mutations?: ToolMutation[];
   metadata?: ToolExecutionMetadata;
+  /** Rich result detail. Absent for a plain text tool result. */
+  envelope?: ToolOutputEnvelope;
+}
+
+export const TOOL_RESULT_OUTCOMES = [
+  "success",
+  "partial",
+  "error",
+  "rejected",
+  "cancelled",
+  "timed_out_known_not_sent",
+  "indeterminate",
+] as const;
+
+export type ToolResultOutcome = (typeof TOOL_RESULT_OUTCOMES)[number];
+
+export const ARTIFACT_VALIDATION_STATES = [
+  "validated",
+  "claim_rejected",
+  "quota_exceeded",
+] as const;
+
+export type ArtifactValidation = (typeof ARTIFACT_VALIDATION_STATES)[number];
+
+export const TOOL_ARTIFACT_KINDS = [
+  "text",
+  "image",
+  "audio",
+  "resource",
+  "unknown",
+] as const;
+
+export type ToolArtifactKind = (typeof TOOL_ARTIFACT_KINDS)[number];
+
+export interface ToolArtifactSource {
+  run_id: string;
+  call_id: string;
+  server_config_id?: string;
+  server_identity_hash?: string;
+  session_hash?: string;
+  remote_tool_name?: string;
+  block_ordinal: number;
+  captured_at: string;
+}
+
+export interface ToolArtifactRef {
+  artifact_id: string;
+  kind: ToolArtifactKind;
+  /** Locally validated MIME type. Absent when the claim was rejected. */
+  mime_type?: string;
+  byte_length: number;
+  sha256: string;
+  storage_ref: string;
+  source: ToolArtifactSource;
+  /** Remote claim retained for provenance only. Never resolved by the UI. */
+  original_uri?: string;
+  audience?: string[];
+  priority?: number;
+  last_modified?: string;
+  sensitivity?: "normal" | "sensitive";
+  trust?: "untrusted" | "local_tool";
+  validation?: ArtifactValidation;
+  validation_detail?: string;
+}
+
+export interface ToolContentBlockMeta {
+  ordinal: number;
+  mime_type?: string;
+  audience?: string[];
+  priority?: number;
+  truncated?: boolean;
+  validation?: ArtifactValidation;
+}
+
+export type ToolContentBlock =
+  | { type: "text"; meta: ToolContentBlockMeta; text: string }
+  | { type: "image"; meta: ToolContentBlockMeta; artifact: ToolArtifactRef }
+  | { type: "audio"; meta: ToolContentBlockMeta; artifact: ToolArtifactRef }
+  | {
+      type: "resource_link";
+      meta: ToolContentBlockMeta;
+      uri: string;
+      name?: string;
+      description?: string;
+    }
+  | {
+      type: "embedded_resource";
+      meta: ToolContentBlockMeta;
+      uri?: string;
+      artifact: ToolArtifactRef;
+      preview?: string;
+    }
+  | {
+      type: "unknown";
+      meta: ToolContentBlockMeta;
+      declared_type: string;
+      retained?: string;
+    };
+
+export interface StructuredToolContent {
+  value: unknown;
+  schema_valid?: boolean;
+  schema_error?: string;
+}
+
+export interface ToolProtocolMetadata {
+  protocol?: string;
+  server_config_id?: string;
+  server_identity_hash?: string;
+  protocol_version?: string;
+  capability_snapshot_id?: string;
+  remote_tool_name?: string;
+  request_id_hash?: string;
+  connection_id?: string;
+  session_hash?: string;
+  attempt_count?: number;
+  duration_ms?: number;
+}
+
+export interface ToolDiagnostic {
+  domain: string;
+  code: string;
+  message: string;
+}
+
+export interface ExternalEffect {
+  kind: string;
+  target: string;
+  indeterminate?: boolean;
+}
+
+export interface ToolOutputEnvelope {
+  outcome?: ToolResultOutcome;
+  summary_text: string;
+  content_blocks?: ToolContentBlock[];
+  structured_content?: StructuredToolContent;
+  artifacts?: ToolArtifactRef[];
+  mutations?: ToolMutation[];
+  external_effects?: ExternalEffect[];
+  protocol_metadata?: ToolProtocolMetadata;
+  diagnostics?: ToolDiagnostic[];
 }
 
 export interface ToolMutation {
@@ -404,6 +545,18 @@ export type StreamEvent =
       call_id: string;
       error: ToolError;
       metadata?: ToolExecutionMetadata;
+    }
+  | {
+      type: "tool_artifact_stored";
+      call_id: string;
+      artifact: ToolArtifactRef;
+    }
+  | {
+      type: "tool_artifact_rejected";
+      call_id: string;
+      block_ordinal: number;
+      reason: string;
+      observed_bytes: number;
     }
   | {
       type: "input_needed";
@@ -677,6 +830,8 @@ export const STREAM_EVENT_NAMES = [
   "tool_call_approval_needed",
   "tool_call_completed",
   "tool_call_failed",
+  "tool_artifact_stored",
+  "tool_artifact_rejected",
   "input_needed",
   "plan_created",
   "plan_step_started",

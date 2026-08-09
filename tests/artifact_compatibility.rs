@@ -168,6 +168,7 @@ async fn canonical_session_persists_restarts_and_reprojects_provider_identity_at
                         output: output.to_string(),
                         mutations: Vec::new(),
                         metadata: ToolExecutionMetadata::default(),
+                        envelope: None,
                     },
                 },
                 &store,

@@ -11,8 +11,19 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { createProductApiClient } from "../product/product-client";
 import type {
   ProductArtifactContentEnvelope,
+  ProductArtifactSourceKind,
   ProductArtifactView,
 } from "../product/product-api-types";
+
+// Reads as a label rather than a wire value, and distinguishes a durable Tool
+// Artifact produced by a tool call from a file the run registered itself.
+const SOURCE_KIND_LABELS: Record<ProductArtifactSourceKind, string> = {
+  report: "report",
+  task_state: "task state",
+  trace: "trace",
+  registered: "registered",
+  tool_artifact: "tool artifact",
+};
 
 export function ArtifactPanel({ sessionId }: { sessionId: string }) {
   const client = useMemo(() => createProductApiClient(), []);
@@ -98,7 +109,7 @@ export function ArtifactPanel({ sessionId }: { sessionId: string }) {
                 {artifact.preview_kind === "raster_image" ? <ImageIcon /> : <FileIcon />}
                 <span>{artifact.safe_name}</span>
                 <small>
-                  {artifact.source_kind} · {artifact.availability}
+                  {SOURCE_KIND_LABELS[artifact.source_kind]} · {artifact.availability}
                   {artifact.size !== undefined ? ` · ${formatBytes(artifact.size)}` : ""}
                 </small>
               </button>

@@ -28,6 +28,7 @@ use crate::runtime_identity::{
     RuntimeIdentity, RuntimeIdentityInput, RuntimeIdentityStatus, build_runtime_identity,
 };
 use crate::session::CHECKPOINT_SESSION_TAIL_ENTRIES;
+use crate::state::tool_artifacts::ToolArtifactStore;
 use crate::state::trace::TraceWriter;
 use crate::types::{
     ApprovalDecision, ApprovalPolicy, JobId, Message, RunId, RunRequest, SessionId,
@@ -641,6 +642,16 @@ impl Engine {
                     ),
                     steer_rx: Some(steer_rx.clone()),
                     steer_lifecycle: Some(steer_lifecycle.clone()),
+                    // Artifacts live beside the trace and state snapshot for
+                    // this run, so a resume reads the same ledger the original
+                    // attempt wrote and download requests resolve against the
+                    // run they name rather than an ambient directory.
+                    tool_artifacts: Some(Arc::new(ToolArtifactStore::new(
+                        self.workspace
+                            .state_dir
+                            .join("runs")
+                            .join(run_id.to_string()),
+                    ))),
                 };
 
                 let mut runtime: BoxStream<'_, LoopItem> = match execution_policy.strategy {

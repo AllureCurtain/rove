@@ -1841,6 +1841,27 @@ async fn api_exposes_openapi_json_for_all_routes() {
     assert!(create_job_responses.contains_key("503"));
     assert!(!create_job_responses.contains_key("501"));
 
+    // The artifact source kind is part of the published contract, so a consumer
+    // can tell a durable Tool Artifact apart from a registered run file without
+    // guessing from the name or MIME type.
+    let source_kinds = spec["components"]["schemas"]["ProductArtifactSourceKind"]["enum"]
+        .as_array()
+        .expect("ProductArtifactSourceKind enum in OpenAPI components");
+    for expected in [
+        "report",
+        "task_state",
+        "trace",
+        "registered",
+        "tool_artifact",
+    ] {
+        assert!(
+            source_kinds
+                .iter()
+                .any(|kind| kind.as_str() == Some(expected)),
+            "missing artifact source kind {expected} in {source_kinds:?}"
+        );
+    }
+
     for (path, method) in [
         ("/product/workspaces", "get"),
         ("/product/workspaces", "post"),

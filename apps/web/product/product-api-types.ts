@@ -1,5 +1,8 @@
 import {
+  ARTIFACT_VALIDATION_STATES,
   STREAM_EVENT_NAMES,
+  TOOL_ARTIFACT_KINDS,
+  TOOL_RESULT_OUTCOMES,
   type ExecutionBudgetExhaustion,
   type ExecutionBudgetLimits,
   type ExecutionBudgetSnapshot,
@@ -17,10 +20,15 @@ import {
   type StepRecord,
   type StreamEvent,
   type TaskPlan,
+  type ToolArtifactRef,
+  type ToolArtifactSource,
   type ToolCallRef,
+  type ToolContentBlock,
+  type ToolContentBlockMeta,
   type ToolError,
   type ToolMutation,
   type ToolMutationOperation,
+  type ToolOutputEnvelope,
   type Usage,
 } from "../lib/rove-types";
 
@@ -312,6 +320,7 @@ export const PRODUCT_ARTIFACT_SOURCE_KINDS = [
   "task_state",
   "trace",
   "registered",
+  "tool_artifact",
 ] as const;
 export type ProductArtifactSourceKind =
   (typeof PRODUCT_ARTIFACT_SOURCE_KINDS)[number];
@@ -699,6 +708,8 @@ export interface ProductToolResult {
   output: string;
   mutations?: ToolMutation[];
   metadata: ProductToolExecutionMetadata;
+  /** Rich result detail, validated when the server sends it. */
+  envelope?: ToolOutputEnvelope;
 }
 
 export interface ProductPromptBuildMetadata {
@@ -2413,7 +2424,254 @@ function parseToolResult(value: unknown, path: string): ProductToolResult {
       parseToolMutation,
     );
   }
+  if (record.envelope !== undefined && record.envelope !== null) {
+    result.envelope = parseToolOutputEnvelope(
+      record.envelope,
+      `${path}.envelope`,
+    );
+  }
   return result;
+}
+
+function parseToolArtifactSource(
+  value: unknown,
+  path: string,
+): ToolArtifactSource {
+  const record = expectRecord(value, path);
+  const source: ToolArtifactSource = {
+    run_id: expectString(record.run_id, `${path}.run_id`, { nonEmpty: true }),
+    call_id: expectString(record.call_id, `${path}.call_id`, {
+      nonEmpty: true,
+    }),
+    block_ordinal: expectInteger(record.block_ordinal, `${path}.block_ordinal`, {
+      min: 0,
+    }),
+    captured_at: expectString(record.captured_at, `${path}.captured_at`, {
+      nonEmpty: true,
+    }),
+  };
+  for (const key of [
+    "server_config_id",
+    "server_identity_hash",
+    "session_hash",
+    "remote_tool_name",
+  ] as const) {
+    if (record[key] !== undefined && record[key] !== null) {
+      source[key] = expectString(record[key], `${path}.${key}`);
+    }
+  }
+  return source;
+}
+
+function parseToolArtifactRef(value: unknown, path: string): ToolArtifactRef {
+  const record = expectRecord(value, path);
+  const artifact: ToolArtifactRef = {
+    artifact_id: expectString(record.artifact_id, `${path}.artifact_id`, {
+      nonEmpty: true,
+    }),
+    kind: expectEnum(record.kind, TOOL_ARTIFACT_KINDS, `${path}.kind`),
+    byte_length: expectInteger(record.byte_length, `${path}.byte_length`, {
+      min: 0,
+    }),
+    sha256: expectString(record.sha256, `${path}.sha256`, { nonEmpty: true }),
+    storage_ref: expectString(record.storage_ref, `${path}.storage_ref`, {
+      nonEmpty: true,
+    }),
+    source: parseToolArtifactSource(record.source, `${path}.source`),
+  };
+  if (record.mime_type !== undefined && record.mime_type !== null) {
+    artifact.mime_type = expectString(record.mime_type, `${path}.mime_type`);
+  }
+  if (record.original_uri !== undefined && record.original_uri !== null) {
+    artifact.original_uri = expectString(
+      record.original_uri,
+      `${path}.original_uri`,
+    );
+  }
+  if (record.validation !== undefined && record.validation !== null) {
+    artifact.validation = expectEnum(
+      record.validation,
+      ARTIFACT_VALIDATION_STATES,
+      `${path}.validation`,
+    );
+  }
+  if (record.sensitivity !== undefined && record.sensitivity !== null) {
+    artifact.sensitivity = expectEnum(
+      record.sensitivity,
+      ["normal", "sensitive"] as const,
+      `${path}.sensitivity`,
+    );
+  }
+  if (record.trust !== undefined && record.trust !== null) {
+    artifact.trust = expectEnum(
+      record.trust,
+      ["untrusted", "local_tool"] as const,
+      `${path}.trust`,
+    );
+  }
+  return artifact;
+}
+
+function parseToolOutputEnvelope(
+  value: unknown,
+  path: string,
+): ToolOutputEnvelope {
+  const record = expectRecord(value, path);
+  const envelope: ToolOutputEnvelope = {
+    summary_text: expectString(record.summary_text, `${path}.summary_text`),
+  };
+  if (record.outcome !== undefined && record.outcome !== null) {
+    envelope.outcome = expectEnum(
+      record.outcome,
+      TOOL_RESULT_OUTCOMES,
+      `${path}.outcome`,
+    );
+  }
+  if (record.artifacts !== undefined && record.artifacts !== null) {
+    envelope.artifacts = expectArray(
+      record.artifacts,
+      `${path}.artifacts`,
+      parseToolArtifactRef,
+    );
+  }
+  // Content blocks, structured content, protocol metadata, effects, and
+  // diagnostics are passed through as validated-shape records rather than
+  // re-modelled here: the server is the authority on their contents, and the
+  // UI reads them through narrow accessors.
+  if (record.content_blocks !== undefined && record.content_blocks !== null) {
+    envelope.content_blocks = expectArray(
+      record.content_blocks,
+      `${path}.content_blocks`,
+      (block, blockPath) =>
+        parseToolContentBlock(block, blockPath),
+    );
+  }
+  if (record.diagnostics !== undefined && record.diagnostics !== null) {
+    envelope.diagnostics = expectArray(
+      record.diagnostics,
+      `${path}.diagnostics`,
+      (diagnostic, diagnosticPath) => {
+        const entry = expectRecord(diagnostic, diagnosticPath);
+        return {
+          domain: expectString(entry.domain, `${diagnosticPath}.domain`),
+          code: expectString(entry.code, `${diagnosticPath}.code`),
+          message: expectString(entry.message, `${diagnosticPath}.message`),
+        };
+      },
+    );
+  }
+  if (
+    record.external_effects !== undefined &&
+    record.external_effects !== null
+  ) {
+    envelope.external_effects = expectArray(
+      record.external_effects,
+      `${path}.external_effects`,
+      (effect, effectPath) => {
+        const entry = expectRecord(effect, effectPath);
+        return {
+          kind: expectString(entry.kind, `${effectPath}.kind`),
+          target: expectString(entry.target, `${effectPath}.target`),
+          indeterminate:
+            entry.indeterminate === undefined || entry.indeterminate === null
+              ? undefined
+              : expectBoolean(
+                  entry.indeterminate,
+                  `${effectPath}.indeterminate`,
+                ),
+        };
+      },
+    );
+  }
+  return envelope;
+}
+
+function parseToolContentBlockMeta(
+  value: unknown,
+  path: string,
+): ToolContentBlockMeta {
+  const record = expectRecord(value, path);
+  const meta: ToolContentBlockMeta = {
+    ordinal: expectInteger(record.ordinal, `${path}.ordinal`, { min: 0 }),
+  };
+  if (record.mime_type !== undefined && record.mime_type !== null) {
+    meta.mime_type = expectString(record.mime_type, `${path}.mime_type`);
+  }
+  if (record.truncated !== undefined && record.truncated !== null) {
+    meta.truncated = expectBoolean(record.truncated, `${path}.truncated`);
+  }
+  if (record.validation !== undefined && record.validation !== null) {
+    meta.validation = expectEnum(
+      record.validation,
+      ARTIFACT_VALIDATION_STATES,
+      `${path}.validation`,
+    );
+  }
+  return meta;
+}
+
+function parseToolContentBlock(
+  value: unknown,
+  path: string,
+): ToolContentBlock {
+  const record = expectRecord(value, path);
+  const type = expectEnum(
+    record.type,
+    [
+      "text",
+      "image",
+      "audio",
+      "resource_link",
+      "embedded_resource",
+      "unknown",
+    ] as const,
+    `${path}.type`,
+  );
+  const meta = parseToolContentBlockMeta(record.meta, `${path}.meta`);
+  switch (type) {
+    case "text":
+      return { type, meta, text: expectString(record.text, `${path}.text`) };
+    case "image":
+    case "audio":
+      return {
+        type,
+        meta,
+        artifact: parseToolArtifactRef(record.artifact, `${path}.artifact`),
+      };
+    case "resource_link":
+      return {
+        type,
+        meta,
+        uri: expectString(record.uri, `${path}.uri`, { nonEmpty: true }),
+        name:
+          record.name === undefined || record.name === null
+            ? undefined
+            : expectString(record.name, `${path}.name`),
+      };
+    case "embedded_resource":
+      return {
+        type,
+        meta,
+        artifact: parseToolArtifactRef(record.artifact, `${path}.artifact`),
+        preview:
+          record.preview === undefined || record.preview === null
+            ? undefined
+            : expectString(record.preview, `${path}.preview`),
+      };
+    case "unknown":
+      return {
+        type,
+        meta,
+        declared_type: expectString(
+          record.declared_type,
+          `${path}.declared_type`,
+        ),
+        retained:
+          record.retained === undefined || record.retained === null
+            ? undefined
+            : expectString(record.retained, `${path}.retained`),
+      };
+  }
 }
 
 function parseToolCallRef(value: unknown, path: string): ToolCallRef {
@@ -3138,6 +3396,30 @@ export function parseStreamEvent(
         type,
         call_id: expectId(record.call_id, `${path}.call_id`),
         result: parseToolResult(record.result, `${path}.result`),
+      };
+    case "tool_artifact_stored":
+      return {
+        type,
+        call_id: expectId(record.call_id, `${path}.call_id`),
+        artifact: parseToolArtifactRef(record.artifact, `${path}.artifact`),
+      };
+    case "tool_artifact_rejected":
+      return {
+        type,
+        call_id: expectId(record.call_id, `${path}.call_id`),
+        block_ordinal: expectInteger(
+          record.block_ordinal,
+          `${path}.block_ordinal`,
+          { min: 0 },
+        ),
+        reason: expectString(record.reason, `${path}.reason`, {
+          nonEmpty: true,
+        }),
+        observed_bytes: expectInteger(
+          record.observed_bytes,
+          `${path}.observed_bytes`,
+          { min: 0 },
+        ),
       };
     case "tool_call_failed":
       return {

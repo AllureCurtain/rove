@@ -380,6 +380,7 @@ impl Tool for FsWriteTool {
                 operation,
                 diff: Some(diff),
             }],
+            envelope: None,
         })
     }
 }

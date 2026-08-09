@@ -12,13 +12,16 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use rove_core::ToolRegistry;
+use rove_core::{ToolRegistry, ToolResultOutcome};
 use rove_runtime::memory::paths::MemoryPaths;
+use rove_runtime::state::tool_artifacts::ToolArtifactStore;
 use rove_runtime::tools::mcp_proxy::{
     McpProbeFailureKind, McpServerConfig, McpTransport, McpTransportPolicy, probe_mcp_server,
     register_mcp_tools,
 };
-use rove_runtime::tools::runtime_context::runtime_tool_context;
+use rove_runtime::tools::runtime_context::{
+    runtime_tool_context, runtime_tool_context_with_artifacts,
+};
 use rove_runtime::types::{ApprovalPolicy, ToolContext};
 use rove_runtime::workspace::Workspace;
 use serde_json::{Value, json};
@@ -45,6 +48,9 @@ enum Mode {
     EventStream,
     /// Answer `tools/call` with a JSON-RPC error.
     CallFails,
+    /// Answer `tools/call` with rich content: an image, structured content, and
+    /// a block type this build does not model.
+    RichContent,
 }
 
 impl FixtureServer {
@@ -137,6 +143,10 @@ async fn serve(
     stream.flush().await
 }
 
+/// A real 1x1 PNG, so the stored bytes and their hash are genuine rather than
+/// an arbitrary blob that happens to decode.
+const PNG_1X1_BASE64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==";
+
 fn rpc_response(mode: Mode, method: &str, id: Value, list_calls: &AtomicU64) -> String {
     let payload = if mode == Mode::CallFails && method == "tools/call" {
         json!({
@@ -174,6 +184,22 @@ fn rpc_response(mode: Mode, method: &str, id: Value, list_calls: &AtomicU64) -> 
                     })
                 }
             }
+            "tools/call" if mode == Mode::RichContent => json!({
+                "content": [
+                    { "type": "text", "text": "rendered the chart" },
+                    {
+                        "type": "image",
+                        // A 1x1 PNG, and a hostile name/URI that must never
+                        // steer where the bytes are written.
+                        "data": PNG_1X1_BASE64,
+                        "mimeType": "image/png",
+                        "name": "../../escape.png",
+                        "uri": "file:///etc/passwd"
+                    },
+                    { "type": "future_block", "detail": "not modelled by this build" }
+                ],
+                "structuredContent": { "rows": 2, "ok": true }
+            }),
             "tools/call" => json!({ "content": [{ "type": "text", "text": "remote ok" }] }),
             _ => json!({}),
         };
@@ -226,6 +252,23 @@ fn mcp_context<'a>(workspace: &'a Workspace) -> ToolContext<'a> {
     )
 }
 
+/// A context carrying a durable artifact authority, as a real run has.
+fn artifact_context<'a>(
+    workspace: &'a Workspace,
+    store: Arc<ToolArtifactStore>,
+) -> ToolContext<'a> {
+    runtime_tool_context_with_artifacts(
+        rove_runtime::types::CallId::new(),
+        workspace,
+        MemoryPaths::from_workspace(workspace, 8),
+        ApprovalPolicy::Auto,
+        None,
+        CancellationToken::new(),
+        rove_runtime::environment::local_environment(workspace),
+        Some(store),
+    )
+}
+
 #[tokio::test]
 async fn streamable_http_registers_paginated_tools_and_calls_them() {
     let server = FixtureServer::start(Mode::Json).await.unwrap();
@@ -271,6 +314,80 @@ async fn streamable_http_registers_paginated_tools_and_calls_them() {
         "the remote result must reach the caller: {}",
         output.content
     );
+}
+
+/// The full rich-result path: a real MCP call, through the real registry, into
+/// the real durable artifact store, and back out as an envelope.
+///
+/// This is the end-to-end proof that the shared contract has a live producer:
+/// the image bytes must exist on disk, addressed by their own hash, with the
+/// server's hostile filename and URI having no influence on the path.
+#[tokio::test]
+async fn a_rich_mcp_result_lands_in_the_durable_artifact_store() {
+    let server = FixtureServer::start(Mode::RichContent).await.unwrap();
+    let mut registry = ToolRegistry::new();
+    register_mcp_tools(&mut registry, vec![server_config(server.url())])
+        .await
+        .unwrap();
+    let tool_name = registry
+        .descriptors()
+        .iter()
+        .map(|descriptor| descriptor.name.clone())
+        .find(|name| name.contains("echo_remote"))
+        .expect("the fixture tool must register");
+
+    let temp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(temp.path()).unwrap();
+    let run_dir = temp.path().join("runs").join("run_fixture");
+    let store = Arc::new(ToolArtifactStore::new(run_dir.clone()));
+    let output = registry
+        .execute(
+            &tool_name,
+            json!({ "text": "hi" }),
+            &artifact_context(&workspace, Arc::clone(&store)),
+        )
+        .await
+        .unwrap();
+
+    let envelope = output.envelope.as_ref().expect("an envelope is produced");
+    assert_eq!(envelope.outcome, ToolResultOutcome::Success);
+    assert_eq!(
+        envelope.artifacts.len(),
+        1,
+        "the image block becomes exactly one artifact"
+    );
+    // The unknown block is retained rather than silently dropped.
+    assert_eq!(envelope.content_blocks.len(), 3, "no block is lost");
+    assert!(
+        envelope.structured_content.is_some(),
+        "well-formed structured content survives"
+    );
+
+    let artifact = &envelope.artifacts[0];
+    assert_eq!(artifact.mime_type.as_deref(), Some("image/png"));
+    assert!(artifact.artifact_id.as_str().starts_with("art_"));
+    // The storage path is derived from the content hash, so neither the
+    // traversal-shaped name nor the file:// URI reached the filesystem.
+    assert!(artifact.storage_ref.contains(artifact.artifact_id.as_str()));
+    assert!(!artifact.storage_ref.contains(".."));
+    assert!(!artifact.storage_ref.contains("passwd"));
+
+    let bytes = store.get(&artifact.artifact_id).await.unwrap();
+    assert_eq!(
+        bytes.len() as u64,
+        artifact.byte_length,
+        "the recorded length matches the bytes actually retained"
+    );
+    assert_eq!(&bytes[1..4], b"PNG", "the real payload was stored");
+
+    // Base64 never reaches the model projection.
+    let projection = envelope.model_projection();
+    assert!(!projection.contains(PNG_1X1_BASE64));
+    assert!(projection.contains("rendered the chart"));
+
+    // And the ledger records the commit as durable evidence.
+    let ledger = store.ledger().await.unwrap();
+    assert_eq!(ledger.len(), 1, "one committed entry: {ledger:?}");
 }
 
 #[tokio::test]

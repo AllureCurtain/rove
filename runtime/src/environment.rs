@@ -551,7 +551,16 @@ impl WorkspaceFileSystem for LocalFileSystem {
                     EnvironmentError::Host(error.to_string())
                 }
             })?;
-        if let Err(error) = file.write_all(content.as_bytes()).await {
+        // `write_all` alone only fills tokio's internal buffer. Without an
+        // explicit flush the bytes are pushed out by a background task when the
+        // handle drops, so a caller that reads the path right after this returns
+        // can observe an empty file. Flush before reporting the mutation.
+        if let Err(error) = async {
+            file.write_all(content.as_bytes()).await?;
+            file.flush().await
+        }
+        .await
+        {
             drop(file);
             let _ = tokio::fs::remove_file(&path).await;
             return Err(EnvironmentError::Host(error.to_string()));

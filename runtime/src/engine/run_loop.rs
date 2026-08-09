@@ -25,6 +25,7 @@ use crate::model_turn::{ModelTurnItem, run_model_turn};
 use crate::prompt_metadata::{
     PromptBuildMetadata, prompt_cache_key, tool_signature, workspace_fingerprint,
 };
+use crate::state::tool_artifacts::ToolArtifactStore;
 use crate::tool_turn::{
     ToolAction, ToolTurnContext, ToolTurnItem, ToolTurnOutcome, append_tool_history, run_tool_turn,
 };
@@ -71,6 +72,8 @@ pub(crate) struct LoopContext<'a> {
     /// Tracks steers after the safe point and until the next model turn is
     /// actually handed to the model runner.
     pub steer_lifecycle: Option<SteerLifecycle>,
+    /// Durable Tool Artifact authority for this run.
+    pub tool_artifacts: Option<Arc<ToolArtifactStore>>,
 }
 
 impl<'a> LoopContext<'a> {
@@ -86,6 +89,7 @@ impl<'a> LoopContext<'a> {
             input_provider: self.input_provider.clone(),
             hooks: self.hooks.clone(),
             cancel_token,
+            tool_artifacts: self.tool_artifacts.clone(),
         }
     }
 }
