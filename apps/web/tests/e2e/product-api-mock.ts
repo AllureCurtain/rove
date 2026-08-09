@@ -1015,7 +1015,10 @@ export async function installMockProductApi(
             409,
           );
         }
-        const created = structuredClone(body);
+        const created: ProductMcpServerConfig = {
+          ...structuredClone(body),
+          transport_deprecated: body.transport === "sse",
+        };
         state.mcpServers[workspaceId] = [...servers, created].sort((left, right) =>
           left.name.localeCompare(right.name),
         );
@@ -1107,7 +1110,11 @@ export async function installMockProductApi(
           );
         }
         const body = request.postDataJSON() as UpdateProductMcpServerRequest;
-        const updated: ProductMcpServerConfig = { name, ...body };
+        const updated: ProductMcpServerConfig = {
+          name,
+          ...body,
+          transport_deprecated: body.transport === "sse",
+        };
         servers[serverIndex] = updated;
         state.mcpServers[workspaceId] = [...servers].sort((left, right) =>
           left.name.localeCompare(right.name),

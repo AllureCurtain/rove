@@ -884,7 +884,23 @@ pub struct UpdateProductMemoryTopicRequest {
 #[serde(rename_all = "snake_case")]
 pub enum ProductMcpTransport {
     Stdio,
+    /// Deprecated HTTP+SSE transport, retained for existing configurations.
     Sse,
+    /// Current MCP HTTP transport with negotiated session and version.
+    StreamableHttp,
+}
+
+impl ProductMcpTransport {
+    /// True for a transport retained only for compatibility. Surfaced so
+    /// product diagnostics can mark it without guessing from the name.
+    pub fn is_deprecated(self) -> bool {
+        matches!(self, Self::Sse)
+    }
+
+    /// True when the transport is configured with a URL rather than a command.
+    pub fn is_http(self) -> bool {
+        matches!(self, Self::Sse | Self::StreamableHttp)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -899,6 +915,9 @@ pub struct ProductMcpServer {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
     pub request_timeout_ms: u64,
+    /// Server-owned deprecation verdict for this server's transport, so the
+    /// client renders one truth instead of hardcoding which name is legacy.
+    pub transport_deprecated: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]

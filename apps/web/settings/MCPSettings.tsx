@@ -21,6 +21,12 @@ import type {
 } from "./settings-platform-api-types";
 import type { SettingsPlatformClient } from "./settings-platform-client";
 
+const TRANSPORT_LABELS: Record<ProductMcpTransport, string> = {
+  stdio: "stdio",
+  streamable_http: "Streamable HTTP",
+  sse: "Legacy SSE",
+};
+
 export interface McpServerDraft {
   name: string;
   enabled: boolean;
@@ -82,7 +88,7 @@ export function mcpServerRequestFromDraft(
     transport: draft.transport,
     request_timeout_ms: Number(draft.timeoutMs),
   };
-  if (draft.transport === "sse") {
+  if (draft.transport !== "stdio") {
     return {
       ...common,
       args: [],
@@ -366,7 +372,7 @@ export function MCPSettings({
 
         <div className="mcp-form-options">
           <div className="settings-segmented" role="group" aria-label="MCP transport">
-            {(["stdio", "sse"] as const).map((transport) => (
+            {(["stdio", "streamable_http", "sse"] as const).map((transport) => (
               <button
                 key={transport}
                 type="button"
@@ -375,7 +381,7 @@ export function MCPSettings({
                 disabled={saving}
                 onClick={() => chooseTransport(transport)}
               >
-                {transport === "stdio" ? "stdio" : "Legacy SSE"}
+                {TRANSPORT_LABELS[transport]}
               </button>
             ))}
           </div>
@@ -449,7 +455,11 @@ export function MCPSettings({
           </>
         ) : (
           <div className="field">
-            <label htmlFor="mcp-sse-url">Legacy SSE URL</label>
+            <label htmlFor="mcp-sse-url">
+              {draft.transport === "streamable_http"
+                ? "Streamable HTTP endpoint URL"
+                : "Legacy SSE URL"}
+            </label>
             <input
               id="mcp-sse-url"
               type="url"
@@ -515,8 +525,9 @@ export function MCPSettings({
                     <span>
                       {server.transport === "stdio"
                         ? `stdio · ${server.command} · ${server.args.length} args · ${server.env_names.length} env names`
-                        : `Legacy SSE · ${server.url}`}
+                        : `${TRANSPORT_LABELS[server.transport]} · ${server.url}`}
                       {` · ${server.request_timeout_ms} ms`}
+                      {server.transport_deprecated ? " · deprecated transport" : ""}
                     </span>
                     {rowErrors[server.name] ? (
                       <div className="chat-error" role="alert">

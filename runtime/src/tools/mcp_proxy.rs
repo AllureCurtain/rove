@@ -53,11 +53,29 @@ pub struct McpServerConfig {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum McpTransport {
     #[default]
     Stdio,
+    /// Deprecated HTTP+SSE transport. Kept for existing configurations and
+    /// deliberately distinct from `streamable_http`, whose session, DELETE, and
+    /// POST-SSE abilities it does not have.
     Sse,
+    /// Current MCP HTTP transport: POST JSON or SSE, negotiated session and
+    /// protocol version, optional GET stream and DELETE.
+    StreamableHttp,
+}
+
+impl McpTransport {
+    /// True for a transport retained only for compatibility.
+    pub fn is_deprecated(self) -> bool {
+        matches!(self, Self::Sse)
+    }
+
+    /// True when the transport is reached over HTTP.
+    pub fn is_http(self) -> bool {
+        matches!(self, Self::Sse | Self::StreamableHttp)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -214,6 +232,15 @@ pub async fn register_mcp_tools_with_environment(
                     }));
                 }
             }
+            McpTransport::StreamableHttp => {
+                let client = Arc::new(connect_streamable_http(&server).await?);
+                for tool in streamable_http_tool_infos(&client).await? {
+                    pending.push(Box::new(McpStreamableHttpProxyTool {
+                        client: client.clone(),
+                        tool,
+                    }));
+                }
+            }
         }
     }
     registry
@@ -285,6 +312,18 @@ pub async fn probe_mcp_server_with_environment(
                     .list_tools()
                     .await
                     .map_err(classify_mcp_probe_error)?
+            }
+            McpTransport::StreamableHttp => {
+                let client = connect_streamable_http(&server)
+                    .await
+                    .map_err(classify_mcp_probe_error)?;
+                let tools = streamable_http_tool_infos(&client)
+                    .await
+                    .map_err(classify_mcp_probe_error)?;
+                // A probe is not a session; release the server session so a
+                // probed server is not left holding state.
+                let _ = client.close().await;
+                tools
             }
         };
         if tools.is_empty() {
@@ -875,6 +914,103 @@ impl Tool for McpSseProxyTool {
                 reason: err.to_string(),
             })?;
         Ok(ToolOutput::text(mcp_call_result_to_text(result)))
+    }
+}
+
+// --- Streamable HTTP transport ---
+
+/// Connect and initialize a Streamable HTTP client for `server`.
+///
+/// Plaintext HTTP is permitted only for loopback so a local development server
+/// works while a public endpoint still requires TLS.
+async fn connect_streamable_http(
+    server: &McpServerConfig,
+) -> anyhow::Result<crate::tools::mcp::client::StreamableHttpClient> {
+    use crate::tools::mcp::client::{McpClientPolicy, StreamableHttpClient};
+    use crate::tools::mcp::http_safety::HttpEndpointPolicy;
+    use crate::tools::mcp::streamable_http::{StreamableHttpPolicy, streamable_http_transport};
+
+    let transport = streamable_http_transport(
+        &server.url,
+        StreamableHttpPolicy {
+            request_timeout_ms: server.policy.request_timeout_ms,
+            endpoint: HttpEndpointPolicy::loopback_permitted(),
+            max_reconnect_attempts: crate::tools::mcp::streamable_http::MAX_MCP_RECONNECT_ATTEMPTS,
+        },
+    )
+    .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    let client = StreamableHttpClient::new(
+        server.name.clone(),
+        transport,
+        McpClientPolicy {
+            request_timeout_ms: server.policy.request_timeout_ms,
+            max_retries: 1,
+        },
+    );
+    client
+        .initialize()
+        .await
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    Ok(client)
+}
+
+/// Project a discovered catalog into the registry's tool-info shape.
+///
+/// Remote annotations are ignored for safety: every MCP tool stays destructive
+/// and non-parallel-safe until the local safety path says otherwise.
+async fn streamable_http_tool_infos(
+    client: &crate::tools::mcp::client::StreamableHttpClient,
+) -> anyhow::Result<Vec<McpToolInfo>> {
+    let snapshot = client
+        .discover_catalog()
+        .await
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    Ok(snapshot
+        .entries
+        .iter()
+        .map(|entry| {
+            let (name, capability_id) =
+                mcp_tool_identity(&snapshot.server_name, &entry.remote_name);
+            McpToolInfo {
+                server_name: snapshot.server_name.clone(),
+                remote_name: entry.remote_name.clone(),
+                schema: ToolDescriptor {
+                    name,
+                    description: entry.description.clone(),
+                    parameters: entry.parameters.clone(),
+                    destructive: true,
+                    parallel_safe: false,
+                    capability_id: Some(capability_id),
+                    capability: None,
+                },
+            }
+        })
+        .collect())
+}
+
+pub struct McpStreamableHttpProxyTool {
+    client: Arc<crate::tools::mcp::client::StreamableHttpClient>,
+    tool: McpToolInfo,
+}
+
+#[async_trait]
+impl Tool for McpStreamableHttpProxyTool {
+    fn schema(&self) -> ToolDescriptor {
+        self.tool.schema.clone()
+    }
+
+    async fn execute(&self, args: Value, _ctx: &ToolContext<'_>) -> Result<ToolOutput, ToolError> {
+        match self.client.call_tool(&self.tool.remote_name, args).await {
+            Ok(result) => Ok(ToolOutput::text(mcp_call_result_to_text(result))),
+            // A committed request whose effect is unknown must not be presented
+            // as a plain failure that a caller might safely retry.
+            Err(error) if error.is_indeterminate() => Err(ToolError::ExecutionFailed {
+                reason: format!("indeterminate MCP tool effect: {error}"),
+            }),
+            Err(error) => Err(ToolError::ExecutionFailed {
+                reason: error.to_string(),
+            }),
+        }
     }
 }
 

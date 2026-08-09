@@ -12,6 +12,7 @@ import {
   parseProductTrustDecisionRequest,
   parseProductTrustStatus,
   parseSettingsPreferencesUpdateRequest,
+  parseUpdateProductMcpServerRequest,
   type SettingsPreferencesUpdateRequest,
 } from "./settings-platform-api-types";
 import { createSettingsPlatformClient } from "./settings-platform-client";
@@ -38,6 +39,7 @@ const mcpServer = {
   args: ["mcp_server.py"],
   env_names: ["WORKSPACE_MCP_TOKEN"],
   request_timeout_ms: 5_000,
+  transport_deprecated: false,
 } as const;
 
 const mcpProbe = {
@@ -232,6 +234,37 @@ describe("settings platform API types", () => {
         env: { WORKSPACE_MCP_TOKEN: "raw-secret" },
       }),
     ).toThrow(ProductApiSchemaError);
+    // A client never declares deprecation: the server owns that verdict, and
+    // the API rejects the field as unknown on a create or update request.
+    expect(() => parseCreateProductMcpServerRequest({ ...mcpServer })).toThrow(
+      ProductApiSchemaError,
+    );
+    const { name: _name, ...updateRequest } = mcpServer;
+    expect(() => parseUpdateProductMcpServerRequest({ ...updateRequest })).toThrow(
+      ProductApiSchemaError,
+    );
+    // A response without the server-owned verdict is not silently defaulted.
+    const { transport_deprecated: _omitted, ...withoutVerdict } = mcpServer;
+    expect(() =>
+      parseProductMcpServersResponse({ servers: [withoutVerdict], total: 1 }),
+    ).toThrow(ProductApiSchemaError);
+    expect(
+      parseProductMcpServersResponse({
+        servers: [
+          {
+            name: mcpServer.name,
+            enabled: true,
+            transport: "sse",
+            args: [],
+            env_names: [],
+            url: "https://mcp.example.com/sse",
+            request_timeout_ms: 5_000,
+            transport_deprecated: true,
+          },
+        ],
+        total: 1,
+      }).servers[0].transport_deprecated,
+    ).toBe(true);
     expect(() =>
       parseCreateProductMcpServerRequest({
         ...mcpServer,
@@ -583,14 +616,22 @@ describe("settings platform client", () => {
           url === "/api/product/mcp/servers?workspace_id=workspace-1" &&
           method === "POST"
         ) {
-          return jsonResponse(JSON.parse(body ?? "{}"), 201);
+          // The real server always returns its own deprecation verdict.
+          return jsonResponse(
+            { transport_deprecated: false, ...JSON.parse(body ?? "{}") },
+            201,
+          );
         }
         if (
           url ===
             "/api/product/mcp/servers/workspace_tools?workspace_id=workspace-1" &&
           method === "PUT"
         ) {
-          return jsonResponse({ name: "workspace_tools", ...JSON.parse(body ?? "{}") });
+          return jsonResponse({
+            name: "workspace_tools",
+            transport_deprecated: false,
+            ...JSON.parse(body ?? "{}"),
+          });
         }
         if (
           url ===
@@ -612,8 +653,9 @@ describe("settings platform client", () => {
     const client = createSettingsPlatformClient({ fetch: fetchMock });
 
     await client.listMcpServers("workspace-1");
+    const { transport_deprecated: _serverOwned, ...createRequest } = mcpServer;
     await client.createMcpServer("workspace-1", {
-      ...mcpServer,
+      ...createRequest,
       args: [...mcpServer.args],
       env_names: [...mcpServer.env_names],
     });

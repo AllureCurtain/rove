@@ -88,7 +88,7 @@ export interface UpdateProductMemoryTopicRequest {
   expected_updated_at?: string;
 }
 
-export const PRODUCT_MCP_TRANSPORTS = ["stdio", "sse"] as const;
+export const PRODUCT_MCP_TRANSPORTS = ["stdio", "sse", "streamable_http"] as const;
 export type ProductMcpTransport = (typeof PRODUCT_MCP_TRANSPORTS)[number];
 
 export interface ProductMcpServerConfig {
@@ -100,6 +100,7 @@ export interface ProductMcpServerConfig {
   env_names: string[];
   url?: string;
   request_timeout_ms: number;
+  transport_deprecated: boolean;
 }
 
 export interface ProductMcpServersResponse {
@@ -840,10 +841,12 @@ function expectMcpUrl(value: unknown, path: string): string {
   return url;
 }
 
+/// Parses the fields a client may send. `transport_deprecated` is excluded on
+/// purpose: it is server-owned and only present on responses.
 function parseProductMcpServerFields(
   record: UnknownRecord,
   path: string,
-): Omit<ProductMcpServerConfig, "name"> {
+): UpdateProductMcpServerRequest {
   const transport = expectEnum(
     record.transport,
     PRODUCT_MCP_TRANSPORTS,
@@ -904,12 +907,21 @@ export function parseProductMcpServerConfig(
       "env_names",
       "url",
       "request_timeout_ms",
+      "transport_deprecated",
     ],
     path,
   );
   return {
     name: expectMcpServerName(record.name, `${path}.name`),
     ...parseProductMcpServerFields(record, path),
+    // Server-owned verdict, validated rather than re-derived so the client
+    // never disagrees with the server about which transport is legacy. It is
+    // deliberately absent from create/update requests: a client does not get
+    // to declare deprecation.
+    transport_deprecated: expectBoolean(
+      record.transport_deprecated,
+      `${path}.transport_deprecated`,
+    ),
   };
 }
 
@@ -917,7 +929,27 @@ export function parseCreateProductMcpServerRequest(
   value: unknown,
   path = "create product MCP server request",
 ): CreateProductMcpServerRequest {
-  return parseProductMcpServerConfig(value, path);
+  const record = expectRecord(value, path);
+  // A create request is not a server config: it must not carry the
+  // server-owned `transport_deprecated`, which the API rejects as unknown.
+  expectOnlyKeys(
+    record,
+    [
+      "name",
+      "enabled",
+      "transport",
+      "command",
+      "args",
+      "env_names",
+      "url",
+      "request_timeout_ms",
+    ],
+    path,
+  );
+  return {
+    name: expectMcpServerName(record.name, `${path}.name`),
+    ...parseProductMcpServerFields(record, path),
+  };
 }
 
 export function parseUpdateProductMcpServerRequest(

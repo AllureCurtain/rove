@@ -38,6 +38,7 @@ describe("MCPSettings", () => {
       args: ["server.py", "--verbose"],
       env_names: ["MCP_TOKEN", "MCP_REGION"],
       request_timeout_ms: 9_000,
+      transport_deprecated: false,
     });
     expect(draft).toMatchObject({
       name: "workspace_tools",
@@ -73,6 +74,26 @@ describe("MCPSettings", () => {
       args: [],
       env_names: [],
       url: "http://127.0.0.1:3001/sse",
+      request_timeout_ms: 30_000,
+    });
+
+    expect(
+      mcpServerRequestFromDraft({
+        ...createEmptyMcpServerDraft(),
+        name: "streaming",
+        transport: "streamable_http",
+        command: "must-not-send",
+        argsText: "--token=must-not-send",
+        envNamesText: "MUST_NOT_SEND",
+        url: "https://mcp.example.com/mcp ",
+      }),
+    ).toEqual({
+      name: "streaming",
+      enabled: true,
+      transport: "streamable_http",
+      args: [],
+      env_names: [],
+      url: "https://mcp.example.com/mcp",
       request_timeout_ms: 30_000,
     });
   });

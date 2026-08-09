@@ -338,6 +338,7 @@ fn mcp_config(input: ProductMcpConfigInput) -> McpServerConfig {
         transport: match input.transport {
             ProductMcpTransport::Stdio => McpTransport::Stdio,
             ProductMcpTransport::Sse => McpTransport::Sse,
+            ProductMcpTransport::StreamableHttp => McpTransport::StreamableHttp,
         },
         command: input.command.unwrap_or_default(),
         args: input.args,
@@ -360,8 +361,9 @@ fn product_mcp_server(server: McpServerConfig) -> ProductMcpServer {
         command: (transport == ProductMcpTransport::Stdio).then_some(server.command),
         args: server.args,
         env_names: server.env_names,
-        url: (transport == ProductMcpTransport::Sse).then_some(server.url),
+        url: transport.is_http().then_some(server.url),
         request_timeout_ms: server.policy.request_timeout_ms,
+        transport_deprecated: transport.is_deprecated(),
     }
 }
 
@@ -369,6 +371,7 @@ fn product_mcp_transport(transport: McpTransport) -> ProductMcpTransport {
     match transport {
         McpTransport::Stdio => ProductMcpTransport::Stdio,
         McpTransport::Sse => ProductMcpTransport::Sse,
+        McpTransport::StreamableHttp => ProductMcpTransport::StreamableHttp,
     }
 }
 

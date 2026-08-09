@@ -258,7 +258,8 @@ invocation adapters live in `runtime/src/tools/`. The tool `Executor`
 pipeline, pre/post-tool plus post-run hooks (including session-summary), and the
 durable tool-turn coordinator live in `runtime/src/tools/executor.rs`,
 `runtime/src/tools/hooks/`, and `runtime/src/engine/tool_turn.rs`. The existing
-stdio/legacy-SSE MCP proxy is implemented in `runtime/src/tools/mcp_proxy.rs`.
+stdio/legacy-SSE MCP proxy is implemented in `runtime/src/tools/mcp_proxy.rs`,
+and the Streamable HTTP transport in `runtime/src/tools/mcp/`.
 CLI and API assemble tools through the same product registry builder. The
 config-aware `tool_registry_for_config` always registers runtime built-ins but
 loads configured MCP tools only when the exact workspace has explicit project
@@ -311,6 +312,31 @@ process identities, and workspace checkpoints are Engine-local and do not
 survive recreation or resume.
 
 MCP stdio transport is bounded by per-server policy. Initialize, list, and call requests time out; stderr is captured up to the configured diagnostic limit; JSON-RPC errors are mapped to structured tool execution failures; and child processes are killed when their client is dropped. `tests/mcp.rs` and `cargo test -p rove-integration-tests --test mcp` cover mock stdio registration, annotation safety, timeout/error/cleanup behavior, and include an opt-in real filesystem MCP smoke test gated by `ROVE_MCP_FILESYSTEM_SMOKE=1`.
+
+The Streamable HTTP transport in `runtime/src/tools/mcp/` is the current MCP
+HTTP transport and sits beside stdio and the deprecated HTTP+SSE path. It
+offers `2025-06-18` and accepts `2025-03-26` and `2024-11-05`; a server that
+omits the version is treated as `2025-03-26`, and an unsupported version fails
+as a protocol mismatch rather than proceeding on a guess. A negotiated
+`mcp-session-id` is validated before it is ever echoed back, so a server cannot
+inject headers through the session value, and the negotiated protocol version
+is sent on every subsequent request. Responses are dispatched by JSON-RPC id
+through a correlating dispatcher bounded to `MAX_MCP_PENDING_REQUESTS` (256) and
+`MAX_MCP_INVALID_FRAMES` (8), so an unsolicited, duplicate, or malformed frame
+cannot resolve the wrong caller or accumulate without bound. `tools/list`
+follows `nextCursor` up to `MAX_MCP_LIST_PAGES` (32) with a bounded cursor, and
+per-server tool and schema limits are enforced during accumulation.
+
+Transport safety is explicit. TLS is required unless the endpoint is an
+explicit loopback host, redirects are re-validated against the same policy
+before being followed, and content types are matched rather than guessed: a
+declared `application/json` or `text/event-stream` is required, and anything
+else is a protocol mismatch. An HTTP 404 on an established session is
+classified as `SessionExpired` rather than a generic failure so a caller can
+re-initialize instead of retrying blindly. Send outcomes are a bounded
+vocabulary, and `SendReceipt::is_safely_retryable()` is true only for `NotSent`;
+once a request is committed to the wire its failure is `Indeterminate` and is
+never silently retried, because an MCP tool call can have external effects.
 
 An MCP discovery request accumulates the enabled-server catalog before one
 atomic registry commit. Invalid schemas, aliases, or capability bindings leave

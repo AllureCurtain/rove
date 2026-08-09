@@ -5,6 +5,7 @@ pub mod echo;
 pub mod executor;
 pub mod fs;
 pub mod hooks;
+pub mod mcp;
 pub mod mcp_config;
 pub mod mcp_proxy;
 pub mod memory;

@@ -7622,6 +7622,65 @@ async fn product_mcp_crud_is_workspace_scoped_secret_free_and_used_by_product_jo
     assert_eq!(created["name"], "mock_server");
     assert_eq!(created["env_names"], serde_json::json!(["PATH"]));
     assert!(created.get("env").is_none());
+    // The server owns the deprecation verdict for every transport it returns.
+    assert_eq!(created["transport_deprecated"], serde_json::json!(false));
+    // A client cannot declare it: the field is unknown on a create request.
+    let declared = post_json(
+        &app,
+        &format!("/product/mcp/servers?workspace_id={workspace_a_id}"),
+        serde_json::json!({
+            "name": "declares_deprecation",
+            "transport": "streamable_http",
+            "url": "https://mcp.example.com/mcp",
+            "transport_deprecated": false
+        }),
+    )
+    .await;
+    assert_eq!(declared.status(), StatusCode::BAD_REQUEST);
+    // Legacy SSE is reported deprecated, the current HTTP transport is not.
+    for (name, transport, url, deprecated) in [
+        ("legacy_sse", "sse", "https://mcp.example.com/sse", true),
+        (
+            "streaming_http",
+            "streamable_http",
+            "https://mcp.example.com/mcp",
+            false,
+        ),
+    ] {
+        let created = post_json(
+            &app,
+            &format!("/product/mcp/servers?workspace_id={workspace_a_id}"),
+            serde_json::json!({
+                "name": name,
+                "transport": transport,
+                "url": url,
+                "request_timeout_ms": 2_000
+            }),
+        )
+        .await;
+        assert_eq!(created.status(), StatusCode::CREATED);
+        let created: serde_json::Value = decode_json(created).await;
+        assert_eq!(created["transport"], transport);
+        assert_eq!(created["url"], url);
+        assert_eq!(
+            created["transport_deprecated"],
+            serde_json::json!(deprecated)
+        );
+        let deleted = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!(
+                        "/product/mcp/servers/{name}?workspace_id={workspace_a_id}"
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(deleted.status(), StatusCode::NO_CONTENT);
+    }
 
     let persisted = std::fs::read_to_string(&config_path).unwrap();
     let persisted_json: serde_json::Value = serde_json::from_str(&persisted).unwrap();
