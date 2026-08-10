@@ -25,13 +25,18 @@ pub fn init() -> Result<()> {
 pub fn run() -> Result<()> {
     init()?;
 
+    // Load config early to get bearer token
+    let desktop_config = config::load_or_create_config()?;
+    let bearer_token = desktop_config.bearer_token.clone();
+
     tauri::Builder::default()
-        .setup(|app| {
+        .setup(move |app| {
             let handle = app.handle().clone();
+            let token_for_async = bearer_token.clone();
 
             // Spawn async initialization
             tauri::async_runtime::spawn(async move {
-                match setup_async(handle).await {
+                match setup_async(handle, token_for_async).await {
                     Ok(()) => {
                         info!("Desktop application setup completed successfully");
                     }
@@ -41,6 +46,21 @@ pub fn run() -> Result<()> {
                     }
                 }
             });
+
+            // Inject initialization script into all windows
+            let init_script = format!(
+                r#"
+                window.__ROVE_TOKEN__ = "{}";
+                console.log("Rove Desktop: Bearer token injected");
+                "#,
+                bearer_token
+            );
+
+            for (_label, window) in app.webview_windows() {
+                window
+                    .eval(&init_script)
+                    .map_err(|e| anyhow::anyhow!("Failed to inject init script: {}", e))?;
+            }
 
             Ok(())
         })
@@ -62,10 +82,8 @@ pub fn run() -> Result<()> {
 }
 
 /// Async setup function
-async fn setup_async(app_handle: tauri::AppHandle) -> Result<()> {
-    // Load or create config
-    let desktop_config = config::load_or_create_config()?;
-    info!("Loaded desktop configuration");
+async fn setup_async(app_handle: tauri::AppHandle, bearer_token: String) -> Result<()> {
+    info!("Starting async setup");
 
     // Get directories
     let state_dir = config::get_state_dir()?;
@@ -79,7 +97,7 @@ async fn setup_async(app_handle: tauri::AppHandle) -> Result<()> {
 
     // Start API server
     let api_config = api_server::ApiServerConfig {
-        bearer_token: desktop_config.bearer_token.clone(),
+        bearer_token: bearer_token.clone(),
         state_dir,
         config_dir,
         logs_dir,
@@ -88,22 +106,26 @@ async fn setup_async(app_handle: tauri::AppHandle) -> Result<()> {
     let api_handle = api_server::start_api_server(api_config).await?;
     info!("API server started at {}", api_handle.base_url);
 
-    // Store API URL and token in app state for WebView access
+    // Store API URL in app state
     app_handle.manage(ApiState {
         base_url: api_handle.base_url.clone(),
-        bearer_token: desktop_config.bearer_token.clone(),
+        bearer_token,
     });
 
-    // Inject initialization script into WebView
-    let window = app_handle.get_webview_window("main").unwrap();
-    let init_script = format!(
+    // Inject API URL into all windows
+    let api_url_script = format!(
         r#"
         window.__ROVE_API_URL__ = "{}";
-        window.__ROVE_TOKEN__ = "{}";
+        console.log("Rove Desktop: API URL injected -", "{}");
         "#,
-        api_handle.base_url, desktop_config.bearer_token
+        api_handle.base_url, api_handle.base_url
     );
-    window.eval(&init_script)?;
+
+    for (_label, window) in app_handle.webview_windows() {
+        if let Err(e) = window.eval(&api_url_script) {
+            error!("Failed to inject API URL: {}", e);
+        }
+    }
 
     // Store server handle for cleanup
     app_handle.manage(api_handle);

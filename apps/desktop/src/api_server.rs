@@ -160,7 +160,7 @@ mod tests {
     async fn test_server_lifecycle() {
         // This is a placeholder test
         // Real implementation will test actual server startup/shutdown
-        let config = ApiServerConfig {
+        let _config = ApiServerConfig {
             bearer_token: "test-token".to_string(),
             state_dir: std::env::temp_dir().join("rove-test-state"),
             config_dir: std::env::temp_dir().join("rove-test-config"),
