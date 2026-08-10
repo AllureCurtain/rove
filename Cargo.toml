@@ -7,6 +7,7 @@ members = [
     "apps/bench",
     "apps/api",
     "apps/cli",
+    "apps/desktop",
     "tests",
 ]
 default-members = ["apps/cli"]
