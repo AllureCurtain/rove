@@ -10,6 +10,26 @@ const streamEventFixtures: StreamEvent[] = [
     user_message: "hello",
   },
   {
+    type: "agent_profile_activated",
+    identity: {
+      selector: { source: "builtin", agent_id: "legacy" },
+      agent_id: "legacy",
+      display_name: "Legacy Agent",
+      definition_version: "compat",
+      manifest_hash: "sha256:" + "a".repeat(64),
+      package_hash: "sha256:" + "b".repeat(64),
+      profile_hash: "sha256:" + "c".repeat(64),
+    },
+    resumed_from_snapshot: false,
+  },
+  {
+    type: "workspace_instructions_resolved",
+    bundle_hash: "sha256:" + "d".repeat(64),
+    layer_count: 1,
+    rejected_count: 0,
+    truncated: false,
+  },
+  {
     type: "execution_strategy_selected",
     policy: {
       version: 1,
@@ -19,6 +39,34 @@ const streamEventFixtures: StreamEvent[] = [
       evaluator_mode: "rule_first_model_on_ambiguity",
       finalizer_policy: "deterministic",
     },
+  },
+  {
+    type: "instruction_overlay_applied",
+    target_path: "apps/web/page.tsx",
+    scope: "apps/web",
+    source_path: "apps/web/AGENTS.md",
+    content_hash: "sha256:" + "f".repeat(64),
+    boundary: "tool_call",
+    call_id: "01JOVERLAY",
+  },
+  {
+    type: "procedures_selected",
+    profile_hash: "sha256:" + "c".repeat(64),
+    selected: [],
+    considered_count: 0,
+    excluded_count: 0,
+  },
+  {
+    type: "procedure_hydrated",
+    reference: {
+      id: "inspect.disk",
+      version: "1.0.0",
+      trust: "workspace_trusted",
+      source_path: "procedures/inspect.disk.md",
+      content_hash: "sha256:" + "e".repeat(64),
+    },
+    truncated: false,
+    dropped_bytes: 0,
   },
   {
     type: "execution_budget_updated",

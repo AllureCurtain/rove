@@ -838,4 +838,129 @@ describe("product API client", () => {
       },
     });
   });
+
+  it("strictly parses Agent lifecycle events", () => {
+    const profileHash = `sha256:${"c".repeat(64)}`;
+    const procedure = {
+      id: "inspect.disk",
+      version: "1.0.0",
+      trust: "workspace_trusted",
+      source_path: "procedures/inspect.disk.md",
+      content_hash: `sha256:${"e".repeat(64)}`,
+    } as const;
+
+    expect(
+      parseStreamEvent({
+        type: "agent_profile_activated",
+        identity: {
+          selector: { source: "workspace", agent_id: "ops" },
+          agent_id: "ops",
+          display_name: "Operations",
+          definition_version: "1.0.0",
+          manifest_hash: `sha256:${"a".repeat(64)}`,
+          package_hash: `sha256:${"b".repeat(64)}`,
+          profile_hash: profileHash,
+          instruction_bundle_hash: `sha256:${"d".repeat(64)}`,
+          procedures: [procedure],
+        },
+        resumed_from_snapshot: false,
+        diagnostics: [
+          {
+            code: "procedure_excluded",
+            subject: "procedures/retired.md",
+            message: "retired procedure was excluded",
+          },
+        ],
+      }),
+    ).toMatchObject({
+      type: "agent_profile_activated",
+      identity: { profile_hash: profileHash, procedures: [procedure] },
+      resumed_from_snapshot: false,
+    });
+
+    expect(
+      parseStreamEvent({
+        type: "workspace_instructions_resolved",
+        bundle_hash: `sha256:${"d".repeat(64)}`,
+        layer_count: 2,
+        rejected_count: 1,
+        truncated: false,
+      }),
+    ).toMatchObject({ type: "workspace_instructions_resolved", layer_count: 2 });
+    expect(
+      parseStreamEvent({
+        type: "instruction_overlay_applied",
+        target_path: "apps/web/page.tsx",
+        scope: "apps/web",
+        source_path: "apps/web/AGENTS.md",
+        content_hash: `sha256:${"f".repeat(64)}`,
+        boundary: "tool_call",
+        call_id: "01JOVERLAY",
+      }),
+    ).toMatchObject({
+      type: "instruction_overlay_applied",
+      scope: "apps/web",
+      target_path: "apps/web/page.tsx",
+    });
+    expect(
+      parseStreamEvent({
+        type: "procedures_selected",
+        profile_hash: profileHash,
+        selected: [procedure],
+        considered_count: 3,
+        excluded_count: 2,
+      }),
+    ).toMatchObject({ type: "procedures_selected", selected: [procedure] });
+    expect(
+      parseStreamEvent({
+        type: "procedure_hydrated",
+        reference: procedure,
+        truncated: true,
+        dropped_bytes: 16,
+      }),
+    ).toMatchObject({ type: "procedure_hydrated", reference: procedure });
+  });
+
+  it("rejects malformed Agent lifecycle events", () => {
+    expect(() =>
+      parseStreamEvent({
+        type: "instruction_overlay_applied",
+        target_path: "apps/web/page.tsx",
+        scope: "apps/web\nforged",
+        source_path: "apps/web/AGENTS.md",
+        content_hash: "sha256:f",
+        boundary: "tool_call",
+      }),
+    ).toThrow(ProductApiSchemaError);
+    expect(() =>
+      parseStreamEvent({
+        type: "agent_profile_activated",
+        identity: {
+          selector: { source: "remote", agent_id: "ops" },
+          agent_id: "ops",
+          display_name: "Operations",
+          definition_version: "1.0.0",
+          manifest_hash: "sha256:a",
+          package_hash: "sha256:b",
+          profile_hash: "sha256:c",
+        },
+        resumed_from_snapshot: false,
+      }),
+    ).toThrow(ProductApiSchemaError);
+    expect(() =>
+      parseStreamEvent({
+        type: "procedure_hydrated",
+        reference: {
+          id: "inspect.disk",
+          version: "1.0.0",
+          trust: "workspace_trusted",
+          source_path: "procedures/inspect.disk.md",
+          content_hash: "sha256:e",
+          permission: "allow",
+        },
+        truncated: false,
+        dropped_bytes: -1,
+      }),
+    ).toThrow(ProductApiSchemaError);
+  });
 });

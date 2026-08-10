@@ -34,6 +34,9 @@ pub struct RuntimeIdentity {
     pub execution_environment: Option<ExecutionEnvironmentIdentity>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_capabilities: Option<ExecutionCapabilities>,
+    /// Content-free identity of the immutable Agent snapshot used by the run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<crate::agents::AgentProfileIdentity>,
 }
 
 impl RuntimeIdentity {
@@ -81,6 +84,7 @@ pub struct RuntimeIdentityInput<'a> {
     pub capability_snapshot_id: Option<&'a str>,
     pub execution_environment: Option<&'a ExecutionEnvironmentIdentity>,
     pub execution_capabilities: Option<&'a ExecutionCapabilities>,
+    pub agent: Option<&'a crate::agents::AgentProfileIdentity>,
 }
 
 pub fn workspace_fingerprint(workspace: &Workspace) -> String {
@@ -112,6 +116,7 @@ pub fn build_runtime_identity(input: RuntimeIdentityInput<'_>) -> RuntimeIdentit
         capability_snapshot_id: input.capability_snapshot_id.map(str::to_string),
         execution_environment: input.execution_environment.cloned(),
         execution_capabilities: input.execution_capabilities.copied(),
+        agent: input.agent.cloned(),
     }
 }
 
@@ -191,6 +196,9 @@ pub fn evaluate_runtime_identity(
     {
         mismatch_fields.push("execution_capabilities".to_string());
     }
+    if saved.agent.is_some() && saved.agent != current.agent {
+        mismatch_fields.push("agent".to_string());
+    }
 
     RuntimeIdentityEvaluation {
         status: if mismatch_fields.is_empty() {
@@ -257,6 +265,7 @@ mod tests {
             capability_snapshot_id: Some("sha256:capabilities"),
             execution_environment: None,
             execution_capabilities: None,
+            agent: None,
         });
 
         assert_eq!(identity.cwd, workspace.root.display().to_string());
@@ -307,6 +316,7 @@ mod tests {
             capability_snapshot_id: Some("sha256:saved-capabilities"),
             execution_environment: None,
             execution_capabilities: None,
+            agent: None,
         });
         let current = build_runtime_identity(RuntimeIdentityInput {
             workspace: &workspace,
@@ -324,6 +334,7 @@ mod tests {
             capability_snapshot_id: Some("sha256:current-capabilities"),
             execution_environment: None,
             execution_capabilities: None,
+            agent: None,
         });
 
         let evaluation = evaluate_runtime_identity(Some(&saved), &current);
@@ -376,6 +387,7 @@ mod tests {
             capability_snapshot_id: None,
             execution_environment: None,
             execution_capabilities: None,
+            agent: None,
         });
 
         let evaluation = evaluate_runtime_identity(None, &current);
@@ -417,6 +429,7 @@ mod tests {
                 workspace_checkpoints: true,
                 artifact_projection: true,
             }),
+            agent: None,
         });
         let mut legacy_value = serde_json::to_value(&current).unwrap();
         legacy_value
@@ -457,6 +470,7 @@ mod tests {
             capability_snapshot_id: None,
             execution_environment: None,
             execution_capabilities: None,
+            agent: None,
         })
     }
 

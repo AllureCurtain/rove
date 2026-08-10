@@ -9,10 +9,12 @@ use crate::events::StreamEvent;
 use crate::execution::ExecutionBudgetDimension;
 use crate::memory::session::append_session_notes_to_dir_sync;
 use crate::run_loop::{
-    LoopContext, enrich_prompt_metadata, extract_session_memory_notes, run_kernel_model_turn,
+    ActiveInstructionTarget, LoopContext, active_target_covers, enrich_prompt_metadata,
+    extract_session_memory_notes, run_kernel_model_turn, scoped_paths_for_action,
+    scoped_prompt_events, scoped_prompt_for_target, shell_path_declaration_missing,
 };
 use crate::tool_turn::{
-    ToolAction, ToolTurnItem, ToolTurnOutcome, append_tool_history, run_tool_turn,
+    ToolAction, ToolTurnItem, ToolTurnOutcome, append_tool_history, defer_tool_turn, run_tool_turn,
 };
 use crate::types::{CallId, Message, PlanStep, ToolMutation, Usage};
 use rove_core::{
@@ -107,6 +109,8 @@ pub(crate) fn run_step<'a>(
             "Goal: {}\nCurrent step {}: {}\nComplete this step and report the result. A tool result is evidence, not step completion; continue this step until you can state its conclusion.",
             input.goal, input.step.id, input.step.title
         );
+        let active_instruction_target =
+            ActiveInstructionTarget::from_text(&ctx, &step_prompt, "plan_step");
         let host = StepKernelHost {
             ctx,
             step_prompt,
@@ -116,6 +120,7 @@ pub(crate) fn run_step<'a>(
             compaction: Some(input.compaction),
             pending_steer_ids: input.accepted_steer_ids,
             max_total_tokens: input.max_total_tokens,
+            active_instruction_target,
         };
         let mut metrics = StepRunMetrics::default();
         let mut kernel = run_agent_kernel(
@@ -241,6 +246,7 @@ struct StepKernelHost<'a> {
     compaction: Option<crate::compaction::CompactionRuntime>,
     pending_steer_ids: Vec<String>,
     max_total_tokens: Option<u64>,
+    active_instruction_target: ActiveInstructionTarget,
 }
 
 impl AgentKernelHost for StepKernelHost<'_> {
@@ -284,6 +290,15 @@ impl AgentKernelHost for StepKernelHost<'_> {
 
             let mut turn_working_memory = self.working_memory.clone();
             turn_working_memory.extend(state.history.iter().cloned());
+            let scoped = scoped_prompt_for_target(&self.ctx, &self.active_instruction_target);
+            for event in scoped_prompt_events(
+                &self.ctx,
+                &self.active_instruction_target,
+                &scoped,
+            ) {
+                yield KernelBeforeModelTurnItem::Event(event);
+            }
+            turn_working_memory.extend(scoped.messages);
             let mut context = self.ctx.context_manager.build_with_checkpoint(
                 &self.step_prompt,
                 &turn_working_memory,
@@ -359,7 +374,7 @@ impl AgentKernelHost for StepKernelHost<'_> {
                 }
             }
 
-            let tool_schemas = self.ctx.registry.descriptors();
+            let tool_schemas = self.ctx.descriptors();
             yield KernelBeforeModelTurnItem::Event(StreamEvent::PromptBuilt {
                 metadata: enrich_prompt_metadata(
                     &self.ctx,
@@ -378,7 +393,7 @@ impl AgentKernelHost for StepKernelHost<'_> {
     ) -> BoxStream<'a, KernelModelTurnItem<Self::Event>> {
         run_kernel_model_turn(
             self.ctx.model,
-            self.ctx.registry,
+            self.ctx.model_schemas(),
             messages,
             cancel_token,
             std::mem::take(&mut self.pending_steer_ids),
@@ -404,8 +419,32 @@ impl AgentKernelHost for StepKernelHost<'_> {
             KernelToolAction::Call(call) => ToolAction::Call(call),
             KernelToolAction::Batch(calls) => ToolAction::Batch(calls),
         };
+        let paths = scoped_paths_for_action(&self.ctx, &action);
+        let call_id = action.calls().first().map(|call| call.call_id);
+        let missing_shell_paths = shell_path_declaration_missing(&self.ctx, &action);
+        let needs_scoped_context = !paths.is_empty()
+            && !active_target_covers(&self.ctx, &self.active_instruction_target, &paths);
+        let inner: BoxStream<'a, ToolTurnItem> = if missing_shell_paths {
+            defer_tool_turn(
+                action,
+                "run_shell must declare bounded workspace-relative paths when nested AGENTS.md scopes exist"
+                    .to_string(),
+            )
+        } else if needs_scoped_context {
+            self.active_instruction_target = ActiveInstructionTarget::for_tool(paths, call_id);
+            defer_tool_turn(
+                action,
+                "path-scoped workspace instructions were activated; reconsider the call and retry if it remains appropriate"
+                    .to_string(),
+            )
+        } else {
+            if !paths.is_empty() {
+                self.active_instruction_target = ActiveInstructionTarget::for_tool(paths, call_id);
+            }
+            run_tool_turn(self.ctx.tool_turn_context(cancel_token), action)
+        };
         Box::pin(stream! {
-            let mut inner = run_tool_turn(self.ctx.tool_turn_context(cancel_token), action);
+            let mut inner = inner;
             while let Some(item) = inner.next().await {
                 match item {
                     ToolTurnItem::Event(event) => yield KernelToolTurnItem::Event(event),

@@ -29,6 +29,7 @@ use rove_core::ToolError;
 use rove_models::ModelClient;
 use rove_models::fake::FakeModelClient;
 use rove_models::health::{HealthConfig, ModelHealthStore};
+use rove_runtime::agents::{AgentActivationError, SelectorError};
 use rove_runtime::engine::{Engine, RunControlHandle};
 use rove_runtime::events::StreamEvent;
 use rove_runtime::state::artifacts::RunArtifactRecorder;
@@ -1078,7 +1079,7 @@ async fn prepare_generic_job_launch(
         Err(error) => {
             release_runtime_resume_claim(&state_store, resume_claim.take()).await;
             tracing::warn!(job_id = %record.job_id, "failed to assemble job engine: {error}");
-            return Err(ApiError::internal("failed to assemble job engine"));
+            return Err(ApiError::agent_engine_assembly(&error));
         }
     };
     let run = match state_store.start_run(record.session_id, record.job_id, record.run_id) {
@@ -1128,6 +1129,7 @@ async fn prepare_followup_job_launch(
         message: claim.control.content.clone(),
         model: None,
         max_steps: None,
+        agent: None,
         approval: None,
         resume: None,
         workspace: None,
@@ -1358,7 +1360,7 @@ async fn prepare_claimed_product_job_launch(
                 .await;
             }
             tracing::warn!(job_id = %record.job_id, "failed to assemble product job engine: {error}");
-            return Err(ApiError::internal("failed to assemble job engine"));
+            return Err(ApiError::agent_engine_assembly(&error));
         }
     };
 
@@ -2308,6 +2310,8 @@ async fn consume_job_stream(
     let request = run.request(record.message.clone(), record.resume_state.clone());
     let mut stream =
         std::pin::pin!(engine.run_with_cancel(request, None, record.cancel_token.clone(),));
+    recorder.set_runtime_identity(stream.runtime_identity().clone());
+    recorder.set_agent_profile(stream.agent_profile().cloned());
     // Capture the control handle so HTTP steer handlers can inject mid-run.
     {
         let _control_lifecycle = record.control_lifecycle_lock.lock().await;
@@ -3159,6 +3163,7 @@ async fn assemble_job_engine(
             .map(|model_config| model_config.max_steps)
             .or(req.max_steps)
             .unwrap_or(config.runtime.max_steps),
+        agent_selector: req.agent.clone(),
         approval_policy,
         input_provider: Some(input_provider),
         approval_provider,
@@ -3856,6 +3861,28 @@ pub(crate) struct ApiError {
 }
 
 impl ApiError {
+    fn agent_engine_assembly(error: &anyhow::Error) -> Self {
+        if let Some(error) = error.downcast_ref::<SelectorError>() {
+            return Self {
+                status: StatusCode::BAD_REQUEST,
+                code: error.code(),
+                message: error.to_string(),
+            };
+        }
+        if let Some(error) = error.downcast_ref::<AgentActivationError>() {
+            return Self {
+                status: if matches!(error, AgentActivationError::WorkspaceSourceNotAuthorized) {
+                    StatusCode::FORBIDDEN
+                } else {
+                    StatusCode::BAD_REQUEST
+                },
+                code: error.code(),
+                message: error.to_string(),
+            };
+        }
+        Self::internal("failed to assemble job engine")
+    }
+
     pub(crate) fn bad_request(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::BAD_REQUEST,
@@ -4559,6 +4586,7 @@ mod tests {
                 message: "finish after the response waiter disconnects".to_string(),
                 model: None,
                 max_steps: None,
+                agent: None,
                 approval: None,
                 resume: None,
                 workspace: None,

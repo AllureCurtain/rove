@@ -222,7 +222,7 @@ Project config and `.env` must resolve inside the workspace and be no larger
 than 256 KiB before bootstrap reads them.
 Workspace `.env` is parsed into one `AppConfig`-scoped map and never writes to
 the process environment. TOML and `.env` values are filtered by their matching
-project-configuration, provider, MCP, or external-path capability before merge;
+project-configuration, workspace-instruction, provider, MCP, or external-path capability before merge;
 operator environment and explicit CLI/API overrides retain precedence. Active
 API jobs poll the canonical trust authority at a bounded interval, so a CLI or
 other-process revocation cancels the run even when it bypasses the API route.
@@ -243,6 +243,10 @@ Common paths and defaults:
 | `runtime.planner_prompt_path` | `prompts/planner.md` |
 | `runtime.model_compaction_enabled` | `false` |
 | `runtime.compaction_failure_threshold` | `3` |
+| `runtime.agent.selector` | `builtin:legacy` |
+| `runtime.agent.workspace_instructions` | `false` |
+| `runtime.agent.allow_remediation_procedures` | `false` |
+| `runtime.agent.max_procedure_selections` | `3` |
 | `state.state_dir` | `.rove` |
 | `state.sqlite_path` | `.rove/state.sqlite` |
 | `tool.mcp_config_path` | `.rove/mcp_servers.json` |
@@ -862,6 +866,26 @@ kernel, normalized model turn, and action parser live in `rove-core`. Product
 registry assembly and first-party
 `AppConfig` live in product bootstrap and app shells.
 
+Before a run stream starts, Engine resolves the configured qualified Agent
+selector through `runtime/src/agents/`. Workspace packages and workspace
+instructions require the independent Project Trust capability. The resulting
+`AgentRuntimeProfile` is immutable and content-addressed: package/default/policy
+text, the bounded root/nested instruction bundle, selected procedure identities,
+and hydrated bodies contribute to its hash. The stream exposes the exact profile
+to artifact recorders before the first event; task state and prompt checkpoints
+store the full snapshot, while runtime identity, events, and reports expose only
+content-free hashes/references. An unfinished successor run validates and reuses
+that snapshot even if source files changed; it never substitutes the latest
+package silently.
+
+Root `AGENTS.md` is stable prompt policy. Nested files are dynamic path overlays.
+If a model first names a tool path whose overlay was not in its active turn, the
+Runtime closes the tool-call correlation with `precondition_required` without
+dispatch, installs the overlay, and lets the next model turn reconsider the
+call. A retry still passes schema, capability, approval, hooks, and workspace
+checks. Shell calls must declare valid non-empty workspace-relative `paths` when
+their command cannot identify the relevant nested scope.
+
 The high-level run flow:
 
 1. Emit `RunStarted`.
@@ -920,12 +944,14 @@ Plan mutation semantics:
   terminal successful record advances a stale materialized cursor without
   replay, and a terminal record missing its decision is evaluated exactly once.
   A complete active attempt without a terminal record becomes `interrupted`
-  and the resumed run stops with an error. Resume does not yet scan trace
-  events newer than the task-state projection.
+  and the resumed run stops with an error. Resume also reconciles canonical
+  trace events newer than the task-state checkpoint as an idempotent projection;
+  it does not redispatch model, tool, or mutation work.
 
 Relevant code:
 
 - `runtime/src/engine/facade.rs`
+- `runtime/src/agents/`
 - `core/src/kernel.rs`
 - `core/src/agent.rs`
 - `core/src/model_turn.rs`

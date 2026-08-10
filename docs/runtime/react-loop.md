@@ -16,6 +16,14 @@ state/trace/artifact/SQLite/repair/resume, context/compaction,
 session/durable memory, local tools/MCP, the tool `Executor` and hooks,
 Runtime kernel hosts and tool turns, planning/step coordination, durable event
 translation, and the persistent `Engine` facade.
+Before either host starts, Engine compiles the qualified Agent selector into an
+immutable run profile. Its capability set filters model-visible tool schemas and
+is rechecked before dispatch; its root instructions, selected procedures, and
+bounded hydrated bodies enter working context without becoming permissions.
+Nested `AGENTS.md` layers are added only for matching paths. A first call into a
+new nested scope is closed with `precondition_required` before dispatch, then the
+next turn receives that scoped layer and may retry through the normal safety
+path.
 `runtime/src/engine/model_turn.rs` is the synchronous translator from in-memory
 `AgentEvent` values into durable `StreamEvent` values. The product default
 entry is `runtime::Engine` via `apps/bootstrap::build_engine`; `core::Agent`

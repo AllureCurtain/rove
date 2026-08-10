@@ -18,6 +18,10 @@ pub struct Args {
     #[arg(long, global = true)]
     pub max_steps: Option<u32>,
 
+    /// Fully qualified Agent selector, for example `workspace:ops`.
+    #[arg(long, global = true, value_name = "SOURCE:ID")]
+    pub agent: Option<String>,
+
     /// Resume a previous task state. Use "latest" for the most recent snapshot.
     #[arg(long, global = true)]
     pub resume: Option<String>,
@@ -171,6 +175,13 @@ mod tests {
     fn approval_defaults_to_ask() {
         let args = Args::parse_from(["rove", "inspect"]);
         assert!(matches!(args.approval, CliApprovalPolicy::Ask));
+    }
+
+    #[test]
+    fn qualified_agent_selector_parses_as_a_global_option() {
+        let args = Args::parse_from(["rove", "exec", "--agent", "workspace:ops", "inspect"]);
+
+        assert_eq!(args.agent.as_deref(), Some("workspace:ops"));
     }
 
     #[test]

@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::agents::procedure::ProcedureReference;
+use crate::agents::{AgentDiagnostic, AgentProfileIdentity};
 use crate::execution::{
     ExecutionBudgetSnapshot, ExecutionDegradation, ExecutionPhase, ExecutionPolicy,
     FinalizationRecord, PlanDecisionRecord, PlanIdentity, PlanRevision, StepAttempt, StepRecord,
@@ -23,8 +25,52 @@ pub enum StreamEvent {
         user_message: String,
     },
 
+    /// Immutable Agent profile selected before planner/model work begins.
+    AgentProfileActivated {
+        identity: Box<AgentProfileIdentity>,
+        resumed_from_snapshot: bool,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        diagnostics: Vec<AgentDiagnostic>,
+    },
+
+    /// Trusted workspace instruction bundle admitted for this run.
+    WorkspaceInstructionsResolved {
+        bundle_hash: String,
+        layer_count: usize,
+        rejected_count: usize,
+        truncated: bool,
+    },
+
     /// Resolved execution policy selected before planner/model work begins.
     ExecutionStrategySelected { policy: ExecutionPolicy },
+
+    /// A nested workspace instruction became active for a concrete model-turn
+    /// target. The body is intentionally absent from the event/trace.
+    InstructionOverlayApplied {
+        target_path: String,
+        scope: String,
+        source_path: String,
+        content_hash: String,
+        boundary: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        call_id: Option<CallId>,
+    },
+
+    /// Deterministic procedure selection, by identity only.
+    ProceduresSelected {
+        profile_hash: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        selected: Vec<ProcedureReference>,
+        considered_count: usize,
+        excluded_count: usize,
+    },
+
+    /// A selected procedure body was admitted into the bounded prompt prefix.
+    ProcedureHydrated {
+        reference: ProcedureReference,
+        truncated: bool,
+        dropped_bytes: usize,
+    },
 
     /// Monotonic multidimensional budget projection after a lifecycle phase or
     /// at an exhaustion boundary.
@@ -220,7 +266,12 @@ impl StreamEvent {
     pub fn event_name(&self) -> &'static str {
         match self {
             Self::RunStarted { .. } => "run_started",
+            Self::AgentProfileActivated { .. } => "agent_profile_activated",
+            Self::WorkspaceInstructionsResolved { .. } => "workspace_instructions_resolved",
             Self::ExecutionStrategySelected { .. } => "execution_strategy_selected",
+            Self::InstructionOverlayApplied { .. } => "instruction_overlay_applied",
+            Self::ProceduresSelected { .. } => "procedures_selected",
+            Self::ProcedureHydrated { .. } => "procedure_hydrated",
             Self::ExecutionBudgetUpdated { .. } => "execution_budget_updated",
             Self::ExecutionDegraded { .. } => "execution_degraded",
             Self::LlmChunk { .. } => "llm_chunk",

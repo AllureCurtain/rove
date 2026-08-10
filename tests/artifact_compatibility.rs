@@ -299,6 +299,7 @@ async fn legacy_message_only_state_dual_reads_then_writes_one_canonical_session(
         checkpoint: None,
         plan: None,
         runtime_identity: None,
+        agent_profile: None,
         step_ledger: Default::default(),
         execution_lifecycle: Default::default(),
     };

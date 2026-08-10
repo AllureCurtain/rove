@@ -1040,6 +1040,60 @@ impl From<&StreamEvent> for RunViewUpdate {
                 status: "execution".to_string(),
                 message: format!("Execution strategy selected: {:?}.", policy.strategy),
             },
+            StreamEvent::AgentProfileActivated {
+                identity,
+                resumed_from_snapshot,
+                diagnostics,
+            } => Self::ModelStatus {
+                status: "agent".to_string(),
+                message: format!(
+                    "Agent {} activated{} ({} diagnostic(s)).",
+                    identity.selector,
+                    if *resumed_from_snapshot {
+                        " from the saved snapshot"
+                    } else {
+                        ""
+                    },
+                    diagnostics.len()
+                ),
+            },
+            StreamEvent::WorkspaceInstructionsResolved {
+                layer_count,
+                rejected_count,
+                truncated,
+                ..
+            } => Self::ModelStatus {
+                status: "agent".to_string(),
+                message: format!(
+                    "Resolved {layer_count} workspace instruction layer(s), {rejected_count} rejected{}.",
+                    if *truncated { ", bounded" } else { "" }
+                ),
+            },
+            StreamEvent::InstructionOverlayApplied {
+                target_path, scope, ..
+            } => Self::ModelStatus {
+                status: "agent".to_string(),
+                message: format!(
+                    "Applied workspace instructions for {scope}/ to target {target_path}."
+                ),
+            },
+            StreamEvent::ProceduresSelected { selected, .. } => Self::ModelStatus {
+                status: "procedure".to_string(),
+                message: format!("Selected {} procedure(s).", selected.len()),
+            },
+            StreamEvent::ProcedureHydrated {
+                reference,
+                truncated,
+                ..
+            } => Self::ModelStatus {
+                status: "procedure".to_string(),
+                message: format!(
+                    "Hydrated procedure {}@{}{}.",
+                    reference.id,
+                    reference.version,
+                    if *truncated { " (bounded)" } else { "" }
+                ),
+            },
             StreamEvent::ExecutionBudgetUpdated { phase, snapshot } => Self::ModelStatus {
                 status: "budget".to_string(),
                 message: snapshot.exhausted.as_ref().map_or_else(

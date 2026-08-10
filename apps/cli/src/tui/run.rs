@@ -74,6 +74,7 @@ mod tests {
                 workspace: &workspace,
                 model_id: "fake",
                 runtime_identity: None,
+                agent_profile: None,
             },
             |update| {
                 if matches!(update, RunViewUpdate::RunCompleted { .. }) {

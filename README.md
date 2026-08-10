@@ -300,27 +300,28 @@ release readiness documents before making release claims.
 
 ## Current Boundaries
 
-Implemented on `main` does not include:
+The current source tree does not include:
 
 - A Tauri Desktop host or Browser/Desktop automation workspace.
 - Hosted multi-user identity, billing, remote gateway, device pairing, or
   distributed rate limiting.
 - Full shell sandboxing beyond the current local policy controls.
 - Built-in vector or provider-backed RAG retrieval.
-- MCP Streamable HTTP, negotiated sessions, rich result envelopes, or Tool
-  Artifacts. The current proxy supports stdio and the existing legacy SSE path.
-- Versioned AgentDefinition packages, runtime `AGENTS.md` discovery, or the
-  proposed OnCall reference evaluation suite.
+- Live MCP catalog refresh and rich result mapping for stdio/legacy SSE.
+- Phase-specific procedure consumption by Planner, Evaluator, and Finalizer,
+  or the proposed OnCall reference evaluation suite.
 - Subagents.
 
 The shared Core/Runtime Agent kernel, Project Trust activation, the shared
-Execution Environment, Coding Tool V2, the independent Finalizer,
-model-on-ambiguity plan evaluation, and public multidimensional execution
-budgets are implemented in the runtime.
+Execution Environment, Coding Tool V2, MCP Streamable HTTP, rich Tool Results
+and durable Tool Artifacts, versioned AgentDefinition packages, runtime
+`AGENTS.md` discovery, typed procedure selection/hydration, the independent
+Finalizer, model-on-ambiguity plan evaluation, and public multidimensional
+execution budgets are implemented in the runtime.
 
 These boundaries are maintained explicitly in the current runtime docs and
-future designs. Worktree-only changes are not part of this README's product
-claim until they are merged and verified on `main`.
+future designs. Optional external interoperability remains unclaimed until its
+explicit gates run successfully.
 
 ## Documentation
 

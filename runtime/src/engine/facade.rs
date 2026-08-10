@@ -1,6 +1,7 @@
 use std::{
+    collections::BTreeSet,
     pin::Pin,
-    sync::Arc,
+    sync::{Arc, Mutex},
     task::{Context, Poll},
 };
 
@@ -9,6 +10,11 @@ use futures::stream::{BoxStream, Stream, StreamExt};
 use tokio::sync::Mutex as AsyncMutex;
 use tokio_util::sync::CancellationToken;
 
+use crate::agents::definition::PromptSlotRole;
+use crate::agents::{
+    AgentActivationConfig, AgentActivationError, AgentRuntime, AgentRuntimeProfile,
+    ResolvedRuntimeFacts,
+};
 use crate::capability::CapabilitySnapshot;
 use crate::compaction::CompactionRuntime;
 use crate::context::{ContextManager, durable_memory_message, session_summary_message};
@@ -32,7 +38,7 @@ use crate::state::tool_artifacts::ToolArtifactStore;
 use crate::state::trace::TraceWriter;
 use crate::types::{
     ApprovalDecision, ApprovalPolicy, JobId, Message, RunId, RunRequest, SessionId,
-    TerminationReason, ToolApprovalProvider, UserInputProvider,
+    TerminationReason, ToolApprovalProvider, ToolDescriptor, UserInputProvider,
 };
 use crate::workspace::Workspace;
 use rove_core::ToolRegistry;
@@ -46,28 +52,12 @@ pub struct RunStream<'e> {
     run_id: RunId,
     cancel_token: CancellationToken,
     control: RunControlHandle,
+    runtime_identity: RuntimeIdentity,
+    agent_profile: Option<AgentRuntimeProfile>,
     inner: Pin<Box<dyn Stream<Item = StreamEvent> + Send + 'e>>,
 }
 
-impl<'e> RunStream<'e> {
-    fn new(
-        session_id: SessionId,
-        job_id: JobId,
-        run_id: RunId,
-        cancel_token: CancellationToken,
-        control: RunControlHandle,
-        inner: impl Stream<Item = StreamEvent> + Send + 'e,
-    ) -> Self {
-        Self {
-            session_id,
-            job_id,
-            run_id,
-            cancel_token,
-            control,
-            inner: Box::pin(inner),
-        }
-    }
-
+impl RunStream<'_> {
     pub fn session_id(&self) -> SessionId {
         self.session_id
     }
@@ -87,6 +77,16 @@ impl<'e> RunStream<'e> {
     /// Handle for submitting steer/followup messages to the in-flight run.
     pub fn control(&self) -> &RunControlHandle {
         &self.control
+    }
+
+    /// Exact runtime identity for this run, including the resolved Agent.
+    pub fn runtime_identity(&self) -> &RuntimeIdentity {
+        &self.runtime_identity
+    }
+
+    /// Exact Agent snapshot retained by task/checkpoint persistence.
+    pub fn agent_profile(&self) -> Option<&AgentRuntimeProfile> {
+        self.agent_profile.as_ref()
     }
 }
 
@@ -192,6 +192,7 @@ pub struct Engine {
     memory_paths: MemoryPaths,
     model_compaction_enabled: bool,
     compaction_failure_threshold: u32,
+    agent_runtime: AgentRuntime,
 }
 
 impl Engine {
@@ -273,6 +274,12 @@ impl Engine {
         let memory_paths = MemoryPaths::from_workspace(&workspace, 8);
         let capability_snapshot = CapabilitySnapshot::from_registry(&registry);
         let execution_policy = config.to_execution_policy();
+        let agent_runtime = AgentRuntime::load(
+            &workspace,
+            AgentActivationConfig::default(),
+            resolved_agent_facts(model.as_ref(), &registry, None),
+        )
+        .expect("builtin legacy Agent activation is infallible");
         Self {
             model,
             registry,
@@ -293,6 +300,7 @@ impl Engine {
             memory_paths,
             model_compaction_enabled: false,
             compaction_failure_threshold: 3,
+            agent_runtime,
         }
     }
 
@@ -356,6 +364,17 @@ impl Engine {
         self
     }
 
+    /// Configure the Runtime-owned Agent source for this Engine.
+    pub fn with_agent_activation(
+        mut self,
+        config: AgentActivationConfig,
+    ) -> Result<Self, AgentActivationError> {
+        let facts =
+            resolved_agent_facts(self.model.as_ref(), &self.registry, config.context_tokens);
+        self.agent_runtime = AgentRuntime::load(&self.workspace, config, facts)?;
+        Ok(self)
+    }
+
     pub fn model_id(&self) -> &str {
         self.model.model_id()
     }
@@ -369,7 +388,20 @@ impl Engine {
     }
 
     pub fn runtime_identity(&self) -> RuntimeIdentity {
+        let agent = self.agent_runtime.source_profile_identity();
         let tools = self.registry.descriptors();
+        self.build_runtime_identity(EngineRuntimeIdentityInput {
+            execution_policy: &self.execution_policy,
+            capability_snapshot: &self.capability_snapshot,
+            agent: &agent,
+            tools: &tools,
+            planner_prompt: self.planner.prompt(),
+            evaluator_prompt: self.evaluator.prompt(),
+            finalizer_prompt: self.finalizer.prompt(),
+        })
+    }
+
+    fn build_runtime_identity(&self, input: EngineRuntimeIdentityInput<'_>) -> RuntimeIdentity {
         build_runtime_identity(RuntimeIdentityInput {
             workspace: &self.workspace,
             model_id: self.model.model_id(),
@@ -378,14 +410,15 @@ impl Engine {
             max_steps: self.config.max_steps,
             plan_enabled: self.config.plan_enabled,
             system_prompt: self.context_manager.system_prompt(),
-            planner_prompt: self.planner.prompt(),
-            evaluator_prompt: self.evaluator.prompt(),
-            finalizer_prompt: self.finalizer.prompt(),
-            execution_policy: self.execution_policy.clone(),
-            tools: &tools,
-            capability_snapshot_id: Some(&self.capability_snapshot.snapshot_id),
+            planner_prompt: input.planner_prompt,
+            evaluator_prompt: input.evaluator_prompt,
+            finalizer_prompt: input.finalizer_prompt,
+            execution_policy: input.execution_policy.clone(),
+            tools: input.tools,
+            capability_snapshot_id: Some(&input.capability_snapshot.snapshot_id),
             execution_environment: Some(self.environment.identity()),
             execution_capabilities: Some(self.environment.capabilities()),
+            agent: Some(input.agent),
         })
     }
 
@@ -439,18 +472,101 @@ impl Engine {
         let user_message = req.user_message;
         let resume_state = req.resume_state;
         let stream_cancel = cancel.clone();
-        let runtime_identity = self.runtime_identity();
+        let pinned_agent_profile = resume_state.as_ref().and_then(|state| {
+            // A successor run created from an interrupted snapshot must keep
+            // the exact profile that was admitted before the interruption.
+            // A completed product turn is a new user turn, so it may select a
+            // fresh procedure set. Explicit same-run requests remain pinned
+            // even when their lifecycle record already contains finalization.
+            let same_run = state.run_id == run_id;
+            let unfinished = state
+                .execution_lifecycle
+                .finalization
+                .as_ref()
+                .is_none_or(|finalization| finalization.completed_at.is_none());
+            (same_run || unfinished)
+                .then(|| {
+                    state
+                        .checkpoint
+                        .as_ref()
+                        .and_then(|checkpoint| checkpoint.agent_profile.as_ref())
+                        .or(state.agent_profile.as_ref())
+                })
+                .flatten()
+        });
+        let resolved_agent = self
+            .agent_runtime
+            .resolve_for_run(&user_message, pinned_agent_profile);
+        let run_policy = resolved_agent
+            .as_ref()
+            .map(|agent| execution_policy_for_agent(&self.execution_policy, &agent.profile))
+            .unwrap_or_else(|_| self.execution_policy.clone());
+        let run_descriptors = resolved_agent
+            .as_ref()
+            .map(|agent| descriptors_for_agent(&self.registry, &agent.profile))
+            .unwrap_or_else(|_| self.registry.descriptors());
+        let run_capability_snapshot = CapabilitySnapshot::from_descriptors(&run_descriptors);
+        let run_planner_prompt = resolved_agent
+            .as_ref()
+            .map(|agent| {
+                composed_prompt(
+                    self.planner.prompt(),
+                    agent.profile.prompt_slot(PromptSlotRole::Planner),
+                    "planner",
+                )
+            })
+            .unwrap_or_else(|_| self.planner.prompt().to_string());
+        let run_evaluator_prompt = resolved_agent
+            .as_ref()
+            .map(|agent| {
+                composed_prompt(
+                    self.evaluator.prompt(),
+                    agent.profile.prompt_slot(PromptSlotRole::Evaluator),
+                    "evaluator",
+                )
+            })
+            .unwrap_or_else(|_| self.evaluator.prompt().to_string());
+        let run_finalizer_prompt = resolved_agent
+            .as_ref()
+            .map(|agent| {
+                composed_prompt(
+                    self.finalizer.prompt(),
+                    agent.profile.prompt_slot(PromptSlotRole::Finalizer),
+                    "finalizer",
+                )
+            })
+            .unwrap_or_else(|_| self.finalizer.prompt().to_string());
+        let runtime_identity = resolved_agent
+            .as_ref()
+            .map(|agent| {
+                self.build_runtime_identity(EngineRuntimeIdentityInput {
+                    execution_policy: &run_policy,
+                    capability_snapshot: &run_capability_snapshot,
+                    agent: &agent.identity,
+                    tools: &run_descriptors,
+                    planner_prompt: &run_planner_prompt,
+                    evaluator_prompt: &run_evaluator_prompt,
+                    finalizer_prompt: &run_finalizer_prompt,
+                })
+            })
+            .unwrap_or_else(|_| self.runtime_identity());
+        let stream_agent_profile = resolved_agent
+            .as_ref()
+            .ok()
+            .map(|agent| agent.profile.clone());
         let (control_handle, steer_rx) = control_channel();
         let steer_rx: SteerReceiver = Arc::new(AsyncMutex::new(steer_rx));
         let steer_lifecycle = SteerLifecycle::default();
 
-        RunStream::new(
+        RunStream {
             session_id,
             job_id,
             run_id,
-            cancel,
-            control_handle,
-            stream! {
+            cancel_token: cancel,
+            control: control_handle,
+            runtime_identity: runtime_identity.clone(),
+            agent_profile: stream_agent_profile,
+            inner: Box::pin(stream! {
                 let mut run_summary = RunSummary::new(user_message.clone());
 
                 macro_rules! complete_run {
@@ -522,11 +638,59 @@ impl Engine {
                 append_trace(&trace_writer, &start_event);
                 yield start_event;
 
-                let strategy_event = StreamEvent::ExecutionStrategySelected {
-                    policy: self.execution_policy.clone(),
+                let resolved_agent = match resolved_agent {
+                    Ok(agent) => agent,
+                    Err(error) => {
+                        let event = StreamEvent::ModelStatus {
+                            status: "agent_activation_failed".to_string(),
+                            message: format!("{}: {error}", error.code()),
+                        };
+                        yield_traced!(event);
+                        complete_run!(
+                            TerminationReason::Error,
+                            Some("Agent activation failed before model execution".to_string())
+                        );
+                    }
                 };
-                append_trace(&trace_writer, &strategy_event);
-                yield strategy_event;
+
+                yield_traced!(StreamEvent::AgentProfileActivated {
+                    identity: Box::new(resolved_agent.identity.clone()),
+                    resumed_from_snapshot: resolved_agent.resumed_from_snapshot,
+                    diagnostics: resolved_agent.diagnostics.clone(),
+                });
+                if let Some(bundle) = resolved_agent.profile.instructions.as_ref() {
+                    yield_traced!(StreamEvent::WorkspaceInstructionsResolved {
+                        bundle_hash: bundle.bundle_hash(),
+                        layer_count: bundle.all_layers().len(),
+                        rejected_count: bundle.rejected.len(),
+                        truncated: bundle.truncated,
+                    });
+                }
+                yield_traced!(StreamEvent::ExecutionStrategySelected {
+                    policy: run_policy.clone(),
+                });
+                if let Some(selection) = resolved_agent.profile.procedures.as_ref() {
+                    yield_traced!(StreamEvent::ProceduresSelected {
+                        profile_hash: resolved_agent.profile.profile_hash.clone(),
+                        selected: selection
+                            .selected
+                            .iter()
+                            .map(|selected| selected.reference.clone())
+                            .collect(),
+                        considered_count: selection.considered.len(),
+                        excluded_count: selection
+                            .risk_excluded
+                            .len()
+                            .saturating_add(selection.conflict_excluded.len()),
+                    });
+                }
+                for procedure in &resolved_agent.profile.hydrated_procedures {
+                    yield_traced!(StreamEvent::ProcedureHydrated {
+                        reference: procedure.reference.clone(),
+                        truncated: procedure.truncated,
+                        dropped_bytes: procedure.dropped_bytes,
+                    });
+                }
 
                 if stream_cancel.is_cancelled() {
                     complete_run!(TerminationReason::Cancelled, None);
@@ -582,7 +746,7 @@ impl Engine {
                     &user_message,
                 )
                 .unwrap_or_default();
-                let mut working_memory: Vec<Message> = Vec::new();
+                let mut working_memory: Vec<Message> = resolved_agent.prompt.messages.clone();
                 if let Some(index) = prompt_memory.durable_index {
                     working_memory.push(durable_memory_message(&index));
                 }
@@ -618,11 +782,14 @@ impl Engine {
                 // It applies only to the run that actually consumed those turns.
                 let budget_step = if resumes_same_run { step } else { 0 };
 
-                let execution_policy = self.execution_policy.clone();
+                let execution_policy = run_policy.clone();
+                let run_planner = Planner::new(run_planner_prompt.clone());
+                let run_evaluator = PlanEvaluator::new(run_evaluator_prompt.clone());
+                let run_finalizer = Finalizer::new(run_finalizer_prompt.clone());
                 let loop_context = LoopContext {
                     model: self.model.as_ref(),
                     registry: &self.registry,
-                    capability_snapshot: &self.capability_snapshot,
+                    capability_snapshot: &run_capability_snapshot,
                     context_manager: &self.context_manager,
                     workspace: &self.workspace,
                     environment: self.environment.clone(),
@@ -630,7 +797,10 @@ impl Engine {
                     session_id,
                     max_steps: self.config.max_steps,
                     execution_policy: execution_policy.clone(),
-                    finalizer: &self.finalizer,
+                    finalizer: &run_finalizer,
+                    agent_profile: Some(Arc::new(resolved_agent.profile.clone())),
+                    agent_planner_summary: Some(resolved_agent.prompt.planner_summary.clone()),
+                    instruction_overlays_seen: Arc::new(Mutex::new(BTreeSet::new())),
                     approval_policy: self.approval_policy,
                     approval_decision: self.approval_decision,
                     approval_provider: self.approval_provider.clone(),
@@ -657,9 +827,9 @@ impl Engine {
                 let mut runtime: BoxStream<'_, LoopItem> = match execution_policy.strategy {
                     ExecutionStrategy::PlanReact => run_planned_loop(
                         loop_context,
-                        &self.planner,
-                        &self.evaluator,
-                        &self.finalizer,
+                        &run_planner,
+                        &run_evaluator,
+                        &run_finalizer,
                         PlanLoopState {
                             user_message,
                             working_memory,
@@ -704,9 +874,19 @@ impl Engine {
                     TerminationReason::Error,
                     Some("runtime loop ended without completion".to_string())
                 );
-            },
-        )
+            }),
+        }
     }
+}
+
+struct EngineRuntimeIdentityInput<'a> {
+    execution_policy: &'a ExecutionPolicy,
+    capability_snapshot: &'a CapabilitySnapshot,
+    agent: &'a crate::agents::AgentProfileIdentity,
+    tools: &'a [ToolDescriptor],
+    planner_prompt: &'a str,
+    evaluator_prompt: &'a str,
+    finalizer_prompt: &'a str,
 }
 
 struct CompletedRunContext {
@@ -717,6 +897,85 @@ struct CompletedRunContext {
     output: Option<String>,
     summary: RunSummary,
     cancel_token: CancellationToken,
+}
+
+fn resolved_agent_facts(
+    model: &dyn ModelClient,
+    registry: &ToolRegistry,
+    context_tokens: Option<u32>,
+) -> ResolvedRuntimeFacts {
+    let available_capabilities = registry
+        .descriptors()
+        .into_iter()
+        .filter_map(|descriptor| descriptor.capability_id)
+        .collect::<BTreeSet<_>>();
+    let provider = model.capabilities();
+    ResolvedRuntimeFacts {
+        available_capabilities,
+        native_tool_use: provider.tool_calls,
+        // ProviderCapabilities does not yet expose a normalized structured
+        // output bit. A package requiring it must fail rather than have the
+        // runtime infer support from a provider name.
+        structured_output: false,
+        context_tokens,
+        modalities: BTreeSet::new(),
+    }
+}
+
+fn execution_policy_for_agent(
+    base: &ExecutionPolicy,
+    profile: &AgentRuntimeProfile,
+) -> ExecutionPolicy {
+    let mut policy = base.clone();
+    if let Some(strategy) = profile.strategy.as_deref() {
+        policy.strategy = match strategy {
+            "react" => ExecutionStrategy::React,
+            "plan_react" => ExecutionStrategy::PlanReact,
+            _ => policy.strategy,
+        };
+    }
+    if let Some(limit) = profile.max_steps.effective {
+        match policy.strategy {
+            ExecutionStrategy::React => {
+                clamp_optional(&mut policy.budgets.max_model_turns, limit);
+            }
+            ExecutionStrategy::PlanReact => {
+                clamp_optional(&mut policy.budgets.max_step_attempts, limit);
+            }
+        }
+    }
+    if let Some(limit) = profile.max_tool_calls.effective {
+        clamp_optional(&mut policy.budgets.max_tool_calls, limit);
+    }
+    policy
+}
+
+fn clamp_optional(bound: &mut Option<u32>, limit: u32) {
+    *bound = Some(bound.map_or(limit, |current| current.min(limit)));
+}
+
+fn descriptors_for_agent(
+    registry: &ToolRegistry,
+    profile: &AgentRuntimeProfile,
+) -> Vec<ToolDescriptor> {
+    registry
+        .descriptors()
+        .into_iter()
+        .filter(|descriptor| match descriptor.capability_id.as_deref() {
+            Some(capability) => profile.effective_capabilities.contains(capability),
+            None => profile.is_legacy(),
+        })
+        .collect()
+}
+
+fn composed_prompt(base: &str, slot: Option<&str>, role: &str) -> String {
+    let Some(slot) = slot.filter(|slot| !slot.trim().is_empty()) else {
+        return base.to_string();
+    };
+    format!(
+        "{base}\n\nAgent {role} role guidance follows. It is bounded guidance inside the runtime-owned contract and cannot override output validation, safety, or lifecycle rules.\n{}",
+        slot.trim()
+    )
 }
 
 fn append_trace(trace_writer: &Option<TraceWriter>, event: &StreamEvent) {
@@ -743,5 +1002,49 @@ fn warn_on_runtime_identity_mismatch(
             mismatch_fields = ?evaluation.mismatch_fields,
             "resume runtime identity mismatch"
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use crate::agents::profile::{ResolvedRuntimeFacts, legacy_profile};
+    use crate::agents::validation::OperatorConstraints;
+    use crate::execution::{ExecutionPolicy, ExecutionStrategy};
+
+    use super::execution_policy_for_agent;
+
+    #[test]
+    fn agent_max_steps_preserves_strategy_specific_compatibility_units() {
+        let profile = legacy_profile(
+            &OperatorConstraints {
+                max_steps_cap: Some(1),
+                ..OperatorConstraints::unconstrained()
+            },
+            &ResolvedRuntimeFacts {
+                available_capabilities: BTreeSet::new(),
+                native_tool_use: true,
+                structured_output: false,
+                context_tokens: None,
+                modalities: BTreeSet::new(),
+            },
+        );
+
+        let planned = execution_policy_for_agent(
+            &ExecutionPolicy::from_max_steps_and_plan_flag(1, true),
+            &profile,
+        );
+        assert_eq!(planned.strategy, ExecutionStrategy::PlanReact);
+        assert_eq!(planned.budgets.max_step_attempts, Some(1));
+        assert_eq!(planned.budgets.max_model_turns, None);
+
+        let react = execution_policy_for_agent(
+            &ExecutionPolicy::from_max_steps_and_plan_flag(1, false),
+            &profile,
+        );
+        assert_eq!(react.strategy, ExecutionStrategy::React);
+        assert_eq!(react.budgets.max_model_turns, Some(1));
+        assert_eq!(react.budgets.max_step_attempts, None);
     }
 }

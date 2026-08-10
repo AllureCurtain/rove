@@ -1,4 +1,5 @@
-use std::sync::Arc;
+use std::collections::BTreeSet;
+use std::sync::{Arc, Mutex};
 
 use async_stream::stream;
 use futures::StreamExt;
@@ -7,6 +8,10 @@ use futures::stream::BoxStream;
 use tokio::sync::Mutex as AsyncMutex;
 use tokio_util::sync::CancellationToken;
 
+use crate::agents::{
+    AgentRuntimeProfile, ScopedInstructionPrompt, scoped_instruction_path_hints,
+    scoped_instruction_prompt,
+};
 use crate::capability::CapabilitySnapshot;
 use crate::compaction::{CompactionRuntime, maybe_compact_history};
 use crate::context::ContextManager;
@@ -27,7 +32,8 @@ use crate::prompt_metadata::{
 };
 use crate::state::tool_artifacts::ToolArtifactStore;
 use crate::tool_turn::{
-    ToolAction, ToolTurnContext, ToolTurnItem, ToolTurnOutcome, append_tool_history, run_tool_turn,
+    ToolAction, ToolTurnContext, ToolTurnItem, ToolTurnOutcome, append_tool_history,
+    defer_tool_turn, run_tool_turn, workspace_target_paths,
 };
 use crate::types::{
     ApprovalDecision, ApprovalPolicy, Message, SessionId, TerminationReason, ToolApprovalProvider,
@@ -39,7 +45,7 @@ use rove_core::{
     KernelLimits, KernelModelTurnItem, KernelState, KernelTermination, KernelToolAction,
     KernelToolTurnItem, ToolRegistry, run_agent_kernel,
 };
-use rove_models::ModelClient;
+use rove_models::{ModelClient, ModelToolSchema};
 
 /// Shared receiver for in-flight steer messages. Wrapped in Arc<AsyncMutex> so
 /// it can be cloned into LoopContext and polled at each safe point without
@@ -74,6 +80,12 @@ pub(crate) struct LoopContext<'a> {
     pub steer_lifecycle: Option<SteerLifecycle>,
     /// Durable Tool Artifact authority for this run.
     pub tool_artifacts: Option<Arc<ToolArtifactStore>>,
+    /// Exact Agent snapshot for capability filtering and resume identity.
+    pub agent_profile: Option<Arc<AgentRuntimeProfile>>,
+    /// Content-free Agent/procedure summary supplied to the Planner.
+    pub agent_planner_summary: Option<String>,
+    /// Run-local deduplication for content-free overlay application events.
+    pub instruction_overlays_seen: Arc<Mutex<BTreeSet<String>>>,
 }
 
 impl<'a> LoopContext<'a> {
@@ -90,8 +102,179 @@ impl<'a> LoopContext<'a> {
             hooks: self.hooks.clone(),
             cancel_token,
             tool_artifacts: self.tool_artifacts.clone(),
+            agent_profile: self.agent_profile.clone(),
         }
     }
+
+    pub(crate) fn descriptors(&self) -> Vec<ToolDescriptor> {
+        self.registry
+            .descriptors()
+            .into_iter()
+            .filter(|descriptor| self.descriptor_allowed(descriptor))
+            .collect()
+    }
+
+    pub(crate) fn model_schemas(&self) -> Vec<ModelToolSchema> {
+        self.descriptors()
+            .iter()
+            .map(ToolDescriptor::model_schema)
+            .collect()
+    }
+
+    fn descriptor_allowed(&self, descriptor: &ToolDescriptor) -> bool {
+        let Some(profile) = self.agent_profile.as_ref() else {
+            return true;
+        };
+        match descriptor.capability_id.as_deref() {
+            Some(capability) => profile.effective_capabilities.contains(capability),
+            None => profile.is_legacy(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ActiveInstructionTarget {
+    paths: Vec<String>,
+    boundary: &'static str,
+    call_id: Option<crate::types::CallId>,
+}
+
+impl ActiveInstructionTarget {
+    pub(crate) fn from_text(ctx: &LoopContext<'_>, text: &str, boundary: &'static str) -> Self {
+        let paths = ctx
+            .agent_profile
+            .as_deref()
+            .map(|profile| scoped_instruction_path_hints(profile, text))
+            .unwrap_or_default();
+        Self {
+            paths,
+            boundary,
+            call_id: None,
+        }
+    }
+
+    pub(crate) fn for_tool(paths: Vec<String>, call_id: Option<crate::types::CallId>) -> Self {
+        Self {
+            paths,
+            boundary: "tool_call",
+            call_id,
+        }
+    }
+}
+
+pub(crate) fn scoped_prompt_for_target(
+    ctx: &LoopContext<'_>,
+    target: &ActiveInstructionTarget,
+) -> ScopedInstructionPrompt {
+    ctx.agent_profile
+        .as_deref()
+        .map(|profile| scoped_instruction_prompt(profile, &target.paths))
+        .unwrap_or_default()
+}
+
+pub(crate) fn scoped_prompt_events(
+    ctx: &LoopContext<'_>,
+    target: &ActiveInstructionTarget,
+    prompt: &ScopedInstructionPrompt,
+) -> Vec<StreamEvent> {
+    let mut seen = ctx
+        .instruction_overlays_seen
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    prompt
+        .applications
+        .iter()
+        .filter_map(|application| {
+            let key = format!("{}#{}", application.scope, application.content_hash);
+            seen.insert(key)
+                .then(|| StreamEvent::InstructionOverlayApplied {
+                    target_path: application.target_path.clone(),
+                    scope: application.scope.clone(),
+                    source_path: application.source_path.clone(),
+                    content_hash: application.content_hash.clone(),
+                    boundary: target.boundary.to_string(),
+                    call_id: target.call_id,
+                })
+        })
+        .collect()
+}
+
+pub(crate) fn scoped_paths_for_action(ctx: &LoopContext<'_>, action: &ToolAction) -> Vec<String> {
+    let mut paths = workspace_target_paths(action);
+    if let Some(profile) = ctx.agent_profile.as_deref() {
+        for call in action
+            .calls()
+            .into_iter()
+            .filter(|call| call.name == "run_shell")
+        {
+            if call.args.get("paths").is_some() {
+                continue;
+            }
+            if let Some(command) = call.args.get("command").and_then(serde_json::Value::as_str) {
+                paths.extend(scoped_instruction_path_hints(profile, command));
+            }
+        }
+    }
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
+pub(crate) fn shell_path_declaration_missing(ctx: &LoopContext<'_>, action: &ToolAction) -> bool {
+    let has_nested_overlays = ctx
+        .agent_profile
+        .as_deref()
+        .and_then(|profile| profile.instructions.as_ref())
+        .is_some_and(|bundle| !bundle.overlays.is_empty());
+    has_nested_overlays
+        && action.calls().into_iter().any(|call| {
+            if call.name != "run_shell" {
+                return false;
+            }
+            if let Some(declared) = call.args.get("paths") {
+                return declared.as_array().is_none_or(|paths| {
+                    paths.is_empty()
+                        || paths.iter().any(|path| {
+                            path.as_str()
+                                .and_then(crate::agents::instructions::normalize_workspace_target)
+                                .is_none()
+                        })
+                });
+            }
+            call.args
+                .get("command")
+                .and_then(serde_json::Value::as_str)
+                .is_none_or(|command| {
+                    ctx.agent_profile.as_deref().is_none_or(|profile| {
+                        scoped_instruction_path_hints(profile, command).is_empty()
+                    })
+                })
+        })
+}
+
+pub(crate) fn active_target_covers(
+    ctx: &LoopContext<'_>,
+    active: &ActiveInstructionTarget,
+    requested_paths: &[String],
+) -> bool {
+    let active_prompt = scoped_prompt_for_target(ctx, active);
+    let requested = ctx
+        .agent_profile
+        .as_deref()
+        .map(|profile| scoped_instruction_prompt(profile, requested_paths))
+        .unwrap_or_default();
+    if !requested.omitted_scopes.is_empty() {
+        return false;
+    }
+    let active_hashes: BTreeSet<&str> = active_prompt
+        .applications
+        .iter()
+        .map(|application| application.content_hash.as_str())
+        .collect();
+    requested
+        .applications
+        .iter()
+        .all(|application| active_hashes.contains(application.content_hash.as_str()))
 }
 
 pub(crate) fn enrich_prompt_metadata(
@@ -199,6 +382,8 @@ pub(crate) fn run_unplanned_loop<'a>(
             .unwrap_or(remaining_turns);
         let initial_total_tokens = budget.usage().total_tokens;
         let kernel_state = KernelState::new(state.history);
+        let active_instruction_target =
+            ActiveInstructionTarget::from_text(&ctx, &state.user_message, "user_task");
         let host = UnplannedKernelHost {
             ctx,
             user_message: state.user_message,
@@ -208,6 +393,7 @@ pub(crate) fn run_unplanned_loop<'a>(
             pending_steer_ids: Vec::new(),
             initial_total_tokens,
             max_total_tokens: policy.budgets.max_total_tokens,
+            active_instruction_target,
         };
         let mut kernel = run_agent_kernel(
             host,
@@ -341,6 +527,7 @@ struct UnplannedKernelHost<'a> {
     pending_steer_ids: Vec<String>,
     initial_total_tokens: u64,
     max_total_tokens: Option<u64>,
+    active_instruction_target: ActiveInstructionTarget,
 }
 
 impl AgentKernelHost for UnplannedKernelHost<'_> {
@@ -383,13 +570,23 @@ impl AgentKernelHost for UnplannedKernelHost<'_> {
                 }
             }
 
+            let scoped = scoped_prompt_for_target(&self.ctx, &self.active_instruction_target);
+            for event in scoped_prompt_events(
+                &self.ctx,
+                &self.active_instruction_target,
+                &scoped,
+            ) {
+                yield KernelBeforeModelTurnItem::Event(event);
+            }
+            let mut turn_working_memory = self.working_memory.clone();
+            turn_working_memory.extend(scoped.messages);
             let context = self.ctx.context_manager.build_with_checkpoint(
                 &self.user_message,
-                &self.working_memory,
+                &turn_working_memory,
                 self.compact_summary.as_deref(),
                 &state.history,
             );
-            let tool_schemas = self.ctx.registry.descriptors();
+            let tool_schemas = self.ctx.descriptors();
             yield KernelBeforeModelTurnItem::Event(StreamEvent::PromptBuilt {
                 metadata: enrich_prompt_metadata(
                     &self.ctx,
@@ -461,7 +658,7 @@ impl AgentKernelHost for UnplannedKernelHost<'_> {
         let accepted = std::mem::take(&mut self.pending_steer_ids);
         run_kernel_model_turn(
             self.ctx.model,
-            self.ctx.registry,
+            self.ctx.model_schemas(),
             messages,
             cancel_token,
             accepted,
@@ -487,8 +684,32 @@ impl AgentKernelHost for UnplannedKernelHost<'_> {
             KernelToolAction::Call(call) => ToolAction::Call(call),
             KernelToolAction::Batch(calls) => ToolAction::Batch(calls),
         };
+        let paths = scoped_paths_for_action(&self.ctx, &action);
+        let call_id = action.calls().first().map(|call| call.call_id);
+        let missing_shell_paths = shell_path_declaration_missing(&self.ctx, &action);
+        let needs_scoped_context = !paths.is_empty()
+            && !active_target_covers(&self.ctx, &self.active_instruction_target, &paths);
+        let inner: BoxStream<'a, ToolTurnItem> = if missing_shell_paths {
+            defer_tool_turn(
+                action,
+                "run_shell must declare bounded workspace-relative paths when nested AGENTS.md scopes exist"
+                    .to_string(),
+            )
+        } else if needs_scoped_context {
+            self.active_instruction_target = ActiveInstructionTarget::for_tool(paths, call_id);
+            defer_tool_turn(
+                action,
+                "path-scoped workspace instructions were activated; reconsider the call and retry if it remains appropriate"
+                    .to_string(),
+            )
+        } else {
+            if !paths.is_empty() {
+                self.active_instruction_target = ActiveInstructionTarget::for_tool(paths, call_id);
+            }
+            run_tool_turn(self.ctx.tool_turn_context(cancel_token), action)
+        };
         Box::pin(stream! {
-            let mut inner = run_tool_turn(self.ctx.tool_turn_context(cancel_token), action);
+            let mut inner = inner;
             while let Some(item) = inner.next().await {
                 match item {
                     ToolTurnItem::Event(event) => yield KernelToolTurnItem::Event(event),
@@ -534,7 +755,7 @@ impl AgentKernelHost for UnplannedKernelHost<'_> {
 
 pub(crate) fn run_kernel_model_turn<'a>(
     model: &'a dyn ModelClient,
-    registry: &'a ToolRegistry,
+    tool_schemas: Vec<ModelToolSchema>,
     messages: Vec<Message>,
     cancel_token: CancellationToken,
     accepted_steer_ids: Vec<String>,
@@ -544,7 +765,7 @@ pub(crate) fn run_kernel_model_turn<'a>(
         let mut inner = run_model_turn(
             model,
             messages,
-            registry.model_schemas(),
+            tool_schemas,
             cancel_token,
         );
         let mut applied = false;

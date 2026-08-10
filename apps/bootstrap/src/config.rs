@@ -7,6 +7,7 @@ use figment::Figment;
 use figment::providers::{Format, Serialized, Toml};
 use serde::{Deserialize, Serialize};
 
+use rove_runtime::agents::AgentSelector;
 use rove_runtime::execution::{
     EvaluatorMode, ExecutionPolicy, FinalizerPolicy, StrategySelectionSource,
 };
@@ -97,6 +98,37 @@ pub struct RuntimeConfig {
     /// deterministic `max_steps` projection, so an existing config file behaves
     /// exactly as before.
     pub execution: ExecutionConfig,
+    /// Runtime-owned Agent selection and bounded procedural context settings.
+    pub agent: AgentConfig,
+}
+
+/// Operator-facing Agent activation settings.
+///
+/// Workspace content still requires the independent Project Trust
+/// `workspace_instructions` capability. Setting these fields cannot grant that
+/// capability; an unauthorized request fails during Engine assembly.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct AgentConfig {
+    /// Fully qualified `<source>:<agent-id>` selector.
+    pub selector: String,
+    /// Discover root and nested `AGENTS.md` files for the selected workspace.
+    pub workspace_instructions: bool,
+    /// Admit remediation-mode procedures after all trust/risk checks.
+    pub allow_remediation_procedures: bool,
+    /// Operator ceiling on selected procedures for one run.
+    pub max_procedure_selections: u32,
+}
+
+impl Default for AgentConfig {
+    fn default() -> Self {
+        Self {
+            selector: AgentSelector::legacy().to_string(),
+            workspace_instructions: false,
+            allow_remediation_procedures: false,
+            max_procedure_selections: 3,
+        }
+    }
 }
 
 /// Operator-facing execution lifecycle configuration.
@@ -318,6 +350,7 @@ pub struct ConfigSourceSummary {
 pub struct AppConfigOverrides {
     pub model: Option<String>,
     pub max_steps: Option<u32>,
+    pub agent_selector: Option<String>,
     pub api_bind_addr: Option<String>,
     pub trust_project: bool,
 }
@@ -334,6 +367,7 @@ impl Default for RuntimeConfig {
             context_hard_limit_tokens: 30_000,
             context_reserved_tokens: 4_000,
             execution: ExecutionConfig::default(),
+            agent: AgentConfig::default(),
         }
     }
 }
@@ -571,6 +605,8 @@ impl AppConfig {
         };
         let project_config_granted =
             capability_allowed(crate::project_trust::CAP_PROJECT_CONFIGURATION);
+        let workspace_instructions_granted =
+            capability_allowed(crate::project_trust::CAP_WORKSPACE_INSTRUCTIONS);
         let provider_credentials_granted =
             capability_allowed(crate::project_trust::CAP_PROVIDER_CREDENTIALS);
         let mcp_processes_granted = capability_allowed(crate::project_trust::CAP_MCP_PROCESSES);
@@ -592,6 +628,7 @@ impl AppConfig {
             &project_environment_values,
             ProjectEnvironmentCapabilities {
                 project_configuration: project_config_granted,
+                workspace_instructions: workspace_instructions_granted,
                 provider_credentials: provider_credentials_granted,
                 mcp_processes: mcp_processes_granted,
                 external_paths: external_paths_granted,
@@ -605,6 +642,7 @@ impl AppConfig {
         if let Some(path) = safe_project_config_path.filter(|_| project_config_loaded) {
             let project_layer = filtered_project_config(
                 &path,
+                workspace_instructions_granted,
                 provider_credentials_granted,
                 mcp_processes_granted,
                 external_paths_granted,
@@ -869,6 +907,11 @@ impl AppConfig {
         validate_provider_options(&self.provider.options, "provider.options")?;
         if self.runtime.max_steps == 0 {
             anyhow::bail!("runtime.max_steps must be greater than 0");
+        }
+        AgentSelector::parse(&self.runtime.agent.selector)
+            .map_err(|error| anyhow::anyhow!("runtime.agent.selector is invalid: {error}"))?;
+        if self.runtime.agent.max_procedure_selections == 0 {
+            anyhow::bail!("runtime.agent.max_procedure_selections must be greater than 0");
         }
         if self.runtime.compaction_failure_threshold == 0 {
             anyhow::bail!("runtime.compaction_failure_threshold must be greater than 0");
@@ -1142,6 +1185,20 @@ struct RuntimeConfigLayer {
     context_hard_limit_tokens: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     context_reserved_tokens: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent: Option<AgentConfigLayer>,
+}
+
+#[derive(Debug, Default, Serialize)]
+struct AgentConfigLayer {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    selector: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    workspace_instructions: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    allow_remediation_procedures: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_procedure_selections: Option<u32>,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -1247,6 +1304,7 @@ struct NamedConfigLayer {
 #[derive(Debug, Clone, Copy)]
 struct ProjectEnvironmentCapabilities {
     project_configuration: bool,
+    workspace_instructions: bool,
     provider_credentials: bool,
     mcp_processes: bool,
     external_paths: bool,
@@ -1262,6 +1320,13 @@ impl AppConfigOverrides {
         if let Some(max_steps) = self.max_steps {
             runtime.max_steps = Some(max_steps);
             keys.push("runtime.max_steps".to_string());
+        }
+        if let Some(selector) = self.agent_selector {
+            runtime.agent = Some(AgentConfigLayer {
+                selector: Some(selector),
+                ..AgentConfigLayer::default()
+            });
+            keys.push("runtime.agent.selector".to_string());
         }
 
         let mut provider = ProviderConfigLayer::default();
@@ -1338,6 +1403,25 @@ fn env_layer(
         runtime.context_reserved_tokens = Some(parse_env("ROVE_CONTEXT_RESERVED_TOKENS", &value)?);
         keys.push("ROVE_CONTEXT_RESERVED_TOKENS".to_string());
     }
+    let mut agent = AgentConfigLayer::default();
+    if let Some(value) = env_string("ROVE_AGENT") {
+        agent.selector = Some(value);
+        keys.push("ROVE_AGENT".to_string());
+    }
+    if let Some(value) = env_string("ROVE_WORKSPACE_INSTRUCTIONS") {
+        agent.workspace_instructions = Some(parse_env_bool("ROVE_WORKSPACE_INSTRUCTIONS", &value)?);
+        keys.push("ROVE_WORKSPACE_INSTRUCTIONS".to_string());
+    }
+    if let Some(value) = env_string("ROVE_ALLOW_REMEDIATION_PROCEDURES") {
+        agent.allow_remediation_procedures =
+            Some(parse_env_bool("ROVE_ALLOW_REMEDIATION_PROCEDURES", &value)?);
+        keys.push("ROVE_ALLOW_REMEDIATION_PROCEDURES".to_string());
+    }
+    if let Some(value) = env_string("ROVE_MAX_PROCEDURE_SELECTIONS") {
+        agent.max_procedure_selections = Some(parse_env("ROVE_MAX_PROCEDURE_SELECTIONS", &value)?);
+        keys.push("ROVE_MAX_PROCEDURE_SELECTIONS".to_string());
+    }
+    runtime.agent = Some(agent).filter(has_agent_values);
 
     let mut provider = ProviderConfigLayer::default();
     if let Some(value) = env_string("ROVE_PROVIDER_ACTIVE") {
@@ -1504,6 +1588,10 @@ fn project_environment_value_allowed(
     capabilities: ProjectEnvironmentCapabilities,
 ) -> bool {
     match name {
+        "ROVE_AGENT"
+        | "ROVE_WORKSPACE_INSTRUCTIONS"
+        | "ROVE_ALLOW_REMEDIATION_PROCEDURES"
+        | "ROVE_MAX_PROCEDURE_SELECTIONS" => capabilities.workspace_instructions,
         "ROVE_PROVIDER_ACTIVE"
         | "ROVE_PROVIDER_PROFILES"
         | "ROVE_PROVIDER_FALLBACK_PROFILES"
@@ -1538,6 +1626,7 @@ fn load_project_environment(
 
 fn filtered_project_config(
     path: &Path,
+    workspace_instructions_granted: bool,
     provider_credentials_granted: bool,
     mcp_processes_granted: bool,
     external_paths_granted: bool,
@@ -1545,6 +1634,9 @@ fn filtered_project_config(
     let mut value = Figment::new()
         .merge(Toml::file(path))
         .extract::<serde_json::Value>()?;
+    if !workspace_instructions_granted {
+        remove_project_config_value(&mut value, &["runtime", "agent"]);
+    }
     if !provider_credentials_granted {
         remove_project_config_value(&mut value, &["provider"]);
     }
@@ -1618,6 +1710,14 @@ fn has_runtime_values(layer: &RuntimeConfigLayer) -> bool {
         || layer.context_soft_limit_tokens.is_some()
         || layer.context_hard_limit_tokens.is_some()
         || layer.context_reserved_tokens.is_some()
+        || layer.agent.is_some()
+}
+
+fn has_agent_values(layer: &AgentConfigLayer) -> bool {
+    layer.selector.is_some()
+        || layer.workspace_instructions.is_some()
+        || layer.allow_remediation_procedures.is_some()
+        || layer.max_procedure_selections.is_some()
 }
 
 fn has_provider_values(layer: &ProviderConfigLayer) -> bool {
@@ -1731,6 +1831,10 @@ mod tests {
             "ROVE_CONTEXT_SOFT_LIMIT_TOKENS",
             "ROVE_CONTEXT_HARD_LIMIT_TOKENS",
             "ROVE_CONTEXT_RESERVED_TOKENS",
+            "ROVE_AGENT",
+            "ROVE_WORKSPACE_INSTRUCTIONS",
+            "ROVE_ALLOW_REMEDIATION_PROCEDURES",
+            "ROVE_MAX_PROCEDURE_SELECTIONS",
             "ROVE_OPENAI_RESPONSES_PROMPT_CACHE",
             "ROVE_OPENAI_RESPONSES_PROMPT_CACHE_RETENTION",
             "ROVE_MCP_CONFIG",
@@ -1766,6 +1870,38 @@ mod tests {
         assert_eq!(
             parse_csv(" fallback-a, ,fallback-b,, fallback-c "),
             vec!["fallback-a", "fallback-b", "fallback-c"]
+        );
+    }
+
+    #[test]
+    fn agent_config_defaults_to_the_legacy_compatibility_profile() {
+        let config = AppConfig::default();
+
+        assert_eq!(config.runtime.agent.selector, "builtin:legacy");
+        assert!(!config.runtime.agent.workspace_instructions);
+        assert!(!config.runtime.agent.allow_remediation_procedures);
+        assert_eq!(config.runtime.agent.max_procedure_selections, 3);
+    }
+
+    #[test]
+    fn invalid_agent_selector_is_rejected_during_config_load() {
+        let _guard = env_lock();
+        clear_config_env();
+        let temp = tempfile::TempDir::new().unwrap();
+
+        let error = AppConfig::load(
+            temp.path(),
+            AppConfigOverrides {
+                agent_selector: Some("unqualified".to_string()),
+                ..AppConfigOverrides::default()
+            },
+        )
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("runtime.agent.selector is invalid")
         );
     }
 
@@ -1809,6 +1945,7 @@ retry_backoff_max_ms = 456
             AppConfigOverrides {
                 model: Some("cli-model".to_string()),
                 max_steps: Some(13),
+                agent_selector: None,
                 api_bind_addr: None,
                 trust_project: true,
             },

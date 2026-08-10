@@ -861,6 +861,52 @@ function applyStreamEvent(
         trace: prependTrace(state.trace, event.type, `${event.user_message}`),
       };
     }
+    case "agent_profile_activated":
+      return {
+        ...next,
+        statusText: `Agent ${event.identity.display_name} activated`,
+        trace: prependTrace(
+          state.trace,
+          event.type,
+          `${event.identity.selector.source}:${event.identity.selector.agent_id} ${event.identity.profile_hash}`,
+        ),
+      };
+    case "workspace_instructions_resolved":
+      return {
+        ...next,
+        trace: prependTrace(
+          state.trace,
+          event.type,
+          `${event.layer_count} layer(s), ${event.rejected_count} rejected`,
+        ),
+      };
+    case "instruction_overlay_applied":
+      return {
+        ...next,
+        trace: prependTrace(
+          state.trace,
+          event.type,
+          `${event.scope} -> ${event.target_path}`,
+        ),
+      };
+    case "procedures_selected":
+      return {
+        ...next,
+        trace: prependTrace(
+          state.trace,
+          event.type,
+          `${event.selected?.length ?? 0} selected, ${event.excluded_count} excluded`,
+        ),
+      };
+    case "procedure_hydrated":
+      return {
+        ...next,
+        trace: prependTrace(
+          state.trace,
+          event.type,
+          `${event.reference.id}@${event.reference.version}${event.truncated ? " (truncated)" : ""}`,
+        ),
+      };
     case "llm_chunk": {
       const projection = appendAssistantDelta(
         state.messages,

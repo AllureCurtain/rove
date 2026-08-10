@@ -6,6 +6,8 @@ use futures::stream::{BoxStream, StreamExt};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+use crate::agents::AgentRuntimeProfile;
+use crate::agents::instructions::normalize_workspace_target;
 use crate::environment::ExecutionEnvironment;
 use crate::events::StreamEvent;
 use crate::executor::Executor;
@@ -26,10 +28,115 @@ use rove_models::{InternalCallId, ToolResultStatus};
 
 const APPROVAL_REASON: &str = "destructive tool requires explicit approval";
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) enum ToolAction {
     Call(ToolCallAction),
     Batch(Vec<ToolCallAction>),
+}
+
+impl ToolAction {
+    pub(crate) fn calls(&self) -> Vec<&ToolCallAction> {
+        match self {
+            Self::Call(call) => vec![call],
+            Self::Batch(calls) => calls.iter().collect(),
+        }
+    }
+
+    fn into_calls(self) -> Vec<ToolCallAction> {
+        match self {
+            Self::Call(call) => vec![call],
+            Self::Batch(calls) => calls,
+        }
+    }
+}
+
+/// Concrete local-workspace targets declared by first-party structured tools.
+///
+/// This is context routing only; each tool still performs its authoritative
+/// argument and workspace-boundary validation. MCP paths are deliberately not
+/// interpreted as local paths because remote resource names have no local
+/// filesystem authority.
+pub(crate) fn workspace_target_paths(action: &ToolAction) -> Vec<String> {
+    const MAX_TARGET_PATHS: usize = 64;
+    let mut paths = Vec::new();
+    for call in action.calls() {
+        let fields: &[&str] = match call.name.as_str() {
+            "read_file" | "write_file" | "edit_file" | "delete_path" | "list_directory"
+            | "glob_paths" | "search_code" => &["path"],
+            "move_path" => &["from", "to"],
+            "workspace_checkpoint" | "workspace_diff" | "workspace_rewind" | "run_shell" => {
+                &["paths"]
+            }
+            _ => &[],
+        };
+        for field in fields {
+            let Some(value) = call.args.get(*field) else {
+                continue;
+            };
+            match value {
+                serde_json::Value::String(path) => push_target_path(&mut paths, path),
+                serde_json::Value::Array(values) => {
+                    for path in values.iter().filter_map(serde_json::Value::as_str) {
+                        push_target_path(&mut paths, path);
+                        if paths.len() >= MAX_TARGET_PATHS {
+                            break;
+                        }
+                    }
+                }
+                _ => {}
+            }
+            if paths.len() >= MAX_TARGET_PATHS {
+                break;
+            }
+        }
+        if paths.len() >= MAX_TARGET_PATHS {
+            break;
+        }
+    }
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
+fn push_target_path(paths: &mut Vec<String>, raw: &str) {
+    if let Some(path) = normalize_workspace_target(raw) {
+        paths.push(path);
+    }
+}
+
+/// Close a model-requested tool call without dispatching it. This preserves
+/// provider tool-call/result correlation and durable session integrity while a
+/// Runtime-owned precondition is installed for the next model turn.
+pub(crate) fn defer_tool_turn(
+    action: ToolAction,
+    reason: String,
+) -> BoxStream<'static, ToolTurnItem> {
+    Box::pin(stream! {
+        let mut records = Vec::new();
+        for call in action.into_calls() {
+            yield ToolTurnItem::Event(StreamEvent::ToolCallStarted {
+                call_id: call.call_id,
+                tool_use_id: call.tool_use_id.clone(),
+                name: call.name.clone(),
+                args: call.args.clone(),
+            });
+            let error = ToolError::PreconditionRequired {
+                reason: reason.clone(),
+            };
+            let metadata = failure_metadata(&error);
+            records.push(ToolExecutionRecord {
+                call: call.clone(),
+                history_output: format!("Error: {error}"),
+                error_reason: Some(error.to_string()),
+            });
+            yield ToolTurnItem::Event(StreamEvent::ToolCallFailed {
+                call_id: call.call_id,
+                error,
+                metadata,
+            });
+        }
+        yield ToolTurnItem::Finished(ToolTurnOutcome { records });
+    })
 }
 
 #[derive(Clone)]
@@ -47,6 +154,7 @@ pub(crate) struct ToolTurnContext<'a> {
     /// Durable artifact authority for this run, passed to every tool so a
     /// rich result can retain its payloads.
     pub tool_artifacts: Option<Arc<ToolArtifactStore>>,
+    pub agent_profile: Option<Arc<AgentRuntimeProfile>>,
 }
 
 #[derive(Debug)]
@@ -161,6 +269,12 @@ impl<'a> ToolTurnContext<'a> {
         approval_decision: ApprovalDecision,
         input_events: Option<mpsc::Sender<RegisteredUserInput>>,
     ) -> ToolExecution {
+        if let Err(error) = self.check_agent_capability(&call.name) {
+            return ToolExecution {
+                call,
+                result: Err(error),
+            };
+        }
         let executor = Executor::with_hooks(self.registry, self.hooks.clone());
         let tool_context = runtime_tool_context_with_artifacts(
             call.call_id,
@@ -182,6 +296,24 @@ impl<'a> ToolTurnContext<'a> {
             )
             .await;
         ToolExecution { call, result }
+    }
+
+    fn check_agent_capability(&self, tool_name: &str) -> Result<(), ToolError> {
+        let Some(profile) = self.agent_profile.as_ref() else {
+            return Ok(());
+        };
+        let descriptor = self.registry.descriptor(tool_name)?;
+        match descriptor.capability_id.as_deref() {
+            Some(capability) if profile.effective_capabilities.contains(capability) => Ok(()),
+            Some(capability) => Err(ToolError::PermissionDenied {
+                reason: format!("active Agent profile does not permit capability '{capability}'"),
+            }),
+            None if profile.is_legacy() => Ok(()),
+            None => Err(ToolError::PermissionDenied {
+                reason: "active Agent profile refuses tools without a capability identity"
+                    .to_string(),
+            }),
+        }
     }
 
     fn execute_tool_call_stream<'b>(
@@ -429,11 +561,20 @@ pub(crate) fn run_tool_turn<'a>(
 }
 
 fn failure_metadata(error: &ToolError) -> ToolExecutionMetadata {
+    let deferred = matches!(error, ToolError::PreconditionRequired { .. });
     ToolExecutionMetadata {
-        status: ToolExecutionStatus::Error,
+        status: if deferred {
+            ToolExecutionStatus::Rejected
+        } else {
+            ToolExecutionStatus::Error
+        },
         error_code: Some(error.error_code().to_string()),
         security_event_type: security_event_type(error),
-        risk_level: ToolRiskLevel::High,
+        risk_level: if deferred {
+            ToolRiskLevel::Low
+        } else {
+            ToolRiskLevel::High
+        },
         read_only: false,
         affected_paths: Vec::new(),
         workspace_changed: false,
@@ -508,8 +649,12 @@ mod tests {
     use futures::StreamExt;
     use tokio_util::sync::CancellationToken;
 
-    use super::{ToolAction, ToolTurnContext, ToolTurnItem, run_tool_turn};
+    use super::{
+        ToolAction, ToolTurnContext, ToolTurnItem, defer_tool_turn, run_tool_turn,
+        workspace_target_paths,
+    };
     use crate::environment::local_environment;
+    use crate::events::StreamEvent;
     use crate::hooks::HookRegistry;
     use crate::memory::paths::MemoryPaths;
     use crate::tools::echo::EchoTool;
@@ -567,6 +712,7 @@ mod tests {
             hooks: HookRegistry::default(),
             cancel_token: CancellationToken::new(),
             tool_artifacts: None,
+            agent_profile: None,
         };
 
         assert!(base.can_run_parallel_batch(&calls));
@@ -597,6 +743,7 @@ mod tests {
             hooks: HookRegistry::default(),
             cancel_token: CancellationToken::new(),
             tool_artifacts: None,
+            agent_profile: None,
         };
         let action = ToolAction::Call(ToolCallAction {
             call_id: CallId::new(),
@@ -617,5 +764,64 @@ mod tests {
                     && metadata.error_code.as_deref() == Some("unknown_tool")
             )
         }));
+    }
+
+    #[test]
+    fn structured_workspace_targets_are_normalized_and_bounded() {
+        let action = ToolAction::Batch(vec![
+            ToolCallAction {
+                call_id: CallId::new(),
+                tool_use_id: None,
+                name: "move_path".to_string(),
+                args: serde_json::json!({
+                    "from": ".\\apps\\web\\old.ts",
+                    "to": "apps/web/new.ts"
+                }),
+            },
+            ToolCallAction {
+                call_id: CallId::new(),
+                tool_use_id: None,
+                name: "read_file".to_string(),
+                args: serde_json::json!({"path":"../outside"}),
+            },
+        ]);
+
+        assert_eq!(
+            workspace_target_paths(&action),
+            vec!["apps/web/new.ts", "apps/web/old.ts"]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_deferred_call_closes_correlation_without_dispatching_a_tool() {
+        let call_id = CallId::new();
+        let items = defer_tool_turn(
+            ToolAction::Call(ToolCallAction {
+                call_id,
+                tool_use_id: Some("toolu-overlay".to_string()),
+                name: "write_file".to_string(),
+                args: serde_json::json!({"path":"apps/web/page.tsx","content":"x"}),
+            }),
+            "scoped instructions activated".to_string(),
+        )
+        .collect::<Vec<_>>()
+        .await;
+
+        assert!(matches!(
+            &items[0],
+            ToolTurnItem::Event(StreamEvent::ToolCallStarted { call_id: id, .. }) if *id == call_id
+        ));
+        assert!(matches!(
+            &items[1],
+            ToolTurnItem::Event(StreamEvent::ToolCallFailed { error, metadata, .. })
+                if error.error_code() == "precondition_required"
+                    && metadata.status == ToolExecutionStatus::Rejected
+        ));
+        assert!(matches!(
+            &items[2],
+            ToolTurnItem::Finished(outcome)
+                if outcome.records.len() == 1
+                    && outcome.records[0].error_reason.is_some()
+        ));
     }
 }

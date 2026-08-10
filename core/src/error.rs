@@ -28,6 +28,11 @@ pub enum ToolError {
     #[error("Invalid input: {reason}")]
     InvalidInput { reason: String },
 
+    /// The request was well-formed but Runtime-owned context must be applied
+    /// before the operation can be reconsidered. No tool dispatch occurred.
+    #[error("Precondition required: {reason}")]
+    PreconditionRequired { reason: String },
+
     #[error("Hook blocked tool call: {reason}")]
     HookBlocked { reason: String },
 
@@ -47,6 +52,7 @@ impl ToolError {
             Self::UnknownTool { .. } => "unknown_tool",
             Self::InvalidArgs { .. } => "invalid_args",
             Self::InvalidInput { .. } => "invalid_input",
+            Self::PreconditionRequired { .. } => "precondition_required",
             Self::HookBlocked { .. } => "hook_blocked",
             Self::PermissionDenied { .. } => "permission_denied",
             Self::ExecutionFailed { .. } => "execution_failed",

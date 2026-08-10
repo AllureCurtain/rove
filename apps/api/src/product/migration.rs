@@ -1232,7 +1232,9 @@ mod tests {
                     capability_snapshot_id: None,
                     execution_environment: None,
                     execution_capabilities: None,
+                    agent: None,
                 }),
+                agent_profile: None,
                 step_ledger: StepLedgerState::default(),
                 execution_lifecycle: Default::default(),
             };

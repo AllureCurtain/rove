@@ -54,6 +54,7 @@ fn run_sync_fast_path(args: Args) -> anyhow::Result<()> {
             AppConfigOverrides {
                 model: args.model.clone(),
                 max_steps: args.max_steps,
+                agent_selector: args.agent.clone(),
                 api_bind_addr: None,
                 trust_project: args.trust_project,
             },
@@ -113,6 +114,7 @@ async fn build_runtime_with_interaction(
         cwd: args.cwd.clone().map(PathBuf::from),
         model: args.model.clone(),
         max_steps: args.max_steps,
+        agent: args.agent.clone(),
         trust_project: args.trust_project,
         approval: args.approval,
         task_workspace: args.task_workspace.clone(),

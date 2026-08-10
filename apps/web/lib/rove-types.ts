@@ -494,8 +494,43 @@ export type StreamEvent =
       user_message: string;
     }
   | {
+      type: "agent_profile_activated";
+      identity: AgentProfileIdentity;
+      resumed_from_snapshot: boolean;
+      diagnostics?: AgentDiagnostic[];
+    }
+  | {
+      type: "workspace_instructions_resolved";
+      bundle_hash: string;
+      layer_count: number;
+      rejected_count: number;
+      truncated: boolean;
+    }
+  | {
       type: "execution_strategy_selected";
       policy: ExecutionPolicy;
+    }
+  | {
+      type: "instruction_overlay_applied";
+      target_path: string;
+      scope: string;
+      source_path: string;
+      content_hash: string;
+      boundary: string;
+      call_id?: string | null;
+    }
+  | {
+      type: "procedures_selected";
+      profile_hash: string;
+      selected?: ProcedureReference[];
+      considered_count: number;
+      excluded_count: number;
+    }
+  | {
+      type: "procedure_hydrated";
+      reference: ProcedureReference;
+      truncated: boolean;
+      dropped_bytes: number;
     }
   | {
       type: "execution_budget_updated";
@@ -650,6 +685,36 @@ export type StreamEvent =
       reason: string;
     };
 
+export interface AgentProfileIdentity {
+  selector: { source: "builtin" | "workspace"; agent_id: string };
+  agent_id: string;
+  display_name: string;
+  definition_version: string;
+  manifest_hash: string;
+  package_hash: string;
+  profile_hash: string;
+  instruction_bundle_hash?: string;
+  procedures?: ProcedureReference[];
+}
+
+export interface AgentDiagnostic {
+  code: string;
+  subject: string;
+  message: string;
+}
+
+export interface ProcedureReference {
+  id: string;
+  version: string;
+  trust:
+    | "builtin_trusted"
+    | "workspace_trusted"
+    | "user_installed"
+    | "external_untrusted";
+  source_path: string;
+  content_hash: string;
+}
+
 export type CreateJobWorkspaceKind = "folder" | "repo" | "task";
 
 /**
@@ -672,6 +737,8 @@ export interface CreateJobRequest {
   message: string;
   model?: string;
   max_steps?: number;
+  /** Fully qualified Runtime Agent selector. */
+  agent?: string;
   approval?: ApprovalPolicy;
   resume?: ResumeMode;
   workspace?: CreateJobWorkspace;
@@ -820,7 +887,12 @@ export type ResumeMode = "latest";
 
 export const STREAM_EVENT_NAMES = [
   "run_started",
+  "agent_profile_activated",
+  "workspace_instructions_resolved",
   "execution_strategy_selected",
+  "instruction_overlay_applied",
+  "procedures_selected",
+  "procedure_hydrated",
   "execution_budget_updated",
   "execution_degraded",
   "llm_chunk",

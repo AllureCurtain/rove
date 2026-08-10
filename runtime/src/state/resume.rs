@@ -91,6 +91,7 @@ mod tests {
             checkpoint: None,
             plan: None,
             runtime_identity: None,
+            agent_profile: None,
             step_ledger: Default::default(),
             execution_lifecycle: Default::default(),
         }

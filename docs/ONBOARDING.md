@@ -679,11 +679,13 @@ Use them for rationale, not as current API/runtime truth when they disagree with
 - Hosted multi-user identity and distributed rate limiting are outside the MVP.
 - Built-in vector RAG is not provided.
 - Real provider/MCP tests are gated.
-- The current MCP path is not the proposed Streamable HTTP design.
-- The runtime does not yet compile versioned AgentDefinition packages.
-- The runtime does not yet discover this `AGENTS.md` as a typed workspace
-  instruction bundle.
-- The proposed procedure catalog and reference Agent benchmark do not yet run.
+- Streamable HTTP is implemented, but live MCP catalog refresh and rich result
+  mapping for stdio/legacy SSE remain pending.
+- The runtime compiles versioned AgentDefinition packages and discovers bounded
+  root/nested `AGENTS.md` instruction layers after Project Trust authorization.
+- Typed procedure catalog selection and bounded hydration run at activation;
+  phase-specific Planner/Evaluator/Finalizer consumption and the OnCall
+  reference benchmark remain pending.
 
 These are boundaries, not reasons to describe the implemented MVP as absent.
 

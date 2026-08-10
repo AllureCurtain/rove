@@ -132,9 +132,14 @@ As of 2026-08-07:
   transient artifact projection, and foreground/background Shell lifecycle.
   Native PTY remains a typed unsupported capability; coding observations,
   checkpoints, projected artifacts, and process identities are not durable.
-- Versioned AgentDefinition packages, `AGENTS.md` runtime discovery, typed
-  procedural knowledge, and the OnCall reference evaluation suite are proposed,
-  not implemented. The execution-lifecycle design is partially implemented:
+- Versioned AgentDefinition packages, immutable per-run profiles, trusted
+  root/nested `AGENTS.md` discovery, typed procedural catalogs, deterministic
+  selection, bounded hydration, exact unfinished-run resume snapshots, and
+  CLI/API/Web selector surfaces are implemented. Nested instructions are
+  activated only for matching paths; a newly discovered tool scope is deferred
+  before dispatch until the model receives its overlay. Procedure-aware
+  Planner/Evaluator/Finalizer phases and the OnCall reference evaluation suite
+  remain proposed. The execution-lifecycle design is partially implemented:
   one Runtime-neutral Agent kernel drives embedded, unplanned, and planned-step
   model/tool coordination; Runtime hosts retain context, persistence, planning,
   approval/input, hooks, memory, and canonical events. Bounded planned
@@ -176,9 +181,9 @@ As of 2026-08-07:
   snapshots, usage/context/cost, bounded files/artifacts/images/diff, redacted
   evidence export, and workspace-scoped Settings/MCP management; they are on
   `main` through PR #29 at `f9e88a7`. No Tauri `apps/desktop` host exists yet.
-- This repository-level `AGENTS.md` guides maintainers and coding agents. Its
-  existence does not mean the rove runtime already loads workspace
-  `AGENTS.md` files into model context.
+- This repository-level `AGENTS.md` guides maintainers and coding agents. A
+  trusted rove run also loads it as the workspace root instruction layer; that
+  runtime admission does not turn its text into tool permission or approval.
 
 The active future/runtime-evolution design chain is:
 

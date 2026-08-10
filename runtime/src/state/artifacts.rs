@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use crate::agents::AgentRuntimeProfile;
 use crate::events::StreamEvent;
 use crate::execution::{
     ExecutionLifecycleState, PlanIdentity, StepLedgerState, StepRecordStatus,
@@ -45,6 +46,7 @@ pub struct RunArtifactRecorder {
     rejected_tool_artifacts: Vec<ReportArtifactRejection>,
     prompt_builds: Vec<PromptBuildMetadata>,
     runtime_identity: Option<RuntimeIdentity>,
+    agent_profile: Option<AgentRuntimeProfile>,
     step_ledger: StepLedgerState,
     execution_lifecycle: ExecutionLifecycleState,
     total_usage: Usage,
@@ -110,6 +112,7 @@ impl RunArtifactRecorder {
             prompt_builds: Vec::new(),
             runtime_identity: runtime_identity
                 .or_else(|| resume_state.and_then(|state| state.runtime_identity.clone())),
+            agent_profile: resume_state.and_then(|state| state.agent_profile.clone()),
             step_ledger: resume_state
                 .map(|state| state.step_ledger.clone())
                 .unwrap_or_default(),
@@ -127,6 +130,19 @@ impl RunArtifactRecorder {
             pending_tool_calls: HashMap::new(),
             unassigned_tool_calls: Vec::new(),
         }
+    }
+
+    /// Attach the exact Engine-resolved Agent snapshot before the first event
+    /// is persisted. This is intentionally separate from StreamEvent so prompt
+    /// text never enters trace/SSE/report projections.
+    pub fn set_agent_profile(&mut self, profile: Option<AgentRuntimeProfile>) {
+        if profile.is_some() {
+            self.agent_profile = profile;
+        }
+    }
+
+    pub fn set_runtime_identity(&mut self, identity: RuntimeIdentity) {
+        self.runtime_identity = Some(identity);
     }
 
     pub async fn record_event(&mut self, event: &StreamEvent, state_store: &StateStore) {
@@ -545,6 +561,7 @@ impl RunArtifactRecorder {
             checkpoint: Some(self.prompt_checkpoint()),
             plan: self.plan.clone(),
             runtime_identity: self.runtime_identity.clone(),
+            agent_profile: self.agent_profile.clone(),
             step_ledger: self.step_ledger.clone(),
             execution_lifecycle: self.execution_lifecycle.clone(),
         };
@@ -676,6 +693,7 @@ impl RunArtifactRecorder {
             compacted_history_messages,
             compaction: self.checkpoint_compaction_state(compacted_history_messages),
             runtime_identity: self.runtime_identity.clone(),
+            agent_profile: self.agent_profile.clone(),
             step_ledger: self.step_ledger.checkpoint(),
             execution_lifecycle: self.execution_lifecycle.checkpoint(),
             session: Some(self.session.clone()),
@@ -857,6 +875,7 @@ mod tests {
             capability_snapshot_id: Some("sha256:capabilities".to_string()),
             execution_environment: None,
             execution_capabilities: None,
+            agent: None,
         }
     }
 

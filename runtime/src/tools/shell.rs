@@ -109,6 +109,17 @@ impl Tool for ShellTool {
                         "type": "boolean",
                         "default": false,
                         "description": "Start the command in the background and return an opaque process ID"
+                    },
+                    "paths": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 64,
+                        "items": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 4096
+                        },
+                        "description": "Workspace-relative paths the command will access, when path-scoped workspace instructions exist"
                     }
                 },
                 "required": ["command"],

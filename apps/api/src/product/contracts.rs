@@ -1051,11 +1051,23 @@ pub struct ProductExecutionEnvironmentInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductAgentRuntimeInfo {
+    /// Configured base selector. A request may still provide an explicit
+    /// selector, and the resolved run identity is emitted canonically.
+    pub selector: String,
+    pub workspace_source_authorized: bool,
+    pub workspace_instructions_enabled: bool,
+    pub allow_remediation_procedures: bool,
+    pub max_procedure_selections: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ProductRuntimeInfo {
     pub api_version: String,
     pub connection: ProductConnectionStatus,
     pub product_store: ProductStoreStatus,
     pub execution_environment: ProductExecutionEnvironmentInfo,
+    pub agent: ProductAgentRuntimeInfo,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resume_health: Option<ProductResumeHealth>,
 }

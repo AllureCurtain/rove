@@ -16,6 +16,8 @@ use rove_models::{
     AssistantTurn, InternalCallId, ModelClient, ModelEvent, ProviderCapabilities, StopReason,
     ToolCall as CanonicalToolCall, ToolResult as CanonicalToolResult, WireCallReference,
 };
+use rove_runtime::agents::validation::OperatorConstraints;
+use rove_runtime::agents::{AgentActivationConfig, AgentSelector};
 use rove_runtime::context::{ContextBudget, ContextManager};
 use rove_runtime::engine::{Engine, EngineConfig};
 use rove_runtime::events::StreamEvent;
@@ -29,6 +31,7 @@ use rove_runtime::hooks::{
 use rove_runtime::memory::durable::read_memory_index_sync;
 use rove_runtime::memory::paths::MemoryPaths;
 use rove_runtime::session::{Session, SessionEntry};
+use rove_runtime::state::artifacts::RunArtifactRecorder;
 use rove_runtime::state::report::RunReport;
 use rove_runtime::state::store::StateStore;
 use rove_runtime::tools::echo::EchoTool;
@@ -957,6 +960,382 @@ async fn collect_events_with_request(engine: &Engine, req: RunRequest) -> Vec<St
     events
 }
 
+fn write_agent_definition_fixture(root: &std::path::Path) {
+    std::fs::create_dir_all(root.join("agents/ops/procedures")).unwrap();
+    std::fs::create_dir_all(root.join("apps/web")).unwrap();
+    std::fs::write(root.join("AGENTS.md"), "ROOT_AGENT_RULE_V1").unwrap();
+    std::fs::write(root.join("apps/web/AGENTS.md"), "WEB_AGENT_RULE_V1").unwrap();
+    std::fs::write(
+        root.join("agents/ops/agent.toml"),
+        r#"
+schema_version = 1
+id = "ops"
+definition_version = "1.0.0"
+display_name = "Operations"
+default_instructions_path = "instructions.md"
+
+[capability_policy]
+allow = ["workspace.fs.read"]
+
+[procedure_policy]
+max_selected = 2
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("agents/ops/instructions.md"),
+        "PACKAGE_AGENT_RULE_V1",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("agents/ops/procedures/rollback.md"),
+        "---\nschema_version: 1\nid: ops.rollback\nversion: 1.0.0\nstatus: active\ntitle: Roll back\nmode: diagnose\nrisk_level: low\nintents: [rollback]\n---\n\nPROCEDURE_BODY_V1\n",
+    )
+    .unwrap();
+}
+
+fn engine_with_workspace_agent(workspace: Workspace, model: Box<dyn ModelClient>) -> Engine {
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(FsReadTool::new(workspace.root.clone())));
+    Engine::with_workspace(
+        model,
+        registry,
+        ContextManager::new("Test system prompt.".to_string()),
+        EngineConfig::new(4, false),
+        workspace,
+        ApprovalPolicy::Auto,
+    )
+    .with_agent_activation(AgentActivationConfig {
+        selector: AgentSelector::parse("workspace:ops").unwrap(),
+        workspace_source_authorized: true,
+        load_workspace_instructions: true,
+        allow_remediation_procedures: false,
+        constraints: OperatorConstraints::unconstrained(),
+        context_tokens: Some(32_000),
+    })
+    .unwrap()
+}
+
+#[tokio::test]
+async fn agent_profile_identity_is_consistent_across_trace_state_checkpoint_and_report() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    write_agent_definition_fixture(&workspace.root);
+    let state_store = StateStore::new(&workspace.state_dir);
+    let run_id = RunId::new();
+    let run = state_store
+        .start_run(SessionId::new(), JobId::new(), run_id)
+        .unwrap();
+    let engine = engine_with_workspace_agent(
+        workspace.clone(),
+        Box::new(FakeModelClient::new(vec!["done".to_string()])),
+    );
+
+    let reason = run_oneshot(
+        &engine,
+        "diagnose rollback in apps/web".to_string(),
+        run,
+        None,
+        &state_store,
+    )
+    .await;
+    assert_eq!(reason, TerminationReason::Final);
+
+    let state = state_store.load_task_state(run_id).await.unwrap();
+    let profile = state.agent_profile.as_ref().expect("top-level profile");
+    assert_eq!(profile.selector.to_string(), "workspace:ops");
+    assert_eq!(profile.hydrated_procedures.len(), 1);
+    assert!(
+        profile.hydrated_procedures[0]
+            .body
+            .contains("PROCEDURE_BODY_V1")
+    );
+    let checkpoint = state.checkpoint.as_ref().expect("prompt checkpoint");
+    assert_eq!(checkpoint.agent_profile.as_ref(), Some(profile));
+    let runtime_agent = state
+        .runtime_identity
+        .as_ref()
+        .and_then(|identity| identity.agent.as_ref())
+        .expect("runtime Agent identity");
+    assert_eq!(runtime_agent.profile_hash, profile.profile_hash);
+    assert_eq!(runtime_agent.package_hash, profile.package_hash);
+
+    let run_dir = state_store.run_store.run_dir(&run_id);
+    let report: RunReport =
+        serde_json::from_slice(&std::fs::read(run_dir.join("report.json")).unwrap()).unwrap();
+    let report_agent = report
+        .runtime_identity
+        .as_ref()
+        .and_then(|identity| identity.agent.as_ref())
+        .expect("report Agent identity");
+    assert_eq!(report_agent.profile_hash, profile.profile_hash);
+
+    let event_names = state_store
+        .index
+        .event_records(run_id)
+        .unwrap()
+        .into_iter()
+        .map(|record| record.event_name)
+        .collect::<Vec<_>>();
+    let event_position = |name: &str| {
+        event_names
+            .iter()
+            .position(|event| event == name)
+            .unwrap_or_else(|| panic!("missing {name} in {event_names:?}"))
+    };
+    assert!(event_position("run_started") < event_position("agent_profile_activated"));
+    assert!(
+        event_position("agent_profile_activated")
+            < event_position("workspace_instructions_resolved")
+    );
+    assert!(
+        event_position("workspace_instructions_resolved")
+            < event_position("execution_strategy_selected")
+    );
+    assert!(event_position("execution_strategy_selected") < event_position("procedures_selected"));
+    assert!(event_position("procedures_selected") < event_position("procedure_hydrated"));
+
+    let trace = std::fs::read_to_string(run_dir.join("trace.jsonl")).unwrap();
+    let report_json = std::fs::read_to_string(run_dir.join("report.json")).unwrap();
+    for private_text in [
+        "ROOT_AGENT_RULE_V1",
+        "WEB_AGENT_RULE_V1",
+        "PACKAGE_AGENT_RULE_V1",
+        "PROCEDURE_BODY_V1",
+    ] {
+        assert!(!trace.contains(private_text));
+        assert!(!report_json.contains(private_text));
+    }
+}
+
+#[tokio::test]
+async fn unfinished_run_resume_uses_the_exact_saved_agent_snapshot_after_sources_change() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    write_agent_definition_fixture(&workspace.root);
+    let state_store = StateStore::new(&workspace.state_dir);
+    let original_run = state_store
+        .start_run(SessionId::new(), JobId::new(), RunId::new())
+        .unwrap();
+    let captured_initial = Arc::new(Mutex::new(Vec::new()));
+    let original_engine = engine_with_workspace_agent(
+        workspace.clone(),
+        Box::new(CapturingFakeModelClient::new(
+            vec!["must not be called".to_string()],
+            captured_initial.clone(),
+        )),
+    );
+
+    {
+        let request = original_run.request("diagnose rollback".to_string(), None);
+        let stream = original_engine.run(request, Some(original_run.trace_writer.clone()));
+        let runtime_identity = stream.runtime_identity().clone();
+        let profile = stream.agent_profile().cloned().expect("resolved profile");
+        let mut recorder = RunArtifactRecorder::new(
+            original_run.session_id,
+            original_run.job_id,
+            original_run.run_id,
+            "diagnose rollback".to_string(),
+            None,
+            Some(runtime_identity),
+        );
+        recorder.set_agent_profile(Some(profile));
+        futures::pin_mut!(stream);
+        while let Some(event) = stream.next().await {
+            recorder.record_event(&event, &state_store).await;
+            if matches!(event, StreamEvent::ProcedureHydrated { .. }) {
+                break;
+            }
+        }
+    }
+    assert!(
+        captured_initial.lock().unwrap().is_empty(),
+        "startup snapshot must be recorded before any model call"
+    );
+
+    let saved = state_store
+        .load_task_state(original_run.run_id)
+        .await
+        .unwrap();
+    assert!(saved.execution_lifecycle.finalization.is_none());
+    let saved_profile = saved.agent_profile.clone().expect("saved Agent profile");
+    assert!(
+        saved_profile
+            .default_instructions
+            .as_deref()
+            .is_some_and(|text| text.contains("PACKAGE_AGENT_RULE_V1"))
+    );
+
+    std::fs::write(
+        workspace.root.join("agents/ops/instructions.md"),
+        "PACKAGE_AGENT_RULE_V2",
+    )
+    .unwrap();
+    std::fs::write(workspace.root.join("AGENTS.md"), "ROOT_AGENT_RULE_V2").unwrap();
+    std::fs::write(
+        workspace.root.join("agents/ops/procedures/rollback.md"),
+        "---\nschema_version: 1\nid: ops.rollback\nversion: 2.0.0\nstatus: active\ntitle: Roll back\nmode: diagnose\nrisk_level: low\nintents: [rollback]\n---\n\nPROCEDURE_BODY_V2\n",
+    )
+    .unwrap();
+
+    let captured_resume = Arc::new(Mutex::new(Vec::new()));
+    let resumed_engine = engine_with_workspace_agent(
+        workspace,
+        Box::new(CapturingFakeModelClient::new(
+            vec!["resumed".to_string()],
+            captured_resume.clone(),
+        )),
+    );
+    let successor_request = RunRequest {
+        session_id: saved.session_id,
+        job_id: saved.job_id,
+        run_id: RunId::new(),
+        user_message: "continue rollback".to_string(),
+        resume_state: Some(saved),
+    };
+    let successor_events = collect_events_with_request(&resumed_engine, successor_request).await;
+
+    assert!(successor_events.iter().any(|event| matches!(
+        event,
+        StreamEvent::AgentProfileActivated {
+            identity,
+            resumed_from_snapshot: true,
+            ..
+        } if identity.profile_hash == saved_profile.profile_hash
+    )));
+    let resumed_prompts = captured_resume.lock().unwrap();
+    let prompt = resumed_prompts
+        .first()
+        .expect("resumed run should reach the model");
+    let prompt_text = prompt
+        .iter()
+        .map(|message| message.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(prompt_text.contains("PACKAGE_AGENT_RULE_V1"));
+    assert!(prompt_text.contains("ROOT_AGENT_RULE_V1"));
+    assert!(prompt_text.contains("PROCEDURE_BODY_V1"));
+    assert!(!prompt_text.contains("PACKAGE_AGENT_RULE_V2"));
+    assert!(!prompt_text.contains("ROOT_AGENT_RULE_V2"));
+    assert!(!prompt_text.contains("PROCEDURE_BODY_V2"));
+}
+
+#[tokio::test]
+async fn nested_workspace_instructions_defer_path_dispatch_until_the_model_sees_them() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    std::fs::create_dir_all(workspace.root.join("apps/web")).unwrap();
+    std::fs::write(workspace.root.join("AGENTS.md"), "Root guidance.").unwrap();
+    std::fs::write(
+        workspace.root.join("apps/web/AGENTS.md"),
+        "WEB_SCOPED_RULE: inspect before editing.",
+    )
+    .unwrap();
+    std::fs::write(workspace.root.join("apps/web/page.txt"), "page").unwrap();
+
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let model = Box::new(CapturingFakeModelClient::new(
+        vec![
+            r#"{"tool":"read_file","args":{"path":"apps/web/page.txt"}}"#.to_string(),
+            r#"{"tool":"read_file","args":{"path":"apps/web/page.txt"}}"#.to_string(),
+            "done".to_string(),
+        ],
+        captured.clone(),
+    ));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(FsReadTool::new(workspace.root.clone())));
+    let engine = Engine::with_workspace(
+        model,
+        registry,
+        ContextManager::new("Test system prompt.".to_string()),
+        EngineConfig::new(4, false),
+        workspace,
+        ApprovalPolicy::Auto,
+    )
+    .with_agent_activation(AgentActivationConfig {
+        selector: AgentSelector::legacy(),
+        workspace_source_authorized: true,
+        load_workspace_instructions: true,
+        allow_remediation_procedures: false,
+        constraints: OperatorConstraints::unconstrained(),
+        context_tokens: Some(32_000),
+    })
+    .unwrap();
+
+    let events = collect_events(&engine, "inspect the requested file").await;
+    let prompts = captured.lock().unwrap();
+    assert!(
+        prompts[0]
+            .iter()
+            .all(|message| !message.content.contains("WEB_SCOPED_RULE"))
+    );
+    assert!(
+        prompts[1]
+            .iter()
+            .any(|message| message.content.contains("WEB_SCOPED_RULE"))
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, StreamEvent::InstructionOverlayApplied { .. }))
+            .count(),
+        1
+    );
+    assert!(events.iter().any(|event| matches!(
+        event,
+        StreamEvent::ToolCallFailed { error, .. }
+            if error.error_code() == "precondition_required"
+    )));
+    assert!(events.iter().any(|event| matches!(
+        event,
+        StreamEvent::ToolCallCompleted { result, .. } if result.output == "page"
+    )));
+}
+
+#[tokio::test]
+async fn nested_workspace_instructions_reject_invalid_shell_path_declarations() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    std::fs::create_dir_all(workspace.root.join("apps/web")).unwrap();
+    std::fs::write(workspace.root.join("apps/web/AGENTS.md"), "WEB_SCOPED_RULE").unwrap();
+    let model = Box::new(FakeModelClient::new(vec![
+        r#"{"tool":"run_shell","args":{"command":"echo bypass","paths":["../outside"]}}"#
+            .to_string(),
+        "stopped".to_string(),
+    ]));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(ShellTool::new(workspace.root.clone())));
+    let engine = Engine::with_workspace(
+        model,
+        registry,
+        ContextManager::new("Test system prompt.".to_string()),
+        EngineConfig::new(2, false),
+        workspace,
+        ApprovalPolicy::Auto,
+    )
+    .with_agent_activation(AgentActivationConfig {
+        selector: AgentSelector::legacy(),
+        workspace_source_authorized: true,
+        load_workspace_instructions: true,
+        allow_remediation_procedures: false,
+        constraints: OperatorConstraints::unconstrained(),
+        context_tokens: Some(32_000),
+    })
+    .unwrap();
+
+    let events = collect_events(&engine, "run the requested check").await;
+    assert!(events.iter().any(|event| matches!(
+        event,
+        StreamEvent::ToolCallFailed { error, .. }
+            if error.error_code() == "precondition_required"
+    )));
+    assert!(
+        events
+            .iter()
+            .all(|event| !matches!(event, StreamEvent::ToolCallCompleted { .. }))
+    );
+}
+
 fn tool_lifecycle(events: &[StreamEvent]) -> Vec<String> {
     events
         .iter()
@@ -1543,6 +1922,7 @@ async fn latest_task_state_is_loaded_for_resume() {
         checkpoint: None,
         plan: None,
         runtime_identity: None,
+        agent_profile: None,
         step_ledger: Default::default(),
         execution_lifecycle: Default::default(),
     };
@@ -1570,6 +1950,7 @@ async fn latest_task_state_rejects_unsupported_schema_version() {
         checkpoint: None,
         plan: None,
         runtime_identity: None,
+        agent_profile: None,
         step_ledger: Default::default(),
         execution_lifecycle: Default::default(),
     };
@@ -1603,6 +1984,7 @@ async fn list_resumable_task_states_filters_by_session_and_newest_first() {
         checkpoint: None,
         plan: None,
         runtime_identity: None,
+        agent_profile: None,
         step_ledger: Default::default(),
         execution_lifecycle: Default::default(),
     };
@@ -1618,6 +2000,7 @@ async fn list_resumable_task_states_filters_by_session_and_newest_first() {
         checkpoint: None,
         plan: None,
         runtime_identity: None,
+        agent_profile: None,
         step_ledger: Default::default(),
         execution_lifecycle: Default::default(),
     };
@@ -1633,6 +2016,7 @@ async fn list_resumable_task_states_filters_by_session_and_newest_first() {
         checkpoint: None,
         plan: None,
         runtime_identity: None,
+        agent_profile: None,
         step_ledger: Default::default(),
         execution_lifecycle: Default::default(),
     };
@@ -1675,6 +2059,7 @@ async fn list_task_states_returns_all_snapshots_newest_first() {
         checkpoint: None,
         plan: None,
         runtime_identity: None,
+        agent_profile: None,
         step_ledger: Default::default(),
         execution_lifecycle: Default::default(),
     };
@@ -1690,6 +2075,7 @@ async fn list_task_states_returns_all_snapshots_newest_first() {
         checkpoint: None,
         plan: None,
         runtime_identity: None,
+        agent_profile: None,
         step_ledger: Default::default(),
         execution_lifecycle: Default::default(),
     };
@@ -1725,6 +2111,7 @@ async fn load_task_state_reads_exact_run_id() {
         checkpoint: None,
         plan: None,
         runtime_identity: None,
+        agent_profile: None,
         step_ledger: Default::default(),
         execution_lifecycle: Default::default(),
     };
@@ -1740,6 +2127,7 @@ async fn load_task_state_reads_exact_run_id() {
         checkpoint: None,
         plan: None,
         runtime_identity: None,
+        agent_profile: None,
         step_ledger: Default::default(),
         execution_lifecycle: Default::default(),
     };
@@ -1823,6 +2211,7 @@ async fn lazy_import_indexes_existing_task_state_artifacts() {
         checkpoint: None,
         plan: None,
         runtime_identity: None,
+        agent_profile: None,
         step_ledger: Default::default(),
         execution_lifecycle: Default::default(),
     };
@@ -1868,6 +2257,7 @@ async fn repair_index_explicitly_imports_legacy_task_state_artifacts() {
         checkpoint: None,
         plan: None,
         runtime_identity: None,
+        agent_profile: None,
         step_ledger: Default::default(),
         execution_lifecycle: Default::default(),
     };
@@ -1936,6 +2326,7 @@ async fn repair_index_rebuilds_events_and_report_from_artifacts() {
         checkpoint: None,
         plan: None,
         runtime_identity: None,
+        agent_profile: None,
         step_ledger,
         execution_lifecycle: Default::default(),
     };
@@ -1992,6 +2383,7 @@ async fn repair_index_reports_corrupted_trace_lines_without_aborting() {
         checkpoint: None,
         plan: None,
         runtime_identity: None,
+        agent_profile: None,
         step_ledger: Default::default(),
         execution_lifecycle: Default::default(),
     };
@@ -2076,6 +2468,7 @@ async fn cleanup_expired_state_rows_removes_only_expired_entries() {
         checkpoint: None,
         plan: None,
         runtime_identity: None,
+        agent_profile: None,
         step_ledger: Default::default(),
         execution_lifecycle: Default::default(),
     };
@@ -2293,6 +2686,7 @@ async fn resumed_run_includes_session_summary_in_prompt() {
             checkpoint: None,
             plan: None,
             runtime_identity: None,
+            agent_profile: None,
             step_ledger: Default::default(),
             execution_lifecycle: Default::default(),
         }),
@@ -2872,6 +3266,7 @@ async fn planner_resumes_at_current_step() {
             checkpoint: None,
             plan: Some(plan),
             runtime_identity: None,
+            agent_profile: None,
             step_ledger: Default::default(),
             execution_lifecycle: Default::default(),
         }),
@@ -2942,11 +3337,13 @@ async fn planner_resume_checkpoint_does_not_repeat_completed_steps() {
                 compacted_history_messages: 0,
                 compaction: Default::default(),
                 runtime_identity: None,
+                agent_profile: None,
                 step_ledger: Default::default(),
                 execution_lifecycle: Default::default(),
             }),
             plan: None,
             runtime_identity: None,
+            agent_profile: None,
             step_ledger: Default::default(),
             execution_lifecycle: Default::default(),
         }),
@@ -3020,6 +3417,7 @@ async fn planner_resume_closes_unknown_in_flight_attempt_without_replay() {
             checkpoint: None,
             plan: Some(plan),
             runtime_identity: None,
+            agent_profile: None,
             step_ledger,
             execution_lifecycle: Default::default(),
         }),
@@ -3096,6 +3494,7 @@ async fn planner_resume_applies_terminal_success_without_replaying_the_step() {
             checkpoint: None,
             plan: Some(plan),
             runtime_identity: None,
+            agent_profile: None,
             step_ledger,
             execution_lifecycle: Default::default(),
         }),
@@ -3164,6 +3563,7 @@ async fn a_new_turn_continuing_a_session_starts_with_a_fresh_execution_budget() 
             checkpoint: None,
             plan: None,
             runtime_identity: None,
+            agent_profile: None,
             step_ledger: Default::default(),
             execution_lifecycle: rove_runtime::execution::ExecutionLifecycleState {
                 budget_usage: exhausted_usage.clone(),
@@ -3266,6 +3666,7 @@ async fn resuming_the_same_run_restores_its_consumed_execution_budget() {
             checkpoint: None,
             plan: None,
             runtime_identity: None,
+            agent_profile: None,
             step_ledger: Default::default(),
             execution_lifecycle: rove_runtime::execution::ExecutionLifecycleState {
                 budget_usage: consumed.clone(),
@@ -3879,6 +4280,7 @@ async fn resumed_run_uses_persisted_replanned_task_state() {
             checkpoint: None,
             plan: Some(plan),
             runtime_identity: None,
+            agent_profile: None,
             step_ledger: Default::default(),
             execution_lifecycle: Default::default(),
         }),
@@ -4772,11 +5174,13 @@ async fn resumed_run_prefers_prompt_checkpoint_tail_and_summary() {
             compacted_history_messages: 1,
             compaction: Default::default(),
             runtime_identity: None,
+            agent_profile: None,
             step_ledger: Default::default(),
             execution_lifecycle: Default::default(),
         }),
         plan: None,
         runtime_identity: None,
+        agent_profile: None,
         step_ledger: Default::default(),
         execution_lifecycle: Default::default(),
     };
@@ -5731,6 +6135,7 @@ async fn engine_resume_reprojects_canonical_openai_history_for_anthropic() {
         compacted_history_messages: 0,
         compaction: Default::default(),
         runtime_identity: None,
+        agent_profile: None,
         step_ledger: Default::default(),
         execution_lifecycle: Default::default(),
     };
@@ -5746,6 +6151,7 @@ async fn engine_resume_reprojects_canonical_openai_history_for_anthropic() {
         checkpoint: Some(checkpoint),
         plan: None,
         runtime_identity: None,
+        agent_profile: None,
         step_ledger: Default::default(),
         execution_lifecycle: Default::default(),
     };
@@ -5862,6 +6268,7 @@ async fn engine_resume_projects_only_the_bounded_canonical_suffix_after_compacti
         compacted_history_messages: 6,
         compaction,
         runtime_identity: None,
+        agent_profile: None,
         step_ledger: Default::default(),
         execution_lifecycle: Default::default(),
     };
@@ -5877,6 +6284,7 @@ async fn engine_resume_projects_only_the_bounded_canonical_suffix_after_compacti
         checkpoint: Some(checkpoint),
         plan: None,
         runtime_identity: None,
+        agent_profile: None,
         step_ledger: Default::default(),
         execution_lifecycle: Default::default(),
     };

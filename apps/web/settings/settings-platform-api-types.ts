@@ -197,6 +197,13 @@ export interface ProductExecutionEnvironmentInfo {
   workspace_digest: string;
   capabilities: ProductExecutionCapabilities;
 }
+export interface ProductAgentRuntimeInfo {
+  selector: string;
+  workspace_source_authorized: boolean;
+  workspace_instructions_enabled: boolean;
+  allow_remediation_procedures: boolean;
+  max_procedure_selections: number;
+}
 export interface ProductResumeHealth {
   status: ProductResumeHealthStatus;
   workspace_count: number;
@@ -211,6 +218,7 @@ export interface ProductRuntimeInfo {
   connection: ProductConnectionStatus;
   product_store: ProductStoreStatus;
   execution_environment: ProductExecutionEnvironmentInfo;
+  agent: ProductAgentRuntimeInfo;
   resume_health?: ProductResumeHealth;
 }
 
@@ -1154,6 +1162,7 @@ export function parseProductRuntimeInfo(
       "connection",
       "product_store",
       "execution_environment",
+      "agent",
       "resume_health",
     ],
     path,
@@ -1167,6 +1176,19 @@ export function parseProductRuntimeInfo(
   );
   const capabilitiesPath = `${environmentPath}.capabilities`;
   const capabilities = expectRecord(environment.capabilities, capabilitiesPath);
+  const agentPath = `${path}.agent`;
+  const agent = expectRecord(record.agent, agentPath);
+  expectOnlyKeys(
+    agent,
+    [
+      "selector",
+      "workspace_source_authorized",
+      "workspace_instructions_enabled",
+      "allow_remediation_procedures",
+      "max_procedure_selections",
+    ],
+    agentPath,
+  );
   expectOnlyKeys(
     capabilities,
     [
@@ -1263,6 +1285,30 @@ export function parseProductRuntimeInfo(
           `${capabilitiesPath}.artifact_projection`,
         ),
       },
+    },
+    agent: {
+      selector: expectString(agent.selector, `${agentPath}.selector`, {
+        nonEmpty: true,
+        maxBytes: 128,
+        noControls: true,
+      }),
+      workspace_source_authorized: expectBoolean(
+        agent.workspace_source_authorized,
+        `${agentPath}.workspace_source_authorized`,
+      ),
+      workspace_instructions_enabled: expectBoolean(
+        agent.workspace_instructions_enabled,
+        `${agentPath}.workspace_instructions_enabled`,
+      ),
+      allow_remediation_procedures: expectBoolean(
+        agent.allow_remediation_procedures,
+        `${agentPath}.allow_remediation_procedures`,
+      ),
+      max_procedure_selections: expectInteger(
+        agent.max_procedure_selections,
+        `${agentPath}.max_procedure_selections`,
+        { min: 1, max: 8 },
+      ),
     },
   };
   if (record.resume_health !== undefined) {

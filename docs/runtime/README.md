@@ -5,7 +5,10 @@ summarizes the implemented runtime, API, Web M1 product shell, verified Web
 Complete C0-C3 implementation, and CDH G1-G7 control/evidence/Settings
 completion. C1-C3 are integrated on `main` through PRs #24-#26; CDH G1-G7
 merged through PR #29 at `f9e88a7`. The deterministic live-API gates passed.
-Desktop contracts remain future work until code and tests land.
+The current source also includes the post-Coding-Tool full-delivery shared
+kernel/lifecycle, MCP Streamable HTTP, rich Tool Result/Artifact, and
+AgentDefinition/instruction/procedure checkpoints. Desktop contracts remain
+future work until code and tests land.
 
 New maintainers should start with [`docs/ONBOARDING.md`](../ONBOARDING.md), then use this directory for current subsystem truth.
 

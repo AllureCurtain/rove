@@ -1165,6 +1165,13 @@ export async function installMockProductApi(
             artifact_projection: true,
           },
         },
+        agent: {
+          selector: "builtin:legacy",
+          workspace_source_authorized: false,
+          workspace_instructions_enabled: false,
+          allow_remediation_procedures: false,
+          max_procedure_selections: 3,
+        },
         resume_health: {
           status: needsAttentionCount === 0 ? "healthy" : "needs_attention",
           workspace_count: state.workspaces.length,

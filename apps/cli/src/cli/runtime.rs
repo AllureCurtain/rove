@@ -18,6 +18,7 @@ pub struct CliRuntimeOptions {
     pub cwd: Option<PathBuf>,
     pub model: Option<String>,
     pub max_steps: Option<u32>,
+    pub agent: Option<String>,
     pub trust_project: bool,
     pub approval: CliApprovalPolicy,
     pub task_workspace: Option<String>,
@@ -79,6 +80,7 @@ pub async fn build_cli_runtime(options: CliRuntimeOptions) -> anyhow::Result<Cli
         AppConfigOverrides {
             model: options.model.clone(),
             max_steps: options.max_steps,
+            agent_selector: options.agent.clone(),
             api_bind_addr: None,
             trust_project: options.trust_project,
         },
@@ -138,6 +140,7 @@ pub async fn build_cli_runtime(options: CliRuntimeOptions) -> anyhow::Result<Cli
         workspace: &workspace,
         config: &config,
         max_steps: config.runtime.max_steps,
+        agent_selector: None,
         approval_policy,
         input_provider: providers.input_provider,
         approval_provider: providers.approval_provider,
@@ -172,6 +175,7 @@ mod tests {
     use std::path::PathBuf;
 
     use crate::cli::args::CliApprovalPolicy;
+    use rove_runtime::agents::AgentActivationError;
     use rove_runtime::types::ApprovalPolicy;
 
     use super::{CliRuntimeInteraction, CliRuntimeOptions, build_cli_runtime};
@@ -207,6 +211,7 @@ mod tests {
             cwd: Some(tmp.path().to_path_buf()),
             model: Some("fake".to_string()),
             max_steps: Some(2),
+            agent: None,
             trust_project: false,
             approval: CliApprovalPolicy::Never,
             task_workspace: None,
@@ -220,6 +225,78 @@ mod tests {
         assert_eq!(runtime.workspace.root, canonicalize(tmp.path()));
         assert!(runtime.workspace.state_dir.ends_with(".rove"));
         assert_eq!(runtime.config.provider.model, "fake");
+    }
+
+    #[tokio::test]
+    async fn cli_agent_selector_activates_only_with_explicit_workspace_trust() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_agent_definition(tmp.path());
+
+        let denied = build_cli_runtime(CliRuntimeOptions {
+            cwd: Some(tmp.path().to_path_buf()),
+            model: Some("fake".to_string()),
+            max_steps: Some(2),
+            agent: Some("workspace:ops".to_string()),
+            trust_project: false,
+            approval: CliApprovalPolicy::Never,
+            task_workspace: None,
+            task_base: None,
+            initial_fake_response: Some("unused".to_string()),
+            interaction: Default::default(),
+        })
+        .await;
+        let denied = match denied {
+            Ok(_) => panic!("workspace Agent must require explicit Project Trust"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            denied.downcast_ref::<AgentActivationError>(),
+            Some(AgentActivationError::WorkspaceSourceNotAuthorized)
+        ));
+
+        let runtime = build_cli_runtime(CliRuntimeOptions {
+            cwd: Some(tmp.path().to_path_buf()),
+            model: Some("fake".to_string()),
+            max_steps: Some(2),
+            agent: Some("workspace:ops".to_string()),
+            trust_project: true,
+            approval: CliApprovalPolicy::Never,
+            task_workspace: None,
+            task_base: None,
+            initial_fake_response: Some("ready".to_string()),
+            interaction: Default::default(),
+        })
+        .await
+        .unwrap();
+        let stream = runtime.engine.ask("diagnose rollback".to_string(), None);
+        assert_eq!(
+            stream
+                .agent_profile()
+                .expect("CLI-selected Agent profile")
+                .selector
+                .to_string(),
+            "workspace:ops"
+        );
+    }
+
+    fn write_agent_definition(root: &std::path::Path) {
+        std::fs::create_dir_all(root.join("agents/ops")).unwrap();
+        std::fs::write(
+            root.join("agents/ops/agent.toml"),
+            r#"
+schema_version = 1
+id = "ops"
+definition_version = "1.0.0"
+display_name = "Operations"
+default_instructions_path = "instructions.md"
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("agents/ops/instructions.md"),
+            "Inspect before changing anything.",
+        )
+        .unwrap();
     }
 
     fn canonicalize(path: impl Into<PathBuf>) -> PathBuf {

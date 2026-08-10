@@ -594,11 +594,13 @@ mod tests {
                     last_error: None,
                 },
                 runtime_identity: None,
+                agent_profile: None,
                 step_ledger: Default::default(),
                 execution_lifecycle: Default::default(),
             }),
             plan: None,
             runtime_identity: None,
+            agent_profile: None,
             step_ledger: Default::default(),
             execution_lifecycle: Default::default(),
         };

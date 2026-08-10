@@ -3,6 +3,7 @@ use std::future::Future;
 use futures::{Stream, StreamExt};
 
 use crate::terminal::view::{RunViewState, RunViewUpdate};
+use rove_runtime::agents::AgentRuntimeProfile;
 use rove_runtime::events::StreamEvent;
 use rove_runtime::runtime_identity::RuntimeIdentity;
 use rove_runtime::state::artifacts::RunArtifactRecorder;
@@ -18,6 +19,7 @@ pub struct RunEventContext<'a> {
     pub workspace: &'a Workspace,
     pub model_id: &'a str,
     pub runtime_identity: Option<RuntimeIdentity>,
+    pub agent_profile: Option<AgentRuntimeProfile>,
 }
 
 #[derive(Debug)]
@@ -45,6 +47,7 @@ where
         workspace,
         model_id,
         runtime_identity,
+        agent_profile,
     } = context;
     let RunHandle {
         session_id,
@@ -61,6 +64,7 @@ where
         resume_state.as_ref(),
         runtime_identity,
     );
+    recorder.set_agent_profile(agent_profile);
     let mut reason = TerminationReason::Error;
     let mut view_state = RunViewState::default();
     let mut completion_update = None;
@@ -143,6 +147,7 @@ mod tests {
                 workspace: &workspace,
                 model_id: "fake",
                 runtime_identity: None,
+                agent_profile: None,
             },
             |_| {
                 updates += 1;
@@ -194,6 +199,7 @@ mod tests {
                 workspace: &workspace,
                 model_id: "fake",
                 runtime_identity: None,
+                agent_profile: None,
             },
             |update| {
                 if matches!(update, RunViewUpdate::RunCompleted { .. }) {

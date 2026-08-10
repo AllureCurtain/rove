@@ -8,10 +8,17 @@ use figment::Figment;
 use figment::providers::{Format, Toml};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
+use rove_runtime::agents::AgentDefinition;
+use rove_runtime::agents::activation::MAX_WORKSPACE_PROCEDURE_ENTRIES;
+use rove_runtime::agents::instructions::InstructionBundle;
+use rove_runtime::agents::package::MAX_MANIFEST_BYTES;
 use rove_runtime::context::prompt_metadata::stable_hash;
 use rove_runtime::workspace::WorkspaceKind;
-use rove_runtime::workspace::boundary::resolve_workspace_read_path;
+use rove_runtime::workspace::boundary::{
+    is_symlink_or_reparse, resolve_workspace_read_path, resolve_workspace_read_path_without_links,
+};
 
 use crate::config::ProviderConfig;
 use crate::provider::{ProviderAuthConfig, ProviderHeaderValue, SecretSource};
@@ -25,6 +32,12 @@ pub const PROJECT_TRUST_INVALID_INPUT_CODE: &str = "project_trust_invalid_input"
 pub const PROJECT_TRUST_UNAVAILABLE_CODE: &str = "project_trust_unavailable";
 pub const PROJECT_TRUST_REQUIRED_CODE: &str = "project_trust_required";
 const MAX_TRUST_INPUT_BYTES: usize = 256 * 1024;
+/// Authority-source discovery is intentionally stricter than ordinary
+/// workspace scanning. If these bounds are exceeded, the capability digest is
+/// omitted and durable trust cannot activate workspace instructions/Agents.
+const MAX_AUTHORITY_SOURCE_ENTRIES: usize = 16_384;
+const MAX_AUTHORITY_SOURCE_BYTES: usize = 16 * 1024 * 1024;
+const UNAVAILABLE_CAPABILITY_DIGEST_PREFIX: &str = "unavailable:";
 
 pub const CAP_PROJECT_CONFIGURATION: &str = "project_configuration";
 pub const CAP_WORKSPACE_INSTRUCTIONS: &str = "workspace_instructions";
@@ -295,6 +308,17 @@ impl ProjectTrustRepository {
         decision: ProjectTrustDecision,
         capability_digests: BTreeMap<String, String>,
     ) -> anyhow::Result<ProjectTrustRecord> {
+        if decision == ProjectTrustDecision::Grant
+            && let Some(capability) = capability_digests.iter().find_map(|(capability, digest)| {
+                digest
+                    .starts_with(UNAVAILABLE_CAPABILITY_DIGEST_PREFIX)
+                    .then_some(capability)
+            })
+        {
+            anyhow::bail!(
+                "project trust capability '{capability}' cannot be granted because its source digest is unavailable"
+            );
+        }
         let canonical_root = canonical_directory(workspace_root)?;
         let identity_digest = workspace_identity_digest(&canonical_root, workspace_kind.clone());
         let canonical_root_text = canonical_root_key(&canonical_root);
@@ -657,8 +681,9 @@ pub fn capability_digest_map(
     );
     result.insert(
         CAP_WORKSPACE_INSTRUCTIONS.to_string(),
-        digest_workspace_file(workspace_root, Some(&workspace_root.join("AGENTS.md")))
-            .unwrap_or_else(|| stable_hash("missing-workspace-instructions")),
+        digest_workspace_instruction_authority(workspace_root).unwrap_or_else(|| {
+            format!("{UNAVAILABLE_CAPABILITY_DIGEST_PREFIX}workspace_instruction_authority")
+        }),
     );
     result.insert(
         CAP_HOOKS_EXTENSIONS.to_string(),
@@ -669,6 +694,212 @@ pub fn capability_digest_map(
         digest_external_paths(project_config.as_ref()),
     );
     result
+}
+
+/// Bind Project Trust to every workspace-owned source that the Agent runtime
+/// can admit as instructions or procedural guidance. This deliberately covers
+/// the whole `agents/` tree (including currently unreferenced package files),
+/// which is conservative: editing package documentation may require a new
+/// confirmation, but editing ordinary application source does not.
+///
+/// `None` means the source set could not be enumerated completely within the
+/// safety bounds. Callers omit the capability in that case, so an incomplete
+/// digest can never become a durable grant.
+fn digest_workspace_instruction_authority(workspace_root: &Path) -> Option<String> {
+    let workspace_root = workspace_root.canonicalize().ok()?;
+    let bundle = InstructionBundle::discover(&workspace_root).ok()?;
+    let bundle_json = serde_json::to_string(&bundle).ok()?;
+    let mut components =
+        BTreeMap::from([("instruction_bundle".to_string(), stable_hash(&bundle_json))]);
+    let mut budget = AuthorityDigestBudget::default();
+    let agents_root = workspace_root.join("agents");
+
+    match std::fs::symlink_metadata(&agents_root) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            components.insert("agents".to_string(), "missing".to_string());
+        }
+        Err(_) => return None,
+        Ok(metadata) if !metadata.is_dir() || is_symlink_or_reparse(&metadata) => {
+            components.insert("agents".to_string(), "refused".to_string());
+        }
+        Ok(_) => {
+            let definitions =
+                digest_agent_tree(&workspace_root, &agents_root, &mut components, &mut budget)?;
+            digest_external_procedure_roots(
+                &workspace_root,
+                definitions,
+                &mut components,
+                &mut budget,
+            )?;
+        }
+    }
+
+    stable_hash(&serde_json::to_string(&components).ok()?).into()
+}
+
+#[derive(Default)]
+struct AuthorityDigestBudget {
+    entries: usize,
+    bytes: usize,
+}
+
+fn digest_agent_tree(
+    workspace_root: &Path,
+    agents_root: &Path,
+    components: &mut BTreeMap<String, String>,
+    budget: &mut AuthorityDigestBudget,
+) -> Option<Vec<AgentDefinition>> {
+    let mut definitions = Vec::new();
+    for entry in walkdir::WalkDir::new(agents_root)
+        .follow_links(false)
+        .sort_by_file_name()
+    {
+        budget.entries = budget.entries.checked_add(1)?;
+        if budget.entries > MAX_AUTHORITY_SOURCE_ENTRIES {
+            return None;
+        }
+        let entry = entry.ok()?;
+        let path = entry.path();
+        let metadata = std::fs::symlink_metadata(path).ok()?;
+        let relative = authority_relative_path(workspace_root, path)?;
+        if is_symlink_or_reparse(&metadata) {
+            components.insert(
+                format!("agent_source:{relative}"),
+                "linked_refused".to_string(),
+            );
+            continue;
+        }
+        if !metadata.is_file() {
+            continue;
+        }
+
+        let bytes = read_authority_file(path, metadata.len(), budget)?;
+        components.insert(
+            format!("agent_source:{relative}"),
+            authority_bytes_hash(&bytes, metadata.len()),
+        );
+
+        if is_direct_agent_manifest(&relative)
+            && bytes.len() <= MAX_MANIFEST_BYTES
+            && let Ok(text) = std::str::from_utf8(&bytes)
+            && let Ok(definition) = toml::from_str::<AgentDefinition>(text)
+        {
+            definitions.push(definition);
+        }
+    }
+    Some(definitions)
+}
+
+fn digest_external_procedure_roots(
+    workspace_root: &Path,
+    definitions: Vec<AgentDefinition>,
+    components: &mut BTreeMap<String, String>,
+    budget: &mut AuthorityDigestBudget,
+) -> Option<()> {
+    let roots = definitions
+        .into_iter()
+        .flat_map(|definition| definition.procedure_policy.roots)
+        .map(|path| path.to_string_lossy().replace('\\', "/"))
+        .collect::<BTreeSet<_>>();
+
+    for raw_root in roots {
+        let component_prefix = format!("procedure_root:{raw_root}");
+        let Ok(root) = resolve_workspace_read_path_without_links(workspace_root, &raw_root) else {
+            components.insert(component_prefix, "unavailable".to_string());
+            continue;
+        };
+        if !root.is_dir() {
+            components.insert(component_prefix, "not_directory".to_string());
+            continue;
+        }
+
+        let mut root_entries = 0usize;
+        for entry in walkdir::WalkDir::new(&root)
+            .follow_links(false)
+            .max_depth(6)
+            .sort_by_file_name()
+        {
+            root_entries += 1;
+            if root_entries > MAX_WORKSPACE_PROCEDURE_ENTRIES {
+                components.insert(
+                    format!("{component_prefix}:limit"),
+                    "entry_limit".to_string(),
+                );
+                break;
+            }
+            budget.entries = budget.entries.checked_add(1)?;
+            if budget.entries > MAX_AUTHORITY_SOURCE_ENTRIES {
+                return None;
+            }
+            let entry = entry.ok()?;
+            let path = entry.path();
+            let metadata = std::fs::symlink_metadata(path).ok()?;
+            let relative = authority_relative_path(workspace_root, path)?;
+            if is_symlink_or_reparse(&metadata) {
+                if path.extension().and_then(|extension| extension.to_str()) == Some("md") {
+                    components.insert(
+                        format!("procedure_source:{relative}"),
+                        "linked_refused".to_string(),
+                    );
+                }
+                continue;
+            }
+            if !metadata.is_file()
+                || path.extension().and_then(|extension| extension.to_str()) != Some("md")
+            {
+                continue;
+            }
+            let bytes = read_authority_file(path, metadata.len(), budget)?;
+            components.insert(
+                format!("procedure_source:{relative}"),
+                authority_bytes_hash(&bytes, metadata.len()),
+            );
+        }
+    }
+    Some(())
+}
+
+fn read_authority_file(
+    path: &Path,
+    observed_len: u64,
+    budget: &mut AuthorityDigestBudget,
+) -> Option<Vec<u8>> {
+    // Every Agent manifest, referenced prompt, and procedure is rejected by
+    // Runtime above 64 KiB. Its content cannot become authority while it stays
+    // oversized, so length is sufficient until it returns to the readable set.
+    if observed_len > MAX_MANIFEST_BYTES as u64 {
+        return Some(Vec::new());
+    }
+    let length = usize::try_from(observed_len).ok()?;
+    budget.bytes = budget.bytes.checked_add(length)?;
+    if budget.bytes > MAX_AUTHORITY_SOURCE_BYTES {
+        return None;
+    }
+    let bytes = std::fs::read(path).ok()?;
+    (bytes.len() == length).then_some(bytes)
+}
+
+fn authority_bytes_hash(bytes: &[u8], observed_len: u64) -> String {
+    if observed_len > MAX_MANIFEST_BYTES as u64 {
+        return format!("oversized:{observed_len}");
+    }
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    format!("sha256:{:x}", hasher.finalize())
+}
+
+fn authority_relative_path(root: &Path, path: &Path) -> Option<String> {
+    Some(
+        path.strip_prefix(root)
+            .ok()?
+            .to_string_lossy()
+            .replace('\\', "/"),
+    )
+}
+
+fn is_direct_agent_manifest(relative: &str) -> bool {
+    let parts = relative.split('/').collect::<Vec<_>>();
+    parts.len() == 3 && parts[0] == "agents" && parts[2] == "agent.toml"
 }
 
 /// Return a stable, redacted provider authority selector. Endpoint/profile and
@@ -935,6 +1166,12 @@ pub fn resolve_project_trust_record(
     let mut granted = BTreeSet::new();
     if record.state == ProjectActivationState::Trusted {
         for (capability, digest) in capability_digests {
+            if digest.starts_with(UNAVAILABLE_CAPABILITY_DIGEST_PREFIX) {
+                if record.capability_digests.contains_key(capability) {
+                    invalidated.push(capability.clone());
+                }
+                continue;
+            }
             match record.capability_digests.get(capability) {
                 Some(stored) if stored == digest => {
                     granted.insert(capability.clone());
@@ -1020,6 +1257,16 @@ fn now_rfc3339() -> String {
 mod tests {
     use super::*;
 
+    fn workspace_instruction_digest(root: &Path) -> BTreeMap<String, String> {
+        let all = capability_digest_map(root, None, None);
+        BTreeMap::from([(
+            CAP_WORKSPACE_INSTRUCTIONS.to_string(),
+            all.get(CAP_WORKSPACE_INSTRUCTIONS)
+                .expect("workspace instruction capability remains discoverable")
+                .clone(),
+        )])
+    }
+
     #[test]
     fn durable_grant_is_exact_root_and_digest_bound() {
         let temp = tempfile::TempDir::new().unwrap();
@@ -1053,6 +1300,150 @@ mod tests {
                 .iter()
                 .any(|item| item == CAP_MCP_PROCESSES)
         );
+    }
+
+    #[test]
+    fn workspace_instruction_grant_tracks_nested_rules_and_agent_sources_only() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let store = ProjectTrustRepository::new(temp.path().join("operator/trust.sqlite"));
+        let root = temp.path().join("workspace");
+        std::fs::create_dir_all(root.join("apps/web")).unwrap();
+        std::fs::create_dir_all(root.join("agents/ops/procedures")).unwrap();
+        std::fs::create_dir_all(root.join("runbooks")).unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("AGENTS.md"), "Root rule.\n").unwrap();
+        std::fs::write(root.join("apps/web/AGENTS.md"), "Web rule.\n").unwrap();
+        std::fs::write(
+            root.join("agents/ops/agent.toml"),
+            r#"
+schema_version = 1
+id = "ops"
+definition_version = "1.0.0"
+display_name = "Ops"
+default_instructions_path = "instructions.md"
+
+[procedure_policy]
+roots = ["runbooks"]
+max_selected = 2
+"#,
+        )
+        .unwrap();
+        std::fs::write(root.join("agents/ops/instructions.md"), "Inspect first.\n").unwrap();
+        std::fs::write(
+            root.join("agents/ops/procedures/local.md"),
+            "local procedure source\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("runbooks/disk.md"), "external procedure source\n").unwrap();
+        std::fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();
+
+        let grant = workspace_instruction_digest(&root);
+        store
+            .decide(
+                &root,
+                WorkspaceKind::Folder,
+                ProjectTrustDecision::Grant,
+                grant,
+            )
+            .unwrap();
+
+        std::fs::write(
+            root.join("src/main.rs"),
+            "fn main() { println!(\"ok\"); }\n",
+        )
+        .unwrap();
+        let ordinary_change = store
+            .resolve(
+                &root,
+                WorkspaceKind::Folder,
+                &capability_digest_map(&root, None, None),
+            )
+            .unwrap();
+        assert!(
+            ordinary_change
+                .granted_capabilities
+                .contains(CAP_WORKSPACE_INSTRUCTIONS)
+        );
+
+        for (path, replacement) in [
+            ("apps/web/AGENTS.md", "Changed web rule.\n"),
+            (
+                "agents/ops/instructions.md",
+                "Changed Agent instructions.\n",
+            ),
+            (
+                "agents/ops/procedures/local.md",
+                "changed local procedure source\n",
+            ),
+            ("runbooks/disk.md", "changed external procedure source\n"),
+        ] {
+            store
+                .decide(
+                    &root,
+                    WorkspaceKind::Folder,
+                    ProjectTrustDecision::Grant,
+                    workspace_instruction_digest(&root),
+                )
+                .unwrap();
+            std::fs::write(root.join(path), replacement).unwrap();
+            let changed = store
+                .resolve(
+                    &root,
+                    WorkspaceKind::Folder,
+                    &capability_digest_map(&root, None, None),
+                )
+                .unwrap();
+            assert_eq!(
+                changed.invalidated_capabilities,
+                vec![CAP_WORKSPACE_INSTRUCTIONS.to_string()],
+                "{path} must be bound to the workspace instruction grant"
+            );
+            assert!(
+                !changed
+                    .granted_capabilities
+                    .contains(CAP_WORKSPACE_INSTRUCTIONS)
+            );
+        }
+    }
+
+    #[test]
+    fn unavailable_authority_digest_cannot_be_granted_and_invalidates_an_old_grant() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let store = ProjectTrustRepository::new(temp.path().join("operator/trust.sqlite"));
+        let root = temp.path().join("workspace");
+        std::fs::create_dir(&root).unwrap();
+        let stable = workspace_instruction_digest(&root);
+        store
+            .decide(
+                &root,
+                WorkspaceKind::Folder,
+                ProjectTrustDecision::Grant,
+                stable,
+            )
+            .unwrap();
+
+        let unavailable = BTreeMap::from([(
+            CAP_WORKSPACE_INSTRUCTIONS.to_string(),
+            format!("{UNAVAILABLE_CAPABILITY_DIGEST_PREFIX}test"),
+        )]);
+        let resolved = store
+            .resolve(&root, WorkspaceKind::Folder, &unavailable)
+            .unwrap();
+        assert_eq!(
+            resolved.invalidated_capabilities,
+            vec![CAP_WORKSPACE_INSTRUCTIONS.to_string()]
+        );
+        assert!(resolved.granted_capabilities.is_empty());
+
+        let error = store
+            .decide(
+                &root,
+                WorkspaceKind::Folder,
+                ProjectTrustDecision::Grant,
+                unavailable,
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("source digest is unavailable"));
     }
 
     #[test]

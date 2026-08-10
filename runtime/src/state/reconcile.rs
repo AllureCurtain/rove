@@ -341,6 +341,7 @@ mod tests {
             compacted_history_messages: 0,
             compaction: PromptCompactionState::default(),
             runtime_identity: None,
+            agent_profile: None,
             step_ledger: Default::default(),
             execution_lifecycle: Default::default(),
         }
@@ -359,6 +360,7 @@ mod tests {
             checkpoint: Some(checkpoint(last_event_seq)),
             plan: None,
             runtime_identity: None,
+            agent_profile: None,
             step_ledger: Default::default(),
             execution_lifecycle: Default::default(),
         }

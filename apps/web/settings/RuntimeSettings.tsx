@@ -224,6 +224,38 @@ function RuntimeHealthCards({
         </div>
       </div>
 
+      <div className="settings-card">
+        <h2>Agent runtime</h2>
+        <div className="inspector-kv">
+          <div>
+            <span>selector</span>
+            <strong>{info.agent.selector}</strong>
+          </div>
+          <div>
+            <span>workspace source</span>
+            <strong>
+              {info.agent.workspace_source_authorized ? "authorized" : "restricted"}
+            </strong>
+          </div>
+          <div>
+            <span>workspace instructions</span>
+            <strong>
+              {info.agent.workspace_instructions_enabled ? "enabled" : "disabled"}
+            </strong>
+          </div>
+          <div>
+            <span>remediation procedures</span>
+            <strong>
+              {info.agent.allow_remediation_procedures ? "allowed" : "diagnostic only"}
+            </strong>
+          </div>
+          <div>
+            <span>procedure limit</span>
+            <strong>{info.agent.max_procedure_selections}</strong>
+          </div>
+        </div>
+      </div>
+
       {info.resume_health ? (
         <div className="settings-card" aria-live="polite">
           <h2>Resume health</h2>

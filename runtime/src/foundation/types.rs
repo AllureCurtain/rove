@@ -52,6 +52,10 @@ pub struct TaskState {
     pub plan: Option<TaskPlan>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_identity: Option<crate::runtime_identity::RuntimeIdentity>,
+    /// Exact Agent snapshot used by this run. It is retained in state only;
+    /// events and reports project the content-free identity instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_profile: Option<crate::agents::AgentRuntimeProfile>,
     #[serde(
         default,
         skip_serializing_if = "crate::execution::StepLedgerState::is_empty"
@@ -85,6 +89,8 @@ pub struct PromptCheckpoint {
     pub compaction: PromptCompactionState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_identity: Option<crate::runtime_identity::RuntimeIdentity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_profile: Option<crate::agents::AgentRuntimeProfile>,
     #[serde(default)]
     pub step_ledger: crate::execution::StepLedgerCheckpoint,
     #[serde(default)]

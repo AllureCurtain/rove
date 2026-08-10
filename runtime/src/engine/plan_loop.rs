@@ -60,6 +60,7 @@ pub(crate) fn run_planned_loop<'a>(
         let capability_summary = ctx.capability_snapshot.planner_summary();
         let planner_context = PlannerContext {
             capability_snapshot_summary: Some(&capability_summary),
+            agent_context_summary: ctx.agent_planner_summary.as_deref(),
         };
 
         macro_rules! finish_planned {

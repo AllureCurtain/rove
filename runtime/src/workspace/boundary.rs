@@ -36,6 +36,28 @@ pub fn resolve_workspace_read_path(root: &Path, raw_path: &str) -> Result<PathBu
     Ok(canonical_target)
 }
 
+/// Resolve an existing workspace-relative path while refusing every linked
+/// component, even when the link target would remain inside the workspace.
+///
+/// Authority-bearing package and procedure discovery uses this stricter form:
+/// provenance must describe the actual tracked path rather than a linked alias.
+pub fn resolve_workspace_read_path_without_links(
+    root: &Path,
+    raw_path: &str,
+) -> Result<PathBuf, ToolError> {
+    let canonical_root = canonical_workspace_root(root)?;
+    let relative = normalize_relative_path(raw_path)?;
+    reject_symlinked_components(&canonical_root, &relative)?;
+    let candidate = canonical_root.join(relative);
+    let canonical_target = candidate
+        .canonicalize()
+        .map_err(|err| ToolError::InvalidInput {
+            reason: format!("invalid path: {err}"),
+        })?;
+    ensure_under_workspace(&canonical_root, &canonical_target)?;
+    Ok(canonical_target)
+}
+
 /// Resolve a workspace-relative path for writing.
 ///
 /// Existing targets are canonicalized directly. New targets canonicalize their
@@ -94,7 +116,12 @@ fn reject_symlinked_components(root: &Path, relative: &Path) -> Result<(), ToolE
     Ok(())
 }
 
-fn is_symlink_or_reparse(metadata: &std::fs::Metadata) -> bool {
+/// Whether a path entry is a symlink or a Windows reparse point.
+///
+/// Crate-visible so the Agent package loader applies the same rule rooted at a
+/// package directory. Duplicating the reparse-point attribute check would leave
+/// two places to keep correct.
+pub fn is_symlink_or_reparse(metadata: &std::fs::Metadata) -> bool {
     if metadata.file_type().is_symlink() {
         return true;
     }

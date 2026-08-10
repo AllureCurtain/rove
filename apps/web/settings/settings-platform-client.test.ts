@@ -92,6 +92,13 @@ const runtimeInfo = {
       artifact_projection: true,
     },
   },
+  agent: {
+    selector: "builtin:legacy",
+    workspace_source_authorized: false,
+    workspace_instructions_enabled: false,
+    allow_remediation_procedures: false,
+    max_procedure_selections: 3,
+  },
   resume_health: {
     status: "healthy",
     workspace_count: 1,
@@ -143,12 +150,14 @@ describe("settings platform API types", () => {
         connection: "connected",
         product_store: "unavailable",
         execution_environment: runtimeInfo.execution_environment,
+        agent: runtimeInfo.agent,
       }),
     ).toEqual({
       api_version: "0.1.0",
       connection: "connected",
       product_store: "unavailable",
       execution_environment: runtimeInfo.execution_environment,
+      agent: runtimeInfo.agent,
     });
   });
 

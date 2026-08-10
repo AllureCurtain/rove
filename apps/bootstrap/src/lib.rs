@@ -9,8 +9,9 @@ pub mod registry;
 
 pub use assembly::{EngineOptions, build_engine, build_engine_with_registry};
 pub use config::{
-    ApiConfig, AppConfig, AppConfigOverrides, ConfigSourceSummary, MemoryConfig, ProviderConfig,
-    ProviderOptions, RoutingConfig, RuntimeConfig, ShellConfig, StateConfig, ToolConfig, WebConfig,
+    AgentConfig, ApiConfig, AppConfig, AppConfigOverrides, ConfigSourceSummary, MemoryConfig,
+    ProviderConfig, ProviderOptions, RoutingConfig, RuntimeConfig, ShellConfig, StateConfig,
+    ToolConfig, WebConfig,
 };
 pub use factory::{
     ModelClientFactory, build_model_client, build_model_client_with_health, try_build_model_client,

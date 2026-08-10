@@ -3,6 +3,8 @@ import {
   STREAM_EVENT_NAMES,
   TOOL_ARTIFACT_KINDS,
   TOOL_RESULT_OUTCOMES,
+  type AgentDiagnostic,
+  type AgentProfileIdentity,
   type ExecutionBudgetExhaustion,
   type ExecutionBudgetLimits,
   type ExecutionBudgetSnapshot,
@@ -16,6 +18,7 @@ import {
   type PlanRevision,
   type PlanStep,
   type PromptCompactionState,
+  type ProcedureReference,
   type RunStatus,
   type StepRecord,
   type StreamEvent,
@@ -3333,6 +3336,163 @@ function parsePromptBuildMetadata(
   return metadata;
 }
 
+function parseProcedureReference(
+  value: unknown,
+  path: string,
+): ProcedureReference {
+  const record = expectRecord(value, path);
+  expectOnlyKeys(
+    record,
+    ["id", "version", "trust", "source_path", "content_hash"],
+    path,
+  );
+  return {
+    id: expectString(record.id, `${path}.id`, {
+      nonEmpty: true,
+      maxBytes: MAX_PRODUCT_TEXT_BYTES,
+      noControlCharacters: true,
+    }),
+    version: expectString(record.version, `${path}.version`, {
+      nonEmpty: true,
+      maxBytes: MAX_PRODUCT_TEXT_BYTES,
+      noControlCharacters: true,
+    }),
+    trust: expectEnum(
+      record.trust,
+      [
+        "builtin_trusted",
+        "workspace_trusted",
+        "user_installed",
+        "external_untrusted",
+      ] as const,
+      `${path}.trust`,
+    ),
+    source_path: expectString(record.source_path, `${path}.source_path`, {
+      nonEmpty: true,
+      maxBytes: MAX_PRODUCT_PATH_BYTES,
+      noControlCharacters: true,
+    }),
+    content_hash: expectString(record.content_hash, `${path}.content_hash`, {
+      nonEmpty: true,
+      maxBytes: MAX_PRODUCT_TEXT_BYTES,
+      noControlCharacters: true,
+    }),
+  };
+}
+
+function parseAgentProfileIdentity(
+  value: unknown,
+  path: string,
+): AgentProfileIdentity {
+  const record = expectRecord(value, path);
+  expectOnlyKeys(
+    record,
+    [
+      "selector",
+      "agent_id",
+      "display_name",
+      "definition_version",
+      "manifest_hash",
+      "package_hash",
+      "profile_hash",
+      "instruction_bundle_hash",
+      "procedures",
+    ],
+    path,
+  );
+  const selectorRecord = expectRecord(record.selector, `${path}.selector`);
+  expectOnlyKeys(selectorRecord, ["source", "agent_id"], `${path}.selector`);
+  const identity: AgentProfileIdentity = {
+    selector: {
+      source: expectEnum(
+        selectorRecord.source,
+        ["builtin", "workspace"] as const,
+        `${path}.selector.source`,
+      ),
+      agent_id: expectString(
+        selectorRecord.agent_id,
+        `${path}.selector.agent_id`,
+        {
+          nonEmpty: true,
+          maxBytes: MAX_PRODUCT_TEXT_BYTES,
+          noControlCharacters: true,
+        },
+      ),
+    },
+    agent_id: expectString(record.agent_id, `${path}.agent_id`, {
+      nonEmpty: true,
+      maxBytes: MAX_PRODUCT_TEXT_BYTES,
+      noControlCharacters: true,
+    }),
+    display_name: expectString(record.display_name, `${path}.display_name`, {
+      nonEmpty: true,
+      maxBytes: MAX_PRODUCT_TEXT_BYTES,
+      noControlCharacters: true,
+    }),
+    definition_version: expectString(
+      record.definition_version,
+      `${path}.definition_version`,
+      {
+        nonEmpty: true,
+        maxBytes: MAX_PRODUCT_TEXT_BYTES,
+        noControlCharacters: true,
+      },
+    ),
+    manifest_hash: expectString(record.manifest_hash, `${path}.manifest_hash`, {
+      nonEmpty: true,
+      maxBytes: MAX_PRODUCT_TEXT_BYTES,
+      noControlCharacters: true,
+    }),
+    package_hash: expectString(record.package_hash, `${path}.package_hash`, {
+      nonEmpty: true,
+      maxBytes: MAX_PRODUCT_TEXT_BYTES,
+      noControlCharacters: true,
+    }),
+    profile_hash: expectString(record.profile_hash, `${path}.profile_hash`, {
+      nonEmpty: true,
+      maxBytes: MAX_PRODUCT_TEXT_BYTES,
+      noControlCharacters: true,
+    }),
+  };
+  assignOptional(
+    identity,
+    "instruction_bundle_hash",
+    optionalString(record, "instruction_bundle_hash", path, {
+      nonEmpty: true,
+      maxBytes: MAX_PRODUCT_TEXT_BYTES,
+      noControlCharacters: true,
+    }),
+  );
+  if (record.procedures !== undefined && record.procedures !== null) {
+    identity.procedures = expectArray(
+      record.procedures,
+      `${path}.procedures`,
+      parseProcedureReference,
+    );
+  }
+  return identity;
+}
+
+function parseAgentDiagnostic(value: unknown, path: string): AgentDiagnostic {
+  const record = expectRecord(value, path);
+  expectOnlyKeys(record, ["code", "subject", "message"], path);
+  return {
+    code: expectString(record.code, `${path}.code`, {
+      nonEmpty: true,
+      maxBytes: MAX_PRODUCT_TEXT_BYTES,
+      noControlCharacters: true,
+    }),
+    subject: expectString(record.subject, `${path}.subject`, {
+      maxBytes: MAX_PRODUCT_TEXT_BYTES,
+      noControlCharacters: true,
+    }),
+    message: expectString(record.message, `${path}.message`, {
+      maxBytes: MAX_PRODUCT_TEXT_BYTES,
+      noControlCharacters: true,
+    }),
+  };
+}
+
 export function parseStreamEvent(
   value: unknown,
   path = "stream event",
@@ -3346,6 +3506,131 @@ export function parseStreamEvent(
         run_id: expectId(record.run_id, `${path}.run_id`),
         job_id: expectId(record.job_id, `${path}.job_id`),
         user_message: expectString(record.user_message, `${path}.user_message`),
+      };
+    case "agent_profile_activated": {
+      const event: Extract<
+        ProductStreamEvent,
+        { type: "agent_profile_activated" }
+      > = {
+        type,
+        identity: parseAgentProfileIdentity(record.identity, `${path}.identity`),
+        resumed_from_snapshot: expectBoolean(
+          record.resumed_from_snapshot,
+          `${path}.resumed_from_snapshot`,
+        ),
+      };
+      if (record.diagnostics !== undefined && record.diagnostics !== null) {
+        event.diagnostics = expectArray(
+          record.diagnostics,
+          `${path}.diagnostics`,
+          parseAgentDiagnostic,
+        );
+      }
+      return event;
+    }
+    case "workspace_instructions_resolved":
+      return {
+        type,
+        bundle_hash: expectString(record.bundle_hash, `${path}.bundle_hash`, {
+          nonEmpty: true,
+          maxBytes: MAX_PRODUCT_TEXT_BYTES,
+          noControlCharacters: true,
+        }),
+        layer_count: expectInteger(record.layer_count, `${path}.layer_count`, {
+          min: 0,
+        }),
+        rejected_count: expectInteger(
+          record.rejected_count,
+          `${path}.rejected_count`,
+          { min: 0 },
+        ),
+        truncated: expectBoolean(record.truncated, `${path}.truncated`),
+      };
+    case "instruction_overlay_applied": {
+      const event: Extract<
+        ProductStreamEvent,
+        { type: "instruction_overlay_applied" }
+      > = {
+        type,
+        target_path: expectString(record.target_path, `${path}.target_path`, {
+          nonEmpty: true,
+          maxBytes: MAX_PRODUCT_PATH_BYTES,
+          noControlCharacters: true,
+        }),
+        scope: expectString(record.scope, `${path}.scope`, {
+          nonEmpty: true,
+          maxBytes: MAX_PRODUCT_PATH_BYTES,
+          noControlCharacters: true,
+        }),
+        source_path: expectString(record.source_path, `${path}.source_path`, {
+          nonEmpty: true,
+          maxBytes: MAX_PRODUCT_PATH_BYTES,
+          noControlCharacters: true,
+        }),
+        content_hash: expectString(record.content_hash, `${path}.content_hash`, {
+          nonEmpty: true,
+          maxBytes: MAX_PRODUCT_TEXT_BYTES,
+          noControlCharacters: true,
+        }),
+        boundary: expectString(record.boundary, `${path}.boundary`, {
+          nonEmpty: true,
+          maxBytes: MAX_PRODUCT_TEXT_BYTES,
+          noControlCharacters: true,
+        }),
+      };
+      if (record.call_id !== undefined && record.call_id !== null) {
+        event.call_id = expectId(record.call_id, `${path}.call_id`);
+      }
+      return event;
+    }
+    case "procedures_selected": {
+      const event: Extract<
+        ProductStreamEvent,
+        { type: "procedures_selected" }
+      > = {
+        type,
+        profile_hash: expectString(
+          record.profile_hash,
+          `${path}.profile_hash`,
+          {
+            nonEmpty: true,
+            maxBytes: MAX_PRODUCT_TEXT_BYTES,
+            noControlCharacters: true,
+          },
+        ),
+        considered_count: expectInteger(
+          record.considered_count,
+          `${path}.considered_count`,
+          { min: 0 },
+        ),
+        excluded_count: expectInteger(
+          record.excluded_count,
+          `${path}.excluded_count`,
+          { min: 0 },
+        ),
+      };
+      if (record.selected !== undefined && record.selected !== null) {
+        event.selected = expectArray(
+          record.selected,
+          `${path}.selected`,
+          parseProcedureReference,
+        );
+      }
+      return event;
+    }
+    case "procedure_hydrated":
+      return {
+        type,
+        reference: parseProcedureReference(
+          record.reference,
+          `${path}.reference`,
+        ),
+        truncated: expectBoolean(record.truncated, `${path}.truncated`),
+        dropped_bytes: expectInteger(
+          record.dropped_bytes,
+          `${path}.dropped_bytes`,
+          { min: 0 },
+        ),
       };
     case "llm_chunk":
       return { type, delta: expectString(record.delta, `${path}.delta`) };

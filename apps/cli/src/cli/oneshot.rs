@@ -40,6 +40,8 @@ pub async fn run_oneshot_with_cancel(
     let req = run.request(message.clone(), resume_state.clone());
     let trace_writer = run.trace_writer.clone();
     let stream = engine.run_with_cancel(req, Some(trace_writer), cancel);
+    let runtime_identity = Some(stream.runtime_identity().clone());
+    let agent_profile = stream.agent_profile().cloned();
     render_run_events(
         stream,
         CliRunRenderContext {
@@ -49,7 +51,8 @@ pub async fn run_oneshot_with_cancel(
             state_store,
             workspace: engine.workspace(),
             model_id: engine.model_id(),
-            runtime_identity: Some(engine.runtime_identity()),
+            runtime_identity,
+            agent_profile,
         },
         CliRunRenderOptions {
             mode: CliRunRenderMode::OneShot,

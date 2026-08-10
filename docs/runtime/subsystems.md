@@ -389,6 +389,44 @@ snapshot, but a planned step that was in flight is not replayed: the new run
 emits an `interrupted` `StepRecord` and terminates with an error so an unknown
 external side effect cannot be repeated automatically.
 
+## Agent Definitions, Instructions, And Procedures
+
+`runtime/src/agents/` is the authority for qualified Agent selectors,
+versioned workspace packages, immutable `AgentRuntimeProfile` snapshots,
+workspace instruction discovery, and typed procedural knowledge. The default
+`builtin:legacy` selector preserves the existing prompt/tool behavior. A
+workspace selector such as `workspace:ops` resolves only from
+`agents/ops/agent.toml`; there is no search-order shadowing or unqualified-ID
+fallback. CLI `--agent`, API `agent`, and the Web/config DTOs all feed this same
+bootstrap path.
+
+Workspace Agent packages, workspace `AGENTS.md`, and workspace procedure roots
+are gated by the capability-specific Project Trust digest. A package can reduce
+tool capabilities and execution bounds but cannot widen operator policy. The
+Engine filters model schemas to the compiled capability set and repeats the
+capability check immediately before dispatch. Procedure text, instruction text,
+and MCP content are context only: none can approve a tool or grant permission.
+
+Instruction discovery is bounded, UTF-8 checked, link/reparse-point refusing,
+and ordered root first. Only the root layer enters the stable prompt. Nested
+layers apply to matching target paths; the first model tool call that introduces
+an unseen nested scope is closed as a typed `precondition_required` rejection
+before real dispatch, and the overlay is supplied on the next model turn.
+`instruction_overlay_applied` carries only target/scope/path/hash facts. With
+nested layers present, `run_shell` requires valid non-empty workspace-relative
+`paths` unless the bounded command text itself identifies a scope.
+
+Procedure frontmatter uses a restricted parser rather than general YAML.
+Origin-derived trust, lifecycle state, platform/workspace/capability eligibility,
+risk/mode, deterministic lexical ranking, conflict deduplication, selection
+limits, and bounded progressive hydration are applied before a body reaches the
+prompt. Selected identities and exact hydrated bodies are part of the profile
+hash and snapshot. `task_state.json` and `PromptCheckpoint` retain that private
+snapshot; trace, report, API, CLI, and Web projections carry identities and
+diagnostics without the body. A genuine unfinished resume validates and reuses
+the saved profile after source changes. Phase-specific procedure input to the
+Planner, Evaluator, and Finalizer remains deferred to Checkpoint 7.
+
 ## Tool Results And Durable Tool Artifacts
 
 A tool result is more than a string. `core/src/tool_result.rs` owns the shared

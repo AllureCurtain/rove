@@ -247,6 +247,7 @@ fn build_resume_state(
         checkpoint: None,
         plan: None,
         runtime_identity: None,
+        agent_profile: None,
         step_ledger: Default::default(),
         execution_lifecycle: Default::default(),
     }
@@ -312,6 +313,8 @@ async fn run_task_with_cancel_resume(
     );
     let mut stream1 =
         std::pin::pin!(engine1.run_with_cancel(req1, Some(tw1.clone()), cancel_token.clone()));
+    rec1.set_runtime_identity(stream1.runtime_identity().clone());
+    rec1.set_agent_profile(stream1.agent_profile().cloned());
     let mut llm_count = 0u32;
     let mut run1_tc = 0u32;
     let mut run1_tf = 0u32;
@@ -402,6 +405,8 @@ async fn run_task_with_cancel_resume(
     );
     let mut stream2 =
         std::pin::pin!(engine2.run_with_cancel(req2, Some(tw2.clone()), CancellationToken::new()));
+    rec2.set_runtime_identity(stream2.runtime_identity().clone());
+    rec2.set_agent_profile(stream2.agent_profile().cloned());
     let mut reason = TerminationReason::Error;
     let mut output = None;
     let mut total_steps = 0u32;
@@ -496,6 +501,8 @@ async fn run_engine_collect_output(
         Some(engine.runtime_identity()),
     );
     let mut stream = std::pin::pin!(engine.run_with_cancel(req, Some(trace_writer), cancel_token));
+    recorder.set_runtime_identity(stream.runtime_identity().clone());
+    recorder.set_agent_profile(stream.agent_profile().cloned());
     let mut reason = TerminationReason::Error;
     let mut output = None;
     let mut steps = 0u32;

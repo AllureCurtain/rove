@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 fn workspace_root() -> PathBuf {
@@ -1705,8 +1706,23 @@ async fn product_runtime_reports_bounded_health_without_paths_or_secrets() {
     assert_eq!(runtime["resume_health"]["bound_session_count"], 0);
     assert_eq!(runtime["resume_health"]["running_session_count"], 0);
     assert_eq!(runtime["resume_health"]["needs_attention_session_count"], 0);
+    assert_eq!(runtime["agent"]["selector"], "builtin:legacy");
+    assert_eq!(runtime["agent"]["workspace_source_authorized"], true);
+    assert_eq!(runtime["agent"]["workspace_instructions_enabled"], false);
+    assert_eq!(runtime["agent"]["allow_remediation_procedures"], false);
+    assert_eq!(runtime["agent"]["max_procedure_selections"], 3);
     let keys = runtime.as_object().unwrap();
-    assert_eq!(keys.len(), 5);
+    assert_eq!(
+        keys.keys().map(String::as_str).collect::<BTreeSet<_>>(),
+        BTreeSet::from([
+            "agent",
+            "api_version",
+            "connection",
+            "execution_environment",
+            "product_store",
+            "resume_health",
+        ])
+    );
     assert!(keys.get("path").is_none());
     let serialized = runtime.to_string();
     for forbidden in [
@@ -4570,6 +4586,89 @@ async fn api_jobs_accept_openai_provider_profile_per_request() {
 }
 
 #[tokio::test]
+async fn api_job_agent_override_activates_a_trusted_workspace_package() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    write_api_agent_definition(tmp.path());
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let config = test_config();
+    assert_eq!(config.runtime.agent.selector, "builtin:legacy");
+    let state_store = rove_runtime::state::store::StateStore::new(&workspace.state_dir);
+    let app = router(ApiState::new(workspace, config));
+
+    let response = post_json(
+        &app,
+        "/jobs",
+        serde_json::json!({
+            "message": "diagnose rollback",
+            "model": "fake",
+            "max_steps": 1,
+            "approval": "auto",
+            "agent": "workspace:ops"
+        }),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let created: CreateJobResponse = decode_json(response).await;
+    let state = wait_for_done(app, created.job_id.to_string()).await;
+    assert!(state.events.iter().any(|stored| matches!(
+        &stored.event,
+        StreamEvent::AgentProfileActivated { identity, .. }
+            if identity.selector.to_string() == "workspace:ops"
+    )));
+    let task_state = state_store.load_task_state(created.run_id).await.unwrap();
+    assert_eq!(
+        task_state
+            .agent_profile
+            .as_ref()
+            .map(|profile| profile.selector.to_string())
+            .as_deref(),
+        Some("workspace:ops")
+    );
+}
+
+#[tokio::test]
+async fn api_rejects_untrusted_or_invalid_agent_selectors_before_creating_a_run() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    write_api_agent_definition(tmp.path());
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let state_store = rove_runtime::state::store::StateStore::new(&workspace.state_dir);
+    let mut config = test_config();
+    config.source_summary.project_activation = ProjectActivationState::Restricted;
+    let app = router(ApiState::new(workspace, config));
+
+    let unauthorized = post_json(
+        &app,
+        "/jobs",
+        serde_json::json!({
+            "message": "diagnose rollback",
+            "model": "fake",
+            "agent": "workspace:ops"
+        }),
+    )
+    .await;
+    assert_eq!(unauthorized.status(), StatusCode::FORBIDDEN);
+    let unauthorized: serde_json::Value = decode_json(unauthorized).await;
+    assert_eq!(unauthorized["code"], "workspace_source_not_authorized");
+    assert!(state_store.list_task_states().await.unwrap().is_empty());
+
+    let invalid = post_json(
+        &app,
+        "/jobs",
+        serde_json::json!({
+            "message": "diagnose rollback",
+            "model": "fake",
+            "agent": "ops"
+        }),
+    )
+    .await;
+    assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
+    let invalid: serde_json::Value = decode_json(invalid).await;
+    assert_eq!(invalid["code"], "missing_source_namespace");
+    assert!(state_store.list_task_states().await.unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn api_jobs_accept_openai_responses_provider_profile_per_request() {
     let provider = start_openai_test_server().await;
     let tmp = tempfile::TempDir::new().unwrap();
@@ -7254,7 +7353,9 @@ async fn api_auto_approval_runs_destructive_tool_without_pending_approval() {
     let state = wait_for_done(app.clone(), created.job_id.to_string()).await;
     assert_eq!(state.status, RunStatus::Done);
     assert!(state.pending_approvals.is_empty());
-    assert_eq!(std::fs::read_to_string(output_path).unwrap(), "ok");
+    let output = std::fs::read_to_string(&output_path)
+        .unwrap_or_else(|error| panic!("{error}; tool events: {:#?}", state.events));
+    assert_eq!(output, "ok");
 }
 
 #[tokio::test]
@@ -10455,4 +10556,35 @@ fn test_config() -> AppConfig {
     config.provider.model = "fake".to_string();
     config.runtime.max_steps = 4;
     config
+}
+
+fn write_api_agent_definition(root: &Path) {
+    std::fs::create_dir_all(root.join("agents/ops/procedures")).unwrap();
+    std::fs::write(
+        root.join("agents/ops/agent.toml"),
+        r#"
+schema_version = 1
+id = "ops"
+definition_version = "1.0.0"
+display_name = "Operations"
+default_instructions_path = "instructions.md"
+
+[capability_policy]
+allow = ["workspace.fs.read"]
+
+[procedure_policy]
+max_selected = 1
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("agents/ops/instructions.md"),
+        "Inspect before changing anything.",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("agents/ops/procedures/rollback.md"),
+        "---\nschema_version: 1\nid: ops.rollback\nversion: 1.0.0\nstatus: active\ntitle: Roll back\nmode: diagnose\nrisk_level: low\nintents: [rollback]\n---\n\nInspect the deployment before rollback.\n",
+    )
+    .unwrap();
 }
