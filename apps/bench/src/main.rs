@@ -1,7 +1,10 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use rove_bench::{available_suites, resolve_suite, run_benchmark_suite};
+use rove_bench::{
+    available_suites, load_benchmark_suite_v2, resolve_suite, run_benchmark_suite,
+    run_benchmark_suite_v2,
+};
 
 #[derive(Debug, Parser)]
 #[command(about = "Run deterministic local rove benchmark tasks")]
@@ -9,6 +12,10 @@ struct Args {
     /// Suite name (e.g. "dataprep", "agent-smoke")
     #[arg(long, default_value = "dataprep")]
     suite: String,
+
+    /// Explicit Benchmark V2 suite JSON. V1 named suites remain unchanged.
+    #[arg(long)]
+    suite_v2: Option<PathBuf>,
 
     /// Profile within the suite ("default" or "stress")
     #[arg(long, default_value = "default")]
@@ -33,6 +40,16 @@ async fn main() -> anyhow::Result<()> {
             println!("  {} — {}", info.name, info.description);
             println!("    profiles: {}\n", info.profiles.join(", "));
         }
+        return Ok(());
+    }
+
+    if let Some(path) = args.suite_v2.as_ref() {
+        let suite = load_benchmark_suite_v2(path).await?;
+        let suite_root = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+        let profile = (args.profile != "default").then_some(args.profile.as_str());
+        let manifest =
+            run_benchmark_suite_v2(&suite, suite_root, &args.output_dir, profile).await?;
+        println!("{}", serde_json::to_string_pretty(&manifest)?);
         return Ok(());
     }
 

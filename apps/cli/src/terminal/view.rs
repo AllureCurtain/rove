@@ -1094,6 +1094,20 @@ impl From<&StreamEvent> for RunViewUpdate {
                     if *truncated { " (bounded)" } else { "" }
                 ),
             },
+            StreamEvent::ProcedureApplied { application } => Self::ModelStatus {
+                status: "procedure".to_string(),
+                message: format!(
+                    "Applied procedure {}@{} at {} boundary.",
+                    application.reference.id, application.reference.version, application.boundary
+                ),
+            },
+            StreamEvent::ProcedureDeviation { deviation, .. } => Self::ModelStatus {
+                status: "procedure".to_string(),
+                message: format!(
+                    "Procedure deviation ({:?}): {}",
+                    deviation.reason, deviation.safe_summary
+                ),
+            },
             StreamEvent::ExecutionBudgetUpdated { phase, snapshot } => Self::ModelStatus {
                 status: "budget".to_string(),
                 message: snapshot.exhausted.as_ref().map_or_else(
@@ -1326,6 +1340,8 @@ mod tests {
             tool_call_ids: Vec::new(),
             artifact_refs: Vec::new(),
             mutations: Vec::new(),
+            procedure_applications: Vec::new(),
+            procedure_deviations: Vec::new(),
             model_turns_used: 1,
             tool_calls_used: 0,
             token_usage: Usage::default(),
@@ -1598,6 +1614,8 @@ mod tests {
                 tool_call_ids: Vec::new(),
                 artifact_refs: Vec::new(),
                 mutations: Vec::new(),
+                procedure_applications: Vec::new(),
+                procedure_deviations: Vec::new(),
                 model_turns_used: 1,
                 tool_calls_used: 0,
                 token_usage: Usage::default(),

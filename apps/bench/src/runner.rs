@@ -5,15 +5,20 @@ use tokio_util::sync::CancellationToken;
 
 use rove_app_bootstrap::tool_registry_with_shell_policy;
 use rove_models::fake::{FakeModelClient, FakeTurn};
+use rove_runtime::agents::validation::OperatorConstraints;
+use rove_runtime::agents::{AgentActivationConfig, AgentSelector};
 use rove_runtime::context::ContextManager;
 use rove_runtime::engine::{Engine, EngineConfig};
 use rove_runtime::events::StreamEvent;
+use rove_runtime::execution::ExecutionPolicy;
 use rove_runtime::state::artifacts::RunArtifactRecorder;
 use rove_runtime::state::store::{RunHandle, StateStore};
 use rove_runtime::tools::shell::ShellPolicy;
 use rove_runtime::types::{
-    ApprovalPolicy, JobId, RunId, RunRequest, SessionId, TaskState, TerminationReason,
+    ApprovalDecision, ApprovalPolicy, JobId, RunId, RunRequest, SessionId, TaskState,
+    TerminationReason,
 };
+use rove_runtime::workspace::boundary::resolve_workspace_write_path;
 use rove_runtime::workspace::{Workspace, WorkspaceKind};
 
 use super::checks::run_check;
@@ -46,7 +51,10 @@ pub async fn run_benchmark_suite(
 
     let mut tasks = Vec::new();
     for task in &suite.tasks {
-        tasks.push(run_benchmark_task(task, &evidence_root).await?);
+        tasks.push(
+            run_benchmark_task_with_options(task, &evidence_root, &BenchmarkRunOptions::default())
+                .await?,
+        );
     }
 
     let finished_at = chrono::Utc::now().to_rfc3339();
@@ -79,11 +87,41 @@ pub async fn run_benchmark_suite(
     Ok(report)
 }
 
-async fn run_benchmark_task(
+#[derive(Debug, Clone)]
+pub(crate) struct BenchmarkRunOptions {
+    pub agent_selector: Option<AgentSelector>,
+    pub workspace_agent_authorized: bool,
+    pub load_workspace_instructions: bool,
+    pub allow_remediation_procedures: bool,
+    pub max_procedure_selections: Option<u32>,
+    pub execution_policy: Option<ExecutionPolicy>,
+    pub approval_policy: ApprovalPolicy,
+    pub approval_decision: ApprovalDecision,
+}
+
+impl Default for BenchmarkRunOptions {
+    fn default() -> Self {
+        Self {
+            agent_selector: None,
+            workspace_agent_authorized: false,
+            load_workspace_instructions: false,
+            allow_remediation_procedures: false,
+            max_procedure_selections: None,
+            execution_policy: None,
+            approval_policy: ApprovalPolicy::Auto,
+            approval_decision: ApprovalDecision::Reject,
+        }
+    }
+}
+
+pub(crate) async fn run_benchmark_task_with_options(
     task: &BenchmarkTask,
     evidence_root: &Path,
+    options: &BenchmarkRunOptions,
 ) -> std::io::Result<BenchmarkTaskReport> {
-    let task_dir = evidence_root.join("tasks").join(&task.name);
+    let task_dir = evidence_root
+        .join("tasks")
+        .join(sanitize_path_component(&task.name));
     let workspace_root = task_dir.join("workspace");
     let state_dir = task_dir.join(".rove");
     tokio::fs::create_dir_all(&workspace_root).await?;
@@ -104,8 +142,15 @@ async fn run_benchmark_task(
 
     let (reason, output, steps, tool_calls, tool_failures, artifacts, resumed) =
         if let Some(cancel_after) = task.cancel_resume_after_turns {
-            run_task_with_cancel_resume(task, &workspace, &state_dir, max_steps, cancel_after)
-                .await?
+            Box::pin(run_task_with_cancel_resume(
+                task,
+                &workspace,
+                &state_dir,
+                max_steps,
+                cancel_after,
+                options,
+            ))
+            .await?
         } else {
             let state_store = StateStore::new(&state_dir);
             state_store
@@ -126,16 +171,18 @@ async fn run_benchmark_task(
                 &workspace,
                 task.turns.iter().cloned().map(Into::into).collect(),
                 max_steps,
-            );
-            let (reason, output, steps, tool_calls, tool_failures) = run_engine_collect_output(
-                &engine,
-                &state_store,
-                run,
-                task.message.clone(),
-                resume_task_state,
-                CancellationToken::new(),
-            )
-            .await;
+                options,
+            )?;
+            let (reason, output, steps, tool_calls, tool_failures) =
+                Box::pin(run_engine_collect_output(
+                    &engine,
+                    &state_store,
+                    run,
+                    task.message.clone(),
+                    resume_task_state,
+                    CancellationToken::new(),
+                ))
+                .await;
             (
                 reason,
                 output,
@@ -259,6 +306,7 @@ async fn run_task_with_cancel_resume(
     state_dir: &Path,
     max_steps: u32,
     cancel_after_turns: usize,
+    options: &BenchmarkRunOptions,
 ) -> std::io::Result<(
     TerminationReason,
     Option<String>,
@@ -294,7 +342,7 @@ async fn run_task_with_cancel_resume(
     let run1 = state_store.start_run(session_id, job_id, run_id_1)?;
     let run_dir_1 = run1.run_dir.clone();
 
-    let engine1 = benchmark_engine(workspace, turns_1, max_steps);
+    let engine1 = benchmark_engine(workspace, turns_1, max_steps, options)?;
     let req1 = run1.request(task.message.clone(), None);
     let RunHandle {
         session_id: s1,
@@ -360,16 +408,17 @@ async fn run_task_with_cancel_resume(
             tracing::warn!("cancel-resume checkpoint load failed: {err}; falling back");
             let run = state_store.start_run(session_id, job_id, RunId::new())?;
             let artifacts = artifacts_for_run(&run);
-            let engine = benchmark_engine(workspace, all_turns, max_steps);
-            let (reason, output, steps, tool_calls, tool_failures) = run_engine_collect_output(
-                &engine,
-                &state_store,
-                run,
-                task.message.clone(),
-                None,
-                CancellationToken::new(),
-            )
-            .await;
+            let engine = benchmark_engine(workspace, all_turns, max_steps, options)?;
+            let (reason, output, steps, tool_calls, tool_failures) =
+                Box::pin(run_engine_collect_output(
+                    &engine,
+                    &state_store,
+                    run,
+                    task.message.clone(),
+                    None,
+                    CancellationToken::new(),
+                ))
+                .await;
             return Ok((
                 reason,
                 output,
@@ -385,7 +434,7 @@ async fn run_task_with_cancel_resume(
     let run_id_2 = RunId::new();
     let run2 = state_store.start_run(session_id, job_id, run_id_2)?;
     let run_dir_2 = run2.run_dir.clone();
-    let engine2 = benchmark_engine(workspace, turns_2, max_steps);
+    let engine2 = benchmark_engine(workspace, turns_2, max_steps, options)?;
     let saved_for_recorder = saved.clone();
     let req2 = run2.request(task.message.clone(), Some(saved));
     let RunHandle {
@@ -447,7 +496,12 @@ async fn run_task_with_cancel_resume(
     ))
 }
 
-fn benchmark_engine(workspace: &Workspace, turns: Vec<FakeTurn>, max_steps: u32) -> Engine {
+fn benchmark_engine(
+    workspace: &Workspace,
+    turns: Vec<FakeTurn>,
+    max_steps: u32,
+    options: &BenchmarkRunOptions,
+) -> std::io::Result<Engine> {
     let model = Box::new(FakeModelClient::with_turns(
         "benchmark fallback response".to_string(),
         turns,
@@ -459,14 +513,41 @@ fn benchmark_engine(workspace: &Workspace, turns: Vec<FakeTurn>, max_steps: u32)
         denylist: Vec::new(),
     };
     let registry = tool_registry_with_shell_policy(workspace, policy);
-    Engine::with_workspace(
+    let mut engine = Engine::with_workspace_and_approval_decision(
         model,
         registry,
         ContextManager::new("You are the rove benchmark runner.".to_string()),
         EngineConfig::new(max_steps, false),
         workspace.clone(),
-        ApprovalPolicy::Auto,
-    )
+        options.approval_policy,
+        options.approval_decision,
+    );
+    if let Some(policy) = options.execution_policy.clone() {
+        engine = engine
+            .with_execution_policy(policy)
+            .map_err(std::io::Error::other)?;
+    }
+    if let Some(selector) = options.agent_selector.clone() {
+        engine = engine
+            .with_agent_activation(AgentActivationConfig {
+                selector,
+                workspace_source_authorized: options.workspace_agent_authorized,
+                load_workspace_instructions: options.load_workspace_instructions,
+                allow_remediation_procedures: options.allow_remediation_procedures,
+                constraints: OperatorConstraints {
+                    max_steps_cap: Some(max_steps),
+                    max_tool_calls_cap: options
+                        .execution_policy
+                        .as_ref()
+                        .and_then(|policy| policy.budgets.max_tool_calls),
+                    max_procedure_selections_cap: options.max_procedure_selections,
+                    ..OperatorConstraints::unconstrained()
+                },
+                context_tokens: Some(32_000),
+            })
+            .map_err(std::io::Error::other)?;
+    }
+    Ok(engine)
 }
 
 async fn run_engine_collect_output(
@@ -547,7 +628,7 @@ fn artifacts_for_run_dir(run_dir: &Path) -> BenchmarkArtifacts {
 
 async fn write_files(root: &Path, files: &[BenchmarkFile]) -> std::io::Result<()> {
     for file in files {
-        let path = root.join(&file.path);
+        let path = resolve_workspace_write_path(root, &file.path).map_err(std::io::Error::other)?;
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }

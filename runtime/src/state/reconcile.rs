@@ -169,6 +169,36 @@ fn apply_event(state: &mut TaskState, event: &StreamEvent) -> bool {
             state.execution_lifecycle.degradations.push(record.clone());
             true
         }
+        StreamEvent::ProcedureApplied { application } => {
+            if state
+                .execution_lifecycle
+                .procedure_applications
+                .iter()
+                .any(|saved| saved.application_id == application.application_id)
+            {
+                return false;
+            }
+            state
+                .execution_lifecycle
+                .procedure_applications
+                .push(application.as_ref().clone());
+            true
+        }
+        StreamEvent::ProcedureDeviation { deviation, .. } => {
+            if state
+                .execution_lifecycle
+                .procedure_deviations
+                .iter()
+                .any(|saved| saved.deviation_id == deviation.deviation_id)
+            {
+                return false;
+            }
+            state
+                .execution_lifecycle
+                .procedure_deviations
+                .push(deviation.as_ref().clone());
+            true
+        }
         StreamEvent::FinalizationStarted { record }
         | StreamEvent::FinalizationCompleted { record } => {
             apply_finalization(&mut state.execution_lifecycle, record)
@@ -382,6 +412,8 @@ mod tests {
             tool_call_ids: Vec::new(),
             artifact_refs: Vec::new(),
             mutations: Vec::new(),
+            procedure_applications: Vec::new(),
+            procedure_deviations: Vec::new(),
             model_turns_used: 1,
             tool_calls_used: 1,
             token_usage: Default::default(),

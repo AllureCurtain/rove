@@ -447,6 +447,8 @@ mod tests {
             tool_call_ids: Vec::new(),
             artifact_refs: Vec::new(),
             mutations: Vec::new(),
+            procedure_applications: Vec::new(),
+            procedure_deviations: Vec::new(),
             model_turns_used: 1,
             tool_calls_used: 0,
             token_usage: Default::default(),

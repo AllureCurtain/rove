@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 use std::time::Instant;
 use thiserror::Error;
 
+use crate::agents::procedure::{ProcedureReference, RiskLevel, SideEffect};
+use crate::capability::CapabilityMutationClass;
 use crate::types::PlanStep;
 use rove_core::{CallId, ToolMutation};
 use rove_models::Usage;
@@ -601,6 +603,124 @@ pub enum StepCompletionBasis {
     RuntimeFailure,
 }
 
+/// One concrete tool binding visible to a procedure at a run/step boundary.
+/// A binding describes availability and policy; it never grants permission.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProcedureCapabilityBinding {
+    pub capability_id: String,
+    #[serde(default)]
+    pub required: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
+    #[serde(default)]
+    pub available: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mutation_class: Option<CapabilityMutationClass>,
+    #[serde(default)]
+    pub approval_required: bool,
+}
+
+/// Bounded procedure material supplied to one execution boundary.
+///
+/// `hydration_hash` identifies the exact section projection admitted to the
+/// model. The source body remains pinned by `reference.content_hash` and the
+/// Agent profile snapshot.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProcedureApplication {
+    pub application_id: String,
+    pub reference: ProcedureReference,
+    pub hydration_hash: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub section_ids: Vec<String>,
+    pub capability_snapshot_id: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capability_bindings: Vec<ProcedureCapabilityBinding>,
+    pub risk_level: RiskLevel,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub side_effects: Vec<SideEffect>,
+    #[serde(default)]
+    pub truncated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step_id: Option<String>,
+    pub boundary: String,
+}
+
+impl ProcedureApplication {
+    pub fn validate(&self) -> Result<(), ExecutionValidationError> {
+        for (field, value) in [
+            ("application_id", self.application_id.as_str()),
+            ("hydration_hash", self.hydration_hash.as_str()),
+            (
+                "capability_snapshot_id",
+                self.capability_snapshot_id.as_str(),
+            ),
+            ("boundary", self.boundary.as_str()),
+        ] {
+            if value.trim().is_empty() {
+                return Err(ExecutionValidationError::MissingProcedureApplicationField { field });
+            }
+        }
+        if self.section_ids.len() > 64
+            || self
+                .section_ids
+                .iter()
+                .any(|section| section.trim().is_empty() || section.chars().count() > 160)
+        {
+            return Err(ExecutionValidationError::InvalidProcedureSections);
+        }
+        Ok(())
+    }
+}
+
+/// Typed reason why execution departed from selected procedure guidance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcedureDeviationReason {
+    EvidenceContradiction,
+    CapabilityUnavailable,
+    PreconditionsUnsatisfied,
+    UserConstraint,
+    ProcedureStale,
+    SaferAlternative,
+    RuntimeFailure,
+}
+
+/// Safe, persisted deviation fact. It can inform evaluation, but cannot
+/// weaken approval, schema, workspace, or capability enforcement.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProcedureDeviation {
+    pub deviation_id: String,
+    pub reference: ProcedureReference,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub application_id: Option<String>,
+    pub reason: ProcedureDeviationReason,
+    pub safe_summary: String,
+    #[serde(default)]
+    pub material: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evidence_refs: Vec<String>,
+}
+
+impl ProcedureDeviation {
+    pub fn validate(&self) -> Result<(), ExecutionValidationError> {
+        if self.deviation_id.trim().is_empty() {
+            return Err(ExecutionValidationError::MissingProcedureDeviationId);
+        }
+        if self.safe_summary.trim().is_empty() || self.safe_summary.chars().count() > 500 {
+            return Err(ExecutionValidationError::InvalidProcedureDeviationSummary);
+        }
+        if self.evidence_refs.len() > 32
+            || self
+                .evidence_refs
+                .iter()
+                .any(|reference| reference.trim().is_empty() || reference.chars().count() > 256)
+        {
+            return Err(ExecutionValidationError::InvalidProcedureDeviationEvidence);
+        }
+        Ok(())
+    }
+}
+
 /// Semantic uncertainty that deterministic lifecycle rules cannot resolve.
 /// This marker is produced only from a validated structured step conclusion;
 /// arbitrary prose never grants access to the model evaluator.
@@ -663,6 +783,10 @@ pub struct StepRecord {
     pub artifact_refs: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mutations: Vec<ToolMutation>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub procedure_applications: Vec<ProcedureApplication>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub procedure_deviations: Vec<ProcedureDeviation>,
     pub model_turns_used: u32,
     pub tool_calls_used: u32,
     #[serde(default)]
@@ -696,6 +820,20 @@ impl StepRecord {
         }
         if let Some(ambiguity) = &self.ambiguity {
             ambiguity.validate()?;
+        }
+        for application in &self.procedure_applications {
+            application.validate()?;
+        }
+        for deviation in &self.procedure_deviations {
+            deviation.validate()?;
+            if let Some(application_id) = deviation.application_id.as_deref()
+                && self
+                    .procedure_applications
+                    .iter()
+                    .all(|application| application.application_id != application_id)
+            {
+                return Err(ExecutionValidationError::UnknownProcedureApplication);
+            }
         }
         Ok(())
     }
@@ -1168,6 +1306,10 @@ pub struct ExecutionLifecycleState {
     pub finalization: Option<FinalizationRecord>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub degradations: Vec<ExecutionDegradation>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub procedure_applications: Vec<ProcedureApplication>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub procedure_deviations: Vec<ProcedureDeviation>,
 }
 
 impl ExecutionLifecycleState {
@@ -1177,6 +1319,8 @@ impl ExecutionLifecycleState {
             && self.budget_exhaustion.is_none()
             && self.finalization.is_none()
             && self.degradations.is_empty()
+            && self.procedure_applications.is_empty()
+            && self.procedure_deviations.is_empty()
     }
 
     pub fn checkpoint(&self) -> ExecutionLifecycleCheckpoint {
@@ -1186,6 +1330,8 @@ impl ExecutionLifecycleState {
             budget_exhaustion: self.budget_exhaustion.clone(),
             finalization: self.finalization.clone(),
             degradation_count: self.degradations.len(),
+            procedure_application_count: self.procedure_applications.len(),
+            procedure_deviation_count: self.procedure_deviations.len(),
         }
     }
 }
@@ -1198,6 +1344,8 @@ pub struct ExecutionLifecycleCheckpoint {
     pub budget_exhaustion: Option<ExecutionBudgetExhaustion>,
     pub finalization: Option<FinalizationRecord>,
     pub degradation_count: usize,
+    pub procedure_application_count: usize,
+    pub procedure_deviation_count: usize,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -1213,6 +1361,18 @@ pub enum ExecutionValidationError {
     MissingStepRecordField { field: &'static str },
     #[error("step record attempt must be greater than zero")]
     ZeroAttempt,
+    #[error("procedure application field {field} must not be empty")]
+    MissingProcedureApplicationField { field: &'static str },
+    #[error("procedure application contains invalid section identities")]
+    InvalidProcedureSections,
+    #[error("procedure deviation ID must not be empty")]
+    MissingProcedureDeviationId,
+    #[error("procedure deviation summary is empty or exceeds its bound")]
+    InvalidProcedureDeviationSummary,
+    #[error("procedure deviation evidence is invalid")]
+    InvalidProcedureDeviationEvidence,
+    #[error("procedure deviation references an unknown application")]
+    UnknownProcedureApplication,
     #[error("plan revision field {field} must not be empty")]
     MissingPlanRevisionField { field: &'static str },
     #[error("initial plan revision cannot have a parent")]

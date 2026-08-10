@@ -4,7 +4,8 @@ use crate::agents::procedure::ProcedureReference;
 use crate::agents::{AgentDiagnostic, AgentProfileIdentity};
 use crate::execution::{
     ExecutionBudgetSnapshot, ExecutionDegradation, ExecutionPhase, ExecutionPolicy,
-    FinalizationRecord, PlanDecisionRecord, PlanIdentity, PlanRevision, StepAttempt, StepRecord,
+    FinalizationRecord, PlanDecisionRecord, PlanIdentity, PlanRevision, ProcedureApplication,
+    ProcedureDeviation, StepAttempt, StepRecord,
 };
 use crate::prompt_metadata::PromptBuildMetadata;
 use crate::types::{JobId, PlanStep, PromptCompactionState, RunId, TaskPlan, TerminationReason};
@@ -70,6 +71,24 @@ pub enum StreamEvent {
         reference: ProcedureReference,
         truncated: bool,
         dropped_bytes: usize,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        step_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hydration_hash: Option<String>,
+    },
+
+    /// A bounded procedure projection was supplied to a concrete execution
+    /// boundary. The body is never included; the application fact is enough
+    /// for resume, diagnostics, and evidence correlation.
+    ProcedureApplied {
+        application: Box<ProcedureApplication>,
+    },
+
+    /// A step explicitly departed from selected procedure guidance. This is a
+    /// fact for evaluation, not a permission or approval signal.
+    ProcedureDeviation {
+        record_id: String,
+        deviation: Box<ProcedureDeviation>,
     },
 
     /// Monotonic multidimensional budget projection after a lifecycle phase or
@@ -289,6 +308,8 @@ impl StreamEvent {
             Self::InstructionOverlayApplied { .. } => "instruction_overlay_applied",
             Self::ProceduresSelected { .. } => "procedures_selected",
             Self::ProcedureHydrated { .. } => "procedure_hydrated",
+            Self::ProcedureApplied { .. } => "procedure_applied",
+            Self::ProcedureDeviation { .. } => "procedure_deviation",
             Self::ExecutionBudgetUpdated { .. } => "execution_budget_updated",
             Self::ExecutionDegraded { .. } => "execution_degraded",
             Self::LlmChunk { .. } => "llm_chunk",

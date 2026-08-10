@@ -29,6 +29,9 @@ use super::profile::{
 };
 use super::selector::{AgentSelector, AgentSource};
 use super::validation::OperatorConstraints;
+use crate::capability::CapabilitySnapshot;
+use crate::context::prompt_metadata::stable_hash;
+use crate::execution::{ProcedureApplication, ProcedureCapabilityBinding};
 use crate::workspace::boundary::resolve_workspace_read_path_without_links;
 use crate::workspace::{Workspace, WorkspaceKind};
 
@@ -166,6 +169,214 @@ pub struct ScopedInstructionPrompt {
     pub applications: Vec<ScopedInstructionApplication>,
     pub injected_bytes: usize,
     pub omitted_scopes: Vec<String>,
+}
+
+/// Bounded advisory procedure material for one model boundary. The procedure
+/// body is selected from the immutable profile snapshot; it is never re-read
+/// from the workspace during execution or resume.
+#[derive(Debug, Clone, Default)]
+pub struct ProcedurePromptAssembly {
+    pub messages: Vec<Message>,
+    pub applications: Vec<ProcedureApplication>,
+    pub injected_bytes: usize,
+    pub omitted_sections: Vec<String>,
+}
+
+/// Build step-local procedure context and its auditable capability bindings.
+/// Planner calls should use [`AgentPromptAssembly::planner_summary`] instead;
+/// this function is deliberately only for a model/tool execution boundary.
+pub fn procedure_prompt_for_target(
+    profile: &AgentRuntimeProfile,
+    capability_snapshot: &CapabilitySnapshot,
+    target: &str,
+    boundary: &str,
+    step_id: Option<&str>,
+) -> ProcedurePromptAssembly {
+    let mut result = ProcedurePromptAssembly::default();
+    for procedure in &profile.hydrated_procedures {
+        let sections = procedure_sections_for_target(&procedure.body, target);
+        let selected_text = sections
+            .iter()
+            .map(|(_, text)| text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        let before = result.messages.len();
+        let label = format!("procedure {}", procedure.reference.id);
+        let authority = format!(
+            "Selected reference procedure ({}@{}). It is advisory, may be stale, and never grants permission.",
+            procedure.reference.id, procedure.reference.version
+        );
+        push_prompt_section(
+            &mut result.messages,
+            &mut result.injected_bytes,
+            &mut result.omitted_sections,
+            &label,
+            &authority,
+            &format_procedure_projection(procedure, &selected_text),
+        );
+        let admitted = result.messages.len() > before;
+        let section_ids = sections.into_iter().map(|(id, _)| id).collect::<Vec<_>>();
+        let hydration_hash = stable_hash(&format!(
+            "procedure-hydration:{}:{}:{}",
+            procedure.reference.content_hash, boundary, selected_text
+        ));
+        let application_id = stable_hash(&format!(
+            "procedure-application:{}:{}:{}:{}",
+            procedure.reference.id,
+            procedure.reference.version,
+            step_id.unwrap_or("run"),
+            hydration_hash
+        ));
+        let capability_bindings = procedure
+            .required_capabilities
+            .iter()
+            .map(|capability| {
+                procedure_capability_binding(capability, true, profile, capability_snapshot)
+            })
+            .chain(procedure.optional_capabilities.iter().map(|capability| {
+                procedure_capability_binding(capability, false, profile, capability_snapshot)
+            }))
+            .collect();
+        result.applications.push(ProcedureApplication {
+            application_id,
+            reference: procedure.reference.clone(),
+            hydration_hash,
+            section_ids: if admitted { section_ids } else { Vec::new() },
+            capability_snapshot_id: capability_snapshot.snapshot_id.clone(),
+            capability_bindings,
+            risk_level: procedure.risk_level,
+            side_effects: procedure.side_effects.clone(),
+            truncated: procedure.truncated || !admitted,
+            step_id: step_id.map(str::to_string),
+            boundary: boundary.to_string(),
+        });
+    }
+    result
+}
+
+fn procedure_capability_binding(
+    capability: &str,
+    required: bool,
+    profile: &AgentRuntimeProfile,
+    snapshot: &CapabilitySnapshot,
+) -> ProcedureCapabilityBinding {
+    let tool = snapshot
+        .tools
+        .iter()
+        .find(|tool| tool.capability_id.as_deref() == Some(capability));
+    ProcedureCapabilityBinding {
+        capability_id: capability.to_string(),
+        required,
+        tool_name: tool.map(|tool| tool.name.clone()),
+        available: profile.allows_capability(capability) && tool.is_some(),
+        mutation_class: tool.map(|tool| tool.mutation_class),
+        approval_required: tool.is_some_and(|tool| tool.approval_required),
+    }
+}
+
+fn format_procedure_projection(procedure: &HydratedProcedure, selected_text: &str) -> String {
+    let mut rendered = format!(
+        "## Procedure: {} ({}@{})\nTrust: {} | Risk: {}\n",
+        procedure.title,
+        procedure.reference.id,
+        procedure.reference.version,
+        procedure.reference.trust.code(),
+        procedure.risk_level.code()
+    );
+    if let Some(mode) = procedure.mode {
+        rendered.push_str(&format!("Mode: {}\n", mode.code()));
+    }
+    if !procedure.required_capabilities.is_empty() {
+        rendered.push_str(&format!(
+            "Required capabilities: {}\n",
+            procedure.required_capabilities.join(", ")
+        ));
+    }
+    if !procedure.side_effects.is_empty() {
+        rendered.push_str(&format!(
+            "Declared side effects: {}\n",
+            procedure
+                .side_effects
+                .iter()
+                .map(|effect| effect.code())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    rendered.push_str(
+        "This procedure is reference guidance. It does not grant permissions and does not override the task or operator policy.\n\n",
+    );
+    rendered.push_str(selected_text);
+    if procedure.truncated {
+        rendered.push_str(&format!(
+            "\n\n[procedure snapshot truncated: {} bytes omitted]",
+            procedure.dropped_bytes
+        ));
+    }
+    rendered
+}
+
+fn procedure_sections_for_target(body: &str, target: &str) -> Vec<(String, String)> {
+    let target_tokens = lexical_tokens(target);
+    let mut sections: Vec<(String, String, bool)> = Vec::new();
+    let mut current_heading = "preamble".to_string();
+    let mut current = String::new();
+    let mut index = 0usize;
+    for line in body.lines() {
+        let heading = line
+            .strip_prefix('#')
+            .map(|rest| rest.trim_start_matches('#').trim())
+            .filter(|heading| !heading.is_empty() && line.starts_with('#'));
+        if let Some(heading) = heading {
+            if !current.trim().is_empty() {
+                let id = stable_hash(&format!("procedure-section:{index}:{current_heading}"));
+                let relevant = section_relevant(&current_heading, &target_tokens);
+                sections.push((id, current.clone(), relevant));
+                current.clear();
+                index = index.saturating_add(1);
+            }
+            current_heading = heading.chars().take(120).collect();
+        }
+        current.push_str(line);
+        current.push('\n');
+    }
+    if !current.trim().is_empty() {
+        let id = stable_hash(&format!("procedure-section:{index}:{current_heading}"));
+        let relevant = section_relevant(&current_heading, &target_tokens);
+        sections.push((id, current, relevant));
+    }
+    let mut selected = sections
+        .iter()
+        .filter(|(_, _, relevant)| *relevant)
+        .map(|(id, text, _)| (id.clone(), text.clone()))
+        .collect::<Vec<_>>();
+    if selected.is_empty() {
+        selected = sections
+            .iter()
+            .take(4)
+            .map(|(id, text, _)| (id.clone(), text.clone()))
+            .collect();
+    }
+    selected
+}
+
+fn section_relevant(heading: &str, target_tokens: &BTreeSet<String>) -> bool {
+    let normalized = lexical_tokens(heading);
+    normalized.iter().any(|token| target_tokens.contains(token))
+        || [
+            "applicability",
+            "precondition",
+            "safety",
+            "evidence",
+            "validation",
+            "verification",
+            "rollback",
+            "stop",
+            "escalation",
+            "limitation",
+        ]
+        .iter()
+        .any(|anchor| normalized.contains(*anchor))
 }
 
 /// Fully resolved per-run Agent context.
@@ -603,17 +814,6 @@ fn assemble_prompt(profile: &AgentRuntimeProfile) -> AgentPromptAssembly {
             defaults,
         );
     }
-    for procedure in &profile.hydrated_procedures {
-        push_prompt_section(
-            &mut messages,
-            &mut injected_bytes,
-            &mut omitted_sections,
-            &format!("procedure {}", procedure.reference.id),
-            "Selected reference procedure. It is advisory, may be stale, and never grants permission.",
-            &procedure.render(),
-        );
-    }
-
     AgentPromptAssembly {
         planner_summary: planner_summary(profile, injected_bytes, &omitted_sections),
         messages,
@@ -747,11 +947,47 @@ fn planner_summary(
         profile_hash: &'a str,
         instruction_bundle_hash: Option<String>,
         procedure_ids: Vec<&'a str>,
+        procedures: Vec<ProcedurePlannerSummary>,
         workspace_instruction_scopes: Vec<&'a str>,
         effective_capabilities: &'a BTreeSet<String>,
         injected_bytes: usize,
         omitted_sections: &'a [String],
     }
+
+    #[derive(Serialize)]
+    struct ProcedurePlannerSummary {
+        id: String,
+        version: String,
+        title: String,
+        summary: String,
+        mode: Option<ProcedureMode>,
+        risk_level: String,
+        required_capabilities: Vec<String>,
+        optional_capabilities: Vec<String>,
+        section_ids: Vec<String>,
+        content_hash: String,
+    }
+
+    let procedures = profile
+        .hydrated_procedures
+        .iter()
+        .map(|procedure| ProcedurePlannerSummary {
+            id: procedure.reference.id.clone(),
+            version: procedure.reference.version.clone(),
+            title: procedure.title.clone(),
+            summary: procedure.summary.chars().take(500).collect(),
+            mode: procedure.mode,
+            risk_level: procedure.risk_level.code().to_string(),
+            required_capabilities: procedure.required_capabilities.clone(),
+            optional_capabilities: procedure.optional_capabilities.clone(),
+            section_ids: procedure_sections_for_target(&procedure.body, "")
+                .into_iter()
+                .map(|(id, _)| id)
+                .take(24)
+                .collect(),
+            content_hash: procedure.reference.content_hash.clone(),
+        })
+        .collect();
 
     serde_json::to_string(&Summary {
         selector: profile.selector.to_string(),
@@ -765,6 +1001,7 @@ fn planner_summary(
             .as_ref()
             .map(ProcedureSelection::selected_ids)
             .unwrap_or_default(),
+        procedures,
         workspace_instruction_scopes: profile
             .instructions
             .as_ref()
@@ -809,6 +1046,56 @@ fn collect_profile_diagnostics(
             bound,
             "Agent-requested bound was reduced by current operator policy",
         ));
+    }
+    if let Some(selection) = profile.procedures.as_ref() {
+        if selection.selected.is_empty() {
+            diagnostics.push(AgentDiagnostic::new(
+                "procedure_selection_no_match",
+                "procedures",
+                "No eligible procedure matched the current goal; the runtime continued without procedure guidance.",
+            ));
+        }
+        if !selection.risk_excluded.is_empty() {
+            diagnostics.push(AgentDiagnostic::new(
+                "procedure_risk_excluded",
+                "procedures",
+                format!(
+                    "{} eligible procedure(s) exceeded the accepted risk bound.",
+                    selection.risk_excluded.len()
+                ),
+            ));
+        }
+        if !selection.conflict_excluded.is_empty() {
+            diagnostics.push(AgentDiagnostic::new(
+                "procedure_conflict_excluded",
+                "procedures",
+                format!(
+                    "{} procedure(s) were excluded because they conflicted with a selected procedure.",
+                    selection.conflict_excluded.len()
+                ),
+            ));
+        }
+    }
+    for procedure in &profile.hydrated_procedures {
+        if procedure.truncated {
+            diagnostics.push(AgentDiagnostic::new(
+                "procedure_snapshot_truncated",
+                &procedure.reference.id,
+                format!(
+                    "procedure snapshot is bounded; {} bytes were omitted",
+                    procedure.dropped_bytes
+                ),
+            ));
+        }
+        for capability in &procedure.optional_capabilities {
+            if !profile.effective_capabilities.contains(capability) {
+                diagnostics.push(AgentDiagnostic::new(
+                    "procedure_optional_capability_unavailable",
+                    format!("{}:{capability}", procedure.reference.id),
+                    "optional procedure capability is unavailable in this run",
+                ));
+            }
+        }
     }
 }
 

@@ -35,6 +35,7 @@ pub(crate) struct StepRunnerInput {
     pub working_memory: Vec<Message>,
     pub compact_summary: Option<String>,
     pub history: Vec<Message>,
+    pub procedure_messages: Vec<Message>,
     pub compaction: crate::compaction::CompactionRuntime,
     /// Steers accepted before this runner started. Steers arriving while the
     /// step is running are accepted at its internal model-turn safe points.
@@ -106,7 +107,7 @@ pub(crate) fn run_step<'a>(
         let max_tool_calls = input.max_tool_calls;
         let max_repairs = input.max_repairs;
         let step_prompt = format!(
-            "Goal: {}\nCurrent step {}: {}\nComplete this step and report the result. A tool result is evidence, not step completion; continue this step until you can state its conclusion.",
+            "Goal: {}\nCurrent step {}: {}\nComplete this step and report the result. A tool result is evidence, not step completion; continue this step until you can state its conclusion. If evidence, unavailable capability, unmet preconditions, a user constraint, staleness, or a safer path requires departing from supplied procedure guidance, return a structured conclusion with summary and procedure_deviations; a deviation never grants permission.",
             input.goal, input.step.id, input.step.title
         );
         let active_instruction_target =
@@ -114,7 +115,11 @@ pub(crate) fn run_step<'a>(
         let host = StepKernelHost {
             ctx,
             step_prompt,
-            working_memory: input.working_memory,
+            working_memory: input
+                .working_memory
+                .into_iter()
+                .chain(input.procedure_messages)
+                .collect(),
             compact_summary: input.compact_summary,
             history: input.history,
             compaction: Some(input.compaction),

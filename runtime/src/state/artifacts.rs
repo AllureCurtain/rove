@@ -171,6 +171,30 @@ impl RunArtifactRecorder {
                 }
                 self.write_snapshot(state_store).await;
             }
+            StreamEvent::ProcedureApplied { application }
+                if self
+                    .execution_lifecycle
+                    .procedure_applications
+                    .iter()
+                    .all(|saved| saved.application_id != application.application_id) =>
+            {
+                self.execution_lifecycle
+                    .procedure_applications
+                    .push(application.as_ref().clone());
+                self.write_snapshot(state_store).await;
+            }
+            StreamEvent::ProcedureDeviation { deviation, .. }
+                if self
+                    .execution_lifecycle
+                    .procedure_deviations
+                    .iter()
+                    .all(|saved| saved.deviation_id != deviation.deviation_id) =>
+            {
+                self.execution_lifecycle
+                    .procedure_deviations
+                    .push(deviation.as_ref().clone());
+                self.write_snapshot(state_store).await;
+            }
             StreamEvent::LlmMessage {
                 full,
                 usage,

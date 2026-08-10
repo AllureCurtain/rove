@@ -13,7 +13,7 @@ use tokio_util::sync::CancellationToken;
 use crate::agents::definition::PromptSlotRole;
 use crate::agents::{
     AgentActivationConfig, AgentActivationError, AgentRuntime, AgentRuntimeProfile,
-    ResolvedRuntimeFacts,
+    ResolvedRuntimeFacts, procedure_prompt_for_target,
 };
 use crate::capability::CapabilitySnapshot;
 use crate::compaction::CompactionRuntime;
@@ -750,6 +750,24 @@ impl Engine {
                         reference: procedure.reference.clone(),
                         truncated: procedure.truncated,
                         dropped_bytes: procedure.dropped_bytes,
+                        step_id: None,
+                        hydration_hash: Some(procedure.body_hash.clone()),
+                    });
+                }
+                let react_procedure_context = if matches!(run_policy.strategy, ExecutionStrategy::React) {
+                    procedure_prompt_for_target(
+                        &resolved_agent.profile,
+                        &run_capability_snapshot,
+                        &user_message,
+                        "react_run",
+                        None,
+                    )
+                } else {
+                    Default::default()
+                };
+                for application in &react_procedure_context.applications {
+                    yield_traced!(StreamEvent::ProcedureApplied {
+                        application: Box::new(application.clone()),
                     });
                 }
 
@@ -808,6 +826,7 @@ impl Engine {
                 )
                 .unwrap_or_default();
                 let mut working_memory: Vec<Message> = resolved_agent.prompt.messages.clone();
+                working_memory.extend(react_procedure_context.messages.clone());
                 if let Some(index) = prompt_memory.durable_index {
                     working_memory.push(durable_memory_message(&index));
                 }

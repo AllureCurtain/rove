@@ -1,0 +1,38 @@
+schema_version = 1
+id = "rove.reference.oncall"
+definition_version = "1.0.0"
+display_name = "Rove OnCall Reference"
+description = "Synthetic evidence-grounded incident diagnosis reference Agent"
+default_instructions_path = "instructions.md"
+owner = "rove"
+tags = ["evaluation", "oncall", "synthetic"]
+
+[runtime_compatibility]
+min_schema_version = 1
+native_tool_use = "preferred"
+
+[prompt_slots]
+planner = "prompts/planner.md"
+evaluator = "prompts/evaluator.md"
+finalizer = "prompts/finalizer.md"
+
+[execution_defaults]
+max_steps = 4
+max_tool_calls = 8
+max_procedure_selections = 2
+
+[capability_policy]
+required = ["workspace.fs.read"]
+allow = ["workspace.fs.read"]
+deny = ["workspace.fs.write", "workspace.shell.run"]
+
+[procedure_policy]
+allowed_trust_levels = ["workspace_trusted"]
+max_selected = 2
+
+[memory_policy]
+promotion_mode = "disabled"
+
+[output_defaults]
+verbosity = "concise"
+language = "en"

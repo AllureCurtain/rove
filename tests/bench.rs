@@ -15,7 +15,8 @@ use std::collections::BTreeSet;
 
 use rove_bench::{
     BenchmarkOutcome, default_profile_params, generate_dataprep_suite, load_benchmark_suite,
-    resolve_suite, run_benchmark_suite, stress_profile_params,
+    load_benchmark_suite_v2, resolve_suite, run_benchmark_suite, run_benchmark_suite_v2,
+    stress_profile_params,
 };
 
 #[tokio::test]
@@ -194,6 +195,54 @@ async fn coding_tool_v2_benchmark_passes_with_exact_workspace_and_artifacts() {
     assert!(task.artifacts.trace_jsonl.is_file());
     assert!(task.artifacts.task_state_json.is_file());
     assert!(task.artifacts.report_json.is_file());
+}
+
+#[tokio::test]
+async fn oncall_benchmark_v2_passes_independent_truth_and_hard_safety_gates() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let suite_path = workspace_path("benchmarks/oncall-reference/suite.json");
+    let suite = load_benchmark_suite_v2(&suite_path).await.unwrap();
+
+    assert_eq!(suite.schema_version, 2);
+    assert!(suite.scenarios.len() >= 11);
+    assert!(suite.scenarios.iter().all(|scenario| {
+        !scenario
+            .task
+            .as_ref()
+            .unwrap()
+            .requires_network
+            .unwrap_or(true)
+    }));
+
+    let manifest = run_benchmark_suite_v2(
+        &suite,
+        suite_path.parent().unwrap(),
+        tmp.path(),
+        Some("full"),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(manifest.schema_version, 2);
+    assert_eq!(manifest.case_count, suite.scenarios.len());
+    assert_eq!(manifest.provider_profile, "fake_contract");
+    assert_eq!(manifest.network_mode, "disabled");
+
+    let evidence_root = std::fs::read_dir(tmp.path())
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let cases: Vec<rove_bench::V2CaseReport> =
+        serde_json::from_slice(&std::fs::read(evidence_root.join("aggregate.json")).unwrap())
+            .unwrap();
+    assert_eq!(cases.len(), suite.scenarios.len());
+    assert!(cases.iter().all(|case| case.passed), "{cases:#?}");
+    assert!(cases.iter().all(|case| case.hard_gate_passed));
+    assert!(cases.iter().any(|case| case.metrics.resumed));
+    assert!(evidence_root.join("manifest.json").is_file());
+    assert!(evidence_root.join("DATA_PROVENANCE.md").is_file());
 }
 
 #[test]

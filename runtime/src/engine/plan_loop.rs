@@ -3,14 +3,15 @@ use futures::StreamExt;
 use futures::stream::BoxStream;
 use tokio_util::sync::CancellationToken;
 
+use crate::agents::procedure_prompt_for_target;
 use crate::events::StreamEvent;
 use crate::execution::{
     DEFAULT_MAX_MODEL_REPAIRS, EvaluatorMode, ExecutionBudgetDimension, ExecutionBudgetTracker,
     ExecutionBudgetUsage, ExecutionDegradation, ExecutionLifecycleState, ExecutionPhase,
     FinalizationMode, FinalizerPolicy, PlanAmbiguity, PlanAmbiguityKind, PlanDecisionKind,
-    PlanDecisionRecord, PlanFinishReason, PlanIdentity, PlanRevision, StepAttempt,
-    StepCompletionBasis, StepLedgerState, StepRecord, StepRecordStatus,
-    planned_step_failure_message,
+    PlanDecisionRecord, PlanFinishReason, PlanIdentity, PlanRevision, ProcedureApplication,
+    ProcedureDeviation, ProcedureDeviationReason, StepAttempt, StepCompletionBasis,
+    StepLedgerState, StepRecord, StepRecordStatus, planned_step_failure_message,
 };
 use crate::finalizer::{FinalizationContext, Finalizer};
 use crate::plan_evaluator::{
@@ -607,6 +608,19 @@ pub(crate) fn run_planned_loop<'a>(
                 .map(|limit| limit.saturating_sub(budget.usage().model_repairs))
                 .unwrap_or(DEFAULT_MAX_MODEL_REPAIRS);
             let max_total_tokens = budget.remaining_tokens();
+            let procedure_context = ctx
+                .agent_profile
+                .as_deref()
+                .map(|profile| {
+                    procedure_prompt_for_target(
+                        profile,
+                        ctx.capability_snapshot,
+                        &format!("{}\n{}", active_plan.goal, current_step.title),
+                        "plan_step",
+                        Some(&current_step.id),
+                    )
+                })
+                .unwrap_or_default();
 
             let attempt = StepAttempt {
                 plan_id: plan_identity.plan_id.clone(),
@@ -622,11 +636,17 @@ pub(crate) fn run_planned_loop<'a>(
                 attempt: attempt.clone(),
                 budget: Box::new(budget.snapshot()),
             });
+            for application in &procedure_context.applications {
+                yield LoopItem::Event(StreamEvent::ProcedureApplied {
+                    application: Box::new(application.clone()),
+                });
+            }
 
             let runner_input = StepRunnerInput {
                 goal: active_plan.goal.clone(),
                 step: current_step.clone(),
                 working_memory: state.working_memory.clone(),
+                procedure_messages: procedure_context.messages.clone(),
                 compact_summary: state.compact_summary.take(),
                 history: std::mem::take(&mut state.history),
                 compaction: compaction.clone(),
@@ -649,12 +669,23 @@ pub(crate) fn run_planned_loop<'a>(
                     reason: "step runner ended without a result".to_string(),
                     replan: false,
                 };
-                let record = terminal_step_record(&attempt, &outcome, &StepRunMetrics::default());
+                let record = terminal_step_record(
+                    &attempt,
+                    &outcome,
+                    &StepRunMetrics::default(),
+                    &procedure_context.applications,
+                );
                 ledger.active_step_attempt = None;
                 ledger.step_records.push(record.clone());
                 yield LoopItem::Event(StreamEvent::StepResult {
-                    record: Box::new(record),
+                    record: Box::new(record.clone()),
                 });
+                for deviation in &record.procedure_deviations {
+                    yield LoopItem::Event(StreamEvent::ProcedureDeviation {
+                        record_id: record.record_id.clone(),
+                        deviation: Box::new(deviation.clone()),
+                    });
+                }
                 continue;
             };
 
@@ -665,6 +696,7 @@ pub(crate) fn run_planned_loop<'a>(
                 &attempt,
                 &runner_result.outcome,
                 &runner_result.metrics,
+                &procedure_context.applications,
             );
             if let StepRunnerOutcome::Succeeded { output } = &runner_result.outcome {
                 final_output = Some(output.clone());
@@ -672,8 +704,14 @@ pub(crate) fn run_planned_loop<'a>(
             ledger.active_step_attempt = None;
             ledger.step_records.push(record.clone());
             yield LoopItem::Event(StreamEvent::StepResult {
-                record: Box::new(record),
+                record: Box::new(record.clone()),
             });
+            for deviation in &record.procedure_deviations {
+                yield LoopItem::Event(StreamEvent::ProcedureDeviation {
+                    record_id: record.record_id.clone(),
+                    deviation: Box::new(deviation.clone()),
+                });
+            }
             if let Err(exhaustion) = budget.record_step_usage(
                 runner_result.metrics.model_turns_used,
                 u32::try_from(runner_result.metrics.tool_call_ids.len()).unwrap_or(u32::MAX),
@@ -1326,117 +1364,131 @@ fn terminal_step_record(
     attempt: &StepAttempt,
     outcome: &StepRunnerOutcome,
     metrics: &StepRunMetrics,
+    procedure_applications: &[ProcedureApplication],
 ) -> StepRecord {
-    let (status, summary, completion_basis, error_code, safe_error_summary, ambiguity) =
-        match outcome {
-            StepRunnerOutcome::Succeeded { output } => {
-                let (summary, ambiguity) = parse_structured_step_conclusion(output);
-                (
-                    StepRecordStatus::Succeeded,
-                    summary,
-                    StepCompletionBasis::ModelConclusion,
-                    None,
-                    None,
-                    ambiguity,
-                )
-            }
-            StepRunnerOutcome::Failed { reason, replan }
-                if !replan && is_permission_denied(reason) =>
-            {
-                let rejected = reason.to_ascii_lowercase().contains("reject");
-                (
-                    if rejected {
-                        StepRecordStatus::Rejected
-                    } else {
-                        StepRecordStatus::Blocked
-                    },
-                    if rejected {
-                        "Step stopped because required tool approval was rejected.".to_string()
-                    } else {
-                        "Step blocked because required tool permission was denied.".to_string()
-                    },
-                    StepCompletionBasis::RuntimeFailure,
-                    Some(if rejected {
-                        "approval_rejected".to_string()
-                    } else {
-                        "permission_denied".to_string()
-                    }),
-                    Some(if rejected {
-                        "Required tool approval was rejected.".to_string()
-                    } else {
-                        "Required tool permission was denied.".to_string()
-                    }),
-                    None,
-                )
-            }
-            StepRunnerOutcome::Failed { reason, replan } => (
-                StepRecordStatus::Failed,
-                if *replan {
-                    "Step failed; the runtime may replace the remaining plan.".to_string()
+    let (
+        status,
+        summary,
+        completion_basis,
+        error_code,
+        safe_error_summary,
+        ambiguity,
+        procedure_deviations,
+    ) = match outcome {
+        StepRunnerOutcome::Succeeded { output } => {
+            let (summary, ambiguity, deviations) =
+                parse_structured_step_conclusion(output, procedure_applications);
+            (
+                StepRecordStatus::Succeeded,
+                summary,
+                StepCompletionBasis::ModelConclusion,
+                None,
+                None,
+                ambiguity,
+                deviations,
+            )
+        }
+        StepRunnerOutcome::Failed { reason, replan } if !replan && is_permission_denied(reason) => {
+            let rejected = reason.to_ascii_lowercase().contains("reject");
+            (
+                if rejected {
+                    StepRecordStatus::Rejected
                 } else {
-                    "Step failed and cannot continue safely.".to_string()
+                    StepRecordStatus::Blocked
+                },
+                if rejected {
+                    "Step stopped because required tool approval was rejected.".to_string()
+                } else {
+                    "Step blocked because required tool permission was denied.".to_string()
                 },
                 StepCompletionBasis::RuntimeFailure,
-                Some(
-                    if *replan {
-                        RECOVERABLE_STEP_FAILURE_CODE
-                    } else {
-                        "step_runtime_failure"
-                    }
-                    .to_string(),
-                ),
-                Some(bounded_step_summary(
-                    reason,
-                    "The planned step ended with a runtime or model failure.",
-                )),
+                Some(if rejected {
+                    "approval_rejected".to_string()
+                } else {
+                    "permission_denied".to_string()
+                }),
+                Some(if rejected {
+                    "Required tool approval was rejected.".to_string()
+                } else {
+                    "Required tool permission was denied.".to_string()
+                }),
                 None,
+                Vec::new(),
+            )
+        }
+        StepRunnerOutcome::Failed { reason, replan } => (
+            StepRecordStatus::Failed,
+            if *replan {
+                "Step failed; the runtime may replace the remaining plan.".to_string()
+            } else {
+                "Step failed and cannot continue safely.".to_string()
+            },
+            StepCompletionBasis::RuntimeFailure,
+            Some(
+                if *replan {
+                    RECOVERABLE_STEP_FAILURE_CODE
+                } else {
+                    "step_runtime_failure"
+                }
+                .to_string(),
             ),
-            StepRunnerOutcome::BudgetExhausted { dimension, reason } => (
-                StepRecordStatus::BudgetExhausted,
-                format!("Step stopped after exhausting its {dimension:?} budget."),
-                StepCompletionBasis::RuntimeFailure,
-                Some(format!(
-                    "{}_budget_exhausted",
-                    budget_dimension_code(*dimension)
-                )),
-                Some(bounded_step_summary(
-                    reason,
-                    "A configured per-step execution budget was exhausted.",
-                )),
-                None,
-            ),
-            StepRunnerOutcome::TokenLimit { reason } => (
-                StepRecordStatus::BudgetExhausted,
-                "Step stopped because the context token limit was exceeded.".to_string(),
-                StepCompletionBasis::RuntimeFailure,
-                Some(CONTEXT_TOKEN_LIMIT_CODE.to_string()),
-                Some(bounded_step_summary(
-                    reason,
-                    "The configured context token limit was exceeded.",
-                )),
-                None,
-            ),
-            StepRunnerOutcome::Indeterminate { reason } => (
-                StepRecordStatus::Indeterminate,
-                "Step stopped with an indeterminate external effect that will not be replayed."
-                    .to_string(),
-                StepCompletionBasis::RuntimeFailure,
-                Some("external_effect_indeterminate".to_string()),
-                Some(bounded_step_summary(
-                    reason,
-                    "The external effect could not be determined safely.",
-                )),
-                None,
-            ),
-            StepRunnerOutcome::Cancelled => (
-                StepRecordStatus::Cancelled,
-                "Step was cancelled before completion.".to_string(),
-                StepCompletionBasis::UserDecision,
-                Some("cancelled".to_string()),
-                Some("The step was cancelled before completion.".to_string()),
-                None,
-            ),
-        };
+            Some(bounded_step_summary(
+                reason,
+                "The planned step ended with a runtime or model failure.",
+            )),
+            None,
+            Vec::new(),
+        ),
+        StepRunnerOutcome::BudgetExhausted { dimension, reason } => (
+            StepRecordStatus::BudgetExhausted,
+            format!("Step stopped after exhausting its {dimension:?} budget."),
+            StepCompletionBasis::RuntimeFailure,
+            Some(format!(
+                "{}_budget_exhausted",
+                budget_dimension_code(*dimension)
+            )),
+            Some(bounded_step_summary(
+                reason,
+                "A configured per-step execution budget was exhausted.",
+            )),
+            None,
+            Vec::new(),
+        ),
+        StepRunnerOutcome::TokenLimit { reason } => (
+            StepRecordStatus::BudgetExhausted,
+            "Step stopped because the context token limit was exceeded.".to_string(),
+            StepCompletionBasis::RuntimeFailure,
+            Some(CONTEXT_TOKEN_LIMIT_CODE.to_string()),
+            Some(bounded_step_summary(
+                reason,
+                "The configured context token limit was exceeded.",
+            )),
+            None,
+            Vec::new(),
+        ),
+        StepRunnerOutcome::Indeterminate { reason } => (
+            StepRecordStatus::Indeterminate,
+            "Step stopped with an indeterminate external effect that will not be replayed."
+                .to_string(),
+            StepCompletionBasis::RuntimeFailure,
+            Some("external_effect_indeterminate".to_string()),
+            Some(bounded_step_summary(
+                reason,
+                "The external effect could not be determined safely.",
+            )),
+            None,
+            Vec::new(),
+        ),
+        StepRunnerOutcome::Cancelled => (
+            StepRecordStatus::Cancelled,
+            "Step was cancelled before completion.".to_string(),
+            StepCompletionBasis::UserDecision,
+            Some("cancelled".to_string()),
+            Some("The step was cancelled before completion.".to_string()),
+            None,
+            Vec::new(),
+        ),
+    };
 
     let record = StepRecord {
         record_id: ulid::Ulid::new().to_string(),
@@ -1457,6 +1509,8 @@ fn terminal_step_record(
         tool_call_ids: metrics.tool_call_ids.clone(),
         artifact_refs: Vec::new(),
         mutations: metrics.mutations.clone(),
+        procedure_applications: procedure_applications.to_vec(),
+        procedure_deviations,
         model_turns_used: metrics.model_turns_used,
         tool_calls_used: u32::try_from(metrics.tool_call_ids.len()).unwrap_or(u32::MAX),
         token_usage: metrics.token_usage.clone(),
@@ -1486,6 +1540,8 @@ fn interrupted_step_record(attempt: &StepAttempt) -> StepRecord {
         tool_call_ids: Vec::new(),
         artifact_refs: Vec::new(),
         mutations: Vec::new(),
+        procedure_applications: Vec::new(),
+        procedure_deviations: Vec::new(),
         model_turns_used: 0,
         tool_calls_used: 0,
         token_usage: Default::default(),
@@ -1513,13 +1569,18 @@ fn bounded_step_summary(value: &str, fallback: &str) -> String {
     }
 }
 
-fn parse_structured_step_conclusion(output: &str) -> (String, Option<PlanAmbiguity>) {
+fn parse_structured_step_conclusion(
+    output: &str,
+    applications: &[ProcedureApplication],
+) -> (String, Option<PlanAmbiguity>, Vec<ProcedureDeviation>) {
     #[derive(serde::Deserialize)]
     #[serde(deny_unknown_fields)]
     struct StructuredConclusion {
         summary: String,
         #[serde(default)]
         lifecycle_ambiguity: Option<StructuredAmbiguity>,
+        #[serde(default)]
+        procedure_deviations: Vec<StructuredProcedureDeviation>,
     }
 
     #[derive(serde::Deserialize)]
@@ -1531,11 +1592,27 @@ fn parse_structured_step_conclusion(output: &str) -> (String, Option<PlanAmbigui
         evidence_refs: Vec<String>,
     }
 
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct StructuredProcedureDeviation {
+        procedure_id: String,
+        reason: ProcedureDeviationReason,
+        safe_summary: String,
+        #[serde(default)]
+        material: bool,
+        #[serde(default)]
+        evidence_refs: Vec<String>,
+    }
+
     let Ok(parsed) = serde_json::from_str::<StructuredConclusion>(output.trim()) else {
-        return (bounded_step_summary(output, "Step completed."), None);
+        return (
+            bounded_step_summary(output, "Step completed."),
+            None,
+            Vec::new(),
+        );
     };
     let summary = bounded_step_summary(&parsed.summary, "Step completed.");
-    let ambiguity = parsed.lifecycle_ambiguity.and_then(|value| {
+    let mut ambiguity = parsed.lifecycle_ambiguity.and_then(|value| {
         let ambiguity = PlanAmbiguity {
             kind: value.kind,
             safe_summary: value.safe_summary,
@@ -1543,7 +1620,41 @@ fn parse_structured_step_conclusion(output: &str) -> (String, Option<PlanAmbigui
         };
         ambiguity.validate().is_ok().then_some(ambiguity)
     });
-    (summary, ambiguity)
+    let deviations = parsed
+        .procedure_deviations
+        .into_iter()
+        .filter_map(|value| {
+            let application = applications
+                .iter()
+                .find(|application| application.reference.id == value.procedure_id)?;
+            let deviation = ProcedureDeviation {
+                deviation_id: ulid::Ulid::new().to_string(),
+                reference: application.reference.clone(),
+                application_id: Some(application.application_id.clone()),
+                reason: value.reason,
+                safe_summary: bounded_step_summary(
+                    &value.safe_summary,
+                    "Execution departed from selected procedure guidance.",
+                ),
+                material: value.material,
+                evidence_refs: value.evidence_refs,
+            };
+            deviation.validate().is_ok().then_some(deviation)
+        })
+        .collect::<Vec<_>>();
+    if ambiguity.is_none()
+        && let Some(material) = deviations.iter().find(|deviation| deviation.material)
+    {
+        let derived = PlanAmbiguity {
+            kind: PlanAmbiguityKind::PlanAssumptionMayBeInvalid,
+            safe_summary: material.safe_summary.clone(),
+            evidence_refs: material.evidence_refs.clone(),
+        };
+        if derived.validate().is_ok() {
+            ambiguity = Some(derived);
+        }
+    }
+    (summary, ambiguity, deviations)
 }
 
 fn budget_dimension_code(dimension: ExecutionBudgetDimension) -> &'static str {

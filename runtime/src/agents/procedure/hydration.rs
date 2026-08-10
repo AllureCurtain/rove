@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 
 use super::catalog::CatalogEntry;
 use super::document::{ProcedureDocument, ProcedureReference};
-use super::metadata::{RiskLevel, SideEffect};
+use super::metadata::{ProcedureMode, RiskLevel, SideEffect};
 use super::selection::SelectedProcedure;
 
 /// Largest hydrated body admitted into a prompt.
@@ -97,9 +97,17 @@ pub struct ProcedureOutline {
 pub struct HydratedProcedure {
     pub reference: ProcedureReference,
     pub title: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub summary: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<ProcedureMode>,
     pub risk_level: RiskLevel,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub side_effects: Vec<SideEffect>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_capabilities: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub optional_capabilities: Vec<String>,
     /// Body text, possibly truncated.
     pub body: String,
     /// Hash of the exact bounded body retained in this snapshot.
@@ -130,6 +138,15 @@ impl HydratedProcedure {
             self.reference.trust.code(),
             self.risk_level.code()
         ));
+        if let Some(mode) = self.mode {
+            rendered.push_str(&format!("Mode: {}\n", mode.code()));
+        }
+        if !self.required_capabilities.is_empty() {
+            rendered.push_str(&format!(
+                "Required capabilities: {}\n",
+                self.required_capabilities.join(", ")
+            ));
+        }
         if !self.side_effects.is_empty() {
             let effects: Vec<&str> = self.side_effects.iter().map(|e| e.code()).collect();
             rendered.push_str(&format!("Declared side effects: {}\n", effects.join(", ")));
@@ -299,8 +316,12 @@ fn hydrate_document(document: &ProcedureDocument) -> HydratedProcedure {
     HydratedProcedure {
         reference: document.reference(),
         title: metadata.title.clone(),
+        summary: metadata.summary.clone(),
+        mode: Some(metadata.mode),
         risk_level: metadata.risk_level,
         side_effects: metadata.side_effects.iter().copied().collect(),
+        required_capabilities: metadata.required_capabilities.iter().cloned().collect(),
+        optional_capabilities: metadata.optional_capabilities.iter().cloned().collect(),
         body_hash: crate::agents::hashing::content_hash("hydrated-procedure-body", &body),
         body,
         truncated,

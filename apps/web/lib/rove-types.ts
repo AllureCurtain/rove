@@ -51,6 +51,48 @@ export interface PlanAmbiguity {
   evidence_refs?: string[];
 }
 
+export type ProcedureDeviationReason =
+  | "evidence_contradiction"
+  | "capability_unavailable"
+  | "preconditions_unsatisfied"
+  | "user_constraint"
+  | "procedure_stale"
+  | "safer_alternative"
+  | "runtime_failure";
+
+export interface ProcedureCapabilityBinding {
+  capability_id: string;
+  required?: boolean;
+  tool_name?: string | null;
+  available: boolean;
+  mutation_class?: "read_only" | "mutating" | null;
+  approval_required: boolean;
+}
+
+export interface ProcedureApplication {
+  application_id: string;
+  reference: ProcedureReference;
+  hydration_hash: string;
+  section_ids?: string[];
+  capability_snapshot_id: string;
+  capability_bindings?: ProcedureCapabilityBinding[];
+  risk_level: "low" | "medium" | "high";
+  side_effects?: string[];
+  truncated?: boolean;
+  step_id?: string | null;
+  boundary: string;
+}
+
+export interface ProcedureDeviation {
+  deviation_id: string;
+  reference: ProcedureReference;
+  application_id?: string | null;
+  reason: ProcedureDeviationReason;
+  safe_summary: string;
+  material?: boolean;
+  evidence_refs?: string[];
+}
+
 export interface StepRecord {
   record_id: string;
   plan_id: string;
@@ -66,6 +108,8 @@ export interface StepRecord {
   tool_call_ids?: string[];
   artifact_refs?: string[];
   mutations?: ToolMutation[];
+  procedure_applications?: ProcedureApplication[];
+  procedure_deviations?: ProcedureDeviation[];
   model_turns_used: number;
   tool_calls_used: number;
   token_usage: Usage;
@@ -218,6 +262,8 @@ export interface ExecutionLifecycleState {
   budget_exhaustion?: ExecutionBudgetExhaustion | null;
   finalization?: FinalizationRecord | null;
   degradations?: ExecutionDegradation[];
+  procedure_applications?: ProcedureApplication[];
+  procedure_deviations?: ProcedureDeviation[];
 }
 
 export type PlanDecisionKind = "continue" | "replace_remaining" | "finish";
@@ -531,6 +577,17 @@ export type StreamEvent =
       reference: ProcedureReference;
       truncated: boolean;
       dropped_bytes: number;
+      step_id?: string | null;
+      hydration_hash?: string | null;
+    }
+  | {
+      type: "procedure_applied";
+      application: ProcedureApplication;
+    }
+  | {
+      type: "procedure_deviation";
+      record_id: string;
+      deviation: ProcedureDeviation;
     }
   | {
       type: "execution_budget_updated";
@@ -907,6 +964,8 @@ export const STREAM_EVENT_NAMES = [
   "instruction_overlay_applied",
   "procedures_selected",
   "procedure_hydrated",
+  "procedure_applied",
+  "procedure_deviation",
   "execution_budget_updated",
   "execution_degraded",
   "llm_chunk",
