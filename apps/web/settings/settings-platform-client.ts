@@ -10,6 +10,7 @@ import {
   parseCreateProductMcpServerRequest,
   parseCreateProductMemoryTopicRequest,
   parseProductMcpProbeResponse,
+  parseProductMcpHealthResponse,
   parseProductMcpServerConfig,
   parseProductMcpServersResponse,
   parseProductMemoryListFilters,
@@ -27,6 +28,7 @@ import {
   type CreateProductMcpServerRequest,
   type CreateProductMemoryTopicRequest,
   type ProductMcpProbeResponse,
+  type ProductMcpHealthResponse,
   type ProductMcpServerConfig,
   type ProductMcpServersResponse,
   type ProductMemoryListFilters,
@@ -93,6 +95,10 @@ export interface SettingsPlatformClient {
     workspaceId: string,
     options?: SettingsPlatformRequestOptions,
   ): Promise<ProductMcpServersResponse>;
+  getMcpHealth(
+    workspaceId: string,
+    options?: SettingsPlatformRequestOptions,
+  ): Promise<ProductMcpHealthResponse>;
   createMcpServer(
     workspaceId: string,
     request: CreateProductMcpServerRequest,
@@ -523,6 +529,18 @@ export function createSettingsPlatformClient(
         ),
         getRequest(requestOptions?.signal),
         parseProductMcpServersResponse,
+      );
+    },
+
+    getMcpHealth(workspaceId, requestOptions) {
+      return requestJson(
+        fetchImpl,
+        productUrl(
+          apiPrefix,
+          `/product/mcp/health?${mcpWorkspaceQuery(workspaceId)}`,
+        ),
+        getRequest(requestOptions?.signal),
+        parseProductMcpHealthResponse,
       );
     },
 

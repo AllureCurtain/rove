@@ -1125,6 +1125,24 @@ function applyStreamEvent(
         ),
       };
     }
+    case "mcp_server_degraded":
+      return {
+        ...next,
+        trace: prependTrace(
+          state.trace,
+          event.type,
+          `${event.server_config_id}: ${event.failure_code}`,
+        ),
+      };
+    case "mcp_capabilities_refreshed":
+      return {
+        ...next,
+        trace: prependTrace(
+          state.trace,
+          event.type,
+          `${event.server_config_id}: +${event.added.length} -${event.removed.length} ~${event.changed.length}`,
+        ),
+      };
     case "tool_call_failed": {
       const timelineId = toolTimelineEntityId(state, event.call_id);
       return {

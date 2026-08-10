@@ -963,4 +963,56 @@ describe("product API client", () => {
       }),
     ).toThrow(ProductApiSchemaError);
   });
+
+  it("strictly parses bounded MCP lifecycle events", () => {
+    expect(
+      parseStreamEvent({
+        type: "mcp_server_degraded",
+        server_config_id: "monitoring",
+        required: false,
+        failure_code: "mcp_catalog_refresh_failed",
+      }),
+    ).toEqual({
+      type: "mcp_server_degraded",
+      server_config_id: "monitoring",
+      required: false,
+      failure_code: "mcp_catalog_refresh_failed",
+    });
+    expect(
+      parseStreamEvent({
+        type: "mcp_capabilities_refreshed",
+        server_config_id: "monitoring",
+        snapshot_id: "sha256:catalog-v2",
+        added: ["mcp__monitoring__new"],
+        removed: ["mcp__monitoring__retired"],
+        changed: ["mcp__monitoring__query"],
+      }),
+    ).toMatchObject({
+      type: "mcp_capabilities_refreshed",
+      added: ["mcp__monitoring__new"],
+      removed: ["mcp__monitoring__retired"],
+      changed: ["mcp__monitoring__query"],
+    });
+  });
+
+  it("rejects control characters and oversized MCP lifecycle diffs", () => {
+    expect(() =>
+      parseStreamEvent({
+        type: "mcp_server_degraded",
+        server_config_id: "monitoring",
+        required: false,
+        failure_code: "mcp_failed\nforged trace",
+      }),
+    ).toThrow(ProductApiSchemaError);
+    expect(() =>
+      parseStreamEvent({
+        type: "mcp_capabilities_refreshed",
+        server_config_id: "monitoring",
+        snapshot_id: "sha256:catalog-v2",
+        added: Array.from({ length: 129 }, (_, index) => `tool_${index}`),
+        removed: [],
+        changed: [],
+      }),
+    ).toThrow(ProductApiSchemaError);
+  });
 });

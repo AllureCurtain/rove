@@ -7731,6 +7731,7 @@ async fn product_mcp_crud_is_workspace_scoped_secret_free_and_used_by_product_jo
         serde_json::json!({
             "name": "mock_server",
             "enabled": true,
+            "required": true,
             "transport": "stdio",
             "command": python_command(),
             "args": [workspace_path_string("tests/fixtures/mcp_mock_server.py")],
@@ -7742,6 +7743,7 @@ async fn product_mcp_crud_is_workspace_scoped_secret_free_and_used_by_product_jo
     assert_eq!(created.status(), StatusCode::CREATED);
     let created: serde_json::Value = decode_json(created).await;
     assert_eq!(created["name"], "mock_server");
+    assert_eq!(created["required"], true);
     assert_eq!(created["env_names"], serde_json::json!(["PATH"]));
     assert!(created.get("env").is_none());
     // The server owns the deprecation verdict for every transport it returns.
@@ -7864,6 +7866,20 @@ async fn product_mcp_crud_is_workspace_scoped_secret_free_and_used_by_product_jo
     assert_eq!(probe["tools"][0]["parallel_safe"], false);
     assert!(!probe.to_string().contains(secret_canary));
 
+    let health = get_response(
+        &app,
+        &format!("/product/mcp/health?workspace_id={workspace_a_id}"),
+    )
+    .await;
+    assert_eq!(health.status(), StatusCode::OK);
+    let health: serde_json::Value = decode_json(health).await;
+    assert_eq!(health["total"], 1);
+    assert_eq!(health["servers"][0]["server_name"], "mock_server");
+    assert_eq!(health["servers"][0]["required"], true);
+    assert_eq!(health["servers"][0]["status"], "unknown");
+    assert_eq!(health["servers"][0]["tool_count"], 0);
+    assert!(health["servers"][0].get("server_config_hash").is_none());
+
     let session = create_product_session(&app, workspace_a_id, "MCP product job").await;
     let session_id = session["id"].as_str().unwrap();
     configure_product_session_model(&app, session_id, "fake-raw", 1).await;
@@ -7890,12 +7906,36 @@ async fn product_mcp_crud_is_workspace_scoped_secret_free_and_used_by_product_jo
             if result.output == "remote: product MCP catalog"
     )));
 
+    let health = get_response(
+        &app,
+        &format!("/product/mcp/health?workspace_id={workspace_a_id}"),
+    )
+    .await;
+    assert_eq!(health.status(), StatusCode::OK);
+    let health: serde_json::Value = decode_json(health).await;
+    let ready = &health["servers"][0];
+    assert_eq!(ready["status"], "ready");
+    assert_eq!(ready["tool_count"], 2);
+    assert_eq!(ready["protocol_version"], "2025-06-18");
+    assert!(
+        ready["server_config_hash"]
+            .as_str()
+            .is_some_and(|hash| hash.starts_with("sha256:"))
+    );
+    assert!(
+        ready["capability_snapshot_id"]
+            .as_str()
+            .is_some_and(|hash| hash.starts_with("sha256:"))
+    );
+    assert!(!health.to_string().contains(secret_canary));
+
     let disabled = request_json(
         &app,
         "PUT",
         &format!("/product/mcp/servers/mock_server?workspace_id={workspace_a_id}"),
         serde_json::json!({
             "enabled": false,
+            "required": true,
             "transport": "stdio",
             "command": python_command(),
             "args": [workspace_path_string("tests/fixtures/mcp_mock_server.py")],
@@ -7907,6 +7947,17 @@ async fn product_mcp_crud_is_workspace_scoped_secret_free_and_used_by_product_jo
     assert_eq!(disabled.status(), StatusCode::OK);
     let disabled: serde_json::Value = decode_json(disabled).await;
     assert_eq!(disabled["enabled"], false);
+
+    let health = get_response(
+        &app,
+        &format!("/product/mcp/health?workspace_id={workspace_a_id}"),
+    )
+    .await;
+    assert_eq!(health.status(), StatusCode::OK);
+    let health: serde_json::Value = decode_json(health).await;
+    assert_eq!(health["servers"][0]["status"], "disabled");
+    assert_eq!(health["servers"][0]["tool_count"], 0);
+    assert!(health["servers"][0].get("refreshed_at").is_none());
 
     let disabled_session =
         create_product_session(&app, workspace_a_id, "Disabled MCP product job").await;
@@ -7924,6 +7975,52 @@ async fn product_mcp_crud_is_workspace_scoped_secret_free_and_used_by_product_jo
         StreamEvent::ToolCallCompleted { result, .. }
             if result.output == "remote: product MCP catalog"
     )));
+
+    let optional = request_json(
+        &app,
+        "PUT",
+        &format!("/product/mcp/servers/mock_server?workspace_id={workspace_a_id}"),
+        serde_json::json!({
+            "enabled": true,
+            "required": false,
+            "transport": "stdio",
+            "command": "rove-command-that-does-not-exist-058761eb",
+            "args": [],
+            "env_names": [],
+            "request_timeout_ms": 2_000
+        }),
+    )
+    .await;
+    assert_eq!(optional.status(), StatusCode::OK);
+    let optional: serde_json::Value = decode_json(optional).await;
+    assert_eq!(optional["required"], false);
+    let optional_session =
+        create_product_session(&app, workspace_a_id, "Optional MCP degradation").await;
+    let optional_session_id = optional_session["id"].as_str().unwrap();
+    configure_product_session_model(&app, optional_session_id, "fake", 1).await;
+    let optional_job = create_product_job(&app, optional_session_id, "inspect safely").await;
+    let optional_state = wait_for_done(app.clone(), optional_job.job_id.to_string()).await;
+    assert_eq!(optional_state.status, RunStatus::Done);
+
+    let health = get_response(
+        &app,
+        &format!("/product/mcp/health?workspace_id={workspace_a_id}"),
+    )
+    .await;
+    assert_eq!(health.status(), StatusCode::OK);
+    let health: serde_json::Value = decode_json(health).await;
+    let degraded = &health["servers"][0];
+    assert_eq!(degraded["required"], false);
+    assert_eq!(degraded["status"], "degraded");
+    assert_eq!(degraded["tool_count"], 0);
+    assert!(degraded["failure_code"].as_str().is_some_and(|code| {
+        matches!(code, "mcp_activation_failed" | "mcp_activation_unavailable")
+    }));
+    assert!(
+        !health
+            .to_string()
+            .contains("rove-command-that-does-not-exist")
+    );
 
     let deleted = app
         .clone()

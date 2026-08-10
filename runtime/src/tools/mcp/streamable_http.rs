@@ -61,6 +61,8 @@ impl Default for StreamableHttpPolicy {
 pub struct HttpSessionState {
     pub session_id: Option<String>,
     pub protocol_version: Option<String>,
+    /// Hash of the validated initialize serverInfo/capabilities projection.
+    pub server_identity_hash: Option<String>,
     /// Last SSE event ID, used to resume a dropped stream.
     pub last_event_id: Option<String>,
 }
@@ -122,11 +124,13 @@ impl StreamableHttpTransport {
     ) -> Result<(), McpProtocolError> {
         let offered = result.get("protocolVersion").and_then(|v| v.as_str());
         let negotiated = negotiate_protocol_version(offered)?;
+        let identity_hash = super::protocol::server_identity_hash(result)?;
+        let session_id = session_header.map(validate_session_id).transpose()?;
         let mut session = self.session.lock().await;
         session.protocol_version = Some(negotiated);
-        if let Some(header) = session_header {
-            session.session_id = Some(validate_session_id(header)?);
-        }
+        session.server_identity_hash = Some(identity_hash);
+        session.session_id = session_id;
+        session.last_event_id = None;
         Ok(())
     }
 
@@ -183,10 +187,14 @@ impl StreamableHttpTransport {
             return Err(McpProtocolError::MessageTooLarge);
         }
         let headers = self.headers(true).await?;
+        if self.cancel.is_cancelled() {
+            return Err(McpProtocolError::Cancelled);
+        }
 
         let response = tokio::select! {
-            biased;
-            _ = self.cancel.cancelled() => return Err(McpProtocolError::Cancelled),
+            _ = self.cancel.cancelled() => return Err(McpProtocolError::Indeterminate {
+                detail: "request cancelled after dispatch began".to_string(),
+            }),
             result = self
                 .http
                 .post(self.endpoint.as_str())
@@ -220,10 +228,12 @@ impl StreamableHttpTransport {
                 .unwrap_or_default()
                 .to_string();
             // Validated for diagnostics; the hop is not followed automatically.
-            validate_redirect(&self.endpoint, &location, self.policy.endpoint)?;
+            validate_redirect(&self.endpoint, &location, self.policy.endpoint)
+                .map_err(McpProtocolError::after_commit)?;
             return Err(McpProtocolError::Transport {
                 detail: "MCP endpoint redirect requires explicit reconfiguration".to_string(),
-            });
+            }
+            .after_commit());
         }
 
         let session_header = response
@@ -238,16 +248,23 @@ impl StreamableHttpTransport {
             .map(str::to_string);
         let has_body = response.content_length().is_none_or(|length| length > 0);
 
-        let kind = classify_response(status, content_type.as_deref(), has_body)?;
-        match kind {
+        let kind = classify_response(status, content_type.as_deref(), has_body)
+            .map_err(McpProtocolError::after_commit)?;
+        let outcome = match kind {
             McpResponseKind::Empty => Ok(PostOutcome {
                 session_header,
                 routed_messages: 0,
                 kind,
             }),
             McpResponseKind::Json => {
-                let bytes = self.read_bounded_body(response).await?;
-                let routed = self.route_frame(&bytes).await?;
+                let bytes = self
+                    .read_bounded_body(response)
+                    .await
+                    .map_err(McpProtocolError::after_commit)?;
+                let routed = self
+                    .route_frame(&bytes)
+                    .await
+                    .map_err(McpProtocolError::after_commit)?;
                 Ok(PostOutcome {
                     session_header,
                     routed_messages: routed,
@@ -255,21 +272,25 @@ impl StreamableHttpTransport {
                 })
             }
             McpResponseKind::EventStream => {
-                let routed = self.consume_sse(response).await?;
+                let routed = self
+                    .consume_sse(response)
+                    .await
+                    .map_err(McpProtocolError::after_commit)?;
                 Ok(PostOutcome {
                     session_header,
                     routed_messages: routed,
                     kind,
                 })
             }
-        }
+        };
+        outcome.map_err(McpProtocolError::after_commit)
     }
 
     /// Translate a send failure into a retry-safe or indeterminate error.
     fn classify_send_failure(&self, receipt: SendReceipt, detail: &str) -> McpProtocolError {
         let detail = bounded_diagnostic(detail);
         if receipt.is_safely_retryable() {
-            return McpProtocolError::Transport { detail };
+            return McpProtocolError::NotSent { detail };
         }
         McpProtocolError::Indeterminate { detail }
     }
@@ -531,7 +552,10 @@ mod tests {
 
         transport
             .record_initialize(
-                &json!({ "protocolVersion": "2025-03-26" }),
+                &json!({
+                    "protocolVersion": "2025-03-26",
+                    "serverInfo": { "name": "fixture", "version": "1" }
+                }),
                 Some("session-abc.123"),
             )
             .await
@@ -552,11 +576,17 @@ mod tests {
             streamable_http_transport("http://127.0.0.1:9/mcp", loopback_policy()).unwrap();
 
         let error = transport
-            .record_initialize(&json!({}), Some("bad\r\nInjected: yes"))
+            .record_initialize(
+                &json!({ "serverInfo": { "name": "fixture", "version": "1" } }),
+                Some("bad\r\nInjected: yes"),
+            )
             .await
             .expect_err("a header-injecting session id must be refused");
         assert_eq!(error, McpProtocolError::InvalidSessionId);
-        assert!(transport.session_id().await.is_none());
+        let state = transport.session_state().await;
+        assert!(state.session_id.is_none());
+        assert!(state.protocol_version.is_none());
+        assert!(state.server_identity_hash.is_none());
     }
 
     #[tokio::test]
@@ -565,7 +595,13 @@ mod tests {
             streamable_http_transport("http://127.0.0.1:9/mcp", loopback_policy()).unwrap();
 
         let error = transport
-            .record_initialize(&json!({ "protocolVersion": "1999-01-01" }), None)
+            .record_initialize(
+                &json!({
+                    "protocolVersion": "1999-01-01",
+                    "serverInfo": { "name": "fixture", "version": "1" }
+                }),
+                None,
+            )
             .await
             .expect_err("an unknown version must not be assumed compatible");
         assert!(matches!(
@@ -578,7 +614,13 @@ mod tests {
     async fn an_absent_version_uses_the_documented_default() {
         let transport =
             streamable_http_transport("http://127.0.0.1:9/mcp", loopback_policy()).unwrap();
-        transport.record_initialize(&json!({}), None).await.unwrap();
+        transport
+            .record_initialize(
+                &json!({ "serverInfo": { "name": "fixture", "version": "1" } }),
+                None,
+            )
+            .await
+            .unwrap();
         assert_eq!(
             transport.session_state().await.protocol_version.as_deref(),
             Some(super::super::protocol::MCP_DEFAULT_NEGOTIATED_VERSION)
@@ -590,7 +632,13 @@ mod tests {
         let transport =
             streamable_http_transport("http://127.0.0.1:9/mcp", loopback_policy()).unwrap();
         transport
-            .record_initialize(&json!({ "protocolVersion": "2025-06-18" }), Some("sid-1"))
+            .record_initialize(
+                &json!({
+                    "protocolVersion": "2025-06-18",
+                    "serverInfo": { "name": "fixture", "version": "1" }
+                }),
+                Some("sid-1"),
+            )
             .await
             .unwrap();
 

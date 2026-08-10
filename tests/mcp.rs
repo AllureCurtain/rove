@@ -18,8 +18,9 @@ use rove_core::ToolError;
 use rove_core::ToolRegistry;
 use rove_runtime::memory::paths::MemoryPaths;
 use rove_runtime::tools::mcp_proxy::{
-    MAX_MCP_RESPONSE_BYTES, McpProbeFailureKind, McpServerConfig, McpTransport, McpTransportPolicy,
-    probe_mcp_server, register_mcp_tools, resolve_mcp_server_environment,
+    MAX_MCP_RESPONSE_BYTES, McpProbeFailureKind, McpRuntimeState, McpServerConfig,
+    McpServerHealthStatus, McpTransport, McpTransportPolicy, probe_mcp_server, register_mcp_tools,
+    resolve_mcp_server_environment,
 };
 use rove_runtime::tools::runtime_context::runtime_tool_context;
 use rove_runtime::types::{ApprovalPolicy, ToolContext};
@@ -73,6 +74,7 @@ async fn mcp_sse_rejects_oversized_discovery_and_json_responses() {
         let failure = probe_mcp_server(McpServerConfig {
             name: "bounded-sse".to_string(),
             enabled: true,
+            required: true,
             transport: McpTransport::Sse,
             command: String::new(),
             args: Vec::new(),
@@ -133,6 +135,7 @@ async fn mcp_proxy_registers_and_calls_stdio_tools() {
         vec![McpServerConfig {
             name: "mock-server".to_string(),
             enabled: true,
+            required: true,
             transport: McpTransport::Stdio,
             command: python_command(),
             args: vec![workspace_path_string("tests/fixtures/mcp_mock_server.py").to_string()],
@@ -170,10 +173,20 @@ async fn mcp_proxy_registers_and_calls_stdio_tools() {
         .unwrap();
 
     assert_eq!(output.content, "remote: hello");
+    let runtime_identity = registry
+        .extension::<McpRuntimeState>()
+        .and_then(|state| state.snapshot("mock-server"))
+        .expect("MCP runtime snapshot");
+    let result_identity = output
+        .envelope
+        .as_ref()
+        .and_then(|envelope| envelope.protocol_metadata.server_identity_hash.as_deref())
+        .expect("MCP result identity");
+    assert_eq!(result_identity, runtime_identity.server_identity_hash);
 }
 
 #[tokio::test]
-async fn mcp_stdio_requests_time_out_when_server_does_not_respond() {
+async fn required_mcp_stdio_activation_timeout_fails_closed_without_raw_diagnostics() {
     let _guard = MCP_STDIO_TEST_LOCK.lock().await;
     let mut registry = ToolRegistry::new();
     let err = register_mcp_tools(
@@ -181,6 +194,7 @@ async fn mcp_stdio_requests_time_out_when_server_does_not_respond() {
         vec![McpServerConfig {
             name: "hanging-server".to_string(),
             enabled: true,
+            required: true,
             transport: McpTransport::Stdio,
             command: python_command(),
             args: vec![workspace_path_string("tests/fixtures/mcp_hanging_server.py").to_string()],
@@ -194,7 +208,13 @@ async fn mcp_stdio_requests_time_out_when_server_does_not_respond() {
     .unwrap_err();
 
     let message = err.to_string();
-    assert!(message.contains("timed out after 250ms"), "{message}");
+    assert!(
+        message.contains("required MCP server `hanging-server`"),
+        "{message}"
+    );
+    assert!(message.contains("mcp_activation_timeout"), "{message}");
+    assert!(!message.contains("hanging server received"), "{message}");
+    assert!(!message.contains("250ms"), "{message}");
 }
 
 #[tokio::test]
@@ -208,6 +228,7 @@ async fn mcp_tool_call_error_maps_to_structured_tool_error() {
         vec![McpServerConfig {
             name: "error-server".to_string(),
             enabled: true,
+            required: true,
             transport: McpTransport::Stdio,
             command: python_command(),
             args: vec![workspace_path_string("tests/fixtures/mcp_error_server.py").to_string()],
@@ -255,6 +276,7 @@ async fn dropping_stdio_mcp_registry_cleans_up_child_process() {
             vec![McpServerConfig {
                 name: "lifecycle-server".to_string(),
                 enabled: true,
+                required: true,
                 transport: McpTransport::Stdio,
                 command: python_command(),
                 args: vec![
@@ -290,6 +312,7 @@ async fn disabled_mcp_servers_are_never_assembled_or_environment_resolved() {
         vec![McpServerConfig {
             name: "disabled_server".to_string(),
             enabled: false,
+            required: true,
             transport: McpTransport::Stdio,
             command: "rove-command-that-does-not-exist-019fcfd2".to_string(),
             args: Vec::new(),
@@ -312,11 +335,46 @@ async fn disabled_mcp_servers_are_never_assembled_or_environment_resolved() {
     );
 }
 
+#[tokio::test]
+async fn an_optional_server_failure_degrades_without_removing_local_tools() {
+    let _guard = MCP_STDIO_TEST_LOCK.lock().await;
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(rove_runtime::tools::echo::EchoTool));
+
+    let registered = register_mcp_tools(
+        &mut registry,
+        vec![McpServerConfig {
+            name: "optional_missing".to_string(),
+            enabled: true,
+            required: false,
+            transport: McpTransport::Stdio,
+            command: "rove-command-that-does-not-exist-optional".to_string(),
+            args: Vec::new(),
+            env: Default::default(),
+            env_names: Vec::new(),
+            url: String::new(),
+            policy: short_mcp_policy(),
+        }],
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(registered, 0);
+    assert!(registry.has("echo"));
+    let state = registry.extension::<McpRuntimeState>().unwrap();
+    let snapshot = state.snapshot("optional_missing").unwrap();
+    assert!(!snapshot.required);
+    assert_eq!(snapshot.status, McpServerHealthStatus::Degraded);
+    assert_eq!(snapshot.tool_count, 0);
+    assert!(snapshot.failure_code.is_some());
+}
+
 #[test]
 fn mcp_environment_resolution_rejects_invalid_and_unavailable_names() {
     let base = McpServerConfig {
         name: "env_server".to_string(),
         enabled: true,
+        required: true,
         transport: McpTransport::Stdio,
         command: python_command(),
         args: Vec::new(),
@@ -393,6 +451,7 @@ async fn mcp_official_filesystem_server_smoke_when_enabled() {
         vec![McpServerConfig {
             name: "filesystem-smoke".to_string(),
             enabled: true,
+            required: true,
             transport: McpTransport::Stdio,
             command,
             args,

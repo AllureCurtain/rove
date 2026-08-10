@@ -190,6 +190,20 @@ const streamEventFixtures: StreamEvent[] = [
     observed_bytes: 9000000,
   },
   {
+    type: "mcp_server_degraded",
+    server_config_id: "monitoring",
+    required: false,
+    failure_code: "mcp_catalog_refresh_failed",
+  },
+  {
+    type: "mcp_capabilities_refreshed",
+    server_config_id: "monitoring",
+    snapshot_id: "sha256:catalog-v2",
+    added: ["mcp__monitoring__new"],
+    removed: [],
+    changed: ["mcp__monitoring__query"],
+  },
+  {
     type: "input_needed",
     input_id: "input-1",
     prompt: "Which branch?",

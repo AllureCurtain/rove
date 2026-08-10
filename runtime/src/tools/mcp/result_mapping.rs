@@ -34,9 +34,12 @@ pub struct McpResultContext<'a> {
     pub server_config_id: String,
     pub server_identity_hash: String,
     pub protocol_version: String,
+    pub capability_snapshot_id: Option<String>,
     pub session_hash: Option<String>,
     pub attempt_count: u32,
     pub duration_ms: Option<u64>,
+    /// Locally validated output schema pinned with the tool catalog.
+    pub output_schema: Option<&'a Value>,
     /// Durable artifact authority. `None` in an embedding without a run
     /// directory, in which case binary payloads are refused rather than
     /// inlined.
@@ -51,7 +54,7 @@ impl McpResultContext<'_> {
             server_config_id: Some(self.server_config_id.clone()),
             server_identity_hash: Some(self.server_identity_hash.clone()),
             protocol_version: Some(self.protocol_version.clone()),
-            capability_snapshot_id: None,
+            capability_snapshot_id: self.capability_snapshot_id.clone(),
             remote_tool_name: Some(self.remote_tool_name.clone()),
             request_id_hash: None,
             connection_id: None,
@@ -119,10 +122,29 @@ pub async fn envelope_from_mcp_result(
         }
     }
 
+    let mut structured_schema_failed = false;
     let structured = match result.get("structuredContent") {
         Some(value) => match StructuredToolContent::bounded(value.clone()) {
-            Ok(structured) => Some(structured),
+            Ok(structured) => {
+                if let Some(schema) = ctx.output_schema {
+                    match rove_core::validate_tool_args(schema, value) {
+                        Ok(()) => Some(structured.with_schema_verdict(true, None)),
+                        Err(error) => {
+                            structured_schema_failed = true;
+                            diagnostics.push(ToolDiagnostic::new(
+                                ToolErrorDomain::OutputSchema,
+                                "mcp_output_schema_validation_failed",
+                                &error.to_string(),
+                            ));
+                            Some(structured.with_schema_verdict(false, Some(error.to_string())))
+                        }
+                    }
+                } else {
+                    Some(structured)
+                }
+            }
             Err(rejection) => {
+                structured_schema_failed = ctx.output_schema.is_some();
                 diagnostics.push(ToolDiagnostic::new(
                     ToolErrorDomain::OutputSchema,
                     "mcp_structured_content_rejected",
@@ -131,7 +153,17 @@ pub async fn envelope_from_mcp_result(
                 None
             }
         },
-        None => None,
+        None => {
+            if ctx.output_schema.is_some() {
+                structured_schema_failed = true;
+                diagnostics.push(ToolDiagnostic::new(
+                    ToolErrorDomain::OutputSchema,
+                    "mcp_structured_content_missing",
+                    "the tool declared outputSchema but returned no structuredContent",
+                ));
+            }
+            None
+        }
     };
 
     let summary = if text_parts.is_empty() {
@@ -147,7 +179,7 @@ pub async fn envelope_from_mcp_result(
         .get("isError")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let outcome = if remote_error {
+    let outcome = if remote_error || structured_schema_failed {
         ToolResultOutcome::Error
     } else if artifact_failed {
         ToolResultOutcome::Partial
@@ -178,6 +210,29 @@ pub async fn envelope_from_mcp_result(
         }],
         protocol_metadata: ctx.protocol_metadata(),
         diagnostics,
+    }
+    .enforce_bounds()
+}
+
+/// Preserve a committed remote call whose effect cannot be established.
+pub fn indeterminate_envelope(ctx: &McpResultContext<'_>, safe_detail: &str) -> ToolOutputEnvelope {
+    let detail = truncate_utf8(safe_detail, 512).0;
+    ToolOutputEnvelope {
+        outcome: ToolResultOutcome::Indeterminate,
+        summary_text: "the MCP tool call ended after dispatch without a verifiable result"
+            .to_string(),
+        external_effects: vec![ExternalEffect {
+            kind: "mcp_tool_call".to_string(),
+            target: format!("{}/{}", ctx.server_config_id, ctx.remote_tool_name),
+            indeterminate: true,
+        }],
+        protocol_metadata: ctx.protocol_metadata(),
+        diagnostics: vec![ToolDiagnostic::new(
+            ToolErrorDomain::Transport,
+            "mcp_tool_effect_indeterminate",
+            &detail,
+        )],
+        ..ToolOutputEnvelope::default()
     }
     .enforce_bounds()
 }

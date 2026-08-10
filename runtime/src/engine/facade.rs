@@ -36,6 +36,7 @@ use crate::runtime_identity::{
 use crate::session::CHECKPOINT_SESSION_TAIL_ENTRIES;
 use crate::state::tool_artifacts::ToolArtifactStore;
 use crate::state::trace::TraceWriter;
+use crate::tools::mcp_proxy::{McpLifecycleFact, McpRuntimeState, McpServerRuntimeSnapshot};
 use crate::types::{
     ApprovalDecision, ApprovalPolicy, JobId, Message, RunId, RunRequest, SessionId,
     TerminationReason, ToolApprovalProvider, ToolDescriptor, UserInputProvider,
@@ -390,6 +391,11 @@ impl Engine {
     pub fn runtime_identity(&self) -> RuntimeIdentity {
         let agent = self.agent_runtime.source_profile_identity();
         let tools = self.registry.descriptors();
+        let mcp_servers = self
+            .registry
+            .extension::<McpRuntimeState>()
+            .map(|state| state.snapshots())
+            .unwrap_or_default();
         self.build_runtime_identity(EngineRuntimeIdentityInput {
             execution_policy: &self.execution_policy,
             capability_snapshot: &self.capability_snapshot,
@@ -398,11 +404,12 @@ impl Engine {
             planner_prompt: self.planner.prompt(),
             evaluator_prompt: self.evaluator.prompt(),
             finalizer_prompt: self.finalizer.prompt(),
+            mcp_servers: &mcp_servers,
         })
     }
 
     fn build_runtime_identity(&self, input: EngineRuntimeIdentityInput<'_>) -> RuntimeIdentity {
-        build_runtime_identity(RuntimeIdentityInput {
+        let mut identity = build_runtime_identity(RuntimeIdentityInput {
             workspace: &self.workspace,
             model_id: self.model.model_id(),
             provider_target: self.model.client_id().as_str(),
@@ -419,7 +426,9 @@ impl Engine {
             execution_environment: Some(self.environment.identity()),
             execution_capabilities: Some(self.environment.capabilities()),
             agent: Some(input.agent),
-        })
+        });
+        identity.mcp_servers = input.mcp_servers.to_vec();
+        identity
     }
 
     async fn run_post_run_hooks(&self, ctx: CompletedRunContext) {
@@ -472,6 +481,17 @@ impl Engine {
         let user_message = req.user_message;
         let resume_state = req.resume_state;
         let stream_cancel = cancel.clone();
+        // Dynamic catalogs publish only into the live registry. This private
+        // copy freezes both schemas and implementations for the whole run.
+        let run_registry = self.registry.snapshot();
+        let run_mcp_servers = run_registry
+            .extension::<McpRuntimeState>()
+            .map(|state| state.snapshots())
+            .unwrap_or_default();
+        let mcp_lifecycle_facts = run_registry
+            .extension::<McpRuntimeState>()
+            .map(|state| state.take_facts())
+            .unwrap_or_default();
         let pinned_agent_profile = resume_state.as_ref().and_then(|state| {
             // A successor run created from an interrupted snapshot must keep
             // the exact profile that was admitted before the interruption.
@@ -494,17 +514,24 @@ impl Engine {
                 })
                 .flatten()
         });
-        let resolved_agent = self
-            .agent_runtime
-            .resolve_for_run(&user_message, pinned_agent_profile);
+        let run_capabilities = run_registry
+            .descriptors()
+            .into_iter()
+            .filter_map(|descriptor| descriptor.capability_id)
+            .collect();
+        let resolved_agent = self.agent_runtime.resolve_for_run_with_capabilities(
+            &user_message,
+            pinned_agent_profile,
+            run_capabilities,
+        );
         let run_policy = resolved_agent
             .as_ref()
             .map(|agent| execution_policy_for_agent(&self.execution_policy, &agent.profile))
             .unwrap_or_else(|_| self.execution_policy.clone());
         let run_descriptors = resolved_agent
             .as_ref()
-            .map(|agent| descriptors_for_agent(&self.registry, &agent.profile))
-            .unwrap_or_else(|_| self.registry.descriptors());
+            .map(|agent| descriptors_for_agent(&run_registry, &agent.profile))
+            .unwrap_or_else(|_| run_registry.descriptors());
         let run_capability_snapshot = CapabilitySnapshot::from_descriptors(&run_descriptors);
         let run_planner_prompt = resolved_agent
             .as_ref()
@@ -547,6 +574,7 @@ impl Engine {
                     planner_prompt: &run_planner_prompt,
                     evaluator_prompt: &run_evaluator_prompt,
                     finalizer_prompt: &run_finalizer_prompt,
+                    mcp_servers: &run_mcp_servers,
                 })
             })
             .unwrap_or_else(|_| self.runtime_identity());
@@ -637,6 +665,39 @@ impl Engine {
                 };
                 append_trace(&trace_writer, &start_event);
                 yield start_event;
+
+                for fact in mcp_lifecycle_facts {
+                    let event = match fact {
+                        McpLifecycleFact::Degraded {
+                            server_config_id,
+                            failure_code,
+                        } => {
+                            let required = run_mcp_servers
+                                .iter()
+                                .find(|snapshot| snapshot.server_config_id == server_config_id)
+                                .is_some_and(|snapshot| snapshot.required);
+                            StreamEvent::McpServerDegraded {
+                                server_config_id,
+                                required,
+                                failure_code,
+                            }
+                        }
+                        McpLifecycleFact::CapabilitiesRefreshed {
+                            server_config_id,
+                            snapshot_id,
+                            added,
+                            removed,
+                            changed,
+                        } => StreamEvent::McpCapabilitiesRefreshed {
+                            server_config_id,
+                            snapshot_id,
+                            added,
+                            removed,
+                            changed,
+                        },
+                    };
+                    yield_traced!(event);
+                }
 
                 let resolved_agent = match resolved_agent {
                     Ok(agent) => agent,
@@ -788,7 +849,7 @@ impl Engine {
                 let run_finalizer = Finalizer::new(run_finalizer_prompt.clone());
                 let loop_context = LoopContext {
                     model: self.model.as_ref(),
-                    registry: &self.registry,
+                    registry: &run_registry,
                     capability_snapshot: &run_capability_snapshot,
                     context_manager: &self.context_manager,
                     workspace: &self.workspace,
@@ -887,6 +948,7 @@ struct EngineRuntimeIdentityInput<'a> {
     planner_prompt: &'a str,
     evaluator_prompt: &'a str,
     finalizer_prompt: &'a str,
+    mcp_servers: &'a [McpServerRuntimeSnapshot],
 }
 
 struct CompletedRunContext {

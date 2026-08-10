@@ -594,6 +594,20 @@ export type StreamEvent =
       observed_bytes: number;
     }
   | {
+      type: "mcp_server_degraded";
+      server_config_id: string;
+      required: boolean;
+      failure_code: string;
+    }
+  | {
+      type: "mcp_capabilities_refreshed";
+      server_config_id: string;
+      snapshot_id: string;
+      added: string[];
+      removed: string[];
+      changed: string[];
+    }
+  | {
       type: "input_needed";
       input_id: string;
       prompt: string;
@@ -904,6 +918,8 @@ export const STREAM_EVENT_NAMES = [
   "tool_call_failed",
   "tool_artifact_stored",
   "tool_artifact_rejected",
+  "mcp_server_degraded",
+  "mcp_capabilities_refreshed",
   "input_needed",
   "plan_created",
   "plan_step_started",

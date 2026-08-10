@@ -94,6 +94,7 @@ export type ProductMcpTransport = (typeof PRODUCT_MCP_TRANSPORTS)[number];
 export interface ProductMcpServerConfig {
   name: string;
   enabled: boolean;
+  required: boolean;
   transport: ProductMcpTransport;
   command?: string;
   args: string[];
@@ -108,9 +109,39 @@ export interface ProductMcpServersResponse {
   total: number;
 }
 
+export const PRODUCT_MCP_HEALTH_STATUSES = [
+  "ready",
+  "degraded",
+  "disabled",
+  "unknown",
+] as const;
+export type ProductMcpHealthStatus =
+  (typeof PRODUCT_MCP_HEALTH_STATUSES)[number];
+
+export interface ProductMcpHealthSnapshot {
+  server_name: string;
+  required: boolean;
+  transport: ProductMcpTransport;
+  status: ProductMcpHealthStatus;
+  server_config_hash?: string;
+  server_identity_hash?: string;
+  protocol_version?: string;
+  catalog_hash?: string;
+  capability_snapshot_id?: string;
+  tool_count: number;
+  failure_code?: string;
+  refreshed_at?: string;
+}
+
+export interface ProductMcpHealthResponse {
+  servers: ProductMcpHealthSnapshot[];
+  total: number;
+}
+
 export interface CreateProductMcpServerRequest {
   name: string;
   enabled: boolean;
+  required: boolean;
   transport: ProductMcpTransport;
   command?: string;
   args: string[];
@@ -867,6 +898,7 @@ function parseProductMcpServerFields(
   );
   const common = {
     enabled: expectBoolean(record.enabled, `${path}.enabled`),
+    required: expectBoolean(record.required, `${path}.required`),
     transport,
     args,
     env_names: envNames,
@@ -909,6 +941,7 @@ export function parseProductMcpServerConfig(
     [
       "name",
       "enabled",
+      "required",
       "transport",
       "command",
       "args",
@@ -945,6 +978,7 @@ export function parseCreateProductMcpServerRequest(
     [
       "name",
       "enabled",
+      "required",
       "transport",
       "command",
       "args",
@@ -969,6 +1003,7 @@ export function parseUpdateProductMcpServerRequest(
     record,
     [
       "enabled",
+      "required",
       "transport",
       "command",
       "args",
@@ -997,6 +1032,83 @@ export function parseProductMcpServersResponse(
     parseProductMcpServerConfig(server, `${path}.servers[${index}]`),
   );
   if (new Set(servers.map((server) => server.name)).size !== servers.length) {
+    return schemaError(`${path}.servers`, "servers with unique names");
+  }
+  const total = expectInteger(record.total, `${path}.total`, {
+    min: 0,
+    max: MAX_MCP_SERVERS,
+  });
+  if (total !== servers.length) {
+    return schemaError(`${path}.total`, "equal to the number of servers");
+  }
+  return { servers, total };
+}
+
+export function parseProductMcpHealthResponse(
+  value: unknown,
+  path = "product MCP health response",
+): ProductMcpHealthResponse {
+  const record = expectRecord(value, path);
+  expectOnlyKeys(record, ["servers", "total"], path);
+  if (!Array.isArray(record.servers) || record.servers.length > MAX_MCP_SERVERS) {
+    return schemaError(`${path}.servers`, `an array with at most ${MAX_MCP_SERVERS} items`);
+  }
+  const optionalText = (
+    server: UnknownRecord,
+    key: string,
+    serverPath: string,
+  ): string | undefined =>
+    server[key] === undefined
+      ? undefined
+      : expectString(server[key], `${serverPath}.${key}`, {
+          nonEmpty: true,
+          maxBytes: MAX_PRODUCT_TEXT_BYTES,
+          noControls: true,
+        });
+  const servers = record.servers.map((value, index) => {
+    const serverPath = `${path}.servers[${index}]`;
+    const server = expectRecord(value, serverPath);
+    expectOnlyKeys(
+      server,
+      [
+        "server_name",
+        "required",
+        "transport",
+        "status",
+        "server_config_hash",
+        "server_identity_hash",
+        "protocol_version",
+        "catalog_hash",
+        "capability_snapshot_id",
+        "tool_count",
+        "failure_code",
+        "refreshed_at",
+      ],
+      serverPath,
+    );
+    const refreshedAt = optionalText(server, "refreshed_at", serverPath);
+    if (refreshedAt !== undefined && !Number.isFinite(Date.parse(refreshedAt))) {
+      return schemaError(`${serverPath}.refreshed_at`, "an ISO timestamp");
+    }
+    return {
+      server_name: expectMcpServerName(server.server_name, `${serverPath}.server_name`),
+      required: expectBoolean(server.required, `${serverPath}.required`),
+      transport: expectEnum(server.transport, PRODUCT_MCP_TRANSPORTS, `${serverPath}.transport`),
+      status: expectEnum(server.status, PRODUCT_MCP_HEALTH_STATUSES, `${serverPath}.status`),
+      server_config_hash: optionalText(server, "server_config_hash", serverPath),
+      server_identity_hash: optionalText(server, "server_identity_hash", serverPath),
+      protocol_version: optionalText(server, "protocol_version", serverPath),
+      catalog_hash: optionalText(server, "catalog_hash", serverPath),
+      capability_snapshot_id: optionalText(server, "capability_snapshot_id", serverPath),
+      tool_count: expectInteger(server.tool_count, `${serverPath}.tool_count`, {
+        min: 0,
+        max: MAX_MCP_TOOLS,
+      }),
+      failure_code: optionalText(server, "failure_code", serverPath),
+      refreshed_at: refreshedAt,
+    } satisfies ProductMcpHealthSnapshot;
+  });
+  if (new Set(servers.map((server) => server.server_name)).size !== servers.length) {
     return schemaError(`${path}.servers`, "servers with unique names");
   }
   const total = expectInteger(record.total, `${path}.total`, {

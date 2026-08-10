@@ -101,7 +101,7 @@ and updates its tests and current documentation:
 
 ## 5. Current implementation boundaries
 
-As of 2026-08-07:
+As of 2026-08-10:
 
 - rove is a local-first Rust runtime with CLI, API, Web, persisted run state,
   resume, provider routing, tools, layered memory, optional future external retrieval, and
@@ -118,10 +118,14 @@ As of 2026-08-07:
   Web Complete C0–C3 persistence, continuity, Settings, migration, polish, and
   acceptance work integrated on `main` through PRs #24, #25, and #26, plus the
   CDH G1-G7 control, evidence, and Settings completion merged through PR #29.
-- MCP currently supports stdio and the existing legacy SSE path. Streamable
-  HTTP, negotiated sessions, rich MCP result envelopes, and Tool Artifacts are
-  proposed, not implemented. Existing MCP catalogs are registration-time
-  schema validated and committed atomically to the shared tool registry.
+- MCP supports stdio, deprecated legacy SSE, and negotiated Streamable HTTP.
+  All three proxies map bounded rich result blocks into the shared Tool Result
+  envelope and canonical durable Tool Artifact store. Streamable HTTP supports
+  bounded `listChanged` rediscovery, atomic namespace replacement, run-pinned
+  catalogs, required/optional degradation, circuit backoff, secret-free runtime
+  identity/health, canonical refresh/degradation events, and Product API/Web
+  diagnostics. Real third-party hosted MCP interoperability remains an optional
+  unrun gate.
 - Durable granular Project Trust and the Runtime-owned Execution Environment
   are implemented. Project activation remains restricted by default, exact-root
   and capability-specific; workspace `.env`, `.rove/config.toml`, and MCP
@@ -149,7 +153,9 @@ As of 2026-08-07:
   budgets with per-run accounting, canonical lifecycle events, trace-tail
   reconciliation on resume, registration-pinned bounded Tool Schemas,
   pre-dispatch provider/tool validation, and Runtime-owned capability snapshots
-  exist; live capability refresh remains proposed.
+  exist. Streamable HTTP MCP catalogs refresh live for future runs while active
+  runs retain their pinned bindings; general non-MCP live capability refresh is
+  not implemented.
 - Web M1 is implemented: explicit Folder/Repo roots, fail-closed hard resume,
   and the Workspace → Session → Chat product shell are implemented. Web
   Complete C0 adds an API-global SQLite ProductStore,
@@ -185,15 +191,17 @@ As of 2026-08-07:
   trusted rove run also loads it as the workspace root instruction layer; that
   runtime admission does not turn its text into tool permission or approval.
 
-The active future/runtime-evolution design chain is:
+The active design/runtime-evolution chain is:
 
 - `docs/design/2026-07-14-agent-execution-lifecycle-design.md`
 - `docs/design/2026-07-14-agent-definition-and-procedural-knowledge-design.md`
 - `docs/design/2026-07-15-mcp-streamable-http-and-tool-artifacts-design.md`
 - `docs/design/2026-07-15-oncall-reference-agent-evaluation-plan.md`
 
-Use those documents to plan future implementation, not to describe current
-runtime behavior.
+Read each document's visible status before using it. The lifecycle,
+AgentDefinition, and MCP documents are partially implemented design records;
+their remaining targets are future work. Use `docs/runtime/` and tests to
+describe current behavior. The OnCall evaluation remains proposed.
 
 The active implementation work follows these briefs:
 

@@ -1433,7 +1433,8 @@ Example config:
 Supported transports:
 
 - `stdio`;
-- `sse`.
+- `sse` (deprecated compatibility path);
+- `streamable_http`.
 
 For stdio, the Execution Environment reads the bounded workspace config and its
 process port spawns the configured command, sends JSON-RPC messages over stdin,
@@ -1444,16 +1445,17 @@ registers each returned tool as:
 mcp__<sanitized_server_name>__<remote_tool_name>
 ```
 
-The proxy maps MCP annotations into local tool metadata:
-
-- `destructiveHint` -> `destructive`;
-- `readOnlyHint` -> `parallel_safe` when not destructive.
+Remote annotations, descriptions, schemas, and content are untrusted data. They
+never grant local safety: registered MCP tools remain destructive and
+non-parallel until a local operator-owned policy says otherwise.
 
 Each server can include an optional `policy` object:
 
 ```json
 {
   "name": "filesystem",
+  "enabled": true,
+  "required": true,
   "transport": "stdio",
   "command": "npx",
   "args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
@@ -1464,9 +1466,59 @@ Each server can include an optional `policy` object:
 }
 ```
 
-`request_timeout_ms` bounds stdio initialize/list/call requests and SSE HTTP requests. `stderr_capture_bytes` controls how much stdio stderr is retained for timeout and startup diagnostics. MCP JSON-RPC errors are mapped into structured tool execution failures instead of raw protocol blobs. Stdio child processes are killed when their registered client is dropped.
+Old configurations default `enabled` and `required` to `true`. A required
+activation failure aborts assembly with a stable code and no raw remote error;
+an optional failure leaves local/other tools registered and publishes degraded
+health. Disabled servers are not contacted.
 
-Default test coverage uses Python stdio fixtures for normal registration, timeout, JSON-RPC error mapping, and child cleanup. A real stdio filesystem MCP smoke test is available behind an explicit environment gate:
+`request_timeout_ms` bounds stdio initialize/list/call requests and HTTP
+requests. `stderr_capture_bytes` bounds stdio diagnostics. Stdio child processes
+are killed when their registered client is dropped. All responses are bounded
+to 1 MiB. Streamable HTTP additionally enforces protocol negotiation, validated
+session headers, declared content types, TLS outside permitted loopback, safe
+redirects, bounded request correlation/pagination, and retry only for proven
+`NotSent` requests. A post-dispatch failure is `Indeterminate`.
+
+Every successful initialize validates and canonicalizes the server-declared
+`serverInfo` name/version plus bounded capabilities into one secret-free
+identity hash. Catalog snapshots, runtime identity/resume, and Tool Result
+protocol metadata use that same hash; missing, oversized, or control-bearing
+identity fields fail activation rather than falling back to a configured name.
+
+Every transport maps MCP text, structured content, image/audio, resource/link,
+unknown blocks, `isError`, and declared output schema through the shared Tool
+Result envelope. Eligible binary content enters the run's content-addressed Tool
+Artifact store; payload bytes do not enter prompts, trace, or canonical events.
+`ToolArtifactStored` or `ToolArtifactRejected` precedes the correlated
+`ToolCallCompleted` event.
+
+For Streamable HTTP, `notifications/tools/list_changed` causes a complete
+bounded rediscovery. The validated server namespace is replaced atomically;
+invalid refresh retains the old namespace and marks health degraded. Engine
+pins one registry snapshot per run, so an active run never changes bindings and
+a later run sees the refreshed catalog. Three consecutive refresh/poll failures
+enter a 30-second circuit cooldown.
+
+Secret-free MCP snapshots enter runtime identity, checkpoints, and reports.
+Canonical `mcp_server_degraded` and `mcp_capabilities_refreshed` events use only
+server config IDs, stable failure/snapshot codes, and bounded name diffs. Product
+diagnostics are available at `GET /product/mcp/health`; Settings displays
+required/optional and `ready`/`degraded`/`disabled`/`unknown` state. Raw endpoint
+credentials, environment values, session IDs, and remote diagnostics are not
+returned.
+
+Default tests use deterministic stdio and loopback HTTP fixtures for
+registration, timeout, JSON-RPC correlation/error mapping, rich results,
+artifacts, refresh/run pinning, invalid catalogs, health, and cleanup. Run:
+
+```powershell
+cargo test -p rove-runtime tools::mcp --lib
+cargo test -p rove-integration-tests --test mcp
+cargo test -p rove-integration-tests --test mcp_streamable_http
+```
+
+A real stdio filesystem MCP smoke test remains behind an explicit environment
+gate:
 
 ```powershell
 $env:ROVE_MCP_FILESYSTEM_SMOKE = "1"
@@ -1478,7 +1530,10 @@ By default that smoke test runs `npx -y @modelcontextprotocol/server-filesystem 
 Relevant code:
 
 - `runtime/src/tools/mcp_proxy.rs`
+- `runtime/src/tools/mcp/`
+- `runtime/src/state/tool_artifacts.rs`
 - `tests/mcp.rs`
+- `tests/mcp_streamable_http.rs`
 - `tests/fixtures/mcp_mock_server.py`
 
 ## 18. RAG

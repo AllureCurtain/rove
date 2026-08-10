@@ -263,6 +263,7 @@ test("MCP settings preserve failed drafts, recover probes, and isolate workspace
     .fill("tests/fixtures/mcp_mock_server.py\n--verbose");
   await mcpForm.getByLabel("Environment names (one per line)").fill("MCP_TOKEN");
   await mcpForm.getByLabel("Connection timeout (ms)").fill("2400");
+  await expect(mcpForm.getByLabel("Required at startup")).toBeChecked();
   await mcpForm.getByRole("button", { name: "Add server" }).click();
 
   await expect(mcpForm.getByRole("alert")).toContainText(
@@ -282,6 +283,8 @@ test("MCP settings preserve failed drafts, recover probes, and isolate workspace
     .locator(".profile-row")
     .filter({ hasText: "mock_server" });
   await expect(serverRow).toContainText("Enabled");
+  await expect(serverRow).toContainText("Required");
+  await expect(serverRow).toContainText("health: unknown");
   await expect(serverRow).toContainText("2400 ms");
   await expect.poll(() => api.mcpMutationRequests).toBe(2);
   expect(api.mcpServers[workspaceA.id]).toHaveLength(1);
@@ -291,19 +294,24 @@ test("MCP settings preserve failed drafts, recover probes, and isolate workspace
   }
   expect(JSON.parse(api.mcpRequestBodies.at(-1)!)).toMatchObject({
     env_names: ["MCP_TOKEN"],
+    required: true,
   });
 
   await serverRow.getByRole("button", { name: "Edit" }).click();
   await mcpForm.getByLabel("Enabled").uncheck();
+  await mcpForm.getByLabel("Required at startup").uncheck();
   await mcpForm.getByLabel("Connection timeout (ms)").fill("4500");
   await mcpForm.getByRole("button", { name: "Save changes" }).click();
   serverRow = mcpSettings
     .locator(".profile-row")
     .filter({ hasText: "mock_server" });
   await expect(serverRow).toContainText("Disabled");
+  await expect(serverRow).toContainText("Optional");
+  await expect(serverRow).toContainText("health: disabled");
   await expect(serverRow).toContainText("4500 ms");
   expect(api.mcpServers[workspaceA.id]?.[0]).toMatchObject({
     enabled: false,
+    required: false,
     request_timeout_ms: 4500,
   });
   expect(JSON.parse(api.mcpRequestBodies.at(-1)!)).not.toHaveProperty("env");

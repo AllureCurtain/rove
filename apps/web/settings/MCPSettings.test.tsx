@@ -5,6 +5,7 @@ import { ProductApiError } from "../product/product-client";
 import {
   MCPSettings,
   createEmptyMcpServerDraft,
+  describeMcpHealth,
   describeMcpProbeFailure,
   mcpServerDraftFromConfig,
   mcpServerRequestFromDraft,
@@ -33,6 +34,7 @@ describe("MCPSettings", () => {
     const draft = mcpServerDraftFromConfig({
       name: "workspace_tools",
       enabled: false,
+      required: false,
       transport: "stdio",
       command: "python",
       args: ["server.py", "--verbose"],
@@ -43,6 +45,7 @@ describe("MCPSettings", () => {
     expect(draft).toMatchObject({
       name: "workspace_tools",
       enabled: false,
+      required: false,
       argsText: "server.py\n--verbose",
       envNamesText: "MCP_TOKEN\nMCP_REGION",
       timeoutMs: "9000",
@@ -50,6 +53,7 @@ describe("MCPSettings", () => {
     expect(mcpServerRequestFromDraft(draft)).toEqual({
       name: "workspace_tools",
       enabled: false,
+      required: false,
       transport: "stdio",
       command: "python",
       args: ["server.py", "--verbose"],
@@ -70,6 +74,7 @@ describe("MCPSettings", () => {
     ).toEqual({
       name: "legacy_sse",
       enabled: true,
+      required: true,
       transport: "sse",
       args: [],
       env_names: [],
@@ -90,12 +95,32 @@ describe("MCPSettings", () => {
     ).toEqual({
       name: "streaming",
       enabled: true,
+      required: true,
       transport: "streamable_http",
       args: [],
       env_names: [],
       url: "https://mcp.example.com/mcp",
       request_timeout_ms: 30_000,
     });
+  });
+
+  it("describes unknown and populated MCP health without exposing identifiers", () => {
+    expect(describeMcpHealth(undefined)).toBe("health: unknown");
+    expect(
+      describeMcpHealth({
+        server_name: "workspace_tools",
+        required: false,
+        transport: "streamable_http",
+        status: "ready",
+        server_config_hash: "sha256:config",
+        server_identity_hash: "sha256:identity",
+        protocol_version: "2025-03-26",
+        catalog_hash: "sha256:catalog",
+        capability_snapshot_id: "sha256:snapshot",
+        tool_count: 3,
+        refreshed_at: "2026-08-10T00:00:00Z",
+      }),
+    ).toBe("health: ready (3 tools)");
   });
 
   it("maps typed probe failures to actionable messages", () => {

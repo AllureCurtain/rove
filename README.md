@@ -49,8 +49,9 @@ Complete C0-C3, and the merged CDH G1-G7 control/evidence/settings delivery:
 - CLI one-shot runs, REPL, bounded full-screen TUI, resume picker, tool
   details, configuration inspection, and session listing.
 - Durable run state, canonical event streams, bounded tool execution, layered
-  memory, provider routing, MCP stdio plus the existing legacy SSE path, and
-  deterministic benchmark evidence.
+  memory, provider routing, MCP stdio/deprecated SSE/Streamable HTTP with rich
+  results, negotiated server identity, and run-pinned live catalog refresh,
+  and deterministic benchmark evidence.
 - API-authoritative Steer and durable Follow-up controls, terminal-boundary
   session Fork with inherited read-only history, and session-scoped model/
   reasoning/approval/step-limit snapshots.
@@ -194,9 +195,9 @@ CLI / API / benchmark
 
 The important boundaries are deliberate:
 
-- Web, API, CLI, and benchmark surfaces do not own independent Agent loops;
-  they reuse the persistent Runtime. Consolidating the embedded Core loop and
-  Runtime's remaining iteration mechanics into one kernel is proposed work.
+- Web, API, CLI, benchmark, and embedding surfaces do not own independent Agent
+  loops; durable hosts and the in-memory embedding host use one Runtime-neutral
+  Core Agent kernel.
 - Provider payloads do not leak into core execution.
 - Tool descriptions, MCP annotations, prompts, and model requests cannot grant
   permission.
@@ -307,7 +308,8 @@ The current source tree does not include:
   distributed rate limiting.
 - Full shell sandboxing beyond the current local policy controls.
 - Built-in vector or provider-backed RAG retrieval.
-- Live MCP catalog refresh and rich result mapping for stdio/legacy SSE.
+- Live MCP catalog refresh for stdio/deprecated SSE; refresh is implemented for
+  Streamable HTTP, and real third-party MCP interoperability remains unclaimed.
 - Phase-specific procedure consumption by Planner, Evaluator, and Finalizer,
   or the proposed OnCall reference evaluation suite.
 - Subagents.

@@ -402,7 +402,7 @@ mod tests {
         dispatcher
             .abandon(
                 &id,
-                McpProtocolError::Transport {
+                McpProtocolError::NotSent {
                     detail: "write failed before send".to_string(),
                 },
             )

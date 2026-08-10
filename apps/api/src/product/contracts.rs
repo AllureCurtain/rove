@@ -907,6 +907,7 @@ impl ProductMcpTransport {
 pub struct ProductMcpServer {
     pub name: String,
     pub enabled: bool,
+    pub required: bool,
     pub transport: ProductMcpTransport,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command: Option<String>,
@@ -926,12 +927,52 @@ pub struct ProductMcpServersResponse {
     pub total: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductMcpHealthStatus {
+    Ready,
+    Degraded,
+    Disabled,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductMcpHealthSnapshot {
+    pub server_name: String,
+    pub required: bool,
+    pub transport: ProductMcpTransport,
+    pub status: ProductMcpHealthStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_config_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_identity_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catalog_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capability_snapshot_id: Option<String>,
+    pub tool_count: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refreshed_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductMcpHealthResponse {
+    pub servers: Vec<ProductMcpHealthSnapshot>,
+    pub total: usize,
+}
+
 #[derive(Debug, Clone, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CreateProductMcpServerRequest {
     pub name: String,
     #[serde(default = "default_product_mcp_enabled")]
     pub enabled: bool,
+    #[serde(default = "default_product_mcp_required")]
+    pub required: bool,
     pub transport: ProductMcpTransport,
     #[serde(default)]
     pub command: Option<String>,
@@ -949,6 +990,8 @@ pub struct CreateProductMcpServerRequest {
 #[serde(deny_unknown_fields)]
 pub struct UpdateProductMcpServerRequest {
     pub enabled: bool,
+    #[serde(default = "default_product_mcp_required")]
+    pub required: bool,
     pub transport: ProductMcpTransport,
     #[serde(default)]
     pub command: Option<String>,
@@ -978,6 +1021,10 @@ pub struct ProductMcpProbeResponse {
 }
 
 const fn default_product_mcp_enabled() -> bool {
+    true
+}
+
+const fn default_product_mcp_required() -> bool {
     true
 }
 

@@ -32,6 +32,7 @@ pub use tool_result::{
 };
 pub use tools::{
     MAX_CAPABILITY_ID_BYTES, Tool, ToolContext, ToolOutput, ToolRegistrationError, ToolRegistry,
+    ToolRegistryPublisher, ToolRegistryReplacement,
 };
 pub use types::{
     Action, CallId, ToolCallAction, ToolCapability, ToolDescriptor, ToolExecutionMetadata,

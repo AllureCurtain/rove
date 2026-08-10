@@ -11,8 +11,9 @@ use rove_runtime::tools::mcp_config::{
     update_product_mcp_server_sync,
 };
 use rove_runtime::tools::mcp_proxy::{
-    McpProbeFailure, McpProbeFailureKind, McpServerConfig, McpToolInfo, McpTransport,
-    McpTransportPolicy, probe_mcp_server_with_environment,
+    McpProbeFailure, McpProbeFailureKind, McpServerConfig, McpServerHealthStatus,
+    McpServerRuntimeSnapshot, McpToolInfo, McpTransport, McpTransportPolicy,
+    probe_mcp_server_with_environment,
 };
 use serde::Deserialize;
 use utoipa::IntoParams;
@@ -64,6 +65,57 @@ pub(crate) async fn list_product_mcp_servers(
 }
 
 #[utoipa::path(
+    get,
+    path = "/product/mcp/health",
+    tag = docs::PRODUCT_TAG,
+    security(("BearerAuth" = [])),
+    params(ProductMcpWorkspaceQuery),
+    responses(
+        (status = 200, description = "Last real runtime MCP activation health; unactivated servers are explicitly unknown", body = ProductMcpHealthResponse),
+        (status = 400, description = "Missing or invalid product workspace id", body = ApiErrorResponse),
+        (status = 404, description = "Product workspace not found", body = ApiErrorResponse),
+        (status = 409, description = "MCP config is locked, unsafe, or corrupt", body = ApiErrorResponse),
+        (status = 500, description = "MCP config read failed", body = ApiErrorResponse),
+        (status = 503, description = "ProductStore is unavailable", body = ApiErrorResponse)
+    )
+)]
+pub(crate) async fn get_product_mcp_health(
+    State(state): State<ApiState>,
+    query: Result<Query<ProductMcpWorkspaceQuery>, QueryRejection>,
+) -> Result<Json<ProductMcpHealthResponse>, ApiError> {
+    let Query(query) = product_mcp_query(query)?;
+    let path = product_mcp_config_path(&state, &query.workspace_id).await?;
+    let read_path = path.clone();
+    let servers = tokio::task::spawn_blocking(move || list_product_mcp_servers_sync(&read_path))
+        .await
+        .map_err(|_| product_mcp_internal())?
+        .map_err(map_mcp_io_error)?;
+    let runtime = state
+        .inner
+        .mcp_health
+        .read()
+        .await
+        .get(&path)
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|snapshot| (snapshot.server_config_id.clone(), snapshot))
+        .collect::<HashMap<_, _>>();
+    let snapshots = servers
+        .into_iter()
+        .map(|server| {
+            let runtime = runtime.get(&server.name);
+            product_mcp_health(server, runtime)
+        })
+        .collect::<Vec<_>>();
+    let total = snapshots.len();
+    Ok(Json(ProductMcpHealthResponse {
+        servers: snapshots,
+        total,
+    }))
+}
+
+#[utoipa::path(
     post,
     path = "/product/mcp/servers",
     tag = docs::PRODUCT_TAG,
@@ -87,11 +139,13 @@ pub(crate) async fn create_product_mcp_server(
     let Query(query) = product_mcp_query(query)?;
     let request = super::routes::product_json(body)?;
     let path = product_mcp_config_path(&state, &query.workspace_id).await?;
+    let health_path = path.clone();
     let server = mcp_config_from_create(request);
     let server = tokio::task::spawn_blocking(move || create_product_mcp_server_sync(&path, server))
         .await
         .map_err(|_| product_mcp_internal())?
         .map_err(map_mcp_io_error)?;
+    state.inner.mcp_health.write().await.remove(&health_path);
     Ok((StatusCode::CREATED, Json(product_mcp_server(server))))
 }
 
@@ -123,12 +177,14 @@ pub(crate) async fn update_product_mcp_server(
     let Query(query) = product_mcp_query(query)?;
     let request = super::routes::product_json(body)?;
     let path = product_mcp_config_path(&state, &query.workspace_id).await?;
+    let health_path = path.clone();
     let server = mcp_config_from_update(name.clone(), request);
     let server =
         tokio::task::spawn_blocking(move || update_product_mcp_server_sync(&path, &name, server))
             .await
             .map_err(|_| product_mcp_internal())?
             .map_err(map_mcp_io_error)?;
+    state.inner.mcp_health.write().await.remove(&health_path);
     Ok(Json(product_mcp_server(server)))
 }
 
@@ -157,10 +213,12 @@ pub(crate) async fn delete_product_mcp_server(
 ) -> Result<StatusCode, ApiError> {
     let Query(query) = product_mcp_query(query)?;
     let path = product_mcp_config_path(&state, &query.workspace_id).await?;
+    let health_path = path.clone();
     tokio::task::spawn_blocking(move || delete_product_mcp_server_sync(&path, &name))
         .await
         .map_err(|_| product_mcp_internal())?
         .map_err(map_mcp_io_error)?;
+    state.inner.mcp_health.write().await.remove(&health_path);
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -298,6 +356,7 @@ fn mcp_config_from_create(request: CreateProductMcpServerRequest) -> McpServerCo
     mcp_config(ProductMcpConfigInput {
         name: request.name,
         enabled: request.enabled,
+        required: request.required,
         transport: request.transport,
         command: request.command,
         args: request.args,
@@ -311,6 +370,7 @@ fn mcp_config_from_update(name: String, request: UpdateProductMcpServerRequest) 
     mcp_config(ProductMcpConfigInput {
         name,
         enabled: request.enabled,
+        required: request.required,
         transport: request.transport,
         command: request.command,
         args: request.args,
@@ -323,6 +383,7 @@ fn mcp_config_from_update(name: String, request: UpdateProductMcpServerRequest) 
 struct ProductMcpConfigInput {
     name: String,
     enabled: bool,
+    required: bool,
     transport: ProductMcpTransport,
     command: Option<String>,
     args: Vec<String>,
@@ -335,6 +396,7 @@ fn mcp_config(input: ProductMcpConfigInput) -> McpServerConfig {
     McpServerConfig {
         name: input.name,
         enabled: input.enabled,
+        required: input.required,
         transport: match input.transport {
             ProductMcpTransport::Stdio => McpTransport::Stdio,
             ProductMcpTransport::Sse => McpTransport::Sse,
@@ -357,6 +419,7 @@ fn product_mcp_server(server: McpServerConfig) -> ProductMcpServer {
     ProductMcpServer {
         name: server.name,
         enabled: server.enabled,
+        required: server.required,
         transport,
         command: (transport == ProductMcpTransport::Stdio).then_some(server.command),
         args: server.args,
@@ -364,6 +427,41 @@ fn product_mcp_server(server: McpServerConfig) -> ProductMcpServer {
         url: transport.is_http().then_some(server.url),
         request_timeout_ms: server.policy.request_timeout_ms,
         transport_deprecated: transport.is_deprecated(),
+    }
+}
+
+fn product_mcp_health(
+    server: McpServerConfig,
+    runtime: Option<&McpServerRuntimeSnapshot>,
+) -> ProductMcpHealthSnapshot {
+    let status = runtime.map_or_else(
+        || {
+            if server.enabled {
+                ProductMcpHealthStatus::Unknown
+            } else {
+                ProductMcpHealthStatus::Disabled
+            }
+        },
+        |snapshot| match snapshot.status {
+            McpServerHealthStatus::Ready => ProductMcpHealthStatus::Ready,
+            McpServerHealthStatus::Degraded => ProductMcpHealthStatus::Degraded,
+            McpServerHealthStatus::Disabled => ProductMcpHealthStatus::Disabled,
+        },
+    );
+    ProductMcpHealthSnapshot {
+        server_name: server.name,
+        required: server.required,
+        transport: product_mcp_transport(server.transport),
+        status,
+        server_config_hash: runtime.map(|snapshot| snapshot.server_config_hash.clone()),
+        server_identity_hash: runtime.map(|snapshot| snapshot.server_identity_hash.clone()),
+        protocol_version: runtime.and_then(|snapshot| snapshot.protocol_version.clone()),
+        catalog_hash: runtime.and_then(|snapshot| snapshot.catalog_hash.clone()),
+        capability_snapshot_id: runtime
+            .and_then(|snapshot| snapshot.capability_snapshot_id.clone()),
+        tool_count: runtime.map_or(0, |snapshot| snapshot.tool_count),
+        failure_code: runtime.and_then(|snapshot| snapshot.failure_code.clone()),
+        refreshed_at: runtime.map(|snapshot| snapshot.refreshed_at.clone()),
     }
 }
 

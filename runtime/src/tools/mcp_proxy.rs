@@ -1,7 +1,7 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::{Arc, Mutex as StdMutex, RwLock as StdRwLock, Weak};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -11,23 +11,34 @@ use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufR
 use tokio::process::{ChildStdin, ChildStdout};
 use tokio::sync::Mutex;
 use tokio::time::timeout;
+use tokio_util::sync::CancellationToken;
 
 use crate::environment::{
     EnvironmentError, ExecutionEnvironment, StdioProcessGuard, local_environment,
 };
 use crate::state::tool_artifacts::ToolArtifactStore;
+use crate::tools::mcp::catalog::{
+    CatalogBuilder, McpCatalogSnapshot, McpToolAnnotations, mcp_server_namespace,
+    parse_catalog_page,
+};
+use crate::tools::mcp::protocol::{negotiate_protocol_version, server_identity_hash};
 use crate::workspace::Workspace;
 
 use rove_core::ToolDescriptor;
-use rove_core::{Tool, ToolContext, ToolError, ToolOutput, ToolRegistry};
+use rove_core::{
+    Tool, ToolContext, ToolError, ToolOutput, ToolRegistry, ToolRegistryPublisher,
+    ToolRegistryReplacement,
+};
 
 const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
 const DEFAULT_MCP_REQUEST_TIMEOUT_MS: u64 = 30_000;
 const DEFAULT_MCP_STDERR_CAPTURE_BYTES: usize = 16 * 1024;
 const MAX_MCP_CONFIG_BYTES: usize = 256 * 1024;
-const MAX_MCP_TOOLS_PER_SERVER: usize = 128;
 pub const MAX_MCP_RESPONSE_BYTES: usize = 1024 * 1024;
 const MAX_MCP_ENDPOINT_BYTES: usize = 2_048;
+const MCP_REFRESH_BACKOFF_SECONDS: u64 = 1;
+const MCP_REFRESH_CIRCUIT_BACKOFF_SECONDS: u64 = 30;
+const MCP_REFRESH_CIRCUIT_FAILURES: u32 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -35,6 +46,10 @@ pub struct McpServerConfig {
     pub name: String,
     #[serde(default = "default_mcp_server_enabled")]
     pub enabled: bool,
+    /// A required server blocks runtime activation when it cannot provide a
+    /// complete validated catalog. Optional servers degrade explicitly.
+    #[serde(default = "default_mcp_server_required")]
+    pub required: bool,
     #[serde(default)]
     pub transport: McpTransport,
     /// Command to spawn (stdio transport only).
@@ -105,6 +120,10 @@ fn default_mcp_server_enabled() -> bool {
     true
 }
 
+fn default_mcp_server_required() -> bool {
+    true
+}
+
 fn default_mcp_stderr_capture_bytes() -> usize {
     DEFAULT_MCP_STDERR_CAPTURE_BYTES
 }
@@ -120,6 +139,111 @@ pub struct McpToolInfo {
     pub server_name: String,
     pub remote_name: String,
     pub schema: ToolDescriptor,
+    pub output_schema: Option<Value>,
+    pub annotations: McpToolAnnotations,
+    pub catalog_hash: String,
+    pub protocol_version: String,
+    pub server_identity_hash: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum McpServerHealthStatus {
+    Ready,
+    Degraded,
+    Disabled,
+}
+
+/// Secret-free identity and health facts for one configured MCP server.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpServerRuntimeSnapshot {
+    pub server_config_id: String,
+    pub server_config_hash: String,
+    pub required: bool,
+    pub transport: McpTransport,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol_version: Option<String>,
+    pub server_identity_hash: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catalog_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capability_snapshot_id: Option<String>,
+    pub tool_count: usize,
+    pub status: McpServerHealthStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_code: Option<String>,
+    pub refreshed_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum McpLifecycleFact {
+    Degraded {
+        server_config_id: String,
+        failure_code: String,
+    },
+    CapabilitiesRefreshed {
+        server_config_id: String,
+        snapshot_id: String,
+        added: Vec<String>,
+        removed: Vec<String>,
+        changed: Vec<String>,
+    },
+}
+
+/// Registry-scoped MCP diagnostics and refresh lifecycle authority.
+#[derive(Default)]
+pub struct McpRuntimeState {
+    servers: StdRwLock<BTreeMap<String, McpServerRuntimeSnapshot>>,
+    facts: StdMutex<Vec<McpLifecycleFact>>,
+    cancel: CancellationToken,
+}
+
+impl McpRuntimeState {
+    pub fn snapshots(&self) -> Vec<McpServerRuntimeSnapshot> {
+        self.servers
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .values()
+            .cloned()
+            .collect()
+    }
+
+    pub fn snapshot(&self, server_config_id: &str) -> Option<McpServerRuntimeSnapshot> {
+        self.servers
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(server_config_id)
+            .cloned()
+    }
+
+    pub fn take_facts(&self) -> Vec<McpLifecycleFact> {
+        std::mem::take(
+            &mut *self
+                .facts
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
+
+    fn publish(&self, snapshot: McpServerRuntimeSnapshot) {
+        self.servers
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(snapshot.server_config_id.clone(), snapshot);
+    }
+
+    fn push_fact(&self, fact: McpLifecycleFact) {
+        self.facts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(fact);
+    }
+}
+
+impl Drop for McpRuntimeState {
+    fn drop(&mut self) {
+        self.cancel.cancel();
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -202,51 +326,414 @@ pub async fn register_mcp_tools_with_environment(
     servers: Vec<McpServerConfig>,
     environment: Arc<dyn ExecutionEnvironment>,
 ) -> anyhow::Result<usize> {
-    let mut pending: Vec<Box<dyn Tool>> = Vec::new();
-    for server in servers {
-        if !server.enabled {
+    let runtime_state = Arc::new(McpRuntimeState::default());
+    registry.attach_extension(Arc::clone(&runtime_state));
+    let publisher = registry.publisher();
+    let mut registered = 0_usize;
+
+    for configured in servers {
+        if !configured.enabled {
+            runtime_state.publish(server_runtime_snapshot(
+                &configured,
+                None,
+                McpServerHealthStatus::Disabled,
+                None,
+            ));
             continue;
         }
-        let server = resolve_mcp_server_environment(server)?;
-        match server.transport {
-            McpTransport::Stdio => {
-                if !environment.capabilities().process_stdio {
-                    anyhow::bail!("execution capability unavailable: process_stdio");
-                }
-                let client = Arc::new(
-                    StdioMcpClient::connect_with_environment(server, Arc::clone(&environment))
-                        .await?,
-                );
-                for tool in client.list_tools().await? {
-                    pending.push(Box::new(McpProxyTool {
-                        client: client.clone(),
-                        tool,
-                    }));
+        let activation = activate_mcp_server(configured.clone(), Arc::clone(&environment))
+            .await
+            .and_then(|activation| {
+                registry
+                    .try_register_batch(activation.tools)
+                    .map(|count| (count, activation.catalog, activation.refresh_client))
+                    .map_err(anyhow::Error::from)
+            });
+
+        match activation {
+            Ok((count, catalog, refresh_client)) => {
+                registered = registered.saturating_add(count);
+                runtime_state.publish(server_runtime_snapshot(
+                    &configured,
+                    Some(&catalog),
+                    McpServerHealthStatus::Ready,
+                    None,
+                ));
+                if let Some(client) = refresh_client {
+                    spawn_streamable_catalog_controller(
+                        client,
+                        configured,
+                        publisher.clone(),
+                        Arc::downgrade(&runtime_state),
+                    );
                 }
             }
-            McpTransport::Sse => {
-                let client = Arc::new(SseMcpClient::connect(server).await?);
-                for tool in client.list_tools().await? {
-                    pending.push(Box::new(McpSseProxyTool {
-                        client: client.clone(),
-                        tool,
-                    }));
-                }
-            }
-            McpTransport::StreamableHttp => {
-                let client = Arc::new(connect_streamable_http(&server).await?);
-                for tool in streamable_http_tool_infos(&client).await? {
-                    pending.push(Box::new(McpStreamableHttpProxyTool {
-                        client: client.clone(),
-                        tool,
-                    }));
+            Err(error) => {
+                let failure_code = activation_failure_code(&error).to_string();
+                runtime_state.publish(server_runtime_snapshot(
+                    &configured,
+                    None,
+                    McpServerHealthStatus::Degraded,
+                    Some(failure_code.clone()),
+                ));
+                runtime_state.push_fact(McpLifecycleFact::Degraded {
+                    server_config_id: configured.name.clone(),
+                    failure_code: failure_code.clone(),
+                });
+                if configured.required {
+                    anyhow::bail!(
+                        "required MCP server `{}` failed activation ({failure_code})",
+                        configured.name
+                    );
                 }
             }
         }
     }
-    registry
-        .try_register_batch(pending)
-        .map_err(anyhow::Error::from)
+    Ok(registered)
+}
+
+struct ActivatedMcpServer {
+    tools: Vec<Box<dyn Tool>>,
+    catalog: McpCatalogSnapshot,
+    refresh_client: Option<Arc<crate::tools::mcp::client::StreamableHttpClient>>,
+}
+
+async fn activate_mcp_server(
+    server: McpServerConfig,
+    environment: Arc<dyn ExecutionEnvironment>,
+) -> anyhow::Result<ActivatedMcpServer> {
+    let server = resolve_mcp_server_environment(server)?;
+    match server.transport {
+        McpTransport::Stdio => {
+            if !environment.capabilities().process_stdio {
+                anyhow::bail!("execution capability unavailable: process_stdio");
+            }
+            let client = Arc::new(
+                StdioMcpClient::connect_with_environment(server, Arc::clone(&environment)).await?,
+            );
+            let infos = client.list_tools().await?;
+            let catalog = catalog_from_tool_infos(&infos)?;
+            let tools = infos
+                .into_iter()
+                .map(|tool| {
+                    Box::new(McpProxyTool {
+                        client: client.clone(),
+                        tool,
+                    }) as Box<dyn Tool>
+                })
+                .collect();
+            Ok(ActivatedMcpServer {
+                tools,
+                catalog,
+                refresh_client: None,
+            })
+        }
+        McpTransport::Sse => {
+            let client = Arc::new(SseMcpClient::connect(server).await?);
+            let infos = client.list_tools().await?;
+            let catalog = catalog_from_tool_infos(&infos)?;
+            let tools = infos
+                .into_iter()
+                .map(|tool| {
+                    Box::new(McpSseProxyTool {
+                        client: client.clone(),
+                        tool,
+                    }) as Box<dyn Tool>
+                })
+                .collect();
+            Ok(ActivatedMcpServer {
+                tools,
+                catalog,
+                refresh_client: None,
+            })
+        }
+        McpTransport::StreamableHttp => {
+            let client = Arc::new(connect_streamable_http(&server).await?);
+            let catalog = client
+                .discover_catalog()
+                .await
+                .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+            let tools = streamable_http_proxy_tools(Arc::clone(&client), &catalog);
+            Ok(ActivatedMcpServer {
+                tools,
+                catalog,
+                refresh_client: Some(client),
+            })
+        }
+    }
+}
+
+fn catalog_from_tool_infos(infos: &[McpToolInfo]) -> anyhow::Result<McpCatalogSnapshot> {
+    let first = infos
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("MCP server exposed no usable tools"))?;
+    Ok(McpCatalogSnapshot {
+        server_name: first.server_name.clone(),
+        protocol_version: first.protocol_version.clone(),
+        server_identity_hash: first.server_identity_hash.clone(),
+        entries: infos
+            .iter()
+            .map(|tool| crate::tools::mcp::catalog::McpCatalogEntry {
+                remote_name: tool.remote_name.clone(),
+                local_name: tool.schema.name.clone(),
+                title: None,
+                description: tool.schema.description.clone(),
+                parameters: tool.schema.parameters.clone(),
+                output_schema: tool.output_schema.clone(),
+                annotations: tool.annotations.clone(),
+                capability_id: tool.schema.capability_id.clone().unwrap_or_default(),
+                raw_descriptor_hash: crate::prompt_metadata::stable_hash(
+                    &serde_json::to_string(&tool.schema).unwrap_or_default(),
+                ),
+            })
+            .collect(),
+        catalog_hash: first.catalog_hash.clone(),
+    })
+}
+
+fn streamable_http_proxy_tools(
+    client: Arc<crate::tools::mcp::client::StreamableHttpClient>,
+    catalog: &McpCatalogSnapshot,
+) -> Vec<Box<dyn Tool>> {
+    tool_infos_from_catalog(catalog)
+        .into_iter()
+        .map(|tool| {
+            Box::new(McpStreamableHttpProxyTool {
+                client: Arc::clone(&client),
+                tool,
+            }) as Box<dyn Tool>
+        })
+        .collect()
+}
+
+fn spawn_streamable_catalog_controller(
+    client: Arc<crate::tools::mcp::client::StreamableHttpClient>,
+    server: McpServerConfig,
+    publisher: ToolRegistryPublisher,
+    state: Weak<McpRuntimeState>,
+) {
+    tokio::spawn(async move {
+        let mut consecutive_failures = 0_u32;
+        loop {
+            let Some(runtime_state) = state.upgrade() else {
+                let _ = client.close().await;
+                return;
+            };
+            let cancel = runtime_state.cancel.clone();
+            drop(runtime_state);
+            let poll = tokio::select! {
+                _ = cancel.cancelled() => {
+                    let _ = client.close().await;
+                    return;
+                }
+                result = client.poll_notifications() => result,
+            };
+
+            match poll {
+                Ok(_) => {
+                    if client.tools_changed().await {
+                        if refresh_streamable_catalog(&client, &server, &publisher, &state).await {
+                            consecutive_failures = 0;
+                        } else {
+                            consecutive_failures = consecutive_failures.saturating_add(1);
+                        }
+                        // Notifications observed while discovering describe the
+                        // snapshot just fetched and need no second refresh.
+                        let _ = client.take_events().await;
+                    } else {
+                        consecutive_failures = 0;
+                        mark_mcp_notification_stream_ready(&state, &server.name);
+                    }
+                }
+                Err(_) => {
+                    consecutive_failures = consecutive_failures.saturating_add(1);
+                    mark_mcp_degraded(&state, &server.name, "mcp_notification_poll_failed");
+                }
+            }
+
+            let backoff = mcp_refresh_backoff(consecutive_failures);
+            tokio::select! {
+                _ = cancel.cancelled() => {
+                    let _ = client.close().await;
+                    return;
+                }
+                _ = tokio::time::sleep(backoff) => {}
+            }
+        }
+    });
+}
+
+fn mcp_refresh_backoff(consecutive_failures: u32) -> Duration {
+    Duration::from_secs(if consecutive_failures >= MCP_REFRESH_CIRCUIT_FAILURES {
+        MCP_REFRESH_CIRCUIT_BACKOFF_SECONDS
+    } else {
+        MCP_REFRESH_BACKOFF_SECONDS
+    })
+}
+
+async fn refresh_streamable_catalog(
+    client: &Arc<crate::tools::mcp::client::StreamableHttpClient>,
+    server: &McpServerConfig,
+    publisher: &ToolRegistryPublisher,
+    state: &Weak<McpRuntimeState>,
+) -> bool {
+    let catalog = match client.discover_catalog().await {
+        Ok(catalog) => catalog,
+        Err(_) => {
+            mark_mcp_degraded(state, &server.name, "mcp_catalog_refresh_failed");
+            return false;
+        }
+    };
+    let tools = streamable_http_proxy_tools(Arc::clone(client), &catalog);
+    let namespace = mcp_server_namespace(&server.name);
+    let replacement = match publisher.try_replace_prefix(&namespace, tools) {
+        Some(Ok(replacement)) => replacement,
+        Some(Err(_)) => {
+            mark_mcp_degraded(state, &server.name, "mcp_catalog_publish_failed");
+            return false;
+        }
+        None => return false,
+    };
+    publish_refreshed_snapshot(state, server, &catalog, replacement);
+    true
+}
+
+fn publish_refreshed_snapshot(
+    state: &Weak<McpRuntimeState>,
+    server: &McpServerConfig,
+    catalog: &McpCatalogSnapshot,
+    replacement: ToolRegistryReplacement,
+) {
+    let Some(state) = state.upgrade() else {
+        return;
+    };
+    state.publish(server_runtime_snapshot(
+        server,
+        Some(catalog),
+        McpServerHealthStatus::Ready,
+        None,
+    ));
+    state.push_fact(McpLifecycleFact::CapabilitiesRefreshed {
+        server_config_id: server.name.clone(),
+        snapshot_id: catalog.catalog_hash.clone(),
+        added: replacement.added,
+        removed: replacement.removed,
+        changed: replacement.changed,
+    });
+}
+
+fn mark_mcp_degraded(state: &Weak<McpRuntimeState>, server_name: &str, failure_code: &str) {
+    let Some(state) = state.upgrade() else {
+        return;
+    };
+    if let Some(mut snapshot) = state.snapshot(server_name) {
+        snapshot.status = McpServerHealthStatus::Degraded;
+        snapshot.failure_code = Some(failure_code.to_string());
+        snapshot.refreshed_at = chrono::Utc::now().to_rfc3339();
+        state.publish(snapshot);
+    }
+    state.push_fact(McpLifecycleFact::Degraded {
+        server_config_id: server_name.to_string(),
+        failure_code: failure_code.to_string(),
+    });
+}
+
+fn mark_mcp_notification_stream_ready(state: &Weak<McpRuntimeState>, server_name: &str) {
+    let Some(state) = state.upgrade() else {
+        return;
+    };
+    let Some(mut snapshot) = state.snapshot(server_name) else {
+        return;
+    };
+    if snapshot.failure_code.as_deref() != Some("mcp_notification_poll_failed") {
+        return;
+    }
+    snapshot.status = McpServerHealthStatus::Ready;
+    snapshot.failure_code = None;
+    snapshot.refreshed_at = chrono::Utc::now().to_rfc3339();
+    state.publish(snapshot);
+}
+
+fn server_runtime_snapshot(
+    server: &McpServerConfig,
+    catalog: Option<&McpCatalogSnapshot>,
+    status: McpServerHealthStatus,
+    failure_code: Option<String>,
+) -> McpServerRuntimeSnapshot {
+    let catalog_hash = catalog.map(|catalog| catalog.catalog_hash.clone());
+    McpServerRuntimeSnapshot {
+        server_config_id: server.name.clone(),
+        server_config_hash: safe_server_config_hash(server),
+        required: server.required,
+        transport: server.transport,
+        protocol_version: catalog.map(|catalog| catalog.protocol_version.clone()),
+        server_identity_hash: catalog
+            .map(|catalog| catalog.server_identity_hash.clone())
+            .unwrap_or_else(|| configured_server_identity_hash(server)),
+        capability_snapshot_id: catalog_hash.clone(),
+        catalog_hash,
+        tool_count: catalog.map(McpCatalogSnapshot::tool_count).unwrap_or(0),
+        status,
+        failure_code,
+        refreshed_at: chrono::Utc::now().to_rfc3339(),
+    }
+}
+
+fn configured_server_identity_hash(server: &McpServerConfig) -> String {
+    crate::prompt_metadata::stable_hash(&format!(
+        "mcp-server-config:v1:{}:{:?}",
+        server.name, server.transport
+    ))
+}
+
+fn safe_server_config_hash(server: &McpServerConfig) -> String {
+    let endpoint = reqwest::Url::parse(&server.url).ok().map(|url| {
+        format!(
+            "{}://{}{}{}",
+            url.scheme(),
+            url.host_str().unwrap_or_default(),
+            url.port()
+                .map(|port| format!(":{port}"))
+                .unwrap_or_default(),
+            url.path()
+        )
+    });
+    let mut env_names = server.env.keys().cloned().collect::<Vec<_>>();
+    env_names.extend(server.env_names.clone());
+    env_names.sort();
+    env_names.dedup();
+    crate::prompt_metadata::stable_hash(
+        &serde_json::json!({
+            "name": server.name,
+            "enabled": server.enabled,
+            "required": server.required,
+            "transport": server.transport,
+            "command_hash": crate::prompt_metadata::stable_hash(&server.command),
+            "args_hash": crate::prompt_metadata::stable_hash(&serde_json::to_string(&server.args).unwrap_or_default()),
+            "env_names": env_names,
+            "endpoint": endpoint,
+            "policy": server.policy,
+        })
+        .to_string(),
+    )
+}
+
+fn activation_failure_code(error: &anyhow::Error) -> &'static str {
+    let message = error.to_string();
+    if message.contains("environment variable") {
+        "mcp_environment_missing"
+    } else if message.contains("timed out") {
+        "mcp_activation_timeout"
+    } else if message.contains("must use https") {
+        "mcp_transport_policy_blocked"
+    } else if message.contains("schema") || message.contains("catalog") || message.contains("tool")
+    {
+        "mcp_catalog_invalid"
+    } else if message.contains("capability unavailable") || message.contains("spawn") {
+        "mcp_activation_unavailable"
+    } else {
+        "mcp_activation_failed"
+    }
 }
 
 pub fn resolve_mcp_server_environment(
@@ -291,7 +778,7 @@ pub async fn probe_mcp_server_with_environment(
                         kind: McpProbeFailureKind::Spawn,
                     });
                 }
-                let client = StdioMcpClient::spawn_with_environment(server, environment)
+                let mut client = StdioMcpClient::spawn_with_environment(server, environment)
                     .await
                     .map_err(|_| McpProbeFailure {
                         kind: McpProbeFailureKind::Spawn,
@@ -343,10 +830,15 @@ pub async fn probe_mcp_server_with_environment(
 
 fn classify_mcp_probe_error(error: anyhow::Error) -> McpProbeFailure {
     let message = error.to_string();
-    let kind = if message.contains("timed out") {
+    let kind = if message.contains("exposed no usable tools") {
+        McpProbeFailureKind::NoTools
+    } else if message.contains("timed out") {
         McpProbeFailureKind::Timeout
     } else if error.chain().any(|source| {
-        source.downcast_ref::<serde_json::Error>().is_some()
+        source
+            .downcast_ref::<crate::tools::mcp::protocol::McpProtocolError>()
+            .is_some()
+            || source.downcast_ref::<serde_json::Error>().is_some()
             || source
                 .downcast_ref::<reqwest::Error>()
                 .is_some_and(reqwest::Error::is_decode)
@@ -383,7 +875,10 @@ impl Tool for McpProxyTool {
         self.tool.schema.clone()
     }
 
-    async fn execute(&self, args: Value, _ctx: &ToolContext<'_>) -> Result<ToolOutput, ToolError> {
+    async fn execute(&self, args: Value, ctx: &ToolContext<'_>) -> Result<ToolOutput, ToolError> {
+        let services = crate::tools::runtime_context::runtime_tool_services(ctx).ok();
+        let artifacts = services.and_then(|services| services.tool_artifacts.as_deref());
+        let started = std::time::Instant::now();
         let result = self
             .client
             .call_tool(&self.tool.remote_name, args)
@@ -391,12 +886,18 @@ impl Tool for McpProxyTool {
             .map_err(|err| ToolError::ExecutionFailed {
                 reason: err.to_string(),
             })?;
-        Ok(ToolOutput::text(mcp_call_result_to_text(result)))
+        let duration_ms = elapsed_millis(started);
+        let context = mcp_result_context(&self.tool, ctx, artifacts, duration_ms, None);
+        Ok(ToolOutput::from_envelope(
+            crate::tools::mcp::result_mapping::envelope_from_mcp_result(&result, &context).await,
+        ))
     }
 }
 
 pub struct StdioMcpClient {
     server_name: String,
+    server_identity_hash: String,
+    protocol_version: String,
     next_id: AtomicU64,
     policy: McpTransportPolicy,
     _child: StdMutex<Option<StdioProcessGuard>>,
@@ -414,7 +915,7 @@ impl StdioMcpClient {
         config: McpServerConfig,
         environment: Arc<dyn ExecutionEnvironment>,
     ) -> anyhow::Result<Self> {
-        let client = Self::spawn_with_environment(config, environment).await?;
+        let mut client = Self::spawn_with_environment(config, environment).await?;
         client.initialize().await?;
         Ok(client)
     }
@@ -443,6 +944,8 @@ impl StdioMcpClient {
         spawn_stderr_capture(stderr, stderr_capture.clone());
 
         Ok(Self {
+            server_identity_hash: configured_server_identity_hash(&config),
+            protocol_version: MCP_PROTOCOL_VERSION.to_string(),
             server_name: config.name,
             next_id: AtomicU64::new(1),
             policy: config.policy,
@@ -455,36 +958,49 @@ impl StdioMcpClient {
         })
     }
 
-    async fn initialize(&self) -> anyhow::Result<()> {
-        self.request(
-            "initialize",
-            json!({
-                "protocolVersion": MCP_PROTOCOL_VERSION,
-                "capabilities": {},
-                "clientInfo": {
-                    "name": "rove",
-                    "version": env!("CARGO_PKG_VERSION")
-                }
-            }),
-        )
-        .await?;
+    async fn initialize(&mut self) -> anyhow::Result<()> {
+        let result = self
+            .request(
+                "initialize",
+                json!({
+                    "protocolVersion": MCP_PROTOCOL_VERSION,
+                    "capabilities": {},
+                    "clientInfo": {
+                        "name": "rove",
+                        "version": env!("CARGO_PKG_VERSION")
+                    }
+                }),
+            )
+            .await?;
+        self.protocol_version =
+            negotiate_protocol_version(result.get("protocolVersion").and_then(Value::as_str))?;
+        self.server_identity_hash = server_identity_hash(&result)?;
         self.notify("notifications/initialized", json!({})).await?;
         Ok(())
     }
 
     pub async fn list_tools(&self) -> anyhow::Result<Vec<McpToolInfo>> {
-        let result = self.request("tools/list", json!({})).await?;
-        let tools = result
-            .get("tools")
-            .and_then(Value::as_array)
-            .ok_or_else(|| anyhow::anyhow!("MCP tools/list response missing tools array"))?;
-        if tools.len() > MAX_MCP_TOOLS_PER_SERVER {
-            anyhow::bail!("MCP tools/list response contains too many tools");
+        Ok(tool_infos_from_catalog(&self.discover_catalog().await?))
+    }
+
+    async fn discover_catalog(&self) -> anyhow::Result<McpCatalogSnapshot> {
+        let mut builder =
+            CatalogBuilder::new(self.server_name.clone(), self.protocol_version.clone())
+                .with_server_identity_hash(self.server_identity_hash.clone());
+        let mut cursor: Option<String> = None;
+        loop {
+            let params = cursor
+                .as_ref()
+                .map_or_else(|| json!({}), |cursor| json!({ "cursor": cursor }));
+            let page = parse_catalog_page(
+                &self.server_name,
+                &self.request("tools/list", params).await?,
+            )?;
+            match builder.push_page(page)? {
+                Some(next) => cursor = Some(next),
+                None => return Ok(builder.finish()?),
+            }
         }
-        tools
-            .iter()
-            .map(|tool| self.parse_tool(tool))
-            .collect::<anyhow::Result<Vec<_>>>()
     }
 
     pub async fn call_tool(&self, name: &str, arguments: Value) -> anyhow::Result<Value> {
@@ -536,42 +1052,6 @@ impl StdioMcpClient {
             .await
             .write_message(&notification)
             .await
-    }
-
-    fn parse_tool(&self, tool: &Value) -> anyhow::Result<McpToolInfo> {
-        let remote_name = tool
-            .get("name")
-            .and_then(Value::as_str)
-            .filter(|name| !name.trim().is_empty())
-            .ok_or_else(|| anyhow::anyhow!("MCP tool missing name"))?
-            .to_string();
-        let description = tool
-            .get("description")
-            .and_then(Value::as_str)
-            .unwrap_or("MCP server tool")
-            .to_string();
-        let parameters = tool
-            .get("inputSchema")
-            .cloned()
-            .unwrap_or_else(|| json!({ "type": "object" }));
-        // Remote annotations describe intent; they are not a trusted local policy grant.
-        let destructive = true;
-        let parallel_safe = false;
-        let (name, capability_id) = mcp_tool_identity(&self.server_name, &remote_name);
-
-        Ok(McpToolInfo {
-            server_name: self.server_name.clone(),
-            remote_name,
-            schema: ToolDescriptor {
-                name,
-                description,
-                parameters,
-                destructive,
-                parallel_safe,
-                capability_id: Some(capability_id),
-                capability: None,
-            },
-        })
     }
 }
 
@@ -632,31 +1112,12 @@ async fn read_bounded_json_line<R: AsyncBufRead + Unpin>(
     }
 }
 
-fn mcp_call_result_to_text(result: Value) -> String {
-    let Some(content) = result.get("content").and_then(Value::as_array) else {
-        return result.to_string();
-    };
-
-    let mut parts = Vec::new();
-    for item in content {
-        if item.get("type").and_then(Value::as_str) == Some("text")
-            && let Some(text) = item.get("text").and_then(Value::as_str)
-        {
-            parts.push(text.to_string());
-        }
-    }
-
-    if parts.is_empty() {
-        result.to_string()
-    } else {
-        parts.join("\n")
-    }
-}
-
 // --- SSE Transport ---
 
 pub struct SseMcpClient {
     server_name: String,
+    server_identity_hash: String,
+    protocol_version: String,
     http: reqwest::Client,
     endpoint: String,
     next_id: AtomicU64,
@@ -670,7 +1131,9 @@ impl SseMcpClient {
             .build()?;
         let endpoint = discover_endpoint(&http, &config.url).await?;
 
-        let client = Self {
+        let mut client = Self {
+            server_identity_hash: configured_server_identity_hash(&config),
+            protocol_version: MCP_PROTOCOL_VERSION.to_string(),
             server_name: config.name,
             http,
             endpoint,
@@ -681,36 +1144,49 @@ impl SseMcpClient {
         Ok(client)
     }
 
-    async fn initialize(&self) -> anyhow::Result<()> {
-        self.request(
-            "initialize",
-            json!({
-                "protocolVersion": MCP_PROTOCOL_VERSION,
-                "capabilities": {},
-                "clientInfo": {
-                    "name": "rove",
-                    "version": env!("CARGO_PKG_VERSION")
-                }
-            }),
-        )
-        .await?;
+    async fn initialize(&mut self) -> anyhow::Result<()> {
+        let result = self
+            .request(
+                "initialize",
+                json!({
+                    "protocolVersion": MCP_PROTOCOL_VERSION,
+                    "capabilities": {},
+                    "clientInfo": {
+                        "name": "rove",
+                        "version": env!("CARGO_PKG_VERSION")
+                    }
+                }),
+            )
+            .await?;
+        self.protocol_version =
+            negotiate_protocol_version(result.get("protocolVersion").and_then(Value::as_str))?;
+        self.server_identity_hash = server_identity_hash(&result)?;
         self.notify("notifications/initialized", json!({})).await?;
         Ok(())
     }
 
     pub async fn list_tools(&self) -> anyhow::Result<Vec<McpToolInfo>> {
-        let result = self.request("tools/list", json!({})).await?;
-        let tools = result
-            .get("tools")
-            .and_then(Value::as_array)
-            .ok_or_else(|| anyhow::anyhow!("MCP tools/list response missing tools array"))?;
-        if tools.len() > MAX_MCP_TOOLS_PER_SERVER {
-            anyhow::bail!("MCP tools/list response contains too many tools");
+        Ok(tool_infos_from_catalog(&self.discover_catalog().await?))
+    }
+
+    async fn discover_catalog(&self) -> anyhow::Result<McpCatalogSnapshot> {
+        let mut builder =
+            CatalogBuilder::new(self.server_name.clone(), self.protocol_version.clone())
+                .with_server_identity_hash(self.server_identity_hash.clone());
+        let mut cursor: Option<String> = None;
+        loop {
+            let params = cursor
+                .as_ref()
+                .map_or_else(|| json!({}), |cursor| json!({ "cursor": cursor }));
+            let page = parse_catalog_page(
+                &self.server_name,
+                &self.request("tools/list", params).await?,
+            )?;
+            match builder.push_page(page)? {
+                Some(next) => cursor = Some(next),
+                None => return Ok(builder.finish()?),
+            }
         }
-        tools
-            .iter()
-            .map(|tool| self.parse_tool(tool))
-            .collect::<anyhow::Result<Vec<_>>>()
     }
 
     pub async fn call_tool(&self, name: &str, arguments: Value) -> anyhow::Result<Value> {
@@ -778,42 +1254,6 @@ impl SseMcpClient {
             .send()
             .await?;
         Ok(())
-    }
-
-    fn parse_tool(&self, tool: &Value) -> anyhow::Result<McpToolInfo> {
-        let remote_name = tool
-            .get("name")
-            .and_then(Value::as_str)
-            .filter(|name| !name.trim().is_empty())
-            .ok_or_else(|| anyhow::anyhow!("MCP tool missing name"))?
-            .to_string();
-        let description = tool
-            .get("description")
-            .and_then(Value::as_str)
-            .unwrap_or("MCP server tool")
-            .to_string();
-        let parameters = tool
-            .get("inputSchema")
-            .cloned()
-            .unwrap_or_else(|| json!({ "type": "object" }));
-        // Remote annotations describe intent; they are not a trusted local policy grant.
-        let destructive = true;
-        let parallel_safe = false;
-        let (name, capability_id) = mcp_tool_identity(&self.server_name, &remote_name);
-
-        Ok(McpToolInfo {
-            server_name: self.server_name.clone(),
-            remote_name,
-            schema: ToolDescriptor {
-                name,
-                description,
-                parameters,
-                destructive,
-                parallel_safe,
-                capability_id: Some(capability_id),
-                capability: None,
-            },
-        })
     }
 }
 
@@ -906,7 +1346,10 @@ impl Tool for McpSseProxyTool {
         self.tool.schema.clone()
     }
 
-    async fn execute(&self, args: Value, _ctx: &ToolContext<'_>) -> Result<ToolOutput, ToolError> {
+    async fn execute(&self, args: Value, ctx: &ToolContext<'_>) -> Result<ToolOutput, ToolError> {
+        let services = crate::tools::runtime_context::runtime_tool_services(ctx).ok();
+        let artifacts = services.and_then(|services| services.tool_artifacts.as_deref());
+        let started = std::time::Instant::now();
         let result = self
             .client
             .call_tool(&self.tool.remote_name, args)
@@ -914,7 +1357,11 @@ impl Tool for McpSseProxyTool {
             .map_err(|err| ToolError::ExecutionFailed {
                 reason: err.to_string(),
             })?;
-        Ok(ToolOutput::text(mcp_call_result_to_text(result)))
+        let duration_ms = elapsed_millis(started);
+        let context = mcp_result_context(&self.tool, ctx, artifacts, duration_ms, None);
+        Ok(ToolOutput::from_envelope(
+            crate::tools::mcp::result_mapping::envelope_from_mcp_result(&result, &context).await,
+        ))
     }
 }
 
@@ -966,27 +1413,34 @@ async fn streamable_http_tool_infos(
         .discover_catalog()
         .await
         .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-    Ok(snapshot
+    Ok(tool_infos_from_catalog(&snapshot))
+}
+
+fn tool_infos_from_catalog(snapshot: &McpCatalogSnapshot) -> Vec<McpToolInfo> {
+    snapshot
         .entries
         .iter()
-        .map(|entry| {
-            let (name, capability_id) =
-                mcp_tool_identity(&snapshot.server_name, &entry.remote_name);
-            McpToolInfo {
-                server_name: snapshot.server_name.clone(),
-                remote_name: entry.remote_name.clone(),
-                schema: ToolDescriptor {
-                    name,
-                    description: entry.description.clone(),
-                    parameters: entry.parameters.clone(),
-                    destructive: true,
-                    parallel_safe: false,
-                    capability_id: Some(capability_id),
-                    capability: None,
-                },
-            }
+        .map(|entry| McpToolInfo {
+            server_name: snapshot.server_name.clone(),
+            remote_name: entry.remote_name.clone(),
+            schema: ToolDescriptor {
+                name: entry.local_name.clone(),
+                description: entry.description.clone(),
+                parameters: entry.parameters.clone(),
+                // Remote annotations are untrusted hints. The local policy
+                // remains conservative even when a server claims read-only.
+                destructive: true,
+                parallel_safe: false,
+                capability_id: Some(entry.capability_id.clone()),
+                capability: None,
+            },
+            output_schema: entry.output_schema.clone(),
+            annotations: entry.annotations.clone(),
+            catalog_hash: snapshot.catalog_hash.clone(),
+            protocol_version: snapshot.protocol_version.clone(),
+            server_identity_hash: snapshot.server_identity_hash.clone(),
         })
-        .collect())
+        .collect()
 }
 
 pub struct McpStreamableHttpProxyTool {
@@ -1010,7 +1464,7 @@ impl McpStreamableHttpProxyTool {
     /// `duration_ms` is measured around the call so a slow server is visible in
     /// the report without the mapping having to own a clock.
     async fn result_context<'a>(
-        &self,
+        &'a self,
         ctx: &ToolContext<'_>,
         artifacts: Option<&'a ToolArtifactStore>,
         duration_ms: u64,
@@ -1019,15 +1473,13 @@ impl McpStreamableHttpProxyTool {
             call_id: ctx.call_id.to_string(),
             remote_tool_name: self.tool.remote_name.clone(),
             server_config_id: self.tool.server_name.clone(),
-            server_identity_hash: crate::prompt_metadata::stable_hash(&format!(
-                "mcp-server:v1:{}",
-                self.tool.server_name
-            )),
+            server_identity_hash: self.tool.server_identity_hash.clone(),
             protocol_version: self
                 .client
                 .negotiated_version()
                 .await
                 .unwrap_or_else(|| "unknown".to_string()),
+            capability_snapshot_id: Some(self.tool.catalog_hash.clone()),
             session_hash: self
                 .client
                 .session_id()
@@ -1036,6 +1488,7 @@ impl McpStreamableHttpProxyTool {
                 .map(session_correlation_hash),
             attempt_count: 1,
             duration_ms: Some(duration_ms),
+            output_schema: self.tool.output_schema.as_ref(),
             artifacts,
             captured_at: chrono::Utc::now().to_rfc3339(),
         }
@@ -1057,7 +1510,7 @@ impl Tool for McpStreamableHttpProxyTool {
 
         let started = std::time::Instant::now();
         let outcome = self.client.call_tool(&self.tool.remote_name, args).await;
-        let duration_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+        let duration_ms = elapsed_millis(started);
 
         match outcome {
             Ok(result) => {
@@ -1069,9 +1522,15 @@ impl Tool for McpStreamableHttpProxyTool {
             }
             // A committed request whose effect is unknown must not be presented
             // as a plain failure that a caller might safely retry.
-            Err(error) if error.is_indeterminate() => Err(ToolError::ExecutionFailed {
-                reason: format!("indeterminate MCP tool effect: {error}"),
-            }),
+            Err(error) if error.is_indeterminate() => {
+                let context = self.result_context(ctx, artifacts, duration_ms).await;
+                Ok(ToolOutput::from_envelope(
+                    crate::tools::mcp::result_mapping::indeterminate_envelope(
+                        &context,
+                        &error.to_string(),
+                    ),
+                ))
+            }
             Err(error) => Err(ToolError::ExecutionFailed {
                 reason: error.to_string(),
             }),
@@ -1079,43 +1538,30 @@ impl Tool for McpStreamableHttpProxyTool {
     }
 }
 
-fn sanitize_name(value: &str) -> String {
-    value
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || ch == '_' {
-                ch
-            } else {
-                '_'
-            }
-        })
-        .collect()
+fn elapsed_millis(started: std::time::Instant) -> u64 {
+    started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
 }
 
-fn mcp_tool_identity(server_name: &str, remote_name: &str) -> (String, String) {
-    let server = bounded_identity_component(server_name, "server");
-    let remote = bounded_identity_component(remote_name, "tool");
-    let identity_hash =
-        crate::prompt_metadata::stable_hash(&format!("mcp-tool:v1:{server_name}\0{remote_name}"));
-    let short_hash = identity_hash
-        .strip_prefix("sha256:")
-        .unwrap_or(&identity_hash)
-        .chars()
-        .take(12)
-        .collect::<String>();
-    (
-        format!("mcp__{server}__{remote}"),
-        format!("mcp.{server}.{remote}.{short_hash}"),
-    )
-}
-
-fn bounded_identity_component(value: &str, fallback: &str) -> String {
-    let sanitized = sanitize_name(value);
-    let bounded = sanitized.chars().take(64).collect::<String>();
-    if bounded.is_empty() {
-        fallback.to_string()
-    } else {
-        bounded
+fn mcp_result_context<'a>(
+    tool: &'a McpToolInfo,
+    ctx: &ToolContext<'_>,
+    artifacts: Option<&'a ToolArtifactStore>,
+    duration_ms: u64,
+    session_hash: Option<String>,
+) -> crate::tools::mcp::result_mapping::McpResultContext<'a> {
+    crate::tools::mcp::result_mapping::McpResultContext {
+        call_id: ctx.call_id.to_string(),
+        remote_tool_name: tool.remote_name.clone(),
+        server_config_id: tool.server_name.clone(),
+        server_identity_hash: tool.server_identity_hash.clone(),
+        protocol_version: tool.protocol_version.clone(),
+        capability_snapshot_id: Some(tool.catalog_hash.clone()),
+        session_hash,
+        attempt_count: 1,
+        duration_ms: Some(duration_ms),
+        output_schema: tool.output_schema.as_ref(),
+        artifacts,
+        captured_at: chrono::Utc::now().to_rfc3339(),
     }
 }
 
@@ -1194,5 +1640,72 @@ fn format_mcp_error(error: &Value) -> String {
     match code {
         Some(code) => format!("MCP JSON-RPC error {code}: {message}"),
         None => format!("MCP JSON-RPC error: {message}"),
+    }
+}
+
+#[cfg(test)]
+mod refresh_health_tests {
+    use super::*;
+
+    fn server() -> McpServerConfig {
+        McpServerConfig {
+            name: "monitoring".to_string(),
+            enabled: true,
+            required: false,
+            transport: McpTransport::StreamableHttp,
+            command: String::new(),
+            args: Vec::new(),
+            env: HashMap::new(),
+            env_names: Vec::new(),
+            url: "https://mcp.example.com/mcp".to_string(),
+            policy: McpTransportPolicy::default(),
+        }
+    }
+
+    #[test]
+    fn refresh_failures_enter_a_bounded_circuit_backoff() {
+        assert_eq!(mcp_refresh_backoff(0), Duration::from_secs(1));
+        assert_eq!(mcp_refresh_backoff(2), Duration::from_secs(1));
+        assert_eq!(mcp_refresh_backoff(3), Duration::from_secs(30));
+        assert_eq!(mcp_refresh_backoff(u32::MAX), Duration::from_secs(30));
+    }
+
+    #[test]
+    fn a_validated_empty_catalog_keeps_the_stable_probe_classification() {
+        let failure =
+            classify_mcp_probe_error(anyhow::anyhow!("MCP server exposed no usable tools"));
+        assert_eq!(failure.kind, McpProbeFailureKind::NoTools);
+
+        let protocol = classify_mcp_probe_error(anyhow::Error::new(
+            crate::tools::mcp::protocol::McpProtocolError::MalformedFrame,
+        ));
+        assert_eq!(protocol.kind, McpProbeFailureKind::Protocol);
+    }
+
+    #[test]
+    fn only_notification_poll_recovery_clears_its_degraded_health() {
+        let state = Arc::new(McpRuntimeState::default());
+        state.publish(server_runtime_snapshot(
+            &server(),
+            None,
+            McpServerHealthStatus::Ready,
+            None,
+        ));
+        let weak = Arc::downgrade(&state);
+
+        mark_mcp_degraded(&weak, "monitoring", "mcp_notification_poll_failed");
+        mark_mcp_notification_stream_ready(&weak, "monitoring");
+        let recovered = state.snapshot("monitoring").unwrap();
+        assert_eq!(recovered.status, McpServerHealthStatus::Ready);
+        assert!(recovered.failure_code.is_none());
+
+        mark_mcp_degraded(&weak, "monitoring", "mcp_catalog_refresh_failed");
+        mark_mcp_notification_stream_ready(&weak, "monitoring");
+        let still_degraded = state.snapshot("monitoring").unwrap();
+        assert_eq!(still_degraded.status, McpServerHealthStatus::Degraded);
+        assert_eq!(
+            still_degraded.failure_code.as_deref(),
+            Some("mcp_catalog_refresh_failed")
+        );
     }
 }

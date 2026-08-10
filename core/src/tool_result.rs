@@ -777,15 +777,20 @@ impl ToolOutputEnvelope {
 
     /// Text projected to the model.
     ///
-    /// Concatenates the summary with each block's model text, then bounds the
-    /// whole thing. No base64, headers, or session values can reach a prompt
-    /// through this path because no block exposes them.
+    /// Concatenates the summary with each non-text block's model text, then
+    /// bounds the whole thing. Text blocks are already represented by the
+    /// compatibility summary and must not be repeated. No base64, headers, or
+    /// session values can reach a prompt through this path because no block
+    /// exposes them.
     pub fn model_projection(&self) -> String {
         let mut sections: Vec<String> = Vec::new();
         if !self.summary_text.is_empty() {
             sections.push(self.summary_text.clone());
         }
         for block in &self.content_blocks {
+            if matches!(block, ToolContentBlock::Text { .. }) {
+                continue;
+            }
             let text = block.model_text();
             if !text.is_empty() {
                 sections.push(text);
@@ -1162,7 +1167,7 @@ mod tests {
     fn the_model_projection_carries_no_bytes_and_flags_unsafe_outcomes() {
         let envelope = ToolOutputEnvelope {
             outcome: ToolResultOutcome::Indeterminate,
-            summary_text: "called the remote tool".to_string(),
+            summary_text: "called the remote tool\nplain detail".to_string(),
             content_blocks: vec![
                 ToolContentBlock::Text {
                     meta: ContentBlockMeta::new(0),
@@ -1186,6 +1191,7 @@ mod tests {
 
         let projection = envelope.model_projection();
         assert!(projection.contains("plain detail"));
+        assert_eq!(projection.matches("plain detail").count(), 1);
         assert!(projection.contains("artifact art_0123456789abcdef"));
         assert!(
             projection.contains("may or may not have taken effect"),

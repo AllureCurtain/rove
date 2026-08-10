@@ -13,9 +13,11 @@ fn context<'a>(store: Option<&'a ToolArtifactStore>) -> McpResultContext<'a> {
         server_config_id: "srv".to_string(),
         server_identity_hash: "identity-hash".to_string(),
         protocol_version: "2025-06-18".to_string(),
+        capability_snapshot_id: Some("catalog-hash".to_string()),
         session_hash: Some("session-hash".to_string()),
         attempt_count: 1,
         duration_ms: Some(12),
+        output_schema: None,
         artifacts: store,
         captured_at: "2026-08-09T00:00:00Z".to_string(),
     }
@@ -357,6 +359,71 @@ async fn well_formed_structured_content_is_kept() {
 
     let structured = envelope.structured_content.as_ref().unwrap();
     assert_eq!(structured.value["rows"][2], 3);
+}
+
+#[tokio::test]
+async fn declared_output_schema_is_enforced_before_success_is_reported() {
+    let (_dir, store) = store();
+    let schema = json!({
+        "type": "object",
+        "properties": { "ok": { "type": "boolean" } },
+        "required": ["ok"],
+        "additionalProperties": false
+    });
+    let mut valid_context = context(Some(&store));
+    valid_context.output_schema = Some(&schema);
+    let valid = envelope_from_mcp_result(
+        &json!({
+            "content": [{"type": "text", "text": "ok"}],
+            "structuredContent": {"ok": true}
+        }),
+        &valid_context,
+    )
+    .await;
+    assert_eq!(valid.outcome, ToolResultOutcome::Success);
+    assert_eq!(
+        valid
+            .structured_content
+            .as_ref()
+            .and_then(|content| content.schema_valid),
+        Some(true)
+    );
+
+    let invalid = envelope_from_mcp_result(
+        &json!({
+            "content": [{"type": "text", "text": "claimed success"}],
+            "structuredContent": {"ok": "not a boolean"}
+        }),
+        &valid_context,
+    )
+    .await;
+    assert_eq!(invalid.outcome, ToolResultOutcome::Error);
+    assert_eq!(
+        invalid
+            .structured_content
+            .as_ref()
+            .and_then(|content| content.schema_valid),
+        Some(false)
+    );
+    assert!(
+        invalid
+            .diagnostics
+            .iter()
+            .any(|diagnostic| { diagnostic.code == "mcp_output_schema_validation_failed" })
+    );
+
+    let missing = envelope_from_mcp_result(
+        &json!({"content": [{"type": "text", "text": "no structured result"}]}),
+        &valid_context,
+    )
+    .await;
+    assert_eq!(missing.outcome, ToolResultOutcome::Error);
+    assert!(
+        missing
+            .diagnostics
+            .iter()
+            .any(|diagnostic| { diagnostic.code == "mcp_structured_content_missing" })
+    );
 }
 
 #[tokio::test]

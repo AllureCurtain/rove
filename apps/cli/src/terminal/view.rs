@@ -1127,6 +1127,32 @@ impl From<&StreamEvent> for RunViewUpdate {
                     "Refused artifact from block {block_ordinal} after {observed_bytes} bytes: {reason}."
                 ),
             },
+            StreamEvent::McpServerDegraded {
+                server_config_id,
+                required,
+                failure_code,
+            } => Self::ModelStatus {
+                status: "mcp-degraded".to_string(),
+                message: format!(
+                    "MCP server {server_config_id}{} degraded: {failure_code}.",
+                    if *required { " (required)" } else { "" }
+                ),
+            },
+            StreamEvent::McpCapabilitiesRefreshed {
+                server_config_id,
+                added,
+                removed,
+                changed,
+                ..
+            } => Self::ModelStatus {
+                status: "mcp-refresh".to_string(),
+                message: format!(
+                    "MCP server {server_config_id} refreshed capabilities (+{}, -{}, ~{}).",
+                    added.len(),
+                    removed.len(),
+                    changed.len()
+                ),
+            },
             StreamEvent::LlmChunk { delta } => Self::AssistantDelta {
                 delta: delta.clone(),
             },

@@ -16,8 +16,8 @@ use rove_core::{ToolRegistry, ToolResultOutcome};
 use rove_runtime::memory::paths::MemoryPaths;
 use rove_runtime::state::tool_artifacts::ToolArtifactStore;
 use rove_runtime::tools::mcp_proxy::{
-    McpProbeFailureKind, McpServerConfig, McpTransport, McpTransportPolicy, probe_mcp_server,
-    register_mcp_tools,
+    McpLifecycleFact, McpProbeFailureKind, McpRuntimeState, McpServerConfig, McpTransport,
+    McpTransportPolicy, probe_mcp_server, register_mcp_tools,
 };
 use rove_runtime::tools::runtime_context::{
     runtime_tool_context, runtime_tool_context_with_artifacts,
@@ -46,6 +46,8 @@ impl Drop for FixtureServer {
 enum Mode {
     Json,
     EventStream,
+    Refresh,
+    InvalidRefresh,
     /// Answer `tools/call` with a JSON-RPC error.
     CallFails,
     /// Answer `tools/call` with rich content: an image, structured content, and
@@ -122,8 +124,16 @@ async fn serve(
             "HTTP/1.1 204 No Content\r\ncontent-length: 0\r\nconnection: close\r\n\r\n".to_string()
         }
         "GET" => {
-            "HTTP/1.1 405 Method Not Allowed\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
-                .to_string()
+            if matches!(mode, Mode::Refresh | Mode::InvalidRefresh) {
+                let frame = "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/tools/list_changed\",\"params\":{}}\n\n";
+                format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{frame}",
+                    frame.len()
+                )
+            } else {
+                "HTTP/1.1 405 Method Not Allowed\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+                    .to_string()
+            }
         }
         _ => {
             let request: Value = serde_json::from_slice(&body).unwrap_or_else(|_| json!({}));
@@ -162,8 +172,23 @@ fn rpc_response(mode: Mode, method: &str, id: Value, list_calls: &AtomicU64) -> 
                 "serverInfo": { "name": "fixture", "version": "1.0.0" }
             }),
             "tools/list" => {
-                // Two pages, so registration must follow pagination.
-                if list_calls.fetch_add(1, Ordering::Relaxed) == 0 {
+                if matches!(mode, Mode::Refresh | Mode::InvalidRefresh) {
+                    let first = list_calls.fetch_add(1, Ordering::Relaxed) == 0;
+                    let name = if first { "old_tool" } else { "new_tool" };
+                    let input_schema = if mode == Mode::InvalidRefresh && !first {
+                        json!({"type":"definitely-not-a-json-schema-type"})
+                    } else {
+                        json!({"type":"object"})
+                    };
+                    json!({
+                        "tools": [{
+                            "name": name,
+                            "description": "refresh fixture",
+                            "inputSchema": input_schema
+                        }]
+                    })
+                } else if list_calls.fetch_add(1, Ordering::Relaxed) == 0 {
+                    // Two pages, so registration must follow pagination.
                     json!({
                         "tools": [{
                             "name": "echo_remote",
@@ -228,6 +253,7 @@ fn server_config(url: String) -> McpServerConfig {
     McpServerConfig {
         name: "http_fixture".to_string(),
         enabled: true,
+        required: true,
         transport: McpTransport::StreamableHttp,
         command: String::new(),
         args: Vec::new(),
@@ -313,6 +339,80 @@ async fn streamable_http_registers_paginated_tools_and_calls_them() {
         output.content.contains("remote ok"),
         "the remote result must reach the caller: {}",
         output.content
+    );
+}
+
+#[tokio::test]
+async fn list_changed_atomically_refreshes_future_runs_and_keeps_active_run_pinned() {
+    let server = FixtureServer::start(Mode::Refresh).await.unwrap();
+    let mut registry = ToolRegistry::new();
+    register_mcp_tools(&mut registry, vec![server_config(server.url())])
+        .await
+        .unwrap();
+    let pinned = registry.snapshot();
+    assert!(pinned.has("mcp__http_fixture__old_tool"));
+
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if registry.has("mcp__http_fixture__new_tool") {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("list_changed should publish a validated replacement");
+
+    assert!(!registry.has("mcp__http_fixture__old_tool"));
+    assert!(registry.has("mcp__http_fixture__new_tool"));
+    assert!(pinned.has("mcp__http_fixture__old_tool"));
+    assert!(!pinned.has("mcp__http_fixture__new_tool"));
+    let state = registry.extension::<McpRuntimeState>().unwrap();
+    assert!(state.take_facts().iter().any(|fact| matches!(
+        fact,
+        McpLifecycleFact::CapabilitiesRefreshed { added, removed, .. }
+            if added == &["mcp__http_fixture__new_tool"]
+                && removed == &["mcp__http_fixture__old_tool"]
+    )));
+}
+
+#[tokio::test]
+async fn an_invalid_refresh_keeps_the_last_catalog_and_marks_health_degraded() {
+    let server = FixtureServer::start(Mode::InvalidRefresh).await.unwrap();
+    let mut registry = ToolRegistry::new();
+    register_mcp_tools(&mut registry, vec![server_config(server.url())])
+        .await
+        .unwrap();
+    assert!(registry.has("mcp__http_fixture__old_tool"));
+    let state = registry.extension::<McpRuntimeState>().unwrap();
+    let original_catalog_hash = state
+        .snapshot("http_fixture")
+        .unwrap()
+        .catalog_hash
+        .unwrap();
+
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if state.snapshot("http_fixture").is_some_and(|snapshot| {
+                snapshot.failure_code.as_deref() == Some("mcp_catalog_refresh_failed")
+            }) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("invalid refresh should produce degraded health");
+
+    assert!(registry.has("mcp__http_fixture__old_tool"));
+    assert!(!registry.has("mcp__http_fixture__new_tool"));
+    assert_eq!(
+        state
+            .snapshot("http_fixture")
+            .unwrap()
+            .catalog_hash
+            .as_deref(),
+        Some(original_catalog_hash.as_str())
     );
 }
 
@@ -501,9 +601,10 @@ async fn a_plaintext_non_loopback_endpoint_is_refused() {
         .expect_err("plaintext to a public host must be refused");
 
     assert!(
-        error.to_string().contains("https"),
-        "the refusal must explain the TLS requirement: {error}"
+        error.to_string().contains("mcp_transport_policy_blocked"),
+        "the refusal must expose a stable policy code: {error}"
     );
+    assert!(!error.to_string().contains("mcp.example.com"));
 }
 
 #[tokio::test]

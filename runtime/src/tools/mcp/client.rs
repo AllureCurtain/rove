@@ -77,6 +77,10 @@ impl StreamableHttpClient {
         self.transport.session_state().await.protocol_version
     }
 
+    pub async fn server_identity_hash(&self) -> Option<String> {
+        self.transport.session_state().await.server_identity_hash
+    }
+
     /// Perform the initialize handshake and send `notifications/initialized`.
     pub async fn initialize(&self) -> Result<Value, McpProtocolError> {
         let params = json!({
@@ -120,7 +124,10 @@ impl StreamableHttpClient {
 
             match self.transport.post_message(&message).await {
                 Ok(outcome) => {
-                    let result = self.await_response(pending).await?;
+                    let result = self
+                        .await_response(pending)
+                        .await
+                        .map_err(McpProtocolError::after_commit)?;
                     return Ok((result, outcome.session_header));
                 }
                 Err(error) => {
@@ -142,13 +149,23 @@ impl StreamableHttpClient {
         &self,
         pending: super::dispatcher::PendingRequest,
     ) -> Result<Value, McpProtocolError> {
+        let id = pending.id.clone();
         let timeout = Duration::from_millis(self.policy.request_timeout_ms);
         match tokio::time::timeout(timeout, pending.wait()).await {
             Ok(result) => result,
-            Err(_) => Err(McpProtocolError::Timeout {
-                elapsed_ms: self.policy.request_timeout_ms,
-            }),
+            Err(_) => {
+                let error = McpProtocolError::Timeout {
+                    elapsed_ms: self.policy.request_timeout_ms,
+                };
+                self.dispatcher.abandon(&id, error.clone()).await;
+                Err(error)
+            }
         }
+    }
+
+    #[cfg(test)]
+    pub async fn pending_request_count(&self) -> usize {
+        self.dispatcher.pending_count().await
     }
 
     /// Discover the complete tool catalog, following pagination.
@@ -156,11 +173,15 @@ impl StreamableHttpClient {
     /// Discovery is all-or-nothing: a failure anywhere aborts the catalog rather
     /// than registering a partial tool set.
     pub async fn discover_catalog(&self) -> Result<McpCatalogSnapshot, McpProtocolError> {
-        let version = self
-            .negotiated_version()
-            .await
-            .unwrap_or_else(|| super::protocol::MCP_PROTOCOL_VERSION.to_string());
-        let mut builder = CatalogBuilder::new(self.server_name.clone(), version);
+        let state = self.transport.session_state().await;
+        let version = state
+            .protocol_version
+            .ok_or_else(|| not_initialized("tools/list"))?;
+        let identity_hash = state
+            .server_identity_hash
+            .ok_or_else(|| not_initialized("tools/list"))?;
+        let mut builder = CatalogBuilder::new(self.server_name.clone(), version)
+            .with_server_identity_hash(identity_hash);
         let mut cursor: Option<String> = None;
 
         loop {
@@ -180,6 +201,9 @@ impl StreamableHttpClient {
 
     /// Call one remote tool by its exact remote name.
     pub async fn call_tool(&self, name: &str, arguments: Value) -> Result<Value, McpProtocolError> {
+        if self.server_identity_hash().await.is_none() {
+            return Err(not_initialized("tools/call"));
+        }
         self.request(
             "tools/call",
             json!({ "name": name, "arguments": arguments }),
@@ -224,5 +248,11 @@ impl StreamableHttpClient {
             self.server_name,
             self.transport_kind().as_str()
         ))
+    }
+}
+
+fn not_initialized(method: &str) -> McpProtocolError {
+    McpProtocolError::Transport {
+        detail: format!("MCP {method} requires a completed initialize handshake"),
     }
 }

@@ -15,6 +15,7 @@ import { ProductApiError } from "../product/product-client";
 import type {
   CreateProductMcpServerRequest,
   ProductMcpProbeResponse,
+  ProductMcpHealthSnapshot,
   ProductMcpServerConfig,
   ProductMcpTransport,
   UpdateProductMcpServerRequest,
@@ -30,6 +31,7 @@ const TRANSPORT_LABELS: Record<ProductMcpTransport, string> = {
 export interface McpServerDraft {
   name: string;
   enabled: boolean;
+  required: boolean;
   transport: ProductMcpTransport;
   command: string;
   argsText: string;
@@ -48,6 +50,7 @@ export function createEmptyMcpServerDraft(): McpServerDraft {
   return {
     name: "",
     enabled: true,
+    required: true,
     transport: "stdio",
     command: "",
     argsText: "",
@@ -63,6 +66,7 @@ export function mcpServerDraftFromConfig(
   return {
     name: server.name,
     enabled: server.enabled,
+    required: server.required,
     transport: server.transport,
     command: server.command ?? "",
     argsText: server.args.join("\n"),
@@ -85,6 +89,7 @@ export function mcpServerRequestFromDraft(
   const common = {
     name: draft.name.trim(),
     enabled: draft.enabled,
+    required: draft.required,
     transport: draft.transport,
     request_timeout_ms: Number(draft.timeoutMs),
   };
@@ -139,6 +144,23 @@ function sortServers(servers: ProductMcpServerConfig[]): ProductMcpServerConfig[
   return [...servers].sort((left, right) => left.name.localeCompare(right.name));
 }
 
+function indexMcpHealth(
+  snapshots: ProductMcpHealthSnapshot[],
+): Record<string, ProductMcpHealthSnapshot> {
+  return Object.fromEntries(
+    snapshots.map((snapshot) => [snapshot.server_name, snapshot]),
+  );
+}
+
+export function describeMcpHealth(
+  snapshot: ProductMcpHealthSnapshot | undefined,
+): string {
+  if (!snapshot) {
+    return "health: unknown";
+  }
+  return `health: ${snapshot.status}${snapshot.tool_count > 0 ? ` (${snapshot.tool_count} tools)` : ""}`;
+}
+
 export function MCPSettings({
   client,
   workspaceId,
@@ -157,6 +179,7 @@ export function MCPSettings({
   const [deletingName, setDeletingName] = useState<string | null>(null);
   const [rowErrors, setRowErrors] = useState<Record<string, string>>({});
   const [probes, setProbes] = useState<Record<string, ProbeState>>({});
+  const [health, setHealth] = useState<Record<string, ProductMcpHealthSnapshot>>({});
 
   async function loadServers(): Promise<void> {
     if (!workspaceId) {
@@ -169,6 +192,12 @@ export function MCPSettings({
     try {
       const response = await client.listMcpServers(workspaceId);
       setServers(sortServers(response.servers));
+      try {
+        const healthResponse = await client.getMcpHealth(workspaceId);
+        setHealth(indexMcpHealth(healthResponse.servers));
+      } catch {
+        setHealth({});
+      }
     } catch (error) {
       setLoadError(describeError(error));
     } finally {
@@ -187,23 +216,32 @@ export function MCPSettings({
     }
     setLoading(true);
     setLoadError(null);
-    void client
-      .listMcpServers(workspaceId)
-      .then((response) => {
+    void (async () => {
+      try {
+        const response = await client.listMcpServers(workspaceId);
         if (active) {
           setServers(sortServers(response.servers));
         }
-      })
-      .catch((error: unknown) => {
+        try {
+          const healthResponse = await client.getMcpHealth(workspaceId);
+          if (active) {
+            setHealth(indexMcpHealth(healthResponse.servers));
+          }
+        } catch {
+          if (active) {
+            setHealth({});
+          }
+        }
+      } catch (error) {
         if (active) {
           setLoadError(describeError(error));
         }
-      })
-      .finally(() => {
+      } finally {
         if (active) {
           setLoading(false);
         }
-      });
+      }
+    })();
     return () => {
       active = false;
     };
@@ -262,6 +300,16 @@ export function MCPSettings({
         delete next[saved.name];
         return next;
       });
+      try {
+        const healthResponse = await client.getMcpHealth(workspaceId);
+        setHealth(indexMcpHealth(healthResponse.servers));
+      } catch {
+        setHealth((current) => {
+          const next = { ...current };
+          delete next[saved.name];
+          return next;
+        });
+      }
       resetDraft();
     } catch (error) {
       setFormError(describeError(error));
@@ -283,6 +331,11 @@ export function MCPSettings({
     try {
       await client.deleteMcpServer(workspaceId, name);
       setServers((current) => current.filter((server) => server.name !== name));
+      setHealth((current) => {
+        const next = { ...current };
+        delete next[name];
+        return next;
+      });
       setConfirmingDelete(null);
       if (editingName === name) {
         resetDraft();
@@ -399,6 +452,21 @@ export function MCPSettings({
               }
             />
             <span>Enabled</span>
+          </label>
+          <label className="settings-checkbox" htmlFor="mcp-required">
+            <input
+              id="mcp-required"
+              type="checkbox"
+              checked={draft.required}
+              disabled={saving}
+              onChange={(event) =>
+                setDraft((current) => ({
+                  ...current,
+                  required: event.target.checked,
+                }))
+              }
+            />
+            <span>Required at startup</span>
           </label>
         </div>
 
@@ -521,6 +589,9 @@ export function MCPSettings({
                       <span className="mcp-server-status" data-enabled={server.enabled}>
                         {server.enabled ? "Enabled" : "Disabled"}
                       </span>
+                      <span className="mcp-server-status">
+                        {server.required ? "Required" : "Optional"}
+                      </span>
                     </div>
                     <span>
                       {server.transport === "stdio"
@@ -528,6 +599,7 @@ export function MCPSettings({
                         : `${TRANSPORT_LABELS[server.transport]} · ${server.url}`}
                       {` · ${server.request_timeout_ms} ms`}
                       {server.transport_deprecated ? " · deprecated transport" : ""}
+                      {` · ${describeMcpHealth(health[server.name])}`}
                     </span>
                     {rowErrors[server.name] ? (
                       <div className="chat-error" role="alert">

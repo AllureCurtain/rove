@@ -3706,6 +3706,59 @@ export function parseStreamEvent(
           { min: 0 },
         ),
       };
+    case "mcp_server_degraded":
+      return {
+        type,
+        server_config_id: expectString(
+          record.server_config_id,
+          `${path}.server_config_id`,
+          {
+            nonEmpty: true,
+            maxBytes: MAX_PRODUCT_TEXT_BYTES,
+            noControlCharacters: true,
+          },
+        ),
+        required: expectBoolean(record.required, `${path}.required`),
+        failure_code: expectString(record.failure_code, `${path}.failure_code`, {
+          nonEmpty: true,
+          maxBytes: MAX_PRODUCT_TEXT_BYTES,
+          noControlCharacters: true,
+        }),
+      };
+    case "mcp_capabilities_refreshed": {
+      const names = (key: "added" | "removed" | "changed") =>
+        expectArray(
+          record[key],
+          `${path}.${key}`,
+          (value, itemPath) =>
+            expectString(value, itemPath, {
+              nonEmpty: true,
+              maxBytes: MAX_PRODUCT_TEXT_BYTES,
+              noControlCharacters: true,
+            }),
+          128,
+        );
+      return {
+        type,
+        server_config_id: expectString(
+          record.server_config_id,
+          `${path}.server_config_id`,
+          {
+            nonEmpty: true,
+            maxBytes: MAX_PRODUCT_TEXT_BYTES,
+            noControlCharacters: true,
+          },
+        ),
+        snapshot_id: expectString(record.snapshot_id, `${path}.snapshot_id`, {
+          nonEmpty: true,
+          maxBytes: MAX_PRODUCT_TEXT_BYTES,
+          noControlCharacters: true,
+        }),
+        added: names("added"),
+        removed: names("removed"),
+        changed: names("changed"),
+      };
+    }
     case "tool_call_failed":
       return {
         type,

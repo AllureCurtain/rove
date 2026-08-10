@@ -11,6 +11,7 @@
 
 use std::collections::HashSet;
 
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::protocol::{
@@ -19,22 +20,47 @@ use super::protocol::{
 };
 
 /// One validated remote tool.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpToolAnnotations {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_only_hint: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destructive_hint: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idempotent_hint: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_world_hint: Option<bool>,
+}
+
+/// One validated remote tool.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct McpCatalogEntry {
     /// Exact remote name, used verbatim in `tools/call`.
     pub remote_name: String,
     /// Local alias, namespaced by server.
     pub local_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     pub description: String,
     pub parameters: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_schema: Option<Value>,
+    #[serde(default)]
+    pub annotations: McpToolAnnotations,
     pub capability_id: String,
+    /// Hash of the bounded descriptor received from the server. The raw
+    /// descriptor itself is never retained in runtime identity or events.
+    pub raw_descriptor_hash: String,
 }
 
 /// A complete catalog for one server at one point in time.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct McpCatalogSnapshot {
     pub server_name: String,
     pub protocol_version: String,
+    /// Digest of the validated serverInfo/capabilities from initialize.
+    #[serde(default)]
+    pub server_identity_hash: String,
     pub entries: Vec<McpCatalogEntry>,
     /// Stable digest of the validated catalog, for pinning within a run.
     pub catalog_hash: String,
@@ -54,25 +80,47 @@ impl McpCatalogSnapshot {
 
 /// Namespaced local identity for a remote tool.
 pub fn mcp_tool_identity(server_name: &str, remote_name: &str) -> (String, String) {
-    let sanitized_server = sanitize_identity_component(server_name);
-    let sanitized_tool = sanitize_identity_component(remote_name);
+    let sanitized_server = bounded_identity_component(server_name, "server");
+    let sanitized_tool = bounded_identity_component(remote_name, "tool");
+    let identity_hash =
+        crate::prompt_metadata::stable_hash(&format!("mcp-tool:v1:{server_name}\0{remote_name}"));
+    let short_hash = identity_hash
+        .strip_prefix("sha256:")
+        .unwrap_or(&identity_hash)
+        .chars()
+        .take(12)
+        .collect::<String>();
     (
         format!("mcp__{sanitized_server}__{sanitized_tool}"),
-        format!("mcp:{sanitized_server}:{sanitized_tool}"),
+        format!("mcp.{sanitized_server}.{sanitized_tool}.{short_hash}"),
     )
 }
 
-fn sanitize_identity_component(value: &str) -> String {
-    value
+/// Namespace prefix reserved for one server's validated tool catalog.
+pub fn mcp_server_namespace(server_name: &str) -> String {
+    format!(
+        "mcp__{}__",
+        bounded_identity_component(server_name, "server")
+    )
+}
+
+fn bounded_identity_component(value: &str, fallback: &str) -> String {
+    let sanitized = value
         .chars()
         .map(|character| {
-            if character.is_ascii_alphanumeric() || character == '_' || character == '-' {
+            if character.is_ascii_alphanumeric() || character == '_' {
                 character
             } else {
                 '_'
             }
         })
-        .collect()
+        .take(64)
+        .collect::<String>();
+    if sanitized.is_empty() {
+        fallback.to_string()
+    } else {
+        sanitized
+    }
 }
 
 /// One `tools/list` page as returned by a server.
@@ -143,6 +191,11 @@ fn parse_catalog_entry(
         .and_then(Value::as_str)
         .map(bounded_diagnostic)
         .unwrap_or_else(|| "MCP server tool".to_string());
+    let title = tool
+        .get("title")
+        .and_then(Value::as_str)
+        .map(bounded_diagnostic)
+        .filter(|title| !title.is_empty());
 
     let parameters = tool
         .get("inputSchema")
@@ -161,12 +214,67 @@ fn parse_catalog_entry(
     }
 
     let (local_name, capability_id) = mcp_tool_identity(server_name, &remote_name);
+    rove_models::ModelToolSchema {
+        name: local_name.clone(),
+        description: description.clone(),
+        parameters: parameters.clone(),
+    }
+    .validate()
+    .map_err(|error| McpProtocolError::Transport {
+        detail: bounded_diagnostic(&format!("MCP input schema is invalid: {error}")),
+    })?;
+
+    let output_schema = tool.get("outputSchema").cloned();
+    if let Some(schema) = output_schema.as_ref() {
+        rove_models::ModelToolSchema {
+            name: local_name.clone(),
+            description: String::new(),
+            parameters: schema.clone(),
+        }
+        .validate()
+        .map_err(|error| McpProtocolError::Transport {
+            detail: bounded_diagnostic(&format!("MCP output schema is invalid: {error}")),
+        })?;
+    }
+    let annotations = parse_annotations(tool.get("annotations"))?;
+    let raw_descriptor_hash =
+        crate::prompt_metadata::stable_hash(&serde_json::to_string(tool).unwrap_or_default());
     Ok(McpCatalogEntry {
         remote_name,
         local_name,
+        title,
         description,
         parameters,
+        output_schema,
+        annotations,
         capability_id,
+        raw_descriptor_hash,
+    })
+}
+
+fn parse_annotations(value: Option<&Value>) -> Result<McpToolAnnotations, McpProtocolError> {
+    let Some(value) = value else {
+        return Ok(McpToolAnnotations::default());
+    };
+    let object = value
+        .as_object()
+        .ok_or_else(|| McpProtocolError::Transport {
+            detail: "MCP tool annotations must be an object".to_string(),
+        })?;
+    let boolean = |name: &str| -> Result<Option<bool>, McpProtocolError> {
+        match object.get(name) {
+            None | Some(Value::Null) => Ok(None),
+            Some(Value::Bool(value)) => Ok(Some(*value)),
+            Some(_) => Err(McpProtocolError::Transport {
+                detail: format!("MCP tool annotation {name} must be boolean"),
+            }),
+        }
+    };
+    Ok(McpToolAnnotations {
+        read_only_hint: boolean("readOnlyHint")?,
+        destructive_hint: boolean("destructiveHint")?,
+        idempotent_hint: boolean("idempotentHint")?,
+        open_world_hint: boolean("openWorldHint")?,
     })
 }
 
@@ -178,9 +286,11 @@ fn parse_catalog_entry(
 pub struct CatalogBuilder {
     server_name: String,
     protocol_version: String,
+    server_identity_hash: Option<String>,
     entries: Vec<McpCatalogEntry>,
     seen_cursors: HashSet<String>,
     seen_remote_names: HashSet<String>,
+    seen_local_names: HashSet<String>,
     pages: usize,
 }
 
@@ -189,11 +299,19 @@ impl CatalogBuilder {
         Self {
             server_name: server_name.into(),
             protocol_version: protocol_version.into(),
+            server_identity_hash: None,
             entries: Vec::new(),
             seen_cursors: HashSet::new(),
             seen_remote_names: HashSet::new(),
+            seen_local_names: HashSet::new(),
             pages: 0,
         }
+    }
+
+    /// Pin the identity returned by the completed initialize handshake.
+    pub fn with_server_identity_hash(mut self, hash: impl Into<String>) -> Self {
+        self.server_identity_hash = Some(hash.into());
+        self
     }
 
     /// Absorb one page and report the cursor to request next, if any.
@@ -210,6 +328,11 @@ impl CatalogBuilder {
             if !self.seen_remote_names.insert(entry.remote_name.clone()) {
                 return Err(McpProtocolError::Transport {
                     detail: "MCP tools/list returned a duplicate tool name".to_string(),
+                });
+            }
+            if !self.seen_local_names.insert(entry.local_name.clone()) {
+                return Err(McpProtocolError::Transport {
+                    detail: "MCP tool names collide after local alias normalization".to_string(),
                 });
             }
             self.entries.push(entry);
@@ -245,6 +368,9 @@ impl CatalogBuilder {
         Ok(McpCatalogSnapshot {
             server_name: self.server_name,
             protocol_version: self.protocol_version,
+            server_identity_hash: self.server_identity_hash.unwrap_or_else(|| {
+                crate::prompt_metadata::stable_hash("mcp-server:unnegotiated:v1")
+            }),
             entries: self.entries,
             catalog_hash,
         })
@@ -258,7 +384,12 @@ fn catalog_hash(server_name: &str, protocol_version: &str, entries: &[McpCatalog
             json!({
                 "remote_name": entry.remote_name,
                 "local_name": entry.local_name,
+                "title": entry.title,
+                "description": entry.description,
                 "parameters": entry.parameters,
+                "output_schema": entry.output_schema,
+                "annotations": entry.annotations,
+                "raw_descriptor_hash": entry.raw_descriptor_hash,
             })
         })
         .collect();
@@ -292,7 +423,7 @@ mod tests {
             "the exact remote name is kept"
         );
         assert_eq!(entry.local_name, "mcp__files__read_file");
-        assert_eq!(entry.capability_id, "mcp:files:read_file");
+        assert!(entry.capability_id.starts_with("mcp.files.read_file."));
         assert_eq!(page.next_cursor, None);
     }
 
@@ -300,7 +431,8 @@ mod tests {
     fn a_server_name_with_separators_cannot_forge_another_identity() {
         let (local, capability) = mcp_tool_identity("evil__server", "tool:name");
         assert_eq!(local, "mcp__evil__server__tool_name");
-        assert_eq!(capability, "mcp:evil__server:tool_name");
+        assert!(capability.starts_with("mcp.evil__server.tool_name."));
+        assert_eq!(capability.len(), "mcp.evil__server.tool_name.".len() + 12);
     }
 
     #[test]
@@ -317,6 +449,57 @@ mod tests {
         }
         // A missing tools array is a protocol error, not an empty catalog.
         assert!(parse_catalog_page("files", &json!({})).is_err());
+    }
+
+    #[test]
+    fn output_schema_and_annotations_are_validated_but_never_grant_local_safety() {
+        let result = json!({
+            "tools": [{
+                "name": "inspect",
+                "title": "Inspector",
+                "inputSchema": { "type": "object", "properties": {} },
+                "outputSchema": {
+                    "type": "object",
+                    "properties": { "ok": { "type": "boolean" } },
+                    "required": ["ok"]
+                },
+                "annotations": {
+                    "readOnlyHint": true,
+                    "destructiveHint": false,
+                    "idempotentHint": true,
+                    "openWorldHint": false
+                }
+            }]
+        });
+        let page = parse_catalog_page("files", &result).unwrap();
+        let entry = &page.entries[0];
+        assert_eq!(entry.title.as_deref(), Some("Inspector"));
+        assert!(entry.output_schema.is_some());
+        assert_eq!(entry.annotations.read_only_hint, Some(true));
+        assert_eq!(entry.annotations.destructive_hint, Some(false));
+        assert_eq!(entry.annotations.idempotent_hint, Some(true));
+        assert_eq!(entry.annotations.open_world_hint, Some(false));
+        assert!(entry.raw_descriptor_hash.starts_with("sha256:"));
+
+        let invalid_schema = json!({
+            "tools": [{ "name": "bad", "outputSchema": { "type": "mystery" } }]
+        });
+        assert!(parse_catalog_page("files", &invalid_schema).is_err());
+        let invalid_annotations = json!({
+            "tools": [{ "name": "bad", "annotations": { "readOnlyHint": "yes" } }]
+        });
+        assert!(parse_catalog_page("files", &invalid_annotations).is_err());
+    }
+
+    #[test]
+    fn aliases_that_collide_after_normalization_abort_the_complete_catalog() {
+        let page = parse_catalog_page(
+            "files",
+            &json!({ "tools": [tool("read:file"), tool("read/file")] }),
+        )
+        .unwrap();
+        let mut builder = CatalogBuilder::new("files", "2025-06-18");
+        assert!(builder.push_page(page).is_err());
     }
 
     #[test]

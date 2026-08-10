@@ -383,19 +383,20 @@ permission.
 
 Current MCP truth:
 
-- stdio is implemented and covered by deterministic fixture tests;
-- the repository has an existing legacy SSE path;
-- current tests focus mainly on stdio;
-- the official filesystem server smoke is opt-in;
-- Streamable HTTP, negotiated sessions, rich result blocks, and Tool Artifact
-  envelopes are future design.
+- stdio, deprecated legacy SSE, and negotiated Streamable HTTP are implemented;
+- all transports map bounded rich result blocks into the shared envelope and
+  durable Tool Artifact authority;
+- Streamable HTTP supports bounded `listChanged` refresh with active-run
+  pinning, required/optional degradation, circuit backoff, and health;
+- deterministic fixtures cover protocol, refresh, artifact, and safety paths;
+- the official filesystem and real third-party MCP smokes remain opt-in.
 
 See:
 
 - `runtime/src/tools/mcp_proxy.rs`;
 - `tests/mcp.rs`;
 - [`runtime/subsystems.md`](runtime/subsystems.md);
-- [future MCP design](design/2026-07-15-mcp-streamable-http-and-tool-artifacts-design.md).
+- [partially implemented MCP design record](design/2026-07-15-mcp-streamable-http-and-tool-artifacts-design.md).
 
 Never treat MCP annotations as authorization or a remote `file://` URI as a
 local workspace path.
@@ -611,7 +612,7 @@ A skipped external smoke is not evidence that the external integration works.
 - [integration testing](runtime/integration-testing.md)
 - [release readiness](runtime/release-readiness.md)
 
-### Active future design chain
+### Active design and evaluation chain
 
 1. [Agent Execution Lifecycle](design/2026-07-14-agent-execution-lifecycle-design.md)
 2. [Agent Definition and Procedural Knowledge](design/2026-07-14-agent-definition-and-procedural-knowledge-design.md)
@@ -622,8 +623,12 @@ The execution lifecycle is implemented through one Runtime-neutral Agent
 kernel, bounded StepRunner, StepRecord ledger, PlanRevision, rule-first
 PlanDecision with bounded model-on-ambiguity evaluation, an independent
 evidence-grounded Finalizer, public multidimensional execution budgets, and
-trace-tail reconciliation on resume. The other three documents remain
-proposed/not implemented.
+trace-tail reconciliation on resume. AgentDefinition/instruction/procedure
+activation and MCP Streamable HTTP/rich artifacts/live refresh are also
+implemented. Phase-specific procedure consumption and the OnCall reference
+evaluation remain proposed. The linked lifecycle, AgentDefinition, and MCP
+documents are partially implemented design records; only the OnCall evaluation
+document remains wholly future work.
 
 ### Active product delivery
 
@@ -679,8 +684,9 @@ Use them for rationale, not as current API/runtime truth when they disagree with
 - Hosted multi-user identity and distributed rate limiting are outside the MVP.
 - Built-in vector RAG is not provided.
 - Real provider/MCP tests are gated.
-- Streamable HTTP is implemented, but live MCP catalog refresh and rich result
-  mapping for stdio/legacy SSE remain pending.
+- Streamable HTTP live catalog refresh and rich result mapping across all three
+  transports are implemented. Stdio/deprecated SSE do not consume live
+  `listChanged`; real third-party MCP interoperability remains unverified.
 - The runtime compiles versioned AgentDefinition packages and discovers bounded
   root/nested `AGENTS.md` instruction layers after Project Trust authorization.
 - Typed procedure catalog selection and bounded hydration run at activation;

@@ -1,8 +1,8 @@
 # rove Agent Definition and Procedural Knowledge Design - 2026-07-14
 
-> Status: **Proposed / Not Implemented**
+> Status: **Partially implemented - remaining target is proposed**
 >
-> 本文是未来设计 spec，不是当前实现说明，也不是实现计划。当前运行时事实仍以 [`docs/runtime/`](../runtime/README.md) 为准；在 loader、schema、事件、artifact、测试和 runtime 文档全部落地之前，不得把本文中的 Agent package、`AGENTS.md` discovery、procedure catalog 或 selection 行为描述为已实现。
+> 本文保留完整目标与尚未完成的设计，不是当前实现说明。当前运行时事实仍以 [`docs/runtime/`](../runtime/README.md) 为准。Versioned AgentDefinition packages、bounded `AGENTS.md` discovery、typed procedure selection/hydration 与 exact resume snapshot 已实现；phase-specific lifecycle consumption 和 OnCall evaluation 仍是后续目标。
 
 > **Current-state correction (2026-07-25):** built-in vector RAG, LanceDB,
 > `retrieve_code`, and `retrieve_docs` were removed from rove before the modular

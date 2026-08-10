@@ -50,6 +50,11 @@ async fn a_json_post_completes_initialize_and_negotiates_session_and_version() {
         client.session_id().await.as_deref(),
         Some("fixture-session-1")
     );
+    let identity = client
+        .server_identity_hash()
+        .await
+        .expect("server identity");
+    assert!(identity.starts_with("sha256:"));
 
     let observed = server.observations().await;
     assert_eq!(
@@ -76,6 +81,21 @@ async fn a_json_post_completes_initialize_and_negotiates_session_and_version() {
 }
 
 #[tokio::test]
+async fn list_and_call_require_a_completed_initialize_identity() {
+    let (server, client) = client_for(FixtureConfig::default()).await;
+
+    let list_error = client.discover_catalog().await.unwrap_err();
+    let call_error = client.call_tool("echo", json!({})).await.unwrap_err();
+
+    assert!(list_error.to_string().contains("completed initialize"));
+    assert!(call_error.to_string().contains("completed initialize"));
+    assert!(
+        server.observations().await.methods.is_empty(),
+        "pre-initialize operations must not reach the server"
+    );
+}
+
+#[tokio::test]
 async fn a_post_sse_response_is_parsed_as_a_json_rpc_response() {
     let (_server, client) = client_for(FixtureConfig {
         response_mode: FixtureResponseMode::EventStream,
@@ -89,6 +109,10 @@ async fn a_post_sse_response_is_parsed_as_a_json_rpc_response() {
 
     assert_eq!(catalog.tool_count(), 1);
     assert_eq!(catalog.entries[0].local_name, "mcp__fixture__echo");
+    assert_eq!(
+        catalog.server_identity_hash,
+        client.server_identity_hash().await.unwrap()
+    );
 }
 
 #[tokio::test]
@@ -218,10 +242,8 @@ async fn a_wrong_content_type_is_refused_rather_than_guessed() {
 
     let error = client.initialize().await.unwrap_err();
 
-    assert!(
-        matches!(error, McpProtocolError::Transport { .. }),
-        "{error:?}"
-    );
+    assert!(error.is_indeterminate(), "committed response: {error:?}");
+    assert!(!error.is_safely_retryable());
 }
 
 #[tokio::test]
@@ -316,6 +338,59 @@ async fn a_cancelled_client_stops_issuing_requests() {
     let error = client.call_tool("echo", json!({})).await.unwrap_err();
 
     assert_eq!(error, McpProtocolError::Cancelled);
+}
+
+#[tokio::test]
+async fn a_committed_call_timeout_is_indeterminate_and_cleans_up_its_waiter() {
+    let server = McpFixtureServer::start(FixtureConfig {
+        response_mode: FixtureResponseMode::Accepted,
+        ..FixtureConfig::default()
+    })
+    .await
+    .unwrap();
+    let transport = streamable_http_transport(
+        &server.url(),
+        StreamableHttpPolicy {
+            request_timeout_ms: 250,
+            endpoint: HttpEndpointPolicy::loopback_permitted(),
+            max_reconnect_attempts: 0,
+        },
+    )
+    .unwrap();
+    transport
+        .record_initialize(
+            &json!({
+                "protocolVersion": MCP_PROTOCOL_VERSION,
+                "serverInfo": { "name": "fixture", "version": "1.0.0" }
+            }),
+            Some("fixture-session-1"),
+        )
+        .await
+        .unwrap();
+    let client = StreamableHttpClient::new(
+        "accepted-without-result",
+        transport,
+        McpClientPolicy {
+            request_timeout_ms: 25,
+            max_retries: 3,
+        },
+    );
+
+    let error = client.call_tool("echo", json!({})).await.unwrap_err();
+
+    assert!(error.is_indeterminate(), "committed call: {error:?}");
+    assert!(!error.is_safely_retryable());
+    assert_eq!(client.pending_request_count().await, 0);
+    let observed = server.observations().await;
+    assert_eq!(
+        observed
+            .methods
+            .iter()
+            .filter(|method| method.as_str() == "tools/call")
+            .count(),
+        1,
+        "an indeterminate call must never be retried"
+    );
 }
 
 #[tokio::test]

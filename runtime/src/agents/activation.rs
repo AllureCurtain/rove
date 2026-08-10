@@ -336,6 +336,23 @@ impl AgentRuntime {
         })
     }
 
+    /// Resolve against the capability catalog pinned for this run.
+    ///
+    /// Model/runtime compatibility facts remain those validated at Engine
+    /// assembly; only tool capabilities can change through an atomic registry
+    /// refresh. Cloning here keeps the loaded package and instruction sources
+    /// immutable while allowing a new run to see a newly published catalog.
+    pub fn resolve_for_run_with_capabilities(
+        &self,
+        user_message: &str,
+        pinned: Option<&AgentRuntimeProfile>,
+        available_capabilities: BTreeSet<String>,
+    ) -> Result<ResolvedAgentRun, AgentActivationError> {
+        let mut runtime = self.clone();
+        runtime.facts.available_capabilities = available_capabilities;
+        runtime.resolve_for_run(user_message, pinned)
+    }
+
     fn fresh_profile(
         &self,
         user_message: &str,

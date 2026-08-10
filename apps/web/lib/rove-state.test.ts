@@ -1097,6 +1097,40 @@ describe("workbenchReducer", () => {
     });
   });
 
+  it("projects MCP degradation and capability refresh into the canonical trace", () => {
+    const degraded = workbenchReducer(createWorkbenchState(), {
+      type: "stream_event",
+      event: {
+        type: "mcp_server_degraded",
+        server_config_id: "monitoring",
+        required: false,
+        failure_code: "mcp_catalog_refresh_failed",
+      },
+    });
+    const refreshed = workbenchReducer(degraded, {
+      type: "stream_event",
+      event: {
+        type: "mcp_capabilities_refreshed",
+        server_config_id: "monitoring",
+        snapshot_id: "sha256:catalog-v2",
+        added: ["mcp__monitoring__new"],
+        removed: ["mcp__monitoring__retired"],
+        changed: ["mcp__monitoring__query"],
+      },
+    });
+
+    expect(refreshed.trace.slice(0, 2)).toMatchObject([
+      {
+        label: "mcp_capabilities_refreshed",
+        detail: "monitoring: +1 -1 ~1",
+      },
+      {
+        label: "mcp_server_degraded",
+        detail: "monitoring: mcp_catalog_refresh_failed",
+      },
+    ]);
+  });
+
   it("adds pending input on input_needed event", () => {
     const state = workbenchReducer(createWorkbenchState(), {
       type: "stream_event",

@@ -4,6 +4,7 @@ import type {
   CreateProductMemoryTopicRequest,
   CreateProductMcpServerRequest,
   ProductMemoryTopicContentResponse,
+  ProductMcpHealthSnapshot,
   ProductMcpServerConfig,
   ProductMcpToolDescriptor,
   UpdateProductMcpServerRequest,
@@ -89,6 +90,7 @@ export interface MockProductApiOptions {
   memoryTopics?: Record<string, ProductMemoryTopicContentResponse>;
   memoryMutationFailures?: number;
   mcpServers?: Record<string, ProductMcpServerConfig[]>;
+  mcpHealth?: Record<string, ProductMcpHealthSnapshot[]>;
   mcpMutationFailures?: number;
   mcpProbeFailures?: Record<string, MockMcpProbeFailure[]>;
   mcpProbeTools?: ProductMcpToolDescriptor[];
@@ -120,6 +122,7 @@ export interface MockProductApiState {
   memoryMutationRequests: number;
   remainingMemoryMutationFailures: number;
   mcpServers: Record<string, ProductMcpServerConfig[]>;
+  mcpHealth: Record<string, ProductMcpHealthSnapshot[]>;
   mcpRequestBodies: string[];
   mcpMutationRequests: number;
   remainingMcpMutationFailures: number;
@@ -200,6 +203,7 @@ export async function installMockProductApi(
     memoryMutationRequests: 0,
     remainingMemoryMutationFailures: options.memoryMutationFailures ?? 0,
     mcpServers: structuredClone(options.mcpServers ?? {}),
+    mcpHealth: structuredClone(options.mcpHealth ?? {}),
     mcpRequestBodies: [],
     mcpMutationRequests: 0,
     remainingMcpMutationFailures: options.mcpMutationFailures ?? 0,
@@ -478,6 +482,7 @@ export async function installMockProductApi(
         }
       }
       delete state.mcpServers[workspaceId];
+      delete state.mcpHealth[workspaceId];
       return route.fulfill({ status: 204, body: "" });
     }
     if (path === "/product/sessions" && method === "GET") {
@@ -977,6 +982,35 @@ export async function installMockProductApi(
       delete state.memoryTopics[slug];
       return route.fulfill({ status: 204, body: "" });
     }
+    if (path === "/product/mcp/health" && method === "GET") {
+      const workspaceId = url.searchParams.get("workspace_id");
+      if (
+        workspaceId === null ||
+        !state.workspaces.some((workspace) => workspace.id === workspaceId)
+      ) {
+        return json(
+          route,
+          { code: "product_not_found", error: "product workspace was not found" },
+          404,
+        );
+      }
+      const cached = new Map(
+        (state.mcpHealth[workspaceId] ?? []).map((entry) => [
+          entry.server_name,
+          entry,
+        ]),
+      );
+      const servers = (state.mcpServers[workspaceId] ?? []).map((server) =>
+        cached.get(server.name) ?? {
+          server_name: server.name,
+          required: server.required,
+          transport: server.transport,
+          status: server.enabled ? "unknown" : "disabled",
+          tool_count: 0,
+        },
+      );
+      return json(route, { servers, total: servers.length });
+    }
     if (path === "/product/mcp/servers") {
       const workspaceId = url.searchParams.get("workspace_id");
       if (
@@ -1021,6 +1055,9 @@ export async function installMockProductApi(
         };
         state.mcpServers[workspaceId] = [...servers, created].sort((left, right) =>
           left.name.localeCompare(right.name),
+        );
+        state.mcpHealth[workspaceId] = (state.mcpHealth[workspaceId] ?? []).filter(
+          (entry) => entry.server_name !== created.name,
         );
         return json(route, created, 201);
       }
@@ -1119,6 +1156,9 @@ export async function installMockProductApi(
         state.mcpServers[workspaceId] = [...servers].sort((left, right) =>
           left.name.localeCompare(right.name),
         );
+        state.mcpHealth[workspaceId] = (state.mcpHealth[workspaceId] ?? []).filter(
+          (entry) => entry.server_name !== name,
+        );
         return json(route, updated);
       }
       if (method === "DELETE") {
@@ -1136,6 +1176,9 @@ export async function installMockProductApi(
         }
         state.mcpServers[workspaceId] = servers.filter(
           (server) => server.name !== name,
+        );
+        state.mcpHealth[workspaceId] = (state.mcpHealth[workspaceId] ?? []).filter(
+          (entry) => entry.server_name !== name,
         );
         return route.fulfill({ status: 204, body: "" });
       }

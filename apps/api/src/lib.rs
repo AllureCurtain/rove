@@ -37,6 +37,7 @@ use rove_runtime::state::index::{ResumeJobClaim, RunIndexRecord, StateIndex};
 use rove_runtime::state::resume::resolve_resume_state;
 use rove_runtime::state::store::{RunHandle, StateStore};
 use rove_runtime::state::trace::TraceWriter;
+use rove_runtime::tools::mcp_proxy::McpServerRuntimeSnapshot;
 use rove_runtime::types::{
     ApprovalDecision, ApprovalPolicy, CallId, JobId, Message, PendingToolApproval,
     PendingUserInput, Role, RunId, RunStatus, SessionId, TaskState, TerminationReason,
@@ -80,6 +81,7 @@ struct ApiStateInner {
     job_starts: TaskTracker,
     supervisors: TaskTracker,
     jobs: RwLock<HashMap<JobId, Arc<JobRecord>>>,
+    mcp_health: RwLock<HashMap<PathBuf, Vec<McpServerRuntimeSnapshot>>>,
     model_health: Arc<ModelHealthStore>,
     rate_limit: tokio::sync::Mutex<RateLimitState>,
     bench_runs: Arc<BenchState>,
@@ -273,6 +275,7 @@ pub fn router(state: ApiState) -> Router {
         .routes(routes!(product::platform::update_product_memory_topic))
         .routes(routes!(product::platform::delete_product_memory_topic))
         .routes(routes!(product::mcp::list_product_mcp_servers))
+        .routes(routes!(product::mcp::get_product_mcp_health))
         .routes(routes!(product::mcp::create_product_mcp_server))
         .routes(routes!(product::mcp::update_product_mcp_server))
         .routes(routes!(product::mcp::delete_product_mcp_server))
@@ -475,6 +478,7 @@ impl ApiState {
                 job_starts: TaskTracker::new(),
                 supervisors: TaskTracker::new(),
                 jobs: RwLock::new(HashMap::new()),
+                mcp_health: RwLock::new(HashMap::new()),
                 model_health,
                 rate_limit: tokio::sync::Mutex::new(RateLimitState::default()),
                 bench_runs: Arc::new(BenchState::default()),
@@ -3153,7 +3157,7 @@ async fn assemble_job_engine(
         }) as Arc<dyn ToolApprovalProvider>
     });
 
-    build_engine(EngineOptions {
+    let engine = build_engine(EngineOptions {
         model,
         workspace: &workspace,
         config: &config,
@@ -3169,7 +3173,13 @@ async fn assemble_job_engine(
         approval_provider,
         environment: None,
     })
-    .await
+    .await?;
+    let mcp_config_path = config.workspace_bounded_mcp_config_path()?;
+    state.inner.mcp_health.write().await.insert(
+        mcp_config_path,
+        engine.runtime_identity().mcp_servers.clone(),
+    );
+    Ok(engine)
 }
 
 fn state_store_for_api(state: &ApiState) -> StateStore {

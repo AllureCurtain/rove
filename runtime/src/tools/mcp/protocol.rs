@@ -7,6 +7,7 @@
 //! Everything crossing this boundary is untrusted remote input, so each type
 //! carries explicit bounds and validation rather than trusting the peer.
 
+use std::collections::BTreeMap;
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
@@ -37,6 +38,9 @@ pub const MAX_MCP_TOOL_SCHEMA_BYTES: usize = 128 * 1024;
 pub const MAX_MCP_CURSOR_BYTES: usize = 4 * 1024;
 pub const MAX_MCP_LIST_PAGES: usize = 32;
 pub const MAX_MCP_DIAGNOSTIC_CHARS: usize = 500;
+pub const MAX_MCP_SERVER_IDENTITY_FIELD_BYTES: usize = 512;
+pub const MAX_MCP_SERVER_INFO_BYTES: usize = 8 * 1024;
+pub const MAX_MCP_SERVER_CAPABILITIES_BYTES: usize = 64 * 1024;
 
 /// JSON-RPC request identity. Only the shapes MCP actually uses are accepted.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -336,6 +340,10 @@ pub enum McpProtocolError {
     Indeterminate {
         detail: String,
     },
+    /// The transport proved that no request bytes reached the peer.
+    NotSent {
+        detail: String,
+    },
     Timeout {
         elapsed_ms: u64,
     },
@@ -380,6 +388,9 @@ impl fmt::Display for McpProtocolError {
                 formatter,
                 "MCP request was committed but its remote effect is unknown: {detail}"
             ),
+            Self::NotSent { detail } => {
+                write!(formatter, "MCP request was not sent: {detail}")
+            }
             Self::Timeout { elapsed_ms } => {
                 write!(formatter, "MCP request timed out after {elapsed_ms}ms")
             }
@@ -398,12 +409,24 @@ impl McpProtocolError {
     /// A committed request is never safely retryable, because a duplicate could
     /// repeat a side effect the server already performed.
     pub fn is_safely_retryable(&self) -> bool {
-        matches!(self, Self::Disconnected { .. } | Self::Transport { .. })
+        matches!(self, Self::NotSent { .. })
     }
 
     /// True when the remote effect is unknown and must not be replayed.
     pub fn is_indeterminate(&self) -> bool {
         matches!(self, Self::Indeterminate { .. })
+    }
+
+    /// Convert a failure observed after request dispatch into a conservative
+    /// effect verdict. A JSON-RPC error response is already a complete verdict;
+    /// every other failure leaves the remote effect unknown.
+    pub fn after_commit(self) -> Self {
+        match self {
+            Self::Server(_) | Self::Indeterminate { .. } => self,
+            other => Self::Indeterminate {
+                detail: bounded_diagnostic(&other.to_string()),
+            },
+        }
     }
 }
 
@@ -426,6 +449,92 @@ pub fn negotiate_protocol_version(offered: Option<&str>) -> Result<String, McpPr
     Err(McpProtocolError::UnsupportedProtocolVersion {
         offered: bounded_diagnostic(offered),
     })
+}
+
+/// Validate the server identity negotiated during `initialize` and return a
+/// stable, secret-free digest for runtime pinning. The server-declared name,
+/// version, and capabilities are untrusted input; names are normalized only
+/// after rejecting controls and enforcing a byte bound, while capability JSON
+/// is recursively canonicalized so object key order cannot cause identity
+/// drift.
+pub fn server_identity_hash(result: &Value) -> Result<String, McpProtocolError> {
+    let info = result
+        .get("serverInfo")
+        .and_then(Value::as_object)
+        .ok_or_else(|| McpProtocolError::Transport {
+            detail: "MCP initialize response is missing serverInfo".to_string(),
+        })?;
+    let info_bytes = serde_json::to_vec(info).map_err(|_| McpProtocolError::Transport {
+        detail: "MCP initialize serverInfo could not be encoded".to_string(),
+    })?;
+    if info_bytes.len() > MAX_MCP_SERVER_INFO_BYTES {
+        return Err(McpProtocolError::Transport {
+            detail: "MCP initialize serverInfo exceeds the supported size".to_string(),
+        });
+    }
+    let name = normalized_identity_field(info.get("name"), "name")?;
+    let version = normalized_identity_field(info.get("version"), "version")?;
+    let empty_capabilities = Value::Object(serde_json::Map::new());
+    let capabilities = result.get("capabilities").unwrap_or(&empty_capabilities);
+    if !capabilities.is_object() {
+        return Err(McpProtocolError::Transport {
+            detail: "MCP initialize capabilities must be an object".to_string(),
+        });
+    }
+    let capability_bytes =
+        serde_json::to_vec(capabilities).map_err(|_| McpProtocolError::Transport {
+            detail: "MCP initialize capabilities could not be encoded".to_string(),
+        })?;
+    if capability_bytes.len() > MAX_MCP_SERVER_CAPABILITIES_BYTES {
+        return Err(McpProtocolError::Transport {
+            detail: "MCP initialize capabilities exceed the supported size".to_string(),
+        });
+    }
+    let canonical_capabilities = canonical_json(capabilities);
+    Ok(crate::prompt_metadata::stable_hash(
+        &serde_json::json!({
+            "name": name,
+            "version": version,
+            "capabilities": canonical_capabilities,
+        })
+        .to_string(),
+    ))
+}
+
+fn normalized_identity_field(
+    value: Option<&Value>,
+    field: &str,
+) -> Result<String, McpProtocolError> {
+    let value = value
+        .and_then(Value::as_str)
+        .ok_or_else(|| McpProtocolError::Transport {
+            detail: format!("MCP initialize serverInfo is missing {field}"),
+        })?;
+    let value = value.trim();
+    if value.is_empty()
+        || value.len() > MAX_MCP_SERVER_IDENTITY_FIELD_BYTES
+        || value.chars().any(char::is_control)
+    {
+        return Err(McpProtocolError::Transport {
+            detail: format!("MCP initialize serverInfo {field} is invalid"),
+        });
+    }
+    Ok(value.to_string())
+}
+
+fn canonical_json(value: &Value) -> Value {
+    match value {
+        Value::Object(object) => Value::Object(
+            object
+                .iter()
+                .map(|(key, value)| (key.clone(), canonical_json(value)))
+                .collect::<BTreeMap<_, _>>()
+                .into_iter()
+                .collect(),
+        ),
+        Value::Array(values) => Value::Array(values.iter().map(canonical_json).collect()),
+        value => value.clone(),
+    }
 }
 
 /// Validate a server-assigned session ID before it is echoed in any header.
@@ -560,6 +669,84 @@ mod tests {
             negotiate_protocol_version(Some("1999-01-01")),
             Err(McpProtocolError::UnsupportedProtocolVersion { .. })
         ));
+    }
+
+    #[test]
+    fn negotiated_server_identity_is_canonical_and_tracks_drift() {
+        let first = json!({
+            "serverInfo": { "name": "fixture", "version": "1.0.0" },
+            "capabilities": {
+                "tools": { "listChanged": true },
+                "logging": {}
+            }
+        });
+        let reordered = json!({
+            "capabilities": {
+                "logging": {},
+                "tools": { "listChanged": true }
+            },
+            "serverInfo": { "version": "1.0.0", "name": "fixture" }
+        });
+        let changed_version = json!({
+            "serverInfo": { "name": "fixture", "version": "2.0.0" },
+            "capabilities": first["capabilities"].clone()
+        });
+        let changed_capability = json!({
+            "serverInfo": first["serverInfo"].clone(),
+            "capabilities": { "tools": { "listChanged": false }, "logging": {} }
+        });
+
+        let identity = server_identity_hash(&first).unwrap();
+        assert!(identity.starts_with("sha256:"));
+        assert_eq!(identity, server_identity_hash(&reordered).unwrap());
+        assert_ne!(identity, server_identity_hash(&changed_version).unwrap());
+        assert_ne!(identity, server_identity_hash(&changed_capability).unwrap());
+    }
+
+    #[test]
+    fn missing_oversized_and_malicious_server_identity_is_rejected() {
+        for invalid in [
+            json!({}),
+            json!({ "serverInfo": {} }),
+            json!({ "serverInfo": { "name": "", "version": "1" } }),
+            json!({ "serverInfo": { "name": "bad\nname", "version": "1" } }),
+            json!({ "serverInfo": { "name": "fixture", "version": 1 } }),
+            json!({
+                "serverInfo": { "name": "fixture", "version": "1" },
+                "capabilities": []
+            }),
+        ] {
+            assert!(
+                server_identity_hash(&invalid).is_err(),
+                "must reject {invalid}"
+            );
+        }
+        assert!(
+            server_identity_hash(&json!({
+                "serverInfo": {
+                    "name": "x".repeat(MAX_MCP_SERVER_IDENTITY_FIELD_BYTES + 1),
+                    "version": "1"
+                }
+            }))
+            .is_err()
+        );
+        assert!(
+            server_identity_hash(&json!({
+                "serverInfo": {
+                    "name": "fixture",
+                    "version": "1",
+                    "unknown": "x".repeat(MAX_MCP_SERVER_INFO_BYTES)
+                }
+            }))
+            .is_err()
+        );
+        assert!(
+            server_identity_hash(&json!({
+                "serverInfo": { "name": "fixture", "version": "1" },
+                "capabilities": { "huge": "x".repeat(MAX_MCP_SERVER_CAPABILITIES_BYTES) }
+            }))
+            .is_err()
+        );
     }
 
     #[test]

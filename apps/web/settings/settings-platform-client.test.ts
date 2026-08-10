@@ -4,6 +4,7 @@ import { ProductApiSchemaError } from "../product/product-api-types";
 import { ProductApiError } from "../product/product-client";
 import {
   parseCreateProductMcpServerRequest,
+  parseProductMcpHealthResponse,
   parseProductMcpProbeResponse,
   parseProductMcpServersResponse,
   parseProductMemoryTopicContentResponse,
@@ -34,12 +35,36 @@ const topic = {
 const mcpServer = {
   name: "workspace_tools",
   enabled: true,
+  required: true,
   transport: "stdio",
   command: "python",
   args: ["mcp_server.py"],
   env_names: ["WORKSPACE_MCP_TOKEN"],
   request_timeout_ms: 5_000,
   transport_deprecated: false,
+} as const;
+
+const mcpHealth = {
+  servers: [
+    {
+      server_name: "workspace_tools",
+      required: true,
+      transport: "stdio",
+      status: "ready",
+      server_config_hash:
+        "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      server_identity_hash:
+        "sha256:1123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      protocol_version: "2025-03-26",
+      catalog_hash:
+        "sha256:2123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      capability_snapshot_id:
+        "sha256:3123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      tool_count: 2,
+      refreshed_at: "2026-08-10T00:00:00Z",
+    },
+  ],
+  total: 1,
 } as const;
 
 const mcpProbe = {
@@ -236,6 +261,7 @@ describe("settings platform API types", () => {
     expect(
       parseProductMcpServersResponse({ servers: [mcpServer], total: 1 }),
     ).toEqual({ servers: [mcpServer], total: 1 });
+    expect(parseProductMcpHealthResponse(mcpHealth)).toEqual(mcpHealth);
     expect(parseProductMcpProbeResponse(mcpProbe)).toEqual(mcpProbe);
     expect(() =>
       parseCreateProductMcpServerRequest({
@@ -263,6 +289,7 @@ describe("settings platform API types", () => {
           {
             name: mcpServer.name,
             enabled: true,
+            required: false,
             transport: "sse",
             args: [],
             env_names: [],
@@ -290,6 +317,18 @@ describe("settings platform API types", () => {
       parseProductMcpProbeResponse({
         ...mcpProbe,
         tools: [{ ...mcpProbe.tools[0], destructive: false }],
+      }),
+    ).toThrow(ProductApiSchemaError);
+    expect(() =>
+      parseProductMcpHealthResponse({
+        servers: [mcpHealth.servers[0], mcpHealth.servers[0]],
+        total: 2,
+      }),
+    ).toThrow(ProductApiSchemaError);
+    expect(() =>
+      parseProductMcpHealthResponse({
+        servers: [{ ...mcpHealth.servers[0], failure_code: "raw secret\nvalue" }],
+        total: 1,
       }),
     ).toThrow(ProductApiSchemaError);
   });
@@ -622,6 +661,12 @@ describe("settings platform client", () => {
           return jsonResponse({ servers: [mcpServer], total: 1 });
         }
         if (
+          url === "/api/product/mcp/health?workspace_id=workspace-1" &&
+          method === "GET"
+        ) {
+          return jsonResponse(mcpHealth);
+        }
+        if (
           url === "/api/product/mcp/servers?workspace_id=workspace-1" &&
           method === "POST"
         ) {
@@ -662,6 +707,7 @@ describe("settings platform client", () => {
     const client = createSettingsPlatformClient({ fetch: fetchMock });
 
     await client.listMcpServers("workspace-1");
+    await expect(client.getMcpHealth("workspace-1")).resolves.toEqual(mcpHealth);
     const { transport_deprecated: _serverOwned, ...createRequest } = mcpServer;
     await client.createMcpServer("workspace-1", {
       ...createRequest,
@@ -670,6 +716,7 @@ describe("settings platform client", () => {
     });
     await client.updateMcpServer("workspace-1", "workspace_tools", {
       enabled: false,
+      required: false,
       transport: "stdio",
       command: "python",
       args: ["mcp_server.py"],
@@ -681,6 +728,7 @@ describe("settings platform client", () => {
 
     expect(calls.map(({ method, url }) => `${method} ${url}`)).toEqual([
       "GET /api/product/mcp/servers?workspace_id=workspace-1",
+      "GET /api/product/mcp/health?workspace_id=workspace-1",
       "POST /api/product/mcp/servers?workspace_id=workspace-1",
       "PUT /api/product/mcp/servers/workspace_tools?workspace_id=workspace-1",
       "POST /api/product/mcp/servers/workspace_tools/probe?workspace_id=workspace-1",

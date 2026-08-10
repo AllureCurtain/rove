@@ -37,6 +37,10 @@ pub struct RuntimeIdentity {
     /// Content-free identity of the immutable Agent snapshot used by the run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<crate::agents::AgentProfileIdentity>,
+    /// Secret-free MCP identities and catalog/health snapshots pinned by the
+    /// run. Empty in artifacts written before rich MCP refresh support.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mcp_servers: Vec<crate::tools::mcp_proxy::McpServerRuntimeSnapshot>,
 }
 
 impl RuntimeIdentity {
@@ -117,6 +121,7 @@ pub fn build_runtime_identity(input: RuntimeIdentityInput<'_>) -> RuntimeIdentit
         execution_environment: input.execution_environment.cloned(),
         execution_capabilities: input.execution_capabilities.copied(),
         agent: input.agent.cloned(),
+        mcp_servers: Vec::new(),
     }
 }
 
@@ -199,6 +204,11 @@ pub fn evaluate_runtime_identity(
     if saved.agent.is_some() && saved.agent != current.agent {
         mismatch_fields.push("agent".to_string());
     }
+    if !saved.mcp_servers.is_empty()
+        && !mcp_resume_identity_matches(&saved.mcp_servers, &current.mcp_servers)
+    {
+        mismatch_fields.push("mcp_servers".to_string());
+    }
 
     RuntimeIdentityEvaluation {
         status: if mismatch_fields.is_empty() {
@@ -208,6 +218,24 @@ pub fn evaluate_runtime_identity(
         },
         mismatch_fields,
     }
+}
+
+fn mcp_resume_identity_matches(
+    saved: &[crate::tools::mcp_proxy::McpServerRuntimeSnapshot],
+    current: &[crate::tools::mcp_proxy::McpServerRuntimeSnapshot],
+) -> bool {
+    saved.len() == current.len()
+        && saved.iter().zip(current).all(|(saved, current)| {
+            saved.server_config_id == current.server_config_id
+                && saved.server_config_hash == current.server_config_hash
+                && saved.required == current.required
+                && saved.transport == current.transport
+                && saved.protocol_version == current.protocol_version
+                && saved.server_identity_hash == current.server_identity_hash
+                && saved.catalog_hash == current.catalog_hash
+                && saved.capability_snapshot_id == current.capability_snapshot_id
+                && saved.tool_count == current.tool_count
+        })
 }
 
 #[cfg(test)]
@@ -559,6 +587,89 @@ mod tests {
         assert_eq!(
             legacy.to_execution_policy(),
             ExecutionPolicy::from_max_steps_and_plan_flag(20, true)
+        );
+    }
+
+    fn mcp_snapshot(
+        catalog_hash: &str,
+        status: crate::tools::mcp_proxy::McpServerHealthStatus,
+        refreshed_at: &str,
+    ) -> crate::tools::mcp_proxy::McpServerRuntimeSnapshot {
+        crate::tools::mcp_proxy::McpServerRuntimeSnapshot {
+            server_config_id: "monitoring".to_string(),
+            server_config_hash: "sha256:config".to_string(),
+            required: false,
+            transport: crate::tools::mcp_proxy::McpTransport::StreamableHttp,
+            protocol_version: Some("2025-03-26".to_string()),
+            server_identity_hash: "sha256:server".to_string(),
+            catalog_hash: Some(catalog_hash.to_string()),
+            capability_snapshot_id: Some(catalog_hash.to_string()),
+            tool_count: 2,
+            status,
+            failure_code: (status == crate::tools::mcp_proxy::McpServerHealthStatus::Degraded)
+                .then(|| "mcp_notification_poll_failed".to_string()),
+            refreshed_at: refreshed_at.to_string(),
+        }
+    }
+
+    #[test]
+    fn mcp_resume_identity_ignores_health_time_but_rejects_catalog_or_server_drift() {
+        let workspace = workspace();
+        let policy = ExecutionPolicy::from_max_steps_and_plan_flag(20, true);
+        let mut saved = lifecycle_identity("evaluator", "finalizer", policy.clone(), &workspace);
+        saved.mcp_servers = vec![mcp_snapshot(
+            "sha256:catalog-v1",
+            crate::tools::mcp_proxy::McpServerHealthStatus::Ready,
+            "2026-08-09T00:00:00Z",
+        )];
+        let mut current = lifecycle_identity("evaluator", "finalizer", policy, &workspace);
+        current.mcp_servers = vec![mcp_snapshot(
+            "sha256:catalog-v1",
+            crate::tools::mcp_proxy::McpServerHealthStatus::Degraded,
+            "2026-08-10T00:00:00Z",
+        )];
+
+        assert_eq!(
+            evaluate_runtime_identity(Some(&saved), &current).status,
+            RuntimeIdentityStatus::FullValid
+        );
+
+        current.mcp_servers[0].catalog_hash = Some("sha256:catalog-v2".to_string());
+        current.mcp_servers[0].capability_snapshot_id = Some("sha256:catalog-v2".to_string());
+        let evaluation = evaluate_runtime_identity(Some(&saved), &current);
+        assert_eq!(evaluation.status, RuntimeIdentityStatus::RuntimeMismatch);
+        assert_eq!(evaluation.mismatch_fields, ["mcp_servers"]);
+
+        current.mcp_servers[0].catalog_hash = Some("sha256:catalog-v1".to_string());
+        current.mcp_servers[0].capability_snapshot_id = Some("sha256:catalog-v1".to_string());
+        current.mcp_servers[0].server_identity_hash = "sha256:server-v2".to_string();
+        let evaluation = evaluate_runtime_identity(Some(&saved), &current);
+        assert_eq!(evaluation.status, RuntimeIdentityStatus::RuntimeMismatch);
+        assert_eq!(evaluation.mismatch_fields, ["mcp_servers"]);
+    }
+
+    #[test]
+    fn legacy_identity_without_mcp_snapshots_remains_compatible() {
+        let workspace = workspace();
+        let mut current = lifecycle_identity(
+            "evaluator",
+            "finalizer",
+            ExecutionPolicy::from_max_steps_and_plan_flag(20, true),
+            &workspace,
+        );
+        current.mcp_servers = vec![mcp_snapshot(
+            "sha256:catalog-v1",
+            crate::tools::mcp_proxy::McpServerHealthStatus::Ready,
+            "2026-08-10T00:00:00Z",
+        )];
+        let mut legacy_value = serde_json::to_value(&current).unwrap();
+        legacy_value.as_object_mut().unwrap().remove("mcp_servers");
+        let legacy: RuntimeIdentity = serde_json::from_value(legacy_value).unwrap();
+
+        assert!(legacy.mcp_servers.is_empty());
+        assert_eq!(
+            evaluate_runtime_identity(Some(&legacy), &current).status,
+            RuntimeIdentityStatus::FullValid
         );
     }
 }

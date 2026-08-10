@@ -482,6 +482,7 @@ mod tests {
         McpServerConfig {
             name: name.to_string(),
             enabled: true,
+            required: true,
             transport: McpTransport::Stdio,
             command: "python".to_string(),
             args: vec!["server.py".to_string()],

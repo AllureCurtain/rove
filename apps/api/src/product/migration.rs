@@ -1233,6 +1233,7 @@ mod tests {
                     execution_environment: None,
                     execution_capabilities: None,
                     agent: None,
+                    mcp_servers: Vec::new(),
                 }),
                 agent_profile: None,
                 step_ledger: StepLedgerState::default(),

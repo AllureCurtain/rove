@@ -6,9 +6,9 @@ Complete C0-C3 implementation, and CDH G1-G7 control/evidence/Settings
 completion. C1-C3 are integrated on `main` through PRs #24-#26; CDH G1-G7
 merged through PR #29 at `f9e88a7`. The deterministic live-API gates passed.
 The current source also includes the post-Coding-Tool full-delivery shared
-kernel/lifecycle, MCP Streamable HTTP, rich Tool Result/Artifact, and
-AgentDefinition/instruction/procedure checkpoints. Desktop contracts remain
-future work until code and tests land.
+kernel/lifecycle, MCP Streamable HTTP plus rich Tool Result/Artifact and live
+catalog refresh, and AgentDefinition/instruction/procedure checkpoints.
+Desktop contracts remain future work until code and tests land.
 
 New maintainers should start with [`docs/ONBOARDING.md`](../ONBOARDING.md), then use this directory for current subsystem truth.
 
@@ -37,6 +37,12 @@ The current architecture is based on:
 - [`docs/design/2026-07-22-modular-workspace-architecture.md`](../design/2026-07-22-modular-workspace-architecture.md)
 - [`docs/design/2026-07-23-provider-layer-redesign-design.md`](../design/2026-07-23-provider-layer-redesign-design.md)
 - [`docs/design/2026-07-24-cleanup-and-naming-decisions.md`](../design/2026-07-24-cleanup-and-naming-decisions.md)
+
+Partially implemented evolution records are:
+
+- [`docs/design/2026-07-14-agent-execution-lifecycle-design.md`](../design/2026-07-14-agent-execution-lifecycle-design.md)
+- [`docs/design/2026-07-14-agent-definition-and-procedural-knowledge-design.md`](../design/2026-07-14-agent-definition-and-procedural-knowledge-design.md)
+- [`docs/design/2026-07-15-mcp-streamable-http-and-tool-artifacts-design.md`](../design/2026-07-15-mcp-streamable-http-and-tool-artifacts-design.md)
 
 The Web product line is tracked separately:
 

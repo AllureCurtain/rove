@@ -13,7 +13,7 @@ use crate::events::StreamEvent;
 use crate::executor::Executor;
 use crate::hooks::HookRegistry;
 use crate::memory::paths::MemoryPaths;
-use crate::state::tool_artifacts::ToolArtifactStore;
+use crate::state::tool_artifacts::{ArtifactLedgerEntry, ToolArtifactStore};
 use crate::tool_input::RegisteredUserInput;
 use crate::tools::runtime_context::runtime_tool_context_with_artifacts;
 use crate::types::{
@@ -534,6 +534,37 @@ pub(crate) fn run_tool_turn<'a>(
                         history_output: result.output.clone(),
                         error_reason: None,
                     });
+                    if let Some(envelope) = result.envelope.as_ref() {
+                        for artifact in &envelope.artifacts {
+                            yield ToolTurnItem::Event(StreamEvent::ToolArtifactStored {
+                                call_id: execution.call.call_id,
+                                artifact: Box::new(artifact.clone()),
+                            });
+                        }
+                    }
+                    if let Some(store) = ctx.tool_artifacts.as_ref()
+                        && let Ok(entries) = store.ledger().await
+                    {
+                        let call_id = execution.call.call_id.to_string();
+                        for entry in entries {
+                            if let ArtifactLedgerEntry::Rejected {
+                                call_id: rejected_call_id,
+                                block_ordinal,
+                                reason,
+                                observed_bytes,
+                                ..
+                            } = entry
+                                && rejected_call_id == call_id
+                            {
+                                yield ToolTurnItem::Event(StreamEvent::ToolArtifactRejected {
+                                    call_id: execution.call.call_id,
+                                    block_ordinal,
+                                    reason: reason.code().to_string(),
+                                    observed_bytes,
+                                });
+                            }
+                        }
+                    }
                     yield ToolTurnItem::Event(StreamEvent::ToolCallCompleted {
                         call_id: execution.call.call_id,
                         result,
@@ -657,16 +688,80 @@ mod tests {
     use crate::events::StreamEvent;
     use crate::hooks::HookRegistry;
     use crate::memory::paths::MemoryPaths;
+    use crate::state::tool_artifacts::{ArtifactClaim, ToolArtifactStore};
     use crate::tools::echo::EchoTool;
     use crate::types::{
         ApprovalDecision, ApprovalPolicy, CallId, PendingUserInput, ToolCallAction,
         ToolExecutionStatus, UserInputProvider, UserInputRequest,
     };
     use crate::workspace::Workspace;
-    use rove_core::ToolError;
-    use rove_core::ToolRegistry;
+    use rove_core::{
+        ArtifactTrust, Sensitivity, Tool, ToolArtifactKind, ToolArtifactSource, ToolContext,
+        ToolDescriptor, ToolError, ToolOutput, ToolOutputEnvelope, ToolRegistry,
+    };
 
     struct ImmediateInputProvider;
+
+    struct ArtifactFixtureTool {
+        store: Arc<ToolArtifactStore>,
+    }
+
+    #[async_trait]
+    impl Tool for ArtifactFixtureTool {
+        fn schema(&self) -> ToolDescriptor {
+            ToolDescriptor {
+                name: "artifact_fixture".to_string(),
+                description: "Emit one artifact and one quota rejection".to_string(),
+                parameters: serde_json::json!({"type":"object"}),
+                destructive: false,
+                parallel_safe: false,
+                capability_id: None,
+                capability: None,
+            }
+        }
+
+        async fn execute(
+            &self,
+            _args: serde_json::Value,
+            context: &ToolContext<'_>,
+        ) -> Result<ToolOutput, ToolError> {
+            let source = |block_ordinal| ToolArtifactSource {
+                run_id: self.store.run_id(),
+                call_id: context.call_id.to_string(),
+                block_ordinal,
+                captured_at: "2026-08-10T00:00:00Z".to_string(),
+                ..ToolArtifactSource::default()
+            };
+            let artifact = self
+                .store
+                .put(
+                    ToolArtifactKind::Resource,
+                    b"retained",
+                    source(0),
+                    ArtifactClaim::default(),
+                    Sensitivity::Normal,
+                    ArtifactTrust::Untrusted,
+                )
+                .await
+                .unwrap();
+            let _ = self
+                .store
+                .put(
+                    ToolArtifactKind::Resource,
+                    b"",
+                    source(1),
+                    ArtifactClaim::default(),
+                    Sensitivity::Normal,
+                    ArtifactTrust::Untrusted,
+                )
+                .await;
+            Ok(ToolOutput::from_envelope(ToolOutputEnvelope {
+                summary_text: "artifact result".to_string(),
+                artifacts: vec![artifact],
+                ..ToolOutputEnvelope::default()
+            }))
+        }
+    }
 
     #[async_trait]
     impl UserInputProvider for ImmediateInputProvider {
@@ -764,6 +859,95 @@ mod tests {
                     && metadata.error_code.as_deref() == Some("unknown_tool")
             )
         }));
+    }
+
+    #[tokio::test]
+    async fn artifact_events_precede_the_completed_tool_event_without_payload_bytes() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let workspace = Workspace::detect(tmp.path()).unwrap();
+        let memory_paths = MemoryPaths::from_workspace(&workspace, 8);
+        let store = Arc::new(ToolArtifactStore::new(
+            tmp.path().join("runs").join("run-artifact-events"),
+        ));
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(ArtifactFixtureTool {
+            store: Arc::clone(&store),
+        }));
+        let call_id = CallId::new();
+        let ctx = ToolTurnContext {
+            registry: &registry,
+            workspace: &workspace,
+            environment: local_environment(&workspace),
+            memory_paths: &memory_paths,
+            approval_policy: ApprovalPolicy::Auto,
+            approval_decision: ApprovalDecision::Approve,
+            approval_provider: None,
+            input_provider: None,
+            hooks: HookRegistry::default(),
+            cancel_token: CancellationToken::new(),
+            tool_artifacts: Some(Arc::clone(&store)),
+            agent_profile: None,
+        };
+        let items = run_tool_turn(
+            ctx,
+            ToolAction::Call(ToolCallAction {
+                call_id,
+                tool_use_id: None,
+                name: "artifact_fixture".to_string(),
+                args: serde_json::json!({}),
+            }),
+        )
+        .collect::<Vec<_>>()
+        .await;
+
+        let stored = items
+            .iter()
+            .position(|item| {
+                matches!(
+                    item,
+                    ToolTurnItem::Event(StreamEvent::ToolArtifactStored { call_id: id, artifact })
+                        if *id == call_id && artifact.byte_length == 8
+                )
+            })
+            .unwrap();
+        let rejected = items
+            .iter()
+            .position(|item| {
+                matches!(
+                    item,
+                    ToolTurnItem::Event(StreamEvent::ToolArtifactRejected {
+                        call_id: id,
+                        block_ordinal: 1,
+                        reason,
+                        observed_bytes: 0,
+                    }) if *id == call_id && reason == "artifact_empty_payload"
+                )
+            })
+            .unwrap();
+        let completed = items
+            .iter()
+            .position(|item| {
+                matches!(
+                    item,
+                    ToolTurnItem::Event(StreamEvent::ToolCallCompleted { call_id: id, .. })
+                        if *id == call_id
+                )
+            })
+            .unwrap();
+        assert!(stored < rejected && rejected < completed);
+        assert!(
+            !serde_json::to_string(
+                &items
+                    .iter()
+                    .filter_map(|item| match item {
+                        ToolTurnItem::Event(event) => Some(event),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+            )
+            .unwrap()
+            .contains("cmV0YWluZWQ=")
+        );
     }
 
     #[test]

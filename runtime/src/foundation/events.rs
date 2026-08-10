@@ -153,6 +153,23 @@ pub enum StreamEvent {
         observed_bytes: u64,
     },
 
+    /// A configured MCP server is unavailable or retained its last catalog
+    /// after a failed refresh. Fields are bounded codes/identities only.
+    McpServerDegraded {
+        server_config_id: String,
+        required: bool,
+        failure_code: String,
+    },
+
+    /// A complete MCP catalog replaced the namespace used by future runs.
+    McpCapabilitiesRefreshed {
+        server_config_id: String,
+        snapshot_id: String,
+        added: Vec<String>,
+        removed: Vec<String>,
+        changed: Vec<String>,
+    },
+
     /// The `request_input` tool is waiting for user input.
     InputNeeded { input_id: CallId, prompt: String },
 
@@ -283,6 +300,8 @@ impl StreamEvent {
             Self::ToolCallFailed { .. } => "tool_call_failed",
             Self::ToolArtifactStored { .. } => "tool_artifact_stored",
             Self::ToolArtifactRejected { .. } => "tool_artifact_rejected",
+            Self::McpServerDegraded { .. } => "mcp_server_degraded",
+            Self::McpCapabilitiesRefreshed { .. } => "mcp_capabilities_refreshed",
             Self::InputNeeded { .. } => "input_needed",
             Self::PlanCreated { .. } => "plan_created",
             Self::PlanStepStarted { .. } => "plan_step_started",

@@ -253,7 +253,12 @@ and pins the descriptor plus model projection for later lookup and execution.
 The registry is lexically ordered; duplicate names, duplicate capability IDs,
 invalid schemas, and excessive catalogs fail without overwriting an existing
 entry. The compatibility `register` wrapper is for trusted built-ins, while
-dynamic catalogs use fallible atomic batch registration. Local built-in tool implementations and their typed
+dynamic catalogs use fallible atomic batch registration. A dynamic source can
+hold a weak publisher and atomically replace one validated name prefix; the
+registry reports stable added/removed/changed names, and a failed replacement
+keeps the old namespace intact. `Engine` snapshots exact descriptors and tool
+implementations at run start, while the base registry remains available to a
+future run. Local built-in tool implementations and their typed
 invocation adapters live in `runtime/src/tools/`. The tool `Executor`
 pipeline, pre/post-tool plus post-run hooks (including session-summary), and the
 durable tool-turn coordinator live in `runtime/src/tools/executor.rs`,
@@ -318,6 +323,10 @@ HTTP transport and sits beside stdio and the deprecated HTTP+SSE path. It
 offers `2025-06-18` and accepts `2025-03-26` and `2024-11-05`; a server that
 omits the version is treated as `2025-03-26`, and an unsupported version fails
 as a protocol mismatch rather than proceeding on a guess. A negotiated
+`serverInfo` name/version and bounded capability object are validated,
+canonicalized, and hashed once; catalog snapshots, runtime identity, resume,
+and rich result audit metadata reuse that exact secret-free hash. Missing,
+oversized, or control-bearing identity fields fail activation. A negotiated
 `mcp-session-id` is validated before it is ever echoed back, so a server cannot
 inject headers through the session value, and the negotiated protocol version
 is sent on every subsequent request. Responses are dispatched by JSON-RPC id
@@ -342,8 +351,25 @@ An MCP discovery request accumulates the enabled-server catalog before one
 atomic registry commit. Invalid schemas, aliases, or capability bindings leave
 the prior registry unchanged. MCP tools receive stable namespaced capability
 IDs derived from the configured server and exact remote identity, while local
-safety remains conservative (`destructive`, non-parallel). This is catalog
-pinning for the current Engine, not live MCP capability refresh.
+safety remains conservative (`destructive`, non-parallel). A Streamable HTTP
+`notifications/tools/list_changed` message triggers another complete bounded
+discovery; only a fully valid catalog atomically replaces that server's
+namespace. The active run retains its registry snapshot, while the next run on
+the same Engine sees the replacement. Stdio and deprecated SSE catalogs remain
+registration-time snapshots.
+
+Each server is `required` by default for old-config compatibility. Required
+activation failure blocks assembly with a stable failure code. An optional
+failure keeps built-ins and other servers available, records a degraded
+secret-free snapshot, and emits `mcp_server_degraded` after the next run starts.
+Refresh success emits `mcp_capabilities_refreshed` with only snapshot identity
+and added/removed/changed names. Notification and catalog failures use a bounded
+1-second retry interval and a 30-second circuit cooldown after three consecutive
+failures. Runtime identity/checkpoint/report persist config/protocol/server/
+catalog identity, but resume comparison ignores health timestamps and rejects
+real catalog drift. Product `GET /product/mcp/health` and Settings expose
+`ready`, `degraded`, `disabled`, or `unknown`; config mutations invalidate the
+cached assembly snapshot.
 
 All MCP transports are byte-bounded by `MAX_MCP_RESPONSE_BYTES` (1 MiB): stdio
 JSON lines, legacy SSE endpoint discovery, and SSE JSON responses. HTTP bodies
@@ -486,11 +512,12 @@ Two `StreamEvent` variants report this to consumers: `ToolArtifactStored` and
 `ToolArtifactRejected`. Because the stream enum is matched exhaustively, adding
 them forced every consumer to state what it does with them.
 
-The MCP Streamable HTTP proxy is the first live producer. It maps a real
-`tools/call` result into an envelope through
+The stdio, deprecated SSE, and Streamable HTTP proxies all map real
+`tools/call` results into an envelope through
 `runtime/src/tools/mcp/result_mapping.rs`, storing binary content as durable
-artifacts and correlating the session by hash only, never by raw session ID. When
-no artifact store is available the mapper **refuses** binary payloads with
+artifacts. Protocol metadata stores a session hash when a transport has a
+session, never the raw session ID. When no artifact store is available the
+mapper **refuses** binary payloads with
 `artifact_store_unavailable` rather than inlining them as base64.
 
 The product API exposes these through the existing session-scoped manifest,

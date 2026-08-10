@@ -55,7 +55,7 @@ pub struct ToolCallAction {
 ///
 /// `model_schema` projects this descriptor into the provider-neutral wire
 /// schema without leaking safety or scheduling fields to model adapters.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ToolDescriptor {
     pub name: String,
     pub description: String,
