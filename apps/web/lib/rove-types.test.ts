@@ -69,6 +69,40 @@ const streamEventFixtures: StreamEvent[] = [
     dropped_bytes: 0,
   },
   {
+    type: "procedure_applied",
+    application: {
+      application_id: "app-1",
+      reference: {
+        id: "inspect.disk",
+        version: "1.0.0",
+        trust: "workspace_trusted",
+        source_path: "procedures/inspect.disk.md",
+        content_hash: "sha256:" + "e".repeat(64),
+      },
+      hydration_hash: "sha256:" + "h".repeat(64),
+      capability_snapshot_id: "snap-1",
+      risk_level: "low",
+      boundary: "step",
+    },
+  },
+  {
+    type: "procedure_deviation",
+    record_id: "rec-dev-1",
+    deviation: {
+      deviation_id: "dev-1",
+      reference: {
+        id: "mutate.files",
+        version: "1.0.0",
+        trust: "workspace_trusted",
+        source_path: "procedures/mutate.files.md",
+        content_hash: "sha256:" + "m".repeat(64),
+      },
+      reason: "capability_unavailable",
+      safe_summary: "Required tool not available",
+      material: true,
+    },
+  },
+  {
     type: "execution_budget_updated",
     phase: "step",
     snapshot: {
