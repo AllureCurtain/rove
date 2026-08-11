@@ -318,7 +318,7 @@ registered typed unsupported capability. Observations, artifact projections,
 process identities, and workspace checkpoints are Engine-local and do not
 survive recreation or resume.
 
-MCP stdio transport is bounded by per-server policy. Initialize, list, and call requests time out; stderr is captured up to the configured diagnostic limit; JSON-RPC errors are mapped to structured tool execution failures; and child processes are killed when their client is dropped. `tests/mcp.rs` and `cargo test -p rove-integration-tests --test mcp` cover mock stdio registration, annotation safety, timeout/error/cleanup behavior, and include an opt-in real filesystem MCP smoke test gated by `ROVE_MCP_FILESYSTEM_SMOKE=1`.
+MCP stdio transport is bounded by per-server policy. Initialize, list, and call requests time out; stderr is captured up to the configured diagnostic limit; JSON-RPC errors are mapped to structured tool execution failures; and child processes are killed and asynchronously reaped when their client is dropped, including Unix zombie cleanup without relying on the caller's Tokio runtime to remain active. `tests/mcp.rs` and `cargo test -p rove-integration-tests --test mcp` cover mock stdio registration, annotation safety, timeout/error/cleanup behavior, and include an opt-in real filesystem MCP smoke test gated by `ROVE_MCP_FILESYSTEM_SMOKE=1`.
 
 The Streamable HTTP transport in `runtime/src/tools/mcp/` is the current MCP
 HTTP transport and sits beside stdio and the deprecated HTTP+SSE path. It

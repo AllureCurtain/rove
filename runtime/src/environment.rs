@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -30,6 +30,8 @@ const MAX_CHECKPOINTS: usize = 32;
 const MAX_CHECKPOINT_BYTES: usize = 8 * 1024 * 1024;
 const MAX_BACKGROUND_PROCESSES: usize = 64;
 const MAX_DIRECTORY_MUTATION_ENTRIES: usize = 4_096;
+const STDIO_PROCESS_REAP_TIMEOUT: Duration = Duration::from_secs(5);
+const STDIO_PROCESS_REAP_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ExecutionEnvironmentIdentity {
@@ -288,7 +290,33 @@ impl StdioProcessGuard {
 
 impl Drop for StdioProcessGuard {
     fn drop(&mut self) {
-        self.kill();
+        let Some(mut child) = self.child.take() else {
+            return;
+        };
+        let _ = child.start_kill();
+
+        // `start_kill` only requests termination. On Unix the exited child
+        // remains a zombie until its parent observes the status, so dropping
+        // it immediately can leave registry-owned MCP processes visible and
+        // consume a process-table entry. Reap independently of Tokio: registry
+        // drop can happen while the runtime thread is blocked or shutting down.
+        let _ = std::thread::Builder::new()
+            .name("rove-stdio-reaper".to_string())
+            .spawn(move || {
+                let deadline = Instant::now() + STDIO_PROCESS_REAP_TIMEOUT;
+                loop {
+                    match child.try_wait() {
+                        Ok(Some(_)) | Err(_) => break,
+                        Ok(None) if Instant::now() < deadline => {
+                            std::thread::sleep(STDIO_PROCESS_REAP_POLL_INTERVAL);
+                        }
+                        Ok(None) => {
+                            let _ = child.start_kill();
+                            break;
+                        }
+                    }
+                }
+            });
     }
 }
 
