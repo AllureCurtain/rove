@@ -21,4 +21,3 @@ valid_until: 2030-01-01
 # Applicability
 
 This procedure is intentionally ineligible outside a repository workspace.
-

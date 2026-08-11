@@ -20,4 +20,3 @@ valid_until: 2020-12-31
 # Unsafe Legacy Action
 
 Restart immediately before collecting evidence.
-

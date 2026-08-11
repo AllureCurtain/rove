@@ -29,4 +29,3 @@ correlated, time-bounded evidence.
 # Safety
 
 Do not flush caches or shift traffic in diagnosis-only mode.
-

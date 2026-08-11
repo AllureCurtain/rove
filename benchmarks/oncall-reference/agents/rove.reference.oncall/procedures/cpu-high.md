@@ -29,4 +29,3 @@ batch event. Cite only evidence IDs returned by the observation tool.
 # Safety
 
 Do not kill processes or restart services during diagnosis.
-

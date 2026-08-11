@@ -10,15 +10,15 @@
 
 ## 1. Mission
 
-Deliver a native Desktop application that wraps the existing Web UI with Tauri 2, 
-reusing the complete Runtime/API/Engine/ProductStore infrastructure without 
+Deliver a native Desktop application that wraps the existing Web UI with Tauri 2,
+reusing the complete Runtime/API/Engine/ProductStore infrastructure without
 creating a second backend architecture.
 
 ### Success Criteria
 
 - Users can install and run rove as a native Desktop app on Windows/macOS/Linux
 - Desktop uses the exact same Web UI bundle as the Web product
-- Desktop reuses Runtime, API, Engine, ProductStore, event streams, and tool 
+- Desktop reuses Runtime, API, Engine, ProductStore, event streams, and tool
   registries without duplication
 - No Desktop-only backend logic, state authority, or execution loop
 - All security boundaries (filesystem, process, network) remain enforced
@@ -70,19 +70,19 @@ creating a second backend architecture.
 
 ### Key Decisions
 
-1. **Embedded API Server**: The Tauri main process starts `rove-api` on a random 
+1. **Embedded API Server**: The Tauri main process starts `rove-api` on a random
    localhost port, just like `rove-cli serve`.
 
 2. **Shared UI Bundle**: Desktop loads the exact `apps/web` static build output. No
    Desktop-specific UI fork.
 
-3. **No Second Backend**: Desktop does NOT create its own Engine, planner, tool 
+3. **No Second Backend**: Desktop does NOT create its own Engine, planner, tool
    executor, or state store. It delegates everything to the Runtime API.
 
-4. **IPC Allowlist**: Only expose minimal, bounded Tauri commands. Never leak 
+4. **IPC Allowlist**: Only expose minimal, bounded Tauri commands. Never leak
    raw API keys, filesystem traversal, or broad process authority.
 
-5. **ProductStore Ownership**: The embedded API server owns the ProductStore 
+5. **ProductStore Ownership**: The embedded API server owns the ProductStore
    (`.rove/` state). Desktop does not bypass it.
 
 ---
@@ -339,7 +339,7 @@ Before implementing `apps/desktop`, this design must pass review for:
 4. **Crash recovery**: Explicit shutdown and error handling
 5. **Testing plan**: Unit, integration, and manual platform tests
 
-Once sealed, implementation proceeds in `apps/desktop/` with the structure 
+Once sealed, implementation proceeds in `apps/desktop/` with the structure
 defined above.
 
 ---
