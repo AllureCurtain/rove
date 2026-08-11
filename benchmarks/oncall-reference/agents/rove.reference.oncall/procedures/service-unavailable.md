@@ -29,4 +29,3 @@ event before naming a root cause.
 # Safety
 
 Do not restart the service during the diagnostic profile.
-

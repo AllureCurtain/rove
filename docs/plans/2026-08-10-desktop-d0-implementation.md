@@ -209,10 +209,10 @@ apps/desktop/src/platform/linux.rs
 mod tests {
     #[tokio::test]
     async fn server_starts_and_responds_to_health_check() { }
-    
+
     #[tokio::test]
     async fn server_shuts_down_gracefully() { }
-    
+
     #[test]
     fn port_allocation_finds_available_port() { }
 }
@@ -222,10 +222,10 @@ mod tests {
 mod tests {
     #[test]
     fn workspace_select_validates_absolute_paths() { }
-    
+
     #[test]
     fn open_external_blocks_file_urls() { }
-    
+
     #[test]
     fn show_in_folder_rejects_traversal() { }
 }

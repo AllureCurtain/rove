@@ -29,4 +29,3 @@ record whether an OOM event exists.
 # Safety
 
 Do not force a restart or dump potentially sensitive process memory.
-
