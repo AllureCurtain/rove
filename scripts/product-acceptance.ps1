@@ -135,8 +135,10 @@ foreach ($check in $Checks) {
     Write-Host "running  $id : $commandLine"
 
     $checkStart = Get-Date
-    # -Wait is required for ExitCode to be populated reliably; WaitForExit alone
-    # can leave the property unset, which would misreport a passing check.
+    # Wait only for the command process. Start-Process -Wait follows the entire
+    # descendant tree on Windows, so a test fixture that intentionally detaches
+    # a bounded helper can delay or hang the acceptance runner after Cargo has
+    # already returned its real exit code.
     $resolvedCommand = Get-Command $check.command -ErrorAction Stop
     $processFilePath = $resolvedCommand.Path
     $processArguments = @($check.arguments)
@@ -146,7 +148,9 @@ foreach ($check in $Checks) {
     }
     $process = Start-Process -FilePath $processFilePath -ArgumentList $processArguments `
         -WorkingDirectory $check.cwd -RedirectStandardOutput $stdoutLog -RedirectStandardError $stderrLog `
-        -PassThru -NoNewWindow -Wait
+        -PassThru -NoNewWindow
+    $process.WaitForExit()
+    $process.Refresh()
     $exitCode = $process.ExitCode
     $duration = [Math]::Round(((Get-Date) - $checkStart).TotalSeconds, 2)
 
