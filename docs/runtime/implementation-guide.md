@@ -168,7 +168,7 @@ Task workspace lifecycle:
    removes the task files, `.rove` state, run artifacts, and default memory for
    that isolated task.
 
-Browser and Desktop workspaces are documented future designs only:
+Browser and Desktop automation workspaces are documented future designs only:
 `docs/runtime/browser-workspace-spec.md` and
 `docs/runtime/desktop-workspace-spec.md`. The runtime intentionally has no
 `Browser` or `Desktop` workspace enum stubs yet.

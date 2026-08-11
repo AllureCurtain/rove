@@ -1,6 +1,6 @@
 # Desktop D0: Tauri 2 Integration Design
 
-> Status: **Design sealed, ready for implementation**
+> Status: **Implemented; Windows packaging verified, macOS/Linux evidence pending**
 >
 > Date: 2026-08-10
 >
@@ -56,9 +56,10 @@ creating a second backend architecture.
 │  │ - workspace_select                    │  │
 │  │ - get_app_paths                       │  │
 │  │ - open_external                       │  │
+│  │ - show_in_folder                      │  │
 │  └───────────────────────────────────────┘  │
 └─────────────────────────────────────────────┘
-         ↕ (localhost HTTP + WebSocket)
+         ↕ (authenticated loopback HTTP + SSE)
 ┌─────────────────────────────────────────────┐
 │  Tauri WebView (apps/web bundle)           │
 │  - Product UI (React)                       │
@@ -72,7 +73,7 @@ creating a second backend architecture.
 1. **Embedded API Server**: The Tauri main process starts `rove-api` on a random 
    localhost port, just like `rove-cli serve`.
 
-2. **Shared UI Bundle**: Desktop serves the exact `apps/web` build output. No 
+2. **Shared UI Bundle**: Desktop loads the exact `apps/web` static build output. No
    Desktop-specific UI fork.
 
 3. **No Second Backend**: Desktop does NOT create its own Engine, planner, tool 
@@ -108,10 +109,10 @@ apps/
 
 ```toml
 [dependencies]
-tauri = { version = "2.1", features = ["protocol-asset"] }
-rove-api = { path = "../../runtime" }
-rove-config = { path = "../../packages/rove-config" }
+tauri = { version = "2.1", features = [] }
+rove-api = { path = "../api" }
 tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tracing = "0.1"
@@ -127,14 +128,15 @@ anyhow = "1"
   "version": "0.1.0",
   "identifier": "com.rove.agent",
   "build": {
-    "beforeDevCommand": "cd ../web && pnpm dev",
-    "beforeBuildCommand": "cd ../web && pnpm build",
-    "devUrl": "http://localhost:5173",
-    "frontendDist": "../web/dist"
+    "beforeDevCommand": "pnpm --dir web dev",
+    "beforeBuildCommand": "pnpm --dir web build:desktop",
+    "devUrl": "http://localhost:3000",
+    "frontendDist": "../web/desktop-dist"
   },
   "app": {
     "windows": [
       {
+        "create": false,
         "title": "Rove",
         "width": 1400,
         "height": 900,
@@ -145,15 +147,21 @@ anyhow = "1"
       }
     ],
     "security": {
-      "csp": "default-src 'self'; connect-src 'self' http://localhost:* ws://localhost:*; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'unsafe-eval'"
+      "csp": {
+        "default-src": "'self'",
+        "connect-src": "'self' http://localhost:* http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:*",
+        "style-src": "'self' 'unsafe-inline'",
+        "script-src": "'self' 'unsafe-inline' 'unsafe-eval'",
+        "img-src": "'self' data: blob:",
+        "font-src": "'self' data:"
+      }
     }
   },
   "bundle": {
     "active": true,
     "targets": "all",
-    "icon": [
-      "icons/icon.png"
-    ]
+    "icon": ["icons/32x32.png", "icons/128x128.png",
+      "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"]
   }
 }
 ```
@@ -164,26 +172,29 @@ anyhow = "1"
 
 ### Startup Sequence
 
-1. **Parse Configuration**: Load bearer token, CORS, state root from config/env
-2. **Find Available Port**: Bind to random `localhost:0`, get assigned port
-3. **Start API Server**: Launch `rove-api` with runtime configuration
-4. **Wait for Health**: Poll `http://localhost:{port}/health` until ready
-5. **Launch WebView**: Pass `http://localhost:{port}` as base URL
-6. **Inject Token**: Store bearer token in WebView localStorage on first load
+1. **Parse Configuration**: Load bearer token and platform config/state/log roots
+2. **Find Available Port**: Bind to `127.0.0.1:0`, retaining the listener
+3. **Start API Server**: Launch the shared `rove-api` router/state in-process
+4. **Wait for Readiness**: Poll authenticated `/product/runtime` until ready
+5. **Launch WebView**: Build the configured window only after API readiness
+6. **Inject Token**: Use a document-start, origin-bounded runtime global; do not
+   persist the token in Web localStorage
 
 ### Shutdown Sequence
 
 1. **Window Close**: User closes the window or quits the app
 2. **Cancel API Server**: Send cancellation signal to API server task
 3. **Graceful Drain**: Wait up to 5 seconds for in-flight requests to complete
-4. **Force Kill**: If timeout expires, drop the server task
-5. **Clean Temp State**: Remove any temp files created during this session
+4. **Force Abort**: If timeout expires, abort and await the server task
+5. **Clean Temp State**: No temporary runtime state is created outside the
+   platform state directory
 
 ### Crash Recovery
 
 - If API server panics or exits unexpectedly, show error dialog and exit
 - Do NOT auto-restart the server in a loop (prevents runaway failures)
-- Log crash details to `~/.rove/logs/desktop-crash.log`
+- Write a payload-redacted panic marker to the platform logs directory; do not
+  copy panic payloads into logs
 
 ---
 
@@ -201,6 +212,8 @@ async fn workspace_select() -> Result<Option<String>, String> {
 ```
 
 **Security**: Only returns user-selected paths. No arbitrary path injection.
+The shared Web product calls this command only when the injected Desktop
+transport is present; browser deployments retain their absolute-path form.
 
 ### `get_app_paths`
 
@@ -249,14 +262,19 @@ async fn show_in_folder(path: String) -> Result<(), String> {
 ### Bearer Token Handling
 
 1. **Generation**: On first launch, generate a random bearer token
-2. **Storage**: Store in `~/.rove/config/desktop.json` (file permissions 0600)
-3. **Injection**: On WebView load, inject into localStorage via `window.__ROVE_TOKEN__`
-4. **API Calls**: Web UI includes `Authorization: Bearer <token>` in all requests
+2. **Storage**: Store in the platform config directory's `desktop.json` (0600 on Unix)
+3. **Injection**: Inject document-start `window.__ROVE_TOKEN__` and
+   `window.__ROVE_API_URL__` only for the Tauri/dev app origin
+4. **API Calls**: Web UI includes `Authorization: Bearer <token>` in ordinary,
+   SSE, and binary resource fetches
 
 ### ProductStore Location
 
-- Desktop uses the same `~/.rove/state/` as CLI
-- No Desktop-specific state directory
+- Desktop uses its platform user-data state directory for the API-global
+  ProductStore; workspace runtime state remains under each selected workspace
+  root.
+- The Desktop config/state/log roots are explicit platform paths, not a hidden
+  second ProductStore authority.
 - Workspace selection respects existing `.rove/` state in each project
 
 ---
@@ -328,20 +346,22 @@ defined above.
 
 ## 10. Implementation Checklist
 
-- [ ] Create `apps/desktop/` with Tauri 2 scaffold
-- [ ] Implement `api_server.rs` with embedded `rove-api` lifecycle
-- [ ] Implement allowlisted commands in `commands.rs`
-- [ ] Add bearer token generation and injection
-- [ ] Configure `tauri.conf.json` with CSP and security policies
-- [ ] Add application icons for all platforms
-- [ ] Write unit tests for server lifecycle and commands
+- [x] Create `apps/desktop/` with Tauri 2 scaffold
+- [x] Implement `api_server.rs` with embedded `rove-api` lifecycle
+- [x] Implement allowlisted commands in `commands.rs`
+- [x] Wire the native workspace picker into the shared Web workspace forms
+- [x] Add bearer token generation and injection
+- [x] Configure `tauri.conf.json` with CSP and security policies
+- [x] Add application icons for all platforms
+- [x] Write unit tests for server lifecycle and commands
 - [ ] Write integration test for Desktop launch → API → WebView flow
 - [ ] Test manual installation on Windows, macOS, Linux
-- [ ] Document platform-specific build and packaging steps
-- [ ] Verify no Desktop-only backend logic exists
-- [ ] Verify ProductStore ownership remains with API server
-- [ ] Update `docs/runtime/` with Desktop architecture
-- [ ] Pass CP8 gate and commit
+- [x] Document platform-specific build and packaging steps
+- [x] Verify no Desktop-only backend logic exists
+- [x] Verify ProductStore ownership remains with API server
+- [x] Update `docs/runtime/` with Desktop architecture
+- [x] Pass the CP8 implementation gate; CP9 repository acceptance and PR
+  evidence are recorded by the full-delivery handoff
 
 ---
 
@@ -358,4 +378,3 @@ defined above.
 - Linux Flatpak or Snap packaging
 
 These are explicitly deferred to post-D0 releases.
-

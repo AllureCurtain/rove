@@ -1,6 +1,6 @@
 # Web → Desktop Master Delivery Plan
 
-> Status: **Active coordinator plan — Web Complete integrated/verified; Desktop pending**
+> Status: **Coordinator plan — Web Complete integrated/verified; Desktop D0 implemented on `program/full-delivery`; cross-platform evidence pending**
 >
 > Coordinator: the primary conversation working from the repository `main`
 > checkout. Worker conversations implement bounded branches only; they do not
@@ -27,7 +27,8 @@ parallel boundaries, PR authority, and the handoff from Web Complete to a future
 Tauri Desktop milestone. It does not replace current runtime truth in
 `docs/runtime/**`. Web Complete C0–C3 implementation, ordered integration, and
 post-merge local acceptance are complete on `main`. This plan does not claim
-that Desktop exists.
+that Desktop is merged to `main`; the dedicated D0 implementation is on the
+full-delivery branch and remains subject to the single PR handoff.
 
 ---
 
@@ -58,8 +59,9 @@ Settings: full page with its own section navigation
 The Web implementation work through Settings, migration/recovery,
 accessibility, responsive behavior, and visual/live-API acceptance is complete
 on `main`. Optional external-provider validation remains separate when
-credentials are deliberately in scope. Desktop D0 has not started and still
-requires a sealed design and plan before implementation.
+credentials are deliberately in scope. Desktop D0 is implemented in its
+dedicated design/plan and on `program/full-delivery`; this coordinator plan is
+retained as historical delivery-order context.
 
 ---
 
@@ -128,10 +130,11 @@ bounded `/dev/workbench` smoke; its latest local fake-provider run passed all
 three Playwright scenarios before and after integration. The optional
 external-provider gate remains explicitly unrun.
 
-### 2.4 Desktop is not implementation-ready
+### 2.4 Desktop readiness (historical baseline)
 
-There is no `apps/desktop`, Tauri dependency, `src-tauri`, packaging pipeline, or
-sealed D0 plan. The accepted direction is only:
+The original coordinator baseline had no `apps/desktop`, Tauri dependency,
+packaging pipeline, or sealed D0 plan. The dedicated D0 design and plan now exist
+and the implementation is on `program/full-delivery`:
 
 ```text
 same shared product UI
@@ -463,9 +466,9 @@ is included in the current evidence.
 
 ## 7. Desktop D0 gate
 
-Desktop D0 has not started. A docs-only D0 branch may now begin only as a
-separate explicitly authorized milestone; implementation still requires a
-sealed D0 design and plan. D0 must decide:
+The D0 gate has been implemented on `program/full-delivery`; the remaining
+evidence questions are the explicitly unverified cross-platform and interactive
+manual checks. The sealed D0 design and plan cover:
 
 1. target operating systems and first release platform;
 2. Tauri 2 application/package structure;

@@ -163,6 +163,29 @@ pub fn load_or_create_config() -> Result<DesktopConfig> {
     }
 }
 
+/// Install a minimal crash marker without recording panic payloads, which may
+/// contain provider credentials or user content. The normal stderr hook is
+/// intentionally replaced so secrets cannot be copied into a crash log.
+pub fn install_crash_handler() -> Result<()> {
+    let log_path = get_logs_dir()?.join("desktop-crash.log");
+    if let Some(parent) = log_path.parent() {
+        std::fs::create_dir_all(parent).context("failed to create crash log directory")?;
+    }
+    std::panic::set_hook(Box::new(move |panic_info| {
+        let location = panic_info
+            .location()
+            .map(|location| format!("{}:{}", location.file(), location.line()))
+            .unwrap_or_else(|| "unknown".to_string());
+        let line = format!("desktop panic at {location}\n");
+        let _ = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+            .and_then(|mut file| std::io::Write::write_all(&mut file, line.as_bytes()));
+    }));
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

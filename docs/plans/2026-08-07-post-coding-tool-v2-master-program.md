@@ -1,6 +1,6 @@
 # Post-Coding-Tool V2 Master Program
 
-> Status: **Active coordinator program / Single-worker delivery ready**
+> Status: **Implemented on `program/full-delivery`; final acceptance and PR review pending**
 >
 > Coordinator branch: `main`
 >
@@ -63,10 +63,12 @@ The base already provides:
 - persistent Project Trust, Runtime-owned Execution Environment, authoritative
   Tool Schemas, immutable Capability Snapshots, and Coding Tool V2;
 - MCP stdio and legacy SSE with the current text-oriented ToolOutput contract;
-- a complete browser product shell, but no Tauri `apps/desktop` host.
+- a complete browser product shell. The Tauri `apps/desktop` host is now
+  implemented on `program/full-delivery` and is not yet merged to `main`.
 
-The implemented baseline does not yet provide the seven program outcomes in
-Section 2. A future design is not implementation evidence.
+This section records the starting contract. Current implementation truth is in
+code, tests, and `docs/runtime/`; the delivery branch now implements the program
+outcomes, while optional external/cross-platform evidence remains unclaimed.
 
 ## 4. Finite Scope
 

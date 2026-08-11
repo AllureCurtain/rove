@@ -7,6 +7,10 @@ import {
 } from "../product/product-api-types";
 import { ProductApiError } from "../product/product-client";
 import {
+  desktopTransport,
+  withDesktopAuthorization,
+} from "../platform/desktop-transport";
+import {
   parseCreateProductMcpServerRequest,
   parseCreateProductMemoryTopicRequest,
   parseProductMcpProbeResponse,
@@ -49,6 +53,7 @@ export interface SettingsPlatformClientOptions {
   fetch?: typeof globalThis.fetch;
   /** Browser calls stay relative so the Next proxy owns upstream auth. */
   apiPrefix?: string;
+  apiToken?: string;
 }
 
 export interface SettingsPlatformRequestOptions {
@@ -340,11 +345,18 @@ async function requestMcpMutation(
 export function createSettingsPlatformClient(
   options: SettingsPlatformClientOptions = {},
 ): SettingsPlatformClient {
-  const fetchImpl = options.fetch ?? globalThis.fetch;
-  if (!fetchImpl) {
+  const baseFetch = options.fetch ?? globalThis.fetch;
+  if (!baseFetch) {
     throw new Error("fetch is required to create a settings platform client");
   }
-  const apiPrefix = normalizeApiPrefix(options.apiPrefix ?? DEFAULT_API_PREFIX);
+  const desktop = desktopTransport();
+  const fetchImpl = withDesktopAuthorization(
+    baseFetch,
+    options.apiToken ?? desktop?.token,
+  );
+  const apiPrefix = normalizeApiPrefix(
+    options.apiPrefix ?? desktop?.apiPrefix ?? DEFAULT_API_PREFIX,
+  );
 
   const updatePreferences = async (
     input: SettingsPreferencesUpdateRequest,

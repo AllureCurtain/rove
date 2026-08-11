@@ -401,7 +401,9 @@ When a wave merges:
 3. Touch `docs/runtime/**` only if runtime semantics change.
 4. Check off wave exit items in this plan via changelog notes (do not silently
    rewrite history).
-5. Keep Desktop marked deferred until a future D0 plan is sealed.
+5. Keep Desktop-specific work in the dedicated D0 design and plan; D0 is now
+   implemented on `program/full-delivery` and is not part of the historical C0-C3
+   merge sequence.
 
 ---
 
@@ -410,8 +412,9 @@ When a wave merges:
 C0–C3 implementation, ordered coordinator integration, and post-merge local
 verification are complete. Do not reintroduce browser authority or
 workspace-global `latest` inside `ProductApp`. The optional external-provider
-gate remains unrun. Desktop D0 is still deferred and was not started; historical
-worktrees were intentionally retained.
+gate remains unrun. At this historical C0-C3 handoff, Desktop D0 was still
+deferred and had not started; it was implemented later on
+`program/full-delivery`.
 
 ---
 

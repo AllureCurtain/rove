@@ -4931,6 +4931,48 @@ async fn api_allows_configured_cors_origin_and_sets_headers() {
 }
 
 #[tokio::test]
+async fn api_allows_configured_authenticated_cors_preflight() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let mut config = test_config();
+    config.api.token_auth = Some("desktop-secret".to_string());
+    config.api.cors_origins = vec!["tauri://localhost".to_string()];
+    let app = router(ApiState::new(workspace, config));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("OPTIONS")
+                .uri("/product/runtime")
+                .header("origin", "tauri://localhost")
+                .header("access-control-request-method", "GET")
+                .header("access-control-request-headers", "authorization")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(
+        response
+            .headers()
+            .get("access-control-allow-origin")
+            .unwrap(),
+        "tauri://localhost"
+    );
+    assert!(
+        response
+            .headers()
+            .get("access-control-allow-headers")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .contains("authorization")
+    );
+}
+
+#[tokio::test]
 async fn api_rate_limits_requests_when_configured() {
     let tmp = tempfile::TempDir::new().unwrap();
     let workspace = Workspace::detect(tmp.path()).unwrap();

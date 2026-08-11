@@ -1,6 +1,6 @@
 # Post-Coding-Tool V2 Full Delivery
 
-> Status: **Ready for execution / Complete all checkpoints before handoff**
+> Status: **Implemented through Checkpoint 8; Checkpoint 9 final acceptance and PR handoff in progress**
 >
 > Branch: `program/full-delivery`
 >

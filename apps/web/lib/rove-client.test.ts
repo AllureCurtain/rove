@@ -5,6 +5,7 @@ import {
   fetchRunReport,
   listProviderModels,
   listRuns,
+  openJobStream,
   RoveApiError,
   submitApproval,
   testProvider,
@@ -13,6 +14,75 @@ import {
 describe("rove client", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it("uses the authenticated loopback transport injected by Desktop", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ job_id: "job-1", run_id: "run-1" }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("window", {
+      __ROVE_API_URL__: "http://127.0.0.1:49152",
+      __ROVE_TOKEN__: "desktop-secret",
+    });
+
+    await createJob({
+      message: "desktop run",
+      model: "fake",
+      max_steps: 1,
+      approval: "ask",
+    });
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("http://127.0.0.1:49152/jobs");
+    const headers = new Headers(fetchMock.mock.calls[0]?.[1]?.headers);
+    expect(headers.get("authorization")).toBe("Bearer desktop-secret");
+    expect(headers.get("content-type")).toBe("application/json");
+  });
+
+  it("parses authenticated Desktop SSE frames and exposes canonical event ids", async () => {
+    const encoder = new TextEncoder();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode(": keep-alive\r\n"));
+        controller.enqueue(
+          encoder.encode(
+            "id: 7\r\nevent: run_completed\r\ndata: {\"type\":\"run_completed\"}\r\n\r\n",
+          ),
+        );
+        controller.close();
+      },
+    });
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      body,
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("window", {
+      __ROVE_API_URL__: "http://127.0.0.1:49152",
+      __ROVE_TOKEN__: "desktop-secret",
+    });
+
+    const source = openJobStream("job/1");
+    const message = await new Promise<MessageEvent<string>>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error("Desktop SSE event timed out")), 1_000);
+      source.addEventListener("run_completed", ((event: MessageEvent<string>) => {
+        clearTimeout(timeout);
+        source.close();
+        resolve(event);
+      }) as EventListener);
+    });
+
+    expect(message.data).toBe('{"type":"run_completed"}');
+    expect(message.lastEventId).toBe("7");
+    expect(fetchMock.mock.calls[0]?.[0]?.toString()).toBe(
+      "http://127.0.0.1:49152/jobs/job%2F1/events",
+    );
+    const headers = new Headers(fetchMock.mock.calls[0]?.[1]?.headers);
+    expect(headers.get("authorization")).toBe("Bearer desktop-secret");
+    expect(headers.get("accept")).toBe("text/event-stream");
   });
 
   it("posts approval decisions to the job approval endpoint", async () => {

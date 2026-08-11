@@ -24,6 +24,9 @@ Included:
 - CDH G1-G7 durable controls and Fork/lineage, session configuration snapshots,
   usage/context/cost, bounded files/artifacts/images/diff, redacted evidence
   export, and workspace-scoped Settings/MCP management.
+- Tauri Desktop D0 delivery shell with embedded authenticated API, shared static
+  Web build, native workspace commands, and current-platform Windows MSI/process
+  evidence. macOS/Linux packaging and manual installation remain unverified.
 - Local state under `.rove/`.
 - Folder, Repo, and Task workspaces.
 - Built-in tools, MCP proxy, memory tools, fake provider, OpenAI /
@@ -34,7 +37,8 @@ Not included:
 
 - Hosted SaaS operation.
 - Multi-user identity, billing, or distributed rate limiting.
-- Browser/Desktop workspace implementations.
+- Browser/Desktop **automation workspace** implementations (the Desktop product
+  shell is a delivery host, not a new workspace kind).
 - Full shell sandboxing beyond the current local policy controls.
 - Built-in vector or provider-backed RAG retrieval.
 
@@ -44,8 +48,8 @@ Do not treat the following as release blockers for the current local-first MVP:
 
 - hosted multi-user deployment;
 - OAuth/login, billing, or admin controls;
-- Browser and Desktop workspace runtime implementations;
-- a bundled desktop app or installer;
+- Browser and Desktop automation workspace runtime implementations;
+- macOS/Linux bundled Desktop packages and manual installation evidence;
 - distributed rate limiting across multiple API processes.
 
 ## Deterministic Gates
@@ -345,7 +349,8 @@ Before a packaged release:
 - include required runtime prerequisites: Rust/Cargo for source builds, Node.js
   and pnpm for the Web application, provider keys for real models.
 
-This repository does not yet define an installer, bundled desktop app, or single
+The full-delivery branch defines a Tauri Desktop bundle and has produced a
+Windows MSI locally. It does not yet provide macOS/Linux packages or a single
 binary distribution.
 
 ## Security Posture

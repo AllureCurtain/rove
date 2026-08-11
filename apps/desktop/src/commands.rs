@@ -1,8 +1,37 @@
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
-use tauri::command;
+use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
+use tauri::{command, AppHandle, Manager};
+use tokio::sync::RwLock;
 
-/// Application paths exposed to the frontend
+/// Roots selected through the native picker. Native reveal operations are
+/// bounded by these roots, so a renderer cannot turn the command into a
+/// general filesystem browser.
+#[derive(Clone, Default)]
+pub struct WorkspaceRoots(pub Arc<RwLock<Vec<PathBuf>>>);
+
+impl WorkspaceRoots {
+    pub fn for_process() -> Self {
+        let mut roots = Vec::new();
+        if let Ok(cwd) = std::env::current_dir().and_then(|path| path.canonicalize()) {
+            roots.push(cwd);
+        }
+        for path in [
+            crate::config::get_config_dir(),
+            crate::config::get_state_dir(),
+            crate::config::get_logs_dir(),
+        ]
+        .into_iter()
+        .filter_map(Result::ok)
+        {
+            if let Ok(path) = path.canonicalize() {
+                roots.push(path);
+            }
+        }
+        Self(Arc::new(RwLock::new(roots)))
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppPaths {
     pub config_dir: String,
@@ -10,16 +39,11 @@ pub struct AppPaths {
     pub logs_dir: String,
 }
 
-/// Get application paths (config, state, logs directories)
 #[command]
 pub fn get_app_paths() -> Result<AppPaths, String> {
-    let config_dir =
-        crate::config::get_config_dir().map_err(|e| format!("Failed to get config dir: {}", e))?;
-    let state_dir =
-        crate::config::get_state_dir().map_err(|e| format!("Failed to get state dir: {}", e))?;
-    let logs_dir =
-        crate::config::get_logs_dir().map_err(|e| format!("Failed to get logs dir: {}", e))?;
-
+    let config_dir = crate::config::get_config_dir().map_err(|e| e.to_string())?;
+    let state_dir = crate::config::get_state_dir().map_err(|e| e.to_string())?;
+    let logs_dir = crate::config::get_logs_dir().map_err(|e| e.to_string())?;
     Ok(AppPaths {
         config_dir: config_dir.to_string_lossy().to_string(),
         state_dir: state_dir.to_string_lossy().to_string(),
@@ -27,102 +51,115 @@ pub fn get_app_paths() -> Result<AppPaths, String> {
     })
 }
 
-/// Open a native folder picker dialog
 #[command]
-pub async fn workspace_select() -> Result<Option<String>, String> {
-    // TODO: Implement native folder picker with Tauri 2 dialog API
-    // For now, return an error indicating this needs implementation
-    Err("Folder picker not yet implemented".to_string())
+pub async fn workspace_select(app: AppHandle) -> Result<Option<String>, String> {
+    let selected = tauri::async_runtime::spawn_blocking(|| {
+        rfd::FileDialog::new()
+            .set_title("Choose a Rove workspace")
+            .pick_folder()
+    })
+    .await
+    .map_err(|error| format!("folder picker failed: {error}"))?;
+    let Some(path) = selected else {
+        return Ok(None);
+    };
+    let root = canonical_existing_directory(&path)?;
+    let roots = app.state::<WorkspaceRoots>();
+    let mut known = roots.0.write().await;
+    if !known.iter().any(|entry| entry == &root) {
+        known.push(root.clone());
+    }
+    Ok(Some(root.to_string_lossy().to_string()))
 }
 
-/// Validate URL scheme
-fn is_safe_url(url: &str) -> bool {
-    url.starts_with("http://") || url.starts_with("https://")
+fn is_safe_url(value: &str) -> bool {
+    let Ok(url) = url::Url::parse(value) else {
+        return false;
+    };
+    matches!(url.scheme(), "http" | "https") && url.host_str().is_some()
 }
 
-/// Open a URL in the default browser
 #[command]
 pub async fn open_external(url: String) -> Result<(), String> {
-    // Validate URL scheme
     if !is_safe_url(&url) {
-        return Err(format!(
-            "Unsafe URL scheme. Only http:// and https:// are allowed: {}",
-            url
-        ));
+        return Err("only absolute http:// and https:// URLs are allowed".to_string());
     }
-
-    // Open in default browser
-    open::that(&url).map_err(|e| format!("Failed to open URL: {}", e))?;
-
-    Ok(())
+    open::that(&url).map_err(|error| format!("failed to open URL: {error}"))
 }
 
-/// Validate path is under a workspace root or known safe directory
-fn is_safe_path(path: &Path) -> Result<(), String> {
-    // Path must be absolute
+fn canonical_existing_directory(path: &Path) -> Result<PathBuf, String> {
     if !path.is_absolute() {
-        return Err("Path must be absolute".to_string());
+        return Err("path must be absolute".to_string());
     }
-
-    // Path must exist
-    if !path.exists() {
-        return Err("Path does not exist".to_string());
+    let canonical = path
+        .canonicalize()
+        .map_err(|error| format!("path is not accessible: {error}"))?;
+    if !canonical.is_dir() {
+        return Err("workspace path must be a directory".to_string());
     }
-
-    // Check for obvious traversal patterns
-    let path_str = path.to_string_lossy();
-    if path_str.contains("..") {
-        return Err("Path contains traversal component".to_string());
-    }
-
-    Ok(())
+    Ok(canonical)
 }
 
-/// Show a file or directory in the native file manager
+fn canonical_existing_path(path: &Path) -> Result<PathBuf, String> {
+    if !path.is_absolute() {
+        return Err("path must be absolute".to_string());
+    }
+    if path
+        .components()
+        .any(|component| component == Component::ParentDir)
+    {
+        return Err("path contains a traversal component".to_string());
+    }
+    path.canonicalize()
+        .map_err(|error| format!("path is not accessible: {error}"))
+}
+
+fn path_is_within(path: &Path, root: &Path) -> bool {
+    path == root || path.starts_with(root)
+}
+
+fn is_safe_path(path: &Path, allowed_roots: &[PathBuf]) -> Result<PathBuf, String> {
+    let canonical = canonical_existing_path(path)?;
+    if allowed_roots
+        .iter()
+        .filter_map(|root| root.canonicalize().ok())
+        .any(|root| path_is_within(&canonical, &root))
+    {
+        return Ok(canonical);
+    }
+    Err("path is outside an approved workspace".to_string())
+}
+
 #[command]
-pub async fn show_in_folder(path: String) -> Result<(), String> {
-    let path_buf = PathBuf::from(&path);
+pub async fn show_in_folder(app: AppHandle, path: String) -> Result<(), String> {
+    let path_buf = PathBuf::from(path);
+    let roots = app.state::<WorkspaceRoots>();
+    let known = roots.0.read().await.clone();
+    let canonical = is_safe_path(&path_buf, &known)?;
 
-    // Validate path
-    is_safe_path(&path_buf)?;
-
-    // Show in file manager
     #[cfg(target_os = "windows")]
     {
         std::process::Command::new("explorer")
             .arg("/select,")
-            .arg(&path)
+            .arg(&canonical)
             .spawn()
-            .map_err(|e| format!("Failed to open file manager: {}", e))?;
+            .map_err(|error| format!("failed to open file manager: {error}"))?;
     }
-
     #[cfg(target_os = "macos")]
     {
         std::process::Command::new("open")
             .arg("-R")
-            .arg(&path)
+            .arg(&canonical)
             .spawn()
-            .map_err(|e| format!("Failed to open Finder: {}", e))?;
+            .map_err(|error| format!("failed to open Finder: {error}"))?;
     }
-
     #[cfg(target_os = "linux")]
     {
-        // Try xdg-open first, fallback to common file managers
-        let result = std::process::Command::new("xdg-open")
-            .arg(path_buf.parent().unwrap_or(&path_buf))
-            .spawn();
-
-        if result.is_err() {
-            // Fallback to nautilus/dolphin/thunar
-            for fm in &["nautilus", "dolphin", "thunar"] {
-                if let Ok(_) = std::process::Command::new(fm).arg(&path).spawn() {
-                    return Ok(());
-                }
-            }
-            return Err("No file manager found".to_string());
-        }
+        std::process::Command::new("xdg-open")
+            .arg(canonical.parent().unwrap_or(&canonical))
+            .spawn()
+            .map_err(|error| format!("failed to open file manager: {error}"))?;
     }
-
     Ok(())
 }
 
@@ -131,31 +168,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_is_safe_url() {
-        assert!(is_safe_url("http://example.com"));
-        assert!(is_safe_url("https://example.com"));
+    fn safe_url_requires_http_host() {
+        assert!(is_safe_url("https://example.com/path"));
         assert!(!is_safe_url("file:///etc/passwd"));
         assert!(!is_safe_url("javascript:alert(1)"));
-        assert!(!is_safe_url("ftp://example.com"));
+        assert!(!is_safe_url("https://"));
     }
 
     #[test]
-    fn test_is_safe_path_relative() {
-        let path = PathBuf::from("relative/path");
-        assert!(is_safe_path(&path).is_err());
-    }
-
-    #[test]
-    fn test_is_safe_path_traversal() {
-        let path = PathBuf::from("/tmp/../etc/passwd");
-        assert!(is_safe_path(&path).is_err());
-    }
-
-    #[test]
-    fn test_get_app_paths() {
-        let paths = get_app_paths().unwrap();
-        assert!(!paths.config_dir.is_empty());
-        assert!(!paths.state_dir.is_empty());
-        assert!(!paths.logs_dir.is_empty());
+    fn path_validation_rejects_traversal_and_escape() {
+        let root =
+            std::env::temp_dir().join(format!("rove-desktop-command-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("nested")).unwrap();
+        let inside = root.join("nested");
+        std::fs::write(inside.join("file.txt"), "ok").unwrap();
+        assert!(is_safe_path(&inside.join("file.txt"), std::slice::from_ref(&root)).is_ok());
+        let mut traversal = root.join("nested");
+        traversal.push("..");
+        traversal.push("file.txt");
+        assert!(is_safe_path(&traversal, std::slice::from_ref(&root)).is_err());
+        let outside =
+            std::env::temp_dir().join(format!("rove-desktop-outside-{}", uuid::Uuid::new_v4()));
+        std::fs::write(&outside, "outside").unwrap();
+        assert!(is_safe_path(&outside, std::slice::from_ref(&root)).is_err());
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_file(outside);
     }
 }

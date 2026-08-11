@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ProductApiSchemaError } from "../product/product-api-types";
 import { ProductApiError } from "../product/product-client";
@@ -149,6 +149,10 @@ function jsonResponse(value: unknown, status = 200): Response {
     headers: { "content-type": "application/json" },
   });
 }
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 describe("settings platform API types", () => {
   it("strictly parses bounded memory and runtime responses", () => {
@@ -363,6 +367,26 @@ describe("settings platform API types", () => {
 });
 
 describe("settings platform client", () => {
+  it("uses the authenticated Desktop loopback transport", async () => {
+    vi.stubGlobal("window", {
+      __ROVE_API_URL__: "http://127.0.0.1:49152",
+      __ROVE_TOKEN__: "desktop-secret",
+    });
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        jsonResponse(runtimeInfo),
+    );
+
+    await createSettingsPlatformClient({ fetch: fetchMock }).getRuntimeInfo();
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
+      "http://127.0.0.1:49152/product/runtime",
+    );
+    const headers = new Headers(fetchMock.mock.calls[0]?.[1]?.headers);
+    expect(headers.get("authorization")).toBe("Bearer desktop-secret");
+  });
+
   it("uses only the server-owned workspace id for trust decisions", async () => {
     const calls: Array<{ url: string; method: string; body?: string }> = [];
     const fetchMock: typeof globalThis.fetch = vi.fn(

@@ -1,14 +1,53 @@
 use rove_desktop::config;
+use std::ffi::OsString;
+use std::sync::{Mutex, MutexGuard};
+
+static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+struct AppDataOverride {
+    previous: Option<OsString>,
+    _lock: MutexGuard<'static, ()>,
+}
+
+impl AppDataOverride {
+    fn install(value: &std::path::Path) -> Self {
+        let lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let previous = std::env::var_os("APPDATA");
+        std::env::set_var("APPDATA", value);
+        Self {
+            previous,
+            _lock: lock,
+        }
+    }
+}
+
+impl Drop for AppDataOverride {
+    fn drop(&mut self) {
+        if let Some(previous) = self.previous.take() {
+            std::env::set_var("APPDATA", previous);
+        } else {
+            std::env::remove_var("APPDATA");
+        }
+    }
+}
+
+fn lock_environment() -> MutexGuard<'static, ()> {
+    ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 /// Test that bearer token persists across config reloads
 #[test]
 fn test_bearer_token_persistence() {
     // Create a temporary directory for config
-    let temp_dir = std::env::temp_dir().join(format!("rove-test-{}", std::process::id()));
+    let temp_dir = std::env::temp_dir().join(format!("rove-test-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&temp_dir).unwrap();
 
     // Override config directory for this test
-    std::env::set_var("APPDATA", temp_dir.to_str().unwrap());
+    let appdata = AppDataOverride::install(&temp_dir);
 
     // First load should generate a token
     let config1 = config::load_or_create_config().unwrap();
@@ -21,13 +60,14 @@ fn test_bearer_token_persistence() {
     assert_eq!(token1, token2);
 
     // Cleanup
+    drop(appdata);
     std::fs::remove_dir_all(temp_dir).ok();
-    std::env::remove_var("APPDATA");
 }
 
 /// Test that config directories are resolved correctly
 #[test]
 fn test_directory_resolution() {
+    let _environment = lock_environment();
     let config_dir = config::get_config_dir().unwrap();
     let state_dir = config::get_state_dir().unwrap();
     let logs_dir = config::get_logs_dir().unwrap();
@@ -66,6 +106,7 @@ fn test_directory_resolution() {
 /// Test that bearer tokens are cryptographically random
 #[test]
 fn test_token_randomness() {
+    let _environment = lock_environment();
     let tokens: Vec<String> = (0..10).map(|_| config::generate_bearer_token()).collect();
 
     // All tokens should be non-empty

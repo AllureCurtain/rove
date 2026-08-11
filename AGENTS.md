@@ -108,7 +108,8 @@ As of 2026-08-10:
   deterministic benchmarks.
 - The repository is a virtual Cargo Workspace with default member `apps/cli`.
   Package layout is `rove-models <- rove-core <- rove-runtime <-
-  rove-app-bootstrap <- {rove-cli, rove-api, rove-bench}` plus
+  rove-app-bootstrap <- {rove-cli, rove-api, rove-bench}`, with
+  `rove-api <- rove-desktop`, plus
   `rove-integration-tests`. `rove-models` has no local project dependency;
   `rove-core` depends only on `rove-models`. `rove-runtime` owns durable
   execution, state, memory, tools/MCP, planning, and the Engine facade.
@@ -142,8 +143,9 @@ As of 2026-08-10:
   CLI/API/Web selector surfaces are implemented. Nested instructions are
   activated only for matching paths; a newly discovered tool scope is deferred
   before dispatch until the model receives its overlay. Procedure-aware
-  Planner/Evaluator/Finalizer phases and the OnCall reference evaluation suite
-  remain proposed. The execution-lifecycle design is partially implemented:
+  Planner/Evaluator/Finalizer phases and the deterministic OnCall reference
+  evaluation suite are implemented; external-provider experiments and broader
+  holdout matrices remain optional future work. The execution-lifecycle design is partially implemented:
   one Runtime-neutral Agent kernel drives embedded, unplanned, and planned-step
   model/tool coordination; Runtime hosts retain context, persistence, planning,
   approval/input, hooks, memory, and canonical events. Bounded planned
@@ -186,7 +188,9 @@ As of 2026-08-10:
   terminal-boundary Fork/lineage, session model/reasoning/approval/step-limit
   snapshots, usage/context/cost, bounded files/artifacts/images/diff, redacted
   evidence export, and workspace-scoped Settings/MCP management; they are on
-  `main` through PR #29 at `f9e88a7`. No Tauri `apps/desktop` host exists yet.
+  `main` through PR #29 at `f9e88a7`. The `program/full-delivery` branch also
+  contains the Tauri Desktop D0 host; current-platform Windows package and
+  process evidence are recorded, while macOS/Linux packaging remains unverified.
 - This repository-level `AGENTS.md` guides maintainers and coding agents. A
   trusted rove run also loads it as the workspace root instruction layer; that
   runtime admission does not turn its text into tool permission or approval.
@@ -200,8 +204,10 @@ The active design/runtime-evolution chain is:
 
 Read each document's visible status before using it. The lifecycle,
 AgentDefinition, and MCP documents are partially implemented design records;
-their remaining targets are future work. Use `docs/runtime/` and tests to
-describe current behavior. The OnCall evaluation remains proposed.
+their remaining targets are future work. The OnCall document is a partially
+implemented design record with the deterministic V2 suite in the repository;
+external-provider and holdout evidence remain optional. Use `docs/runtime/` and
+tests to describe current behavior.
 
 The active implementation work follows these briefs:
 

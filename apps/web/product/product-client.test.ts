@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   ProductApiSchemaError,
@@ -154,7 +154,57 @@ function jsonResponse(value: unknown, status = 200): Response {
   });
 }
 
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
 describe("product API client", () => {
+  it("uses the authenticated Desktop loopback transport", async () => {
+    vi.stubGlobal("window", {
+      __ROVE_API_URL__: "http://127.0.0.1:49152",
+      __ROVE_TOKEN__: "desktop-secret",
+    });
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        jsonResponse({ workspaces: [] }),
+    );
+
+    await createProductApiClient({ fetch: fetchMock }).listWorkspaces();
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
+      "http://127.0.0.1:49152/product/workspaces",
+    );
+    const headers = new Headers(fetchMock.mock.calls[0]?.[1]?.headers);
+    expect(headers.get("authorization")).toBe("Bearer desktop-secret");
+  });
+
+  it("authenticates Desktop binary resources instead of exposing a bare URL", async () => {
+    vi.stubGlobal("window", {
+      __ROVE_API_URL__: "http://127.0.0.1:49152",
+      __ROVE_TOKEN__: "desktop-secret",
+    });
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Response(new Uint8Array([1, 2, 3]), {
+          status: 200,
+          headers: { "content-type": "application/octet-stream" },
+        }),
+    );
+
+    const blob = await createProductApiClient({ fetch: fetchMock }).fetchArtifactDownload(
+      session.id,
+      "artifact-1",
+    );
+
+    expect(blob.size).toBe(3);
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
+      `http://127.0.0.1:49152/product/sessions/${session.id}/artifacts/artifact-1/download`,
+    );
+    const headers = new Headers(fetchMock.mock.calls[0]?.[1]?.headers);
+    expect(headers.get("authorization")).toBe("Bearer desktop-secret");
+  });
+
   it("covers the registered product CRUD, preferences, and transcript routes", async () => {
     const calls: Array<{ url: string; method: string; body?: string }> = [];
     const fetchMock: typeof globalThis.fetch = vi.fn(

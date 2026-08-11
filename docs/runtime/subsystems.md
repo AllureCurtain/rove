@@ -103,10 +103,12 @@ fallback).
 
 Task cleanup is directory-based: deleting the task workspace directory removes
 its local files, `.rove` state, run artifacts, and default memory. Browser and
-Desktop workspaces remain future specs only in
+Desktop **automation workspace kinds** remain future specs only in
 `docs/runtime/browser-workspace-spec.md` and
 `docs/runtime/desktop-workspace-spec.md`; the runtime has no partial enum or
-tool stubs for those kinds.
+tool stubs for those kinds. The Tauri Desktop product host is a delivery shell
+over the existing Folder/Repo product workspace contracts and does not add a
+workspace kind.
 
 ## State, Job, And Run
 
@@ -450,8 +452,10 @@ prompt. Selected identities and exact hydrated bodies are part of the profile
 hash and snapshot. `task_state.json` and `PromptCheckpoint` retain that private
 snapshot; trace, report, API, CLI, and Web projections carry identities and
 diagnostics without the body. A genuine unfinished resume validates and reuses
-the saved profile after source changes. Phase-specific procedure input to the
-Planner, Evaluator, and Finalizer remains deferred to Checkpoint 7.
+the saved profile after source changes. Planner, StepRunner, Evaluator, and
+Finalizer receive bounded procedure material and record applications/deviations;
+the deterministic OnCall Benchmark V2 suite verifies this path. External-provider
+experiments and broader holdout matrices remain optional.
 
 ## Tool Results And Durable Tool Artifacts
 

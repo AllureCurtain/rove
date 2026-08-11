@@ -185,8 +185,9 @@ The API exposes generated OpenAPI at `/api/openapi.json` and Swagger UI at
 cargo run -p rove-bench -- --suite benchmarks/agent-smoke.json --output-dir .rove/bench
 ```
 
-This is a deterministic, no-network smoke. It does not evaluate the proposed
-OnCall reference Agent.
+This is a deterministic, no-network smoke. The separate OnCall Reference V2
+suite is also implemented and runs through `rove-bench` with independent truth
+and hard safety oracles.
 
 ## 6. Main entry points
 
@@ -492,7 +493,8 @@ cargo run -p rove-bench -- --suite benchmarks/agent-smoke.json --output-dir .rov
 Published evidence and provenance rules are described in
 [`runtime/benchmark-evidence.md`](runtime/benchmark-evidence.md).
 
-The proposed V2 Agent evaluation and OnCall reference suite are documented in
+The implemented deterministic V2 Agent evaluation and OnCall reference suite are
+documented in
 [`2026-07-15-oncall-reference-agent-evaluation-plan.md`](design/2026-07-15-oncall-reference-agent-evaluation-plan.md).
 
 ## 17. Verification matrix
@@ -625,21 +627,24 @@ PlanDecision with bounded model-on-ambiguity evaluation, an independent
 evidence-grounded Finalizer, public multidimensional execution budgets, and
 trace-tail reconciliation on resume. AgentDefinition/instruction/procedure
 activation and MCP Streamable HTTP/rich artifacts/live refresh are also
-implemented. Phase-specific procedure consumption and the OnCall reference
-evaluation remain proposed. The linked lifecycle, AgentDefinition, and MCP
-documents are partially implemented design records; only the OnCall evaluation
-document remains wholly future work.
+implemented. Planner, StepRunner, Evaluator, and Finalizer consume bounded
+procedure material, and the deterministic OnCall suite covers lifecycle and
+safety oracles. External-provider experiments and broader holdout matrices are
+optional future work. The linked lifecycle, AgentDefinition, MCP, and OnCall
+documents are partially implemented design records.
 
 ### Active product delivery
 
 - [Agent Desktop + Web shared UI](design/2026-07-25-agent-desktop-web-ui-design.md)
-  — Web M1 and Web Complete C0–C3 are implemented on `main`; Desktop remains
-  pending.
+  — Web M1 and Web Complete C0–C3 are implemented on `main`; the Tauri Desktop
+  D0 host is implemented on `program/full-delivery` and has Windows MSI/process
+  evidence, while macOS/Linux packaging remains unverified.
 - [Web Complete design](design/2026-07-26-web-complete-design.md) and
   [delivery plan](plans/2026-07-26-web-complete.md) — C0–C3 implementation,
   ordered coordinator integration, and post-merge local acceptance are complete.
 - [Web → Desktop coordinator plan](plans/2026-07-25-web-desktop-master-delivery.md)
-  — historical Web delivery coordination; Desktop remains future scope.
+  — historical Web delivery coordination; Desktop D0 now has its dedicated
+  design and implementation plan.
 - [CDH G1-G7 delivery](plans/2026-08-03-cdh-alder-merge.md) — completed through
   PR #29; G8 Desktop was out of scope.
 - [Kernel, Message, and Provider Implementation](plans/2026-08-06-kernel-message-provider-implementation.md)
@@ -680,7 +685,8 @@ Use them for rationale, not as current API/runtime truth when they disagree with
 
 - Browser/Desktop automation workspace specs are future. The Web product shell
   and C0–C3 persistence/continuity/Settings/migration/polish implementation
-  exist on `main`; a Tauri Desktop product host does not.
+  exist on `main`; the Tauri Desktop product host is implemented on the
+  full-delivery branch with current-platform Windows evidence.
 - Hosted multi-user identity and distributed rate limiting are outside the MVP.
 - Built-in vector RAG is not provided.
 - Real provider/MCP tests are gated.
@@ -690,8 +696,9 @@ Use them for rationale, not as current API/runtime truth when they disagree with
 - The runtime compiles versioned AgentDefinition packages and discovers bounded
   root/nested `AGENTS.md` instruction layers after Project Trust authorization.
 - Typed procedure catalog selection and bounded hydration run at activation;
-  phase-specific Planner/Evaluator/Finalizer consumption and the OnCall
-  reference benchmark remain pending.
+  phase-specific Planner/Evaluator/Finalizer consumption and the deterministic
+  OnCall reference benchmark are implemented; external-provider and holdout
+  evidence remain optional.
 
 These are boundaries, not reasons to describe the implemented MVP as absent.
 

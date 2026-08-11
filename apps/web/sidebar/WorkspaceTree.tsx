@@ -11,12 +11,17 @@ import {
   Cross2Icon,
   DrawingPinFilledIcon,
   DrawingPinIcon,
+  FileIcon,
   GearIcon,
   LockClosedIcon,
   MagnifyingGlassIcon,
   PlusIcon,
 } from "@radix-ui/react-icons";
 
+import {
+  desktopWorkspacePickerAvailable,
+  selectDesktopWorkspace,
+} from "../platform/desktop-commands";
 import type { SessionRecord, WorkspaceKind, WorkspaceRecord } from "../state/product-types";
 
 export function WorkspaceTree({
@@ -472,6 +477,12 @@ function OpenWorkspaceDialog({
   const [path, setPath] = useState("");
   const [kind, setKind] = useState<WorkspaceKind>("folder");
   const [error, setError] = useState<string | null>(null);
+  const [nativePickerAvailable, setNativePickerAvailable] = useState(false);
+  const [pickerBusy, setPickerBusy] = useState(false);
+
+  useEffect(() => {
+    setNativePickerAvailable(desktopWorkspacePickerAvailable());
+  }, []);
 
   function handleSubmit(event: FormEvent) {
     event.preventDefault();
@@ -482,6 +493,21 @@ function OpenWorkspaceDialog({
     }
     setError(null);
     onOpen(trimmed, kind);
+  }
+
+  async function browseWorkspace() {
+    setPickerBusy(true);
+    setError(null);
+    try {
+      const selected = await selectDesktopWorkspace();
+      if (selected) {
+        setPath(selected);
+      }
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Failed to open folder picker.");
+    } finally {
+      setPickerBusy(false);
+    }
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLFormElement>) {
@@ -530,15 +556,28 @@ function OpenWorkspaceDialog({
         </p>
         <div className="field">
           <label htmlFor="workspace-path">Absolute path</label>
-          <input
-            id="workspace-path"
-            value={path}
-            onChange={(event) => setPath(event.target.value)}
-            placeholder="D:\\Study\\project\\agent\\rove"
-            autoFocus
-            aria-invalid={error ? "true" : undefined}
-            aria-describedby={error ? "workspace-path-error" : undefined}
-          />
+          <div className="workspace-path-control">
+            <input
+              id="workspace-path"
+              value={path}
+              onChange={(event) => setPath(event.target.value)}
+              placeholder="D:\\Study\\project\\agent\\rove"
+              autoFocus
+              aria-invalid={error ? "true" : undefined}
+              aria-describedby={error ? "workspace-path-error" : undefined}
+            />
+            {nativePickerAvailable ? (
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => void browseWorkspace()}
+                disabled={pickerBusy}
+              >
+                <FileIcon aria-hidden="true" />
+                {pickerBusy ? "Opening..." : "Browse"}
+              </button>
+            ) : null}
+          </div>
         </div>
         <div className="field">
           <label htmlFor="workspace-kind">Kind</label>

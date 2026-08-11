@@ -4,7 +4,7 @@
 
 The repository manifest is a modular Cargo Workspace containing
 a virtual Cargo Workspace of `rove-models`, `rove-core`, `rove-runtime`,
-`rove-app-bootstrap`, `rove-cli`, `rove-api`, `rove-bench`, and
+`rove-app-bootstrap`, `rove-cli`, `rove-api`, `rove-bench`, `rove-desktop`, and
 `rove-integration-tests`; the default member is `apps/cli`. Shared package metadata and dependency versions are
 defined at Workspace scope. `rove-core` is the in-memory embedding layer and
 owns the shared Runtime-neutral Agent kernel; it depends only on `rove-models`.
@@ -17,7 +17,7 @@ context/compaction, session/durable memory services, local built-in tools,
 their invocation adapters, the existing MCP proxy, the tool Executor pipeline,
 pre/post-tool plus post-run hooks, planning/step coordination, durable event
 translation, and the persistent Engine facade. Product tool-registry assembly,
-first-party AppConfig and product assembly live in `apps/bootstrap`; product apps live under `apps/`.
+first-party AppConfig and product assembly live in `apps/bootstrap`; product apps live under `apps/`. The Desktop delivery host depends only on `rove-api` among local packages; API-owned embedded assembly keeps AppConfig, Workspace, and ProductStore wiring out of the native shell.
 
 ## Shape
 

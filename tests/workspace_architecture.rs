@@ -112,6 +112,7 @@ fn local_dependency_is_allowed(package: &str, dependency: &str) -> bool {
             dependency,
             "rove-models" | "rove-core" | "rove-runtime" | "rove-app-bootstrap" | "rove-bench"
         ),
+        "rove-desktop" => dependency == "rove-api",
         "rove-cli" => matches!(
             dependency,
             "rove-models" | "rove-core" | "rove-runtime" | "rove-app-bootstrap"
@@ -123,7 +124,12 @@ fn local_dependency_is_allowed(package: &str, dependency: &str) -> bool {
 
 #[test]
 fn first_party_products_do_not_construct_private_agent_loops() {
-    for relative_root in ["apps/cli/src", "apps/api/src", "apps/bench/src"] {
+    for relative_root in [
+        "apps/cli/src",
+        "apps/api/src",
+        "apps/bench/src",
+        "apps/desktop/src",
+    ] {
         for path in rust_files(&workspace_root().join(relative_root)) {
             let source = std::fs::read_to_string(&path)
                 .unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()));

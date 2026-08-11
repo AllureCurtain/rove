@@ -357,6 +357,49 @@ pub async fn serve_with_shutdown(
     let addr: SocketAddr = config.api.bind_addr.parse()?;
     let state = ApiState::with_shutdown(workspace, config, shutdown.clone());
     let listener = tokio::net::TcpListener::bind(addr).await?;
+    serve_state_listener(listener, state).await
+}
+
+/// Assemble API state for a trusted in-process delivery host. The API crate
+/// retains ownership of AppConfig, Workspace, and ProductStore wiring so an
+/// embedding host does not reproduce backend assembly across package layers.
+pub fn embedded_api_state(
+    cwd: &FsPath,
+    bind_addr: SocketAddr,
+    state_dir: PathBuf,
+    bearer_token: String,
+    cors_origins: Vec<String>,
+    shutdown: CancellationToken,
+) -> anyhow::Result<ApiState> {
+    let mut config = AppConfig::load(
+        cwd,
+        AppConfigOverrides {
+            api_bind_addr: Some(bind_addr.to_string()),
+            trust_project: false,
+            ..AppConfigOverrides::default()
+        },
+    )?;
+    config.api.bind_addr = bind_addr.to_string();
+    config.api.token_auth = Some(bearer_token);
+    config.api.cors_origins = cors_origins;
+    config.state.state_dir = state_dir.clone();
+    config.state.sqlite_path = state_dir.join("state.sqlite");
+    config.source_summary.workspace_root = cwd.to_path_buf();
+    config.source_summary.project_config_path = cwd.join(".rove/config.toml");
+
+    let mut workspace = Workspace::detect(cwd)?;
+    workspace.state_dir = config.state_dir();
+    workspace.ensure_state_dir()?;
+    Ok(ApiState::with_shutdown(workspace, config, shutdown))
+}
+
+/// Serve an already-assembled API state and perform the same complete shutdown
+/// drain used by the standalone API binary.
+pub async fn serve_state_listener(
+    listener: tokio::net::TcpListener,
+    state: ApiState,
+) -> anyhow::Result<()> {
+    let shutdown = state.inner.shutdown_token.clone();
     let result = serve_listener(listener, router(state.clone()), shutdown).await;
     state.inner.shutdown_token.cancel();
     drain_job_supervisors(&state).await;
