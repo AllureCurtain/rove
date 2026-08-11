@@ -1,6 +1,6 @@
 # Post-Coding-Tool V2 Full Delivery
 
-> Status: **Implemented through Checkpoint 8; Checkpoint 9 final acceptance and PR handoff in progress**
+> Status: **Implemented and accepted on `program/full-delivery`; PR review pending**
 >
 > Branch: `program/full-delivery`
 >

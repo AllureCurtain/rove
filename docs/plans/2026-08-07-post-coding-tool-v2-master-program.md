@@ -1,6 +1,6 @@
 # Post-Coding-Tool V2 Master Program
 
-> Status: **Implemented on `program/full-delivery`; final acceptance and PR review pending**
+> Status: **Implemented and accepted on `program/full-delivery`; PR review pending**
 >
 > Coordinator branch: `main`
 >
