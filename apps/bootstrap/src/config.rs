@@ -7,6 +7,10 @@ use figment::Figment;
 use figment::providers::{Format, Serialized, Toml};
 use serde::{Deserialize, Serialize};
 
+use rove_runtime::agents::AgentSelector;
+use rove_runtime::execution::{
+    EvaluatorMode, ExecutionPolicy, FinalizerPolicy, StrategySelectionSource,
+};
 use rove_runtime::memory::paths::MemoryPaths;
 use rove_runtime::workspace::WorkspaceKind;
 
@@ -90,6 +94,148 @@ pub struct RuntimeConfig {
     pub context_soft_limit_tokens: usize,
     pub context_hard_limit_tokens: usize,
     pub context_reserved_tokens: usize,
+    /// Optional multidimensional execution limits. Absent dimensions keep the
+    /// deterministic `max_steps` projection, so an existing config file behaves
+    /// exactly as before.
+    pub execution: ExecutionConfig,
+    /// Runtime-owned Agent selection and bounded procedural context settings.
+    pub agent: AgentConfig,
+}
+
+/// Operator-facing Agent activation settings.
+///
+/// Workspace content still requires the independent Project Trust
+/// `workspace_instructions` capability. Setting these fields cannot grant that
+/// capability; an unauthorized request fails during Engine assembly.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct AgentConfig {
+    /// Fully qualified `<source>:<agent-id>` selector.
+    pub selector: String,
+    /// Discover root and nested `AGENTS.md` files for the selected workspace.
+    pub workspace_instructions: bool,
+    /// Admit remediation-mode procedures after all trust/risk checks.
+    pub allow_remediation_procedures: bool,
+    /// Operator ceiling on selected procedures for one run.
+    pub max_procedure_selections: u32,
+}
+
+impl Default for AgentConfig {
+    fn default() -> Self {
+        Self {
+            selector: AgentSelector::legacy().to_string(),
+            workspace_instructions: false,
+            allow_remediation_procedures: false,
+            max_procedure_selections: 3,
+        }
+    }
+}
+
+/// Operator-facing execution lifecycle configuration.
+///
+/// Every field is optional and defaults to "not configured", which preserves the
+/// deterministic `max_steps`-derived policy. This is a bounded projection into
+/// `rove_runtime::execution::ExecutionPolicy`, which remains the sole execution
+/// config truth at runtime.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct ExecutionConfig {
+    /// Bounded model evaluation for typed plan ambiguity. Rule-only by default.
+    pub evaluator_mode: Option<ExecutionEvaluatorMode>,
+    /// Independent finalization authority. Deterministic by default.
+    pub finalizer_policy: Option<ExecutionFinalizerPolicy>,
+    pub max_plan_steps: Option<u32>,
+    pub max_step_attempts: Option<u32>,
+    pub max_model_turns: Option<u32>,
+    pub max_model_turns_per_step: Option<u32>,
+    pub max_tool_calls: Option<u32>,
+    pub max_tool_calls_per_step: Option<u32>,
+    pub max_plan_revisions: Option<u32>,
+    pub max_model_repairs: Option<u32>,
+    pub max_finalization_turns: Option<u32>,
+    pub max_wall_time_ms: Option<u64>,
+    pub max_total_tokens: Option<u64>,
+    /// Cost enforcement applies only when the active provider supplies priced
+    /// usage. Configuring it never fabricates enforcement.
+    pub max_cost_microunits: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionEvaluatorMode {
+    RuleOnly,
+    RuleFirstModelOnAmbiguity,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionFinalizerPolicy {
+    Deterministic,
+    ModelPreferred,
+}
+
+impl ExecutionConfig {
+    /// True when no dimension has been configured, so the deterministic
+    /// `max_steps` projection is used unchanged.
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Apply configured dimensions on top of the deterministic policy derived
+    /// from `max_steps` / `plan_enabled`.
+    ///
+    /// An unset field leaves the derived value in place rather than clearing it,
+    /// so partial configuration cannot silently remove a budget the strategy
+    /// projection established.
+    pub fn apply_to(&self, mut policy: ExecutionPolicy) -> ExecutionPolicy {
+        if let Some(mode) = self.evaluator_mode {
+            policy.evaluator_mode = match mode {
+                ExecutionEvaluatorMode::RuleOnly => EvaluatorMode::RuleOnly,
+                ExecutionEvaluatorMode::RuleFirstModelOnAmbiguity => {
+                    EvaluatorMode::RuleFirstModelOnAmbiguity
+                }
+            };
+        }
+        if let Some(finalizer) = self.finalizer_policy {
+            policy.finalizer_policy = match finalizer {
+                ExecutionFinalizerPolicy::Deterministic => FinalizerPolicy::Deterministic,
+                ExecutionFinalizerPolicy::ModelPreferred => FinalizerPolicy::ModelPreferred,
+            };
+        }
+        if !self.is_empty() {
+            policy.selection_source = StrategySelectionSource::Config;
+        }
+
+        let budgets = &mut policy.budgets;
+        overlay(&mut budgets.max_plan_steps, self.max_plan_steps);
+        overlay(&mut budgets.max_step_attempts, self.max_step_attempts);
+        overlay(&mut budgets.max_model_turns, self.max_model_turns);
+        overlay(
+            &mut budgets.max_model_turns_per_step,
+            self.max_model_turns_per_step,
+        );
+        overlay(&mut budgets.max_tool_calls, self.max_tool_calls);
+        overlay(
+            &mut budgets.max_tool_calls_per_step,
+            self.max_tool_calls_per_step,
+        );
+        overlay(&mut budgets.max_plan_revisions, self.max_plan_revisions);
+        overlay(&mut budgets.max_model_repairs, self.max_model_repairs);
+        overlay(
+            &mut budgets.max_finalization_turns,
+            self.max_finalization_turns,
+        );
+        overlay(&mut budgets.max_wall_time_ms, self.max_wall_time_ms);
+        overlay(&mut budgets.max_total_tokens, self.max_total_tokens);
+        overlay(&mut budgets.max_cost_microunits, self.max_cost_microunits);
+        policy
+    }
+}
+
+fn overlay<T: Copy>(slot: &mut Option<T>, configured: Option<T>) {
+    if let Some(value) = configured {
+        *slot = Some(value);
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -204,6 +350,7 @@ pub struct ConfigSourceSummary {
 pub struct AppConfigOverrides {
     pub model: Option<String>,
     pub max_steps: Option<u32>,
+    pub agent_selector: Option<String>,
     pub api_bind_addr: Option<String>,
     pub trust_project: bool,
 }
@@ -219,6 +366,8 @@ impl Default for RuntimeConfig {
             context_soft_limit_tokens: 24_000,
             context_hard_limit_tokens: 30_000,
             context_reserved_tokens: 4_000,
+            execution: ExecutionConfig::default(),
+            agent: AgentConfig::default(),
         }
     }
 }
@@ -456,6 +605,8 @@ impl AppConfig {
         };
         let project_config_granted =
             capability_allowed(crate::project_trust::CAP_PROJECT_CONFIGURATION);
+        let workspace_instructions_granted =
+            capability_allowed(crate::project_trust::CAP_WORKSPACE_INSTRUCTIONS);
         let provider_credentials_granted =
             capability_allowed(crate::project_trust::CAP_PROVIDER_CREDENTIALS);
         let mcp_processes_granted = capability_allowed(crate::project_trust::CAP_MCP_PROCESSES);
@@ -477,6 +628,7 @@ impl AppConfig {
             &project_environment_values,
             ProjectEnvironmentCapabilities {
                 project_configuration: project_config_granted,
+                workspace_instructions: workspace_instructions_granted,
                 provider_credentials: provider_credentials_granted,
                 mcp_processes: mcp_processes_granted,
                 external_paths: external_paths_granted,
@@ -490,6 +642,7 @@ impl AppConfig {
         if let Some(path) = safe_project_config_path.filter(|_| project_config_loaded) {
             let project_layer = filtered_project_config(
                 &path,
+                workspace_instructions_granted,
                 provider_credentials_granted,
                 mcp_processes_granted,
                 external_paths_granted,
@@ -755,9 +908,15 @@ impl AppConfig {
         if self.runtime.max_steps == 0 {
             anyhow::bail!("runtime.max_steps must be greater than 0");
         }
+        AgentSelector::parse(&self.runtime.agent.selector)
+            .map_err(|error| anyhow::anyhow!("runtime.agent.selector is invalid: {error}"))?;
+        if self.runtime.agent.max_procedure_selections == 0 {
+            anyhow::bail!("runtime.agent.max_procedure_selections must be greater than 0");
+        }
         if self.runtime.compaction_failure_threshold == 0 {
             anyhow::bail!("runtime.compaction_failure_threshold must be greater than 0");
         }
+        self.validate_execution_config()?;
         if self.runtime.context_reserved_tokens >= self.runtime.context_hard_limit_tokens {
             anyhow::bail!(
                 "runtime.context_reserved_tokens must be less than context_hard_limit_tokens"
@@ -832,6 +991,51 @@ impl AppConfig {
                 })?;
         }
         Ok(())
+    }
+
+    /// Reject an execution configuration that the runtime policy would refuse.
+    ///
+    /// Validating here keeps a bad budget a startup error with a config-shaped
+    /// message instead of a mid-run refusal.
+    fn validate_execution_config(&self) -> anyhow::Result<()> {
+        let execution = &self.runtime.execution;
+        for (field, value) in [
+            ("max_plan_steps", execution.max_plan_steps),
+            ("max_step_attempts", execution.max_step_attempts),
+            ("max_model_turns", execution.max_model_turns),
+            (
+                "max_model_turns_per_step",
+                execution.max_model_turns_per_step,
+            ),
+            ("max_tool_calls", execution.max_tool_calls),
+            ("max_tool_calls_per_step", execution.max_tool_calls_per_step),
+            ("max_plan_revisions", execution.max_plan_revisions),
+            ("max_model_repairs", execution.max_model_repairs),
+            ("max_finalization_turns", execution.max_finalization_turns),
+        ] {
+            if value == Some(0) {
+                anyhow::bail!("runtime.execution.{field} must be greater than 0");
+            }
+        }
+        for (field, value) in [
+            ("max_wall_time_ms", execution.max_wall_time_ms),
+            ("max_total_tokens", execution.max_total_tokens),
+            ("max_cost_microunits", execution.max_cost_microunits),
+        ] {
+            if value == Some(0) {
+                anyhow::bail!("runtime.execution.{field} must be greater than 0");
+            }
+        }
+
+        // The resolved policy is the authority, so validate the exact value the
+        // runtime will receive rather than the config fragment alone.
+        let policy = execution.apply_to(ExecutionPolicy::from_max_steps_and_plan_flag(
+            self.runtime.max_steps,
+            true,
+        ));
+        policy
+            .validate()
+            .map_err(|error| anyhow::anyhow!("runtime.execution is invalid: {error}"))
     }
 
     fn validate_api_remote_mode(&self) -> anyhow::Result<()> {
@@ -981,6 +1185,20 @@ struct RuntimeConfigLayer {
     context_hard_limit_tokens: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     context_reserved_tokens: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent: Option<AgentConfigLayer>,
+}
+
+#[derive(Debug, Default, Serialize)]
+struct AgentConfigLayer {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    selector: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    workspace_instructions: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    allow_remediation_procedures: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_procedure_selections: Option<u32>,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -1086,6 +1304,7 @@ struct NamedConfigLayer {
 #[derive(Debug, Clone, Copy)]
 struct ProjectEnvironmentCapabilities {
     project_configuration: bool,
+    workspace_instructions: bool,
     provider_credentials: bool,
     mcp_processes: bool,
     external_paths: bool,
@@ -1101,6 +1320,13 @@ impl AppConfigOverrides {
         if let Some(max_steps) = self.max_steps {
             runtime.max_steps = Some(max_steps);
             keys.push("runtime.max_steps".to_string());
+        }
+        if let Some(selector) = self.agent_selector {
+            runtime.agent = Some(AgentConfigLayer {
+                selector: Some(selector),
+                ..AgentConfigLayer::default()
+            });
+            keys.push("runtime.agent.selector".to_string());
         }
 
         let mut provider = ProviderConfigLayer::default();
@@ -1177,6 +1403,25 @@ fn env_layer(
         runtime.context_reserved_tokens = Some(parse_env("ROVE_CONTEXT_RESERVED_TOKENS", &value)?);
         keys.push("ROVE_CONTEXT_RESERVED_TOKENS".to_string());
     }
+    let mut agent = AgentConfigLayer::default();
+    if let Some(value) = env_string("ROVE_AGENT") {
+        agent.selector = Some(value);
+        keys.push("ROVE_AGENT".to_string());
+    }
+    if let Some(value) = env_string("ROVE_WORKSPACE_INSTRUCTIONS") {
+        agent.workspace_instructions = Some(parse_env_bool("ROVE_WORKSPACE_INSTRUCTIONS", &value)?);
+        keys.push("ROVE_WORKSPACE_INSTRUCTIONS".to_string());
+    }
+    if let Some(value) = env_string("ROVE_ALLOW_REMEDIATION_PROCEDURES") {
+        agent.allow_remediation_procedures =
+            Some(parse_env_bool("ROVE_ALLOW_REMEDIATION_PROCEDURES", &value)?);
+        keys.push("ROVE_ALLOW_REMEDIATION_PROCEDURES".to_string());
+    }
+    if let Some(value) = env_string("ROVE_MAX_PROCEDURE_SELECTIONS") {
+        agent.max_procedure_selections = Some(parse_env("ROVE_MAX_PROCEDURE_SELECTIONS", &value)?);
+        keys.push("ROVE_MAX_PROCEDURE_SELECTIONS".to_string());
+    }
+    runtime.agent = Some(agent).filter(has_agent_values);
 
     let mut provider = ProviderConfigLayer::default();
     if let Some(value) = env_string("ROVE_PROVIDER_ACTIVE") {
@@ -1343,6 +1588,10 @@ fn project_environment_value_allowed(
     capabilities: ProjectEnvironmentCapabilities,
 ) -> bool {
     match name {
+        "ROVE_AGENT"
+        | "ROVE_WORKSPACE_INSTRUCTIONS"
+        | "ROVE_ALLOW_REMEDIATION_PROCEDURES"
+        | "ROVE_MAX_PROCEDURE_SELECTIONS" => capabilities.workspace_instructions,
         "ROVE_PROVIDER_ACTIVE"
         | "ROVE_PROVIDER_PROFILES"
         | "ROVE_PROVIDER_FALLBACK_PROFILES"
@@ -1377,6 +1626,7 @@ fn load_project_environment(
 
 fn filtered_project_config(
     path: &Path,
+    workspace_instructions_granted: bool,
     provider_credentials_granted: bool,
     mcp_processes_granted: bool,
     external_paths_granted: bool,
@@ -1384,6 +1634,9 @@ fn filtered_project_config(
     let mut value = Figment::new()
         .merge(Toml::file(path))
         .extract::<serde_json::Value>()?;
+    if !workspace_instructions_granted {
+        remove_project_config_value(&mut value, &["runtime", "agent"]);
+    }
     if !provider_credentials_granted {
         remove_project_config_value(&mut value, &["provider"]);
     }
@@ -1457,6 +1710,14 @@ fn has_runtime_values(layer: &RuntimeConfigLayer) -> bool {
         || layer.context_soft_limit_tokens.is_some()
         || layer.context_hard_limit_tokens.is_some()
         || layer.context_reserved_tokens.is_some()
+        || layer.agent.is_some()
+}
+
+fn has_agent_values(layer: &AgentConfigLayer) -> bool {
+    layer.selector.is_some()
+        || layer.workspace_instructions.is_some()
+        || layer.allow_remediation_procedures.is_some()
+        || layer.max_procedure_selections.is_some()
 }
 
 fn has_provider_values(layer: &ProviderConfigLayer) -> bool {
@@ -1570,6 +1831,10 @@ mod tests {
             "ROVE_CONTEXT_SOFT_LIMIT_TOKENS",
             "ROVE_CONTEXT_HARD_LIMIT_TOKENS",
             "ROVE_CONTEXT_RESERVED_TOKENS",
+            "ROVE_AGENT",
+            "ROVE_WORKSPACE_INSTRUCTIONS",
+            "ROVE_ALLOW_REMEDIATION_PROCEDURES",
+            "ROVE_MAX_PROCEDURE_SELECTIONS",
             "ROVE_OPENAI_RESPONSES_PROMPT_CACHE",
             "ROVE_OPENAI_RESPONSES_PROMPT_CACHE_RETENTION",
             "ROVE_MCP_CONFIG",
@@ -1605,6 +1870,38 @@ mod tests {
         assert_eq!(
             parse_csv(" fallback-a, ,fallback-b,, fallback-c "),
             vec!["fallback-a", "fallback-b", "fallback-c"]
+        );
+    }
+
+    #[test]
+    fn agent_config_defaults_to_the_legacy_compatibility_profile() {
+        let config = AppConfig::default();
+
+        assert_eq!(config.runtime.agent.selector, "builtin:legacy");
+        assert!(!config.runtime.agent.workspace_instructions);
+        assert!(!config.runtime.agent.allow_remediation_procedures);
+        assert_eq!(config.runtime.agent.max_procedure_selections, 3);
+    }
+
+    #[test]
+    fn invalid_agent_selector_is_rejected_during_config_load() {
+        let _guard = env_lock();
+        clear_config_env();
+        let temp = tempfile::TempDir::new().unwrap();
+
+        let error = AppConfig::load(
+            temp.path(),
+            AppConfigOverrides {
+                agent_selector: Some("unqualified".to_string()),
+                ..AppConfigOverrides::default()
+            },
+        )
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("runtime.agent.selector is invalid")
         );
     }
 
@@ -1648,6 +1945,7 @@ retry_backoff_max_ms = 456
             AppConfigOverrides {
                 model: Some("cli-model".to_string()),
                 max_steps: Some(13),
+                agent_selector: None,
                 api_bind_addr: None,
                 trust_project: true,
             },
@@ -2270,5 +2568,153 @@ system_prompt_path = "../outside/prompt.md"
     #[cfg(not(any(unix, windows)))]
     fn create_file_symlink(_target: &Path, _link: &Path) -> bool {
         false
+    }
+
+    #[test]
+    fn an_unconfigured_execution_section_keeps_the_deterministic_projection() {
+        let config = AppConfig::default();
+        assert!(config.runtime.execution.is_empty());
+
+        let derived = ExecutionPolicy::from_max_steps_and_plan_flag(config.runtime.max_steps, true);
+        let resolved = config.runtime.execution.apply_to(derived.clone());
+
+        assert_eq!(resolved, derived, "an empty section changes nothing");
+        assert_eq!(
+            resolved.selection_source,
+            StrategySelectionSource::MaxStepsAndPlanFlag
+        );
+        config.validate_execution_config().unwrap();
+    }
+
+    #[test]
+    fn configured_dimensions_overlay_the_derived_policy() {
+        let execution = ExecutionConfig {
+            evaluator_mode: Some(ExecutionEvaluatorMode::RuleOnly),
+            finalizer_policy: Some(ExecutionFinalizerPolicy::ModelPreferred),
+            max_tool_calls: Some(40),
+            max_tool_calls_per_step: Some(5),
+            max_wall_time_ms: Some(120_000),
+            ..ExecutionConfig::default()
+        };
+        let derived = ExecutionPolicy::from_max_steps_and_plan_flag(12, true);
+        let resolved = execution.apply_to(derived.clone());
+
+        assert_eq!(resolved.evaluator_mode, EvaluatorMode::RuleOnly);
+        assert_eq!(resolved.finalizer_policy, FinalizerPolicy::ModelPreferred);
+        assert_eq!(resolved.budgets.max_tool_calls, Some(40));
+        assert_eq!(resolved.budgets.max_tool_calls_per_step, Some(5));
+        assert_eq!(resolved.budgets.max_wall_time_ms, Some(120_000));
+        assert_eq!(
+            resolved.selection_source,
+            StrategySelectionSource::Config,
+            "an explicitly configured policy records its own source"
+        );
+        // Dimensions the strategy derived and the operator did not set survive.
+        assert_eq!(
+            resolved.budgets.max_step_attempts,
+            derived.budgets.max_step_attempts
+        );
+        resolved.validate().unwrap();
+    }
+
+    #[test]
+    fn a_zero_execution_limit_is_rejected_at_startup() {
+        let mut config = AppConfig::default();
+        config.runtime.execution.max_tool_calls = Some(0);
+
+        let error = config.validate_execution_config().unwrap_err().to_string();
+
+        assert!(
+            error.contains("runtime.execution.max_tool_calls must be greater than 0"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn a_per_step_limit_above_its_global_limit_is_rejected_at_startup() {
+        let mut config = AppConfig::default();
+        config.runtime.execution.max_tool_calls = Some(4);
+        config.runtime.execution.max_tool_calls_per_step = Some(9);
+
+        let error = config.validate_execution_config().unwrap_err().to_string();
+
+        assert!(
+            error.contains("runtime.execution is invalid"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn an_execution_section_round_trips_through_toml() {
+        let _guard = env_lock();
+        clear_config_env();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let config_dir = tmp.path().join(".rove");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::write(
+            config_dir.join("config.toml"),
+            r#"
+[runtime]
+max_steps = 9
+
+[runtime.execution]
+evaluator_mode = "rule_first_model_on_ambiguity"
+finalizer_policy = "model_preferred"
+max_model_turns = 30
+max_model_turns_per_step = 4
+max_total_tokens = 500000
+"#,
+        )
+        .unwrap();
+
+        let config = AppConfig::load(tmp.path(), trusted_overrides()).unwrap();
+
+        let execution = &config.runtime.execution;
+        assert_eq!(
+            execution.evaluator_mode,
+            Some(ExecutionEvaluatorMode::RuleFirstModelOnAmbiguity)
+        );
+        assert_eq!(
+            execution.finalizer_policy,
+            Some(ExecutionFinalizerPolicy::ModelPreferred)
+        );
+        assert_eq!(execution.max_model_turns, Some(30));
+        assert_eq!(execution.max_model_turns_per_step, Some(4));
+        assert_eq!(execution.max_total_tokens, Some(500_000));
+
+        let resolved = execution.apply_to(ExecutionPolicy::from_max_steps_and_plan_flag(
+            config.runtime.max_steps,
+            true,
+        ));
+        assert_eq!(resolved.budgets.max_model_turns, Some(30));
+        resolved.validate().unwrap();
+        clear_config_env();
+    }
+
+    #[test]
+    fn an_old_config_without_an_execution_section_still_loads() {
+        let _guard = env_lock();
+        clear_config_env();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let config_dir = tmp.path().join(".rove");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::write(
+            config_dir.join("config.toml"),
+            r#"
+[runtime]
+max_steps = 7
+"#,
+        )
+        .unwrap();
+
+        let config = AppConfig::load(tmp.path(), trusted_overrides()).unwrap();
+
+        assert_eq!(config.runtime.max_steps, 7);
+        assert!(
+            config.runtime.execution.is_empty(),
+            "a missing section defaults to unconfigured"
+        );
+        config.validate().unwrap();
+        clear_config_env();
     }
 }

@@ -49,8 +49,9 @@ Complete C0-C3, and the merged CDH G1-G7 control/evidence/settings delivery:
 - CLI one-shot runs, REPL, bounded full-screen TUI, resume picker, tool
   details, configuration inspection, and session listing.
 - Durable run state, canonical event streams, bounded tool execution, layered
-  memory, provider routing, MCP stdio plus the existing legacy SSE path, and
-  deterministic benchmark evidence.
+  memory, provider routing, MCP stdio/deprecated SSE/Streamable HTTP with rich
+  results, negotiated server identity, and run-pinned live catalog refresh,
+  and deterministic benchmark evidence.
 - API-authoritative Steer and durable Follow-up controls, terminal-boundary
   session Fork with inherited read-only history, and session-scoped model/
   reasoning/approval/step-limit snapshots.
@@ -162,7 +163,7 @@ not secret values.
 
 | Area | Implemented behavior |
 |---|---|
-| Execution | Planned and unplanned loops share normalized model turns, tool turns, context checkpoints, history writeback, and canonical lifecycle events. |
+| Execution | One Runtime-neutral Core kernel drives embedded, unplanned, and planned-step model/tool coordination; Runtime hosts retain context checkpoints, safety, persistence, and canonical lifecycle events. |
 | Tools | Filesystem and shell access are workspace-bounded. Shell timeout, output limits, environment policy, denylist, and approval controls are configurable. |
 | Human control | Tool approval, `request_input`, cancellation, resume, Steer/Follow-up, session Fork, and terminal-visible status are part of the shared runtime/product contract. |
 | Providers | Provider-specific payloads stay behind the model boundary. Routing supports retries and fallback models where configured. |
@@ -194,9 +195,9 @@ CLI / API / benchmark
 
 The important boundaries are deliberate:
 
-- Web, API, CLI, and benchmark surfaces do not own independent Agent loops;
-  they reuse the persistent Runtime. Consolidating the embedded Core loop and
-  Runtime's remaining iteration mechanics into one kernel is proposed work.
+- Web, API, CLI, benchmark, and embedding surfaces do not own independent Agent
+  loops; durable hosts and the in-memory embedding host use one Runtime-neutral
+  Core Agent kernel.
 - Provider payloads do not leak into core execution.
 - Tool descriptions, MCP annotations, prompts, and model requests cannot grant
   permission.
@@ -300,24 +301,29 @@ release readiness documents before making release claims.
 
 ## Current Boundaries
 
-Implemented on `main` does not include:
+The current source tree does not include:
 
 - A Tauri Desktop host or Browser/Desktop automation workspace.
 - Hosted multi-user identity, billing, remote gateway, device pairing, or
   distributed rate limiting.
 - Full shell sandboxing beyond the current local policy controls.
 - Built-in vector or provider-backed RAG retrieval.
-- MCP Streamable HTTP, negotiated sessions, rich result envelopes, or Tool
-  Artifacts. The current proxy supports stdio and the existing legacy SSE path.
-- Versioned AgentDefinition packages, runtime `AGENTS.md` discovery, or the
-  proposed OnCall reference evaluation suite.
-- One shared Core/Runtime Agent kernel, Project Trust activation, the shared
-  Execution Environment, Coding Tool V2, Subagents, independent Finalizer,
-  model-on-ambiguity plan evaluation, or public multidimensional budgets.
+- Live MCP catalog refresh for stdio/deprecated SSE; refresh is implemented for
+  Streamable HTTP, and real third-party MCP interoperability remains unclaimed.
+- Phase-specific procedure consumption by Planner, Evaluator, and Finalizer,
+  or the proposed OnCall reference evaluation suite.
+- Subagents.
+
+The shared Core/Runtime Agent kernel, Project Trust activation, the shared
+Execution Environment, Coding Tool V2, MCP Streamable HTTP, rich Tool Results
+and durable Tool Artifacts, versioned AgentDefinition packages, runtime
+`AGENTS.md` discovery, typed procedure selection/hydration, the independent
+Finalizer, model-on-ambiguity plan evaluation, and public multidimensional
+execution budgets are implemented in the runtime.
 
 These boundaries are maintained explicitly in the current runtime docs and
-future designs. Worktree-only changes are not part of this README's product
-claim until they are merged and verified on `main`.
+future designs. Optional external interoperability remains unclaimed until its
+explicit gates run successfully.
 
 ## Documentation
 

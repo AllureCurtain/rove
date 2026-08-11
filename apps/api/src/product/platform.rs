@@ -388,6 +388,21 @@ pub(crate) async fn get_product_runtime_info(
                 artifact_projection: capabilities.artifact_projection,
             },
         },
+        agent: ProductAgentRuntimeInfo {
+            selector: state.inner.config.runtime.agent.selector.clone(),
+            workspace_source_authorized: state
+                .inner
+                .config
+                .project_capability_allowed(rove_app_bootstrap::CAP_WORKSPACE_INSTRUCTIONS),
+            workspace_instructions_enabled: state.inner.config.runtime.agent.workspace_instructions,
+            allow_remediation_procedures: state
+                .inner
+                .config
+                .runtime
+                .agent
+                .allow_remediation_procedures,
+            max_procedure_selections: state.inner.config.runtime.agent.max_procedure_selections,
+        },
         resume_health,
     }))
 }

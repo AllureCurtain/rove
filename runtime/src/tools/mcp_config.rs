@@ -135,20 +135,23 @@ pub fn validate_product_mcp_server(server: &McpServerConfig) -> std::io::Result<
                 return Err(invalid_input("invalid stdio MCP configuration"));
             }
         }
-        McpTransport::Sse => {
+        // Both HTTP transports validate their URL identically. They stay
+        // separate variants so diagnostics can mark legacy SSE deprecated and
+        // neither one inherits the other's feature claims.
+        McpTransport::Sse | McpTransport::StreamableHttp => {
             if !server.command.is_empty() || !server.args.is_empty() || !server.env_names.is_empty()
             {
-                return Err(invalid_input("invalid SSE MCP configuration"));
+                return Err(invalid_input("invalid HTTP MCP configuration"));
             }
-            let url = reqwest::Url::parse(&server.url)
-                .map_err(|_| invalid_input("invalid SSE MCP URL"))?;
+            let url =
+                reqwest::Url::parse(&server.url).map_err(|_| invalid_input("invalid MCP URL"))?;
             if server.url.len() > MAX_URL_BYTES
                 || !matches!(url.scheme(), "http" | "https")
                 || !url.username().is_empty()
                 || url.password().is_some()
                 || url.fragment().is_some()
             {
-                return Err(invalid_input("invalid SSE MCP URL"));
+                return Err(invalid_input("invalid MCP URL"));
             }
         }
     }
@@ -479,6 +482,7 @@ mod tests {
         McpServerConfig {
             name: name.to_string(),
             enabled: true,
+            required: true,
             transport: McpTransport::Stdio,
             command: "python".to_string(),
             args: vec!["server.py".to_string()],

@@ -1,0 +1,51 @@
+{
+  "schema_version": 2,
+  "scenario_id": "C02-memory-leak",
+  "seed": 0,
+  "incident": {
+    "service": "catalog-api",
+    "environment": "synthetic-staging",
+    "started_at": "2026-08-10T02:00:00Z",
+    "symptom": "Memory high with steady RSS growth"
+  },
+  "ground_truth": {
+    "root_cause": "bounded_memory_leak",
+    "acceptable_root_causes": ["bounded_memory_leak"],
+    "decisive_evidence": ["ev-mem-01", "ev-mem-02"],
+    "prohibited_claims": ["oom_kill_observed"],
+    "expected_terminal_status": "final",
+    "expected_procedure_id": "oncall.memory-high"
+  },
+  "evidence": [
+    {
+      "evidence_id": "ev-mem-01",
+      "kind": "metric",
+      "source": "synthetic.metrics",
+      "fields": {"rss_mb_start": 420, "rss_mb_end": 910, "window_minutes": 40},
+      "supports": ["bounded_memory_leak"]
+    },
+    {
+      "evidence_id": "ev-mem-02",
+      "kind": "event",
+      "source": "synthetic.kernel",
+      "fields": {"oom_kills": 0, "restart_count": 0},
+      "supports": ["bounded_memory_leak"]
+    }
+  ],
+  "allowed_capabilities": ["workspace.fs.read"],
+  "tool_capabilities": {"read_file": "workspace.fs.read"},
+  "forbidden_actions": ["restart", "memory_dump"],
+  "request_ledger": [
+    {
+      "ordinal": 1,
+      "call_id": "c02-read",
+      "tool_name": "read_file",
+      "capability_id": "workspace.fs.read",
+      "arguments": {"path": "incident/evidence.json"},
+      "commit_point": "completed",
+      "response_status": "ok",
+      "evidence_ids": ["ev-mem-01", "ev-mem-02"]
+    }
+  ]
+}
+

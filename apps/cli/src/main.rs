@@ -26,8 +26,19 @@ fn main() -> anyhow::Result<()> {
         return run_sync_fast_path(args);
     }
 
-    let runtime = tokio::runtime::Runtime::new()?;
-    runtime.block_on(async_main(args))
+    // The combined REPL/TUI/exec future is large in debug builds. Windows gives
+    // the process main thread a comparatively small default stack, so host the
+    // async CLI on an explicitly bounded stack instead of overflowing before
+    // the first command can run.
+    std::thread::Builder::new()
+        .name("rove-cli-main".to_string())
+        .stack_size(8 * 1024 * 1024)
+        .spawn(move || {
+            let runtime = tokio::runtime::Runtime::new()?;
+            runtime.block_on(async_main(args))
+        })?
+        .join()
+        .map_err(|_| anyhow::anyhow!("CLI runtime thread panicked"))?
 }
 
 fn init_tracing(tui_mode: bool) {
@@ -54,6 +65,7 @@ fn run_sync_fast_path(args: Args) -> anyhow::Result<()> {
             AppConfigOverrides {
                 model: args.model.clone(),
                 max_steps: args.max_steps,
+                agent_selector: args.agent.clone(),
                 api_bind_addr: None,
                 trust_project: args.trust_project,
             },
@@ -113,6 +125,7 @@ async fn build_runtime_with_interaction(
         cwd: args.cwd.clone().map(PathBuf::from),
         model: args.model.clone(),
         max_steps: args.max_steps,
+        agent: args.agent.clone(),
         trust_project: args.trust_project,
         approval: args.approval,
         task_workspace: args.task_workspace.clone(),

@@ -11,8 +11,19 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { createProductApiClient } from "../product/product-client";
 import type {
   ProductArtifactContentEnvelope,
+  ProductArtifactSourceKind,
   ProductArtifactView,
 } from "../product/product-api-types";
+
+// Reads as a label rather than a wire value, and distinguishes a durable Tool
+// Artifact produced by a tool call from a file the run registered itself.
+const SOURCE_KIND_LABELS: Record<ProductArtifactSourceKind, string> = {
+  report: "report",
+  task_state: "task state",
+  trace: "trace",
+  registered: "registered",
+  tool_artifact: "tool artifact",
+};
 
 export function ArtifactPanel({ sessionId }: { sessionId: string }) {
   const client = useMemo(() => createProductApiClient(), []);
@@ -20,8 +31,15 @@ export function ArtifactPanel({ sessionId }: { sessionId: string }) {
   const [partial, setPartial] = useState<string[]>([]);
   const [selected, setSelected] = useState<ProductArtifactView | null>(null);
   const [content, setContent] = useState<ProductArtifactContentEnvelope | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
+    };
+  }, [previewUrl]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -49,14 +67,35 @@ export function ArtifactPanel({ sessionId }: { sessionId: string }) {
   async function openArtifact(artifact: ProductArtifactView) {
     setSelected(artifact);
     setContent(null);
+    setPreviewUrl(null);
     setError(null);
     if (artifact.availability !== "available" || artifact.preview_kind === "unavailable") {
       return;
     }
     try {
-      setContent(await client.getArtifactContent(sessionId, artifact.artifact_id));
+      const nextContent = await client.getArtifactContent(sessionId, artifact.artifact_id);
+      const nextPreviewUrl =
+        nextContent.image && nextContent.preview_allowed
+          ? URL.createObjectURL(
+              await client.fetchArtifactPreview(sessionId, artifact.artifact_id),
+            )
+          : null;
+      setContent(nextContent);
+      setPreviewUrl(nextPreviewUrl);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Failed to open artifact");
+    }
+  }
+
+  async function downloadArtifact(artifact: ProductArtifactView) {
+    setError(null);
+    try {
+      await downloadBlob(
+        await client.fetchArtifactDownload(sessionId, artifact.artifact_id),
+        artifact.safe_name,
+      );
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Failed to download artifact");
     }
   }
 
@@ -98,20 +137,20 @@ export function ArtifactPanel({ sessionId }: { sessionId: string }) {
                 {artifact.preview_kind === "raster_image" ? <ImageIcon /> : <FileIcon />}
                 <span>{artifact.safe_name}</span>
                 <small>
-                  {artifact.source_kind} · {artifact.availability}
+                  {SOURCE_KIND_LABELS[artifact.source_kind]} · {artifact.availability}
                   {artifact.size !== undefined ? ` · ${formatBytes(artifact.size)}` : ""}
                 </small>
               </button>
               {artifact.availability === "available" || artifact.availability === "too_large" ? (
-                <a
+                <button
+                  type="button"
                   className="ghost icon-button"
-                  href={client.artifactDownloadUrl(sessionId, artifact.artifact_id)}
-                  download
+                  onClick={() => void downloadArtifact(artifact)}
                   aria-label={`Download ${artifact.safe_name}`}
                   title={`Download ${artifact.safe_name}`}
                 >
                   <DownloadIcon />
-                </a>
+                </button>
               ) : null}
             </li>
           ))}
@@ -125,15 +164,15 @@ export function ArtifactPanel({ sessionId }: { sessionId: string }) {
               <span>{selected.mime} · run {shortId(selected.source_run_id)}</span>
             </div>
             {selected.availability === "available" || selected.availability === "too_large" ? (
-              <a
+              <button
+                type="button"
                 className="ghost icon-button"
-                href={client.artifactDownloadUrl(sessionId, selected.artifact_id)}
-                download
+                onClick={() => void downloadArtifact(selected)}
                 aria-label={`Download ${selected.safe_name}`}
                 title={`Download ${selected.safe_name}`}
               >
                 <DownloadIcon />
-              </a>
+              </button>
             ) : null}
           </div>
           {selected.sha256 ? (
@@ -154,7 +193,7 @@ export function ArtifactPanel({ sessionId }: { sessionId: string }) {
           {content?.image && content.preview_allowed ? (
             <figure className="evidence-preview__image">
               <img
-                src={client.artifactPreviewUrl(sessionId, selected.artifact_id)}
+                src={previewUrl ?? undefined}
                 alt={selected.safe_name}
               />
               <figcaption>
@@ -169,6 +208,18 @@ export function ArtifactPanel({ sessionId }: { sessionId: string }) {
       ) : null}
     </section>
   );
+}
+
+async function downloadBlob(blob: Blob, filename: string): Promise<void> {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.hidden = true;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
 function shortId(value: string): string {

@@ -421,6 +421,10 @@ mod tests {
             step_records: Vec::new(),
             plan_decisions: Vec::new(),
             plan_revisions: Vec::new(),
+            execution_lifecycle: Default::default(),
+            final_outcome: None,
+            tool_artifacts: Vec::new(),
+            rejected_tool_artifacts: Vec::new(),
             output: None,
             timestamp: "2026-08-04T00:00:00Z".to_string(),
         }
@@ -590,11 +594,15 @@ mod tests {
                     last_error: None,
                 },
                 runtime_identity: None,
+                agent_profile: None,
                 step_ledger: Default::default(),
+                execution_lifecycle: Default::default(),
             }),
             plan: None,
             runtime_identity: None,
+            agent_profile: None,
             step_ledger: Default::default(),
+            execution_lifecycle: Default::default(),
         };
         let snapshot = snapshot_for("claude-sonnet-4-5", run_id, 1);
         let context = context_from_sources(&report, Some(&state), Some(&snapshot))

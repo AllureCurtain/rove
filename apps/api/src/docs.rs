@@ -97,6 +97,7 @@ pub const DEBUG_TAG: &str = "Debug";
             super::ProductReasoningPreference,
             super::ProductRuntimeBinding,
             super::ProductRuntimeInfo,
+            super::ProductAgentRuntimeInfo,
             super::ProductExecutionAdapter,
             super::ProductExecutionCapabilities,
             super::ProductExecutionEnvironmentInfo,

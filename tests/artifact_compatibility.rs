@@ -168,6 +168,7 @@ async fn canonical_session_persists_restarts_and_reprojects_provider_identity_at
                         output: output.to_string(),
                         mutations: Vec::new(),
                         metadata: ToolExecutionMetadata::default(),
+                        envelope: None,
                     },
                 },
                 &store,
@@ -298,7 +299,9 @@ async fn legacy_message_only_state_dual_reads_then_writes_one_canonical_session(
         checkpoint: None,
         plan: None,
         runtime_identity: None,
+        agent_profile: None,
         step_ledger: Default::default(),
+        execution_lifecycle: Default::default(),
     };
     let legacy_json = serde_json::to_string(&legacy).unwrap();
     assert!(!legacy_json.contains("\"session\""));

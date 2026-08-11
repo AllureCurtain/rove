@@ -48,6 +48,7 @@ async fn runtime_registers_calls_and_classifies_stdio_mcp_tools() {
         vec![McpServerConfig {
             name: "mock-server".to_string(),
             enabled: true,
+            required: true,
             transport: McpTransport::Stdio,
             command: python_command().to_string(),
             args: vec![fixture("mcp_mock_server.py").to_string_lossy().to_string()],

@@ -24,16 +24,74 @@ export type StepRecordStatus =
   | "partial"
   | "failed"
   | "blocked"
+  | "rejected"
   | "skipped"
   | "budget_exhausted"
   | "cancelled"
-  | "interrupted";
+  | "interrupted"
+  | "indeterminate";
 
 export type StepCompletionBasis =
   | "model_conclusion"
   | "deterministic_rule"
   | "user_decision"
   | "runtime_failure";
+
+/** Semantic uncertainty that deterministic lifecycle rules cannot resolve. */
+export type PlanAmbiguityKind =
+  | "remaining_work_may_be_unnecessary"
+  | "plan_assumption_may_be_invalid"
+  | "recoverable_alternative_may_exist"
+  | "goal_may_be_partially_satisfied"
+  | "remaining_dependencies_may_need_reordering";
+
+export interface PlanAmbiguity {
+  kind: PlanAmbiguityKind;
+  safe_summary: string;
+  evidence_refs?: string[];
+}
+
+export type ProcedureDeviationReason =
+  | "evidence_contradiction"
+  | "capability_unavailable"
+  | "preconditions_unsatisfied"
+  | "user_constraint"
+  | "procedure_stale"
+  | "safer_alternative"
+  | "runtime_failure";
+
+export interface ProcedureCapabilityBinding {
+  capability_id: string;
+  required?: boolean;
+  tool_name?: string | null;
+  available: boolean;
+  mutation_class?: "read_only" | "mutating" | null;
+  approval_required: boolean;
+}
+
+export interface ProcedureApplication {
+  application_id: string;
+  reference: ProcedureReference;
+  hydration_hash: string;
+  section_ids?: string[];
+  capability_snapshot_id: string;
+  capability_bindings?: ProcedureCapabilityBinding[];
+  risk_level: "low" | "medium" | "high";
+  side_effects?: string[];
+  truncated?: boolean;
+  step_id?: string | null;
+  boundary: string;
+}
+
+export interface ProcedureDeviation {
+  deviation_id: string;
+  reference: ProcedureReference;
+  application_id?: string | null;
+  reason: ProcedureDeviationReason;
+  safe_summary: string;
+  material?: boolean;
+  evidence_refs?: string[];
+}
 
 export interface StepRecord {
   record_id: string;
@@ -50,12 +108,15 @@ export interface StepRecord {
   tool_call_ids?: string[];
   artifact_refs?: string[];
   mutations?: ToolMutation[];
+  procedure_applications?: ProcedureApplication[];
+  procedure_deviations?: ProcedureDeviation[];
   model_turns_used: number;
   tool_calls_used: number;
   token_usage: Usage;
   error_code?: string;
   safe_error_summary?: string;
   supersedes_record_id?: string;
+  ambiguity?: PlanAmbiguity;
 }
 
 export interface ExecutionBudgetUsage {
@@ -64,9 +125,145 @@ export interface ExecutionBudgetUsage {
   model_turns: number;
   tool_calls: number;
   plan_revisions: number;
+  model_repairs: number;
+  planner_turns: number;
+  evaluator_turns: number;
+  replanner_turns: number;
+  finalization_turns: number;
   wall_time_ms: number;
   total_tokens: number;
   cost_microunits: number;
+}
+
+/** Independent per-dimension execution limits. Absent means unresolved. */
+export interface ExecutionBudgetLimits {
+  max_plan_steps?: number | null;
+  max_step_attempts?: number | null;
+  max_model_turns?: number | null;
+  max_model_turns_per_step?: number | null;
+  max_tool_calls?: number | null;
+  max_tool_calls_per_step?: number | null;
+  max_plan_revisions?: number | null;
+  max_model_repairs?: number | null;
+  max_finalization_turns?: number | null;
+  max_wall_time_ms?: number | null;
+  max_total_tokens?: number | null;
+  max_cost_microunits?: number | null;
+}
+
+export type ExecutionPhase =
+  | "planner"
+  | "step"
+  | "evaluator"
+  | "replanner"
+  | "finalizer"
+  | "run";
+
+export type ExecutionBudgetDimension =
+  | "plan_steps"
+  | "step_attempts"
+  | "model_turns"
+  | "model_turns_per_step"
+  | "tool_calls"
+  | "tool_calls_per_step"
+  | "plan_revisions"
+  | "model_repairs"
+  | "finalization_turns"
+  | "wall_time"
+  | "total_tokens"
+  | "cost";
+
+export interface ExecutionBudgetExhaustion {
+  dimension: ExecutionBudgetDimension;
+  phase: ExecutionPhase;
+  limit: number;
+  consumed: number;
+  safe_summary: string;
+}
+
+export interface ExecutionBudgetSnapshot {
+  limits: ExecutionBudgetLimits;
+  consumed: ExecutionBudgetUsage;
+  exhausted?: ExecutionBudgetExhaustion | null;
+  /** Cost is enforceable only when the provider supplies priced usage. */
+  cost_enforced: boolean;
+}
+
+export type ExecutionStrategy = "react" | "plan_react";
+
+export type StrategySelectionSource =
+  | "request"
+  | "session"
+  | "config"
+  | "compatibility_default"
+  | "max_steps_and_plan_flag";
+
+export type EvaluatorMode = "rule_only" | "rule_first_model_on_ambiguity";
+
+export type FinalizerPolicy = "deterministic" | "model_preferred";
+
+export interface ExecutionPolicy {
+  version: number;
+  strategy: ExecutionStrategy;
+  selection_source: StrategySelectionSource;
+  budgets: ExecutionBudgetLimits;
+  evaluator_mode?: EvaluatorMode;
+  finalizer_policy?: FinalizerPolicy;
+}
+
+/** Explicit, safe degradation fact. Fallbacks are never silent. */
+export interface ExecutionDegradation {
+  degradation_id: string;
+  phase: ExecutionPhase;
+  code: string;
+  safe_summary: string;
+  occurred_at: string;
+}
+
+/** User-visible terminal classification, distinct from `TerminationReason`. */
+export type FinalOutcomeStatus =
+  | "success"
+  | "partial"
+  | "blocked"
+  | "rejected"
+  | "cancelled"
+  | "interrupted"
+  | "exhausted"
+  | "indeterminate"
+  | "failed";
+
+export type FinalizationMode =
+  | "direct"
+  | "model"
+  | "deterministic"
+  | "deterministic_fallback";
+
+export type FinalizationPhase = "started" | "completed";
+
+export interface FinalizationRecord {
+  finalization_id: string;
+  phase: FinalizationPhase;
+  finish_reason: PlanFinishReason;
+  outcome?: FinalOutcomeStatus | null;
+  mode: FinalizationMode;
+  started_at: string;
+  completed_at?: string | null;
+  output?: string | null;
+  evidence_refs?: string[];
+  incomplete_step_ids?: string[];
+  budget_before?: ExecutionBudgetUsage;
+  budget_after?: ExecutionBudgetUsage;
+}
+
+/** Materialized run lifecycle projection stored in state and reports. */
+export interface ExecutionLifecycleState {
+  policy?: ExecutionPolicy | null;
+  budget_usage?: ExecutionBudgetUsage;
+  budget_exhaustion?: ExecutionBudgetExhaustion | null;
+  finalization?: FinalizationRecord | null;
+  degradations?: ExecutionDegradation[];
+  procedure_applications?: ProcedureApplication[];
+  procedure_deviations?: ProcedureDeviation[];
 }
 
 export type PlanDecisionKind = "continue" | "replace_remaining" | "finish";
@@ -78,7 +275,9 @@ export type PlanFinishReason =
   | "budget_exhausted"
   | "failed"
   | "cancelled"
-  | "interrupted";
+  | "interrupted"
+  | "rejected"
+  | "indeterminate";
 
 export interface PlanDecision {
   decision_id: string;
@@ -147,6 +346,147 @@ export interface ToolResult {
   output: string;
   mutations?: ToolMutation[];
   metadata?: ToolExecutionMetadata;
+  /** Rich result detail. Absent for a plain text tool result. */
+  envelope?: ToolOutputEnvelope;
+}
+
+export const TOOL_RESULT_OUTCOMES = [
+  "success",
+  "partial",
+  "error",
+  "rejected",
+  "cancelled",
+  "timed_out_known_not_sent",
+  "indeterminate",
+] as const;
+
+export type ToolResultOutcome = (typeof TOOL_RESULT_OUTCOMES)[number];
+
+export const ARTIFACT_VALIDATION_STATES = [
+  "validated",
+  "claim_rejected",
+  "quota_exceeded",
+] as const;
+
+export type ArtifactValidation = (typeof ARTIFACT_VALIDATION_STATES)[number];
+
+export const TOOL_ARTIFACT_KINDS = [
+  "text",
+  "image",
+  "audio",
+  "resource",
+  "unknown",
+] as const;
+
+export type ToolArtifactKind = (typeof TOOL_ARTIFACT_KINDS)[number];
+
+export interface ToolArtifactSource {
+  run_id: string;
+  call_id: string;
+  server_config_id?: string;
+  server_identity_hash?: string;
+  session_hash?: string;
+  remote_tool_name?: string;
+  block_ordinal: number;
+  captured_at: string;
+}
+
+export interface ToolArtifactRef {
+  artifact_id: string;
+  kind: ToolArtifactKind;
+  /** Locally validated MIME type. Absent when the claim was rejected. */
+  mime_type?: string;
+  byte_length: number;
+  sha256: string;
+  storage_ref: string;
+  source: ToolArtifactSource;
+  /** Remote claim retained for provenance only. Never resolved by the UI. */
+  original_uri?: string;
+  audience?: string[];
+  priority?: number;
+  last_modified?: string;
+  sensitivity?: "normal" | "sensitive";
+  trust?: "untrusted" | "local_tool";
+  validation?: ArtifactValidation;
+  validation_detail?: string;
+}
+
+export interface ToolContentBlockMeta {
+  ordinal: number;
+  mime_type?: string;
+  audience?: string[];
+  priority?: number;
+  truncated?: boolean;
+  validation?: ArtifactValidation;
+}
+
+export type ToolContentBlock =
+  | { type: "text"; meta: ToolContentBlockMeta; text: string }
+  | { type: "image"; meta: ToolContentBlockMeta; artifact: ToolArtifactRef }
+  | { type: "audio"; meta: ToolContentBlockMeta; artifact: ToolArtifactRef }
+  | {
+      type: "resource_link";
+      meta: ToolContentBlockMeta;
+      uri: string;
+      name?: string;
+      description?: string;
+    }
+  | {
+      type: "embedded_resource";
+      meta: ToolContentBlockMeta;
+      uri?: string;
+      artifact: ToolArtifactRef;
+      preview?: string;
+    }
+  | {
+      type: "unknown";
+      meta: ToolContentBlockMeta;
+      declared_type: string;
+      retained?: string;
+    };
+
+export interface StructuredToolContent {
+  value: unknown;
+  schema_valid?: boolean;
+  schema_error?: string;
+}
+
+export interface ToolProtocolMetadata {
+  protocol?: string;
+  server_config_id?: string;
+  server_identity_hash?: string;
+  protocol_version?: string;
+  capability_snapshot_id?: string;
+  remote_tool_name?: string;
+  request_id_hash?: string;
+  connection_id?: string;
+  session_hash?: string;
+  attempt_count?: number;
+  duration_ms?: number;
+}
+
+export interface ToolDiagnostic {
+  domain: string;
+  code: string;
+  message: string;
+}
+
+export interface ExternalEffect {
+  kind: string;
+  target: string;
+  indeterminate?: boolean;
+}
+
+export interface ToolOutputEnvelope {
+  outcome?: ToolResultOutcome;
+  summary_text: string;
+  content_blocks?: ToolContentBlock[];
+  structured_content?: StructuredToolContent;
+  artifacts?: ToolArtifactRef[];
+  mutations?: ToolMutation[];
+  external_effects?: ExternalEffect[];
+  protocol_metadata?: ToolProtocolMetadata;
+  diagnostics?: ToolDiagnostic[];
 }
 
 export interface ToolMutation {
@@ -200,6 +540,65 @@ export type StreamEvent =
       user_message: string;
     }
   | {
+      type: "agent_profile_activated";
+      identity: AgentProfileIdentity;
+      resumed_from_snapshot: boolean;
+      diagnostics?: AgentDiagnostic[];
+    }
+  | {
+      type: "workspace_instructions_resolved";
+      bundle_hash: string;
+      layer_count: number;
+      rejected_count: number;
+      truncated: boolean;
+    }
+  | {
+      type: "execution_strategy_selected";
+      policy: ExecutionPolicy;
+    }
+  | {
+      type: "instruction_overlay_applied";
+      target_path: string;
+      scope: string;
+      source_path: string;
+      content_hash: string;
+      boundary: string;
+      call_id?: string | null;
+    }
+  | {
+      type: "procedures_selected";
+      profile_hash: string;
+      selected?: ProcedureReference[];
+      considered_count: number;
+      excluded_count: number;
+    }
+  | {
+      type: "procedure_hydrated";
+      reference: ProcedureReference;
+      truncated: boolean;
+      dropped_bytes: number;
+      step_id?: string | null;
+      hydration_hash?: string | null;
+    }
+  | {
+      type: "procedure_applied";
+      application: ProcedureApplication;
+    }
+  | {
+      type: "procedure_deviation";
+      record_id: string;
+      deviation: ProcedureDeviation;
+    }
+  | {
+      type: "execution_budget_updated";
+      phase: ExecutionPhase;
+      snapshot: ExecutionBudgetSnapshot;
+    }
+  | {
+      type: "execution_degraded";
+      record: ExecutionDegradation;
+    }
+  | {
       type: "llm_chunk";
       delta: string;
     }
@@ -240,6 +639,32 @@ export type StreamEvent =
       metadata?: ToolExecutionMetadata;
     }
   | {
+      type: "tool_artifact_stored";
+      call_id: string;
+      artifact: ToolArtifactRef;
+    }
+  | {
+      type: "tool_artifact_rejected";
+      call_id: string;
+      block_ordinal: number;
+      reason: string;
+      observed_bytes: number;
+    }
+  | {
+      type: "mcp_server_degraded";
+      server_config_id: string;
+      required: boolean;
+      failure_code: string;
+    }
+  | {
+      type: "mcp_capabilities_refreshed";
+      server_config_id: string;
+      snapshot_id: string;
+      added: string[];
+      removed: string[];
+      changed: string[];
+    }
+  | {
       type: "input_needed";
       input_id: string;
       prompt: string;
@@ -261,6 +686,7 @@ export type StreamEvent =
       step_id?: string;
       attempt?: number;
       started_at?: string;
+      budget?: ExecutionBudgetSnapshot;
     }
   | {
       type: "step_result";
@@ -274,6 +700,14 @@ export type StreamEvent =
       type: "plan_revised";
       plan: TaskPlan;
       revision: PlanRevision;
+    }
+  | {
+      type: "finalization_started";
+      record: FinalizationRecord;
+    }
+  | {
+      type: "finalization_completed";
+      record: FinalizationRecord;
     }
   | {
       type: "prompt_compacted";
@@ -322,6 +756,36 @@ export type StreamEvent =
       reason: string;
     };
 
+export interface AgentProfileIdentity {
+  selector: { source: "builtin" | "workspace"; agent_id: string };
+  agent_id: string;
+  display_name: string;
+  definition_version: string;
+  manifest_hash: string;
+  package_hash: string;
+  profile_hash: string;
+  instruction_bundle_hash?: string;
+  procedures?: ProcedureReference[];
+}
+
+export interface AgentDiagnostic {
+  code: string;
+  subject: string;
+  message: string;
+}
+
+export interface ProcedureReference {
+  id: string;
+  version: string;
+  trust:
+    | "builtin_trusted"
+    | "workspace_trusted"
+    | "user_installed"
+    | "external_untrusted";
+  source_path: string;
+  content_hash: string;
+}
+
 export type CreateJobWorkspaceKind = "folder" | "repo" | "task";
 
 /**
@@ -344,6 +808,8 @@ export interface CreateJobRequest {
   message: string;
   model?: string;
   max_steps?: number;
+  /** Fully qualified Runtime Agent selector. */
+  agent?: string;
   approval?: ApprovalPolicy;
   resume?: ResumeMode;
   workspace?: CreateJobWorkspace;
@@ -492,6 +958,16 @@ export type ResumeMode = "latest";
 
 export const STREAM_EVENT_NAMES = [
   "run_started",
+  "agent_profile_activated",
+  "workspace_instructions_resolved",
+  "execution_strategy_selected",
+  "instruction_overlay_applied",
+  "procedures_selected",
+  "procedure_hydrated",
+  "procedure_applied",
+  "procedure_deviation",
+  "execution_budget_updated",
+  "execution_degraded",
   "llm_chunk",
   "model_status",
   "llm_message",
@@ -499,12 +975,18 @@ export const STREAM_EVENT_NAMES = [
   "tool_call_approval_needed",
   "tool_call_completed",
   "tool_call_failed",
+  "tool_artifact_stored",
+  "tool_artifact_rejected",
+  "mcp_server_degraded",
+  "mcp_capabilities_refreshed",
   "input_needed",
   "plan_created",
   "plan_step_started",
   "step_result",
   "plan_decision",
   "plan_revised",
+  "finalization_started",
+  "finalization_completed",
   "prompt_compacted",
   "memory_flushed",
   "prompt_built",

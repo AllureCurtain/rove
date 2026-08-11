@@ -3,10 +3,10 @@ use crate::hooks::{HookRegistry, PostToolHookContext};
 use crate::tool_input::RegisteredUserInput;
 use crate::tools::runtime_context::runtime_tool_services;
 use crate::types::{
-    CallId, ToolContext, ToolDescriptor, ToolExecutionMetadata, ToolExecutionStatus, ToolMutation,
-    ToolResult, ToolRiskLevel,
+    CallId, ToolContext, ToolDescriptor, ToolExecutionMetadata, ToolMutation, ToolResult,
+    ToolRiskLevel,
 };
-use rove_core::{ToolError, ToolRegistry};
+use rove_core::{ToolError, ToolRegistry, ToolResultOutcome};
 use tokio::sync::mpsc;
 
 /// The executor runs tools through the pipeline.
@@ -70,7 +70,7 @@ impl<'a> Executor<'a> {
             self.registry.execute(name, args.clone(), ctx),
         )
         .await?;
-        let metadata = success_metadata(&schema, &output.mutations);
+        let metadata = completion_metadata(&schema, &output.mutations, output.outcome());
 
         // Step 6: result wrapping
         let result = ToolResult {
@@ -78,6 +78,7 @@ impl<'a> Executor<'a> {
             output: output.content,
             mutations: output.mutations,
             metadata,
+            envelope: output.envelope,
         };
 
         // Step 7: post-tool hooks
@@ -310,10 +311,26 @@ fn invalid_args<T>(reason: String) -> Result<T, ToolError> {
     Err(ToolError::InvalidArgs { reason })
 }
 
-fn success_metadata(schema: &ToolDescriptor, mutations: &[ToolMutation]) -> ToolExecutionMetadata {
+/// Metadata for a tool that returned rather than failed.
+///
+/// The status comes from the rich outcome, not from the fact that the call
+/// returned: a partial, cancelled, or indeterminate envelope must not be
+/// recorded as a plain success.
+fn completion_metadata(
+    schema: &ToolDescriptor,
+    mutations: &[ToolMutation],
+    outcome: ToolResultOutcome,
+) -> ToolExecutionMetadata {
     ToolExecutionMetadata {
-        status: ToolExecutionStatus::Ok,
-        error_code: None,
+        status: outcome.to_execution_status(),
+        error_code: (outcome != ToolResultOutcome::Success).then(|| match outcome {
+            ToolResultOutcome::Partial => "tool_partial_result".to_string(),
+            ToolResultOutcome::Rejected => "tool_rejected".to_string(),
+            ToolResultOutcome::Cancelled => "tool_cancelled".to_string(),
+            ToolResultOutcome::TimedOutKnownNotSent => "tool_timed_out_not_sent".to_string(),
+            ToolResultOutcome::Indeterminate => "tool_indeterminate_effect".to_string(),
+            ToolResultOutcome::Error | ToolResultOutcome::Success => "tool_error".to_string(),
+        }),
         security_event_type: None,
         risk_level: if schema.destructive {
             ToolRiskLevel::High
@@ -409,6 +426,7 @@ mod tests {
                     operation: ToolMutationOperation::Update,
                     diff: Some("+hello".to_string()),
                 }],
+                envelope: None,
             })
         }
     }

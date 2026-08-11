@@ -3,19 +3,31 @@ use futures::StreamExt;
 use futures::stream::BoxStream;
 use tokio_util::sync::CancellationToken;
 
+use crate::agents::procedure_prompt_for_target;
 use crate::events::StreamEvent;
 use crate::execution::{
-    ExecutionBudgetUsage, PlanDecisionKind, PlanDecisionRecord, PlanFinishReason, PlanIdentity,
-    PlanRevision, StepAttempt, StepCompletionBasis, StepLedgerState, StepRecord, StepRecordStatus,
-    planned_step_failure_message,
+    DEFAULT_MAX_MODEL_REPAIRS, EvaluatorMode, ExecutionBudgetDimension, ExecutionBudgetTracker,
+    ExecutionBudgetUsage, ExecutionDegradation, ExecutionLifecycleState, ExecutionPhase,
+    FinalizationMode, FinalizerPolicy, PlanAmbiguity, PlanAmbiguityKind, PlanDecisionKind,
+    PlanDecisionRecord, PlanFinishReason, PlanIdentity, PlanRevision, ProcedureApplication,
+    ProcedureDeviation, ProcedureDeviationReason, StepAttempt, StepCompletionBasis,
+    StepLedgerState, StepRecord, StepRecordStatus, planned_step_failure_message,
 };
-use crate::plan_evaluator::{RECOVERABLE_STEP_FAILURE_CODE, evaluate_step_record};
+use crate::finalizer::{FinalizationContext, Finalizer};
+use crate::plan_evaluator::{
+    ModelEvaluationContext, PlanEvaluator, RECOVERABLE_STEP_FAILURE_CODE, RuleEvaluation,
+    deterministic_evaluation, evaluation_key,
+};
 use crate::planner::{Planner, PlannerContext};
 use crate::run_loop::{LoopContext, LoopItem};
 use crate::step_runner::{
     StepRunMetrics, StepRunnerInput, StepRunnerItem, StepRunnerOutcome, run_step,
 };
-use crate::types::{Message, PlanStep, TaskPlan, TerminationReason};
+use crate::types::{Message, PlanStep, TaskPlan, TerminationReason, Usage};
+
+/// Step error code for a context hard-limit refusal. This is not a tracked
+/// budget dimension, so the terminal compatibility reason keys off it directly.
+const CONTEXT_TOKEN_LIMIT_CODE: &str = "context_token_limit";
 
 const MAX_STEP_RECORD_SUMMARY_CHARS: usize = 1_000;
 
@@ -24,37 +36,83 @@ pub(crate) struct PlanLoopState {
     pub working_memory: Vec<Message>,
     pub compact_summary: Option<String>,
     pub history: Vec<Message>,
-    pub step: u32,
     pub plan: Option<TaskPlan>,
     pub step_ledger: StepLedgerState,
+    pub execution_lifecycle: ExecutionLifecycleState,
 }
 
 pub(crate) fn run_planned_loop<'a>(
     ctx: LoopContext<'a>,
     planner: &'a Planner,
+    evaluator: &'a PlanEvaluator,
+    finalizer: &'a Finalizer,
     mut state: PlanLoopState,
     cancel_token: CancellationToken,
 ) -> BoxStream<'a, LoopItem> {
     Box::pin(stream! {
         let mut compaction = ctx.compaction.clone();
         let mut ledger = std::mem::take(&mut state.step_ledger);
+        let mut budget = ExecutionBudgetTracker::new(
+            ctx.execution_policy.budgets.clone(),
+            state.execution_lifecycle.budget_usage.clone(),
+            false,
+        );
         let mut plan_identity = ledger.plan_identity().unwrap_or_else(PlanIdentity::fresh);
         let capability_summary = ctx.capability_snapshot.planner_summary();
         let planner_context = PlannerContext {
             capability_snapshot_summary: Some(&capability_summary),
+            agent_context_summary: ctx.agent_planner_summary.as_deref(),
         };
 
+        macro_rules! finish_planned {
+            ($finish_reason:expr, $direct_output:expr) => {{
+                let finish_reason = $finish_reason;
+                let direct_output: Option<String> = $direct_output;
+                let revisions = ledger.plan_lifecycle.revisions.clone();
+                let records = ledger.step_records.clone();
+                let transition = finalize_planned_run(
+                    LifecycleContext {
+                        model: ctx.model,
+                        policy: &ctx.execution_policy,
+                        original_goal: &state.user_message,
+                        cancel: cancel_token.clone(),
+                    },
+                    finalizer,
+                    FinalizationEvidence {
+                        finish_reason,
+                        revisions: &revisions,
+                        records: &records,
+                        direct_output: direct_output.as_deref(),
+                    },
+                    &mut budget,
+                )
+                .await;
+                for event in transition.events {
+                    yield LoopItem::Event(event);
+                }
+                yield LoopItem::Complete {
+                    reason: transition.reason,
+                    output: transition.output,
+                };
+                return;
+            }};
+        }
+
         if state.plan.is_none() {
+            if let Err(exhaustion) = budget.reserve_model_turn(ExecutionPhase::Planner) {
+                budget.mark_exhausted(exhaustion);
+                yield LoopItem::Event(StreamEvent::ExecutionBudgetUpdated {
+                    phase: ExecutionPhase::Planner,
+                    snapshot: Box::new(budget.snapshot()),
+                });
+                finish_planned!(PlanFinishReason::BudgetExhausted, None);
+            }
             let draft_result = tokio::select! {
                 biased;
                 _ = cancel_token.cancelled() => {
-                    yield LoopItem::Complete {
-                        reason: TerminationReason::Cancelled,
-                        output: None,
-                    };
-                    return;
+                    finish_planned!(PlanFinishReason::Cancelled, None);
                 }
-                result = planner.draft_with_context(
+                result = planner.draft_accounted(
                     ctx.model,
                     &state.user_message,
                     &state.history,
@@ -62,7 +120,30 @@ pub(crate) fn run_planned_loop<'a>(
                 ) => result,
             };
             match draft_result {
-                Ok(drafted) => {
+                Ok(draft) => {
+                    if let Err(exhaustion) = budget.record_tokens(
+                        &draft.usage,
+                        ExecutionPhase::Planner,
+                    ) {
+                        budget.mark_exhausted(exhaustion);
+                        yield LoopItem::Event(StreamEvent::ExecutionBudgetUpdated {
+                            phase: ExecutionPhase::Planner,
+                            snapshot: Box::new(budget.snapshot()),
+                        });
+                        finish_planned!(PlanFinishReason::BudgetExhausted, None);
+                    }
+                    let drafted = draft.plan;
+                    if let Err(exhaustion) = budget.validate_plan_steps(
+                        drafted.steps.len(),
+                        ExecutionPhase::Planner,
+                    ) {
+                        budget.mark_exhausted(exhaustion);
+                        yield LoopItem::Event(StreamEvent::ExecutionBudgetUpdated {
+                            phase: ExecutionPhase::Planner,
+                            snapshot: Box::new(budget.snapshot()),
+                        });
+                        finish_planned!(PlanFinishReason::BudgetExhausted, None);
+                    }
                     plan_identity = PlanIdentity::fresh();
                     ledger.set_plan_identity(&plan_identity);
                     let revision = match initial_plan_revision(
@@ -70,14 +151,11 @@ pub(crate) fn run_planned_loop<'a>(
                         &plan_identity,
                         "planner_draft",
                         &ctx.capability_snapshot.snapshot_id,
+                        budget.usage(),
                     ) {
                         Ok(revision) => revision,
                         Err(reason) => {
-                            yield LoopItem::Complete {
-                                reason: TerminationReason::Error,
-                                output: Some(reason),
-                            };
-                            return;
+                            finish_planned!(PlanFinishReason::Failed, Some(reason));
                         }
                     };
                     ledger.plan_lifecycle.push_revision(revision.clone());
@@ -86,14 +164,17 @@ pub(crate) fn run_planned_loop<'a>(
                         identity: plan_identity.clone(),
                         plan_revision: Some(Box::new(revision)),
                     });
+                    yield LoopItem::Event(StreamEvent::ExecutionBudgetUpdated {
+                        phase: ExecutionPhase::Planner,
+                        snapshot: Box::new(budget.snapshot()),
+                    });
                     state.plan = Some(drafted);
                 }
                 Err(err) => {
-                    yield LoopItem::Complete {
-                        reason: TerminationReason::Error,
-                        output: Some(format!("Planner error: {err}")),
-                    };
-                    return;
+                    finish_planned!(
+                        PlanFinishReason::Failed,
+                        Some(format!("Planner error: {err}"))
+                    );
                 }
             }
         } else if ledger.plan_lifecycle.revisions.is_empty() {
@@ -112,6 +193,7 @@ pub(crate) fn run_planned_loop<'a>(
                 &plan_identity,
                 "legacy_plan_migrated",
                 &ctx.capability_snapshot.snapshot_id,
+                budget.usage(),
             ) {
                 Ok(revision) => revision,
                 Err(reason) => {
@@ -133,6 +215,18 @@ pub(crate) fn run_planned_loop<'a>(
                 plan_identity = active_revision.identity();
             }
             ledger.set_plan_identity(&plan_identity);
+        }
+
+        if let Some(active_plan) = state.plan.as_ref()
+            && let Err(exhaustion) =
+                budget.validate_plan_steps(active_plan.steps.len(), ExecutionPhase::Planner)
+        {
+            budget.mark_exhausted(exhaustion);
+            yield LoopItem::Event(StreamEvent::ExecutionBudgetUpdated {
+                phase: ExecutionPhase::Planner,
+                snapshot: Box::new(budget.snapshot()),
+            });
+            finish_planned!(PlanFinishReason::BudgetExhausted, None);
         }
 
         // An in-flight attempt from a previous process may have performed an
@@ -175,8 +269,35 @@ pub(crate) fn run_planned_loop<'a>(
             // `TaskPlan::current_step`, then complete the transition exactly
             // once without replaying model or tool work.
             if let Some(record) = pending_undecided_record(&ledger, &plan_identity).cloned() {
-                let has_remaining = has_remaining_steps_after_record(active_plan, &record.step_id);
-                let decision = evaluate_step_record(&record, has_remaining);
+                let remaining_steps = remaining_steps_after_record(active_plan, &record.step_id);
+                let active_revision = ledger
+                    .plan_lifecycle
+                    .revisions
+                    .last()
+                    .cloned()
+                    .expect("planned execution has an active revision");
+                let evaluation = evaluate_record_transition(
+                    LifecycleContext {
+                        model: ctx.model,
+                        policy: &ctx.execution_policy,
+                        original_goal: &state.user_message,
+                        cancel: cancel_token.clone(),
+                    },
+                    evaluator,
+                    EvaluationEvidence {
+                        revision: &active_revision,
+                        record: &record,
+                        remaining_steps: &remaining_steps,
+                        capability_summary: &capability_summary,
+                        ledger: &ledger,
+                    },
+                    &mut budget,
+                )
+                .await;
+                for event in evaluation.events {
+                    yield LoopItem::Event(event);
+                }
+                let decision = evaluation.decision;
                 ledger.plan_lifecycle.push_decision(decision.clone());
                 yield LoopItem::Event(StreamEvent::PlanDecision {
                     record: Box::new(decision.clone()),
@@ -190,7 +311,23 @@ pub(crate) fn run_planned_loop<'a>(
                         continue;
                     }
                     PlanDecisionKind::ReplaceRemaining => {
-                        let (replacement, revision) = match replan_and_build_revision(
+                        if let Err(exhaustion) = budget.reserve_plan_revision() {
+                            budget.mark_exhausted(exhaustion);
+                            yield LoopItem::Event(StreamEvent::ExecutionBudgetUpdated {
+                                phase: ExecutionPhase::Replanner,
+                                snapshot: Box::new(budget.snapshot()),
+                            });
+                            finish_planned!(PlanFinishReason::BudgetExhausted, final_output.clone());
+                        }
+                        if let Err(exhaustion) = budget.reserve_model_turn(ExecutionPhase::Replanner) {
+                            budget.mark_exhausted(exhaustion);
+                            yield LoopItem::Event(StreamEvent::ExecutionBudgetUpdated {
+                                phase: ExecutionPhase::Replanner,
+                                snapshot: Box::new(budget.snapshot()),
+                            });
+                            finish_planned!(PlanFinishReason::BudgetExhausted, final_output.clone());
+                        }
+                        let (replacement, mut revision, usage) = match replan_and_build_revision(
                             planner,
                             ctx.model,
                             active_plan,
@@ -208,17 +345,43 @@ pub(crate) fn run_planned_loop<'a>(
                         .await
                         {
                             Ok(transition) => transition,
-                            Err(item) => {
-                                yield item;
-                                return;
+                            Err(ReplanError::Cancelled) => {
+                                finish_planned!(PlanFinishReason::Cancelled, final_output.clone());
+                            }
+                            Err(ReplanError::Failed(reason)) => {
+                                finish_planned!(PlanFinishReason::Partial, Some(reason));
                             }
                         };
+                        if let Err(exhaustion) = budget.record_tokens(&usage, ExecutionPhase::Replanner) {
+                            budget.mark_exhausted(exhaustion);
+                            yield LoopItem::Event(StreamEvent::ExecutionBudgetUpdated {
+                                phase: ExecutionPhase::Replanner,
+                                snapshot: Box::new(budget.snapshot()),
+                            });
+                            finish_planned!(PlanFinishReason::BudgetExhausted, final_output.clone());
+                        }
+                        if let Err(exhaustion) = budget.validate_plan_steps(
+                            replacement.steps.len(),
+                            ExecutionPhase::Replanner,
+                        ) {
+                            budget.mark_exhausted(exhaustion);
+                            yield LoopItem::Event(StreamEvent::ExecutionBudgetUpdated {
+                                phase: ExecutionPhase::Replanner,
+                                snapshot: Box::new(budget.snapshot()),
+                            });
+                            finish_planned!(PlanFinishReason::BudgetExhausted, final_output.clone());
+                        }
+                        revision.budget_snapshot = budget.usage().clone();
                         plan_identity = revision.identity();
                         ledger.set_plan_identity(&plan_identity);
                         ledger.plan_lifecycle.push_revision(revision.clone());
                         yield LoopItem::Event(StreamEvent::PlanRevised {
                             plan: replacement.clone(),
                             revision: Box::new(revision),
+                        });
+                        yield LoopItem::Event(StreamEvent::ExecutionBudgetUpdated {
+                            phase: ExecutionPhase::Replanner,
+                            snapshot: Box::new(budget.snapshot()),
                         });
                         *active_plan = replacement;
                         continue;
@@ -230,10 +393,13 @@ pub(crate) fn run_planned_loop<'a>(
                         ) {
                             mark_step_done(active_plan, &record.step_id);
                         }
-                        let (reason, output) =
-                            finish_transition(&decision, &record, final_output.clone());
-                        yield LoopItem::Complete { reason, output };
-                        return;
+                        finish_planned!(
+                            decision
+                                .decision
+                                .finish_reason
+                                .unwrap_or(PlanFinishReason::Failed),
+                            final_output.clone()
+                        );
                     }
                 }
             }
@@ -242,13 +408,14 @@ pub(crate) fn run_planned_loop<'a>(
             // step. Compatibility notifications are derived; the canonical
             // decision is sufficient to complete this resumed run.
             if let Some((record, decision)) = pending_finish_transition(&ledger, &plan_identity) {
-                let (reason, output) = finish_transition(
-                    decision,
-                    record,
-                    final_output.clone(),
-                );
-                yield LoopItem::Complete { reason, output };
-                return;
+                let finish_reason = decision
+                    .decision
+                    .finish_reason
+                    .unwrap_or(PlanFinishReason::Failed);
+                let direct = final_output
+                    .clone()
+                    .or_else(|| Some(record_reason(record)));
+                finish_planned!(finish_reason, direct);
             }
 
             // Replanner work starts only after the replace decision is durable.
@@ -260,7 +427,23 @@ pub(crate) fn run_planned_loop<'a>(
             {
                 let (step, index) = compatibility_step(active_plan, &record);
                 let reason = record_reason(&record);
-                let (replacement, revision) = match replan_and_build_revision(
+                if let Err(exhaustion) = budget.reserve_plan_revision() {
+                    budget.mark_exhausted(exhaustion);
+                    yield LoopItem::Event(StreamEvent::ExecutionBudgetUpdated {
+                        phase: ExecutionPhase::Replanner,
+                        snapshot: Box::new(budget.snapshot()),
+                    });
+                    finish_planned!(PlanFinishReason::BudgetExhausted, final_output.clone());
+                }
+                if let Err(exhaustion) = budget.reserve_model_turn(ExecutionPhase::Replanner) {
+                    budget.mark_exhausted(exhaustion);
+                    yield LoopItem::Event(StreamEvent::ExecutionBudgetUpdated {
+                        phase: ExecutionPhase::Replanner,
+                        snapshot: Box::new(budget.snapshot()),
+                    });
+                    finish_planned!(PlanFinishReason::BudgetExhausted, final_output.clone());
+                }
+                let (replacement, mut revision, usage) = match replan_and_build_revision(
                     planner,
                     ctx.model,
                     active_plan,
@@ -276,17 +459,43 @@ pub(crate) fn run_planned_loop<'a>(
                     cancel_token.clone(),
                 ).await {
                     Ok(transition) => transition,
-                    Err(item) => {
-                        yield item;
-                        return;
+                    Err(ReplanError::Cancelled) => {
+                        finish_planned!(PlanFinishReason::Cancelled, final_output.clone());
+                    }
+                    Err(ReplanError::Failed(reason)) => {
+                        finish_planned!(PlanFinishReason::Partial, Some(reason));
                     }
                 };
+                if let Err(exhaustion) = budget.record_tokens(&usage, ExecutionPhase::Replanner) {
+                    budget.mark_exhausted(exhaustion);
+                    yield LoopItem::Event(StreamEvent::ExecutionBudgetUpdated {
+                        phase: ExecutionPhase::Replanner,
+                        snapshot: Box::new(budget.snapshot()),
+                    });
+                    finish_planned!(PlanFinishReason::BudgetExhausted, final_output.clone());
+                }
+                if let Err(exhaustion) = budget.validate_plan_steps(
+                    replacement.steps.len(),
+                    ExecutionPhase::Replanner,
+                ) {
+                    budget.mark_exhausted(exhaustion);
+                    yield LoopItem::Event(StreamEvent::ExecutionBudgetUpdated {
+                        phase: ExecutionPhase::Replanner,
+                        snapshot: Box::new(budget.snapshot()),
+                    });
+                    finish_planned!(PlanFinishReason::BudgetExhausted, final_output.clone());
+                }
+                revision.budget_snapshot = budget.usage().clone();
                 plan_identity = revision.identity();
                 ledger.set_plan_identity(&plan_identity);
                 ledger.plan_lifecycle.push_revision(revision.clone());
                 yield LoopItem::Event(StreamEvent::PlanRevised {
                     plan: replacement.clone(),
                     revision: Box::new(revision),
+                });
+                yield LoopItem::Event(StreamEvent::ExecutionBudgetUpdated {
+                    phase: ExecutionPhase::Replanner,
+                    snapshot: Box::new(budget.snapshot()),
                 });
                 *active_plan = replacement;
                 continue;
@@ -302,11 +511,7 @@ pub(crate) fn run_planned_loop<'a>(
                         });
                     }
                 }
-                yield LoopItem::Complete {
-                    reason: TerminationReason::Cancelled,
-                    output: None,
-                };
-                return;
+                finish_planned!(PlanFinishReason::Cancelled, None);
             }
 
             // SAFE POINT — drain queued steers at the step boundary, before the
@@ -333,12 +538,13 @@ pub(crate) fn run_planned_loop<'a>(
                 break;
             }
 
-            if state.step >= ctx.max_steps {
-                yield LoopItem::Complete {
-                    reason: TerminationReason::StepLimit,
-                    output: final_output,
-                };
-                return;
+            if let Err(exhaustion) = budget.refresh_wall_time(ExecutionPhase::Step) {
+                budget.mark_exhausted(exhaustion);
+                yield LoopItem::Event(StreamEvent::ExecutionBudgetUpdated {
+                    phase: ExecutionPhase::Step,
+                    snapshot: Box::new(budget.snapshot()),
+                });
+                finish_planned!(PlanFinishReason::BudgetExhausted, final_output.clone());
             }
 
             let Some(current_step) = active_plan.current_step().cloned() else {
@@ -366,6 +572,56 @@ pub(crate) fn run_planned_loop<'a>(
                 }
             }
 
+            if let Err(exhaustion) = budget.reserve_step_attempt() {
+                budget.mark_exhausted(exhaustion);
+                yield LoopItem::Event(StreamEvent::ExecutionBudgetUpdated {
+                    phase: ExecutionPhase::Step,
+                    snapshot: Box::new(budget.snapshot()),
+                });
+                finish_planned!(PlanFinishReason::BudgetExhausted, final_output.clone());
+            }
+            let max_model_turns = match budget.remaining_model_turns_for_step() {
+                Ok(limit) => limit,
+                Err(exhaustion) => {
+                    budget.mark_exhausted(exhaustion);
+                    yield LoopItem::Event(StreamEvent::ExecutionBudgetUpdated {
+                        phase: ExecutionPhase::Step,
+                        snapshot: Box::new(budget.snapshot()),
+                    });
+                    finish_planned!(PlanFinishReason::BudgetExhausted, final_output.clone());
+                }
+            };
+            let max_tool_calls = budget
+                .limits()
+                .max_tool_calls_per_step
+                .unwrap_or(u32::MAX)
+                .min(
+                    budget
+                        .limits()
+                        .max_tool_calls
+                        .map(|limit| limit.saturating_sub(budget.usage().tool_calls))
+                        .unwrap_or(u32::MAX),
+                );
+            let max_repairs = budget
+                .limits()
+                .max_model_repairs
+                .map(|limit| limit.saturating_sub(budget.usage().model_repairs))
+                .unwrap_or(DEFAULT_MAX_MODEL_REPAIRS);
+            let max_total_tokens = budget.remaining_tokens();
+            let procedure_context = ctx
+                .agent_profile
+                .as_deref()
+                .map(|profile| {
+                    procedure_prompt_for_target(
+                        profile,
+                        ctx.capability_snapshot,
+                        &format!("{}\n{}", active_plan.goal, current_step.title),
+                        "plan_step",
+                        Some(&current_step.id),
+                    )
+                })
+                .unwrap_or_default();
+
             let attempt = StepAttempt {
                 plan_id: plan_identity.plan_id.clone(),
                 plan_revision_id: plan_identity.plan_revision_id.clone(),
@@ -378,17 +634,27 @@ pub(crate) fn run_planned_loop<'a>(
                 step: current_step.clone(),
                 index: current_index,
                 attempt: attempt.clone(),
+                budget: Box::new(budget.snapshot()),
             });
+            for application in &procedure_context.applications {
+                yield LoopItem::Event(StreamEvent::ProcedureApplied {
+                    application: Box::new(application.clone()),
+                });
+            }
 
-            state.step += 1;
             let runner_input = StepRunnerInput {
                 goal: active_plan.goal.clone(),
                 step: current_step.clone(),
                 working_memory: state.working_memory.clone(),
+                procedure_messages: procedure_context.messages.clone(),
                 compact_summary: state.compact_summary.take(),
                 history: std::mem::take(&mut state.history),
                 compaction: compaction.clone(),
                 accepted_steer_ids,
+                max_model_turns,
+                max_tool_calls,
+                max_repairs,
+                max_total_tokens,
             };
             let mut runner = run_step(ctx.clone(), runner_input, cancel_token.clone());
             let runner_result = loop {
@@ -403,12 +669,23 @@ pub(crate) fn run_planned_loop<'a>(
                     reason: "step runner ended without a result".to_string(),
                     replan: false,
                 };
-                let record = terminal_step_record(&attempt, &outcome, &StepRunMetrics::default());
+                let record = terminal_step_record(
+                    &attempt,
+                    &outcome,
+                    &StepRunMetrics::default(),
+                    &procedure_context.applications,
+                );
                 ledger.active_step_attempt = None;
                 ledger.step_records.push(record.clone());
                 yield LoopItem::Event(StreamEvent::StepResult {
-                    record: Box::new(record),
+                    record: Box::new(record.clone()),
                 });
+                for deviation in &record.procedure_deviations {
+                    yield LoopItem::Event(StreamEvent::ProcedureDeviation {
+                        record_id: record.record_id.clone(),
+                        deviation: Box::new(deviation.clone()),
+                    });
+                }
                 continue;
             };
 
@@ -419,6 +696,7 @@ pub(crate) fn run_planned_loop<'a>(
                 &attempt,
                 &runner_result.outcome,
                 &runner_result.metrics,
+                &procedure_context.applications,
             );
             if let StepRunnerOutcome::Succeeded { output } = &runner_result.outcome {
                 final_output = Some(output.clone());
@@ -426,15 +704,342 @@ pub(crate) fn run_planned_loop<'a>(
             ledger.active_step_attempt = None;
             ledger.step_records.push(record.clone());
             yield LoopItem::Event(StreamEvent::StepResult {
-                record: Box::new(record),
+                record: Box::new(record.clone()),
+            });
+            for deviation in &record.procedure_deviations {
+                yield LoopItem::Event(StreamEvent::ProcedureDeviation {
+                    record_id: record.record_id.clone(),
+                    deviation: Box::new(deviation.clone()),
+                });
+            }
+            if let Err(exhaustion) = budget.record_step_usage(
+                runner_result.metrics.model_turns_used,
+                u32::try_from(runner_result.metrics.tool_call_ids.len()).unwrap_or(u32::MAX),
+                runner_result.metrics.repairs_used,
+                &runner_result.metrics.token_usage,
+            ) {
+                budget.mark_exhausted(exhaustion);
+            }
+            yield LoopItem::Event(StreamEvent::ExecutionBudgetUpdated {
+                phase: ExecutionPhase::Step,
+                snapshot: Box::new(budget.snapshot()),
             });
         }
 
-        yield LoopItem::Complete {
-            reason: TerminationReason::Final,
-            output: final_output,
-        };
+        finish_planned!(PlanFinishReason::Completed, final_output);
     })
+}
+
+struct EvaluationTransition {
+    decision: PlanDecisionRecord,
+    events: Vec<StreamEvent>,
+}
+
+/// Collaborators that stay fixed for the whole planned run.
+struct LifecycleContext<'a> {
+    model: &'a dyn rove_models::ModelClient,
+    policy: &'a crate::execution::ExecutionPolicy,
+    original_goal: &'a str,
+    cancel: CancellationToken,
+}
+
+/// The recorded evidence one evaluator decision is made from.
+struct EvaluationEvidence<'a> {
+    revision: &'a PlanRevision,
+    record: &'a StepRecord,
+    remaining_steps: &'a [PlanStep],
+    capability_summary: &'a str,
+    ledger: &'a StepLedgerState,
+}
+
+async fn evaluate_record_transition(
+    lifecycle: LifecycleContext<'_>,
+    evaluator: &PlanEvaluator,
+    evidence: EvaluationEvidence<'_>,
+    budget: &mut ExecutionBudgetTracker,
+) -> EvaluationTransition {
+    let LifecycleContext {
+        model,
+        policy,
+        original_goal,
+        cancel,
+    } = lifecycle;
+    let EvaluationEvidence {
+        revision,
+        record,
+        remaining_steps,
+        capability_summary,
+        ledger,
+    } = evidence;
+    let (classification, fallback) = deterministic_evaluation(record, !remaining_steps.is_empty());
+    if classification == RuleEvaluation::Decided || policy.evaluator_mode == EvaluatorMode::RuleOnly
+    {
+        return EvaluationTransition {
+            decision: fallback,
+            events: Vec::new(),
+        };
+    }
+
+    let key = evaluation_key(revision, record, remaining_steps);
+    if ledger
+        .plan_lifecycle
+        .decisions
+        .iter()
+        .any(|saved| saved.evaluation_key.as_deref() == Some(key.as_str()))
+    {
+        return EvaluationTransition {
+            decision: fallback,
+            events: vec![StreamEvent::ExecutionDegraded {
+                record: degradation(
+                    ExecutionPhase::Evaluator,
+                    "evaluator_duplicate_suppressed",
+                    "An identical ambiguity evaluation was not repeated.",
+                ),
+            }],
+        };
+    }
+
+    let mut events = Vec::new();
+    let mut repair_error: Option<String> = None;
+    loop {
+        if let Err(exhaustion) = budget.reserve_model_turn(ExecutionPhase::Evaluator) {
+            budget.mark_exhausted(exhaustion);
+            events.push(StreamEvent::ExecutionBudgetUpdated {
+                phase: ExecutionPhase::Evaluator,
+                snapshot: Box::new(budget.snapshot()),
+            });
+            events.push(StreamEvent::ExecutionDegraded {
+                record: degradation(
+                    ExecutionPhase::Evaluator,
+                    "evaluator_budget_fallback",
+                    "Model evaluation was skipped because its execution budget was unavailable.",
+                ),
+            });
+            return EvaluationTransition {
+                decision: fallback,
+                events,
+            };
+        }
+        let budget_snapshot = budget.snapshot();
+        let context = ModelEvaluationContext {
+            original_goal,
+            revision,
+            record,
+            remaining_steps,
+            capability_snapshot_summary: capability_summary,
+            budget: &budget_snapshot,
+            repair_error: repair_error.as_deref(),
+        };
+        match evaluator
+            .evaluate_model(model, context, cancel.clone())
+            .await
+        {
+            Ok(model_evaluation) => {
+                if let Err(exhaustion) =
+                    budget.record_tokens(&model_evaluation.usage, ExecutionPhase::Evaluator)
+                {
+                    budget.mark_exhausted(exhaustion);
+                }
+                events.push(StreamEvent::ExecutionBudgetUpdated {
+                    phase: ExecutionPhase::Evaluator,
+                    snapshot: Box::new(budget.snapshot()),
+                });
+                return EvaluationTransition {
+                    decision: model_evaluation.record,
+                    events,
+                };
+            }
+            Err(error) => {
+                let can_repair = repair_error.is_none();
+                if can_repair && budget.reserve_repair(ExecutionPhase::Evaluator).is_ok() {
+                    repair_error = Some(error.to_string());
+                    continue;
+                }
+                events.push(StreamEvent::ExecutionDegraded {
+                    record: degradation(
+                        ExecutionPhase::Evaluator,
+                        "evaluator_safe_fallback",
+                        &format!(
+                            "Model evaluation was unavailable; deterministic safe fallback was used: {}",
+                            bounded_step_summary(&error.to_string(), "evaluation failed")
+                        ),
+                    ),
+                });
+                events.push(StreamEvent::ExecutionBudgetUpdated {
+                    phase: ExecutionPhase::Evaluator,
+                    snapshot: Box::new(budget.snapshot()),
+                });
+                return EvaluationTransition {
+                    decision: fallback,
+                    events,
+                };
+            }
+        }
+    }
+}
+
+struct PlannedFinalization {
+    events: Vec<StreamEvent>,
+    reason: TerminationReason,
+    output: Option<String>,
+}
+
+/// The recorded evidence the finalizer may ground its answer in.
+struct FinalizationEvidence<'a> {
+    finish_reason: PlanFinishReason,
+    revisions: &'a [PlanRevision],
+    records: &'a [StepRecord],
+    direct_output: Option<&'a str>,
+}
+
+async fn finalize_planned_run(
+    lifecycle: LifecycleContext<'_>,
+    finalizer: &Finalizer,
+    evidence: FinalizationEvidence<'_>,
+    budget: &mut ExecutionBudgetTracker,
+) -> PlannedFinalization {
+    let LifecycleContext {
+        model,
+        policy,
+        original_goal,
+        cancel,
+    } = lifecycle;
+    let FinalizationEvidence {
+        finish_reason,
+        revisions,
+        records,
+        direct_output,
+    } = evidence;
+    let preferred_mode = if policy.finalizer_policy == FinalizerPolicy::ModelPreferred {
+        FinalizationMode::Model
+    } else {
+        FinalizationMode::Deterministic
+    };
+    let budget_before = budget.usage().clone();
+    let context = FinalizationContext {
+        original_goal,
+        strategy: policy.strategy,
+        finish_reason,
+        revisions,
+        records,
+        budget: &budget_before,
+        direct_output,
+    };
+    let started = finalizer.started_record(&context, preferred_mode);
+    let mut events = vec![StreamEvent::FinalizationStarted {
+        record: Box::new(started.clone()),
+    }];
+
+    let mut result = None;
+    if preferred_mode == FinalizationMode::Model {
+        match budget.reserve_model_turn(ExecutionPhase::Finalizer) {
+            Ok(()) => {
+                let budget_after_reservation = budget.usage().clone();
+                match finalizer
+                    .model(
+                        model,
+                        &context,
+                        started.clone(),
+                        budget_after_reservation,
+                        cancel,
+                    )
+                    .await
+                {
+                    Ok(mut finalized) => {
+                        if let Err(exhaustion) =
+                            budget.record_tokens(&finalized.usage, ExecutionPhase::Finalizer)
+                        {
+                            budget.mark_exhausted(exhaustion);
+                        }
+                        finalized.record.budget_after = budget.usage().clone();
+                        result = Some(finalized);
+                    }
+                    Err(error) => events.push(StreamEvent::ExecutionDegraded {
+                        record: degradation(
+                            ExecutionPhase::Finalizer,
+                            "finalizer_model_fallback",
+                            &format!(
+                                "Model finalization was unavailable; deterministic synthesis was used: {}",
+                                bounded_step_summary(&error.to_string(), "finalizer failed")
+                            ),
+                        ),
+                    }),
+                }
+            }
+            Err(exhaustion) => {
+                budget.mark_exhausted(exhaustion);
+                events.push(StreamEvent::ExecutionDegraded {
+                    record: degradation(
+                        ExecutionPhase::Finalizer,
+                        "finalizer_budget_fallback",
+                        "Model finalization had no reserved budget; deterministic synthesis was used.",
+                    ),
+                });
+            }
+        }
+    }
+
+    let finalized = result.unwrap_or_else(|| {
+        finalizer.deterministic(
+            &context,
+            started,
+            preferred_mode == FinalizationMode::Model,
+            budget.usage().clone(),
+        )
+    });
+    events.push(StreamEvent::ExecutionBudgetUpdated {
+        phase: ExecutionPhase::Finalizer,
+        snapshot: Box::new(budget.snapshot()),
+    });
+    let output = finalized.record.output.clone();
+    events.push(StreamEvent::FinalizationCompleted {
+        record: Box::new(finalized.record),
+    });
+
+    let reason = match finish_reason {
+        PlanFinishReason::Completed => TerminationReason::Final,
+        PlanFinishReason::BudgetExhausted => {
+            let exhausted_dimension = budget
+                .snapshot()
+                .exhausted
+                .as_ref()
+                .map(|exhaustion| exhaustion.dimension);
+            // A context hard-limit refusal is a token boundary even though it is
+            // not one of the tracked budget dimensions, so the compatibility
+            // reason must not degrade to the generic step limit.
+            let context_token_limited = records.last().is_some_and(|record| {
+                record.error_code.as_deref() == Some(CONTEXT_TOKEN_LIMIT_CODE)
+            });
+            match exhausted_dimension {
+                Some(ExecutionBudgetDimension::TotalTokens) => TerminationReason::TokenLimit,
+                Some(ExecutionBudgetDimension::WallTime) => TerminationReason::TimeLimit,
+                _ if context_token_limited => TerminationReason::TokenLimit,
+                _ => TerminationReason::StepLimit,
+            }
+        }
+        PlanFinishReason::Cancelled => TerminationReason::Cancelled,
+        PlanFinishReason::Partial
+        | PlanFinishReason::Blocked
+        | PlanFinishReason::Rejected
+        | PlanFinishReason::Failed
+        | PlanFinishReason::Interrupted
+        | PlanFinishReason::Indeterminate => TerminationReason::Error,
+    };
+    PlannedFinalization {
+        events,
+        reason,
+        output,
+    }
+}
+
+fn degradation(phase: ExecutionPhase, code: &str, safe_summary: &str) -> ExecutionDegradation {
+    ExecutionDegradation {
+        degradation_id: ulid::Ulid::new().to_string(),
+        phase,
+        code: code.to_string(),
+        safe_summary: bounded_step_summary(safe_summary, "Lifecycle degradation occurred."),
+        occurred_at: chrono::Utc::now().to_rfc3339(),
+    }
 }
 
 fn initial_plan_revision(
@@ -442,6 +1047,7 @@ fn initial_plan_revision(
     identity: &PlanIdentity,
     reason_code: &str,
     capability_snapshot_id: &str,
+    budget_usage: &ExecutionBudgetUsage,
 ) -> Result<PlanRevision, String> {
     let revision = PlanRevision {
         plan_id: identity.plan_id.clone(),
@@ -461,7 +1067,7 @@ fn initial_plan_revision(
             .cloned()
             .collect(),
         capability_snapshot_id: Some(capability_snapshot_id.to_string()),
-        budget_snapshot: ExecutionBudgetUsage::default(),
+        budget_snapshot: budget_usage.clone(),
     };
     revision
         .validate()
@@ -484,29 +1090,25 @@ async fn replan_and_build_revision(
     planner_context: PlannerContext<'_>,
     history: &mut Vec<Message>,
     cancel_token: CancellationToken,
-) -> Result<(TaskPlan, PlanRevision), LoopItem> {
+) -> Result<(TaskPlan, PlanRevision, Usage), ReplanError> {
     history.push(Message::user(planned_step_failure_message(
         trigger_step_title,
         reason,
     )));
     let replacement = tokio::select! {
         biased;
-        _ = cancel_token.cancelled() => Err(LoopItem::Complete {
-            reason: TerminationReason::Cancelled,
-            output: None,
-        }),
-        result = planner.draft_with_context(
+        _ = cancel_token.cancelled() => Err(ReplanError::Cancelled),
+        result = planner.draft_accounted(
             model,
             &active_plan.goal,
             history,
             planner_context,
         ) => {
-            result.map_err(|err| LoopItem::Complete {
-                reason: TerminationReason::Error,
-                output: Some(format!("Planner error: {err}")),
-            })
+            result.map_err(|err| ReplanError::Failed(format!("Planner error: {err}")))
         }
     }?;
+    let usage = replacement.usage;
+    let replacement = replacement.plan;
     let parent_remaining_ids: Vec<_> = active_plan
         .steps
         .iter()
@@ -520,6 +1122,24 @@ async fn replan_and_build_revision(
         .filter(|step| !step.done)
         .map(|step| step.id.as_str())
         .collect();
+    let parent_remaining: Vec<_> = active_plan
+        .steps
+        .iter()
+        .skip(trigger_step_index.saturating_add(1))
+        .filter(|step| !step.done)
+        .map(|step| (&step.id, &step.title))
+        .collect();
+    let replacement_remaining: Vec<_> = replacement
+        .steps
+        .iter()
+        .filter(|step| !step.done)
+        .map(|step| (&step.id, &step.title))
+        .collect();
+    if parent_remaining == replacement_remaining {
+        return Err(ReplanError::Failed(
+            "replacement plan did not change the remaining work".to_string(),
+        ));
+    }
     let retained_step_ids = parent_remaining_ids
         .iter()
         .filter(|step_id| replacement_ids.contains(step_id.as_str()))
@@ -550,11 +1170,15 @@ async fn replan_and_build_revision(
         capability_snapshot_id: Some(capability_snapshot_id.to_string()),
         budget_snapshot: ExecutionBudgetUsage::default(),
     };
-    revision.validate().map_err(|err| LoopItem::Complete {
-        reason: TerminationReason::Error,
-        output: Some(format!("invalid replacement plan revision: {err}")),
-    })?;
-    Ok((replacement, revision))
+    revision
+        .validate()
+        .map_err(|err| ReplanError::Failed(format!("invalid replacement plan revision: {err}")))?;
+    Ok((replacement, revision, usage))
+}
+
+enum ReplanError {
+    Cancelled,
+    Failed(String),
 }
 
 fn pending_undecided_record<'a>(
@@ -649,11 +1273,19 @@ fn apply_persisted_continue_decisions(
     }
 }
 
-fn has_remaining_steps_after_record(plan: &TaskPlan, step_id: &str) -> bool {
+fn remaining_steps_after_record(plan: &TaskPlan, step_id: &str) -> Vec<PlanStep> {
     plan.steps
         .iter()
         .position(|step| step.id == step_id)
-        .is_some_and(|index| index.saturating_add(1) < plan.steps.len())
+        .map(|index| {
+            plan.steps
+                .iter()
+                .skip(index.saturating_add(1))
+                .filter(|step| !step.done)
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn mark_step_done(plan: &mut TaskPlan, step_id: &str) {
@@ -690,37 +1322,6 @@ fn record_reason(record: &StepRecord) -> String {
         .safe_error_summary
         .clone()
         .unwrap_or_else(|| record.summary.clone())
-}
-
-fn finish_transition(
-    decision: &PlanDecisionRecord,
-    record: &StepRecord,
-    final_output: Option<String>,
-) -> (TerminationReason, Option<String>) {
-    let finish_reason = decision
-        .decision
-        .finish_reason
-        .unwrap_or(PlanFinishReason::Failed);
-    let safe_output = || Some(record_reason(record));
-    match finish_reason {
-        PlanFinishReason::Completed => (
-            TerminationReason::Final,
-            final_output.or_else(|| Some(record.summary.clone())),
-        ),
-        PlanFinishReason::BudgetExhausted => (
-            if record.error_code.as_deref() == Some("context_token_limit") {
-                TerminationReason::TokenLimit
-            } else {
-                TerminationReason::StepLimit
-            },
-            safe_output(),
-        ),
-        PlanFinishReason::Cancelled => (TerminationReason::Cancelled, None),
-        PlanFinishReason::Partial
-        | PlanFinishReason::Blocked
-        | PlanFinishReason::Failed
-        | PlanFinishReason::Interrupted => (TerminationReason::Error, safe_output()),
-    }
 }
 
 fn next_attempt(ledger: &StepLedgerState, identity: &PlanIdentity, step_id: &str) -> u32 {
@@ -763,22 +1364,56 @@ fn terminal_step_record(
     attempt: &StepAttempt,
     outcome: &StepRunnerOutcome,
     metrics: &StepRunMetrics,
+    procedure_applications: &[ProcedureApplication],
 ) -> StepRecord {
-    let (status, summary, completion_basis, error_code, safe_error_summary) = match outcome {
-        StepRunnerOutcome::Succeeded { output } => (
-            StepRecordStatus::Succeeded,
-            bounded_step_summary(output, "Step completed."),
-            StepCompletionBasis::ModelConclusion,
-            None,
-            None,
-        ),
-        StepRunnerOutcome::Failed { reason, replan } if !replan && is_permission_denied(reason) => {
+    let (
+        status,
+        summary,
+        completion_basis,
+        error_code,
+        safe_error_summary,
+        ambiguity,
+        procedure_deviations,
+    ) = match outcome {
+        StepRunnerOutcome::Succeeded { output } => {
+            let (summary, ambiguity, deviations) =
+                parse_structured_step_conclusion(output, procedure_applications);
             (
-                StepRecordStatus::Blocked,
-                "Step blocked because required tool permission was denied.".to_string(),
+                StepRecordStatus::Succeeded,
+                summary,
+                StepCompletionBasis::ModelConclusion,
+                None,
+                None,
+                ambiguity,
+                deviations,
+            )
+        }
+        StepRunnerOutcome::Failed { reason, replan } if !replan && is_permission_denied(reason) => {
+            let rejected = reason.to_ascii_lowercase().contains("reject");
+            (
+                if rejected {
+                    StepRecordStatus::Rejected
+                } else {
+                    StepRecordStatus::Blocked
+                },
+                if rejected {
+                    "Step stopped because required tool approval was rejected.".to_string()
+                } else {
+                    "Step blocked because required tool permission was denied.".to_string()
+                },
                 StepCompletionBasis::RuntimeFailure,
-                Some("permission_denied".to_string()),
-                Some("Required tool permission was denied.".to_string()),
+                Some(if rejected {
+                    "approval_rejected".to_string()
+                } else {
+                    "permission_denied".to_string()
+                }),
+                Some(if rejected {
+                    "Required tool approval was rejected.".to_string()
+                } else {
+                    "Required tool permission was denied.".to_string()
+                }),
+                None,
+                Vec::new(),
             )
         }
         StepRunnerOutcome::Failed { reason, replan } => (
@@ -801,26 +1436,48 @@ fn terminal_step_record(
                 reason,
                 "The planned step ended with a runtime or model failure.",
             )),
+            None,
+            Vec::new(),
         ),
-        StepRunnerOutcome::BudgetExhausted { reason } => (
+        StepRunnerOutcome::BudgetExhausted { dimension, reason } => (
             StepRecordStatus::BudgetExhausted,
-            "Step stopped after exhausting its model-turn budget.".to_string(),
+            format!("Step stopped after exhausting its {dimension:?} budget."),
             StepCompletionBasis::RuntimeFailure,
-            Some("step_model_turn_budget_exhausted".to_string()),
+            Some(format!(
+                "{}_budget_exhausted",
+                budget_dimension_code(*dimension)
+            )),
             Some(bounded_step_summary(
                 reason,
-                "The configured per-step model-turn budget was exhausted.",
+                "A configured per-step execution budget was exhausted.",
             )),
+            None,
+            Vec::new(),
         ),
         StepRunnerOutcome::TokenLimit { reason } => (
             StepRecordStatus::BudgetExhausted,
             "Step stopped because the context token limit was exceeded.".to_string(),
             StepCompletionBasis::RuntimeFailure,
-            Some("context_token_limit".to_string()),
+            Some(CONTEXT_TOKEN_LIMIT_CODE.to_string()),
             Some(bounded_step_summary(
                 reason,
                 "The configured context token limit was exceeded.",
             )),
+            None,
+            Vec::new(),
+        ),
+        StepRunnerOutcome::Indeterminate { reason } => (
+            StepRecordStatus::Indeterminate,
+            "Step stopped with an indeterminate external effect that will not be replayed."
+                .to_string(),
+            StepCompletionBasis::RuntimeFailure,
+            Some("external_effect_indeterminate".to_string()),
+            Some(bounded_step_summary(
+                reason,
+                "The external effect could not be determined safely.",
+            )),
+            None,
+            Vec::new(),
         ),
         StepRunnerOutcome::Cancelled => (
             StepRecordStatus::Cancelled,
@@ -828,6 +1485,8 @@ fn terminal_step_record(
             StepCompletionBasis::UserDecision,
             Some("cancelled".to_string()),
             Some("The step was cancelled before completion.".to_string()),
+            None,
+            Vec::new(),
         ),
     };
 
@@ -850,12 +1509,15 @@ fn terminal_step_record(
         tool_call_ids: metrics.tool_call_ids.clone(),
         artifact_refs: Vec::new(),
         mutations: metrics.mutations.clone(),
+        procedure_applications: procedure_applications.to_vec(),
+        procedure_deviations,
         model_turns_used: metrics.model_turns_used,
         tool_calls_used: u32::try_from(metrics.tool_call_ids.len()).unwrap_or(u32::MAX),
         token_usage: metrics.token_usage.clone(),
         error_code,
         safe_error_summary,
         supersedes_record_id: None,
+        ambiguity,
     };
     debug_assert!(record.validate().is_ok());
     record
@@ -878,6 +1540,8 @@ fn interrupted_step_record(attempt: &StepAttempt) -> StepRecord {
         tool_call_ids: Vec::new(),
         artifact_refs: Vec::new(),
         mutations: Vec::new(),
+        procedure_applications: Vec::new(),
+        procedure_deviations: Vec::new(),
         model_turns_used: 0,
         tool_calls_used: 0,
         token_usage: Default::default(),
@@ -886,6 +1550,7 @@ fn interrupted_step_record(attempt: &StepAttempt) -> StepRecord {
             "The process ended before the step attempt reached a terminal result.".to_string(),
         ),
         supersedes_record_id: None,
+        ambiguity: None,
     };
     debug_assert!(record.validate().is_ok());
     record
@@ -901,6 +1566,111 @@ fn bounded_step_summary(value: &str, fallback: &str) -> String {
         format!("{summary}...")
     } else {
         summary
+    }
+}
+
+fn parse_structured_step_conclusion(
+    output: &str,
+    applications: &[ProcedureApplication],
+) -> (String, Option<PlanAmbiguity>, Vec<ProcedureDeviation>) {
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct StructuredConclusion {
+        summary: String,
+        #[serde(default)]
+        lifecycle_ambiguity: Option<StructuredAmbiguity>,
+        #[serde(default)]
+        procedure_deviations: Vec<StructuredProcedureDeviation>,
+    }
+
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct StructuredAmbiguity {
+        kind: PlanAmbiguityKind,
+        safe_summary: String,
+        #[serde(default)]
+        evidence_refs: Vec<String>,
+    }
+
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct StructuredProcedureDeviation {
+        procedure_id: String,
+        reason: ProcedureDeviationReason,
+        safe_summary: String,
+        #[serde(default)]
+        material: bool,
+        #[serde(default)]
+        evidence_refs: Vec<String>,
+    }
+
+    let Ok(parsed) = serde_json::from_str::<StructuredConclusion>(output.trim()) else {
+        return (
+            bounded_step_summary(output, "Step completed."),
+            None,
+            Vec::new(),
+        );
+    };
+    let summary = bounded_step_summary(&parsed.summary, "Step completed.");
+    let mut ambiguity = parsed.lifecycle_ambiguity.and_then(|value| {
+        let ambiguity = PlanAmbiguity {
+            kind: value.kind,
+            safe_summary: value.safe_summary,
+            evidence_refs: value.evidence_refs,
+        };
+        ambiguity.validate().is_ok().then_some(ambiguity)
+    });
+    let deviations = parsed
+        .procedure_deviations
+        .into_iter()
+        .filter_map(|value| {
+            let application = applications
+                .iter()
+                .find(|application| application.reference.id == value.procedure_id)?;
+            let deviation = ProcedureDeviation {
+                deviation_id: ulid::Ulid::new().to_string(),
+                reference: application.reference.clone(),
+                application_id: Some(application.application_id.clone()),
+                reason: value.reason,
+                safe_summary: bounded_step_summary(
+                    &value.safe_summary,
+                    "Execution departed from selected procedure guidance.",
+                ),
+                material: value.material,
+                evidence_refs: value.evidence_refs,
+            };
+            deviation.validate().is_ok().then_some(deviation)
+        })
+        .collect::<Vec<_>>();
+    if ambiguity.is_none()
+        && let Some(material) = deviations.iter().find(|deviation| deviation.material)
+    {
+        let derived = PlanAmbiguity {
+            kind: PlanAmbiguityKind::PlanAssumptionMayBeInvalid,
+            safe_summary: material.safe_summary.clone(),
+            evidence_refs: material.evidence_refs.clone(),
+        };
+        if derived.validate().is_ok() {
+            ambiguity = Some(derived);
+        }
+    }
+    (summary, ambiguity, deviations)
+}
+
+fn budget_dimension_code(dimension: ExecutionBudgetDimension) -> &'static str {
+    match dimension {
+        ExecutionBudgetDimension::PlanSteps => "plan_steps",
+        ExecutionBudgetDimension::StepAttempts => "step_attempts",
+        ExecutionBudgetDimension::ModelTurns => "model_turns",
+        ExecutionBudgetDimension::ModelTurnsPerStep => "model_turns_per_step",
+        ExecutionBudgetDimension::ToolCalls => "tool_calls",
+        ExecutionBudgetDimension::ToolCallsPerStep => "tool_calls_per_step",
+        ExecutionBudgetDimension::PlanRevisions => "plan_revisions",
+        ExecutionBudgetDimension::ModelRepairs => "model_repairs",
+        ExecutionBudgetDimension::FinalizationTurns => "finalization_turns",
+        ExecutionBudgetDimension::WallTime => "wall_time",
+        ExecutionBudgetDimension::TotalTokens => "total_tokens",
+        ExecutionBudgetDimension::Cost => "cost",
     }
 }
 

@@ -1,8 +1,12 @@
 # rove OnCall Reference Agent and Evaluation Plan - 2026-07-15
 
-> Status: **Proposed / Not Implemented**
+> Status: **Partially implemented — deterministic Benchmark V2 and OnCall reference suite landed; external/holdout evidence pending**
 >
-> 本文是未来 reference Agent 与 evaluation 设计，不是当前 benchmark 能力说明。现有 benchmark runner、Agent runtime、procedure、MCP Streamable HTTP 与 Tool Artifact 的真实状态仍以源码和 [`docs/runtime/`](../runtime/README.md) 为准；在 schema、fixtures、runner、oracles、tests 和证据包全部实现前，不得宣称本文场景已经运行或通过。
+> 本文仍是设计与评测边界记录，但 schema、fixtures、runner、oracles、tests 和
+> deterministic evidence package 已落地到 `benchmarks/oncall-reference/`。当前
+> suite 使用本地 fake provider 且已覆盖 11 个场景；外部 provider、holdout
+> 矩阵和生产基础设施互操作仍未宣称。其余当前状态以源码和
+> [`docs/runtime/`](../runtime/README.md) 为准。
 
 本文把 OnCall 项目中有价值的 AIOps Agent 机制转化为 rove 的**合成参考 Agent 与可重复评测场景**。目标不是复制 OnCall 产品、接入真实生产系统或证明 rove 能自动运维，而是用一个足够复杂、证据可控、包含规划、程序性知识、MCP、artifact、失败、重规划、安全和恢复的垂直任务，验证前三篇设计能否形成真正闭环。
 
@@ -32,18 +36,20 @@
 - 如何生成可复现证据包并避免 benchmark gaming；
 - 如何分层进入 PR、nightly 和 opt-in provider gate。
 
-### 1.2 本文不解决什么
+### 1.2 本文的原始设计边界不解决什么
 
 - 不连接真实生产 AIOps 系统；
 - 不自动重启、扩容、清理磁盘或修改数据库；
 - 不复制 OnCall 的品牌、业务 UI 或部署形态；
 - 不把 LangGraph 作为 rove 的必须依赖；
 - 不把现有五份 runbook 原文直接当 trusted procedure；
-- 不在本轮实现 AgentDefinition、procedure loader、MCP 或 benchmark code；
+- 原始设计阶段不预设 AgentDefinition、procedure loader、MCP 或 benchmark
+  code 的实现顺序；这些能力现已分别落在 Runtime 与 deterministic V2 suite；
 - 不用 LLM-as-judge 代替 deterministic correctness；
 - 不以单个 provider/单次运行结果证明泛化；
 - 不把 benchmark 结果写成生产安全认证；
-- 不把 future suite 加进当前 `docs/runtime/acceptance-matrix.md`。
+- 不把未运行的 future/provider suite 加进当前 `docs/runtime/acceptance-matrix.md`；
+  当前已运行的 deterministic V2 gate 已被记录。
 
 ### 1.3 源码证据
 

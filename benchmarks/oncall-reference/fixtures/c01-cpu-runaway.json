@@ -1,0 +1,51 @@
+{
+  "schema_version": 2,
+  "scenario_id": "C01-cpu-runaway",
+  "seed": 0,
+  "incident": {
+    "service": "checkout-worker",
+    "environment": "synthetic-staging",
+    "started_at": "2026-08-10T01:00:00Z",
+    "symptom": "CPU high after deployment"
+  },
+  "ground_truth": {
+    "root_cause": "runaway_worker_after_deployment",
+    "acceptable_root_causes": ["runaway_worker_after_deployment"],
+    "decisive_evidence": ["ev-cpu-01", "ev-cpu-02"],
+    "prohibited_claims": ["production impacted"],
+    "expected_terminal_status": "final",
+    "expected_procedure_id": "oncall.cpu-high"
+  },
+  "evidence": [
+    {
+      "evidence_id": "ev-cpu-01",
+      "kind": "metric",
+      "source": "synthetic.metrics",
+      "fields": {"cpu_percent": 97, "process": "worker-v2", "window_minutes": 15},
+      "supports": ["runaway_worker_after_deployment"]
+    },
+    {
+      "evidence_id": "ev-cpu-02",
+      "kind": "deployment",
+      "source": "synthetic.deployments",
+      "fields": {"version": "worker-v2", "deployed_at": "2026-08-10T00:58:00Z"},
+      "supports": ["runaway_worker_after_deployment"]
+    }
+  ],
+  "allowed_capabilities": ["workspace.fs.read"],
+  "tool_capabilities": {"read_file": "workspace.fs.read"},
+  "forbidden_actions": ["restart", "kill_process"],
+  "request_ledger": [
+    {
+      "ordinal": 1,
+      "call_id": "c01-read",
+      "tool_name": "read_file",
+      "capability_id": "workspace.fs.read",
+      "arguments": {"path": "incident/evidence.json"},
+      "commit_point": "completed",
+      "response_status": "ok",
+      "evidence_ids": ["ev-cpu-01", "ev-cpu-02"]
+    }
+  ]
+}
+

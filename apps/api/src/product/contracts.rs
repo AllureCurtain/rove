@@ -884,13 +884,30 @@ pub struct UpdateProductMemoryTopicRequest {
 #[serde(rename_all = "snake_case")]
 pub enum ProductMcpTransport {
     Stdio,
+    /// Deprecated HTTP+SSE transport, retained for existing configurations.
     Sse,
+    /// Current MCP HTTP transport with negotiated session and version.
+    StreamableHttp,
+}
+
+impl ProductMcpTransport {
+    /// True for a transport retained only for compatibility. Surfaced so
+    /// product diagnostics can mark it without guessing from the name.
+    pub fn is_deprecated(self) -> bool {
+        matches!(self, Self::Sse)
+    }
+
+    /// True when the transport is configured with a URL rather than a command.
+    pub fn is_http(self) -> bool {
+        matches!(self, Self::Sse | Self::StreamableHttp)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ProductMcpServer {
     pub name: String,
     pub enabled: bool,
+    pub required: bool,
     pub transport: ProductMcpTransport,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command: Option<String>,
@@ -899,11 +916,52 @@ pub struct ProductMcpServer {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
     pub request_timeout_ms: u64,
+    /// Server-owned deprecation verdict for this server's transport, so the
+    /// client renders one truth instead of hardcoding which name is legacy.
+    pub transport_deprecated: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ProductMcpServersResponse {
     pub servers: Vec<ProductMcpServer>,
+    pub total: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductMcpHealthStatus {
+    Ready,
+    Degraded,
+    Disabled,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductMcpHealthSnapshot {
+    pub server_name: String,
+    pub required: bool,
+    pub transport: ProductMcpTransport,
+    pub status: ProductMcpHealthStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_config_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_identity_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catalog_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capability_snapshot_id: Option<String>,
+    pub tool_count: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refreshed_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductMcpHealthResponse {
+    pub servers: Vec<ProductMcpHealthSnapshot>,
     pub total: usize,
 }
 
@@ -913,6 +971,8 @@ pub struct CreateProductMcpServerRequest {
     pub name: String,
     #[serde(default = "default_product_mcp_enabled")]
     pub enabled: bool,
+    #[serde(default = "default_product_mcp_required")]
+    pub required: bool,
     pub transport: ProductMcpTransport,
     #[serde(default)]
     pub command: Option<String>,
@@ -930,6 +990,8 @@ pub struct CreateProductMcpServerRequest {
 #[serde(deny_unknown_fields)]
 pub struct UpdateProductMcpServerRequest {
     pub enabled: bool,
+    #[serde(default = "default_product_mcp_required")]
+    pub required: bool,
     pub transport: ProductMcpTransport,
     #[serde(default)]
     pub command: Option<String>,
@@ -959,6 +1021,10 @@ pub struct ProductMcpProbeResponse {
 }
 
 const fn default_product_mcp_enabled() -> bool {
+    true
+}
+
+const fn default_product_mcp_required() -> bool {
     true
 }
 
@@ -1032,11 +1098,23 @@ pub struct ProductExecutionEnvironmentInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductAgentRuntimeInfo {
+    /// Configured base selector. A request may still provide an explicit
+    /// selector, and the resolved run identity is emitted canonically.
+    pub selector: String,
+    pub workspace_source_authorized: bool,
+    pub workspace_instructions_enabled: bool,
+    pub allow_remediation_procedures: bool,
+    pub max_procedure_selections: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ProductRuntimeInfo {
     pub api_version: String,
     pub connection: ProductConnectionStatus,
     pub product_store: ProductStoreStatus,
     pub execution_environment: ProductExecutionEnvironmentInfo,
+    pub agent: ProductAgentRuntimeInfo,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resume_health: Option<ProductResumeHealth>,
 }

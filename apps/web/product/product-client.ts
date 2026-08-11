@@ -66,6 +66,10 @@ import {
   type UpdateProductSessionModelConfigRequest,
   type UpdateProductSessionRequest,
 } from "./product-api-types";
+import {
+  desktopTransport,
+  withDesktopAuthorization,
+} from "../platform/desktop-transport";
 
 const DEFAULT_API_PREFIX = "/api";
 
@@ -85,6 +89,7 @@ export interface ProductApiClientOptions {
   fetch?: typeof globalThis.fetch;
   /** Browser calls stay relative so the Next proxy owns upstream auth. */
   apiPrefix?: string;
+  apiToken?: string;
 }
 
 export interface ExactM1BrowserMigrationBody {
@@ -104,6 +109,8 @@ export interface ProductSessionEvidenceDownload {
   mediaType: string;
   content: Blob;
 }
+
+const MAX_BINARY_RESOURCE_BYTES = 64 * 1024 * 1024;
 
 export interface ProductApiClient {
   listWorkspaces(): Promise<ProductWorkspacesResponse>;
@@ -128,10 +135,14 @@ export interface ProductApiClient {
   getWorkspaceFileContent(workspaceId: string, path: string): Promise<ProductFileContentEnvelope>;
   workspaceFileDownloadUrl(workspaceId: string, path: string): string;
   workspaceFilePreviewUrl(workspaceId: string, path: string): string;
+  fetchWorkspaceFileDownload(workspaceId: string, path: string): Promise<Blob>;
+  fetchWorkspaceFilePreview(workspaceId: string, path: string): Promise<Blob>;
   listSessionArtifacts(sessionId: string, includeSystem?: boolean): Promise<ProductArtifactsResponse>;
   getArtifactContent(sessionId: string, artifactId: string): Promise<ProductArtifactContentEnvelope>;
   artifactDownloadUrl(sessionId: string, artifactId: string): string;
   artifactPreviewUrl(sessionId: string, artifactId: string): string;
+  fetchArtifactDownload(sessionId: string, artifactId: string): Promise<Blob>;
+  fetchArtifactPreview(sessionId: string, artifactId: string): Promise<Blob>;
   getSessionDiff(sessionId: string, scope?: "run" | "git" | "all"): Promise<ProductSessionDiffResponse>;
   exportSessionEvidence(
     sessionId: string,
@@ -280,6 +291,30 @@ async function requestEvidenceExport(
   return { filename, mediaType, content };
 }
 
+async function requestBinaryResource(
+  fetchImpl: typeof globalThis.fetch,
+  url: string,
+  expectedMediaType?: string,
+): Promise<Blob> {
+  const response = await fetchImpl(url, { cache: "no-store" });
+  if (!response.ok) {
+    return throwProductApiError(response);
+  }
+  const mediaType = response.headers.get("content-type") ?? "";
+  if (expectedMediaType && !mediaType.toLowerCase().startsWith(expectedMediaType)) {
+    throw new ProductApiSchemaError(
+      `product binary response must use ${expectedMediaType}`,
+    );
+  }
+  const content = await response.blob();
+  if (content.size > MAX_BINARY_RESOURCE_BYTES) {
+    throw new ProductApiSchemaError(
+      `product binary response exceeds the ${MAX_BINARY_RESOURCE_BYTES} byte client limit`,
+    );
+  }
+  return content;
+}
+
 function attachmentFilename(value: string | null): string | null {
   const match = value?.match(/(?:^|;)\s*filename="([A-Za-z0-9._-]+)"\s*(?:;|$)/i);
   return match?.[1] ?? null;
@@ -329,11 +364,18 @@ function canonicalM1MigrationBody(exact: ExactM1BrowserMigrationBody): string {
 export function createProductApiClient(
   options: ProductApiClientOptions = {},
 ): ProductApiClient {
-  const fetchImpl = options.fetch ?? globalThis.fetch;
-  if (!fetchImpl) {
+  const baseFetch = options.fetch ?? globalThis.fetch;
+  if (!baseFetch) {
     throw new Error("fetch is required to create a product API client");
   }
-  const apiPrefix = normalizeApiPrefix(options.apiPrefix ?? DEFAULT_API_PREFIX);
+  const desktop = desktopTransport();
+  const fetchImpl = withDesktopAuthorization(
+    baseFetch,
+    options.apiToken ?? desktop?.token,
+  );
+  const apiPrefix = normalizeApiPrefix(
+    options.apiPrefix ?? desktop?.apiPrefix ?? DEFAULT_API_PREFIX,
+  );
 
   return {
     listWorkspaces() {
@@ -484,6 +526,27 @@ export function createProductApiClient(
       );
     },
 
+    fetchWorkspaceFileDownload(workspaceId, path) {
+      return requestBinaryResource(
+        fetchImpl,
+        productUrl(
+          apiPrefix,
+          `/product/workspaces/${encodeURIComponent(workspaceId)}/files/download?${new URLSearchParams({ path }).toString()}`,
+        ),
+      );
+    },
+
+    fetchWorkspaceFilePreview(workspaceId, path) {
+      return requestBinaryResource(
+        fetchImpl,
+        productUrl(
+          apiPrefix,
+          `/product/workspaces/${encodeURIComponent(workspaceId)}/files/preview?${new URLSearchParams({ path }).toString()}`,
+        ),
+        "image/",
+      );
+    },
+
     listSessionArtifacts(sessionId, includeSystem) {
       const params = new URLSearchParams();
       if (includeSystem !== undefined) {
@@ -524,6 +587,27 @@ export function createProductApiClient(
       return productUrl(
         apiPrefix,
         `/product/sessions/${encodeURIComponent(sessionId)}/artifacts/${encodeURIComponent(artifactId)}/preview`,
+      );
+    },
+
+    fetchArtifactDownload(sessionId, artifactId) {
+      return requestBinaryResource(
+        fetchImpl,
+        productUrl(
+          apiPrefix,
+          `/product/sessions/${encodeURIComponent(sessionId)}/artifacts/${encodeURIComponent(artifactId)}/download`,
+        ),
+      );
+    },
+
+    fetchArtifactPreview(sessionId, artifactId) {
+      return requestBinaryResource(
+        fetchImpl,
+        productUrl(
+          apiPrefix,
+          `/product/sessions/${encodeURIComponent(sessionId)}/artifacts/${encodeURIComponent(artifactId)}/preview`,
+        ),
+        "image/",
       );
     },
 

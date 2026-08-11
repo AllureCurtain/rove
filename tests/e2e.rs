@@ -16,6 +16,8 @@ use rove_models::{
     AssistantTurn, InternalCallId, ModelClient, ModelEvent, ProviderCapabilities, StopReason,
     ToolCall as CanonicalToolCall, ToolResult as CanonicalToolResult, WireCallReference,
 };
+use rove_runtime::agents::validation::OperatorConstraints;
+use rove_runtime::agents::{AgentActivationConfig, AgentSelector};
 use rove_runtime::context::{ContextBudget, ContextManager};
 use rove_runtime::engine::{Engine, EngineConfig};
 use rove_runtime::events::StreamEvent;
@@ -29,6 +31,7 @@ use rove_runtime::hooks::{
 use rove_runtime::memory::durable::read_memory_index_sync;
 use rove_runtime::memory::paths::MemoryPaths;
 use rove_runtime::session::{Session, SessionEntry};
+use rove_runtime::state::artifacts::RunArtifactRecorder;
 use rove_runtime::state::report::RunReport;
 use rove_runtime::state::store::StateStore;
 use rove_runtime::tools::echo::EchoTool;
@@ -70,12 +73,15 @@ fn sample_step_record(
         tool_call_ids: Vec::new(),
         artifact_refs: Vec::new(),
         mutations: Vec::new(),
+        procedure_applications: Vec::new(),
+        procedure_deviations: Vec::new(),
         model_turns_used: 1,
         tool_calls_used: 0,
         token_usage: Usage::default(),
         error_code: None,
         safe_error_summary: None,
         supersedes_record_id: None,
+        ambiguity: None,
     }
 }
 
@@ -839,10 +845,7 @@ fn build_test_engine(responses: Vec<String>) -> Engine {
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(EchoTool));
     let context_manager = ContextManager::new("You are a test agent.".to_string());
-    let config = EngineConfig {
-        max_steps: 5,
-        plan_enabled: false,
-    };
+    let config = EngineConfig::new(5, false);
     Engine::new(model, registry, context_manager, config)
 }
 
@@ -851,10 +854,7 @@ fn build_planner_test_engine(responses: Vec<String>) -> Engine {
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(EchoTool));
     let context_manager = ContextManager::new("You are a test agent.".to_string());
-    let config = EngineConfig {
-        max_steps: 5,
-        plan_enabled: true,
-    };
+    let config = EngineConfig::new(5, true);
     Engine::new(model, registry, context_manager, config)
 }
 
@@ -866,10 +866,7 @@ fn build_replanning_test_engine() -> Engine {
         model,
         registry,
         ContextManager::new("You are a test agent.".to_string()),
-        EngineConfig {
-            max_steps: 5,
-            plan_enabled: true,
-        },
+        EngineConfig::new(5, true),
     )
 }
 
@@ -878,10 +875,7 @@ fn build_test_engine_with_workspace(responses: Vec<String>, workspace: Workspace
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(EchoTool));
     let context_manager = ContextManager::new("You are a test agent.".to_string());
-    let config = EngineConfig {
-        max_steps: 5,
-        plan_enabled: false,
-    };
+    let config = EngineConfig::new(5, false);
     Engine::with_workspace(
         model,
         registry,
@@ -913,10 +907,7 @@ fn build_engine_with_destructive_tool(
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(FakeDestructiveTool));
     let context_manager = ContextManager::new("You are a test agent.".to_string());
-    let config = EngineConfig {
-        max_steps: 2,
-        plan_enabled: false,
-    };
+    let config = EngineConfig::new(2, false);
     Engine::with_workspace_and_approval_decision(
         model,
         registry,
@@ -938,10 +929,7 @@ fn build_engine_with_counting_tool_and_hooks(
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(CountingTool { calls }));
     let context_manager = ContextManager::new("You are a test agent.".to_string());
-    let config = EngineConfig {
-        max_steps: 2,
-        plan_enabled: false,
-    };
+    let config = EngineConfig::new(2, false);
     Engine::with_workspace(
         model,
         registry,
@@ -972,6 +960,382 @@ async fn collect_events_with_request(engine: &Engine, req: RunRequest) -> Vec<St
         events.push(event);
     }
     events
+}
+
+fn write_agent_definition_fixture(root: &std::path::Path) {
+    std::fs::create_dir_all(root.join("agents/ops/procedures")).unwrap();
+    std::fs::create_dir_all(root.join("apps/web")).unwrap();
+    std::fs::write(root.join("AGENTS.md"), "ROOT_AGENT_RULE_V1").unwrap();
+    std::fs::write(root.join("apps/web/AGENTS.md"), "WEB_AGENT_RULE_V1").unwrap();
+    std::fs::write(
+        root.join("agents/ops/agent.toml"),
+        r#"
+schema_version = 1
+id = "ops"
+definition_version = "1.0.0"
+display_name = "Operations"
+default_instructions_path = "instructions.md"
+
+[capability_policy]
+allow = ["workspace.fs.read"]
+
+[procedure_policy]
+max_selected = 2
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("agents/ops/instructions.md"),
+        "PACKAGE_AGENT_RULE_V1",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("agents/ops/procedures/rollback.md"),
+        "---\nschema_version: 1\nid: ops.rollback\nversion: 1.0.0\nstatus: active\ntitle: Roll back\nmode: diagnose\nrisk_level: low\nintents: [rollback]\n---\n\nPROCEDURE_BODY_V1\n",
+    )
+    .unwrap();
+}
+
+fn engine_with_workspace_agent(workspace: Workspace, model: Box<dyn ModelClient>) -> Engine {
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(FsReadTool::new(workspace.root.clone())));
+    Engine::with_workspace(
+        model,
+        registry,
+        ContextManager::new("Test system prompt.".to_string()),
+        EngineConfig::new(4, false),
+        workspace,
+        ApprovalPolicy::Auto,
+    )
+    .with_agent_activation(AgentActivationConfig {
+        selector: AgentSelector::parse("workspace:ops").unwrap(),
+        workspace_source_authorized: true,
+        load_workspace_instructions: true,
+        allow_remediation_procedures: false,
+        constraints: OperatorConstraints::unconstrained(),
+        context_tokens: Some(32_000),
+    })
+    .unwrap()
+}
+
+#[tokio::test]
+async fn agent_profile_identity_is_consistent_across_trace_state_checkpoint_and_report() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    write_agent_definition_fixture(&workspace.root);
+    let state_store = StateStore::new(&workspace.state_dir);
+    let run_id = RunId::new();
+    let run = state_store
+        .start_run(SessionId::new(), JobId::new(), run_id)
+        .unwrap();
+    let engine = engine_with_workspace_agent(
+        workspace.clone(),
+        Box::new(FakeModelClient::new(vec!["done".to_string()])),
+    );
+
+    let reason = run_oneshot(
+        &engine,
+        "diagnose rollback in apps/web".to_string(),
+        run,
+        None,
+        &state_store,
+    )
+    .await;
+    assert_eq!(reason, TerminationReason::Final);
+
+    let state = state_store.load_task_state(run_id).await.unwrap();
+    let profile = state.agent_profile.as_ref().expect("top-level profile");
+    assert_eq!(profile.selector.to_string(), "workspace:ops");
+    assert_eq!(profile.hydrated_procedures.len(), 1);
+    assert!(
+        profile.hydrated_procedures[0]
+            .body
+            .contains("PROCEDURE_BODY_V1")
+    );
+    let checkpoint = state.checkpoint.as_ref().expect("prompt checkpoint");
+    assert_eq!(checkpoint.agent_profile.as_ref(), Some(profile));
+    let runtime_agent = state
+        .runtime_identity
+        .as_ref()
+        .and_then(|identity| identity.agent.as_ref())
+        .expect("runtime Agent identity");
+    assert_eq!(runtime_agent.profile_hash, profile.profile_hash);
+    assert_eq!(runtime_agent.package_hash, profile.package_hash);
+
+    let run_dir = state_store.run_store.run_dir(&run_id);
+    let report: RunReport =
+        serde_json::from_slice(&std::fs::read(run_dir.join("report.json")).unwrap()).unwrap();
+    let report_agent = report
+        .runtime_identity
+        .as_ref()
+        .and_then(|identity| identity.agent.as_ref())
+        .expect("report Agent identity");
+    assert_eq!(report_agent.profile_hash, profile.profile_hash);
+
+    let event_names = state_store
+        .index
+        .event_records(run_id)
+        .unwrap()
+        .into_iter()
+        .map(|record| record.event_name)
+        .collect::<Vec<_>>();
+    let event_position = |name: &str| {
+        event_names
+            .iter()
+            .position(|event| event == name)
+            .unwrap_or_else(|| panic!("missing {name} in {event_names:?}"))
+    };
+    assert!(event_position("run_started") < event_position("agent_profile_activated"));
+    assert!(
+        event_position("agent_profile_activated")
+            < event_position("workspace_instructions_resolved")
+    );
+    assert!(
+        event_position("workspace_instructions_resolved")
+            < event_position("execution_strategy_selected")
+    );
+    assert!(event_position("execution_strategy_selected") < event_position("procedures_selected"));
+    assert!(event_position("procedures_selected") < event_position("procedure_hydrated"));
+
+    let trace = std::fs::read_to_string(run_dir.join("trace.jsonl")).unwrap();
+    let report_json = std::fs::read_to_string(run_dir.join("report.json")).unwrap();
+    for private_text in [
+        "ROOT_AGENT_RULE_V1",
+        "WEB_AGENT_RULE_V1",
+        "PACKAGE_AGENT_RULE_V1",
+        "PROCEDURE_BODY_V1",
+    ] {
+        assert!(!trace.contains(private_text));
+        assert!(!report_json.contains(private_text));
+    }
+}
+
+#[tokio::test]
+async fn unfinished_run_resume_uses_the_exact_saved_agent_snapshot_after_sources_change() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    write_agent_definition_fixture(&workspace.root);
+    let state_store = StateStore::new(&workspace.state_dir);
+    let original_run = state_store
+        .start_run(SessionId::new(), JobId::new(), RunId::new())
+        .unwrap();
+    let captured_initial = Arc::new(Mutex::new(Vec::new()));
+    let original_engine = engine_with_workspace_agent(
+        workspace.clone(),
+        Box::new(CapturingFakeModelClient::new(
+            vec!["must not be called".to_string()],
+            captured_initial.clone(),
+        )),
+    );
+
+    {
+        let request = original_run.request("diagnose rollback".to_string(), None);
+        let stream = original_engine.run(request, Some(original_run.trace_writer.clone()));
+        let runtime_identity = stream.runtime_identity().clone();
+        let profile = stream.agent_profile().cloned().expect("resolved profile");
+        let mut recorder = RunArtifactRecorder::new(
+            original_run.session_id,
+            original_run.job_id,
+            original_run.run_id,
+            "diagnose rollback".to_string(),
+            None,
+            Some(runtime_identity),
+        );
+        recorder.set_agent_profile(Some(profile));
+        futures::pin_mut!(stream);
+        while let Some(event) = stream.next().await {
+            recorder.record_event(&event, &state_store).await;
+            if matches!(event, StreamEvent::ProcedureHydrated { .. }) {
+                break;
+            }
+        }
+    }
+    assert!(
+        captured_initial.lock().unwrap().is_empty(),
+        "startup snapshot must be recorded before any model call"
+    );
+
+    let saved = state_store
+        .load_task_state(original_run.run_id)
+        .await
+        .unwrap();
+    assert!(saved.execution_lifecycle.finalization.is_none());
+    let saved_profile = saved.agent_profile.clone().expect("saved Agent profile");
+    assert!(
+        saved_profile
+            .default_instructions
+            .as_deref()
+            .is_some_and(|text| text.contains("PACKAGE_AGENT_RULE_V1"))
+    );
+
+    std::fs::write(
+        workspace.root.join("agents/ops/instructions.md"),
+        "PACKAGE_AGENT_RULE_V2",
+    )
+    .unwrap();
+    std::fs::write(workspace.root.join("AGENTS.md"), "ROOT_AGENT_RULE_V2").unwrap();
+    std::fs::write(
+        workspace.root.join("agents/ops/procedures/rollback.md"),
+        "---\nschema_version: 1\nid: ops.rollback\nversion: 2.0.0\nstatus: active\ntitle: Roll back\nmode: diagnose\nrisk_level: low\nintents: [rollback]\n---\n\nPROCEDURE_BODY_V2\n",
+    )
+    .unwrap();
+
+    let captured_resume = Arc::new(Mutex::new(Vec::new()));
+    let resumed_engine = engine_with_workspace_agent(
+        workspace,
+        Box::new(CapturingFakeModelClient::new(
+            vec!["resumed".to_string()],
+            captured_resume.clone(),
+        )),
+    );
+    let successor_request = RunRequest {
+        session_id: saved.session_id,
+        job_id: saved.job_id,
+        run_id: RunId::new(),
+        user_message: "continue rollback".to_string(),
+        resume_state: Some(saved),
+    };
+    let successor_events = collect_events_with_request(&resumed_engine, successor_request).await;
+
+    assert!(successor_events.iter().any(|event| matches!(
+        event,
+        StreamEvent::AgentProfileActivated {
+            identity,
+            resumed_from_snapshot: true,
+            ..
+        } if identity.profile_hash == saved_profile.profile_hash
+    )));
+    let resumed_prompts = captured_resume.lock().unwrap();
+    let prompt = resumed_prompts
+        .first()
+        .expect("resumed run should reach the model");
+    let prompt_text = prompt
+        .iter()
+        .map(|message| message.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(prompt_text.contains("PACKAGE_AGENT_RULE_V1"));
+    assert!(prompt_text.contains("ROOT_AGENT_RULE_V1"));
+    assert!(prompt_text.contains("PROCEDURE_BODY_V1"));
+    assert!(!prompt_text.contains("PACKAGE_AGENT_RULE_V2"));
+    assert!(!prompt_text.contains("ROOT_AGENT_RULE_V2"));
+    assert!(!prompt_text.contains("PROCEDURE_BODY_V2"));
+}
+
+#[tokio::test]
+async fn nested_workspace_instructions_defer_path_dispatch_until_the_model_sees_them() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    std::fs::create_dir_all(workspace.root.join("apps/web")).unwrap();
+    std::fs::write(workspace.root.join("AGENTS.md"), "Root guidance.").unwrap();
+    std::fs::write(
+        workspace.root.join("apps/web/AGENTS.md"),
+        "WEB_SCOPED_RULE: inspect before editing.",
+    )
+    .unwrap();
+    std::fs::write(workspace.root.join("apps/web/page.txt"), "page").unwrap();
+
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let model = Box::new(CapturingFakeModelClient::new(
+        vec![
+            r#"{"tool":"read_file","args":{"path":"apps/web/page.txt"}}"#.to_string(),
+            r#"{"tool":"read_file","args":{"path":"apps/web/page.txt"}}"#.to_string(),
+            "done".to_string(),
+        ],
+        captured.clone(),
+    ));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(FsReadTool::new(workspace.root.clone())));
+    let engine = Engine::with_workspace(
+        model,
+        registry,
+        ContextManager::new("Test system prompt.".to_string()),
+        EngineConfig::new(4, false),
+        workspace,
+        ApprovalPolicy::Auto,
+    )
+    .with_agent_activation(AgentActivationConfig {
+        selector: AgentSelector::legacy(),
+        workspace_source_authorized: true,
+        load_workspace_instructions: true,
+        allow_remediation_procedures: false,
+        constraints: OperatorConstraints::unconstrained(),
+        context_tokens: Some(32_000),
+    })
+    .unwrap();
+
+    let events = collect_events(&engine, "inspect the requested file").await;
+    let prompts = captured.lock().unwrap();
+    assert!(
+        prompts[0]
+            .iter()
+            .all(|message| !message.content.contains("WEB_SCOPED_RULE"))
+    );
+    assert!(
+        prompts[1]
+            .iter()
+            .any(|message| message.content.contains("WEB_SCOPED_RULE"))
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, StreamEvent::InstructionOverlayApplied { .. }))
+            .count(),
+        1
+    );
+    assert!(events.iter().any(|event| matches!(
+        event,
+        StreamEvent::ToolCallFailed { error, .. }
+            if error.error_code() == "precondition_required"
+    )));
+    assert!(events.iter().any(|event| matches!(
+        event,
+        StreamEvent::ToolCallCompleted { result, .. } if result.output == "page"
+    )));
+}
+
+#[tokio::test]
+async fn nested_workspace_instructions_reject_invalid_shell_path_declarations() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    std::fs::create_dir_all(workspace.root.join("apps/web")).unwrap();
+    std::fs::write(workspace.root.join("apps/web/AGENTS.md"), "WEB_SCOPED_RULE").unwrap();
+    let model = Box::new(FakeModelClient::new(vec![
+        r#"{"tool":"run_shell","args":{"command":"echo bypass","paths":["../outside"]}}"#
+            .to_string(),
+        "stopped".to_string(),
+    ]));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(ShellTool::new(workspace.root.clone())));
+    let engine = Engine::with_workspace(
+        model,
+        registry,
+        ContextManager::new("Test system prompt.".to_string()),
+        EngineConfig::new(2, false),
+        workspace,
+        ApprovalPolicy::Auto,
+    )
+    .with_agent_activation(AgentActivationConfig {
+        selector: AgentSelector::legacy(),
+        workspace_source_authorized: true,
+        load_workspace_instructions: true,
+        allow_remediation_procedures: false,
+        constraints: OperatorConstraints::unconstrained(),
+        context_tokens: Some(32_000),
+    })
+    .unwrap();
+
+    let events = collect_events(&engine, "run the requested check").await;
+    assert!(events.iter().any(|event| matches!(
+        event,
+        StreamEvent::ToolCallFailed { error, .. }
+            if error.error_code() == "precondition_required"
+    )));
+    assert!(
+        events
+            .iter()
+            .all(|event| !matches!(event, StreamEvent::ToolCallCompleted { .. }))
+    );
 }
 
 fn tool_lifecycle(events: &[StreamEvent]) -> Vec<String> {
@@ -1094,10 +1458,7 @@ async fn failed_approval_registration_emits_no_actionable_event_and_runs_no_tool
         model,
         registry,
         ContextManager::new("You are a test agent.".to_string()),
-        EngineConfig {
-            max_steps: 2,
-            plan_enabled: false,
-        },
+        EngineConfig::new(2, false),
         workspace,
         ApprovalPolicy::Ask,
     )
@@ -1563,7 +1924,9 @@ async fn latest_task_state_is_loaded_for_resume() {
         checkpoint: None,
         plan: None,
         runtime_identity: None,
+        agent_profile: None,
         step_ledger: Default::default(),
+        execution_lifecycle: Default::default(),
     };
 
     store.write_task_state(&state).await.unwrap();
@@ -1589,7 +1952,9 @@ async fn latest_task_state_rejects_unsupported_schema_version() {
         checkpoint: None,
         plan: None,
         runtime_identity: None,
+        agent_profile: None,
         step_ledger: Default::default(),
+        execution_lifecycle: Default::default(),
     };
 
     store.write_task_state(&state).await.unwrap();
@@ -1621,7 +1986,9 @@ async fn list_resumable_task_states_filters_by_session_and_newest_first() {
         checkpoint: None,
         plan: None,
         runtime_identity: None,
+        agent_profile: None,
         step_ledger: Default::default(),
+        execution_lifecycle: Default::default(),
     };
     let unrelated = TaskState {
         schema_version: 1,
@@ -1635,7 +2002,9 @@ async fn list_resumable_task_states_filters_by_session_and_newest_first() {
         checkpoint: None,
         plan: None,
         runtime_identity: None,
+        agent_profile: None,
         step_ledger: Default::default(),
+        execution_lifecycle: Default::default(),
     };
     let newer = TaskState {
         schema_version: 1,
@@ -1649,7 +2018,9 @@ async fn list_resumable_task_states_filters_by_session_and_newest_first() {
         checkpoint: None,
         plan: None,
         runtime_identity: None,
+        agent_profile: None,
         step_ledger: Default::default(),
+        execution_lifecycle: Default::default(),
     };
 
     store.write_task_state(&older).await.unwrap();
@@ -1690,7 +2061,9 @@ async fn list_task_states_returns_all_snapshots_newest_first() {
         checkpoint: None,
         plan: None,
         runtime_identity: None,
+        agent_profile: None,
         step_ledger: Default::default(),
+        execution_lifecycle: Default::default(),
     };
     let newer = TaskState {
         schema_version: 1,
@@ -1704,7 +2077,9 @@ async fn list_task_states_returns_all_snapshots_newest_first() {
         checkpoint: None,
         plan: None,
         runtime_identity: None,
+        agent_profile: None,
         step_ledger: Default::default(),
+        execution_lifecycle: Default::default(),
     };
 
     store.write_task_state(&older).await.unwrap();
@@ -1738,7 +2113,9 @@ async fn load_task_state_reads_exact_run_id() {
         checkpoint: None,
         plan: None,
         runtime_identity: None,
+        agent_profile: None,
         step_ledger: Default::default(),
+        execution_lifecycle: Default::default(),
     };
     let other = TaskState {
         schema_version: 1,
@@ -1752,7 +2129,9 @@ async fn load_task_state_reads_exact_run_id() {
         checkpoint: None,
         plan: None,
         runtime_identity: None,
+        agent_profile: None,
         step_ledger: Default::default(),
+        execution_lifecycle: Default::default(),
     };
 
     store.write_task_state(&target).await.unwrap();
@@ -1834,7 +2213,9 @@ async fn lazy_import_indexes_existing_task_state_artifacts() {
         checkpoint: None,
         plan: None,
         runtime_identity: None,
+        agent_profile: None,
         step_ledger: Default::default(),
+        execution_lifecycle: Default::default(),
     };
     let run_dir = tmp.path().join("runs").join(state.run_id.to_string());
     std::fs::create_dir_all(&run_dir).unwrap();
@@ -1878,7 +2259,9 @@ async fn repair_index_explicitly_imports_legacy_task_state_artifacts() {
         checkpoint: None,
         plan: None,
         runtime_identity: None,
+        agent_profile: None,
         step_ledger: Default::default(),
+        execution_lifecycle: Default::default(),
     };
     let run_dir = tmp.path().join("runs").join(state.run_id.to_string());
     std::fs::create_dir_all(&run_dir).unwrap();
@@ -1945,7 +2328,9 @@ async fn repair_index_rebuilds_events_and_report_from_artifacts() {
         checkpoint: None,
         plan: None,
         runtime_identity: None,
+        agent_profile: None,
         step_ledger,
+        execution_lifecycle: Default::default(),
     };
     store.write_task_state(&state).await.unwrap();
     let mut report = RunReport::new(
@@ -2000,7 +2385,9 @@ async fn repair_index_reports_corrupted_trace_lines_without_aborting() {
         checkpoint: None,
         plan: None,
         runtime_identity: None,
+        agent_profile: None,
         step_ledger: Default::default(),
+        execution_lifecycle: Default::default(),
     };
     std::fs::write(
         run_dir.join("task_state.json"),
@@ -2083,7 +2470,9 @@ async fn cleanup_expired_state_rows_removes_only_expired_entries() {
         checkpoint: None,
         plan: None,
         runtime_identity: None,
+        agent_profile: None,
         step_ledger: Default::default(),
+        execution_lifecycle: Default::default(),
     };
     store.write_task_state(&expired_state).await.unwrap();
     let run_dir = tmp.path().join("runs").join(active_run.to_string());
@@ -2227,10 +2616,7 @@ async fn oneshot_persists_native_tool_use_structured_history() {
         Box::new(NativeToolUseModelClient::new()),
         registry,
         ContextManager::new("You are a test agent.".to_string()),
-        EngineConfig {
-            max_steps: 5,
-            plan_enabled: false,
-        },
+        EngineConfig::new(5, false),
         workspace.clone(),
         ApprovalPolicy::Auto,
     );
@@ -2275,10 +2661,7 @@ async fn resumed_run_includes_session_summary_in_prompt() {
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(EchoTool));
     let context_manager = ContextManager::with_max_history("system".to_string(), 2);
-    let config = EngineConfig {
-        max_steps: 1,
-        plan_enabled: false,
-    };
+    let config = EngineConfig::new(1, false);
     let engine = Engine::with_workspace(
         model,
         registry,
@@ -2305,7 +2688,9 @@ async fn resumed_run_includes_session_summary_in_prompt() {
             checkpoint: None,
             plan: None,
             runtime_identity: None,
+            agent_profile: None,
             step_ledger: Default::default(),
+            execution_lifecycle: Default::default(),
         }),
     };
 
@@ -2345,10 +2730,7 @@ async fn engine_includes_session_memory_file_in_prompt() {
         model,
         registry,
         ContextManager::with_max_history("system".to_string(), 2),
-        EngineConfig {
-            max_steps: 1,
-            plan_enabled: false,
-        },
+        EngineConfig::new(1, false),
         workspace,
         ApprovalPolicy::Auto,
     );
@@ -2396,10 +2778,7 @@ async fn engine_honors_configured_session_memory_dir_for_read_and_write() {
         model,
         registry,
         ContextManager::with_max_history("system".to_string(), 2),
-        EngineConfig {
-            max_steps: 1,
-            plan_enabled: false,
-        },
+        EngineConfig::new(1, false),
         workspace.clone(),
         ApprovalPolicy::Auto,
     )
@@ -2495,10 +2874,7 @@ async fn engine_writes_deterministic_session_summary_with_tool_activity() {
         ])),
         registry,
         ContextManager::new("system".to_string()),
-        EngineConfig {
-            max_steps: 3,
-            plan_enabled: false,
-        },
+        EngineConfig::new(3, false),
         workspace.clone(),
         ApprovalPolicy::Auto,
     );
@@ -2534,10 +2910,7 @@ async fn engine_writes_deterministic_session_summary_with_tool_activity() {
         Box::new(RecordingModelClient::new(captured_messages.clone())),
         ToolRegistry::new(),
         ContextManager::with_max_history("system".to_string(), 2),
-        EngineConfig {
-            max_steps: 1,
-            plan_enabled: false,
-        },
+        EngineConfig::new(1, false),
         workspace,
         ApprovalPolicy::Auto,
     );
@@ -2589,10 +2962,7 @@ async fn engine_includes_relevant_durable_memory_in_prompt() {
         model,
         registry,
         ContextManager::with_max_history("system".to_string(), 2),
-        EngineConfig {
-            max_steps: 1,
-            plan_enabled: false,
-        },
+        EngineConfig::new(1, false),
         workspace,
         ApprovalPolicy::Auto,
     );
@@ -2643,10 +3013,7 @@ async fn engine_honors_configured_durable_memory_dir_for_prompt_recall() {
         model,
         registry,
         ContextManager::with_max_history("system".to_string(), 2),
-        EngineConfig {
-            max_steps: 1,
-            plan_enabled: false,
-        },
+        EngineConfig::new(1, false),
         workspace.clone(),
         ApprovalPolicy::Auto,
     )
@@ -2752,10 +3119,7 @@ async fn engine_writes_completed_plan_steps_to_session_summary() {
         ])),
         ToolRegistry::new(),
         ContextManager::new("system".to_string()),
-        EngineConfig {
-            max_steps: 5,
-            plan_enabled: true,
-        },
+        EngineConfig::new(5, true),
         workspace.clone(),
         ApprovalPolicy::Auto,
     );
@@ -2849,10 +3213,7 @@ async fn planner_uses_engine_configured_prompt() {
         model,
         registry,
         ContextManager::new("You are a test agent.".to_string()),
-        EngineConfig {
-            max_steps: 3,
-            plan_enabled: true,
-        },
+        EngineConfig::new(3, true),
         workspace,
         ApprovalPolicy::Auto,
     )
@@ -2907,7 +3268,9 @@ async fn planner_resumes_at_current_step() {
             checkpoint: None,
             plan: Some(plan),
             runtime_identity: None,
+            agent_profile: None,
             step_ledger: Default::default(),
+            execution_lifecycle: Default::default(),
         }),
     };
     let engine = build_planner_test_engine(vec!["step 2 done".to_string()]);
@@ -2976,11 +3339,15 @@ async fn planner_resume_checkpoint_does_not_repeat_completed_steps() {
                 compacted_history_messages: 0,
                 compaction: Default::default(),
                 runtime_identity: None,
+                agent_profile: None,
                 step_ledger: Default::default(),
+                execution_lifecycle: Default::default(),
             }),
             plan: None,
             runtime_identity: None,
+            agent_profile: None,
             step_ledger: Default::default(),
+            execution_lifecycle: Default::default(),
         }),
     };
     let engine = build_planner_test_engine(vec!["step 2 done".to_string()]);
@@ -3052,7 +3419,9 @@ async fn planner_resume_closes_unknown_in_flight_attempt_without_replay() {
             checkpoint: None,
             plan: Some(plan),
             runtime_identity: None,
+            agent_profile: None,
             step_ledger,
+            execution_lifecycle: Default::default(),
         }),
     };
     let engine = build_planner_test_engine(vec!["must not be called".to_string()]);
@@ -3127,7 +3496,9 @@ async fn planner_resume_applies_terminal_success_without_replaying_the_step() {
             checkpoint: None,
             plan: Some(plan),
             runtime_identity: None,
+            agent_profile: None,
             step_ledger,
+            execution_lifecycle: Default::default(),
         }),
     };
     let engine = build_planner_test_engine(vec!["must not be called".to_string()]);
@@ -3163,6 +3534,173 @@ async fn planner_resume_applies_terminal_success_without_replaying_the_step() {
     ));
 }
 
+/// A new turn that continues a session must start with a fresh execution
+/// budget. Budgets are per-run accounting, so inheriting a previous run's
+/// consumed usage would progressively starve a long session until no further
+/// work could run.
+#[tokio::test]
+async fn a_new_turn_continuing_a_session_starts_with_a_fresh_execution_budget() {
+    let exhausted_usage = rove_runtime::execution::ExecutionBudgetUsage {
+        step_attempts: 5,
+        model_turns: 40,
+        tool_calls: 100,
+        ..Default::default()
+    };
+    let req = RunRequest {
+        session_id: SessionId::new(),
+        job_id: JobId::new(),
+        // A distinct run id marks this as a new turn rather than a resume of
+        // the run that consumed the budget above.
+        run_id: RunId::new(),
+        user_message: "start a follow-up turn".to_string(),
+        resume_state: Some(TaskState {
+            schema_version: 1,
+            session_id: SessionId::new(),
+            job_id: JobId::new(),
+            run_id: RunId::new(),
+            goal: "earlier turn".to_string(),
+            step: 40,
+            history: vec![],
+            summary: None,
+            checkpoint: None,
+            plan: None,
+            runtime_identity: None,
+            agent_profile: None,
+            step_ledger: Default::default(),
+            execution_lifecycle: rove_runtime::execution::ExecutionLifecycleState {
+                budget_usage: exhausted_usage.clone(),
+                ..Default::default()
+            },
+        }),
+    };
+    let engine = build_planner_test_engine(vec![
+        r#"{"goal":"follow up","steps":[{"id":"1","title":"answer"}]}"#.to_string(),
+        "follow-up answer".to_string(),
+    ]);
+
+    let events = collect_events_with_request(&engine, req).await;
+
+    let first = events
+        .iter()
+        .find_map(|event| match event {
+            StreamEvent::ExecutionBudgetUpdated { snapshot, .. } => Some(snapshot.clone()),
+            _ => None,
+        })
+        .expect("a budget projection should be emitted");
+    assert_eq!(
+        first.consumed.step_attempts, 0,
+        "the first projection precedes any step attempt in this turn"
+    );
+    assert!(
+        first.consumed.model_turns < exhausted_usage.model_turns,
+        "a new turn must not inherit prior model turns: {:?}",
+        first.consumed
+    );
+    assert_eq!(
+        first.consumed.tool_calls, 0,
+        "a new turn must not inherit prior tool calls"
+    );
+
+    // Once this turn does reserve a step attempt, it must be its own first.
+    let step_phase = events
+        .iter()
+        .find_map(|event| match event {
+            StreamEvent::ExecutionBudgetUpdated { phase, snapshot }
+                if *phase == rove_runtime::execution::ExecutionPhase::Step =>
+            {
+                Some(snapshot.clone())
+            }
+            _ => None,
+        })
+        .expect("a step-phase budget projection should be emitted");
+    assert_eq!(
+        step_phase.consumed.step_attempts, 1,
+        "the follow-up turn's first step attempt must be counted from zero"
+    );
+    assert!(
+        step_phase.consumed.step_attempts < exhausted_usage.step_attempts,
+        "a new turn must not inherit prior step attempts: {:?}",
+        step_phase.consumed
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, StreamEvent::PlanStepStarted { .. })),
+        "the follow-up turn must be able to run real work"
+    );
+    assert!(
+        !events.iter().any(|event| matches!(
+            event,
+            StreamEvent::FinalizationCompleted { record }
+                if record.finish_reason == rove_runtime::execution::PlanFinishReason::BudgetExhausted
+        )),
+        "a fresh turn must not finish as budget exhausted"
+    );
+}
+
+/// The complement of the rule above: restarting the *same* run must restore
+/// consumed usage so a crash-restart loop cannot hand out a new allowance on
+/// every attempt.
+#[tokio::test]
+async fn resuming_the_same_run_restores_its_consumed_execution_budget() {
+    let run_id = RunId::new();
+    let consumed = rove_runtime::execution::ExecutionBudgetUsage {
+        step_attempts: 3,
+        model_turns: 7,
+        tool_calls: 11,
+        ..Default::default()
+    };
+    let req = RunRequest {
+        session_id: SessionId::new(),
+        job_id: JobId::new(),
+        run_id,
+        user_message: "resume the same run".to_string(),
+        resume_state: Some(TaskState {
+            schema_version: 1,
+            session_id: SessionId::new(),
+            job_id: JobId::new(),
+            // Same run id: this is an explicit resume of interrupted work.
+            run_id,
+            goal: "resume the same run".to_string(),
+            step: 7,
+            history: vec![],
+            summary: None,
+            checkpoint: None,
+            plan: None,
+            runtime_identity: None,
+            agent_profile: None,
+            step_ledger: Default::default(),
+            execution_lifecycle: rove_runtime::execution::ExecutionLifecycleState {
+                budget_usage: consumed.clone(),
+                ..Default::default()
+            },
+        }),
+    };
+    let engine = build_planner_test_engine(vec![
+        r#"{"goal":"resume","steps":[{"id":"1","title":"answer"}]}"#.to_string(),
+        "resumed answer".to_string(),
+    ]);
+
+    let events = collect_events_with_request(&engine, req).await;
+
+    let first = events
+        .iter()
+        .find_map(|event| match event {
+            StreamEvent::ExecutionBudgetUpdated { snapshot, .. } => Some(snapshot.clone()),
+            _ => None,
+        })
+        .expect("a budget projection should be emitted");
+    assert!(
+        first.consumed.model_turns > consumed.model_turns,
+        "a same-run resume keeps prior model turns and adds its own: {:?}",
+        first.consumed
+    );
+    assert_eq!(
+        first.consumed.tool_calls, consumed.tool_calls,
+        "a same-run resume keeps prior tool-call accounting"
+    );
+}
+
 #[tokio::test]
 async fn planned_step_returns_tool_result_to_model_before_completion() {
     let captured = Arc::new(Mutex::new(Vec::new()));
@@ -3180,10 +3718,7 @@ async fn planned_step_returns_tool_result_to_model_before_completion() {
         model,
         registry,
         ContextManager::with_max_history("You are a test agent.".to_string(), 0),
-        EngineConfig {
-            max_steps: 5,
-            plan_enabled: true,
-        },
+        EngineConfig::new(5, true),
     );
 
     let events = collect_events(&engine, "echo ping").await;
@@ -3397,6 +3932,14 @@ async fn planned_step_model_turn_budget_exhaustion_is_explicit() {
     ]);
 
     let events = collect_events(&engine, "run a bounded step").await;
+    for e in &events {
+        if let StreamEvent::StepResult { record } = e {
+            eprintln!(
+                "DBGSR status={:?} code={:?} summary={}",
+                record.status, record.error_code, record.summary
+            );
+        }
+    }
 
     assert_eq!(
         events
@@ -3410,31 +3953,33 @@ async fn planned_step_model_turn_budget_exhaustion_is_explicit() {
             .iter()
             .any(|event| matches!(event, StreamEvent::StepResult { record } if matches!(record.status, rove_runtime::execution::StepRecordStatus::Succeeded | rove_runtime::execution::StepRecordStatus::Skipped)))
     );
-    assert!(events.iter().any(|event| {
-        matches!(
-            event,
-            StreamEvent::StepResult { record }
-                if record.summary.contains(
-                    "step model-turn budget exhausted (max_model_turns_per_step=4)"
-                ) || record
-                    .safe_error_summary
-                    .as_deref()
-                    .is_some_and(|summary| {
-                        summary.contains(
-                            "step model-turn budget exhausted (max_model_turns_per_step=4)",
-                        )
-                    })
-        )
-    }));
-    assert!(events.iter().any(|event| {
-        matches!(
-            event,
-            StreamEvent::StepResult { record }
-                if record.status == StepRecordStatus::BudgetExhausted
-                    && record.error_code.as_deref()
-                        == Some("step_model_turn_budget_exhausted")
-        )
-    }));
+    // The exhausted dimension is now named explicitly by the typed budget,
+    // so the record identifies which per-step ceiling stopped the work.
+    assert!(
+        events.iter().any(|event| {
+            matches!(
+                event,
+                StreamEvent::StepResult { record }
+                    if record.status == StepRecordStatus::BudgetExhausted
+                        && record.error_code.as_deref()
+                            == Some("model_turns_per_step_budget_exhausted")
+            )
+        }),
+        "the step record must name the exhausted per-step model-turn dimension"
+    );
+    assert!(
+        events.iter().any(|event| {
+            matches!(
+                event,
+                StreamEvent::StepResult { record }
+                    if record.summary.contains("ModelTurnsPerStep")
+                        || record.safe_error_summary.as_deref().is_some_and(|summary| {
+                            summary.contains("per-step execution budget")
+                        })
+            )
+        }),
+        "the safe summary must explain the per-step budget boundary"
+    );
     assert!(matches!(
         events.last(),
         Some(StreamEvent::RunCompleted {
@@ -3458,10 +4003,7 @@ async fn planned_permission_denial_emits_blocked_step_record() {
         model,
         registry,
         ContextManager::new("You are a test agent.".to_string()),
-        EngineConfig {
-            max_steps: 3,
-            plan_enabled: true,
-        },
+        EngineConfig::new(3, true),
         workspace,
         ApprovalPolicy::Ask,
         ApprovalDecision::Reject,
@@ -3505,10 +4047,7 @@ async fn planned_context_limit_emits_budget_exhausted_step_record() {
                 reserved_tokens: 0,
             },
         ),
-        EngineConfig {
-            max_steps: 3,
-            plan_enabled: true,
-        },
+        EngineConfig::new(3, true),
     );
 
     let events = collect_events(&engine, "bounded context").await;
@@ -3743,7 +4282,9 @@ async fn resumed_run_uses_persisted_replanned_task_state() {
             checkpoint: None,
             plan: Some(plan),
             runtime_identity: None,
+            agent_profile: None,
             step_ledger: Default::default(),
+            execution_lifecycle: Default::default(),
         }),
     };
     let engine = build_planner_test_engine(vec!["resumed replanned step done".to_string()]);
@@ -3930,10 +4471,7 @@ async fn run_with_cancel_completes_cancelled_while_tool_is_waiting() {
         model,
         registry,
         ContextManager::new("You are a test agent.".to_string()),
-        EngineConfig {
-            max_steps: 2,
-            plan_enabled: false,
-        },
+        EngineConfig::new(2, false),
         workspace,
         ApprovalPolicy::Auto,
     );
@@ -3961,17 +4499,35 @@ async fn run_with_cancel_completes_cancelled_while_tool_is_waiting() {
     }
 
     assert!(saw_tool_start, "tool call should start before cancellation");
-    let event = tokio::time::timeout(Duration::from_secs(2), stream.next())
-        .await
-        .expect("cancelled run should finish promptly")
-        .expect("cancelled run should emit a terminal event");
-    assert!(matches!(
-        event,
-        StreamEvent::RunCompleted {
-            reason: rove_runtime::types::TerminationReason::Cancelled,
-            output: None,
+    // Cancellation still emits its canonical lifecycle facts (such as a final
+    // budget projection) before the terminal event, so drain to the terminal
+    // fact instead of assuming it is the very next event.
+    let mut terminal = None;
+    while let Ok(Some(event)) = tokio::time::timeout(Duration::from_secs(2), stream.next()).await {
+        if matches!(event, StreamEvent::RunCompleted { .. }) {
+            terminal = Some(event);
+            break;
         }
-    ));
+    }
+    let terminal = terminal.expect("cancelled run should emit a terminal event promptly");
+    let StreamEvent::RunCompleted { reason, output } = &terminal else {
+        panic!("expected a terminal run event, got {terminal:?}");
+    };
+    assert!(
+        matches!(reason, rove_runtime::types::TerminationReason::Cancelled),
+        "a cancelled run must report cancellation: {reason:?}"
+    );
+    // The independent finalizer explains every non-success outcome rather than
+    // leaving the user with no answer, and must never imply the work succeeded.
+    let output = output.as_deref().expect("cancellation should be explained");
+    assert!(
+        output.contains("outcome: cancelled"),
+        "the finalized answer must name the cancelled outcome: {output}"
+    );
+    assert!(
+        !output.contains("outcome: success"),
+        "a cancelled run must never be labelled successful: {output}"
+    );
 }
 
 #[tokio::test]
@@ -3988,10 +4544,7 @@ async fn planned_cancellation_closes_the_in_flight_step_record() {
         model,
         registry,
         ContextManager::new("You are a test agent.".to_string()),
-        EngineConfig {
-            max_steps: 3,
-            plan_enabled: true,
-        },
+        EngineConfig::new(3, true),
         workspace,
         ApprovalPolicy::Auto,
     );
@@ -4115,10 +4668,7 @@ async fn run_stream_cancel_completes_cancelled_while_tool_is_waiting() {
         model,
         registry,
         ContextManager::new("You are a test agent.".to_string()),
-        EngineConfig {
-            max_steps: 2,
-            plan_enabled: false,
-        },
+        EngineConfig::new(2, false),
         workspace,
         ApprovalPolicy::Auto,
     );
@@ -4144,17 +4694,35 @@ async fn run_stream_cancel_completes_cancelled_while_tool_is_waiting() {
     }
 
     assert!(saw_tool_start, "tool call should start before cancellation");
-    let event = tokio::time::timeout(Duration::from_secs(2), stream.next())
-        .await
-        .expect("cancelled run should finish promptly")
-        .expect("cancelled run should emit a terminal event");
-    assert!(matches!(
-        event,
-        StreamEvent::RunCompleted {
-            reason: rove_runtime::types::TerminationReason::Cancelled,
-            output: None,
+    // Cancellation still emits its canonical lifecycle facts (such as a final
+    // budget projection) before the terminal event, so drain to the terminal
+    // fact instead of assuming it is the very next event.
+    let mut terminal = None;
+    while let Ok(Some(event)) = tokio::time::timeout(Duration::from_secs(2), stream.next()).await {
+        if matches!(event, StreamEvent::RunCompleted { .. }) {
+            terminal = Some(event);
+            break;
         }
-    ));
+    }
+    let terminal = terminal.expect("cancelled run should emit a terminal event promptly");
+    let StreamEvent::RunCompleted { reason, output } = &terminal else {
+        panic!("expected a terminal run event, got {terminal:?}");
+    };
+    assert!(
+        matches!(reason, rove_runtime::types::TerminationReason::Cancelled),
+        "a cancelled run must report cancellation: {reason:?}"
+    );
+    // The independent finalizer explains every non-success outcome rather than
+    // leaving the user with no answer, and must never imply the work succeeded.
+    let output = output.as_deref().expect("cancellation should be explained");
+    assert!(
+        output.contains("outcome: cancelled"),
+        "the finalized answer must name the cancelled outcome: {output}"
+    );
+    assert!(
+        !output.contains("outcome: success"),
+        "a cancelled run must never be labelled successful: {output}"
+    );
 }
 
 #[test]
@@ -4275,10 +4843,7 @@ async fn oneshot_persists_prompt_checkpoint() {
         model,
         registry,
         ContextManager::new("You are a test agent.".to_string()),
-        EngineConfig {
-            max_steps: 8,
-            plan_enabled: false,
-        },
+        EngineConfig::new(8, false),
         workspace.clone(),
         ApprovalPolicy::Auto,
     );
@@ -4342,10 +4907,7 @@ async fn model_compaction_stores_generated_summary_in_checkpoint() {
         model,
         registry,
         ContextManager::with_max_history("You are a test agent.".to_string(), 2),
-        EngineConfig {
-            max_steps: 4,
-            plan_enabled: false,
-        },
+        EngineConfig::new(4, false),
         workspace.clone(),
         ApprovalPolicy::Auto,
     )
@@ -4405,10 +4967,7 @@ async fn compaction_flushes_tool_notes_to_session_memory_before_summarizing() {
         model,
         registry,
         ContextManager::with_max_history("You are a test agent.".to_string(), 0),
-        EngineConfig {
-            max_steps: 3,
-            plan_enabled: false,
-        },
+        EngineConfig::new(3, false),
         workspace.clone(),
         ApprovalPolicy::Auto,
     )
@@ -4457,10 +5016,7 @@ async fn planned_compaction_flushes_tool_notes_to_session_memory_before_summariz
         model,
         registry,
         ContextManager::with_max_history("You are a test agent.".to_string(), 0),
-        EngineConfig {
-            max_steps: 4,
-            plan_enabled: true,
-        },
+        EngineConfig::new(4, true),
         workspace.clone(),
         ApprovalPolicy::Auto,
     )
@@ -4519,10 +5075,7 @@ async fn failing_model_compaction_falls_back_to_deterministic_summary_with_circu
         model,
         registry,
         ContextManager::with_max_history("You are a test agent.".to_string(), 1),
-        EngineConfig {
-            max_steps: 2,
-            plan_enabled: false,
-        },
+        EngineConfig::new(2, false),
         workspace.clone(),
         ApprovalPolicy::Auto,
     )
@@ -4588,10 +5141,7 @@ async fn resumed_run_prefers_prompt_checkpoint_tail_and_summary() {
         model,
         registry,
         ContextManager::with_max_history("system".to_string(), 20),
-        EngineConfig {
-            max_steps: 1,
-            plan_enabled: false,
-        },
+        EngineConfig::new(1, false),
         workspace,
         ApprovalPolicy::Auto,
     );
@@ -4626,11 +5176,15 @@ async fn resumed_run_prefers_prompt_checkpoint_tail_and_summary() {
             compacted_history_messages: 1,
             compaction: Default::default(),
             runtime_identity: None,
+            agent_profile: None,
             step_ledger: Default::default(),
+            execution_lifecycle: Default::default(),
         }),
         plan: None,
         runtime_identity: None,
+        agent_profile: None,
         step_ledger: Default::default(),
+        execution_lifecycle: Default::default(),
     };
     let req = RunRequest {
         session_id: SessionId::new(),
@@ -4908,10 +5462,7 @@ async fn engine_runs_parallel_safe_tool_batch_concurrently_with_ordered_writebac
         ])),
         registry,
         ContextManager::new("You are a test agent.".to_string()),
-        EngineConfig {
-            max_steps: 3,
-            plan_enabled: false,
-        },
+        EngineConfig::new(3, false),
         workspace,
         ApprovalPolicy::Auto,
     );
@@ -4958,10 +5509,7 @@ async fn engine_runs_non_parallel_safe_tool_batch_serially() {
         ])),
         registry,
         ContextManager::new("You are a test agent.".to_string()),
-        EngineConfig {
-            max_steps: 3,
-            plan_enabled: false,
-        },
+        EngineConfig::new(3, false),
         workspace,
         ApprovalPolicy::Auto,
     );
@@ -4997,10 +5545,7 @@ async fn engine_executes_native_model_tool_use() {
         Box::new(NativeToolUseModelClient::new()),
         registry,
         ContextManager::new("You are a test agent.".to_string()),
-        EngineConfig {
-            max_steps: 3,
-            plan_enabled: false,
-        },
+        EngineConfig::new(3, false),
         workspace,
         ApprovalPolicy::Auto,
     );
@@ -5040,10 +5585,7 @@ async fn engine_routes_request_input_tool_to_input_provider() {
         model,
         registry,
         ContextManager::new("You are a test agent.".to_string()),
-        EngineConfig {
-            max_steps: 5,
-            plan_enabled: false,
-        },
+        EngineConfig::new(5, false),
         workspace,
         ApprovalPolicy::Auto,
     )
@@ -5127,10 +5669,7 @@ async fn custom_tool_public_input_provider_call_uses_canonical_lifecycle() {
         model,
         registry,
         ContextManager::new("You are a test agent.".to_string()),
-        EngineConfig {
-            max_steps: 5,
-            plan_enabled: false,
-        },
+        EngineConfig::new(5, false),
         workspace,
         ApprovalPolicy::Auto,
     )
@@ -5173,10 +5712,7 @@ async fn cancelling_after_input_needed_drops_the_pending_responder() {
         model,
         registry,
         ContextManager::new("You are a test agent.".to_string()),
-        EngineConfig {
-            max_steps: 2,
-            plan_enabled: false,
-        },
+        EngineConfig::new(2, false),
         workspace,
         ApprovalPolicy::Auto,
     )
@@ -5356,10 +5892,7 @@ async fn native_tool_use_populates_structured_history_fields() {
         model,
         registry,
         ContextManager::new("test".to_string()),
-        EngineConfig {
-            max_steps: 5,
-            plan_enabled: false,
-        },
+        EngineConfig::new(5, false),
         workspace,
         ApprovalPolicy::Auto,
     );
@@ -5496,10 +6029,7 @@ async fn native_multi_tool_call_executes_concurrently_and_round_trips() {
         Box::new(NativeBatchModel::new(captured.clone())),
         registry,
         ContextManager::new("test".to_string()),
-        EngineConfig {
-            max_steps: 5,
-            plan_enabled: false,
-        },
+        EngineConfig::new(5, false),
         workspace,
         ApprovalPolicy::Auto,
     );
@@ -5607,7 +6137,9 @@ async fn engine_resume_reprojects_canonical_openai_history_for_anthropic() {
         compacted_history_messages: 0,
         compaction: Default::default(),
         runtime_identity: None,
+        agent_profile: None,
         step_ledger: Default::default(),
+        execution_lifecycle: Default::default(),
     };
     let resume_state = TaskState {
         schema_version: 1,
@@ -5621,7 +6153,9 @@ async fn engine_resume_reprojects_canonical_openai_history_for_anthropic() {
         checkpoint: Some(checkpoint),
         plan: None,
         runtime_identity: None,
+        agent_profile: None,
         step_ledger: Default::default(),
+        execution_lifecycle: Default::default(),
     };
     let captured = Arc::new(Mutex::new(None));
     let tmp = tempfile::TempDir::new().unwrap();
@@ -5632,10 +6166,7 @@ async fn engine_resume_reprojects_canonical_openai_history_for_anthropic() {
         }),
         ToolRegistry::new(),
         ContextManager::new("system".to_string()),
-        EngineConfig {
-            max_steps: 3,
-            plan_enabled: false,
-        },
+        EngineConfig::new(3, false),
         Workspace::detect(tmp.path()).unwrap(),
         ApprovalPolicy::Auto,
     );
@@ -5739,7 +6270,9 @@ async fn engine_resume_projects_only_the_bounded_canonical_suffix_after_compacti
         compacted_history_messages: 6,
         compaction,
         runtime_identity: None,
+        agent_profile: None,
         step_ledger: Default::default(),
+        execution_lifecycle: Default::default(),
     };
     let resume_state = TaskState {
         schema_version: 1,
@@ -5753,7 +6286,9 @@ async fn engine_resume_projects_only_the_bounded_canonical_suffix_after_compacti
         checkpoint: Some(checkpoint),
         plan: None,
         runtime_identity: None,
+        agent_profile: None,
         step_ledger: Default::default(),
+        execution_lifecycle: Default::default(),
     };
     let captured = Arc::new(Mutex::new(None));
     let tmp = tempfile::TempDir::new().unwrap();
@@ -5764,10 +6299,7 @@ async fn engine_resume_projects_only_the_bounded_canonical_suffix_after_compacti
         }),
         ToolRegistry::new(),
         ContextManager::new("system".to_string()),
-        EngineConfig {
-            max_steps: 3,
-            plan_enabled: false,
-        },
+        EngineConfig::new(3, false),
         Workspace::detect(tmp.path()).unwrap(),
         ApprovalPolicy::Auto,
     );
@@ -5944,10 +6476,7 @@ async fn malformed_truncated_oversized_and_unsupported_parallel_turns_execute_ze
             }),
             registry,
             ContextManager::new("system".to_string()),
-            EngineConfig {
-                max_steps: 2,
-                plan_enabled: false,
-            },
+            EngineConfig::new(2, false),
             Workspace::detect(tmp.path()).unwrap(),
             ApprovalPolicy::Auto,
         );

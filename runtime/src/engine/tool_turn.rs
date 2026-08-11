@@ -6,13 +6,16 @@ use futures::stream::{BoxStream, StreamExt};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+use crate::agents::AgentRuntimeProfile;
+use crate::agents::instructions::normalize_workspace_target;
 use crate::environment::ExecutionEnvironment;
 use crate::events::StreamEvent;
 use crate::executor::Executor;
 use crate::hooks::HookRegistry;
 use crate::memory::paths::MemoryPaths;
+use crate::state::tool_artifacts::{ArtifactLedgerEntry, ToolArtifactStore};
 use crate::tool_input::RegisteredUserInput;
-use crate::tools::runtime_context::runtime_tool_context_with_environment;
+use crate::tools::runtime_context::runtime_tool_context_with_artifacts;
 use crate::types::{
     ApprovalDecision, ApprovalPolicy, CallId, Message, PendingToolApproval, ToolApprovalProvider,
     ToolApprovalRequest, ToolCallAction, ToolCallRef, ToolExecutionMetadata, ToolExecutionStatus,
@@ -25,10 +28,115 @@ use rove_models::{InternalCallId, ToolResultStatus};
 
 const APPROVAL_REASON: &str = "destructive tool requires explicit approval";
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) enum ToolAction {
     Call(ToolCallAction),
     Batch(Vec<ToolCallAction>),
+}
+
+impl ToolAction {
+    pub(crate) fn calls(&self) -> Vec<&ToolCallAction> {
+        match self {
+            Self::Call(call) => vec![call],
+            Self::Batch(calls) => calls.iter().collect(),
+        }
+    }
+
+    fn into_calls(self) -> Vec<ToolCallAction> {
+        match self {
+            Self::Call(call) => vec![call],
+            Self::Batch(calls) => calls,
+        }
+    }
+}
+
+/// Concrete local-workspace targets declared by first-party structured tools.
+///
+/// This is context routing only; each tool still performs its authoritative
+/// argument and workspace-boundary validation. MCP paths are deliberately not
+/// interpreted as local paths because remote resource names have no local
+/// filesystem authority.
+pub(crate) fn workspace_target_paths(action: &ToolAction) -> Vec<String> {
+    const MAX_TARGET_PATHS: usize = 64;
+    let mut paths = Vec::new();
+    for call in action.calls() {
+        let fields: &[&str] = match call.name.as_str() {
+            "read_file" | "write_file" | "edit_file" | "delete_path" | "list_directory"
+            | "glob_paths" | "search_code" => &["path"],
+            "move_path" => &["from", "to"],
+            "workspace_checkpoint" | "workspace_diff" | "workspace_rewind" | "run_shell" => {
+                &["paths"]
+            }
+            _ => &[],
+        };
+        for field in fields {
+            let Some(value) = call.args.get(*field) else {
+                continue;
+            };
+            match value {
+                serde_json::Value::String(path) => push_target_path(&mut paths, path),
+                serde_json::Value::Array(values) => {
+                    for path in values.iter().filter_map(serde_json::Value::as_str) {
+                        push_target_path(&mut paths, path);
+                        if paths.len() >= MAX_TARGET_PATHS {
+                            break;
+                        }
+                    }
+                }
+                _ => {}
+            }
+            if paths.len() >= MAX_TARGET_PATHS {
+                break;
+            }
+        }
+        if paths.len() >= MAX_TARGET_PATHS {
+            break;
+        }
+    }
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
+fn push_target_path(paths: &mut Vec<String>, raw: &str) {
+    if let Some(path) = normalize_workspace_target(raw) {
+        paths.push(path);
+    }
+}
+
+/// Close a model-requested tool call without dispatching it. This preserves
+/// provider tool-call/result correlation and durable session integrity while a
+/// Runtime-owned precondition is installed for the next model turn.
+pub(crate) fn defer_tool_turn(
+    action: ToolAction,
+    reason: String,
+) -> BoxStream<'static, ToolTurnItem> {
+    Box::pin(stream! {
+        let mut records = Vec::new();
+        for call in action.into_calls() {
+            yield ToolTurnItem::Event(StreamEvent::ToolCallStarted {
+                call_id: call.call_id,
+                tool_use_id: call.tool_use_id.clone(),
+                name: call.name.clone(),
+                args: call.args.clone(),
+            });
+            let error = ToolError::PreconditionRequired {
+                reason: reason.clone(),
+            };
+            let metadata = failure_metadata(&error);
+            records.push(ToolExecutionRecord {
+                call: call.clone(),
+                history_output: format!("Error: {error}"),
+                error_reason: Some(error.to_string()),
+            });
+            yield ToolTurnItem::Event(StreamEvent::ToolCallFailed {
+                call_id: call.call_id,
+                error,
+                metadata,
+            });
+        }
+        yield ToolTurnItem::Finished(ToolTurnOutcome { records });
+    })
 }
 
 #[derive(Clone)]
@@ -43,6 +151,10 @@ pub(crate) struct ToolTurnContext<'a> {
     pub input_provider: Option<Arc<dyn UserInputProvider>>,
     pub hooks: HookRegistry,
     pub cancel_token: CancellationToken,
+    /// Durable artifact authority for this run, passed to every tool so a
+    /// rich result can retain its payloads.
+    pub tool_artifacts: Option<Arc<ToolArtifactStore>>,
+    pub agent_profile: Option<Arc<AgentRuntimeProfile>>,
 }
 
 #[derive(Debug)]
@@ -157,8 +269,14 @@ impl<'a> ToolTurnContext<'a> {
         approval_decision: ApprovalDecision,
         input_events: Option<mpsc::Sender<RegisteredUserInput>>,
     ) -> ToolExecution {
+        if let Err(error) = self.check_agent_capability(&call.name) {
+            return ToolExecution {
+                call,
+                result: Err(error),
+            };
+        }
         let executor = Executor::with_hooks(self.registry, self.hooks.clone());
-        let tool_context = runtime_tool_context_with_environment(
+        let tool_context = runtime_tool_context_with_artifacts(
             call.call_id,
             self.workspace,
             self.memory_paths.clone(),
@@ -166,6 +284,7 @@ impl<'a> ToolTurnContext<'a> {
             self.input_provider.clone(),
             self.cancel_token.clone(),
             self.environment.clone(),
+            self.tool_artifacts.clone(),
         );
         let result = executor
             .run_with_input_events(
@@ -177,6 +296,24 @@ impl<'a> ToolTurnContext<'a> {
             )
             .await;
         ToolExecution { call, result }
+    }
+
+    fn check_agent_capability(&self, tool_name: &str) -> Result<(), ToolError> {
+        let Some(profile) = self.agent_profile.as_ref() else {
+            return Ok(());
+        };
+        let descriptor = self.registry.descriptor(tool_name)?;
+        match descriptor.capability_id.as_deref() {
+            Some(capability) if profile.effective_capabilities.contains(capability) => Ok(()),
+            Some(capability) => Err(ToolError::PermissionDenied {
+                reason: format!("active Agent profile does not permit capability '{capability}'"),
+            }),
+            None if profile.is_legacy() => Ok(()),
+            None => Err(ToolError::PermissionDenied {
+                reason: "active Agent profile refuses tools without a capability identity"
+                    .to_string(),
+            }),
+        }
     }
 
     fn execute_tool_call_stream<'b>(
@@ -397,6 +534,37 @@ pub(crate) fn run_tool_turn<'a>(
                         history_output: result.output.clone(),
                         error_reason: None,
                     });
+                    if let Some(envelope) = result.envelope.as_ref() {
+                        for artifact in &envelope.artifacts {
+                            yield ToolTurnItem::Event(StreamEvent::ToolArtifactStored {
+                                call_id: execution.call.call_id,
+                                artifact: Box::new(artifact.clone()),
+                            });
+                        }
+                    }
+                    if let Some(store) = ctx.tool_artifacts.as_ref()
+                        && let Ok(entries) = store.ledger().await
+                    {
+                        let call_id = execution.call.call_id.to_string();
+                        for entry in entries {
+                            if let ArtifactLedgerEntry::Rejected {
+                                call_id: rejected_call_id,
+                                block_ordinal,
+                                reason,
+                                observed_bytes,
+                                ..
+                            } = entry
+                                && rejected_call_id == call_id
+                            {
+                                yield ToolTurnItem::Event(StreamEvent::ToolArtifactRejected {
+                                    call_id: execution.call.call_id,
+                                    block_ordinal,
+                                    reason: reason.code().to_string(),
+                                    observed_bytes,
+                                });
+                            }
+                        }
+                    }
                     yield ToolTurnItem::Event(StreamEvent::ToolCallCompleted {
                         call_id: execution.call.call_id,
                         result,
@@ -424,11 +592,20 @@ pub(crate) fn run_tool_turn<'a>(
 }
 
 fn failure_metadata(error: &ToolError) -> ToolExecutionMetadata {
+    let deferred = matches!(error, ToolError::PreconditionRequired { .. });
     ToolExecutionMetadata {
-        status: ToolExecutionStatus::Error,
+        status: if deferred {
+            ToolExecutionStatus::Rejected
+        } else {
+            ToolExecutionStatus::Error
+        },
         error_code: Some(error.error_code().to_string()),
         security_event_type: security_event_type(error),
-        risk_level: ToolRiskLevel::High,
+        risk_level: if deferred {
+            ToolRiskLevel::Low
+        } else {
+            ToolRiskLevel::High
+        },
         read_only: false,
         affected_paths: Vec::new(),
         workspace_changed: false,
@@ -503,20 +680,88 @@ mod tests {
     use futures::StreamExt;
     use tokio_util::sync::CancellationToken;
 
-    use super::{ToolAction, ToolTurnContext, ToolTurnItem, run_tool_turn};
+    use super::{
+        ToolAction, ToolTurnContext, ToolTurnItem, defer_tool_turn, run_tool_turn,
+        workspace_target_paths,
+    };
     use crate::environment::local_environment;
+    use crate::events::StreamEvent;
     use crate::hooks::HookRegistry;
     use crate::memory::paths::MemoryPaths;
+    use crate::state::tool_artifacts::{ArtifactClaim, ToolArtifactStore};
     use crate::tools::echo::EchoTool;
     use crate::types::{
         ApprovalDecision, ApprovalPolicy, CallId, PendingUserInput, ToolCallAction,
         ToolExecutionStatus, UserInputProvider, UserInputRequest,
     };
     use crate::workspace::Workspace;
-    use rove_core::ToolError;
-    use rove_core::ToolRegistry;
+    use rove_core::{
+        ArtifactTrust, Sensitivity, Tool, ToolArtifactKind, ToolArtifactSource, ToolContext,
+        ToolDescriptor, ToolError, ToolOutput, ToolOutputEnvelope, ToolRegistry,
+    };
 
     struct ImmediateInputProvider;
+
+    struct ArtifactFixtureTool {
+        store: Arc<ToolArtifactStore>,
+    }
+
+    #[async_trait]
+    impl Tool for ArtifactFixtureTool {
+        fn schema(&self) -> ToolDescriptor {
+            ToolDescriptor {
+                name: "artifact_fixture".to_string(),
+                description: "Emit one artifact and one quota rejection".to_string(),
+                parameters: serde_json::json!({"type":"object"}),
+                destructive: false,
+                parallel_safe: false,
+                capability_id: None,
+                capability: None,
+            }
+        }
+
+        async fn execute(
+            &self,
+            _args: serde_json::Value,
+            context: &ToolContext<'_>,
+        ) -> Result<ToolOutput, ToolError> {
+            let source = |block_ordinal| ToolArtifactSource {
+                run_id: self.store.run_id(),
+                call_id: context.call_id.to_string(),
+                block_ordinal,
+                captured_at: "2026-08-10T00:00:00Z".to_string(),
+                ..ToolArtifactSource::default()
+            };
+            let artifact = self
+                .store
+                .put(
+                    ToolArtifactKind::Resource,
+                    b"retained",
+                    source(0),
+                    ArtifactClaim::default(),
+                    Sensitivity::Normal,
+                    ArtifactTrust::Untrusted,
+                )
+                .await
+                .unwrap();
+            let _ = self
+                .store
+                .put(
+                    ToolArtifactKind::Resource,
+                    b"",
+                    source(1),
+                    ArtifactClaim::default(),
+                    Sensitivity::Normal,
+                    ArtifactTrust::Untrusted,
+                )
+                .await;
+            Ok(ToolOutput::from_envelope(ToolOutputEnvelope {
+                summary_text: "artifact result".to_string(),
+                artifacts: vec![artifact],
+                ..ToolOutputEnvelope::default()
+            }))
+        }
+    }
 
     #[async_trait]
     impl UserInputProvider for ImmediateInputProvider {
@@ -561,6 +806,8 @@ mod tests {
             input_provider: None,
             hooks: HookRegistry::default(),
             cancel_token: CancellationToken::new(),
+            tool_artifacts: None,
+            agent_profile: None,
         };
 
         assert!(base.can_run_parallel_batch(&calls));
@@ -590,6 +837,8 @@ mod tests {
             input_provider: None,
             hooks: HookRegistry::default(),
             cancel_token: CancellationToken::new(),
+            tool_artifacts: None,
+            agent_profile: None,
         };
         let action = ToolAction::Call(ToolCallAction {
             call_id: CallId::new(),
@@ -610,5 +859,153 @@ mod tests {
                     && metadata.error_code.as_deref() == Some("unknown_tool")
             )
         }));
+    }
+
+    #[tokio::test]
+    async fn artifact_events_precede_the_completed_tool_event_without_payload_bytes() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let workspace = Workspace::detect(tmp.path()).unwrap();
+        let memory_paths = MemoryPaths::from_workspace(&workspace, 8);
+        let store = Arc::new(ToolArtifactStore::new(
+            tmp.path().join("runs").join("run-artifact-events"),
+        ));
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(ArtifactFixtureTool {
+            store: Arc::clone(&store),
+        }));
+        let call_id = CallId::new();
+        let ctx = ToolTurnContext {
+            registry: &registry,
+            workspace: &workspace,
+            environment: local_environment(&workspace),
+            memory_paths: &memory_paths,
+            approval_policy: ApprovalPolicy::Auto,
+            approval_decision: ApprovalDecision::Approve,
+            approval_provider: None,
+            input_provider: None,
+            hooks: HookRegistry::default(),
+            cancel_token: CancellationToken::new(),
+            tool_artifacts: Some(Arc::clone(&store)),
+            agent_profile: None,
+        };
+        let items = run_tool_turn(
+            ctx,
+            ToolAction::Call(ToolCallAction {
+                call_id,
+                tool_use_id: None,
+                name: "artifact_fixture".to_string(),
+                args: serde_json::json!({}),
+            }),
+        )
+        .collect::<Vec<_>>()
+        .await;
+
+        let stored = items
+            .iter()
+            .position(|item| {
+                matches!(
+                    item,
+                    ToolTurnItem::Event(StreamEvent::ToolArtifactStored { call_id: id, artifact })
+                        if *id == call_id && artifact.byte_length == 8
+                )
+            })
+            .unwrap();
+        let rejected = items
+            .iter()
+            .position(|item| {
+                matches!(
+                    item,
+                    ToolTurnItem::Event(StreamEvent::ToolArtifactRejected {
+                        call_id: id,
+                        block_ordinal: 1,
+                        reason,
+                        observed_bytes: 0,
+                    }) if *id == call_id && reason == "artifact_empty_payload"
+                )
+            })
+            .unwrap();
+        let completed = items
+            .iter()
+            .position(|item| {
+                matches!(
+                    item,
+                    ToolTurnItem::Event(StreamEvent::ToolCallCompleted { call_id: id, .. })
+                        if *id == call_id
+                )
+            })
+            .unwrap();
+        assert!(stored < rejected && rejected < completed);
+        assert!(
+            !serde_json::to_string(
+                &items
+                    .iter()
+                    .filter_map(|item| match item {
+                        ToolTurnItem::Event(event) => Some(event),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+            )
+            .unwrap()
+            .contains("cmV0YWluZWQ=")
+        );
+    }
+
+    #[test]
+    fn structured_workspace_targets_are_normalized_and_bounded() {
+        let action = ToolAction::Batch(vec![
+            ToolCallAction {
+                call_id: CallId::new(),
+                tool_use_id: None,
+                name: "move_path".to_string(),
+                args: serde_json::json!({
+                    "from": ".\\apps\\web\\old.ts",
+                    "to": "apps/web/new.ts"
+                }),
+            },
+            ToolCallAction {
+                call_id: CallId::new(),
+                tool_use_id: None,
+                name: "read_file".to_string(),
+                args: serde_json::json!({"path":"../outside"}),
+            },
+        ]);
+
+        assert_eq!(
+            workspace_target_paths(&action),
+            vec!["apps/web/new.ts", "apps/web/old.ts"]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_deferred_call_closes_correlation_without_dispatching_a_tool() {
+        let call_id = CallId::new();
+        let items = defer_tool_turn(
+            ToolAction::Call(ToolCallAction {
+                call_id,
+                tool_use_id: Some("toolu-overlay".to_string()),
+                name: "write_file".to_string(),
+                args: serde_json::json!({"path":"apps/web/page.tsx","content":"x"}),
+            }),
+            "scoped instructions activated".to_string(),
+        )
+        .collect::<Vec<_>>()
+        .await;
+
+        assert!(matches!(
+            &items[0],
+            ToolTurnItem::Event(StreamEvent::ToolCallStarted { call_id: id, .. }) if *id == call_id
+        ));
+        assert!(matches!(
+            &items[1],
+            ToolTurnItem::Event(StreamEvent::ToolCallFailed { error, metadata, .. })
+                if error.error_code() == "precondition_required"
+                    && metadata.status == ToolExecutionStatus::Rejected
+        ));
+        assert!(matches!(
+            &items[2],
+            ToolTurnItem::Finished(outcome)
+                if outcome.records.len() == 1
+                    && outcome.records[0].error_reason.is_some()
+        ));
     }
 }

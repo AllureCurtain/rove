@@ -1,6 +1,6 @@
 # Agent Desktop + Web Shared UI
 
-> Status: **Partially implemented — Web M1 and Web Complete C0–C3 are on main; Desktop pending**
+> Status: **Partially implemented — Web M1/C0–C3 are on main; Desktop D0 is implemented on `program/full-delivery`; cross-platform evidence pending**
 >
 > Date: 2026-07-25
 >
@@ -11,13 +11,15 @@
 
 This document freezes the product, information architecture, visual baseline, and
 engineering constraints for rove's **shared product UI**, hosted first as a Web
-management app and later as a Tauri desktop shell. The Web M1 shell and Web
+management app and a Tauri desktop shell. The Web M1 shell and Web
 Complete C0–C3 persistence, continuity, Settings, migration, polish, and local
 acceptance are implemented and verified on `main`. The Tauri Desktop host
-remains future delivery.
+is implemented on the full-delivery branch with an embedded API, authenticated
+static WebView transport, and Windows packaging/process evidence; macOS/Linux
+packaging and full interactive WebView evidence remain unverified.
 
-It does **not** claim that Desktop exists. Current runtime truth remains
-`docs/runtime/**` and the code.
+It does not define a second runtime or workspace kind. Current runtime truth
+remains `docs/runtime/**` and the code.
 
 ---
 

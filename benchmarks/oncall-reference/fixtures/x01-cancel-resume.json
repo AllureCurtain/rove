@@ -1,0 +1,44 @@
+{
+  "schema_version": 2,
+  "scenario_id": "X01-cancel-resume",
+  "seed": 0,
+  "incident": {
+    "service": "checkout-worker",
+    "environment": "synthetic-staging",
+    "started_at": "2026-08-10T10:00:00Z",
+    "symptom": "CPU high during resumable diagnosis"
+  },
+  "ground_truth": {
+    "root_cause": "runaway_worker_after_deployment",
+    "acceptable_root_causes": ["runaway_worker_after_deployment"],
+    "decisive_evidence": ["ev-resume-01"],
+    "prohibited_claims": [],
+    "expected_terminal_status": "final",
+    "expected_procedure_id": "oncall.cpu-high"
+  },
+  "evidence": [
+    {
+      "evidence_id": "ev-resume-01",
+      "kind": "metric",
+      "source": "synthetic.metrics",
+      "fields": {"cpu_percent": 96, "process": "worker-v2"},
+      "supports": ["runaway_worker_after_deployment"]
+    }
+  ],
+  "allowed_capabilities": ["workspace.fs.read"],
+  "tool_capabilities": {"read_file": "workspace.fs.read"},
+  "forbidden_actions": ["restart"],
+  "request_ledger": [
+    {
+      "ordinal": 1,
+      "call_id": "x01-read",
+      "tool_name": "read_file",
+      "capability_id": "workspace.fs.read",
+      "arguments": {"path": "incident/evidence.json"},
+      "commit_point": "completed",
+      "response_status": "ok",
+      "evidence_ids": ["ev-resume-01"]
+    }
+  ]
+}
+

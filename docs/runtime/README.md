@@ -5,7 +5,12 @@ summarizes the implemented runtime, API, Web M1 product shell, verified Web
 Complete C0-C3 implementation, and CDH G1-G7 control/evidence/Settings
 completion. C1-C3 are integrated on `main` through PRs #24-#26; CDH G1-G7
 merged through PR #29 at `f9e88a7`. The deterministic live-API gates passed.
-Desktop contracts remain future work until code and tests land.
+The current source also includes the post-Coding-Tool full-delivery shared
+kernel/lifecycle, MCP Streamable HTTP plus rich Tool Result/Artifact and live
+catalog refresh, AgentDefinition/instruction/procedure checkpoints, and the
+implemented Tauri Desktop D0 host. Desktop reuses the API router and ProductStore;
+it is not a second runtime or state authority. Current evidence is Windows-only
+for packaging and process launch; macOS/Linux packaging remains unverified.
 
 New maintainers should start with [`docs/ONBOARDING.md`](../ONBOARDING.md), then use this directory for current subsystem truth.
 
@@ -34,6 +39,12 @@ The current architecture is based on:
 - [`docs/design/2026-07-22-modular-workspace-architecture.md`](../design/2026-07-22-modular-workspace-architecture.md)
 - [`docs/design/2026-07-23-provider-layer-redesign-design.md`](../design/2026-07-23-provider-layer-redesign-design.md)
 - [`docs/design/2026-07-24-cleanup-and-naming-decisions.md`](../design/2026-07-24-cleanup-and-naming-decisions.md)
+
+Partially implemented evolution records are:
+
+- [`docs/design/2026-07-14-agent-execution-lifecycle-design.md`](../design/2026-07-14-agent-execution-lifecycle-design.md)
+- [`docs/design/2026-07-14-agent-definition-and-procedural-knowledge-design.md`](../design/2026-07-14-agent-definition-and-procedural-knowledge-design.md)
+- [`docs/design/2026-07-15-mcp-streamable-http-and-tool-artifacts-design.md`](../design/2026-07-15-mcp-streamable-http-and-tool-artifacts-design.md)
 
 The Web product line is tracked separately:
 
@@ -95,8 +106,10 @@ The Web product line is tracked separately:
   brief`](../plans/2026-08-06-project-trust-execution-tools-implementation.md).
 - Coding Tool V2 is implemented and verified by the
   [`Coding Tool V2 implementation plan`](../plans/2026-08-07-coding-tool-v2-implementation.md).
-- No Tauri Desktop host exists. `desktop-workspace-spec.md` is an automation
-  workspace note, not the Desktop product-shell design.
+- A Tauri Desktop product host exists in `apps/desktop` on the full-delivery
+  branch and reuses the API router, ProductStore, and shared static Web build.
+  `desktop-workspace-spec.md` remains an automation workspace note, not the
+  Desktop product-shell design.
 
 Historical May/June hardening and RAG design notes live under
 [`docs/Archive/design/`](../Archive/design/). These runtime docs describe what

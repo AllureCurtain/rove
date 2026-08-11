@@ -217,6 +217,8 @@ async fn run_prompt(
     let stream = runtime
         .engine
         .run_with_cancel(req, Some(trace_writer), run_cancel);
+    let runtime_identity = Some(stream.runtime_identity().clone());
+    let agent_profile = stream.agent_profile().cloned();
     let termination = render_run_events(
         stream,
         CliRunRenderContext {
@@ -226,7 +228,8 @@ async fn run_prompt(
             state_store: &runtime.state_store,
             workspace: &runtime.workspace,
             model_id: runtime.engine.model_id(),
-            runtime_identity: Some(runtime.engine.runtime_identity()),
+            runtime_identity,
+            agent_profile,
         },
         CliRunRenderOptions {
             mode: CliRunRenderMode::ReplCompact,
@@ -450,7 +453,9 @@ mod tests {
             checkpoint: None,
             plan: None,
             runtime_identity: None,
+            agent_profile: None,
             step_ledger: Default::default(),
+            execution_lifecycle: Default::default(),
         }
     }
 }

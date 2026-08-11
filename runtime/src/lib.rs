@@ -4,6 +4,7 @@
 //!
 //! ```text
 //! runtime/src/
+//!   agents/       Agent definitions, instruction bundles, procedural knowledge
 //!   engine/       Engine facade, run/plan/tool/model turn loops
 //!   planning/     ExecutionPolicy, planner, plan evaluator
 //!   tools/        built-in tools, Executor, hooks, tool input
@@ -18,6 +19,7 @@
 //! `events`, …) remain available as crate-root re-exports so apps and
 //! integration tests do not need a mass import rewrite in this PR.
 
+pub mod agents;
 pub mod context;
 pub mod engine;
 pub mod environment;
@@ -60,6 +62,7 @@ pub(crate) use engine::plan_loop;
 pub(crate) use engine::run_loop;
 pub(crate) use engine::step_runner;
 pub(crate) use engine::tool_turn;
+pub(crate) use planning::finalizer;
 pub(crate) use planning::plan_evaluator;
 
 // ---------------------------------------------------------------------------

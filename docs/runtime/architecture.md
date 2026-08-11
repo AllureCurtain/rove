@@ -4,10 +4,11 @@
 
 The repository manifest is a modular Cargo Workspace containing
 a virtual Cargo Workspace of `rove-models`, `rove-core`, `rove-runtime`,
-`rove-app-bootstrap`, `rove-cli`, `rove-api`, `rove-bench`, and
+`rove-app-bootstrap`, `rove-cli`, `rove-api`, `rove-bench`, `rove-desktop`, and
 `rove-integration-tests`; the default member is `apps/cli`. Shared package metadata and dependency versions are
 defined at Workspace scope. `rove-core` is the in-memory embedding layer and
-depends only on `rove-models`. The first verified `rove-runtime` slice depends
+owns the shared Runtime-neutral Agent kernel; it depends only on `rove-models`.
+The first verified `rove-runtime` slice depends
 only on those two packages and owns runtime identity, task/execution contracts,
 Workspace/path safety, prompt metadata, and approval/input provider contracts.
 The same crate now also owns canonical `StreamEvent` and StateStore, trace,
@@ -16,16 +17,16 @@ context/compaction, session/durable memory services, local built-in tools,
 their invocation adapters, the existing MCP proxy, the tool Executor pipeline,
 pre/post-tool plus post-run hooks, planning/step coordination, durable event
 translation, and the persistent Engine facade. Product tool-registry assembly,
-first-party AppConfig and product assembly live in `apps/bootstrap`; product apps live under `apps/`.
+first-party AppConfig and product assembly live in `apps/bootstrap`; product apps live under `apps/`. The Desktop delivery host depends only on `rove-api` among local packages; API-owned embedded assembly keeps AppConfig, Workspace, and ProductStore wiring out of the native shell.
 
 ## Shape
 
 ```text
 CLI / TUI / API / Web
     -> rove-app-bootstrap::build_engine / tool_registry
-        -> rove-runtime Engine / planning / tool turns / hooks / Executor
+        -> rove-runtime Engine / planning / kernel hosts / tool turns / hooks / Executor
         -> rove-runtime context / memory / identity / execution / state / events
-        -> rove-core model turn / ToolRegistry contracts
+        -> rove-core Agent kernel / model turn / ToolRegistry contracts
             -> rove-models ModelClient / RoutingModelClient
         -> runtime approval and input adapters
         -> Memory loaders
@@ -33,6 +34,7 @@ CLI / TUI / API / Web
 
 External embedding
     -> rove-core::Agent
+        -> rove-core Agent kernel
         -> rove-models::ModelClient
         -> custom ToolRegistry / ToolPolicy
         -> in-memory AgentEvent
@@ -55,7 +57,7 @@ embed-only for libraries and tests; it is not the product default entry.
 | Layer | Default consumer | Role |
 |---|---|---|
 | `rove-models` | everyone below | Wire protocols, `ModelClient`, routing |
-| `rove-core` | libraries / tests | Embeddable `Agent`, tool contracts |
+| `rove-core` | libraries / Runtime | Shared Agent kernel, embeddable `Agent`, tool contracts |
 | `rove-runtime` | CLI / API / Web / Bench | Durable `Engine`, plan, state, memory, tool impls |
 | `apps/*` | end users | Product shells |
 
@@ -140,10 +142,11 @@ are committed.
   adapters, routing, health, and Fake Model without depending on another local
   project package. Product assembly builds clients through
   `apps/bootstrap` (`AppConfig` + named profiles only).
-- `rove-core` owns the in-memory `Agent`, `AgentEvent`, action/parser and model
-  turn, cancellation/control, `Tool`/`ToolRegistry`, `ToolDescriptor`, and
-  runtime-neutral policy hook. It depends only on `rove-models` and creates no
-  workspace or state directory.
+- `rove-core` owns the shared multi-turn Agent kernel, in-memory `Agent` host,
+  `AgentEvent`, action/parser and model turn, cancellation/control,
+  `Tool`/`ToolRegistry`, `ToolDescriptor`, and runtime-neutral before/after
+  extension plane. It depends only on `rove-models` and creates no workspace
+  or state directory.
 - `rove-runtime` owns `SessionId`/`JobId`/`RunId`, `RunRequest`, `TaskState`,
   prompt checkpoints, execution-policy and plan-ledger data, Workspace/path
   enforcement, prompt metadata/runtime identity, approval/input provider
@@ -151,9 +154,10 @@ are committed.
   `StreamEvent`, context/compaction, session/durable memory, local built-in
   filesystem/shell/memory/input tools, invocation adapters, the existing
   stdio/legacy-SSE MCP proxy, the tool `Executor` pipeline, pre/post-tool and
-  post-run hooks, planning/step coordination, durable event translation, the
-  persistent `Engine` facade, and state/trace/artifact/SQLite/repair/resume
-  services. Its only local dependencies are `rove-models` and `rove-core`.
+  post-run hooks, kernel hosts, planning/step coordination, durable event
+  translation, the persistent `Engine` facade, and
+  state/trace/artifact/SQLite/repair/resume services. Its only local
+  dependencies are `rove-models` and `rove-core`.
 - Model-visible `rove_models::ModelToolSchema` is separate from operational
   `rove_core::ToolDescriptor`; provider payloads receive only the model schema.
   `rove-models` validates the bounded executable JSON Schema subset and the

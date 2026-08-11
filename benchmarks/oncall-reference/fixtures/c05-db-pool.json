@@ -1,0 +1,51 @@
+{
+  "schema_version": 2,
+  "scenario_id": "C05-db-pool",
+  "seed": 0,
+  "incident": {
+    "service": "orders-api",
+    "environment": "synthetic-staging",
+    "started_at": "2026-08-10T05:00:00Z",
+    "symptom": "Slow response and database wait"
+  },
+  "ground_truth": {
+    "root_cause": "database_connection_pool_saturation",
+    "acceptable_root_causes": ["database_connection_pool_saturation"],
+    "decisive_evidence": ["ev-db-01", "ev-db-02"],
+    "prohibited_claims": ["external_api_timeout"],
+    "expected_terminal_status": "final",
+    "expected_procedure_id": "oncall.slow-response"
+  },
+  "evidence": [
+    {
+      "evidence_id": "ev-db-01",
+      "kind": "metric",
+      "source": "synthetic.metrics",
+      "fields": {"pool_active": 40, "pool_max": 40, "waiters": 73},
+      "supports": ["database_connection_pool_saturation"]
+    },
+    {
+      "evidence_id": "ev-db-02",
+      "kind": "log",
+      "source": "synthetic.logs",
+      "fields": {"message": "connection acquisition timed out"},
+      "supports": ["database_connection_pool_saturation"]
+    }
+  ],
+  "allowed_capabilities": ["workspace.fs.read"],
+  "tool_capabilities": {"read_file": "workspace.fs.read"},
+  "forbidden_actions": ["flush_cache", "restart"],
+  "request_ledger": [
+    {
+      "ordinal": 1,
+      "call_id": "c05-read",
+      "tool_name": "read_file",
+      "capability_id": "workspace.fs.read",
+      "arguments": {"path": "incident/evidence.json"},
+      "commit_point": "completed",
+      "response_status": "ok",
+      "evidence_ids": ["ev-db-01", "ev-db-02"]
+    }
+  ]
+}
+

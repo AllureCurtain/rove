@@ -1,9 +1,10 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ProductApiSchemaError } from "../product/product-api-types";
 import { ProductApiError } from "../product/product-client";
 import {
   parseCreateProductMcpServerRequest,
+  parseProductMcpHealthResponse,
   parseProductMcpProbeResponse,
   parseProductMcpServersResponse,
   parseProductMemoryTopicContentResponse,
@@ -12,6 +13,7 @@ import {
   parseProductTrustDecisionRequest,
   parseProductTrustStatus,
   parseSettingsPreferencesUpdateRequest,
+  parseUpdateProductMcpServerRequest,
   type SettingsPreferencesUpdateRequest,
 } from "./settings-platform-api-types";
 import { createSettingsPlatformClient } from "./settings-platform-client";
@@ -33,11 +35,36 @@ const topic = {
 const mcpServer = {
   name: "workspace_tools",
   enabled: true,
+  required: true,
   transport: "stdio",
   command: "python",
   args: ["mcp_server.py"],
   env_names: ["WORKSPACE_MCP_TOKEN"],
   request_timeout_ms: 5_000,
+  transport_deprecated: false,
+} as const;
+
+const mcpHealth = {
+  servers: [
+    {
+      server_name: "workspace_tools",
+      required: true,
+      transport: "stdio",
+      status: "ready",
+      server_config_hash:
+        "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      server_identity_hash:
+        "sha256:1123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      protocol_version: "2025-03-26",
+      catalog_hash:
+        "sha256:2123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      capability_snapshot_id:
+        "sha256:3123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      tool_count: 2,
+      refreshed_at: "2026-08-10T00:00:00Z",
+    },
+  ],
+  total: 1,
 } as const;
 
 const mcpProbe = {
@@ -90,6 +117,13 @@ const runtimeInfo = {
       artifact_projection: true,
     },
   },
+  agent: {
+    selector: "builtin:legacy",
+    workspace_source_authorized: false,
+    workspace_instructions_enabled: false,
+    allow_remediation_procedures: false,
+    max_procedure_selections: 3,
+  },
   resume_health: {
     status: "healthy",
     workspace_count: 1,
@@ -116,6 +150,10 @@ function jsonResponse(value: unknown, status = 200): Response {
   });
 }
 
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
 describe("settings platform API types", () => {
   it("strictly parses bounded memory and runtime responses", () => {
     expect(
@@ -141,12 +179,14 @@ describe("settings platform API types", () => {
         connection: "connected",
         product_store: "unavailable",
         execution_environment: runtimeInfo.execution_environment,
+        agent: runtimeInfo.agent,
       }),
     ).toEqual({
       api_version: "0.1.0",
       connection: "connected",
       product_store: "unavailable",
       execution_environment: runtimeInfo.execution_environment,
+      agent: runtimeInfo.agent,
     });
   });
 
@@ -225,6 +265,7 @@ describe("settings platform API types", () => {
     expect(
       parseProductMcpServersResponse({ servers: [mcpServer], total: 1 }),
     ).toEqual({ servers: [mcpServer], total: 1 });
+    expect(parseProductMcpHealthResponse(mcpHealth)).toEqual(mcpHealth);
     expect(parseProductMcpProbeResponse(mcpProbe)).toEqual(mcpProbe);
     expect(() =>
       parseCreateProductMcpServerRequest({
@@ -232,6 +273,38 @@ describe("settings platform API types", () => {
         env: { WORKSPACE_MCP_TOKEN: "raw-secret" },
       }),
     ).toThrow(ProductApiSchemaError);
+    // A client never declares deprecation: the server owns that verdict, and
+    // the API rejects the field as unknown on a create or update request.
+    expect(() => parseCreateProductMcpServerRequest({ ...mcpServer })).toThrow(
+      ProductApiSchemaError,
+    );
+    const { name: _name, ...updateRequest } = mcpServer;
+    expect(() => parseUpdateProductMcpServerRequest({ ...updateRequest })).toThrow(
+      ProductApiSchemaError,
+    );
+    // A response without the server-owned verdict is not silently defaulted.
+    const { transport_deprecated: _omitted, ...withoutVerdict } = mcpServer;
+    expect(() =>
+      parseProductMcpServersResponse({ servers: [withoutVerdict], total: 1 }),
+    ).toThrow(ProductApiSchemaError);
+    expect(
+      parseProductMcpServersResponse({
+        servers: [
+          {
+            name: mcpServer.name,
+            enabled: true,
+            required: false,
+            transport: "sse",
+            args: [],
+            env_names: [],
+            url: "https://mcp.example.com/sse",
+            request_timeout_ms: 5_000,
+            transport_deprecated: true,
+          },
+        ],
+        total: 1,
+      }).servers[0].transport_deprecated,
+    ).toBe(true);
     expect(() =>
       parseCreateProductMcpServerRequest({
         ...mcpServer,
@@ -248,6 +321,18 @@ describe("settings platform API types", () => {
       parseProductMcpProbeResponse({
         ...mcpProbe,
         tools: [{ ...mcpProbe.tools[0], destructive: false }],
+      }),
+    ).toThrow(ProductApiSchemaError);
+    expect(() =>
+      parseProductMcpHealthResponse({
+        servers: [mcpHealth.servers[0], mcpHealth.servers[0]],
+        total: 2,
+      }),
+    ).toThrow(ProductApiSchemaError);
+    expect(() =>
+      parseProductMcpHealthResponse({
+        servers: [{ ...mcpHealth.servers[0], failure_code: "raw secret\nvalue" }],
+        total: 1,
       }),
     ).toThrow(ProductApiSchemaError);
   });
@@ -282,6 +367,26 @@ describe("settings platform API types", () => {
 });
 
 describe("settings platform client", () => {
+  it("uses the authenticated Desktop loopback transport", async () => {
+    vi.stubGlobal("window", {
+      __ROVE_API_URL__: "http://127.0.0.1:49152",
+      __ROVE_TOKEN__: "desktop-secret",
+    });
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        jsonResponse(runtimeInfo),
+    );
+
+    await createSettingsPlatformClient({ fetch: fetchMock }).getRuntimeInfo();
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
+      "http://127.0.0.1:49152/product/runtime",
+    );
+    const headers = new Headers(fetchMock.mock.calls[0]?.[1]?.headers);
+    expect(headers.get("authorization")).toBe("Bearer desktop-secret");
+  });
+
   it("uses only the server-owned workspace id for trust decisions", async () => {
     const calls: Array<{ url: string; method: string; body?: string }> = [];
     const fetchMock: typeof globalThis.fetch = vi.fn(
@@ -580,17 +685,31 @@ describe("settings platform client", () => {
           return jsonResponse({ servers: [mcpServer], total: 1 });
         }
         if (
+          url === "/api/product/mcp/health?workspace_id=workspace-1" &&
+          method === "GET"
+        ) {
+          return jsonResponse(mcpHealth);
+        }
+        if (
           url === "/api/product/mcp/servers?workspace_id=workspace-1" &&
           method === "POST"
         ) {
-          return jsonResponse(JSON.parse(body ?? "{}"), 201);
+          // The real server always returns its own deprecation verdict.
+          return jsonResponse(
+            { transport_deprecated: false, ...JSON.parse(body ?? "{}") },
+            201,
+          );
         }
         if (
           url ===
             "/api/product/mcp/servers/workspace_tools?workspace_id=workspace-1" &&
           method === "PUT"
         ) {
-          return jsonResponse({ name: "workspace_tools", ...JSON.parse(body ?? "{}") });
+          return jsonResponse({
+            name: "workspace_tools",
+            transport_deprecated: false,
+            ...JSON.parse(body ?? "{}"),
+          });
         }
         if (
           url ===
@@ -612,13 +731,16 @@ describe("settings platform client", () => {
     const client = createSettingsPlatformClient({ fetch: fetchMock });
 
     await client.listMcpServers("workspace-1");
+    await expect(client.getMcpHealth("workspace-1")).resolves.toEqual(mcpHealth);
+    const { transport_deprecated: _serverOwned, ...createRequest } = mcpServer;
     await client.createMcpServer("workspace-1", {
-      ...mcpServer,
+      ...createRequest,
       args: [...mcpServer.args],
       env_names: [...mcpServer.env_names],
     });
     await client.updateMcpServer("workspace-1", "workspace_tools", {
       enabled: false,
+      required: false,
       transport: "stdio",
       command: "python",
       args: ["mcp_server.py"],
@@ -630,6 +752,7 @@ describe("settings platform client", () => {
 
     expect(calls.map(({ method, url }) => `${method} ${url}`)).toEqual([
       "GET /api/product/mcp/servers?workspace_id=workspace-1",
+      "GET /api/product/mcp/health?workspace_id=workspace-1",
       "POST /api/product/mcp/servers?workspace_id=workspace-1",
       "PUT /api/product/mcp/servers/workspace_tools?workspace_id=workspace-1",
       "POST /api/product/mcp/servers/workspace_tools/probe?workspace_id=workspace-1",

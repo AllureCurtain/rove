@@ -1224,13 +1224,20 @@ mod tests {
                     plan_enabled: false,
                     system_prompt_hash: "system".to_string(),
                     planner_prompt_hash: "planner".to_string(),
+                    evaluator_prompt_hash: None,
+                    finalizer_prompt_hash: None,
                     workspace_fingerprint: "workspace".to_string(),
                     tool_signature: "tools".to_string(),
+                    execution_policy: None,
                     capability_snapshot_id: None,
                     execution_environment: None,
                     execution_capabilities: None,
+                    agent: None,
+                    mcp_servers: Vec::new(),
                 }),
+                agent_profile: None,
                 step_ledger: StepLedgerState::default(),
+                execution_lifecycle: Default::default(),
             };
             state_store.write_task_state(&task_state).await.unwrap();
             state_store

@@ -15,7 +15,8 @@ The repository is a virtual Cargo Workspace. The dependency chain is
 {rove-cli, rove-api, rove-bench}` plus `rove-integration-tests`.
 
 - `rove-models` owns the normalized model protocol, providers, and routing.
-- `rove-core` is the implemented in-memory embedding layer.
+- `rove-core` is the implemented in-memory embedding layer and shared
+  Runtime-neutral Agent kernel.
 - `rove-runtime` owns durable execution, state, memory, tools/MCP, planning, and
   the Engine facade.
 - `rove-app-bootstrap` owns first-party AppConfig, provider factory, product
@@ -184,8 +185,9 @@ The API exposes generated OpenAPI at `/api/openapi.json` and Swagger UI at
 cargo run -p rove-bench -- --suite benchmarks/agent-smoke.json --output-dir .rove/bench
 ```
 
-This is a deterministic, no-network smoke. It does not evaluate the proposed
-OnCall reference Agent.
+This is a deterministic, no-network smoke. The separate OnCall Reference V2
+suite is also implemented and runs through `rove-bench` with independent truth
+and hard safety oracles.
 
 ## 6. Main entry points
 
@@ -195,7 +197,7 @@ OnCall reference Agent.
 | API | `apps/api` | HTTP/SSE surface |
 | Benchmark | `apps/bench` | Deterministic benchmark runner |
 | Web | `apps/web/` | API proxy, state hooks, components, tests |
-| Agent core | `core/` | in-memory Agent/model/tool loop, control, core events, contracts |
+| Agent core | `core/` | shared Agent kernel, in-memory embedding host, control, core events, contracts |
 | Persistent runtime | `runtime/` | contracts/events, workspace, context/compaction, memory, local built-in tools, MCP proxy, StateStore, artifacts/SQLite, repair and resume |
 | Persistent coordinator | `runtime/` | Engine, planning/run coordination, tool turns, memory-flush ordering, durable event translation |
 | Models | `models/` | independent protocol, provider adapters, routing, fake provider |
@@ -382,19 +384,20 @@ permission.
 
 Current MCP truth:
 
-- stdio is implemented and covered by deterministic fixture tests;
-- the repository has an existing legacy SSE path;
-- current tests focus mainly on stdio;
-- the official filesystem server smoke is opt-in;
-- Streamable HTTP, negotiated sessions, rich result blocks, and Tool Artifact
-  envelopes are future design.
+- stdio, deprecated legacy SSE, and negotiated Streamable HTTP are implemented;
+- all transports map bounded rich result blocks into the shared envelope and
+  durable Tool Artifact authority;
+- Streamable HTTP supports bounded `listChanged` refresh with active-run
+  pinning, required/optional degradation, circuit backoff, and health;
+- deterministic fixtures cover protocol, refresh, artifact, and safety paths;
+- the official filesystem and real third-party MCP smokes remain opt-in.
 
 See:
 
 - `runtime/src/tools/mcp_proxy.rs`;
 - `tests/mcp.rs`;
 - [`runtime/subsystems.md`](runtime/subsystems.md);
-- [future MCP design](design/2026-07-15-mcp-streamable-http-and-tool-artifacts-design.md).
+- [partially implemented MCP design record](design/2026-07-15-mcp-streamable-http-and-tool-artifacts-design.md).
 
 Never treat MCP annotations as authorization or a remote `file://` URI as a
 local workspace path.
@@ -490,7 +493,8 @@ cargo run -p rove-bench -- --suite benchmarks/agent-smoke.json --output-dir .rov
 Published evidence and provenance rules are described in
 [`runtime/benchmark-evidence.md`](runtime/benchmark-evidence.md).
 
-The proposed V2 Agent evaluation and OnCall reference suite are documented in
+The implemented deterministic V2 Agent evaluation and OnCall reference suite are
+documented in
 [`2026-07-15-oncall-reference-agent-evaluation-plan.md`](design/2026-07-15-oncall-reference-agent-evaluation-plan.md).
 
 ## 17. Verification matrix
@@ -610,33 +614,42 @@ A skipped external smoke is not evidence that the external integration works.
 - [integration testing](runtime/integration-testing.md)
 - [release readiness](runtime/release-readiness.md)
 
-### Active future design chain
+### Active design and evaluation chain
 
 1. [Agent Execution Lifecycle](design/2026-07-14-agent-execution-lifecycle-design.md)
 2. [Agent Definition and Procedural Knowledge](design/2026-07-14-agent-definition-and-procedural-knowledge-design.md)
 3. [MCP Streamable HTTP and Tool Artifacts](design/2026-07-15-mcp-streamable-http-and-tool-artifacts-design.md)
 4. [OnCall Reference Agent and Evaluation](design/2026-07-15-oncall-reference-agent-evaluation-plan.md)
 
-The execution lifecycle is partially implemented through bounded StepRunner,
-StepRecord ledger, PlanRevision, and rule-first PlanDecision. Its Finalizer,
-model-on-ambiguity, and full budget target remain proposed. The other three
-documents remain proposed/not implemented.
+The execution lifecycle is implemented through one Runtime-neutral Agent
+kernel, bounded StepRunner, StepRecord ledger, PlanRevision, rule-first
+PlanDecision with bounded model-on-ambiguity evaluation, an independent
+evidence-grounded Finalizer, public multidimensional execution budgets, and
+trace-tail reconciliation on resume. AgentDefinition/instruction/procedure
+activation and MCP Streamable HTTP/rich artifacts/live refresh are also
+implemented. Planner, StepRunner, Evaluator, and Finalizer consume bounded
+procedure material, and the deterministic OnCall suite covers lifecycle and
+safety oracles. External-provider experiments and broader holdout matrices are
+optional future work. The linked lifecycle, AgentDefinition, MCP, and OnCall
+documents are partially implemented design records.
 
 ### Active product delivery
 
 - [Agent Desktop + Web shared UI](design/2026-07-25-agent-desktop-web-ui-design.md)
-  — Web M1 and Web Complete C0–C3 are implemented on `main`; Desktop remains
-  pending.
+  — Web M1 and Web Complete C0–C3 are implemented on `main`; the Tauri Desktop
+  D0 host is implemented on `program/full-delivery` and has Windows MSI/process
+  evidence, while macOS/Linux packaging remains unverified.
 - [Web Complete design](design/2026-07-26-web-complete-design.md) and
   [delivery plan](plans/2026-07-26-web-complete.md) — C0–C3 implementation,
   ordered coordinator integration, and post-merge local acceptance are complete.
 - [Web → Desktop coordinator plan](plans/2026-07-25-web-desktop-master-delivery.md)
-  — historical Web delivery coordination; Desktop remains future scope.
+  — historical Web delivery coordination; Desktop D0 now has its dedicated
+  design and implementation plan.
 - [CDH G1-G7 delivery](plans/2026-08-03-cdh-alder-merge.md) — completed through
   PR #29; G8 Desktop was out of scope.
 - [Kernel, Message, and Provider Implementation](plans/2026-08-06-kernel-message-provider-implementation.md)
   — active brief for typed message/session projection, provider protocol
-  normalization, and the later shared-kernel migration.
+  normalization, and the implemented shared-kernel migration.
 - [Authoritative Tool Schema and Runtime Validation](plans/2026-08-07-authoritative-tool-schema-runtime-validation.md)
   — bounded schema compilation, deterministic/atomic tool catalogs, model
   preflight, and Runtime capability snapshot binding; Coding Tool V2 is a
@@ -672,15 +685,20 @@ Use them for rationale, not as current API/runtime truth when they disagree with
 
 - Browser/Desktop automation workspace specs are future. The Web product shell
   and C0–C3 persistence/continuity/Settings/migration/polish implementation
-  exist on `main`; a Tauri Desktop product host does not.
+  exist on `main`; the Tauri Desktop product host is implemented on the
+  full-delivery branch with current-platform Windows evidence.
 - Hosted multi-user identity and distributed rate limiting are outside the MVP.
 - Built-in vector RAG is not provided.
 - Real provider/MCP tests are gated.
-- The current MCP path is not the proposed Streamable HTTP design.
-- The runtime does not yet compile versioned AgentDefinition packages.
-- The runtime does not yet discover this `AGENTS.md` as a typed workspace
-  instruction bundle.
-- The proposed procedure catalog and reference Agent benchmark do not yet run.
+- Streamable HTTP live catalog refresh and rich result mapping across all three
+  transports are implemented. Stdio/deprecated SSE do not consume live
+  `listChanged`; real third-party MCP interoperability remains unverified.
+- The runtime compiles versioned AgentDefinition packages and discovers bounded
+  root/nested `AGENTS.md` instruction layers after Project Trust authorization.
+- Typed procedure catalog selection and bounded hydration run at activation;
+  phase-specific Planner/Evaluator/Finalizer consumption and the deterministic
+  OnCall reference benchmark are implemented; external-provider and holdout
+  evidence remain optional.
 
 These are boundaries, not reasons to describe the implemented MVP as absent.
 

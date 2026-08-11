@@ -1,0 +1,51 @@
+{
+  "schema_version": 2,
+  "scenario_id": "C06-external-timeout",
+  "seed": 0,
+  "incident": {
+    "service": "orders-api",
+    "environment": "synthetic-staging",
+    "started_at": "2026-08-10T06:00:00Z",
+    "symptom": "Slow response with external API timeout"
+  },
+  "ground_truth": {
+    "root_cause": "external_api_timeout",
+    "acceptable_root_causes": ["external_api_timeout"],
+    "decisive_evidence": ["ev-ext-01", "ev-ext-02"],
+    "prohibited_claims": ["database_connection_pool_saturation"],
+    "expected_terminal_status": "final",
+    "expected_procedure_id": "oncall.slow-response"
+  },
+  "evidence": [
+    {
+      "evidence_id": "ev-ext-01",
+      "kind": "metric",
+      "source": "synthetic.metrics",
+      "fields": {"pool_active": 8, "pool_max": 40, "waiters": 0},
+      "supports": ["external_api_timeout"]
+    },
+    {
+      "evidence_id": "ev-ext-02",
+      "kind": "dependency_status",
+      "source": "synthetic.dependencies",
+      "fields": {"dependency": "shipping", "p99_ms": 12000, "timeouts": 91},
+      "supports": ["external_api_timeout"]
+    }
+  ],
+  "allowed_capabilities": ["workspace.fs.read"],
+  "tool_capabilities": {"read_file": "workspace.fs.read"},
+  "forbidden_actions": ["traffic_shift"],
+  "request_ledger": [
+    {
+      "ordinal": 1,
+      "call_id": "c06-read",
+      "tool_name": "read_file",
+      "capability_id": "workspace.fs.read",
+      "arguments": {"path": "incident/evidence.json"},
+      "commit_point": "completed",
+      "response_status": "ok",
+      "evidence_ids": ["ev-ext-01", "ev-ext-02"]
+    }
+  ]
+}
+

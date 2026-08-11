@@ -1,6 +1,7 @@
 use crate::runtime_identity::{
     RuntimeIdentity, RuntimeIdentityEvaluation, evaluate_runtime_identity,
 };
+use crate::state::reconcile::reconcile_task_state_with_trace;
 use crate::state::store::StateStore;
 use crate::types::{RunId, TaskState};
 
@@ -12,14 +13,51 @@ pub async fn resolve_resume_state(
         return Ok(None);
     };
 
-    if value == "latest" {
-        return Ok(state_store.load_latest_task_state().await?);
-    }
+    let mut state = if value == "latest" {
+        match state_store.load_latest_task_state().await? {
+            Some(state) => state,
+            None => return Ok(None),
+        }
+    } else {
+        let run_id = ulid::Ulid::from_string(value).map_err(|_| {
+            anyhow::anyhow!("unsupported --resume value: {value}; expected latest or run_id")
+        })?;
+        state_store.load_task_state(RunId(run_id)).await?
+    };
 
-    let run_id = ulid::Ulid::from_string(value).map_err(|_| {
-        anyhow::anyhow!("unsupported --resume value: {value}; expected latest or run_id")
-    })?;
-    Ok(Some(state_store.load_task_state(RunId(run_id)).await?))
+    reconcile_resume_state(state_store, &mut state).await;
+    Ok(Some(state))
+}
+
+/// Bring a loaded snapshot up to date with durable trace facts written after
+/// its last checkpoint.
+///
+/// The snapshot is written after the trace line, so a crash between those two
+/// writes leaves lifecycle facts only in `trace.jsonl`. Reconciliation is a
+/// projection of already-recorded facts and never replays completed work.
+///
+/// A reconciliation failure is non-fatal: resume proceeds from the durable
+/// snapshot, which is a strictly older but internally consistent state.
+async fn reconcile_resume_state(state_store: &StateStore, state: &mut TaskState) {
+    let run_dir = state_store.run_store.run_dir(&state.run_id);
+    match reconcile_task_state_with_trace(&run_dir, state).await {
+        Ok(outcome) if outcome.applied_event_count > 0 || outcome.corrupt_line_count > 0 => {
+            tracing::info!(
+                run_id = %state.run_id,
+                applied = outcome.applied_event_count,
+                corrupt = outcome.corrupt_line_count,
+                changed = outcome.changed,
+                last_event_seq = ?outcome.last_event_seq,
+                "Reconciled resume snapshot with newer canonical trace facts"
+            );
+        }
+        Ok(_) => {}
+        Err(error) => tracing::warn!(
+            run_id = %state.run_id,
+            %error,
+            "Failed to reconcile resume snapshot with trace; resuming from durable snapshot"
+        ),
+    }
 }
 
 pub fn evaluate_resume_runtime_identity(
@@ -53,7 +91,9 @@ mod tests {
             checkpoint: None,
             plan: None,
             runtime_identity: None,
+            agent_profile: None,
             step_ledger: Default::default(),
+            execution_lifecycle: Default::default(),
         }
     }
 

@@ -10,9 +10,11 @@ import type {
   StepRecord,
   StreamEvent,
   TaskPlan,
+  ToolArtifactRef,
   ToolExecutionMetadata,
   ToolError,
   ToolMutation,
+  ToolResultOutcome,
   Usage,
   JobStateResponse,
 } from "./rove-types";
@@ -49,6 +51,18 @@ export interface ToolCallView {
   metadata?: ToolExecutionViewMetadata;
   reason?: string;
   pendingApproval?: PendingApproval;
+  /** Durable artifacts this call produced, in the order they were stored. */
+  artifacts?: ToolArtifactRef[];
+  /** Artifacts a quota refused, kept so a UI can explain a missing payload. */
+  rejectedArtifacts?: RejectedArtifactView[];
+  /** Rich outcome when the tool produced an envelope. */
+  outcome?: ToolResultOutcome;
+}
+
+export interface RejectedArtifactView {
+  blockOrdinal: number;
+  reason: string;
+  observedBytes: number;
 }
 
 export interface TraceEntry {
@@ -847,6 +861,52 @@ function applyStreamEvent(
         trace: prependTrace(state.trace, event.type, `${event.user_message}`),
       };
     }
+    case "agent_profile_activated":
+      return {
+        ...next,
+        statusText: `Agent ${event.identity.display_name} activated`,
+        trace: prependTrace(
+          state.trace,
+          event.type,
+          `${event.identity.selector.source}:${event.identity.selector.agent_id} ${event.identity.profile_hash}`,
+        ),
+      };
+    case "workspace_instructions_resolved":
+      return {
+        ...next,
+        trace: prependTrace(
+          state.trace,
+          event.type,
+          `${event.layer_count} layer(s), ${event.rejected_count} rejected`,
+        ),
+      };
+    case "instruction_overlay_applied":
+      return {
+        ...next,
+        trace: prependTrace(
+          state.trace,
+          event.type,
+          `${event.scope} -> ${event.target_path}`,
+        ),
+      };
+    case "procedures_selected":
+      return {
+        ...next,
+        trace: prependTrace(
+          state.trace,
+          event.type,
+          `${event.selected?.length ?? 0} selected, ${event.excluded_count} excluded`,
+        ),
+      };
+    case "procedure_hydrated":
+      return {
+        ...next,
+        trace: prependTrace(
+          state.trace,
+          event.type,
+          `${event.reference.id}@${event.reference.version}${event.truncated ? " (truncated)" : ""}`,
+        ),
+      };
     case "llm_chunk": {
       const projection = appendAssistantDelta(
         state.messages,
@@ -989,6 +1049,10 @@ function applyStreamEvent(
           output: event.result.output,
           mutations: event.result.mutations,
           metadata: normalizeToolExecutionMetadata(event.result.metadata),
+          // The envelope's own artifacts are authoritative for the completed
+          // call. Per-artifact events may arrive first; both converge here.
+          artifacts: event.result.envelope?.artifacts,
+          outcome: event.result.envelope?.outcome,
         }),
         timeline: bindTimelineEntry(
           state.timeline,
@@ -1008,6 +1072,77 @@ function applyStreamEvent(
         ),
       };
     }
+    // Artifact events accumulate onto the owning call. They never change its
+    // status: an artifact is evidence about a call, not its outcome.
+    case "tool_artifact_stored": {
+      const existing = state.tools.find((tool) => tool.id === event.call_id);
+      if (!existing) {
+        return next;
+      }
+      const alreadyRecorded = (existing.artifacts ?? []).some(
+        (artifact) => artifact.artifact_id === event.artifact.artifact_id,
+      );
+      return {
+        ...next,
+        tools: alreadyRecorded
+          ? state.tools
+          : upsertTool(state.tools, {
+              ...existing,
+              artifacts: [...(existing.artifacts ?? []), event.artifact],
+            }),
+      };
+    }
+    case "tool_artifact_rejected": {
+      const existing = state.tools.find((tool) => tool.id === event.call_id);
+      if (!existing) {
+        return next;
+      }
+      const rejection: RejectedArtifactView = {
+        blockOrdinal: event.block_ordinal,
+        reason: event.reason,
+        observedBytes: event.observed_bytes,
+      };
+      const alreadyRecorded = (existing.rejectedArtifacts ?? []).some(
+        (entry) =>
+          entry.blockOrdinal === rejection.blockOrdinal &&
+          entry.reason === rejection.reason,
+      );
+      return {
+        ...next,
+        tools: alreadyRecorded
+          ? state.tools
+          : upsertTool(state.tools, {
+              ...existing,
+              rejectedArtifacts: [
+                ...(existing.rejectedArtifacts ?? []),
+                rejection,
+              ],
+            }),
+        trace: prependTrace(
+          state.trace,
+          event.type,
+          `block ${event.block_ordinal}: ${event.reason}`,
+        ),
+      };
+    }
+    case "mcp_server_degraded":
+      return {
+        ...next,
+        trace: prependTrace(
+          state.trace,
+          event.type,
+          `${event.server_config_id}: ${event.failure_code}`,
+        ),
+      };
+    case "mcp_capabilities_refreshed":
+      return {
+        ...next,
+        trace: prependTrace(
+          state.trace,
+          event.type,
+          `${event.server_config_id}: +${event.added.length} -${event.removed.length} ~${event.changed.length}`,
+        ),
+      };
     case "tool_call_failed": {
       const timelineId = toolTimelineEntityId(state, event.call_id);
       return {

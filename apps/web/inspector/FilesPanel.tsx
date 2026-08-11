@@ -21,8 +21,15 @@ export function FilesPanel({ workspaceId }: { workspaceId: string }) {
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [scanLimited, setScanLimited] = useState(false);
   const [content, setContent] = useState<ProductFileContentEnvelope | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    return () => {
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
+    };
+  }, [previewUrl]);
 
   useEffect(() => {
     let cancelled = false;
@@ -30,6 +37,7 @@ export function FilesPanel({ workspaceId }: { workspaceId: string }) {
       setLoading(true);
       setError(null);
       setContent(null);
+      setPreviewUrl(null);
       try {
         const response = await client.listWorkspaceFiles(workspaceId, {
           prefix: prefix || undefined,
@@ -83,9 +91,29 @@ export function FilesPanel({ workspaceId }: { workspaceId: string }) {
     }
     setError(null);
     try {
-      setContent(await client.getWorkspaceFileContent(workspaceId, entry.path));
+      const nextContent = await client.getWorkspaceFileContent(workspaceId, entry.path);
+      const nextPreviewUrl =
+        nextContent.image && nextContent.preview_allowed
+          ? URL.createObjectURL(
+              await client.fetchWorkspaceFilePreview(workspaceId, entry.path),
+            )
+          : null;
+      setContent(nextContent);
+      setPreviewUrl(nextPreviewUrl);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Failed to read file");
+    }
+  }
+
+  async function downloadFile(path: string) {
+    setError(null);
+    try {
+      await downloadBlob(
+        await client.fetchWorkspaceFileDownload(workspaceId, path),
+        filenameForPath(path),
+      );
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Failed to download file");
     }
   }
 
@@ -127,15 +155,15 @@ export function FilesPanel({ workspaceId }: { workspaceId: string }) {
               <small>{entry.kind === "directory" ? "directory" : formatBytes(entry.size)}</small>
             </button>
             {entry.kind === "file" ? (
-              <a
+              <button
+                type="button"
                 className="ghost icon-button"
-                href={client.workspaceFileDownloadUrl(workspaceId, entry.path)}
-                download
+                onClick={() => void downloadFile(entry.path)}
                 aria-label={`Download ${entry.path}`}
                 title={`Download ${entry.path}`}
               >
                 <DownloadIcon />
-              </a>
+              </button>
             ) : null}
           </li>
         ))}
@@ -157,15 +185,15 @@ export function FilesPanel({ workspaceId }: { workspaceId: string }) {
               <strong>{content.path}</strong>
               <span>{content.mime} · {formatBytes(content.size)}{content.truncated ? " · truncated" : ""}</span>
             </div>
-            <a
+            <button
+              type="button"
               className="ghost icon-button"
-              href={client.workspaceFileDownloadUrl(workspaceId, content.path)}
-              download
+              onClick={() => void downloadFile(content.path)}
               aria-label={`Download ${content.path}`}
               title={`Download ${content.path}`}
             >
               <DownloadIcon />
-            </a>
+            </button>
           </div>
           {content.validation_error ? (
             <p className="inspector-empty-line" role="alert">{content.validation_error}</p>
@@ -176,7 +204,7 @@ export function FilesPanel({ workspaceId }: { workspaceId: string }) {
           {content.image && content.preview_allowed ? (
             <figure className="evidence-preview__image">
               <img
-                src={client.workspaceFilePreviewUrl(workspaceId, content.path)}
+                src={previewUrl ?? undefined}
                 alt={content.path}
               />
               <figcaption>
@@ -191,6 +219,23 @@ export function FilesPanel({ workspaceId }: { workspaceId: string }) {
       ) : null}
     </section>
   );
+}
+
+async function downloadBlob(blob: Blob, filename: string): Promise<void> {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.hidden = true;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+function filenameForPath(path: string): string {
+  const filename = path.split("/").filter(Boolean).pop();
+  return filename || "download";
 }
 
 function formatBytes(value: number): string {

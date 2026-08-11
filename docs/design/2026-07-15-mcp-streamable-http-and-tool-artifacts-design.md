@@ -1,8 +1,15 @@
 # rove MCP Streamable HTTP and Tool Artifacts Design - 2026-07-15
 
-> Status: **Proposed / Not Implemented**
+> Status: **Partially implemented - remaining target is proposed**
 >
-> 本文是未来设计 spec，不是当前实现说明，也不是实现计划。当前 MCP、ToolOutput、artifact 与运行时行为仍以 [`docs/runtime/`](../runtime/README.md) 和源码为准；在 transport、schema、事件、持久化、测试与 runtime 文档全部落地之前，不得把本文描述的 Streamable HTTP、session negotiation、structured content 或 Tool Artifact 行为称为已实现。
+> 本文保留完整目标与尚未完成的设计，不是当前实现说明。当前 MCP、Tool Result、Tool Artifact 与运行时行为仍以 [`docs/runtime/`](../runtime/README.md) 和源码为准；不得因为 Checkpoint 3/4/6 已落地，就把本文剩余的跨 transport dispatcher、session recovery 或外部互操作目标描述为已实现。
+
+Implemented checkpoints include negotiated Streamable HTTP sessions, bounded
+protocol/catalog handling, rich result envelopes, durable Tool Artifacts,
+atomic `listChanged` refresh, run pinning, required/optional health, canonical
+events, product diagnostics, and resume identity. Stdio and deprecated SSE keep
+their compatibility adapters and registration-time catalogs; real third-party
+interoperability remains an unrun optional gate.
 
 > **Current-path correction (2026-07-26):** the modular Workspace migration
 > moved MCP implementation to `runtime/src/tools/mcp_proxy.rs` and shared tool

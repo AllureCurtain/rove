@@ -34,7 +34,9 @@ async fn runtime_state_store_round_trips_task_state_and_indexed_trace() {
         checkpoint: None,
         plan: None,
         runtime_identity: None,
+        agent_profile: None,
         step_ledger: Default::default(),
+        execution_lifecycle: Default::default(),
     };
     store.write_task_state(&state).await.unwrap();
 

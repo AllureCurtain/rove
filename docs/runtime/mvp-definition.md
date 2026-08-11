@@ -54,7 +54,7 @@ This MVP is not a SaaS product, browser automation runtime, desktop automation r
   usage/context/cost states, bounded workspace files/artifacts/images/diff,
   redacted JSON/HTML/Markdown evidence export, and workspace-scoped MCP catalog
   management shared by Settings and runtime assembly.
-- Core engine with planned and unplanned loops sharing model turns, tool turns, context checkpoints, and history writeback.
+- One Runtime-neutral Core Agent kernel shared by embedded, unplanned, and planned-step execution, with Runtime-owned context, tool safety, and durable events.
 - Local state under `.rove/` with trace, task state, report, and SQLite index.
 - Folder, Repo, and Task workspaces.
 - Built-in filesystem, shell, memory, request-input, and MCP tools. No built-in vector RAG.

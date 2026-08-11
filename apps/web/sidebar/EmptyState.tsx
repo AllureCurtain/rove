@@ -1,7 +1,12 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import { FileIcon } from "@radix-ui/react-icons";
+import { FormEvent, useEffect, useState } from "react";
 
+import {
+  desktopWorkspacePickerAvailable,
+  selectDesktopWorkspace,
+} from "../platform/desktop-commands";
 import type { WorkspaceKind, WorkspaceRecord } from "../state/product-types";
 
 export function EmptyState({
@@ -18,6 +23,12 @@ export function EmptyState({
   const [path, setPath] = useState("");
   const [kind, setKind] = useState<WorkspaceKind>("folder");
   const [error, setError] = useState<string | null>(null);
+  const [nativePickerAvailable, setNativePickerAvailable] = useState(false);
+  const [pickerBusy, setPickerBusy] = useState(false);
+
+  useEffect(() => {
+    setNativePickerAvailable(desktopWorkspacePickerAvailable());
+  }, []);
 
   function handleSubmit(event: FormEvent) {
     event.preventDefault();
@@ -28,6 +39,21 @@ export function EmptyState({
     }
     setError(null);
     onOpenWorkspace(trimmed, kind);
+  }
+
+  async function browseWorkspace() {
+    setPickerBusy(true);
+    setError(null);
+    try {
+      const selected = await selectDesktopWorkspace();
+      if (selected) {
+        setPath(selected);
+      }
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Failed to open folder picker.");
+    } finally {
+      setPickerBusy(false);
+    }
   }
 
   return (
@@ -41,14 +67,27 @@ export function EmptyState({
         <form onSubmit={handleSubmit} className="settings-card" style={{ padding: 0, border: "none", background: "transparent" }}>
           <div className="field">
             <label htmlFor="empty-workspace-path">Absolute path</label>
-            <input
-              id="empty-workspace-path"
-              value={path}
-              onChange={(event) => setPath(event.target.value)}
-              placeholder="D:\\path\\to\\project"
-              aria-invalid={error ? "true" : undefined}
-              aria-describedby={error ? "empty-workspace-error" : undefined}
-            />
+            <div className="workspace-path-control">
+              <input
+                id="empty-workspace-path"
+                value={path}
+                onChange={(event) => setPath(event.target.value)}
+                placeholder="D:\\path\\to\\project"
+                aria-invalid={error ? "true" : undefined}
+                aria-describedby={error ? "empty-workspace-error" : undefined}
+              />
+              {nativePickerAvailable ? (
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={() => void browseWorkspace()}
+                  disabled={pickerBusy}
+                >
+                  <FileIcon aria-hidden="true" />
+                  {pickerBusy ? "Opening..." : "Browse"}
+                </button>
+              ) : null}
+            </div>
           </div>
           <div className="field">
             <label htmlFor="empty-workspace-kind">Kind</label>

@@ -1327,6 +1327,16 @@ textarea:focus {
   gap: 8px;
 }
 
+.workspace-path-control {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.workspace-path-control button {
+  white-space: nowrap;
+}
+
 .placeholder-note {
   border: 1px dashed var(--border-strong);
   border-radius: var(--radius-md);

@@ -1,9 +1,11 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use crate::agents::AgentRuntimeProfile;
 use crate::events::StreamEvent;
 use crate::execution::{
-    PlanIdentity, StepLedgerState, StepRecordStatus, planned_step_failure_message,
+    ExecutionLifecycleState, PlanIdentity, StepLedgerState, StepRecordStatus,
+    planned_step_failure_message,
 };
 use crate::prompt_metadata::{PromptBuildMetadata, estimate_messages_tokens};
 use crate::runtime_identity::RuntimeIdentity;
@@ -13,14 +15,15 @@ use crate::types::{
     TaskPlan, TaskState, TerminationReason,
 };
 use crate::workspace::Workspace;
-use rove_core::{CallId, ToolExecutionMetadata, ToolMutation};
+use rove_core::{CallId, ToolArtifactRef, ToolExecutionMetadata, ToolMutation};
 use rove_models::{
     AssistantTurn, ContentBlock, InternalCallId, Message, Role, ToolCall,
     ToolResult as CanonicalToolResult, ToolResultStatus, Usage, WireCallReference,
 };
 
-use super::report::{RunReport, write_report};
+use super::report::{ReportArtifactEntry, ReportArtifactRejection, RunReport, write_report};
 use super::store::StateStore;
+use super::tool_artifacts::ToolArtifactStore;
 
 const CHECKPOINT_SUMMARY_CHARS: usize = 180;
 
@@ -38,9 +41,14 @@ pub struct RunArtifactRecorder {
     tool_failures: u32,
     tool_mutations: Vec<ToolMutation>,
     tool_execution_metadata: Vec<ToolExecutionMetadata>,
+    /// Artifact references seen this run, deduplicated by artifact and call.
+    tool_artifacts: Vec<ToolArtifactRef>,
+    rejected_tool_artifacts: Vec<ReportArtifactRejection>,
     prompt_builds: Vec<PromptBuildMetadata>,
     runtime_identity: Option<RuntimeIdentity>,
+    agent_profile: Option<AgentRuntimeProfile>,
     step_ledger: StepLedgerState,
+    execution_lifecycle: ExecutionLifecycleState,
     total_usage: Usage,
     final_reason: TerminationReason,
     final_output: Option<String>,
@@ -99,11 +107,17 @@ impl RunArtifactRecorder {
             tool_failures: 0,
             tool_mutations: Vec::new(),
             tool_execution_metadata: Vec::new(),
+            tool_artifacts: Vec::new(),
+            rejected_tool_artifacts: Vec::new(),
             prompt_builds: Vec::new(),
             runtime_identity: runtime_identity
                 .or_else(|| resume_state.and_then(|state| state.runtime_identity.clone())),
+            agent_profile: resume_state.and_then(|state| state.agent_profile.clone()),
             step_ledger: resume_state
                 .map(|state| state.step_ledger.clone())
+                .unwrap_or_default(),
+            execution_lifecycle: resume_state
+                .map(|state| state.execution_lifecycle.clone())
                 .unwrap_or_default(),
             total_usage: Usage::default(),
             final_reason: TerminationReason::Error,
@@ -118,10 +132,67 @@ impl RunArtifactRecorder {
         }
     }
 
+    /// Attach the exact Engine-resolved Agent snapshot before the first event
+    /// is persisted. This is intentionally separate from StreamEvent so prompt
+    /// text never enters trace/SSE/report projections.
+    pub fn set_agent_profile(&mut self, profile: Option<AgentRuntimeProfile>) {
+        if profile.is_some() {
+            self.agent_profile = profile;
+        }
+    }
+
+    pub fn set_runtime_identity(&mut self, identity: RuntimeIdentity) {
+        self.runtime_identity = Some(identity);
+    }
+
     pub async fn record_event(&mut self, event: &StreamEvent, state_store: &StateStore) {
         self.refresh_last_event_seq(state_store).await;
         match event {
             StreamEvent::RunStarted { .. } => {
+                self.write_snapshot(state_store).await;
+            }
+            StreamEvent::ExecutionStrategySelected { policy } => {
+                self.execution_lifecycle.policy = Some(policy.clone());
+                self.write_snapshot(state_store).await;
+            }
+            StreamEvent::ExecutionBudgetUpdated { snapshot, .. } => {
+                self.execution_lifecycle.budget_usage = snapshot.consumed.clone();
+                self.execution_lifecycle.budget_exhaustion = snapshot.exhausted.clone();
+                self.write_snapshot(state_store).await;
+            }
+            StreamEvent::ExecutionDegraded { record } => {
+                if self
+                    .execution_lifecycle
+                    .degradations
+                    .iter()
+                    .all(|saved| saved.degradation_id != record.degradation_id)
+                {
+                    self.execution_lifecycle.degradations.push(record.clone());
+                }
+                self.write_snapshot(state_store).await;
+            }
+            StreamEvent::ProcedureApplied { application }
+                if self
+                    .execution_lifecycle
+                    .procedure_applications
+                    .iter()
+                    .all(|saved| saved.application_id != application.application_id) =>
+            {
+                self.execution_lifecycle
+                    .procedure_applications
+                    .push(application.as_ref().clone());
+                self.write_snapshot(state_store).await;
+            }
+            StreamEvent::ProcedureDeviation { deviation, .. }
+                if self
+                    .execution_lifecycle
+                    .procedure_deviations
+                    .iter()
+                    .all(|saved| saved.deviation_id != deviation.deviation_id) =>
+            {
+                self.execution_lifecycle
+                    .procedure_deviations
+                    .push(deviation.as_ref().clone());
                 self.write_snapshot(state_store).await;
             }
             StreamEvent::LlmMessage {
@@ -256,7 +327,34 @@ impl RunArtifactRecorder {
                 self.sync_history_from_session();
                 self.tool_mutations.extend(result.mutations.clone());
                 self.tool_execution_metadata.push(result.metadata.clone());
+                // The completed envelope is authoritative for this call's
+                // artifacts. Per-artifact events may have arrived first, so
+                // record by identity rather than appending blindly.
+                if let Some(envelope) = &result.envelope {
+                    for artifact in &envelope.artifacts {
+                        self.record_artifact(artifact);
+                    }
+                }
                 self.write_snapshot(state_store).await;
+            }
+            StreamEvent::ToolArtifactStored { artifact, .. } => {
+                self.record_artifact(artifact);
+            }
+            StreamEvent::ToolArtifactRejected {
+                call_id,
+                block_ordinal,
+                reason,
+                observed_bytes,
+            } => {
+                let rejection = ReportArtifactRejection {
+                    call_id: call_id.to_string(),
+                    block_ordinal: *block_ordinal,
+                    reason: reason.clone(),
+                    observed_bytes: *observed_bytes,
+                };
+                if !self.rejected_tool_artifacts.contains(&rejection) {
+                    self.rejected_tool_artifacts.push(rejection);
+                }
             }
             StreamEvent::ToolCallFailed {
                 call_id,
@@ -382,8 +480,12 @@ impl RunArtifactRecorder {
                     record.status,
                     StepRecordStatus::Failed
                         | StepRecordStatus::Blocked
+                        | StepRecordStatus::Rejected
                         | StepRecordStatus::Interrupted
                         | StepRecordStatus::BudgetExhausted
+                        | StepRecordStatus::Cancelled
+                        | StepRecordStatus::Indeterminate
+                        | StepRecordStatus::Partial
                 ) {
                     let step_title = self
                         .plan
@@ -409,6 +511,11 @@ impl RunArtifactRecorder {
                     self.history.push(Message::user(failure_message));
                     self.sync_history_from_session();
                 }
+                self.write_snapshot(state_store).await;
+            }
+            StreamEvent::FinalizationStarted { record }
+            | StreamEvent::FinalizationCompleted { record } => {
+                self.execution_lifecycle.finalization = Some(record.as_ref().clone());
                 self.write_snapshot(state_store).await;
             }
             StreamEvent::PromptCompacted { summary, state } => {
@@ -478,7 +585,9 @@ impl RunArtifactRecorder {
             checkpoint: Some(self.prompt_checkpoint()),
             plan: self.plan.clone(),
             runtime_identity: self.runtime_identity.clone(),
+            agent_profile: self.agent_profile.clone(),
             step_ledger: self.step_ledger.clone(),
+            execution_lifecycle: self.execution_lifecycle.clone(),
         };
         if let Err(err) = state_store.write_task_state(&state).await {
             tracing::warn!("Failed to write task_state.json: {}", err);
@@ -524,6 +633,24 @@ impl RunArtifactRecorder {
         report.step_records = self.step_ledger.step_records.clone();
         report.plan_decisions = self.step_ledger.plan_lifecycle.decisions.clone();
         report.plan_revisions = self.step_ledger.plan_lifecycle.revisions.clone();
+        report.execution_lifecycle = self.execution_lifecycle.clone();
+        report.final_outcome = self
+            .execution_lifecycle
+            .finalization
+            .as_ref()
+            .and_then(|record| record.outcome);
+        // Payload availability is read from disk rather than assumed, so a
+        // report written after retention cleanup says "expired" truthfully.
+        let artifact_store = ToolArtifactStore::new(run_dir);
+        let mut artifact_entries = Vec::with_capacity(self.tool_artifacts.len());
+        for artifact in &self.tool_artifacts {
+            let available = artifact_store
+                .payload_available(&artifact.artifact_id)
+                .await;
+            artifact_entries.push(ReportArtifactEntry::from_ref(artifact, available));
+        }
+        report.tool_artifacts = artifact_entries;
+        report.rejected_tool_artifacts = self.rejected_tool_artifacts.clone();
         report.output = self.final_output.clone();
 
         match write_report(run_dir, &report) {
@@ -590,7 +717,9 @@ impl RunArtifactRecorder {
             compacted_history_messages,
             compaction: self.checkpoint_compaction_state(compacted_history_messages),
             runtime_identity: self.runtime_identity.clone(),
+            agent_profile: self.agent_profile.clone(),
             step_ledger: self.step_ledger.checkpoint(),
+            execution_lifecycle: self.execution_lifecycle.checkpoint(),
             session: Some(self.session.clone()),
         }
     }
@@ -616,6 +745,22 @@ impl RunArtifactRecorder {
             prompt_version: None,
             source_message_count: compacted_history_messages,
             last_error: None,
+        }
+    }
+
+    /// Records one artifact reference for the report.
+    ///
+    /// The same payload can be referenced by more than one call, so identity
+    /// is the pair of artifact and call: deduplicating on the artifact alone
+    /// would lose the fact that a second call produced the same bytes.
+    fn record_artifact(&mut self, artifact: &ToolArtifactRef) {
+        let already_recorded = self.tool_artifacts.iter().any(|saved| {
+            saved.artifact_id == artifact.artifact_id
+                && saved.source.call_id == artifact.source.call_id
+                && saved.source.block_ordinal == artifact.source.block_ordinal
+        });
+        if !already_recorded {
+            self.tool_artifacts.push(artifact.clone());
         }
     }
 
@@ -746,11 +891,16 @@ mod tests {
             plan_enabled: true,
             system_prompt_hash: "sha256:system".to_string(),
             planner_prompt_hash: "sha256:planner".to_string(),
+            evaluator_prompt_hash: None,
+            finalizer_prompt_hash: None,
             workspace_fingerprint: "sha256:workspace".to_string(),
             tool_signature: "sha256:tools".to_string(),
+            execution_policy: None,
             capability_snapshot_id: Some("sha256:capabilities".to_string()),
             execution_environment: None,
             execution_capabilities: None,
+            agent: None,
+            mcp_servers: Vec::new(),
         }
     }
 
@@ -838,6 +988,7 @@ mod tests {
                         output: "done".to_string(),
                         mutations: Vec::new(),
                         metadata: metadata.clone(),
+                        envelope: None,
                     },
                 },
                 &state_store,

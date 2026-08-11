@@ -101,14 +101,15 @@ and updates its tests and current documentation:
 
 ## 5. Current implementation boundaries
 
-As of 2026-08-07:
+As of 2026-08-10:
 
 - rove is a local-first Rust runtime with CLI, API, Web, persisted run state,
   resume, provider routing, tools, layered memory, optional future external retrieval, and
   deterministic benchmarks.
 - The repository is a virtual Cargo Workspace with default member `apps/cli`.
   Package layout is `rove-models <- rove-core <- rove-runtime <-
-  rove-app-bootstrap <- {rove-cli, rove-api, rove-bench}` plus
+  rove-app-bootstrap <- {rove-cli, rove-api, rove-bench}`, with
+  `rove-api <- rove-desktop`, plus
   `rove-integration-tests`. `rove-models` has no local project dependency;
   `rove-core` depends only on `rove-models`. `rove-runtime` owns durable
   execution, state, memory, tools/MCP, planning, and the Engine facade.
@@ -118,10 +119,14 @@ As of 2026-08-07:
   Web Complete C0–C3 persistence, continuity, Settings, migration, polish, and
   acceptance work integrated on `main` through PRs #24, #25, and #26, plus the
   CDH G1-G7 control, evidence, and Settings completion merged through PR #29.
-- MCP currently supports stdio and the existing legacy SSE path. Streamable
-  HTTP, negotiated sessions, rich MCP result envelopes, and Tool Artifacts are
-  proposed, not implemented. Existing MCP catalogs are registration-time
-  schema validated and committed atomically to the shared tool registry.
+- MCP supports stdio, deprecated legacy SSE, and negotiated Streamable HTTP.
+  All three proxies map bounded rich result blocks into the shared Tool Result
+  envelope and canonical durable Tool Artifact store. Streamable HTTP supports
+  bounded `listChanged` rediscovery, atomic namespace replacement, run-pinned
+  catalogs, required/optional degradation, circuit backoff, secret-free runtime
+  identity/health, canonical refresh/degradation events, and Product API/Web
+  diagnostics. Real third-party hosted MCP interoperability remains an optional
+  unrun gate.
 - Durable granular Project Trust and the Runtime-owned Execution Environment
   are implemented. Project activation remains restricted by default, exact-root
   and capability-specific; workspace `.env`, `.rove/config.toml`, and MCP
@@ -132,14 +137,27 @@ As of 2026-08-07:
   transient artifact projection, and foreground/background Shell lifecycle.
   Native PTY remains a typed unsupported capability; coding observations,
   checkpoints, projected artifacts, and process identities are not durable.
-- Versioned AgentDefinition packages, `AGENTS.md` runtime discovery, typed
-  procedural knowledge, and the OnCall reference evaluation suite are proposed,
-  not implemented. The execution-lifecycle design is partially implemented:
-  bounded planned StepRunner, append-only StepRecord ledger, immutable plan
-  revisions, rule-first decisions, registration-pinned bounded Tool Schemas,
+- Versioned AgentDefinition packages, immutable per-run profiles, trusted
+  root/nested `AGENTS.md` discovery, typed procedural catalogs, deterministic
+  selection, bounded hydration, exact unfinished-run resume snapshots, and
+  CLI/API/Web selector surfaces are implemented. Nested instructions are
+  activated only for matching paths; a newly discovered tool scope is deferred
+  before dispatch until the model receives its overlay. Procedure-aware
+  Planner/Evaluator/Finalizer phases and the deterministic OnCall reference
+  evaluation suite are implemented; external-provider experiments and broader
+  holdout matrices remain optional future work. The execution-lifecycle design is partially implemented:
+  one Runtime-neutral Agent kernel drives embedded, unplanned, and planned-step
+  model/tool coordination; Runtime hosts retain context, persistence, planning,
+  approval/input, hooks, memory, and canonical events. Bounded planned
+  StepRunner, append-only StepRecord ledger, immutable plan revisions,
+  rule-first decisions with bounded model-on-ambiguity evaluation, an
+  independent evidence-grounded Finalizer, public multidimensional execution
+  budgets with per-run accounting, canonical lifecycle events, trace-tail
+  reconciliation on resume, registration-pinned bounded Tool Schemas,
   pre-dispatch provider/tool validation, and Runtime-owned capability snapshots
-  exist; model-on-ambiguity evaluation, independent Finalizer, live capability
-  refresh, and full budget surfaces remain proposed.
+  exist. Streamable HTTP MCP catalogs refresh live for future runs while active
+  runs retain their pinned bindings; general non-MCP live capability refresh is
+  not implemented.
 - Web M1 is implemented: explicit Folder/Repo roots, fail-closed hard resume,
   and the Workspace → Session → Chat product shell are implemented. Web
   Complete C0 adds an API-global SQLite ProductStore,
@@ -170,20 +188,26 @@ As of 2026-08-07:
   terminal-boundary Fork/lineage, session model/reasoning/approval/step-limit
   snapshots, usage/context/cost, bounded files/artifacts/images/diff, redacted
   evidence export, and workspace-scoped Settings/MCP management; they are on
-  `main` through PR #29 at `f9e88a7`. No Tauri `apps/desktop` host exists yet.
-- This repository-level `AGENTS.md` guides maintainers and coding agents. Its
-  existence does not mean the rove runtime already loads workspace
-  `AGENTS.md` files into model context.
+  `main` through PR #29 at `f9e88a7`. The `program/full-delivery` branch also
+  contains the Tauri Desktop D0 host; current-platform Windows package and
+  process evidence are recorded, while macOS/Linux packaging remains unverified.
+- This repository-level `AGENTS.md` guides maintainers and coding agents. A
+  trusted rove run also loads it as the workspace root instruction layer; that
+  runtime admission does not turn its text into tool permission or approval.
 
-The active future/runtime-evolution design chain is:
+The active design/runtime-evolution chain is:
 
 - `docs/design/2026-07-14-agent-execution-lifecycle-design.md`
 - `docs/design/2026-07-14-agent-definition-and-procedural-knowledge-design.md`
 - `docs/design/2026-07-15-mcp-streamable-http-and-tool-artifacts-design.md`
 - `docs/design/2026-07-15-oncall-reference-agent-evaluation-plan.md`
 
-Use those documents to plan future implementation, not to describe current
-runtime behavior.
+Read each document's visible status before using it. The lifecycle,
+AgentDefinition, and MCP documents are partially implemented design records;
+their remaining targets are future work. The OnCall document is a partially
+implemented design record with the deterministic V2 suite in the repository;
+external-provider and holdout evidence remain optional. Use `docs/runtime/` and
+tests to describe current behavior.
 
 The active implementation work follows these briefs:
 

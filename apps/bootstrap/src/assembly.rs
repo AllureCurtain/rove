@@ -2,15 +2,18 @@ use std::sync::Arc;
 
 use rove_core::ToolRegistry;
 use rove_models::ModelClient;
+use rove_runtime::agents::{AgentActivationConfig, AgentSelector};
 use rove_runtime::context::{ContextBudget, ContextManager};
 use rove_runtime::engine::{Engine, EngineConfig, EngineEnvironmentOptions};
 use rove_runtime::environment::{ExecutionEnvironment, local_environment};
+use rove_runtime::execution::ExecutionPolicy;
 use rove_runtime::types::{
     ApprovalDecision, ApprovalPolicy, ToolApprovalProvider, UserInputProvider,
 };
 use rove_runtime::workspace::Workspace;
 
 use crate::config::AppConfig;
+use crate::project_trust::CAP_WORKSPACE_INSTRUCTIONS;
 use crate::registry::tool_registry_for_config_with_environment;
 
 /// Options shared by first-party CLI/API engine construction.
@@ -19,6 +22,9 @@ pub struct EngineOptions<'a> {
     pub workspace: &'a Workspace,
     pub config: &'a AppConfig,
     pub max_steps: u32,
+    /// Request-scoped selector override. Product/API callers use this instead
+    /// of mutating the persisted application configuration.
+    pub agent_selector: Option<String>,
     pub approval_policy: ApprovalPolicy,
     pub input_provider: Option<Arc<dyn UserInputProvider>>,
     pub approval_provider: Option<Arc<dyn ToolApprovalProvider>>,
@@ -38,11 +44,14 @@ pub async fn build_engine(mut options: EngineOptions<'_>) -> anyhow::Result<Engi
     )
     .await?;
     options.environment = Some(environment);
-    Ok(build_engine_with_registry(options, registry))
+    build_engine_with_registry(options, registry)
 }
 
 /// Build a product Engine when the caller already assembled a registry.
-pub fn build_engine_with_registry(options: EngineOptions<'_>, registry: ToolRegistry) -> Engine {
+pub fn build_engine_with_registry(
+    options: EngineOptions<'_>,
+    registry: ToolRegistry,
+) -> anyhow::Result<Engine> {
     let context_manager = ContextManager::with_token_budget(
         options.config.load_system_prompt(),
         ContextBudget {
@@ -55,6 +64,39 @@ pub fn build_engine_with_registry(options: EngineOptions<'_>, registry: ToolRegi
     let environment = options
         .environment
         .unwrap_or_else(|| local_environment(options.workspace));
+    let execution_policy =
+        options
+            .config
+            .runtime
+            .execution
+            .apply_to(ExecutionPolicy::from_max_steps_and_plan_flag(
+                options.max_steps,
+                true,
+            ));
+    let selector_text = options
+        .agent_selector
+        .as_deref()
+        .unwrap_or(&options.config.runtime.agent.selector);
+    let selector = AgentSelector::parse(selector_text).map_err(anyhow::Error::new)?;
+    let context_tokens = u32::try_from(options.config.runtime.context_hard_limit_tokens).ok();
+    let agent_activation = AgentActivationConfig {
+        selector,
+        workspace_source_authorized: options
+            .config
+            .project_capability_allowed(CAP_WORKSPACE_INSTRUCTIONS),
+        load_workspace_instructions: options.config.runtime.agent.workspace_instructions,
+        allow_remediation_procedures: options.config.runtime.agent.allow_remediation_procedures,
+        constraints: rove_runtime::agents::validation::OperatorConstraints {
+            max_steps_cap: Some(options.max_steps),
+            max_tool_calls_cap: execution_policy.budgets.max_tool_calls,
+            max_procedure_selections_cap: Some(
+                options.config.runtime.agent.max_procedure_selections,
+            ),
+            ..rove_runtime::agents::validation::OperatorConstraints::unconstrained()
+        },
+        context_tokens,
+    };
+
     let mut engine = Engine::with_workspace_and_approval_decision_and_environment(
         options.model,
         registry,
@@ -62,6 +104,9 @@ pub fn build_engine_with_registry(options: EngineOptions<'_>, registry: ToolRegi
         EngineConfig {
             max_steps: options.max_steps,
             plan_enabled: true,
+            // Configured dimensions overlay the deterministic projection, so an
+            // unconfigured deployment keeps its existing behavior exactly.
+            execution_policy: Some(execution_policy),
         },
         options.workspace.clone(),
         EngineEnvironmentOptions {
@@ -75,7 +120,9 @@ pub fn build_engine_with_registry(options: EngineOptions<'_>, registry: ToolRegi
     .with_model_compaction(
         options.config.runtime.model_compaction_enabled,
         options.config.runtime.compaction_failure_threshold,
-    );
+    )
+    .with_agent_activation(agent_activation)
+    .map_err(anyhow::Error::new)?;
 
     if let Some(input_provider) = options.input_provider {
         engine = engine.with_input_provider(input_provider);
@@ -84,5 +131,56 @@ pub fn build_engine_with_registry(options: EngineOptions<'_>, registry: ToolRegi
         engine = engine.with_approval_provider(approval_provider);
     }
 
-    engine
+    Ok(engine)
+}
+
+#[cfg(test)]
+mod tests {
+    use rove_core::ToolRegistry;
+    use rove_models::fake::FakeModelClient;
+    use rove_runtime::agents::AgentActivationError;
+    use rove_runtime::types::ApprovalPolicy;
+    use rove_runtime::workspace::Workspace;
+
+    use crate::{AppConfig, ProjectActivationState};
+
+    use super::{EngineOptions, build_engine_with_registry};
+
+    #[test]
+    fn workspace_agent_source_requires_the_independent_trust_capability() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let workspace = Workspace::detect(temp.path()).unwrap();
+        let mut config = AppConfig::default();
+        config.rebase_to_workspace(&workspace.root);
+        config.runtime.agent.selector = "workspace:ops".to_string();
+        config.source_summary.project_activation = ProjectActivationState::Restricted;
+        config
+            .source_summary
+            .project_trust_granted_capabilities
+            .clear();
+
+        let result = build_engine_with_registry(
+            EngineOptions {
+                model: Box::new(FakeModelClient::new("unused".to_string())),
+                workspace: &workspace,
+                config: &config,
+                max_steps: 2,
+                agent_selector: None,
+                approval_policy: ApprovalPolicy::Never,
+                input_provider: None,
+                approval_provider: None,
+                environment: None,
+            },
+            ToolRegistry::new(),
+        );
+        let error = match result {
+            Ok(_) => panic!("unauthorized workspace Agent must fail assembly"),
+            Err(error) => error,
+        };
+
+        let activation_error = error
+            .downcast_ref::<AgentActivationError>()
+            .expect("activation error must remain downcastable through anyhow");
+        assert_eq!(activation_error.code(), "workspace_source_not_authorized");
+    }
 }

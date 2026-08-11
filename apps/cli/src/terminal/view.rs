@@ -1036,6 +1036,137 @@ impl From<&StreamEvent> for RunViewUpdate {
                 job_id: *job_id,
                 user_message: user_message.clone(),
             },
+            StreamEvent::ExecutionStrategySelected { policy } => Self::ModelStatus {
+                status: "execution".to_string(),
+                message: format!("Execution strategy selected: {:?}.", policy.strategy),
+            },
+            StreamEvent::AgentProfileActivated {
+                identity,
+                resumed_from_snapshot,
+                diagnostics,
+            } => Self::ModelStatus {
+                status: "agent".to_string(),
+                message: format!(
+                    "Agent {} activated{} ({} diagnostic(s)).",
+                    identity.selector,
+                    if *resumed_from_snapshot {
+                        " from the saved snapshot"
+                    } else {
+                        ""
+                    },
+                    diagnostics.len()
+                ),
+            },
+            StreamEvent::WorkspaceInstructionsResolved {
+                layer_count,
+                rejected_count,
+                truncated,
+                ..
+            } => Self::ModelStatus {
+                status: "agent".to_string(),
+                message: format!(
+                    "Resolved {layer_count} workspace instruction layer(s), {rejected_count} rejected{}.",
+                    if *truncated { ", bounded" } else { "" }
+                ),
+            },
+            StreamEvent::InstructionOverlayApplied {
+                target_path, scope, ..
+            } => Self::ModelStatus {
+                status: "agent".to_string(),
+                message: format!(
+                    "Applied workspace instructions for {scope}/ to target {target_path}."
+                ),
+            },
+            StreamEvent::ProceduresSelected { selected, .. } => Self::ModelStatus {
+                status: "procedure".to_string(),
+                message: format!("Selected {} procedure(s).", selected.len()),
+            },
+            StreamEvent::ProcedureHydrated {
+                reference,
+                truncated,
+                ..
+            } => Self::ModelStatus {
+                status: "procedure".to_string(),
+                message: format!(
+                    "Hydrated procedure {}@{}{}.",
+                    reference.id,
+                    reference.version,
+                    if *truncated { " (bounded)" } else { "" }
+                ),
+            },
+            StreamEvent::ProcedureApplied { application } => Self::ModelStatus {
+                status: "procedure".to_string(),
+                message: format!(
+                    "Applied procedure {}@{} at {} boundary.",
+                    application.reference.id, application.reference.version, application.boundary
+                ),
+            },
+            StreamEvent::ProcedureDeviation { deviation, .. } => Self::ModelStatus {
+                status: "procedure".to_string(),
+                message: format!(
+                    "Procedure deviation ({:?}): {}",
+                    deviation.reason, deviation.safe_summary
+                ),
+            },
+            StreamEvent::ExecutionBudgetUpdated { phase, snapshot } => Self::ModelStatus {
+                status: "budget".to_string(),
+                message: snapshot.exhausted.as_ref().map_or_else(
+                    || format!("Execution budget updated after {phase:?}."),
+                    |exhaustion| exhaustion.safe_summary.clone(),
+                ),
+            },
+            StreamEvent::ExecutionDegraded { record } => Self::ModelStatus {
+                status: "degraded".to_string(),
+                message: record.safe_summary.clone(),
+            },
+            // Artifact events render as status lines: the terminal shows that
+            // a payload was retained or refused, never the payload itself.
+            StreamEvent::ToolArtifactStored { artifact, .. } => Self::ModelStatus {
+                status: "artifact".to_string(),
+                message: format!(
+                    "Stored {} artifact {} ({} bytes).",
+                    artifact.mime_type.as_deref().unwrap_or("unknown-type"),
+                    artifact.artifact_id,
+                    artifact.byte_length
+                ),
+            },
+            StreamEvent::ToolArtifactRejected {
+                reason,
+                observed_bytes,
+                block_ordinal,
+                ..
+            } => Self::ModelStatus {
+                status: "artifact".to_string(),
+                message: format!(
+                    "Refused artifact from block {block_ordinal} after {observed_bytes} bytes: {reason}."
+                ),
+            },
+            StreamEvent::McpServerDegraded {
+                server_config_id,
+                required,
+                failure_code,
+            } => Self::ModelStatus {
+                status: "mcp-degraded".to_string(),
+                message: format!(
+                    "MCP server {server_config_id}{} degraded: {failure_code}.",
+                    if *required { " (required)" } else { "" }
+                ),
+            },
+            StreamEvent::McpCapabilitiesRefreshed {
+                server_config_id,
+                added,
+                removed,
+                changed,
+                ..
+            } => Self::ModelStatus {
+                status: "mcp-refresh".to_string(),
+                message: format!(
+                    "MCP server {server_config_id} refreshed capabilities (+{}, -{}, ~{}).",
+                    added.len(),
+                    removed.len(),
+                    changed.len()
+                ),
+            },
             StreamEvent::LlmChunk { delta } => Self::AssistantDelta {
                 delta: delta.clone(),
             },
@@ -1100,6 +1231,17 @@ impl From<&StreamEvent> for RunViewUpdate {
             StreamEvent::PlanRevised { plan, revision } => Self::PlanRevised {
                 plan: plan.clone(),
                 revision: revision.as_ref().clone(),
+            },
+            StreamEvent::FinalizationStarted { .. } => Self::ModelStatus {
+                status: "finalizing".to_string(),
+                message: "Finalizing the run from recorded evidence.".to_string(),
+            },
+            StreamEvent::FinalizationCompleted { record } => Self::ModelStatus {
+                status: "finalized".to_string(),
+                message: record.outcome.map_or_else(
+                    || "Run finalization completed.".to_string(),
+                    |outcome| format!("Run finalization completed: {outcome:?}."),
+                ),
             },
             StreamEvent::PlanStepStarted { step, index, .. } => Self::PlanStepStarted {
                 step: step.clone(),
@@ -1198,12 +1340,15 @@ mod tests {
             tool_call_ids: Vec::new(),
             artifact_refs: Vec::new(),
             mutations: Vec::new(),
+            procedure_applications: Vec::new(),
+            procedure_deviations: Vec::new(),
             model_turns_used: 1,
             tool_calls_used: 0,
             token_usage: Usage::default(),
             error_code: None,
             safe_error_summary: None,
             supersedes_record_id: None,
+            ambiguity: None,
         }
     }
 
@@ -1267,6 +1412,7 @@ mod tests {
                     output: "done".to_string(),
                     mutations: Vec::new(),
                     metadata: Default::default(),
+                    envelope: None,
                 },
             },
             StreamEvent::ToolCallFailed {
@@ -1289,6 +1435,7 @@ mod tests {
                 step: step(),
                 index: 0,
                 attempt: Default::default(),
+                budget: Default::default(),
             },
             StreamEvent::StepResult {
                 record: Box::new(step_record()),
@@ -1467,12 +1614,15 @@ mod tests {
                 tool_call_ids: Vec::new(),
                 artifact_refs: Vec::new(),
                 mutations: Vec::new(),
+                procedure_applications: Vec::new(),
+                procedure_deviations: Vec::new(),
                 model_turns_used: 1,
                 tool_calls_used: 0,
                 token_usage: Usage::default(),
                 error_code: None,
                 safe_error_summary: None,
                 supersedes_record_id: None,
+                ambiguity: None,
             },
         });
 
@@ -1710,6 +1860,7 @@ mod tests {
                 output: "done".to_string(),
                 mutations: Vec::new(),
                 metadata: Default::default(),
+                envelope: None,
             },
         });
         state.apply_update(RunViewUpdate::PromptCompacted {

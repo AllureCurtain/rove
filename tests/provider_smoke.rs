@@ -88,6 +88,7 @@ async fn run_provider_smoke(
             max_steps: Some(3),
             api_bind_addr: None,
             trust_project: false,
+            agent_selector: None,
         },
     )
     .unwrap();
@@ -104,10 +105,7 @@ async fn run_provider_smoke(
         model_client,
         tool_registry(&workspace),
         ContextManager::new(config.load_system_prompt()),
-        EngineConfig {
-            max_steps: 3,
-            plan_enabled: false,
-        },
+        EngineConfig::new(3, false),
         workspace,
         ApprovalPolicy::Never,
     );

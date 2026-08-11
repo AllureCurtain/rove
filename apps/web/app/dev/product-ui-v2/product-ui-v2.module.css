@@ -81,13 +81,13 @@
   overflow: hidden;
   color: var(--v2-ink);
   background: var(--v2-canvas);
-  font-family: var(--font-geist-sans), ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   font-size: 14px;
   letter-spacing: 0;
   --v2-radius-xs: 3px;
   --v2-radius-sm: 5px;
   --v2-radius-md: 8px;
-  --v2-mono: var(--font-geist-mono), ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  --v2-mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
 }
 
 .preview *,

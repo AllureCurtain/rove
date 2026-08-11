@@ -10,7 +10,7 @@
 
 - **名字**: rove /roʊv/ (漫游、探索)
 - **语言**: Rust
-- **形态演进**: CLI → API → Web 管理端 → Desktop（Tauri，后置）
+- **形态演进**: CLI → API → Web 管理端 → Desktop（Tauri D0）
 - **位置**: `D:/Study/project/agent/rove/`
 
 ---
@@ -42,11 +42,11 @@
 | design | [模块化 Workspace 架构](./design/2026-07-22-modular-workspace-architecture.md) | Implemented: `models / core / runtime / apps` 四层结构 |
 | design | [Provider Layer 重构](./design/2026-07-23-provider-layer-redesign-design.md) | Accepted/implemented provider protocol registry and profiles |
 | design | [Cleanup & naming decisions](./design/2026-07-24-cleanup-and-naming-decisions.md) | Implemented: delete legacy, provider vocabulary, tools, W1–W3 |
-| design | [Agent Desktop + Web Shared UI](./design/2026-07-25-agent-desktop-web-ui-design.md) | Partially implemented: Web product work landed; Tauri Desktop remains future scope |
+| design | [Agent Desktop + Web Shared UI](./design/2026-07-25-agent-desktop-web-ui-design.md) | Partially implemented: Web product work is on main; Tauri Desktop D0 is implemented on the full-delivery branch |
 | design | [Web Complete](./design/2026-07-26-web-complete-design.md) | Implemented on `main`: C0-C3 persistence, continuity, Settings, migration, polish, and acceptance |
 | plan | [Cleanup W1/W2/W3 delivery](./plans/2026-07-24-cleanup-w1-w2-w3.md) | Completed implementation ledger |
 | plan | [Web Management M1 delivery](./plans/2026-07-25-web-management-m1.md) | Completed serial waves F0→F1→F2 on main |
-| plan | [Web → Desktop master delivery](./plans/2026-07-25-web-desktop-master-delivery.md) | Historical coordinator plan; Web delivery landed and Desktop is deferred |
+| plan | [Web → Desktop master delivery](./plans/2026-07-25-web-desktop-master-delivery.md) | Historical coordinator plan; Web landed on main and Desktop D0 is implemented on the full-delivery branch |
 | plan | [Web Complete delivery](./plans/2026-07-26-web-complete.md) | Completed C0-C3 delivery ledger |
 | plan | [CDH G1-G7 delivery](./plans/2026-08-03-cdh-alder-merge.md) | Completed through PR #29; G8 Desktop was out of scope |
 | plan | [Kernel, Message, and Provider Implementation](./plans/2026-08-06-kernel-message-provider-implementation.md) | Active brief for typed session/message contracts, provider normalization, and the shared kernel path |
@@ -54,7 +54,7 @@
 | future | [Agent Execution Lifecycle](./design/2026-07-14-agent-execution-lifecycle-design.md) | Partially implemented: StepRunner/ledger/revision/decisions landed; Finalizer/budgets remain |
 | future | [Agent Definition 与程序性知识](./design/2026-07-14-agent-definition-and-procedural-knowledge-design.md) | Proposed: versioned Agent profile、procedure 与 capability binding |
 | future | [MCP Streamable HTTP 与 Tool Artifacts](./design/2026-07-15-mcp-streamable-http-and-tool-artifacts-design.md) | Proposed: transport/session/result/artifact 演进 |
-| future | [OnCall Reference Agent Evaluation](./design/2026-07-15-oncall-reference-agent-evaluation-plan.md) | Proposed: 合成 reference Agent 与 deterministic evaluation |
+| future | [OnCall Reference Agent Evaluation](./design/2026-07-15-oncall-reference-agent-evaluation-plan.md) | Partially implemented: deterministic V2 suite is present; external/holdout evidence remains optional |
 | design | [Grok Build 借鉴与 TUI 方向](./design/2026-07-16-grok-build-reference-and-tui-design.md) | Bounded TUI MVP implemented; platform verification gap remains |
 
 ---

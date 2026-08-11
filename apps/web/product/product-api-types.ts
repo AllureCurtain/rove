@@ -1,19 +1,40 @@
 import {
+  ARTIFACT_VALIDATION_STATES,
   STREAM_EVENT_NAMES,
+  TOOL_ARTIFACT_KINDS,
+  TOOL_RESULT_OUTCOMES,
+  type AgentDiagnostic,
+  type AgentProfileIdentity,
+  type ExecutionBudgetExhaustion,
+  type ExecutionBudgetLimits,
+  type ExecutionBudgetSnapshot,
   type ExecutionBudgetUsage,
+  type ExecutionDegradation,
+  type ExecutionPolicy,
+  type FinalizationRecord,
+  type PlanAmbiguity,
   type PlanDecision,
   type PlanDecisionRecord,
   type PlanRevision,
   type PlanStep,
   type PromptCompactionState,
+  type ProcedureReference,
+  type ProcedureApplication,
+  type ProcedureCapabilityBinding,
+  type ProcedureDeviation,
   type RunStatus,
   type StepRecord,
   type StreamEvent,
   type TaskPlan,
+  type ToolArtifactRef,
+  type ToolArtifactSource,
   type ToolCallRef,
+  type ToolContentBlock,
+  type ToolContentBlockMeta,
   type ToolError,
   type ToolMutation,
   type ToolMutationOperation,
+  type ToolOutputEnvelope,
   type Usage,
 } from "../lib/rove-types";
 
@@ -305,6 +326,7 @@ export const PRODUCT_ARTIFACT_SOURCE_KINDS = [
   "task_state",
   "trace",
   "registered",
+  "tool_artifact",
 ] as const;
 export type ProductArtifactSourceKind =
   (typeof PRODUCT_ARTIFACT_SOURCE_KINDS)[number];
@@ -692,6 +714,12 @@ export interface ProductToolResult {
   output: string;
   mutations?: ToolMutation[];
   metadata: ProductToolExecutionMetadata;
+  /** Rich result detail, validated when the server sends it. */
+  envelope?: ToolOutputEnvelope;
+  /** Procedures applied during this tool call */
+  procedure_applications?: ProcedureApplication[];
+  /** Procedure deviations during this tool call */
+  procedure_deviations?: ProcedureDeviation[];
 }
 
 export interface ProductPromptBuildMetadata {
@@ -2389,6 +2417,133 @@ function parseToolExecutionMetadata(
   return metadata;
 }
 
+function parseProcedureReference(
+  value: unknown,
+  path: string,
+): ProcedureReference {
+  const record = expectRecord(value, path);
+  expectOnlyKeys(
+    record,
+    ["id", "version", "trust", "source_path", "content_hash"],
+    path,
+  );
+  return {
+    id: expectString(record.id, `${path}.id`, {
+      nonEmpty: true,
+      maxBytes: MAX_PRODUCT_TEXT_BYTES,
+      noControlCharacters: true,
+    }),
+    version: expectString(record.version, `${path}.version`, {
+      nonEmpty: true,
+      maxBytes: MAX_PRODUCT_TEXT_BYTES,
+      noControlCharacters: true,
+    }),
+    trust: expectEnum(
+      record.trust,
+      [
+        "builtin_trusted",
+        "workspace_trusted",
+        "user_installed",
+        "external_untrusted",
+      ] as const,
+      `${path}.trust`,
+    ),
+    source_path: expectString(record.source_path, `${path}.source_path`, {
+      nonEmpty: true,
+      maxBytes: MAX_PRODUCT_PATH_BYTES,
+      noControlCharacters: true,
+    }),
+    content_hash: expectString(record.content_hash, `${path}.content_hash`, {
+      nonEmpty: true,
+      maxBytes: MAX_PRODUCT_TEXT_BYTES,
+      noControlCharacters: true,
+    }),
+  };
+}
+
+function parseProcedureCapabilityBinding(value: unknown, path: string): ProcedureCapabilityBinding {
+  const record = expectRecord(value, path);
+  const binding: ProcedureCapabilityBinding = {
+    capability_id: expectString(record.capability_id, `${path}.capability_id`, { nonEmpty: true }),
+    available: expectBoolean(record.available, `${path}.available`),
+    approval_required: expectBoolean(record.approval_required, `${path}.approval_required`),
+  };
+  if (record.required !== undefined && record.required !== null) {
+    binding.required = expectBoolean(record.required, `${path}.required`);
+  }
+  if (record.tool_name !== undefined && record.tool_name !== null) {
+    binding.tool_name = expectString(record.tool_name, `${path}.tool_name`, { nonEmpty: true });
+  }
+  if (record.mutation_class !== undefined && record.mutation_class !== null) {
+    binding.mutation_class = expectEnum(record.mutation_class, ["read_only", "mutating"] as const, `${path}.mutation_class`);
+  }
+  return binding;
+}
+
+function parseProcedureApplication(value: unknown, path: string): ProcedureApplication {
+  const record = expectRecord(value, path);
+  const application: ProcedureApplication = {
+    application_id: expectString(record.application_id, `${path}.application_id`, { nonEmpty: true }),
+    reference: parseProcedureReference(record.reference, `${path}.reference`),
+    hydration_hash: expectString(record.hydration_hash, `${path}.hydration_hash`, { nonEmpty: true }),
+    capability_snapshot_id: expectString(record.capability_snapshot_id, `${path}.capability_snapshot_id`, { nonEmpty: true }),
+    risk_level: expectEnum(record.risk_level, ["low", "medium", "high"] as const, `${path}.risk_level`),
+    boundary: expectString(record.boundary, `${path}.boundary`, { nonEmpty: true }),
+  };
+  if (record.section_ids !== undefined && record.section_ids !== null) {
+    application.section_ids = parseStringArray(record.section_ids, `${path}.section_ids`);
+  }
+  if (record.side_effects !== undefined && record.side_effects !== null) {
+    application.side_effects = parseStringArray(record.side_effects, `${path}.side_effects`);
+  }
+  if (record.truncated !== undefined && record.truncated !== null) {
+    application.truncated = expectBoolean(record.truncated, `${path}.truncated`);
+  }
+  if (record.step_id !== undefined && record.step_id !== null) {
+    application.step_id = expectString(record.step_id, `${path}.step_id`, { nonEmpty: true });
+  }
+  if (record.capability_bindings !== undefined && record.capability_bindings !== null) {
+    application.capability_bindings = expectArray(
+      record.capability_bindings,
+      `${path}.capability_bindings`,
+      parseProcedureCapabilityBinding,
+    );
+  }
+  return application;
+}
+
+function parseProcedureDeviation(value: unknown, path: string): ProcedureDeviation {
+  const record = expectRecord(value, path);
+  const deviation: ProcedureDeviation = {
+    deviation_id: expectString(record.deviation_id, `${path}.deviation_id`, { nonEmpty: true }),
+    reference: parseProcedureReference(record.reference, `${path}.reference`),
+    reason: expectEnum(
+      record.reason,
+      [
+        "evidence_contradiction",
+        "capability_unavailable",
+        "preconditions_unsatisfied",
+        "user_constraint",
+        "procedure_stale",
+        "safer_alternative",
+        "runtime_failure",
+      ] as const,
+      `${path}.reason`,
+    ),
+    safe_summary: expectString(record.safe_summary, `${path}.safe_summary`),
+  };
+  if (record.application_id !== undefined && record.application_id !== null) {
+    deviation.application_id = expectString(record.application_id, `${path}.application_id`, { nonEmpty: true });
+  }
+  if (record.material !== undefined && record.material !== null) {
+    deviation.material = expectBoolean(record.material, `${path}.material`);
+  }
+  if (record.evidence_refs !== undefined && record.evidence_refs !== null) {
+    deviation.evidence_refs = parseStringArray(record.evidence_refs, `${path}.evidence_refs`);
+  }
+  return deviation;
+}
+
 function parseToolResult(value: unknown, path: string): ProductToolResult {
   const record = expectRecord(value, path);
   const result: ProductToolResult = {
@@ -2406,7 +2561,268 @@ function parseToolResult(value: unknown, path: string): ProductToolResult {
       parseToolMutation,
     );
   }
+  if (record.procedure_applications !== undefined && record.procedure_applications !== null) {
+    result.procedure_applications = expectArray(
+      record.procedure_applications,
+      `${path}.procedure_applications`,
+      parseProcedureApplication,
+    );
+  }
+  if (record.procedure_deviations !== undefined && record.procedure_deviations !== null) {
+    result.procedure_deviations = expectArray(
+      record.procedure_deviations,
+      `${path}.procedure_deviations`,
+      parseProcedureDeviation,
+    );
+  }
+  if (record.envelope !== undefined && record.envelope !== null) {
+    result.envelope = parseToolOutputEnvelope(
+      record.envelope,
+      `${path}.envelope`,
+    );
+  }
   return result;
+}
+
+function parseToolArtifactSource(
+  value: unknown,
+  path: string,
+): ToolArtifactSource {
+  const record = expectRecord(value, path);
+  const source: ToolArtifactSource = {
+    run_id: expectString(record.run_id, `${path}.run_id`, { nonEmpty: true }),
+    call_id: expectString(record.call_id, `${path}.call_id`, {
+      nonEmpty: true,
+    }),
+    block_ordinal: expectInteger(record.block_ordinal, `${path}.block_ordinal`, {
+      min: 0,
+    }),
+    captured_at: expectString(record.captured_at, `${path}.captured_at`, {
+      nonEmpty: true,
+    }),
+  };
+  for (const key of [
+    "server_config_id",
+    "server_identity_hash",
+    "session_hash",
+    "remote_tool_name",
+  ] as const) {
+    if (record[key] !== undefined && record[key] !== null) {
+      source[key] = expectString(record[key], `${path}.${key}`);
+    }
+  }
+  return source;
+}
+
+function parseToolArtifactRef(value: unknown, path: string): ToolArtifactRef {
+  const record = expectRecord(value, path);
+  const artifact: ToolArtifactRef = {
+    artifact_id: expectString(record.artifact_id, `${path}.artifact_id`, {
+      nonEmpty: true,
+    }),
+    kind: expectEnum(record.kind, TOOL_ARTIFACT_KINDS, `${path}.kind`),
+    byte_length: expectInteger(record.byte_length, `${path}.byte_length`, {
+      min: 0,
+    }),
+    sha256: expectString(record.sha256, `${path}.sha256`, { nonEmpty: true }),
+    storage_ref: expectString(record.storage_ref, `${path}.storage_ref`, {
+      nonEmpty: true,
+    }),
+    source: parseToolArtifactSource(record.source, `${path}.source`),
+  };
+  if (record.mime_type !== undefined && record.mime_type !== null) {
+    artifact.mime_type = expectString(record.mime_type, `${path}.mime_type`);
+  }
+  if (record.original_uri !== undefined && record.original_uri !== null) {
+    artifact.original_uri = expectString(
+      record.original_uri,
+      `${path}.original_uri`,
+    );
+  }
+  if (record.validation !== undefined && record.validation !== null) {
+    artifact.validation = expectEnum(
+      record.validation,
+      ARTIFACT_VALIDATION_STATES,
+      `${path}.validation`,
+    );
+  }
+  if (record.sensitivity !== undefined && record.sensitivity !== null) {
+    artifact.sensitivity = expectEnum(
+      record.sensitivity,
+      ["normal", "sensitive"] as const,
+      `${path}.sensitivity`,
+    );
+  }
+  if (record.trust !== undefined && record.trust !== null) {
+    artifact.trust = expectEnum(
+      record.trust,
+      ["untrusted", "local_tool"] as const,
+      `${path}.trust`,
+    );
+  }
+  return artifact;
+}
+
+function parseToolOutputEnvelope(
+  value: unknown,
+  path: string,
+): ToolOutputEnvelope {
+  const record = expectRecord(value, path);
+  const envelope: ToolOutputEnvelope = {
+    summary_text: expectString(record.summary_text, `${path}.summary_text`),
+  };
+  if (record.outcome !== undefined && record.outcome !== null) {
+    envelope.outcome = expectEnum(
+      record.outcome,
+      TOOL_RESULT_OUTCOMES,
+      `${path}.outcome`,
+    );
+  }
+  if (record.artifacts !== undefined && record.artifacts !== null) {
+    envelope.artifacts = expectArray(
+      record.artifacts,
+      `${path}.artifacts`,
+      parseToolArtifactRef,
+    );
+  }
+  // Content blocks, structured content, protocol metadata, effects, and
+  // diagnostics are passed through as validated-shape records rather than
+  // re-modelled here: the server is the authority on their contents, and the
+  // UI reads them through narrow accessors.
+  if (record.content_blocks !== undefined && record.content_blocks !== null) {
+    envelope.content_blocks = expectArray(
+      record.content_blocks,
+      `${path}.content_blocks`,
+      (block, blockPath) =>
+        parseToolContentBlock(block, blockPath),
+    );
+  }
+  if (record.diagnostics !== undefined && record.diagnostics !== null) {
+    envelope.diagnostics = expectArray(
+      record.diagnostics,
+      `${path}.diagnostics`,
+      (diagnostic, diagnosticPath) => {
+        const entry = expectRecord(diagnostic, diagnosticPath);
+        return {
+          domain: expectString(entry.domain, `${diagnosticPath}.domain`),
+          code: expectString(entry.code, `${diagnosticPath}.code`),
+          message: expectString(entry.message, `${diagnosticPath}.message`),
+        };
+      },
+    );
+  }
+  if (
+    record.external_effects !== undefined &&
+    record.external_effects !== null
+  ) {
+    envelope.external_effects = expectArray(
+      record.external_effects,
+      `${path}.external_effects`,
+      (effect, effectPath) => {
+        const entry = expectRecord(effect, effectPath);
+        return {
+          kind: expectString(entry.kind, `${effectPath}.kind`),
+          target: expectString(entry.target, `${effectPath}.target`),
+          indeterminate:
+            entry.indeterminate === undefined || entry.indeterminate === null
+              ? undefined
+              : expectBoolean(
+                  entry.indeterminate,
+                  `${effectPath}.indeterminate`,
+                ),
+        };
+      },
+    );
+  }
+  return envelope;
+}
+
+function parseToolContentBlockMeta(
+  value: unknown,
+  path: string,
+): ToolContentBlockMeta {
+  const record = expectRecord(value, path);
+  const meta: ToolContentBlockMeta = {
+    ordinal: expectInteger(record.ordinal, `${path}.ordinal`, { min: 0 }),
+  };
+  if (record.mime_type !== undefined && record.mime_type !== null) {
+    meta.mime_type = expectString(record.mime_type, `${path}.mime_type`);
+  }
+  if (record.truncated !== undefined && record.truncated !== null) {
+    meta.truncated = expectBoolean(record.truncated, `${path}.truncated`);
+  }
+  if (record.validation !== undefined && record.validation !== null) {
+    meta.validation = expectEnum(
+      record.validation,
+      ARTIFACT_VALIDATION_STATES,
+      `${path}.validation`,
+    );
+  }
+  return meta;
+}
+
+function parseToolContentBlock(
+  value: unknown,
+  path: string,
+): ToolContentBlock {
+  const record = expectRecord(value, path);
+  const type = expectEnum(
+    record.type,
+    [
+      "text",
+      "image",
+      "audio",
+      "resource_link",
+      "embedded_resource",
+      "unknown",
+    ] as const,
+    `${path}.type`,
+  );
+  const meta = parseToolContentBlockMeta(record.meta, `${path}.meta`);
+  switch (type) {
+    case "text":
+      return { type, meta, text: expectString(record.text, `${path}.text`) };
+    case "image":
+    case "audio":
+      return {
+        type,
+        meta,
+        artifact: parseToolArtifactRef(record.artifact, `${path}.artifact`),
+      };
+    case "resource_link":
+      return {
+        type,
+        meta,
+        uri: expectString(record.uri, `${path}.uri`, { nonEmpty: true }),
+        name:
+          record.name === undefined || record.name === null
+            ? undefined
+            : expectString(record.name, `${path}.name`),
+      };
+    case "embedded_resource":
+      return {
+        type,
+        meta,
+        artifact: parseToolArtifactRef(record.artifact, `${path}.artifact`),
+        preview:
+          record.preview === undefined || record.preview === null
+            ? undefined
+            : expectString(record.preview, `${path}.preview`),
+      };
+    case "unknown":
+      return {
+        type,
+        meta,
+        declared_type: expectString(
+          record.declared_type,
+          `${path}.declared_type`,
+        ),
+        retained:
+          record.retained === undefined || record.retained === null
+            ? undefined
+            : expectString(record.retained, `${path}.retained`),
+      };
+  }
 }
 
 function parseToolCallRef(value: unknown, path: string): ToolCallRef {
@@ -2433,6 +2849,14 @@ function parseToolError(value: unknown, path: string): ToolError {
   return error;
 }
 
+/** An additive counter that older payloads may omit entirely. */
+function optionalCounter(value: unknown, path: string): number {
+  if (value === undefined || value === null) {
+    return 0;
+  }
+  return expectInteger(value, path, { min: 0 });
+}
+
 function parseExecutionBudgetUsage(
   value: unknown,
   path: string,
@@ -2451,6 +2875,22 @@ function parseExecutionBudgetUsage(
       record.plan_revisions,
       `${path}.plan_revisions`,
       { min: 0 },
+    ),
+    // Additive per-phase counters. Older payloads omit them, so they default to
+    // zero rather than failing a snapshot that is otherwise valid.
+    model_repairs: optionalCounter(record.model_repairs, `${path}.model_repairs`),
+    planner_turns: optionalCounter(record.planner_turns, `${path}.planner_turns`),
+    evaluator_turns: optionalCounter(
+      record.evaluator_turns,
+      `${path}.evaluator_turns`,
+    ),
+    replanner_turns: optionalCounter(
+      record.replanner_turns,
+      `${path}.replanner_turns`,
+    ),
+    finalization_turns: optionalCounter(
+      record.finalization_turns,
+      `${path}.finalization_turns`,
     ),
     wall_time_ms: expectInteger(record.wall_time_ms, `${path}.wall_time_ms`, {
       min: 0,
@@ -2552,10 +2992,12 @@ function parseStepRecord(value: unknown, path: string): StepRecord {
         "partial",
         "failed",
         "blocked",
+        "rejected",
         "skipped",
         "budget_exhausted",
         "cancelled",
         "interrupted",
+        "indeterminate",
       ] as const,
       `${path}.status`,
     ),
@@ -2619,7 +3061,273 @@ function parseStepRecord(value: unknown, path: string): StepRecord {
     "supersedes_record_id",
     optionalString(record, "supersedes_record_id", path),
   );
+  if (record.ambiguity !== undefined && record.ambiguity !== null) {
+    stepRecord.ambiguity = parsePlanAmbiguity(
+      record.ambiguity,
+      `${path}.ambiguity`,
+    );
+  }
   return stepRecord;
+}
+
+function parsePlanAmbiguity(value: unknown, path: string): PlanAmbiguity {
+  const record = expectRecord(value, path);
+  const ambiguity: PlanAmbiguity = {
+    kind: expectEnum(
+      record.kind,
+      [
+        "remaining_work_may_be_unnecessary",
+        "plan_assumption_may_be_invalid",
+        "recoverable_alternative_may_exist",
+        "goal_may_be_partially_satisfied",
+        "remaining_dependencies_may_need_reordering",
+      ] as const,
+      `${path}.kind`,
+    ),
+    safe_summary: expectString(record.safe_summary, `${path}.safe_summary`),
+  };
+  if (record.evidence_refs !== undefined && record.evidence_refs !== null) {
+    ambiguity.evidence_refs = parseStringArray(
+      record.evidence_refs,
+      `${path}.evidence_refs`,
+    );
+  }
+  return ambiguity;
+}
+
+const EXECUTION_PHASES = [
+  "planner",
+  "step",
+  "evaluator",
+  "replanner",
+  "finalizer",
+  "run",
+] as const;
+
+const EXECUTION_BUDGET_DIMENSIONS = [
+  "plan_steps",
+  "step_attempts",
+  "model_turns",
+  "model_turns_per_step",
+  "tool_calls",
+  "tool_calls_per_step",
+  "plan_revisions",
+  "model_repairs",
+  "finalization_turns",
+  "wall_time",
+  "total_tokens",
+  "cost",
+] as const;
+
+const PLAN_FINISH_REASONS = [
+  "completed",
+  "partial",
+  "blocked",
+  "budget_exhausted",
+  "failed",
+  "cancelled",
+  "interrupted",
+  "rejected",
+  "indeterminate",
+] as const;
+
+function parseExecutionBudgetLimits(
+  value: unknown,
+  path: string,
+): ExecutionBudgetLimits {
+  const record = expectRecord(value, path);
+  const limits: ExecutionBudgetLimits = {};
+  for (const key of [
+    "max_plan_steps",
+    "max_step_attempts",
+    "max_model_turns",
+    "max_model_turns_per_step",
+    "max_tool_calls",
+    "max_tool_calls_per_step",
+    "max_plan_revisions",
+    "max_model_repairs",
+    "max_finalization_turns",
+    "max_wall_time_ms",
+    "max_total_tokens",
+    "max_cost_microunits",
+  ] as const) {
+    // An unset dimension stays absent rather than becoming a fabricated bound.
+    if (record[key] !== undefined && record[key] !== null) {
+      limits[key] = expectInteger(record[key], `${path}.${key}`, { min: 1 });
+    }
+  }
+  return limits;
+}
+
+function parseExecutionBudgetExhaustion(
+  value: unknown,
+  path: string,
+): ExecutionBudgetExhaustion {
+  const record = expectRecord(value, path);
+  return {
+    dimension: expectEnum(
+      record.dimension,
+      EXECUTION_BUDGET_DIMENSIONS,
+      `${path}.dimension`,
+    ),
+    phase: expectEnum(record.phase, EXECUTION_PHASES, `${path}.phase`),
+    limit: expectInteger(record.limit, `${path}.limit`, { min: 0 }),
+    consumed: expectInteger(record.consumed, `${path}.consumed`, { min: 0 }),
+    safe_summary: expectString(record.safe_summary, `${path}.safe_summary`),
+  };
+}
+
+function parseExecutionBudgetSnapshot(
+  value: unknown,
+  path: string,
+): ExecutionBudgetSnapshot {
+  const record = expectRecord(value, path);
+  const snapshot: ExecutionBudgetSnapshot = {
+    limits: parseExecutionBudgetLimits(record.limits ?? {}, `${path}.limits`),
+    consumed: parseExecutionBudgetUsage(record.consumed, `${path}.consumed`),
+    cost_enforced: optionalBoolean(record, "cost_enforced", path) ?? false,
+  };
+  if (record.exhausted !== undefined && record.exhausted !== null) {
+    snapshot.exhausted = parseExecutionBudgetExhaustion(
+      record.exhausted,
+      `${path}.exhausted`,
+    );
+  }
+  return snapshot;
+}
+
+function parseExecutionPolicy(value: unknown, path: string): ExecutionPolicy {
+  const record = expectRecord(value, path);
+  const policy: ExecutionPolicy = {
+    version: expectInteger(record.version, `${path}.version`, { min: 0 }),
+    strategy: expectEnum(
+      record.strategy,
+      ["react", "plan_react"] as const,
+      `${path}.strategy`,
+    ),
+    selection_source: expectEnum(
+      record.selection_source,
+      [
+        "request",
+        "session",
+        "config",
+        "compatibility_default",
+        "max_steps_and_plan_flag",
+      ] as const,
+      `${path}.selection_source`,
+    ),
+    budgets: parseExecutionBudgetLimits(
+      record.budgets ?? {},
+      `${path}.budgets`,
+    ),
+  };
+  if (record.evaluator_mode !== undefined && record.evaluator_mode !== null) {
+    policy.evaluator_mode = expectEnum(
+      record.evaluator_mode,
+      ["rule_only", "rule_first_model_on_ambiguity"] as const,
+      `${path}.evaluator_mode`,
+    );
+  }
+  if (record.finalizer_policy !== undefined && record.finalizer_policy !== null) {
+    policy.finalizer_policy = expectEnum(
+      record.finalizer_policy,
+      ["deterministic", "model_preferred"] as const,
+      `${path}.finalizer_policy`,
+    );
+  }
+  return policy;
+}
+
+function parseExecutionDegradation(
+  value: unknown,
+  path: string,
+): ExecutionDegradation {
+  const record = expectRecord(value, path);
+  return {
+    degradation_id: expectString(
+      record.degradation_id,
+      `${path}.degradation_id`,
+      { nonEmpty: true },
+    ),
+    phase: expectEnum(record.phase, EXECUTION_PHASES, `${path}.phase`),
+    code: expectString(record.code, `${path}.code`, { nonEmpty: true }),
+    safe_summary: expectString(record.safe_summary, `${path}.safe_summary`),
+    occurred_at: expectString(record.occurred_at, `${path}.occurred_at`, {
+      nonEmpty: true,
+    }),
+  };
+}
+
+function parseFinalizationRecord(
+  value: unknown,
+  path: string,
+): FinalizationRecord {
+  const record = expectRecord(value, path);
+  const finalization: FinalizationRecord = {
+    finalization_id: expectString(
+      record.finalization_id,
+      `${path}.finalization_id`,
+      { nonEmpty: true },
+    ),
+    phase: expectEnum(
+      record.phase,
+      ["started", "completed"] as const,
+      `${path}.phase`,
+    ),
+    finish_reason: expectEnum(
+      record.finish_reason,
+      PLAN_FINISH_REASONS,
+      `${path}.finish_reason`,
+    ),
+    mode: expectEnum(
+      record.mode,
+      ["direct", "model", "deterministic", "deterministic_fallback"] as const,
+      `${path}.mode`,
+    ),
+    started_at: expectString(record.started_at, `${path}.started_at`, {
+      nonEmpty: true,
+    }),
+  };
+  if (record.outcome !== undefined && record.outcome !== null) {
+    finalization.outcome = expectEnum(
+      record.outcome,
+      [
+        "success",
+        "partial",
+        "blocked",
+        "rejected",
+        "cancelled",
+        "interrupted",
+        "exhausted",
+        "indeterminate",
+        "failed",
+      ] as const,
+      `${path}.outcome`,
+    );
+  }
+  assignOptional(
+    finalization,
+    "completed_at",
+    optionalString(record, "completed_at", path, { nonEmpty: true }),
+  );
+  const output = optionalNullableString(record, "output", path);
+  if (output !== undefined) {
+    finalization.output = output;
+  }
+  for (const key of ["evidence_refs", "incomplete_step_ids"] as const) {
+    if (record[key] !== undefined && record[key] !== null) {
+      finalization[key] = parseStringArray(record[key], `${path}.${key}`);
+    }
+  }
+  for (const key of ["budget_before", "budget_after"] as const) {
+    if (record[key] !== undefined && record[key] !== null) {
+      finalization[key] = parseExecutionBudgetUsage(
+        record[key],
+        `${path}.${key}`,
+      );
+    }
+  }
+  return finalization;
 }
 
 function parsePlanDecision(value: unknown, path: string): PlanDecision {
@@ -2776,6 +3484,119 @@ function parsePromptBuildMetadata(
   return metadata;
 }
 
+function parseAgentProfileIdentity(
+  value: unknown,
+  path: string,
+): AgentProfileIdentity {
+  const record = expectRecord(value, path);
+  expectOnlyKeys(
+    record,
+    [
+      "selector",
+      "agent_id",
+      "display_name",
+      "definition_version",
+      "manifest_hash",
+      "package_hash",
+      "profile_hash",
+      "instruction_bundle_hash",
+      "procedures",
+    ],
+    path,
+  );
+  const selectorRecord = expectRecord(record.selector, `${path}.selector`);
+  expectOnlyKeys(selectorRecord, ["source", "agent_id"], `${path}.selector`);
+  const identity: AgentProfileIdentity = {
+    selector: {
+      source: expectEnum(
+        selectorRecord.source,
+        ["builtin", "workspace"] as const,
+        `${path}.selector.source`,
+      ),
+      agent_id: expectString(
+        selectorRecord.agent_id,
+        `${path}.selector.agent_id`,
+        {
+          nonEmpty: true,
+          maxBytes: MAX_PRODUCT_TEXT_BYTES,
+          noControlCharacters: true,
+        },
+      ),
+    },
+    agent_id: expectString(record.agent_id, `${path}.agent_id`, {
+      nonEmpty: true,
+      maxBytes: MAX_PRODUCT_TEXT_BYTES,
+      noControlCharacters: true,
+    }),
+    display_name: expectString(record.display_name, `${path}.display_name`, {
+      nonEmpty: true,
+      maxBytes: MAX_PRODUCT_TEXT_BYTES,
+      noControlCharacters: true,
+    }),
+    definition_version: expectString(
+      record.definition_version,
+      `${path}.definition_version`,
+      {
+        nonEmpty: true,
+        maxBytes: MAX_PRODUCT_TEXT_BYTES,
+        noControlCharacters: true,
+      },
+    ),
+    manifest_hash: expectString(record.manifest_hash, `${path}.manifest_hash`, {
+      nonEmpty: true,
+      maxBytes: MAX_PRODUCT_TEXT_BYTES,
+      noControlCharacters: true,
+    }),
+    package_hash: expectString(record.package_hash, `${path}.package_hash`, {
+      nonEmpty: true,
+      maxBytes: MAX_PRODUCT_TEXT_BYTES,
+      noControlCharacters: true,
+    }),
+    profile_hash: expectString(record.profile_hash, `${path}.profile_hash`, {
+      nonEmpty: true,
+      maxBytes: MAX_PRODUCT_TEXT_BYTES,
+      noControlCharacters: true,
+    }),
+  };
+  assignOptional(
+    identity,
+    "instruction_bundle_hash",
+    optionalString(record, "instruction_bundle_hash", path, {
+      nonEmpty: true,
+      maxBytes: MAX_PRODUCT_TEXT_BYTES,
+      noControlCharacters: true,
+    }),
+  );
+  if (record.procedures !== undefined && record.procedures !== null) {
+    identity.procedures = expectArray(
+      record.procedures,
+      `${path}.procedures`,
+      parseProcedureReference,
+    );
+  }
+  return identity;
+}
+
+function parseAgentDiagnostic(value: unknown, path: string): AgentDiagnostic {
+  const record = expectRecord(value, path);
+  expectOnlyKeys(record, ["code", "subject", "message"], path);
+  return {
+    code: expectString(record.code, `${path}.code`, {
+      nonEmpty: true,
+      maxBytes: MAX_PRODUCT_TEXT_BYTES,
+      noControlCharacters: true,
+    }),
+    subject: expectString(record.subject, `${path}.subject`, {
+      maxBytes: MAX_PRODUCT_TEXT_BYTES,
+      noControlCharacters: true,
+    }),
+    message: expectString(record.message, `${path}.message`, {
+      maxBytes: MAX_PRODUCT_TEXT_BYTES,
+      noControlCharacters: true,
+    }),
+  };
+}
+
 export function parseStreamEvent(
   value: unknown,
   path = "stream event",
@@ -2789,6 +3610,151 @@ export function parseStreamEvent(
         run_id: expectId(record.run_id, `${path}.run_id`),
         job_id: expectId(record.job_id, `${path}.job_id`),
         user_message: expectString(record.user_message, `${path}.user_message`),
+      };
+    case "agent_profile_activated": {
+      const event: Extract<
+        ProductStreamEvent,
+        { type: "agent_profile_activated" }
+      > = {
+        type,
+        identity: parseAgentProfileIdentity(record.identity, `${path}.identity`),
+        resumed_from_snapshot: expectBoolean(
+          record.resumed_from_snapshot,
+          `${path}.resumed_from_snapshot`,
+        ),
+      };
+      if (record.diagnostics !== undefined && record.diagnostics !== null) {
+        event.diagnostics = expectArray(
+          record.diagnostics,
+          `${path}.diagnostics`,
+          parseAgentDiagnostic,
+        );
+      }
+      return event;
+    }
+    case "workspace_instructions_resolved":
+      return {
+        type,
+        bundle_hash: expectString(record.bundle_hash, `${path}.bundle_hash`, {
+          nonEmpty: true,
+          maxBytes: MAX_PRODUCT_TEXT_BYTES,
+          noControlCharacters: true,
+        }),
+        layer_count: expectInteger(record.layer_count, `${path}.layer_count`, {
+          min: 0,
+        }),
+        rejected_count: expectInteger(
+          record.rejected_count,
+          `${path}.rejected_count`,
+          { min: 0 },
+        ),
+        truncated: expectBoolean(record.truncated, `${path}.truncated`),
+      };
+    case "instruction_overlay_applied": {
+      const event: Extract<
+        ProductStreamEvent,
+        { type: "instruction_overlay_applied" }
+      > = {
+        type,
+        target_path: expectString(record.target_path, `${path}.target_path`, {
+          nonEmpty: true,
+          maxBytes: MAX_PRODUCT_PATH_BYTES,
+          noControlCharacters: true,
+        }),
+        scope: expectString(record.scope, `${path}.scope`, {
+          nonEmpty: true,
+          maxBytes: MAX_PRODUCT_PATH_BYTES,
+          noControlCharacters: true,
+        }),
+        source_path: expectString(record.source_path, `${path}.source_path`, {
+          nonEmpty: true,
+          maxBytes: MAX_PRODUCT_PATH_BYTES,
+          noControlCharacters: true,
+        }),
+        content_hash: expectString(record.content_hash, `${path}.content_hash`, {
+          nonEmpty: true,
+          maxBytes: MAX_PRODUCT_TEXT_BYTES,
+          noControlCharacters: true,
+        }),
+        boundary: expectString(record.boundary, `${path}.boundary`, {
+          nonEmpty: true,
+          maxBytes: MAX_PRODUCT_TEXT_BYTES,
+          noControlCharacters: true,
+        }),
+      };
+      if (record.call_id !== undefined && record.call_id !== null) {
+        event.call_id = expectId(record.call_id, `${path}.call_id`);
+      }
+      return event;
+    }
+    case "procedures_selected": {
+      const event: Extract<
+        ProductStreamEvent,
+        { type: "procedures_selected" }
+      > = {
+        type,
+        profile_hash: expectString(
+          record.profile_hash,
+          `${path}.profile_hash`,
+          {
+            nonEmpty: true,
+            maxBytes: MAX_PRODUCT_TEXT_BYTES,
+            noControlCharacters: true,
+          },
+        ),
+        considered_count: expectInteger(
+          record.considered_count,
+          `${path}.considered_count`,
+          { min: 0 },
+        ),
+        excluded_count: expectInteger(
+          record.excluded_count,
+          `${path}.excluded_count`,
+          { min: 0 },
+        ),
+      };
+      if (record.selected !== undefined && record.selected !== null) {
+        event.selected = expectArray(
+          record.selected,
+          `${path}.selected`,
+          parseProcedureReference,
+        );
+      }
+      return event;
+    }
+    case "procedure_hydrated":
+      {
+        const event: Extract<ProductStreamEvent, { type: "procedure_hydrated" }> = {
+        type,
+        reference: parseProcedureReference(
+          record.reference,
+          `${path}.reference`,
+        ),
+        truncated: expectBoolean(record.truncated, `${path}.truncated`),
+        dropped_bytes: expectInteger(
+          record.dropped_bytes,
+          `${path}.dropped_bytes`,
+          { min: 0 },
+        ),
+        };
+        if (record.step_id !== undefined && record.step_id !== null) {
+          event.step_id = expectString(record.step_id, `${path}.step_id`, { nonEmpty: true });
+        }
+        if (record.hydration_hash !== undefined && record.hydration_hash !== null) {
+          event.hydration_hash = expectString(record.hydration_hash, `${path}.hydration_hash`, { nonEmpty: true });
+        }
+        return event;
+      }
+    case "procedure_applied":
+      return {
+        type,
+        application: parseProcedureApplication(record.application, `${path}.application`),
+      };
+    case "procedure_deviation":
+      return {
+        type,
+        record_id: expectString(record.record_id, `${path}.record_id`, { nonEmpty: true }),
+        deviation: parseProcedureDeviation(record.deviation, `${path}.deviation`),
       };
     case "llm_chunk":
       return { type, delta: expectString(record.delta, `${path}.delta`) };
@@ -2840,6 +3806,83 @@ export function parseStreamEvent(
         call_id: expectId(record.call_id, `${path}.call_id`),
         result: parseToolResult(record.result, `${path}.result`),
       };
+    case "tool_artifact_stored":
+      return {
+        type,
+        call_id: expectId(record.call_id, `${path}.call_id`),
+        artifact: parseToolArtifactRef(record.artifact, `${path}.artifact`),
+      };
+    case "tool_artifact_rejected":
+      return {
+        type,
+        call_id: expectId(record.call_id, `${path}.call_id`),
+        block_ordinal: expectInteger(
+          record.block_ordinal,
+          `${path}.block_ordinal`,
+          { min: 0 },
+        ),
+        reason: expectString(record.reason, `${path}.reason`, {
+          nonEmpty: true,
+        }),
+        observed_bytes: expectInteger(
+          record.observed_bytes,
+          `${path}.observed_bytes`,
+          { min: 0 },
+        ),
+      };
+    case "mcp_server_degraded":
+      return {
+        type,
+        server_config_id: expectString(
+          record.server_config_id,
+          `${path}.server_config_id`,
+          {
+            nonEmpty: true,
+            maxBytes: MAX_PRODUCT_TEXT_BYTES,
+            noControlCharacters: true,
+          },
+        ),
+        required: expectBoolean(record.required, `${path}.required`),
+        failure_code: expectString(record.failure_code, `${path}.failure_code`, {
+          nonEmpty: true,
+          maxBytes: MAX_PRODUCT_TEXT_BYTES,
+          noControlCharacters: true,
+        }),
+      };
+    case "mcp_capabilities_refreshed": {
+      const names = (key: "added" | "removed" | "changed") =>
+        expectArray(
+          record[key],
+          `${path}.${key}`,
+          (value, itemPath) =>
+            expectString(value, itemPath, {
+              nonEmpty: true,
+              maxBytes: MAX_PRODUCT_TEXT_BYTES,
+              noControlCharacters: true,
+            }),
+          128,
+        );
+      return {
+        type,
+        server_config_id: expectString(
+          record.server_config_id,
+          `${path}.server_config_id`,
+          {
+            nonEmpty: true,
+            maxBytes: MAX_PRODUCT_TEXT_BYTES,
+            noControlCharacters: true,
+          },
+        ),
+        snapshot_id: expectString(record.snapshot_id, `${path}.snapshot_id`, {
+          nonEmpty: true,
+          maxBytes: MAX_PRODUCT_TEXT_BYTES,
+          noControlCharacters: true,
+        }),
+        added: names("added"),
+        removed: names("removed"),
+        changed: names("changed"),
+      };
+    }
     case "tool_call_failed":
       return {
         type,
@@ -2903,6 +3946,12 @@ export function parseStreamEvent(
         "started_at",
         optionalString(record, "started_at", path),
       );
+      if (record.budget !== undefined && record.budget !== null) {
+        event.budget = parseExecutionBudgetSnapshot(
+          record.budget,
+          `${path}.budget`,
+        );
+      }
       return event;
     }
     case "step_result":
@@ -2920,6 +3969,31 @@ export function parseStreamEvent(
         type,
         plan: parseTaskPlan(record.plan, `${path}.plan`),
         revision: parsePlanRevision(record.revision, `${path}.revision`),
+      };
+    case "execution_strategy_selected":
+      return {
+        type,
+        policy: parseExecutionPolicy(record.policy, `${path}.policy`),
+      };
+    case "execution_budget_updated":
+      return {
+        type,
+        phase: expectEnum(record.phase, EXECUTION_PHASES, `${path}.phase`),
+        snapshot: parseExecutionBudgetSnapshot(
+          record.snapshot,
+          `${path}.snapshot`,
+        ),
+      };
+    case "execution_degraded":
+      return {
+        type,
+        record: parseExecutionDegradation(record.record, `${path}.record`),
+      };
+    case "finalization_started":
+    case "finalization_completed":
+      return {
+        type,
+        record: parseFinalizationRecord(record.record, `${path}.record`),
       };
     case "prompt_compacted": {
       const event: Extract<ProductStreamEvent, { type: "prompt_compacted" }> = {

@@ -29,6 +29,7 @@ use rove_core::ToolError;
 use rove_models::ModelClient;
 use rove_models::fake::FakeModelClient;
 use rove_models::health::{HealthConfig, ModelHealthStore};
+use rove_runtime::agents::{AgentActivationError, SelectorError};
 use rove_runtime::engine::{Engine, RunControlHandle};
 use rove_runtime::events::StreamEvent;
 use rove_runtime::state::artifacts::RunArtifactRecorder;
@@ -36,6 +37,7 @@ use rove_runtime::state::index::{ResumeJobClaim, RunIndexRecord, StateIndex};
 use rove_runtime::state::resume::resolve_resume_state;
 use rove_runtime::state::store::{RunHandle, StateStore};
 use rove_runtime::state::trace::TraceWriter;
+use rove_runtime::tools::mcp_proxy::McpServerRuntimeSnapshot;
 use rove_runtime::types::{
     ApprovalDecision, ApprovalPolicy, CallId, JobId, Message, PendingToolApproval,
     PendingUserInput, Role, RunId, RunStatus, SessionId, TaskState, TerminationReason,
@@ -79,6 +81,7 @@ struct ApiStateInner {
     job_starts: TaskTracker,
     supervisors: TaskTracker,
     jobs: RwLock<HashMap<JobId, Arc<JobRecord>>>,
+    mcp_health: RwLock<HashMap<PathBuf, Vec<McpServerRuntimeSnapshot>>>,
     model_health: Arc<ModelHealthStore>,
     rate_limit: tokio::sync::Mutex<RateLimitState>,
     bench_runs: Arc<BenchState>,
@@ -272,6 +275,7 @@ pub fn router(state: ApiState) -> Router {
         .routes(routes!(product::platform::update_product_memory_topic))
         .routes(routes!(product::platform::delete_product_memory_topic))
         .routes(routes!(product::mcp::list_product_mcp_servers))
+        .routes(routes!(product::mcp::get_product_mcp_health))
         .routes(routes!(product::mcp::create_product_mcp_server))
         .routes(routes!(product::mcp::update_product_mcp_server))
         .routes(routes!(product::mcp::delete_product_mcp_server))
@@ -353,6 +357,49 @@ pub async fn serve_with_shutdown(
     let addr: SocketAddr = config.api.bind_addr.parse()?;
     let state = ApiState::with_shutdown(workspace, config, shutdown.clone());
     let listener = tokio::net::TcpListener::bind(addr).await?;
+    serve_state_listener(listener, state).await
+}
+
+/// Assemble API state for a trusted in-process delivery host. The API crate
+/// retains ownership of AppConfig, Workspace, and ProductStore wiring so an
+/// embedding host does not reproduce backend assembly across package layers.
+pub fn embedded_api_state(
+    cwd: &FsPath,
+    bind_addr: SocketAddr,
+    state_dir: PathBuf,
+    bearer_token: String,
+    cors_origins: Vec<String>,
+    shutdown: CancellationToken,
+) -> anyhow::Result<ApiState> {
+    let mut config = AppConfig::load(
+        cwd,
+        AppConfigOverrides {
+            api_bind_addr: Some(bind_addr.to_string()),
+            trust_project: false,
+            ..AppConfigOverrides::default()
+        },
+    )?;
+    config.api.bind_addr = bind_addr.to_string();
+    config.api.token_auth = Some(bearer_token);
+    config.api.cors_origins = cors_origins;
+    config.state.state_dir = state_dir.clone();
+    config.state.sqlite_path = state_dir.join("state.sqlite");
+    config.source_summary.workspace_root = cwd.to_path_buf();
+    config.source_summary.project_config_path = cwd.join(".rove/config.toml");
+
+    let mut workspace = Workspace::detect(cwd)?;
+    workspace.state_dir = config.state_dir();
+    workspace.ensure_state_dir()?;
+    Ok(ApiState::with_shutdown(workspace, config, shutdown))
+}
+
+/// Serve an already-assembled API state and perform the same complete shutdown
+/// drain used by the standalone API binary.
+pub async fn serve_state_listener(
+    listener: tokio::net::TcpListener,
+    state: ApiState,
+) -> anyhow::Result<()> {
+    let shutdown = state.inner.shutdown_token.clone();
     let result = serve_listener(listener, router(state.clone()), shutdown).await;
     state.inner.shutdown_token.cancel();
     drain_job_supervisors(&state).await;
@@ -474,6 +521,7 @@ impl ApiState {
                 job_starts: TaskTracker::new(),
                 supervisors: TaskTracker::new(),
                 jobs: RwLock::new(HashMap::new()),
+                mcp_health: RwLock::new(HashMap::new()),
                 model_health,
                 rate_limit: tokio::sync::Mutex::new(RateLimitState::default()),
                 bench_runs: Arc::new(BenchState::default()),
@@ -1078,7 +1126,7 @@ async fn prepare_generic_job_launch(
         Err(error) => {
             release_runtime_resume_claim(&state_store, resume_claim.take()).await;
             tracing::warn!(job_id = %record.job_id, "failed to assemble job engine: {error}");
-            return Err(ApiError::internal("failed to assemble job engine"));
+            return Err(ApiError::agent_engine_assembly(&error));
         }
     };
     let run = match state_store.start_run(record.session_id, record.job_id, record.run_id) {
@@ -1128,6 +1176,7 @@ async fn prepare_followup_job_launch(
         message: claim.control.content.clone(),
         model: None,
         max_steps: None,
+        agent: None,
         approval: None,
         resume: None,
         workspace: None,
@@ -1358,7 +1407,7 @@ async fn prepare_claimed_product_job_launch(
                 .await;
             }
             tracing::warn!(job_id = %record.job_id, "failed to assemble product job engine: {error}");
-            return Err(ApiError::internal("failed to assemble job engine"));
+            return Err(ApiError::agent_engine_assembly(&error));
         }
     };
 
@@ -2308,6 +2357,8 @@ async fn consume_job_stream(
     let request = run.request(record.message.clone(), record.resume_state.clone());
     let mut stream =
         std::pin::pin!(engine.run_with_cancel(request, None, record.cancel_token.clone(),));
+    recorder.set_runtime_identity(stream.runtime_identity().clone());
+    recorder.set_agent_profile(stream.agent_profile().cloned());
     // Capture the control handle so HTTP steer handlers can inject mid-run.
     {
         let _control_lifecycle = record.control_lifecycle_lock.lock().await;
@@ -3149,7 +3200,7 @@ async fn assemble_job_engine(
         }) as Arc<dyn ToolApprovalProvider>
     });
 
-    build_engine(EngineOptions {
+    let engine = build_engine(EngineOptions {
         model,
         workspace: &workspace,
         config: &config,
@@ -3159,12 +3210,19 @@ async fn assemble_job_engine(
             .map(|model_config| model_config.max_steps)
             .or(req.max_steps)
             .unwrap_or(config.runtime.max_steps),
+        agent_selector: req.agent.clone(),
         approval_policy,
         input_provider: Some(input_provider),
         approval_provider,
         environment: None,
     })
-    .await
+    .await?;
+    let mcp_config_path = config.workspace_bounded_mcp_config_path()?;
+    state.inner.mcp_health.write().await.insert(
+        mcp_config_path,
+        engine.runtime_identity().mcp_servers.clone(),
+    );
+    Ok(engine)
 }
 
 fn state_store_for_api(state: &ApiState) -> StateStore {
@@ -3856,6 +3914,28 @@ pub(crate) struct ApiError {
 }
 
 impl ApiError {
+    fn agent_engine_assembly(error: &anyhow::Error) -> Self {
+        if let Some(error) = error.downcast_ref::<SelectorError>() {
+            return Self {
+                status: StatusCode::BAD_REQUEST,
+                code: error.code(),
+                message: error.to_string(),
+            };
+        }
+        if let Some(error) = error.downcast_ref::<AgentActivationError>() {
+            return Self {
+                status: if matches!(error, AgentActivationError::WorkspaceSourceNotAuthorized) {
+                    StatusCode::FORBIDDEN
+                } else {
+                    StatusCode::BAD_REQUEST
+                },
+                code: error.code(),
+                message: error.to_string(),
+            };
+        }
+        Self::internal("failed to assemble job engine")
+    }
+
     pub(crate) fn bad_request(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::BAD_REQUEST,
@@ -4559,6 +4639,7 @@ mod tests {
                 message: "finish after the response waiter disconnects".to_string(),
                 model: None,
                 max_steps: None,
+                agent: None,
                 approval: None,
                 resume: None,
                 workspace: None,

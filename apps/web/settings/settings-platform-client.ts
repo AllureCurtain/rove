@@ -7,9 +7,14 @@ import {
 } from "../product/product-api-types";
 import { ProductApiError } from "../product/product-client";
 import {
+  desktopTransport,
+  withDesktopAuthorization,
+} from "../platform/desktop-transport";
+import {
   parseCreateProductMcpServerRequest,
   parseCreateProductMemoryTopicRequest,
   parseProductMcpProbeResponse,
+  parseProductMcpHealthResponse,
   parseProductMcpServerConfig,
   parseProductMcpServersResponse,
   parseProductMemoryListFilters,
@@ -27,6 +32,7 @@ import {
   type CreateProductMcpServerRequest,
   type CreateProductMemoryTopicRequest,
   type ProductMcpProbeResponse,
+  type ProductMcpHealthResponse,
   type ProductMcpServerConfig,
   type ProductMcpServersResponse,
   type ProductMemoryListFilters,
@@ -47,6 +53,7 @@ export interface SettingsPlatformClientOptions {
   fetch?: typeof globalThis.fetch;
   /** Browser calls stay relative so the Next proxy owns upstream auth. */
   apiPrefix?: string;
+  apiToken?: string;
 }
 
 export interface SettingsPlatformRequestOptions {
@@ -93,6 +100,10 @@ export interface SettingsPlatformClient {
     workspaceId: string,
     options?: SettingsPlatformRequestOptions,
   ): Promise<ProductMcpServersResponse>;
+  getMcpHealth(
+    workspaceId: string,
+    options?: SettingsPlatformRequestOptions,
+  ): Promise<ProductMcpHealthResponse>;
   createMcpServer(
     workspaceId: string,
     request: CreateProductMcpServerRequest,
@@ -334,11 +345,18 @@ async function requestMcpMutation(
 export function createSettingsPlatformClient(
   options: SettingsPlatformClientOptions = {},
 ): SettingsPlatformClient {
-  const fetchImpl = options.fetch ?? globalThis.fetch;
-  if (!fetchImpl) {
+  const baseFetch = options.fetch ?? globalThis.fetch;
+  if (!baseFetch) {
     throw new Error("fetch is required to create a settings platform client");
   }
-  const apiPrefix = normalizeApiPrefix(options.apiPrefix ?? DEFAULT_API_PREFIX);
+  const desktop = desktopTransport();
+  const fetchImpl = withDesktopAuthorization(
+    baseFetch,
+    options.apiToken ?? desktop?.token,
+  );
+  const apiPrefix = normalizeApiPrefix(
+    options.apiPrefix ?? desktop?.apiPrefix ?? DEFAULT_API_PREFIX,
+  );
 
   const updatePreferences = async (
     input: SettingsPreferencesUpdateRequest,
@@ -523,6 +541,18 @@ export function createSettingsPlatformClient(
         ),
         getRequest(requestOptions?.signal),
         parseProductMcpServersResponse,
+      );
+    },
+
+    getMcpHealth(workspaceId, requestOptions) {
+      return requestJson(
+        fetchImpl,
+        productUrl(
+          apiPrefix,
+          `/product/mcp/health?${mcpWorkspaceQuery(workspaceId)}`,
+        ),
+        getRequest(requestOptions?.signal),
+        parseProductMcpHealthResponse,
       );
     },
 

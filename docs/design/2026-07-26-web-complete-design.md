@@ -31,9 +31,13 @@ through the ordered coordinator PR chain #24, #25, and #26.
 | Milestone name | **Web Complete** |
 | Goal | Web is good enough for daily primary use |
 | Relation to M1 | **Evolve** the sealed product shell; do not rebuild IA |
-| Desktop (Tauri) | **Separate D0 milestone; not started** |
+| Desktop (Tauri) | **Separate D0 milestone; not part of this historical Web Complete scope** |
 | Remote Gateway | Still out of scope |
 | Delivery style | One sealed scope; **coordinator-owned foundations + bounded parallel worker worktrees** |
+
+This table records the decision when Web Complete was sealed. Desktop D0 was
+implemented later on `program/full-delivery`; see Section 12 and the current
+runtime documents.
 
 ### Why Web Complete before Desktop
 
@@ -295,7 +299,8 @@ The C0 contract is sealed further in the
 Platform adapter remains Web-first:
 
 - path entry may stay typed paths on Web
-- Desktop picker stays future host work
+- Desktop picker is implemented by the D0 host's bounded native command; the
+  shared Web contract remains host-neutral.
 
 ---
 
@@ -356,10 +361,10 @@ merge commit `e3c2403`.
 
 ## 12. Relationship to later Desktop
 
-Desktop remains:
+Desktop D0 now provides:
 
 ```text
-same product UI + Tauri host + native folder picker + embedded API bootstrap
+  same product UI + Tauri host + native folder picker + embedded API bootstrap
 ```
 
 Web Complete should make that cheaper, not harder:
@@ -381,7 +386,7 @@ Web Complete should make that cheaper, not harder:
   preserves mapped deep routes, completes responsive/accessibility/theme and
   visual polish, and passes the three-scenario `local-full` live-API suite. The
   external-provider gate was not run; coordinator integration into `main`
-  remains pending, and Desktop remains deferred.
+  remains unrun, while Desktop D0 is implemented on `program/full-delivery`.
 - 2026-07-27: Marked C2 implemented: all nine Settings sections are usable;
   provider CRUD, approval/step preferences, workspace/session management,
   Memory, runtime health, shortcuts, and mobile bounds have focused and

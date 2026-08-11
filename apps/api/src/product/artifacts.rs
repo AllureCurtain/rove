@@ -11,6 +11,10 @@ use sha2::{Digest, Sha256};
 use tokio::io::AsyncReadExt;
 use utoipa::{IntoParams, ToSchema};
 
+use rove_core::ToolArtifactRef;
+use rove_runtime::state::tool_artifacts::{
+    ARTIFACTS_DIR as TOOL_ARTIFACTS_DIR, is_valid_artifact_id,
+};
 use rove_runtime::types::RunId;
 
 use crate::docs;
@@ -24,6 +28,9 @@ use super::{ProductSessionId, ProductSessionRunBinding};
 
 const MAX_ARTIFACTS_PER_RUN: usize = 512;
 const MAX_ARTIFACT_HASH_BYTES: u64 = 512 * 1024 * 1024;
+/// Artifact metadata is a small fixed record; anything larger is not trusted to
+/// be parsed, so a corrupted or hostile file cannot drive allocation here.
+const MAX_TOOL_ARTIFACT_METADATA_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Default, Deserialize, IntoParams)]
 #[into_params(parameter_in = Query)]
@@ -39,6 +46,12 @@ pub enum ProductArtifactSourceKind {
     TaskState,
     Trace,
     Registered,
+    /// A durable Tool Artifact retained by the canonical artifact store.
+    ///
+    /// Distinct from `Registered` because the payload is content-addressed and
+    /// carries store-validated metadata, so its MIME type and name come from
+    /// that metadata rather than from a file name on disk.
+    ToolArtifact,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, ToSchema, PartialEq, Eq)]
@@ -165,6 +178,14 @@ pub(crate) async fn load_session_artifacts(
             }
         }
         append_registered_artifacts(
+            session_id,
+            binding,
+            &run_dir,
+            &mut artifacts,
+            &mut partial_reasons,
+        )
+        .await?;
+        append_tool_artifacts(
             session_id,
             binding,
             &run_dir,
@@ -353,6 +374,82 @@ async fn append_registered_artifacts(
     Ok(())
 }
 
+/// Adds this run's durable Tool Artifacts to the manifest.
+///
+/// The store's metadata is the authority for MIME type and size; nothing is
+/// sniffed from the payload and no remote-supplied name reaches the response.
+/// An artifact whose payload has been expired is reported as `Cleaned` so the
+/// UI can still show that the tool produced it.
+async fn append_tool_artifacts(
+    session_id: &ProductSessionId,
+    binding: &ProductSessionRunBinding,
+    run_dir: &Path,
+    artifacts: &mut Vec<ProductArtifactView>,
+    partial_reasons: &mut Vec<String>,
+) -> Result<(), ApiError> {
+    let root = run_dir.join(TOOL_ARTIFACTS_DIR);
+    if !root.is_dir() {
+        return Ok(());
+    }
+    let mut rd = tokio::fs::read_dir(&root).await.map_err(|error| {
+        ApiError::internal(format!("tool artifact directory unreadable: {error}"))
+    })?;
+    let mut count = 0usize;
+    while let Some(entry) = rd.next_entry().await.map_err(|error| {
+        ApiError::internal(format!("tool artifact directory read failed: {error}"))
+    })? {
+        if count >= MAX_ARTIFACTS_PER_RUN {
+            partial_reasons.push(format!(
+                "run {}: tool artifact manifest capped at {MAX_ARTIFACTS_PER_RUN} entries",
+                binding.runtime_run_id
+            ));
+            break;
+        }
+        let raw_id = entry.file_name().to_string_lossy().into_owned();
+        // The store owns this identifier shape. Anything else in the directory
+        // is not a Tool Artifact and must not be served as one.
+        if !is_valid_artifact_id(&raw_id) {
+            partial_reasons.push(format!(
+                "run {}: skipped a tool artifact directory with an invalid id",
+                binding.runtime_run_id
+            ));
+            continue;
+        }
+        count += 1;
+        match read_tool_artifact_metadata(&root, &raw_id).await {
+            Ok(metadata) => {
+                artifacts.push(
+                    describe_tool_artifact(
+                        session_id,
+                        binding.runtime_run_id,
+                        &root,
+                        &raw_id,
+                        &metadata,
+                    )
+                    .await,
+                );
+            }
+            Err(reason) => partial_reasons.push(format!(
+                "run {}: tool artifact {raw_id} metadata unusable ({reason})",
+                binding.runtime_run_id
+            )),
+        }
+    }
+    Ok(())
+}
+
+/// Reads and parses one artifact's committed metadata.
+async fn read_tool_artifact_metadata(root: &Path, raw_id: &str) -> Result<ToolArtifactRef, String> {
+    let path = root.join(raw_id).join("metadata.json");
+    let raw = tokio::fs::read(&path)
+        .await
+        .map_err(|error| error.to_string())?;
+    if raw.len() > MAX_TOOL_ARTIFACT_METADATA_BYTES {
+        return Err("metadata exceeds the supported size".to_string());
+    }
+    serde_json::from_slice::<ToolArtifactRef>(&raw).map_err(|error| error.to_string())
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn describe_artifact(
     session_id: &ProductSessionId,
@@ -485,6 +582,98 @@ async fn describe_artifact(
     }
 }
 
+/// Projects one durable Tool Artifact into the product manifest view.
+///
+/// Size and hash come from the store's metadata rather than from a fresh read:
+/// the store hashed the bytes as it streamed them, and re-deriving here would
+/// let a payload that changed under us appear self-consistent.
+async fn describe_tool_artifact(
+    session_id: &ProductSessionId,
+    run_id: RunId,
+    root: &Path,
+    raw_id: &str,
+    metadata: &ToolArtifactRef,
+) -> ProductArtifactView {
+    let public_id = artifact_id(
+        session_id,
+        run_id,
+        ProductArtifactSourceKind::ToolArtifact,
+        raw_id,
+    );
+    let mime = metadata
+        .mime_type
+        .clone()
+        .unwrap_or_else(|| "application/octet-stream".to_string());
+    let safe_name = tool_artifact_safe_name(raw_id, metadata.mime_type.as_deref());
+    let payload = root.join(raw_id).join("payload");
+    let available = tokio::fs::metadata(&payload)
+        .await
+        .is_ok_and(|metadata| metadata.is_file());
+    if !available {
+        return ProductArtifactView {
+            artifact_id: public_id,
+            safe_name,
+            mime,
+            size: Some(metadata.byte_length),
+            sha256: Some(metadata.sha256.clone()),
+            source_run_id: run_id.to_string(),
+            source_kind: ProductArtifactSourceKind::ToolArtifact,
+            availability: ProductArtifactAvailability::Cleaned,
+            preview_kind: ProductArtifactPreviewKind::Unavailable,
+            image: None,
+            validation_error: metadata.validation_detail.clone(),
+        };
+    }
+    // Inline preview is offered only for a raster image whose declared type the
+    // store validated. Active content is download-only regardless of what the
+    // producing server claimed, so a hostile payload cannot execute in the app.
+    let preview_kind = match metadata.mime_type.as_deref() {
+        Some(mime) if rove_core::mime_type_is_active_content(mime) => {
+            ProductArtifactPreviewKind::DownloadOnly
+        }
+        Some("image/png" | "image/jpeg" | "image/gif" | "image/webp") => {
+            ProductArtifactPreviewKind::RasterImage
+        }
+        Some(mime) if mime.starts_with("text/") => ProductArtifactPreviewKind::Text,
+        _ => ProductArtifactPreviewKind::DownloadOnly,
+    };
+    ProductArtifactView {
+        artifact_id: public_id,
+        safe_name,
+        mime,
+        size: Some(metadata.byte_length),
+        sha256: Some(metadata.sha256.clone()),
+        source_run_id: run_id.to_string(),
+        source_kind: ProductArtifactSourceKind::ToolArtifact,
+        availability: ProductArtifactAvailability::Available,
+        preview_kind,
+        image: None,
+        validation_error: metadata.validation_detail.clone(),
+    }
+}
+
+/// Builds a download name from the opaque ID and the validated MIME type.
+///
+/// A remote server's filename or URI is never used here. The name a browser
+/// writes to disk is derived only from values this process controls, so a
+/// crafted `original_uri` cannot steer a download path or extension.
+fn tool_artifact_safe_name(raw_id: &str, mime: Option<&str>) -> String {
+    let extension = match mime {
+        Some("text/plain") => "txt",
+        Some("text/markdown") => "md",
+        Some("application/json") => "json",
+        Some("image/png") => "png",
+        Some("image/jpeg") => "jpg",
+        Some("image/gif") => "gif",
+        Some("image/webp") => "webp",
+        Some("audio/wav" | "audio/x-wav") => "wav",
+        Some("audio/mpeg") => "mp3",
+        Some("application/pdf") => "pdf",
+        _ => "bin",
+    };
+    format!("{raw_id}.{extension}")
+}
+
 fn unavailable_view(
     artifact_id: String,
     name: &str,
@@ -531,6 +720,15 @@ async fn resolve_artifact(
                     safe_name: name.to_string(),
                 });
             }
+        }
+        // Resolved before the registered-artifact scan: that scan skips to the
+        // next binding when `artifacts/` is absent, which is exactly the shape
+        // of a run that produced only durable Tool Artifacts.
+        if let Some(resolved) =
+            resolve_tool_artifact(session_id, binding.runtime_run_id, &run_dir, requested_id)
+                .await?
+        {
+            return Ok(resolved);
         }
         let art_dir = run_dir.join("artifacts");
         if !art_dir.is_dir() {
@@ -582,6 +780,67 @@ async fn resolve_artifact(
     Err(ApiError::not_found(
         "artifact does not belong to this session or was cleaned",
     ))
+}
+
+/// Resolves a requested public ID to a durable Tool Artifact payload.
+///
+/// The requested ID is never used to build a path. Each candidate directory is
+/// enumerated, its store-owned ID validated, and its public ID recomputed from
+/// the session, run, and that validated ID; only an exact match resolves. So a
+/// caller cannot reach an artifact belonging to another session, nor traverse
+/// out of the run, even with a crafted identifier.
+async fn resolve_tool_artifact(
+    session_id: &ProductSessionId,
+    run_id: RunId,
+    run_dir: &Path,
+    requested_id: &str,
+) -> Result<Option<ResolvedArtifact>, ApiError> {
+    let root = run_dir.join(TOOL_ARTIFACTS_DIR);
+    if !root.is_dir() {
+        return Ok(None);
+    }
+    let canonical_root = root
+        .canonicalize()
+        .map_err(|_| ApiError::not_found("artifact was cleaned or is unavailable"))?;
+    let mut rd = tokio::fs::read_dir(&root)
+        .await
+        .map_err(|_| ApiError::not_found("artifact was cleaned or is unavailable"))?;
+    let mut count = 0usize;
+    while let Some(entry) = rd
+        .next_entry()
+        .await
+        .map_err(|_| ApiError::not_found("artifact was cleaned or is unavailable"))?
+    {
+        if count >= MAX_ARTIFACTS_PER_RUN {
+            break;
+        }
+        let raw_id = entry.file_name().to_string_lossy().into_owned();
+        if !is_valid_artifact_id(&raw_id) {
+            continue;
+        }
+        count += 1;
+        if artifact_id(
+            session_id,
+            run_id,
+            ProductArtifactSourceKind::ToolArtifact,
+            &raw_id,
+        ) != requested_id
+        {
+            continue;
+        }
+        let metadata = read_tool_artifact_metadata(&root, &raw_id)
+            .await
+            .map_err(|_| ApiError::not_found("artifact metadata is unavailable"))?;
+        let payload = require_bound_artifact_file(&root.join(&raw_id).join("payload"), &root)?;
+        if !payload.starts_with(&canonical_root) {
+            return Err(ApiError::bad_request("artifact path escapes its run"));
+        }
+        return Ok(Some(ResolvedArtifact {
+            path: payload,
+            safe_name: tool_artifact_safe_name(&raw_id, metadata.mime_type.as_deref()),
+        }));
+    }
+    Ok(None)
 }
 
 fn require_bound_artifact_file(path: &Path, bound_root: &Path) -> Result<PathBuf, ApiError> {
@@ -745,5 +1004,202 @@ mod tests {
             sha256_file(&path).await.unwrap(),
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
+    }
+
+    /// A download name must be derivable only from values this process owns.
+    #[test]
+    fn tool_artifact_download_names_ignore_remote_influence() {
+        let id = "art_0123456789abcdef0123456789abcdef";
+        assert_eq!(
+            tool_artifact_safe_name(id, Some("image/png")),
+            format!("{id}.png")
+        );
+        // An unmodelled or hostile type falls back to an inert extension
+        // instead of being trusted to name the file.
+        assert_eq!(
+            tool_artifact_safe_name(id, Some("text/html")),
+            format!("{id}.bin")
+        );
+        assert_eq!(
+            tool_artifact_safe_name(id, Some("../../evil.sh")),
+            format!("{id}.bin")
+        );
+        assert_eq!(tool_artifact_safe_name(id, None), format!("{id}.bin"));
+    }
+
+    fn tool_artifact_ref(mime: Option<&str>) -> ToolArtifactRef {
+        ToolArtifactRef {
+            artifact_id: rove_core::ArtifactId::new(
+                "art_0123456789abcdef0123456789abcdef".to_string(),
+            ),
+            kind: rove_core::ToolArtifactKind::Image,
+            mime_type: mime.map(str::to_string),
+            byte_length: 3,
+            sha256: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad".to_string(),
+            storage_ref: "tool_artifacts/art_0123456789abcdef0123456789abcdef/payload".to_string(),
+            source: rove_core::ToolArtifactSource {
+                run_id: "run_x".to_string(),
+                call_id: "call_x".to_string(),
+                server_config_id: Some("srv".to_string()),
+                server_identity_hash: Some("hash".to_string()),
+                session_hash: None,
+                remote_tool_name: Some("render".to_string()),
+                block_ordinal: 0,
+                captured_at: "2026-08-09T00:00:00Z".to_string(),
+            },
+            original_uri: None,
+            audience: None,
+            priority: None,
+            last_modified: None,
+            sensitivity: rove_core::Sensitivity::Normal,
+            trust: rove_core::ArtifactTrust::Untrusted,
+            validation: rove_core::ArtifactValidation::Validated,
+            validation_detail: None,
+        }
+    }
+
+    async fn write_tool_artifact(
+        root: &Path,
+        raw_id: &str,
+        metadata: &ToolArtifactRef,
+        payload: Option<&[u8]>,
+    ) {
+        let dir = root.join(raw_id);
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        tokio::fs::write(
+            dir.join("metadata.json"),
+            serde_json::to_vec(metadata).unwrap(),
+        )
+        .await
+        .unwrap();
+        if let Some(bytes) = payload {
+            tokio::fs::write(dir.join("payload"), bytes).await.unwrap();
+        }
+    }
+
+    /// The manifest reports store metadata, and an expired payload stays
+    /// visible as evidence rather than vanishing.
+    #[tokio::test]
+    async fn tool_artifact_manifest_uses_store_metadata_and_survives_cleanup() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let root = temp.path().join(TOOL_ARTIFACTS_DIR);
+        let raw_id = "art_0123456789abcdef0123456789abcdef";
+        let metadata = tool_artifact_ref(Some("image/png"));
+        write_tool_artifact(&root, raw_id, &metadata, Some(b"abc")).await;
+
+        let session_id = ProductSessionId::new();
+        let run_id = RunId::new();
+        let view = describe_tool_artifact(&session_id, run_id, &root, raw_id, &metadata).await;
+        assert_eq!(view.source_kind, ProductArtifactSourceKind::ToolArtifact);
+        assert_eq!(view.availability, ProductArtifactAvailability::Available);
+        assert_eq!(view.preview_kind, ProductArtifactPreviewKind::RasterImage);
+        assert_eq!(view.size, Some(3));
+        assert_eq!(view.sha256.as_deref(), Some(metadata.sha256.as_str()));
+        // The public id is opaque: it does not leak the store id.
+        assert_eq!(view.artifact_id.len(), 64);
+        assert!(!view.artifact_id.contains(raw_id));
+
+        tokio::fs::remove_file(root.join(raw_id).join("payload"))
+            .await
+            .unwrap();
+        let cleaned = describe_tool_artifact(&session_id, run_id, &root, raw_id, &metadata).await;
+        assert_eq!(cleaned.availability, ProductArtifactAvailability::Cleaned);
+        assert_eq!(cleaned.size, Some(3), "cleanup keeps the recorded facts");
+    }
+
+    /// Active content is never offered for inline preview, whatever the
+    /// producing server declared.
+    #[tokio::test]
+    async fn active_content_tool_artifacts_are_download_only() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let root = temp.path().join(TOOL_ARTIFACTS_DIR);
+        let raw_id = "art_0123456789abcdef0123456789abcdef";
+        for mime in ["text/html", "image/svg+xml", "application/pdf"] {
+            let metadata = tool_artifact_ref(Some(mime));
+            write_tool_artifact(&root, raw_id, &metadata, Some(b"abc")).await;
+            let view = describe_tool_artifact(
+                &ProductSessionId::new(),
+                RunId::new(),
+                &root,
+                raw_id,
+                &metadata,
+            )
+            .await;
+            assert_eq!(
+                view.preview_kind,
+                ProductArtifactPreviewKind::DownloadOnly,
+                "{mime} must not be previewable inline"
+            );
+        }
+    }
+
+    /// A directory whose name is not a valid store id is not a Tool Artifact
+    /// and must never be enumerated or served.
+    #[tokio::test]
+    async fn traversal_and_invalid_ids_are_not_enumerated() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let root = temp.path().join(TOOL_ARTIFACTS_DIR);
+        let metadata = tool_artifact_ref(Some("text/plain"));
+        for bad in [
+            "not_an_artifact",
+            "art_short",
+            "art_0123456789ABCDEF0123456789abcdef",
+        ] {
+            write_tool_artifact(&root, bad, &metadata, Some(b"abc")).await;
+        }
+
+        let session_id = ProductSessionId::new();
+        let run_id = RunId::new();
+        let binding_run_dir = temp.path();
+        let mut artifacts = Vec::new();
+        let mut reasons = Vec::new();
+        let binding = ProductSessionRunBinding {
+            product_session_id: session_id.clone(),
+            ordinal: 0,
+            runtime_session_id: rove_runtime::types::SessionId::new(),
+            runtime_job_id: rove_runtime::types::JobId::new(),
+            runtime_run_id: run_id,
+            resumed_from_run_id: None,
+            bound_at: "2026-08-09T00:00:00Z".to_string(),
+        };
+        append_tool_artifacts(
+            &session_id,
+            &binding,
+            binding_run_dir,
+            &mut artifacts,
+            &mut reasons,
+        )
+        .await
+        .unwrap();
+        assert!(artifacts.is_empty(), "invalid ids must not be enumerated");
+        assert_eq!(reasons.len(), 3);
+
+        // And an unknown id resolves to nothing rather than a path guess.
+        assert!(
+            resolve_tool_artifact(&session_id, run_id, binding_run_dir, &"0".repeat(64))
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    /// Oversized or unparsable metadata is refused rather than parsed.
+    #[tokio::test]
+    async fn oversized_tool_artifact_metadata_is_refused() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let root = temp.path().join(TOOL_ARTIFACTS_DIR);
+        let raw_id = "art_0123456789abcdef0123456789abcdef";
+        let dir = root.join(raw_id);
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        tokio::fs::write(
+            dir.join("metadata.json"),
+            vec![b'a'; MAX_TOOL_ARTIFACT_METADATA_BYTES + 1],
+        )
+        .await
+        .unwrap();
+        let error = read_tool_artifact_metadata(&root, raw_id)
+            .await
+            .unwrap_err();
+        assert!(error.contains("exceeds the supported size"), "{error}");
     }
 }

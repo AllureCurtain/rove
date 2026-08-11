@@ -124,6 +124,7 @@ impl Tool for EditFileTool {
                 operation: ToolMutationOperation::Update,
                 diff: Some(localized_diff(path, &before, &after)),
             }],
+            envelope: None,
         })
     }
 }
@@ -232,6 +233,7 @@ impl Tool for DeletePathTool {
                 operation: ToolMutationOperation::Delete,
                 diff,
             }],
+            envelope: None,
         })
     }
 }
@@ -355,6 +357,7 @@ impl Tool for MovePathTool {
                     diff: None,
                 },
             ],
+            envelope: None,
         })
     }
 }
@@ -801,6 +804,7 @@ impl Tool for WorkspaceRewindTool {
             })
             .to_string(),
             mutations,
+            envelope: None,
         })
     }
 }

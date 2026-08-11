@@ -790,6 +790,8 @@ where
     let stream = runtime
         .engine
         .run_with_cancel(request, Some(trace_writer), cancel.clone());
+    let runtime_identity = Some(stream.runtime_identity().clone());
+    let agent_profile = stream.agent_profile().cloned();
     let (updates_tx, updates_rx) = mpsc::channel(RUN_UPDATE_CAPACITY);
     let driver = drive_tui_run_events(
         stream,
@@ -800,7 +802,8 @@ where
             state_store: &runtime.state_store,
             workspace: &runtime.workspace,
             model_id: runtime.engine.model_id(),
-            runtime_identity: Some(runtime.engine.runtime_identity()),
+            runtime_identity,
+            agent_profile,
         },
         move |update| {
             let updates_tx = updates_tx.clone();
@@ -1613,10 +1616,7 @@ mod tests {
             )),
             tool_registry(&workspace),
             ContextManager::new("You are a test agent.".to_string()),
-            EngineConfig {
-                max_steps: 3,
-                plan_enabled: false,
-            },
+            EngineConfig::new(3, false),
             workspace,
             ApprovalPolicy::Ask,
         )
@@ -2205,10 +2205,7 @@ mod tests {
             }),
             tool_registry(&workspace),
             ContextManager::new("You are a test agent.".to_string()),
-            EngineConfig {
-                max_steps: 1,
-                plan_enabled: false,
-            },
+            EngineConfig::new(1, false),
             workspace.clone(),
             ApprovalPolicy::Never,
         );
@@ -2406,6 +2403,7 @@ mod tests {
             cwd: Some(tmp.path().to_path_buf()),
             model: Some("fake".to_string()),
             max_steps: None,
+            agent: None,
             trust_project: false,
             approval: CliApprovalPolicy::Never,
             task_workspace: None,
@@ -2478,6 +2476,7 @@ mod tests {
             cwd: Some(tmp.path().to_path_buf()),
             model: Some("fake".to_string()),
             max_steps: None,
+            agent: None,
             trust_project: false,
             approval: CliApprovalPolicy::Never,
             task_workspace: None,
@@ -2660,6 +2659,7 @@ mod tests {
             cwd: Some(tmp.path().to_path_buf()),
             model: Some("fake".to_string()),
             max_steps: Some(1),
+            agent: None,
             trust_project: false,
             approval: CliApprovalPolicy::Never,
             task_workspace: None,
@@ -2684,7 +2684,9 @@ mod tests {
             checkpoint: None,
             plan: None,
             runtime_identity: None,
+            agent_profile: None,
             step_ledger: Default::default(),
+            execution_lifecycle: Default::default(),
         };
         let newer = TaskState {
             goal: "newer session".to_string(),

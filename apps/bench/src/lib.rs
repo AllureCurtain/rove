@@ -12,6 +12,7 @@ mod evidence;
 mod runner;
 mod schema;
 mod suites;
+pub mod v2;
 
 pub use runner::{load_benchmark_suite, run_benchmark_suite};
 pub use schema::{
@@ -21,6 +22,11 @@ pub use schema::{
     stress_profile_params,
 };
 pub use suites::generate_dataprep_suite;
+pub use v2::{
+    BenchmarkMatrix, BenchmarkOracle, BenchmarkScenarioV2, BenchmarkSuiteV2, FixtureTruth,
+    V2CaseReport, V2EvidenceManifest, V2Metrics, V2OracleResult, load_benchmark_suite_v2,
+    run_benchmark_suite_v2,
+};
 
 use std::path::PathBuf;
 
@@ -55,6 +61,11 @@ pub fn available_suites() -> Vec<SuiteInfo> {
             name: "coding-tool-v2".to_string(),
             description: "Deterministic bounded coding-tool workflow with observations, continuations, checkpoint rewind, and background shell.".to_string(),
             profiles: vec!["default".to_string()],
+        },
+        SuiteInfo {
+            name: "oncall-reference-v2".to_string(),
+            description: "Deterministic synthetic Agent evaluation with independent fixture truth and hard safety gates.".to_string(),
+            profiles: vec!["full".to_string(), "react_no_procedure".to_string()],
         },
     ]
 }

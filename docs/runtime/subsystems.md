@@ -103,10 +103,12 @@ fallback).
 
 Task cleanup is directory-based: deleting the task workspace directory removes
 its local files, `.rove` state, run artifacts, and default memory. Browser and
-Desktop workspaces remain future specs only in
+Desktop **automation workspace kinds** remain future specs only in
 `docs/runtime/browser-workspace-spec.md` and
 `docs/runtime/desktop-workspace-spec.md`; the runtime has no partial enum or
-tool stubs for those kinds.
+tool stubs for those kinds. The Tauri Desktop product host is a delivery shell
+over the existing Folder/Repo product workspace contracts and does not add a
+workspace kind.
 
 ## State, Job, And Run
 
@@ -253,12 +255,18 @@ and pins the descriptor plus model projection for later lookup and execution.
 The registry is lexically ordered; duplicate names, duplicate capability IDs,
 invalid schemas, and excessive catalogs fail without overwriting an existing
 entry. The compatibility `register` wrapper is for trusted built-ins, while
-dynamic catalogs use fallible atomic batch registration. Local built-in tool implementations and their typed
+dynamic catalogs use fallible atomic batch registration. A dynamic source can
+hold a weak publisher and atomically replace one validated name prefix; the
+registry reports stable added/removed/changed names, and a failed replacement
+keeps the old namespace intact. `Engine` snapshots exact descriptors and tool
+implementations at run start, while the base registry remains available to a
+future run. Local built-in tool implementations and their typed
 invocation adapters live in `runtime/src/tools/`. The tool `Executor`
 pipeline, pre/post-tool plus post-run hooks (including session-summary), and the
 durable tool-turn coordinator live in `runtime/src/tools/executor.rs`,
 `runtime/src/tools/hooks/`, and `runtime/src/engine/tool_turn.rs`. The existing
-stdio/legacy-SSE MCP proxy is implemented in `runtime/src/tools/mcp_proxy.rs`.
+stdio/legacy-SSE MCP proxy is implemented in `runtime/src/tools/mcp_proxy.rs`,
+and the Streamable HTTP transport in `runtime/src/tools/mcp/`.
 CLI and API assemble tools through the same product registry builder. The
 config-aware `tool_registry_for_config` always registers runtime built-ins but
 loads configured MCP tools only when the exact workspace has explicit project
@@ -310,14 +318,60 @@ registered typed unsupported capability. Observations, artifact projections,
 process identities, and workspace checkpoints are Engine-local and do not
 survive recreation or resume.
 
-MCP stdio transport is bounded by per-server policy. Initialize, list, and call requests time out; stderr is captured up to the configured diagnostic limit; JSON-RPC errors are mapped to structured tool execution failures; and child processes are killed when their client is dropped. `tests/mcp.rs` and `cargo test -p rove-integration-tests --test mcp` cover mock stdio registration, annotation safety, timeout/error/cleanup behavior, and include an opt-in real filesystem MCP smoke test gated by `ROVE_MCP_FILESYSTEM_SMOKE=1`.
+MCP stdio transport is bounded by per-server policy. Initialize, list, and call requests time out; stderr is captured up to the configured diagnostic limit; JSON-RPC errors are mapped to structured tool execution failures; and child processes are killed and asynchronously reaped when their client is dropped, including Unix zombie cleanup without relying on the caller's Tokio runtime to remain active. `tests/mcp.rs` and `cargo test -p rove-integration-tests --test mcp` cover mock stdio registration, annotation safety, timeout/error/cleanup behavior, and include an opt-in real filesystem MCP smoke test gated by `ROVE_MCP_FILESYSTEM_SMOKE=1`.
+
+The Streamable HTTP transport in `runtime/src/tools/mcp/` is the current MCP
+HTTP transport and sits beside stdio and the deprecated HTTP+SSE path. It
+offers `2025-06-18` and accepts `2025-03-26` and `2024-11-05`; a server that
+omits the version is treated as `2025-03-26`, and an unsupported version fails
+as a protocol mismatch rather than proceeding on a guess. A negotiated
+`serverInfo` name/version and bounded capability object are validated,
+canonicalized, and hashed once; catalog snapshots, runtime identity, resume,
+and rich result audit metadata reuse that exact secret-free hash. Missing,
+oversized, or control-bearing identity fields fail activation. A negotiated
+`mcp-session-id` is validated before it is ever echoed back, so a server cannot
+inject headers through the session value, and the negotiated protocol version
+is sent on every subsequent request. Responses are dispatched by JSON-RPC id
+through a correlating dispatcher bounded to `MAX_MCP_PENDING_REQUESTS` (256) and
+`MAX_MCP_INVALID_FRAMES` (8), so an unsolicited, duplicate, or malformed frame
+cannot resolve the wrong caller or accumulate without bound. `tools/list`
+follows `nextCursor` up to `MAX_MCP_LIST_PAGES` (32) with a bounded cursor, and
+per-server tool and schema limits are enforced during accumulation.
+
+Transport safety is explicit. TLS is required unless the endpoint is an
+explicit loopback host, redirects are re-validated against the same policy
+before being followed, and content types are matched rather than guessed: a
+declared `application/json` or `text/event-stream` is required, and anything
+else is a protocol mismatch. An HTTP 404 on an established session is
+classified as `SessionExpired` rather than a generic failure so a caller can
+re-initialize instead of retrying blindly. Send outcomes are a bounded
+vocabulary, and `SendReceipt::is_safely_retryable()` is true only for `NotSent`;
+once a request is committed to the wire its failure is `Indeterminate` and is
+never silently retried, because an MCP tool call can have external effects.
 
 An MCP discovery request accumulates the enabled-server catalog before one
 atomic registry commit. Invalid schemas, aliases, or capability bindings leave
 the prior registry unchanged. MCP tools receive stable namespaced capability
 IDs derived from the configured server and exact remote identity, while local
-safety remains conservative (`destructive`, non-parallel). This is catalog
-pinning for the current Engine, not live MCP capability refresh.
+safety remains conservative (`destructive`, non-parallel). A Streamable HTTP
+`notifications/tools/list_changed` message triggers another complete bounded
+discovery; only a fully valid catalog atomically replaces that server's
+namespace. The active run retains its registry snapshot, while the next run on
+the same Engine sees the replacement. Stdio and deprecated SSE catalogs remain
+registration-time snapshots.
+
+Each server is `required` by default for old-config compatibility. Required
+activation failure blocks assembly with a stable failure code. An optional
+failure keeps built-ins and other servers available, records a degraded
+secret-free snapshot, and emits `mcp_server_degraded` after the next run starts.
+Refresh success emits `mcp_capabilities_refreshed` with only snapshot identity
+and added/removed/changed names. Notification and catalog failures use a bounded
+1-second retry interval and a 30-second circuit cooldown after three consecutive
+failures. Runtime identity/checkpoint/report persist config/protocol/server/
+catalog identity, but resume comparison ignores health timestamps and rejects
+real catalog drift. Product `GET /product/mcp/health` and Settings expose
+`ready`, `degraded`, `disabled`, or `unknown`; config mutations invalidate the
+cached assembly snapshot.
 
 All MCP transports are byte-bounded by `MAX_MCP_RESPONSE_BYTES` (1 MiB): stdio
 JSON lines, legacy SSE endpoint discovery, and SSE JSON responses. HTTP bodies
@@ -362,6 +416,121 @@ after restart. Startup marks stale running jobs and pending approval/input rows
 snapshot, but a planned step that was in flight is not replayed: the new run
 emits an `interrupted` `StepRecord` and terminates with an error so an unknown
 external side effect cannot be repeated automatically.
+
+## Agent Definitions, Instructions, And Procedures
+
+`runtime/src/agents/` is the authority for qualified Agent selectors,
+versioned workspace packages, immutable `AgentRuntimeProfile` snapshots,
+workspace instruction discovery, and typed procedural knowledge. The default
+`builtin:legacy` selector preserves the existing prompt/tool behavior. A
+workspace selector such as `workspace:ops` resolves only from
+`agents/ops/agent.toml`; there is no search-order shadowing or unqualified-ID
+fallback. CLI `--agent`, API `agent`, and the Web/config DTOs all feed this same
+bootstrap path.
+
+Workspace Agent packages, workspace `AGENTS.md`, and workspace procedure roots
+are gated by the capability-specific Project Trust digest. A package can reduce
+tool capabilities and execution bounds but cannot widen operator policy. The
+Engine filters model schemas to the compiled capability set and repeats the
+capability check immediately before dispatch. Procedure text, instruction text,
+and MCP content are context only: none can approve a tool or grant permission.
+
+Instruction discovery is bounded, UTF-8 checked, link/reparse-point refusing,
+and ordered root first. Only the root layer enters the stable prompt. Nested
+layers apply to matching target paths; the first model tool call that introduces
+an unseen nested scope is closed as a typed `precondition_required` rejection
+before real dispatch, and the overlay is supplied on the next model turn.
+`instruction_overlay_applied` carries only target/scope/path/hash facts. With
+nested layers present, `run_shell` requires valid non-empty workspace-relative
+`paths` unless the bounded command text itself identifies a scope.
+
+Procedure frontmatter uses a restricted parser rather than general YAML.
+Origin-derived trust, lifecycle state, platform/workspace/capability eligibility,
+risk/mode, deterministic lexical ranking, conflict deduplication, selection
+limits, and bounded progressive hydration are applied before a body reaches the
+prompt. Selected identities and exact hydrated bodies are part of the profile
+hash and snapshot. `task_state.json` and `PromptCheckpoint` retain that private
+snapshot; trace, report, API, CLI, and Web projections carry identities and
+diagnostics without the body. A genuine unfinished resume validates and reuses
+the saved profile after source changes. Planner, StepRunner, Evaluator, and
+Finalizer receive bounded procedure material and record applications/deviations;
+the deterministic OnCall Benchmark V2 suite verifies this path. External-provider
+experiments and broader holdout matrices remain optional.
+
+## Tool Results And Durable Tool Artifacts
+
+A tool result is more than a string. `core/src/tool_result.rs` owns the shared
+result contract that the runtime, the finalizer, the CLI, the API, and the Web
+inspector all read from, so a rich remote result does not have to be flattened
+into text at the boundary and then re-parsed downstream.
+
+`ToolResultOutcome` separates the cases that callers must treat differently:
+`Success`, `Partial`, `Error`, `Rejected`, `Cancelled`, `TimedOutKnownNotSent`,
+and `Indeterminate`. Only the first five plus `TimedOutKnownNotSent` are
+retryable; `is_safely_retryable` returns false for `Indeterminate`, which is the
+state used when a call may have already produced an external effect that cannot
+be observed. A timeout is only reported as `TimedOutKnownNotSent` when the
+transport can prove the request never left the client.
+
+`ToolOutputEnvelope` carries the content blocks, optional structured content, the
+outcome, and artifact references. `enforce_bounds` is applied at construction,
+not at serialization time, so an oversized remote result is truncated once with a
+recorded reason rather than propagating to every consumer. The envelope exposes
+four deliberately different projections:
+
+- `model_projection`: what the model sees. Binary payloads never appear here, so
+  a large image cannot be smuggled into the prompt as base64.
+- `ui_projection`: what the inspector renders, including artifact references.
+- `finalizer_projection`: what the finalizer summarizes.
+- `audit_projection`: the fullest view, for trace and review.
+
+`ToolOutput.envelope` is boxed. A `ToolOutput` travels inline through several
+event and turn enums, and inlining the rich contract would make every variant of
+those enums pay for it even though the common tool returns plain text.
+
+Durable Tool Artifacts live in `runtime/src/state/tool_artifacts.rs` under the
+run's `tool_artifacts/` directory, as `tool_artifacts/<art_id>/{payload,
+metadata.json}`. This is deliberately **not** the run's `artifacts/` directory.
+`artifacts/` is a flat set of registered run files that the product manifest
+enumerates as regular files; Tool Artifacts are content-addressed directories
+holding a payload plus metadata, so sharing the directory would make every Tool
+Artifact look like a malformed registered artifact and would blur the
+transient/durable boundary the two stores exist to keep. The process-local
+projection store reachable through `environment.artifacts()` remains a separate,
+transient authority and is not a substitute for this one.
+
+Artifact identity is derived from the content hash, so a remote filename, `uri`,
+or `name` never steers a local path. Content types are matched against an
+explicit list rather than sniffed, and `mime_type_is_active_content` marks the
+types that must never be rendered inline. Remote annotations describe intent and
+grant nothing.
+
+Four quotas bound the store: 8 MiB per artifact, 16 MiB per tool call, 64 MiB per
+run, and 512 artifacts per run. Exceeding a quota rejects the artifact with a
+typed reason instead of failing the run. Every accepted or rejected artifact
+appends one entry to the append-only `tool_artifacts.jsonl` ledger, and
+`expire_payload` removes bytes while retaining metadata, so a cleaned artifact
+stays as evidence that it existed rather than silently disappearing.
+
+Two `StreamEvent` variants report this to consumers: `ToolArtifactStored` and
+`ToolArtifactRejected`. Because the stream enum is matched exhaustively, adding
+them forced every consumer to state what it does with them.
+
+The stdio, deprecated SSE, and Streamable HTTP proxies all map real
+`tools/call` results into an envelope through
+`runtime/src/tools/mcp/result_mapping.rs`, storing binary content as durable
+artifacts. Protocol metadata stores a session hash when a transport has a
+session, never the raw session ID. When no artifact store is available the
+mapper **refuses** binary payloads with
+`artifact_store_unavailable` rather than inlining them as base64.
+
+The product API exposes these through the existing session-scoped manifest,
+content, download, and preview routes under the `tool_artifact` source kind, so
+they inherit the existing session-to-run binding and path-safety checks. Download
+names are derived from the matched MIME type with a `bin` fallback and are never
+influenced by remote input. Active content is forced to download-only. Artifact
+resolution never builds a path from the requested ID: it enumerates the store,
+validates each entry, recomputes the public ID, and requires an exact match.
 
 ## Memory
 

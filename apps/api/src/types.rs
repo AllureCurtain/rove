@@ -68,6 +68,10 @@ pub struct CreateJobRequest {
     pub message: String,
     pub model: Option<String>,
     pub max_steps: Option<u32>,
+    /// Optional fully qualified Agent selector (`builtin:legacy` or
+    /// `workspace:<id>`). Workspace sources still require Project Trust.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
     #[schema(value_type = String, example = "ask")]
     pub approval: Option<ApprovalPolicy>,
     pub resume: Option<String>,

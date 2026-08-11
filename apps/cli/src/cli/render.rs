@@ -7,6 +7,7 @@ use serde::Deserialize;
 
 use crate::terminal::run::{RunEventContext, drive_run_events};
 use crate::terminal::view::RunViewUpdate;
+use rove_runtime::agents::AgentRuntimeProfile;
 use rove_runtime::events::StreamEvent;
 use rove_runtime::runtime_identity::RuntimeIdentity;
 use rove_runtime::state::store::{RunHandle, StateStore};
@@ -21,6 +22,7 @@ pub struct CliRunRenderContext<'a> {
     pub workspace: &'a Workspace,
     pub model_id: &'a str,
     pub runtime_identity: Option<RuntimeIdentity>,
+    pub agent_profile: Option<AgentRuntimeProfile>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,6 +68,7 @@ where
             workspace: context.workspace,
             model_id: context.model_id,
             runtime_identity: context.runtime_identity,
+            agent_profile: context.agent_profile,
         },
         |update| {
             let _ = render_repl_update(update, options, &mut render_state);
@@ -534,6 +537,7 @@ mod tests {
                 workspace: &workspace,
                 model_id: "fake",
                 runtime_identity: None,
+                agent_profile: None,
             },
             CliRunRenderOptions::default(),
         )
@@ -574,6 +578,7 @@ mod tests {
                 workspace: &workspace,
                 model_id: "fake",
                 runtime_identity: None,
+                agent_profile: None,
             },
             CliRunRenderOptions {
                 mode: CliRunRenderMode::ReplCompact,
@@ -629,6 +634,7 @@ mod tests {
                     output: "hello".to_string(),
                     mutations: Vec::new(),
                     metadata: Default::default(),
+                    envelope: None,
                 },
             },
             StreamEvent::RunCompleted {
@@ -647,6 +653,7 @@ mod tests {
                 workspace: &workspace,
                 model_id: "fake",
                 runtime_identity: None,
+                agent_profile: None,
             },
             CliRunRenderOptions {
                 mode: CliRunRenderMode::ReplCompact,
@@ -705,6 +712,7 @@ mod tests {
                 workspace: &workspace,
                 model_id: "fake",
                 runtime_identity: None,
+                agent_profile: None,
             },
             CliRunRenderOptions {
                 mode: CliRunRenderMode::ReplCompact,
@@ -797,6 +805,7 @@ mod tests {
             .to_string(),
             mutations: Vec::new(),
             metadata: Default::default(),
+            envelope: None,
         };
 
         let lines = super::run_shell_result_summary(&result).unwrap();
@@ -822,6 +831,7 @@ mod tests {
             .to_string(),
             mutations: Vec::new(),
             metadata: Default::default(),
+            envelope: None,
         };
 
         let lines = super::run_shell_result_summary(&result).unwrap();
@@ -892,6 +902,7 @@ mod tests {
                 workspace: &workspace,
                 model_id: "fake",
                 runtime_identity: None,
+                agent_profile: None,
             },
             CliRunRenderOptions {
                 mode: CliRunRenderMode::ReplCompact,

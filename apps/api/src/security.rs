@@ -2,8 +2,11 @@ use std::time::{Duration, Instant};
 
 use axum::body::Body;
 use axum::extract::State;
-use axum::http::header::{AUTHORIZATION, ORIGIN, RETRY_AFTER, VARY, WWW_AUTHENTICATE};
-use axum::http::{HeaderValue, Request, StatusCode};
+use axum::http::header::{
+    ACCESS_CONTROL_ALLOW_HEADERS, ACCESS_CONTROL_ALLOW_METHODS, AUTHORIZATION, ORIGIN, RETRY_AFTER,
+    VARY, WWW_AUTHENTICATE,
+};
+use axum::http::{HeaderValue, Method, Request, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 
@@ -23,6 +26,15 @@ pub(crate) async fn api_security(
     if let Some(origin) = origin.as_deref()
         && let Some(response) = disallowed_origin_response(&state, origin)
     {
+        return response;
+    }
+
+    if request.method() == Method::OPTIONS
+        && let Some(origin) = origin.as_deref()
+        && is_origin_allowed(&state, origin)
+    {
+        let mut response = StatusCode::NO_CONTENT.into_response();
+        apply_cors_headers(response.headers_mut(), origin);
         return response;
     }
 
@@ -141,6 +153,14 @@ fn apply_cors_headers(headers: &mut axum::http::HeaderMap, origin: &str) {
     headers.insert(
         axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN,
         HeaderValue::from_str(origin).unwrap_or(HeaderValue::from_static("*")),
+    );
+    headers.insert(
+        ACCESS_CONTROL_ALLOW_HEADERS,
+        HeaderValue::from_static("authorization, content-type"),
+    );
+    headers.insert(
+        ACCESS_CONTROL_ALLOW_METHODS,
+        HeaderValue::from_static("GET, POST, PUT, PATCH, DELETE, OPTIONS"),
     );
     headers.insert(VARY, HeaderValue::from_static("origin"));
 }

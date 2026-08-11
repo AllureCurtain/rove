@@ -1,9 +1,15 @@
 use serde::{Deserialize, Serialize};
 
-use crate::execution::{PlanDecisionRecord, PlanIdentity, PlanRevision, StepAttempt, StepRecord};
+use crate::agents::procedure::ProcedureReference;
+use crate::agents::{AgentDiagnostic, AgentProfileIdentity};
+use crate::execution::{
+    ExecutionBudgetSnapshot, ExecutionDegradation, ExecutionPhase, ExecutionPolicy,
+    FinalizationRecord, PlanDecisionRecord, PlanIdentity, PlanRevision, ProcedureApplication,
+    ProcedureDeviation, StepAttempt, StepRecord,
+};
 use crate::prompt_metadata::PromptBuildMetadata;
 use crate::types::{JobId, PlanStep, PromptCompactionState, RunId, TaskPlan, TerminationReason};
-use rove_core::{CallId, ToolError, ToolExecutionMetadata, ToolResult};
+use rove_core::{CallId, ToolArtifactRef, ToolError, ToolExecutionMetadata, ToolResult};
 use rove_models::{AssistantTurn, ToolCallRef, Usage};
 
 /// All events emitted by the engine's streaming main loop.
@@ -19,6 +25,83 @@ pub enum StreamEvent {
         job_id: JobId,
         user_message: String,
     },
+
+    /// Immutable Agent profile selected before planner/model work begins.
+    AgentProfileActivated {
+        identity: Box<AgentProfileIdentity>,
+        resumed_from_snapshot: bool,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        diagnostics: Vec<AgentDiagnostic>,
+    },
+
+    /// Trusted workspace instruction bundle admitted for this run.
+    WorkspaceInstructionsResolved {
+        bundle_hash: String,
+        layer_count: usize,
+        rejected_count: usize,
+        truncated: bool,
+    },
+
+    /// Resolved execution policy selected before planner/model work begins.
+    ExecutionStrategySelected { policy: ExecutionPolicy },
+
+    /// A nested workspace instruction became active for a concrete model-turn
+    /// target. The body is intentionally absent from the event/trace.
+    InstructionOverlayApplied {
+        target_path: String,
+        scope: String,
+        source_path: String,
+        content_hash: String,
+        boundary: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        call_id: Option<CallId>,
+    },
+
+    /// Deterministic procedure selection, by identity only.
+    ProceduresSelected {
+        profile_hash: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        selected: Vec<ProcedureReference>,
+        considered_count: usize,
+        excluded_count: usize,
+    },
+
+    /// A selected procedure body was admitted into the bounded prompt prefix.
+    ProcedureHydrated {
+        reference: ProcedureReference,
+        truncated: bool,
+        dropped_bytes: usize,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        step_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hydration_hash: Option<String>,
+    },
+
+    /// A bounded procedure projection was supplied to a concrete execution
+    /// boundary. The body is never included; the application fact is enough
+    /// for resume, diagnostics, and evidence correlation.
+    ProcedureApplied {
+        application: Box<ProcedureApplication>,
+    },
+
+    /// A step explicitly departed from selected procedure guidance. This is a
+    /// fact for evaluation, not a permission or approval signal.
+    ProcedureDeviation {
+        record_id: String,
+        deviation: Box<ProcedureDeviation>,
+    },
+
+    /// Monotonic multidimensional budget projection after a lifecycle phase or
+    /// at an exhaustion boundary.
+    ExecutionBudgetUpdated {
+        phase: ExecutionPhase,
+        /// Boxed to keep the canonical event small; the wire shape is unchanged.
+        snapshot: Box<ExecutionBudgetSnapshot>,
+    },
+
+    /// Explicit fallback/degradation fact. Safe summaries never contain hidden
+    /// reasoning or provider payloads.
+    ExecutionDegraded { record: ExecutionDegradation },
 
     /// A chunk of streaming text from the LLM.
     LlmChunk { delta: String },
@@ -66,6 +149,46 @@ pub enum StreamEvent {
         metadata: ToolExecutionMetadata,
     },
 
+    /// A tool payload became a durable artifact.
+    ///
+    /// Carries only the reference. The payload never travels on the event
+    /// stream, so a large artifact cannot bloat a trace or an SSE frame.
+    ToolArtifactStored {
+        call_id: CallId,
+        artifact: Box<ToolArtifactRef>,
+    },
+
+    /// A tool payload was refused by an artifact quota.
+    ///
+    /// Emitted so a quota event stays visible in the trace and in
+    /// diagnostics even though no payload was retained.
+    ToolArtifactRejected {
+        call_id: CallId,
+        /// Position of the originating content block.
+        block_ordinal: u32,
+        /// Stable machine-readable rejection code.
+        reason: String,
+        /// Bytes observed before the read was stopped.
+        observed_bytes: u64,
+    },
+
+    /// A configured MCP server is unavailable or retained its last catalog
+    /// after a failed refresh. Fields are bounded codes/identities only.
+    McpServerDegraded {
+        server_config_id: String,
+        required: bool,
+        failure_code: String,
+    },
+
+    /// A complete MCP catalog replaced the namespace used by future runs.
+    McpCapabilitiesRefreshed {
+        server_config_id: String,
+        snapshot_id: String,
+        added: Vec<String>,
+        removed: Vec<String>,
+        changed: Vec<String>,
+    },
+
     /// The `request_input` tool is waiting for user input.
     InputNeeded { input_id: CallId, prompt: String },
 
@@ -89,6 +212,9 @@ pub enum StreamEvent {
         /// Stable identity of the in-flight attempt.
         #[serde(flatten)]
         attempt: StepAttempt,
+        /// Boxed to keep the canonical event small; the wire shape is unchanged.
+        #[serde(default)]
+        budget: Box<ExecutionBudgetSnapshot>,
     },
 
     /// Canonical terminal result for one planned step attempt.
@@ -106,6 +232,12 @@ pub enum StreamEvent {
         plan: TaskPlan,
         revision: Box<PlanRevision>,
     },
+
+    /// Independent finalizer boundary. The started record contains no output.
+    FinalizationStarted { record: Box<FinalizationRecord> },
+
+    /// Finalizer terminal fact with a typed outcome and bounded output.
+    FinalizationCompleted { record: Box<FinalizationRecord> },
 
     /// Prompt history was compacted for future resume.
     PromptCompacted {
@@ -170,6 +302,16 @@ impl StreamEvent {
     pub fn event_name(&self) -> &'static str {
         match self {
             Self::RunStarted { .. } => "run_started",
+            Self::AgentProfileActivated { .. } => "agent_profile_activated",
+            Self::WorkspaceInstructionsResolved { .. } => "workspace_instructions_resolved",
+            Self::ExecutionStrategySelected { .. } => "execution_strategy_selected",
+            Self::InstructionOverlayApplied { .. } => "instruction_overlay_applied",
+            Self::ProceduresSelected { .. } => "procedures_selected",
+            Self::ProcedureHydrated { .. } => "procedure_hydrated",
+            Self::ProcedureApplied { .. } => "procedure_applied",
+            Self::ProcedureDeviation { .. } => "procedure_deviation",
+            Self::ExecutionBudgetUpdated { .. } => "execution_budget_updated",
+            Self::ExecutionDegraded { .. } => "execution_degraded",
             Self::LlmChunk { .. } => "llm_chunk",
             Self::ModelStatus { .. } => "model_status",
             Self::LlmMessage { .. } => "llm_message",
@@ -177,12 +319,18 @@ impl StreamEvent {
             Self::ToolCallApprovalNeeded { .. } => "tool_call_approval_needed",
             Self::ToolCallCompleted { .. } => "tool_call_completed",
             Self::ToolCallFailed { .. } => "tool_call_failed",
+            Self::ToolArtifactStored { .. } => "tool_artifact_stored",
+            Self::ToolArtifactRejected { .. } => "tool_artifact_rejected",
+            Self::McpServerDegraded { .. } => "mcp_server_degraded",
+            Self::McpCapabilitiesRefreshed { .. } => "mcp_capabilities_refreshed",
             Self::InputNeeded { .. } => "input_needed",
             Self::PlanCreated { .. } => "plan_created",
             Self::PlanStepStarted { .. } => "plan_step_started",
             Self::StepResult { .. } => "step_result",
             Self::PlanDecision { .. } => "plan_decision",
             Self::PlanRevised { .. } => "plan_revised",
+            Self::FinalizationStarted { .. } => "finalization_started",
+            Self::FinalizationCompleted { .. } => "finalization_completed",
             Self::PromptCompacted { .. } => "prompt_compacted",
             Self::MemoryFlushed { .. } => "memory_flushed",
             Self::PromptBuilt { .. } => "prompt_built",

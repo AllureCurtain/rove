@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 fn workspace_root() -> PathBuf {
@@ -1705,8 +1706,23 @@ async fn product_runtime_reports_bounded_health_without_paths_or_secrets() {
     assert_eq!(runtime["resume_health"]["bound_session_count"], 0);
     assert_eq!(runtime["resume_health"]["running_session_count"], 0);
     assert_eq!(runtime["resume_health"]["needs_attention_session_count"], 0);
+    assert_eq!(runtime["agent"]["selector"], "builtin:legacy");
+    assert_eq!(runtime["agent"]["workspace_source_authorized"], true);
+    assert_eq!(runtime["agent"]["workspace_instructions_enabled"], false);
+    assert_eq!(runtime["agent"]["allow_remediation_procedures"], false);
+    assert_eq!(runtime["agent"]["max_procedure_selections"], 3);
     let keys = runtime.as_object().unwrap();
-    assert_eq!(keys.len(), 5);
+    assert_eq!(
+        keys.keys().map(String::as_str).collect::<BTreeSet<_>>(),
+        BTreeSet::from([
+            "agent",
+            "api_version",
+            "connection",
+            "execution_environment",
+            "product_store",
+            "resume_health",
+        ])
+    );
     assert!(keys.get("path").is_none());
     let serialized = runtime.to_string();
     for forbidden in [
@@ -1840,6 +1856,27 @@ async fn api_exposes_openapi_json_for_all_routes() {
         .expect("POST /jobs responses");
     assert!(create_job_responses.contains_key("503"));
     assert!(!create_job_responses.contains_key("501"));
+
+    // The artifact source kind is part of the published contract, so a consumer
+    // can tell a durable Tool Artifact apart from a registered run file without
+    // guessing from the name or MIME type.
+    let source_kinds = spec["components"]["schemas"]["ProductArtifactSourceKind"]["enum"]
+        .as_array()
+        .expect("ProductArtifactSourceKind enum in OpenAPI components");
+    for expected in [
+        "report",
+        "task_state",
+        "trace",
+        "registered",
+        "tool_artifact",
+    ] {
+        assert!(
+            source_kinds
+                .iter()
+                .any(|kind| kind.as_str() == Some(expected)),
+            "missing artifact source kind {expected} in {source_kinds:?}"
+        );
+    }
 
     for (path, method) in [
         ("/product/workspaces", "get"),
@@ -4549,6 +4586,89 @@ async fn api_jobs_accept_openai_provider_profile_per_request() {
 }
 
 #[tokio::test]
+async fn api_job_agent_override_activates_a_trusted_workspace_package() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    write_api_agent_definition(tmp.path());
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let config = test_config();
+    assert_eq!(config.runtime.agent.selector, "builtin:legacy");
+    let state_store = rove_runtime::state::store::StateStore::new(&workspace.state_dir);
+    let app = router(ApiState::new(workspace, config));
+
+    let response = post_json(
+        &app,
+        "/jobs",
+        serde_json::json!({
+            "message": "diagnose rollback",
+            "model": "fake",
+            "max_steps": 1,
+            "approval": "auto",
+            "agent": "workspace:ops"
+        }),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let created: CreateJobResponse = decode_json(response).await;
+    let state = wait_for_done(app, created.job_id.to_string()).await;
+    assert!(state.events.iter().any(|stored| matches!(
+        &stored.event,
+        StreamEvent::AgentProfileActivated { identity, .. }
+            if identity.selector.to_string() == "workspace:ops"
+    )));
+    let task_state = state_store.load_task_state(created.run_id).await.unwrap();
+    assert_eq!(
+        task_state
+            .agent_profile
+            .as_ref()
+            .map(|profile| profile.selector.to_string())
+            .as_deref(),
+        Some("workspace:ops")
+    );
+}
+
+#[tokio::test]
+async fn api_rejects_untrusted_or_invalid_agent_selectors_before_creating_a_run() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    write_api_agent_definition(tmp.path());
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let state_store = rove_runtime::state::store::StateStore::new(&workspace.state_dir);
+    let mut config = test_config();
+    config.source_summary.project_activation = ProjectActivationState::Restricted;
+    let app = router(ApiState::new(workspace, config));
+
+    let unauthorized = post_json(
+        &app,
+        "/jobs",
+        serde_json::json!({
+            "message": "diagnose rollback",
+            "model": "fake",
+            "agent": "workspace:ops"
+        }),
+    )
+    .await;
+    assert_eq!(unauthorized.status(), StatusCode::FORBIDDEN);
+    let unauthorized: serde_json::Value = decode_json(unauthorized).await;
+    assert_eq!(unauthorized["code"], "workspace_source_not_authorized");
+    assert!(state_store.list_task_states().await.unwrap().is_empty());
+
+    let invalid = post_json(
+        &app,
+        "/jobs",
+        serde_json::json!({
+            "message": "diagnose rollback",
+            "model": "fake",
+            "agent": "ops"
+        }),
+    )
+    .await;
+    assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
+    let invalid: serde_json::Value = decode_json(invalid).await;
+    assert_eq!(invalid["code"], "missing_source_namespace");
+    assert!(state_store.list_task_states().await.unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn api_jobs_accept_openai_responses_provider_profile_per_request() {
     let provider = start_openai_test_server().await;
     let tmp = tempfile::TempDir::new().unwrap();
@@ -4807,6 +4927,48 @@ async fn api_allows_configured_cors_origin_and_sets_headers() {
             .get("access-control-allow-origin")
             .unwrap(),
         "https://allowed.example"
+    );
+}
+
+#[tokio::test]
+async fn api_allows_configured_authenticated_cors_preflight() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let mut config = test_config();
+    config.api.token_auth = Some("desktop-secret".to_string());
+    config.api.cors_origins = vec!["tauri://localhost".to_string()];
+    let app = router(ApiState::new(workspace, config));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("OPTIONS")
+                .uri("/product/runtime")
+                .header("origin", "tauri://localhost")
+                .header("access-control-request-method", "GET")
+                .header("access-control-request-headers", "authorization")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(
+        response
+            .headers()
+            .get("access-control-allow-origin")
+            .unwrap(),
+        "tauri://localhost"
+    );
+    assert!(
+        response
+            .headers()
+            .get("access-control-allow-headers")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .contains("authorization")
     );
 }
 
@@ -5665,7 +5827,24 @@ async fn api_writes_run_artifacts_for_completed_job() {
     assert_eq!(report["job_id"], created.job_id.to_string());
     assert_eq!(report["run_id"], created.run_id.to_string());
     assert_eq!(report["status"], "success");
-    assert_eq!(report["output"], "fake response: artifact api");
+    // A planned run's final answer comes from the independent finalizer, which
+    // synthesizes an evidence-grounded answer rather than forwarding the last
+    // model message verbatim. The model's conclusion is retained as the step
+    // summary so no answer content is lost.
+    let output = report["output"].as_str().expect("report output");
+    assert!(
+        output.contains("fake response: artifact api"),
+        "finalized output must retain the step conclusion: {output}"
+    );
+    assert!(
+        output.contains("outcome: success"),
+        "finalized output must state the resolved outcome: {output}"
+    );
+    assert_eq!(report["final_outcome"], "success");
+    assert_eq!(
+        report["execution_lifecycle"]["finalization"]["phase"],
+        "completed"
+    );
     let prompt_build = report["prompt_builds"][0]
         .as_object()
         .expect("report should include prompt build metadata");
@@ -6722,7 +6901,18 @@ async fn api_planned_tool_step_completes_after_successful_tool_call() {
     assert_eq!(report["status"], "success");
     assert_eq!(report["termination_reason"], "final");
     assert_eq!(report["tool_calls"], 1);
-    assert_eq!(report["output"], "planned tool done");
+    // The finalizer synthesizes the answer from recorded evidence and cites the
+    // tool call that produced it, instead of forwarding the raw model message.
+    let output = report["output"].as_str().expect("report output");
+    assert!(
+        output.contains("planned tool done"),
+        "finalized output must retain the step conclusion: {output}"
+    );
+    assert!(
+        output.contains("Evidence: tool_call:"),
+        "a tool-backed step must cite its evidence: {output}"
+    );
+    assert_eq!(report["final_outcome"], "success");
     assert_eq!(report["step_records"].as_array().unwrap().len(), 1);
     assert_eq!(report["step_records"][0]["status"], "succeeded");
 }
@@ -7205,7 +7395,9 @@ async fn api_auto_approval_runs_destructive_tool_without_pending_approval() {
     let state = wait_for_done(app.clone(), created.job_id.to_string()).await;
     assert_eq!(state.status, RunStatus::Done);
     assert!(state.pending_approvals.is_empty());
-    assert_eq!(std::fs::read_to_string(output_path).unwrap(), "ok");
+    let output = std::fs::read_to_string(&output_path)
+        .unwrap_or_else(|error| panic!("{error}; tool events: {:#?}", state.events));
+    assert_eq!(output, "ok");
 }
 
 #[tokio::test]
@@ -7581,6 +7773,7 @@ async fn product_mcp_crud_is_workspace_scoped_secret_free_and_used_by_product_jo
         serde_json::json!({
             "name": "mock_server",
             "enabled": true,
+            "required": true,
             "transport": "stdio",
             "command": python_command(),
             "args": [workspace_path_string("tests/fixtures/mcp_mock_server.py")],
@@ -7592,8 +7785,68 @@ async fn product_mcp_crud_is_workspace_scoped_secret_free_and_used_by_product_jo
     assert_eq!(created.status(), StatusCode::CREATED);
     let created: serde_json::Value = decode_json(created).await;
     assert_eq!(created["name"], "mock_server");
+    assert_eq!(created["required"], true);
     assert_eq!(created["env_names"], serde_json::json!(["PATH"]));
     assert!(created.get("env").is_none());
+    // The server owns the deprecation verdict for every transport it returns.
+    assert_eq!(created["transport_deprecated"], serde_json::json!(false));
+    // A client cannot declare it: the field is unknown on a create request.
+    let declared = post_json(
+        &app,
+        &format!("/product/mcp/servers?workspace_id={workspace_a_id}"),
+        serde_json::json!({
+            "name": "declares_deprecation",
+            "transport": "streamable_http",
+            "url": "https://mcp.example.com/mcp",
+            "transport_deprecated": false
+        }),
+    )
+    .await;
+    assert_eq!(declared.status(), StatusCode::BAD_REQUEST);
+    // Legacy SSE is reported deprecated, the current HTTP transport is not.
+    for (name, transport, url, deprecated) in [
+        ("legacy_sse", "sse", "https://mcp.example.com/sse", true),
+        (
+            "streaming_http",
+            "streamable_http",
+            "https://mcp.example.com/mcp",
+            false,
+        ),
+    ] {
+        let created = post_json(
+            &app,
+            &format!("/product/mcp/servers?workspace_id={workspace_a_id}"),
+            serde_json::json!({
+                "name": name,
+                "transport": transport,
+                "url": url,
+                "request_timeout_ms": 2_000
+            }),
+        )
+        .await;
+        assert_eq!(created.status(), StatusCode::CREATED);
+        let created: serde_json::Value = decode_json(created).await;
+        assert_eq!(created["transport"], transport);
+        assert_eq!(created["url"], url);
+        assert_eq!(
+            created["transport_deprecated"],
+            serde_json::json!(deprecated)
+        );
+        let deleted = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!(
+                        "/product/mcp/servers/{name}?workspace_id={workspace_a_id}"
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(deleted.status(), StatusCode::NO_CONTENT);
+    }
 
     let persisted = std::fs::read_to_string(&config_path).unwrap();
     let persisted_json: serde_json::Value = serde_json::from_str(&persisted).unwrap();
@@ -7655,6 +7908,20 @@ async fn product_mcp_crud_is_workspace_scoped_secret_free_and_used_by_product_jo
     assert_eq!(probe["tools"][0]["parallel_safe"], false);
     assert!(!probe.to_string().contains(secret_canary));
 
+    let health = get_response(
+        &app,
+        &format!("/product/mcp/health?workspace_id={workspace_a_id}"),
+    )
+    .await;
+    assert_eq!(health.status(), StatusCode::OK);
+    let health: serde_json::Value = decode_json(health).await;
+    assert_eq!(health["total"], 1);
+    assert_eq!(health["servers"][0]["server_name"], "mock_server");
+    assert_eq!(health["servers"][0]["required"], true);
+    assert_eq!(health["servers"][0]["status"], "unknown");
+    assert_eq!(health["servers"][0]["tool_count"], 0);
+    assert!(health["servers"][0].get("server_config_hash").is_none());
+
     let session = create_product_session(&app, workspace_a_id, "MCP product job").await;
     let session_id = session["id"].as_str().unwrap();
     configure_product_session_model(&app, session_id, "fake-raw", 1).await;
@@ -7681,12 +7948,36 @@ async fn product_mcp_crud_is_workspace_scoped_secret_free_and_used_by_product_jo
             if result.output == "remote: product MCP catalog"
     )));
 
+    let health = get_response(
+        &app,
+        &format!("/product/mcp/health?workspace_id={workspace_a_id}"),
+    )
+    .await;
+    assert_eq!(health.status(), StatusCode::OK);
+    let health: serde_json::Value = decode_json(health).await;
+    let ready = &health["servers"][0];
+    assert_eq!(ready["status"], "ready");
+    assert_eq!(ready["tool_count"], 2);
+    assert_eq!(ready["protocol_version"], "2025-06-18");
+    assert!(
+        ready["server_config_hash"]
+            .as_str()
+            .is_some_and(|hash| hash.starts_with("sha256:"))
+    );
+    assert!(
+        ready["capability_snapshot_id"]
+            .as_str()
+            .is_some_and(|hash| hash.starts_with("sha256:"))
+    );
+    assert!(!health.to_string().contains(secret_canary));
+
     let disabled = request_json(
         &app,
         "PUT",
         &format!("/product/mcp/servers/mock_server?workspace_id={workspace_a_id}"),
         serde_json::json!({
             "enabled": false,
+            "required": true,
             "transport": "stdio",
             "command": python_command(),
             "args": [workspace_path_string("tests/fixtures/mcp_mock_server.py")],
@@ -7698,6 +7989,17 @@ async fn product_mcp_crud_is_workspace_scoped_secret_free_and_used_by_product_jo
     assert_eq!(disabled.status(), StatusCode::OK);
     let disabled: serde_json::Value = decode_json(disabled).await;
     assert_eq!(disabled["enabled"], false);
+
+    let health = get_response(
+        &app,
+        &format!("/product/mcp/health?workspace_id={workspace_a_id}"),
+    )
+    .await;
+    assert_eq!(health.status(), StatusCode::OK);
+    let health: serde_json::Value = decode_json(health).await;
+    assert_eq!(health["servers"][0]["status"], "disabled");
+    assert_eq!(health["servers"][0]["tool_count"], 0);
+    assert!(health["servers"][0].get("refreshed_at").is_none());
 
     let disabled_session =
         create_product_session(&app, workspace_a_id, "Disabled MCP product job").await;
@@ -7715,6 +8017,52 @@ async fn product_mcp_crud_is_workspace_scoped_secret_free_and_used_by_product_jo
         StreamEvent::ToolCallCompleted { result, .. }
             if result.output == "remote: product MCP catalog"
     )));
+
+    let optional = request_json(
+        &app,
+        "PUT",
+        &format!("/product/mcp/servers/mock_server?workspace_id={workspace_a_id}"),
+        serde_json::json!({
+            "enabled": true,
+            "required": false,
+            "transport": "stdio",
+            "command": "rove-command-that-does-not-exist-058761eb",
+            "args": [],
+            "env_names": [],
+            "request_timeout_ms": 2_000
+        }),
+    )
+    .await;
+    assert_eq!(optional.status(), StatusCode::OK);
+    let optional: serde_json::Value = decode_json(optional).await;
+    assert_eq!(optional["required"], false);
+    let optional_session =
+        create_product_session(&app, workspace_a_id, "Optional MCP degradation").await;
+    let optional_session_id = optional_session["id"].as_str().unwrap();
+    configure_product_session_model(&app, optional_session_id, "fake", 1).await;
+    let optional_job = create_product_job(&app, optional_session_id, "inspect safely").await;
+    let optional_state = wait_for_done(app.clone(), optional_job.job_id.to_string()).await;
+    assert_eq!(optional_state.status, RunStatus::Done);
+
+    let health = get_response(
+        &app,
+        &format!("/product/mcp/health?workspace_id={workspace_a_id}"),
+    )
+    .await;
+    assert_eq!(health.status(), StatusCode::OK);
+    let health: serde_json::Value = decode_json(health).await;
+    let degraded = &health["servers"][0];
+    assert_eq!(degraded["required"], false);
+    assert_eq!(degraded["status"], "degraded");
+    assert_eq!(degraded["tool_count"], 0);
+    assert!(degraded["failure_code"].as_str().is_some_and(|code| {
+        matches!(code, "mcp_activation_failed" | "mcp_activation_unavailable")
+    }));
+    assert!(
+        !health
+            .to_string()
+            .contains("rove-command-that-does-not-exist")
+    );
 
     let deleted = app
         .clone()
@@ -9835,7 +10183,10 @@ async fn wait_for_status(
     expected: RunStatus,
 ) -> JobStateResponse {
     let mut last_state = None;
-    for _ in 0..80 {
+    // Matches `wait_for_done`. The lifecycle finalizer adds real events to the
+    // terminal tail, so a shorter budget than the sibling helper only measures
+    // scheduler load under a parallel suite rather than the asserted status.
+    for _ in 0..400 {
         let response = app
             .clone()
             .oneshot(
@@ -10344,4 +10695,35 @@ fn test_config() -> AppConfig {
     config.provider.model = "fake".to_string();
     config.runtime.max_steps = 4;
     config
+}
+
+fn write_api_agent_definition(root: &Path) {
+    std::fs::create_dir_all(root.join("agents/ops/procedures")).unwrap();
+    std::fs::write(
+        root.join("agents/ops/agent.toml"),
+        r#"
+schema_version = 1
+id = "ops"
+definition_version = "1.0.0"
+display_name = "Operations"
+default_instructions_path = "instructions.md"
+
+[capability_policy]
+allow = ["workspace.fs.read"]
+
+[procedure_policy]
+max_selected = 1
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("agents/ops/instructions.md"),
+        "Inspect before changing anything.",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("agents/ops/procedures/rollback.md"),
+        "---\nschema_version: 1\nid: ops.rollback\nversion: 1.0.0\nstatus: active\ntitle: Roll back\nmode: diagnose\nrisk_level: low\nintents: [rollback]\n---\n\nInspect the deployment before rollback.\n",
+    )
+    .unwrap();
 }

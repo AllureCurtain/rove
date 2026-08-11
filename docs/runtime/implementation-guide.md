@@ -168,7 +168,7 @@ Task workspace lifecycle:
    removes the task files, `.rove` state, run artifacts, and default memory for
    that isolated task.
 
-Browser and Desktop workspaces are documented future designs only:
+Browser and Desktop automation workspaces are documented future designs only:
 `docs/runtime/browser-workspace-spec.md` and
 `docs/runtime/desktop-workspace-spec.md`. The runtime intentionally has no
 `Browser` or `Desktop` workspace enum stubs yet.
@@ -222,7 +222,7 @@ Project config and `.env` must resolve inside the workspace and be no larger
 than 256 KiB before bootstrap reads them.
 Workspace `.env` is parsed into one `AppConfig`-scoped map and never writes to
 the process environment. TOML and `.env` values are filtered by their matching
-project-configuration, provider, MCP, or external-path capability before merge;
+project-configuration, workspace-instruction, provider, MCP, or external-path capability before merge;
 operator environment and explicit CLI/API overrides retain precedence. Active
 API jobs poll the canonical trust authority at a bounded interval, so a CLI or
 other-process revocation cancels the run even when it bypasses the API route.
@@ -243,6 +243,10 @@ Common paths and defaults:
 | `runtime.planner_prompt_path` | `prompts/planner.md` |
 | `runtime.model_compaction_enabled` | `false` |
 | `runtime.compaction_failure_threshold` | `3` |
+| `runtime.agent.selector` | `builtin:legacy` |
+| `runtime.agent.workspace_instructions` | `false` |
+| `runtime.agent.allow_remediation_procedures` | `false` |
+| `runtime.agent.max_procedure_selections` | `3` |
 | `state.state_dir` | `.rove` |
 | `state.sqlite_path` | `.rove/state.sqlite` |
 | `tool.mcp_config_path` | `.rove/mcp_servers.json` |
@@ -856,10 +860,31 @@ workspace, approval policy, hooks, resolved memory paths, planner prompt, and
 optional interface providers for approval/input. IDs, task/execution data,
 Workspace/path safety, runtime identity, approval/input contracts,
 context/compaction, memory, events, state services, the tool `Executor`
-pipeline, hooks, runtime-specific tool turns, planning/run coordination, and
-durable event translation live in `rove-runtime`; the normalized model turn and
-action parser live in `rove-core`. Product registry assembly and first-party
+pipeline, hooks, Runtime kernel hosts/tool turns, planning coordination, and
+durable event translation live in `rove-runtime`; the shared multi-turn Agent
+kernel, normalized model turn, and action parser live in `rove-core`. Product
+registry assembly and first-party
 `AppConfig` live in product bootstrap and app shells.
+
+Before a run stream starts, Engine resolves the configured qualified Agent
+selector through `runtime/src/agents/`. Workspace packages and workspace
+instructions require the independent Project Trust capability. The resulting
+`AgentRuntimeProfile` is immutable and content-addressed: package/default/policy
+text, the bounded root/nested instruction bundle, selected procedure identities,
+and hydrated bodies contribute to its hash. The stream exposes the exact profile
+to artifact recorders before the first event; task state and prompt checkpoints
+store the full snapshot, while runtime identity, events, and reports expose only
+content-free hashes/references. An unfinished successor run validates and reuses
+that snapshot even if source files changed; it never substitutes the latest
+package silently.
+
+Root `AGENTS.md` is stable prompt policy. Nested files are dynamic path overlays.
+If a model first names a tool path whose overlay was not in its active turn, the
+Runtime closes the tool-call correlation with `precondition_required` without
+dispatch, installs the overlay, and lets the next model turn reconsider the
+call. A retry still passes schema, capability, approval, hooks, and workspace
+checks. Shell calls must declare valid non-empty workspace-relative `paths` when
+their command cannot identify the relevant nested scope.
 
 The high-level run flow:
 
@@ -871,8 +896,8 @@ The high-level run flow:
    - emit `PlanCreated` with an immutable revision for an initial plan, or wrap
      a legacy persisted mutable plan once as revision zero;
    - loop over plan steps;
-   - run each step through `step_runner.rs` with a four-model-turn compatibility
-     ceiling;
+   - run each step through the shared Core Agent kernel using the Runtime host
+     in `step_runner.rs`, with a four-model-turn compatibility ceiling;
    - build step-specific context while preserving current-step tool history;
    - call the model and execute tools through the shared turn helpers;
    - append tool results and return to the model in the same step;
@@ -886,7 +911,8 @@ The high-level run flow:
    - repair malformed/recoverable tool output within the step before creating
      a terminal failure.
 5. If planning is disabled:
-   - run the simpler ReAct loop over the original user message.
+   - run the same Core Agent kernel through the unplanned Runtime host over the
+     original user message.
 6. Emit `RunCompleted`.
 7. Run post-run hooks before the stream closes.
 
@@ -899,7 +925,7 @@ Termination can happen because of:
 - planner error;
 - cancellation.
 
-The planned and unplanned paths share model-turn and tool-turn helpers. If you are changing model streaming, native tool-use conversion, approval, batch execution, or history mutation, start in `model_turn.rs` or `tool_turn.rs`. `step_runner.rs` owns bounded within-step iteration, scoped history, and event-derived attempt metrics; `plan_evaluator.rs` owns replay-safe rule-first decisions; `plan_loop.rs` owns plan/revision identity, attempt closure, the append-only terminal record, decision ordering, plan cursor, and replacement revisions. Current planned execution emits only the canonical lifecycle events; compatibility plan-step dual-fire was removed.
+Embedded, planned, and unplanned execution share `core/src/kernel.rs` for model/action/tool repetition, cancellation, limits, batch reservation, final/follow-up transitions, and history progression. If you are changing model streaming or native tool-use conversion, start in the Core model-turn boundary. Runtime approval/input, tool safety, hooks, and execution remain in `runtime/src/engine/tool_turn.rs`; the unplanned and step hosts adapt those services to the kernel. `step_runner.rs` owns step-specific prompt/compaction state and event-derived attempt metrics; `plan_evaluator.rs` owns replay-safe rule-first decisions; `plan_loop.rs` owns plan/revision identity, attempt closure, the append-only terminal record, decision ordering, plan cursor, and replacement revisions. Current planned execution emits only the canonical lifecycle events; compatibility plan-step dual-fire was removed.
 
 Plan mutation semantics:
 
@@ -918,12 +944,15 @@ Plan mutation semantics:
   terminal successful record advances a stale materialized cursor without
   replay, and a terminal record missing its decision is evaluated exactly once.
   A complete active attempt without a terminal record becomes `interrupted`
-  and the resumed run stops with an error. Resume does not yet scan trace
-  events newer than the task-state projection.
+  and the resumed run stops with an error. Resume also reconciles canonical
+  trace events newer than the task-state checkpoint as an idempotent projection;
+  it does not redispatch model, tool, or mutation work.
 
 Relevant code:
 
 - `runtime/src/engine/facade.rs`
+- `runtime/src/agents/`
+- `core/src/kernel.rs`
 - `core/src/agent.rs`
 - `core/src/model_turn.rs`
 - `core/src/parser.rs`
@@ -1404,7 +1433,8 @@ Example config:
 Supported transports:
 
 - `stdio`;
-- `sse`.
+- `sse` (deprecated compatibility path);
+- `streamable_http`.
 
 For stdio, the Execution Environment reads the bounded workspace config and its
 process port spawns the configured command, sends JSON-RPC messages over stdin,
@@ -1415,16 +1445,17 @@ registers each returned tool as:
 mcp__<sanitized_server_name>__<remote_tool_name>
 ```
 
-The proxy maps MCP annotations into local tool metadata:
-
-- `destructiveHint` -> `destructive`;
-- `readOnlyHint` -> `parallel_safe` when not destructive.
+Remote annotations, descriptions, schemas, and content are untrusted data. They
+never grant local safety: registered MCP tools remain destructive and
+non-parallel until a local operator-owned policy says otherwise.
 
 Each server can include an optional `policy` object:
 
 ```json
 {
   "name": "filesystem",
+  "enabled": true,
+  "required": true,
   "transport": "stdio",
   "command": "npx",
   "args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
@@ -1435,9 +1466,59 @@ Each server can include an optional `policy` object:
 }
 ```
 
-`request_timeout_ms` bounds stdio initialize/list/call requests and SSE HTTP requests. `stderr_capture_bytes` controls how much stdio stderr is retained for timeout and startup diagnostics. MCP JSON-RPC errors are mapped into structured tool execution failures instead of raw protocol blobs. Stdio child processes are killed when their registered client is dropped.
+Old configurations default `enabled` and `required` to `true`. A required
+activation failure aborts assembly with a stable code and no raw remote error;
+an optional failure leaves local/other tools registered and publishes degraded
+health. Disabled servers are not contacted.
 
-Default test coverage uses Python stdio fixtures for normal registration, timeout, JSON-RPC error mapping, and child cleanup. A real stdio filesystem MCP smoke test is available behind an explicit environment gate:
+`request_timeout_ms` bounds stdio initialize/list/call requests and HTTP
+requests. `stderr_capture_bytes` bounds stdio diagnostics. Stdio child processes
+are killed when their registered client is dropped. All responses are bounded
+to 1 MiB. Streamable HTTP additionally enforces protocol negotiation, validated
+session headers, declared content types, TLS outside permitted loopback, safe
+redirects, bounded request correlation/pagination, and retry only for proven
+`NotSent` requests. A post-dispatch failure is `Indeterminate`.
+
+Every successful initialize validates and canonicalizes the server-declared
+`serverInfo` name/version plus bounded capabilities into one secret-free
+identity hash. Catalog snapshots, runtime identity/resume, and Tool Result
+protocol metadata use that same hash; missing, oversized, or control-bearing
+identity fields fail activation rather than falling back to a configured name.
+
+Every transport maps MCP text, structured content, image/audio, resource/link,
+unknown blocks, `isError`, and declared output schema through the shared Tool
+Result envelope. Eligible binary content enters the run's content-addressed Tool
+Artifact store; payload bytes do not enter prompts, trace, or canonical events.
+`ToolArtifactStored` or `ToolArtifactRejected` precedes the correlated
+`ToolCallCompleted` event.
+
+For Streamable HTTP, `notifications/tools/list_changed` causes a complete
+bounded rediscovery. The validated server namespace is replaced atomically;
+invalid refresh retains the old namespace and marks health degraded. Engine
+pins one registry snapshot per run, so an active run never changes bindings and
+a later run sees the refreshed catalog. Three consecutive refresh/poll failures
+enter a 30-second circuit cooldown.
+
+Secret-free MCP snapshots enter runtime identity, checkpoints, and reports.
+Canonical `mcp_server_degraded` and `mcp_capabilities_refreshed` events use only
+server config IDs, stable failure/snapshot codes, and bounded name diffs. Product
+diagnostics are available at `GET /product/mcp/health`; Settings displays
+required/optional and `ready`/`degraded`/`disabled`/`unknown` state. Raw endpoint
+credentials, environment values, session IDs, and remote diagnostics are not
+returned.
+
+Default tests use deterministic stdio and loopback HTTP fixtures for
+registration, timeout, JSON-RPC correlation/error mapping, rich results,
+artifacts, refresh/run pinning, invalid catalogs, health, and cleanup. Run:
+
+```powershell
+cargo test -p rove-runtime tools::mcp --lib
+cargo test -p rove-integration-tests --test mcp
+cargo test -p rove-integration-tests --test mcp_streamable_http
+```
+
+A real stdio filesystem MCP smoke test remains behind an explicit environment
+gate:
 
 ```powershell
 $env:ROVE_MCP_FILESYSTEM_SMOKE = "1"
@@ -1449,7 +1530,10 @@ By default that smoke test runs `npx -y @modelcontextprotocol/server-filesystem 
 Relevant code:
 
 - `runtime/src/tools/mcp_proxy.rs`
+- `runtime/src/tools/mcp/`
+- `runtime/src/state/tool_artifacts.rs`
 - `tests/mcp.rs`
+- `tests/mcp_streamable_http.rs`
 - `tests/fixtures/mcp_mock_server.py`
 
 ## 18. RAG
@@ -1629,12 +1713,16 @@ When changing provider tool-use:
 
 These are implementation-level issues to keep in mind before extending the system.
 
-1. The implemented lifecycle evaluator is deterministic and rule-first; it
-   does not call a model for ambiguous evidence. An independent Finalizer,
-   public and globally enforced multidimensional budgets, structured budget and
-   finalization events, and model-on-ambiguity evaluation remain unimplemented.
-   Resume uses the materialized `TaskState` lifecycle projection and does not
-   yet reconcile a canonical trace tail written after the latest snapshot.
+1. The lifecycle evaluator is rule-first. A model evaluation is reachable only
+   from a validated typed `PlanAmbiguity`, is bounded by repair and model-turn
+   budgets, and falls back deterministically with an explicit degradation
+   record. An independent evidence-grounded Finalizer, public and globally
+   enforced multidimensional budgets, and structured budget/finalization events
+   are implemented. Resume reconciles a canonical trace tail written after the
+   latest snapshot as an idempotent projection that never re-dispatches work.
+   Remaining risk: cost enforcement is inert unless the active provider supplies
+   priced usage, and wall-time accounting is sampled at phase boundaries rather
+   than preempting an in-flight provider call.
 
 2. Built-in vector RAG is removed. Workspace retrieval is explicit bounded
    tools plus layered file memory; optional external semantic retrieval remains

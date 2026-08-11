@@ -52,11 +52,20 @@ pub struct TaskState {
     pub plan: Option<TaskPlan>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_identity: Option<crate::runtime_identity::RuntimeIdentity>,
+    /// Exact Agent snapshot used by this run. It is retained in state only;
+    /// events and reports project the content-free identity instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_profile: Option<crate::agents::AgentRuntimeProfile>,
     #[serde(
         default,
         skip_serializing_if = "crate::execution::StepLedgerState::is_empty"
     )]
     pub step_ledger: crate::execution::StepLedgerState,
+    #[serde(
+        default,
+        skip_serializing_if = "crate::execution::ExecutionLifecycleState::is_empty"
+    )]
+    pub execution_lifecycle: crate::execution::ExecutionLifecycleState,
 }
 
 /// Resumable prompt checkpoint used to rebuild context without replaying the full audit history.
@@ -80,8 +89,12 @@ pub struct PromptCheckpoint {
     pub compaction: PromptCompactionState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_identity: Option<crate::runtime_identity::RuntimeIdentity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_profile: Option<crate::agents::AgentRuntimeProfile>,
     #[serde(default)]
     pub step_ledger: crate::execution::StepLedgerCheckpoint,
+    #[serde(default)]
+    pub execution_lifecycle: crate::execution::ExecutionLifecycleCheckpoint,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
