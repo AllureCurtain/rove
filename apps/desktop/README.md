@@ -132,6 +132,17 @@ pnpm dlx @tauri-apps/cli@2 build --target aarch64-apple-darwin
 - State: `$XDG_DATA_HOME/rove` (fallback: `~/.local/share/rove`)
 - Logs: `$XDG_STATE_HOME/rove/logs` (fallback: `~/.local/state/rove/logs`)
 
+Ubuntu/Debian builds require the native GTK/WebKit development packages used
+by Tauri:
+
+```bash
+sudo apt-get update
+sudo apt-get install --no-install-recommends -y \
+  libayatana-appindicator3-dev \
+  librsvg2-dev \
+  libwebkit2gtk-4.1-dev
+```
+
 Build command:
 ```bash
 pnpm dlx @tauri-apps/cli@2 build --target x86_64-unknown-linux-gnu
