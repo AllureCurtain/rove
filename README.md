@@ -1,350 +1,354 @@
-# rove
+<p align="center">
+  <img src="apps/desktop/icons/128x128.png" width="88" height="88" alt="Rove icon">
+</p>
 
-<div align="center">
-  <strong>Local-first agent runtime for work you can inspect, resume, and control.</strong>
-  <br />
-  Rust runtime. CLI. HTTP/SSE API. Web product shell.
-  <br /><br />
-  <a href="#quick-start">Quick start</a>
-  &nbsp;|&nbsp;
-  <a href="#product-surfaces">Product surfaces</a>
-  &nbsp;|&nbsp;
-  <a href="#architecture">Architecture</a>
-  &nbsp;|&nbsp;
-  <a href="#documentation">Documentation</a>
-</div>
+<h1 align="center">Rove</h1>
 
-`rove` is a local-first, stateful Agent runtime written in Rust. It gives the
-same execution model to a terminal REPL, a full-screen TUI, a local HTTP API,
-a Next.js Web product shell, and deterministic benchmarks.
+<p align="center">
+  <strong>A local-first coding agent you can inspect, interrupt, resume, and trust.</strong>
+</p>
 
-The runtime keeps the things that matter for dependable Agent work explicit:
-provider-neutral messages, bounded tools, approval and input gates, canonical
-events, resumable state, readable artifacts, and layered memory.
+<p align="center">
+  One durable runtime behind Desktop, Web, CLI, API, and deterministic evaluation.
+</p>
 
-## At A Glance
+<p align="center">
+  <a href="https://github.com/AllureCurtain/rove/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/AllureCurtain/rove/actions/workflows/ci.yml/badge.svg"></a>
+  <img alt="Version" src="https://img.shields.io/badge/version-0.1.0-2563eb">
+  <img alt="Desktop" src="https://img.shields.io/badge/Desktop-Windows%20verified-0f766e">
+  <img alt="Tauri" src="https://img.shields.io/badge/Tauri-2.x-24c8db">
+  <img alt="Next.js" src="https://img.shields.io/badge/Next.js-16-111111">
+  <img alt="Rust" src="https://img.shields.io/badge/Rust-runtime-b7410e">
+</p>
 
-| | Current main |
+<p align="center">
+  <a href="#one-minute-overview">Overview</a>
+  · <a href="#core-workflow">Workflow</a>
+  · <a href="#what-ships-today">Capabilities</a>
+  · <a href="#get-started">Get started</a>
+  · <a href="#architecture">Architecture</a>
+  · <a href="#documentation">Documentation</a>
+</p>
+
+## One-minute overview
+
+Rove is a local-first Agent product for repository work. You choose a workspace,
+ask for a task, watch the run as it happens, approve sensitive operations, and
+review the resulting files, diffs, artifacts, usage, and evidence.
+
+The product surfaces are different views over the same runtime. Desktop embeds
+the same authenticated API and static Web application; Web, CLI, TUI, API, and
+benchmarks do not maintain separate Agent loops or competing state.
+
+| Project fact | Current state |
 |---|---|
-| Runtime | Rust 2024 virtual Cargo Workspace |
-| Interfaces | CLI/REPL/TUI, HTTP/SSE API, Next.js Web shell |
-| Providers | Fake, OpenAI Chat, OpenAI Responses, Anthropic, Ollama |
-| Workspaces | Folder, Repo, and isolated Task workspaces |
-| Tools | Filesystem, shell, memory, request-input, and MCP proxy |
-| Persistence | SQLite index plus `trace.jsonl`, `task_state.json`, `report.json`, and Markdown memory |
-| Local mode | Deterministic fake-provider runs require no network or provider key |
+| Version | <code>0.1.0</code>, source-first pre-release |
+| Product surfaces | Tauri Desktop, Next.js Web, CLI/REPL/TUI, HTTP/SSE API |
+| Local evaluation | Deterministic fake provider, no key or network required |
+| Model providers | OpenAI Chat, OpenAI Responses, Anthropic, Ollama, Fake, external adapter |
+| Workspaces | Explicit Folder, Repo, and isolated Task roots |
+| Durable state | SQLite index plus readable trace, task state, report, artifacts, and Markdown memory |
+| Desktop evidence | Windows MSI/NSIS build and release-process smoke |
+| Accounts and cloud | No hosted account, billing, or Rove cloud service |
 
-## Current MVP
+Rove is currently best suited to local development and controlled dogfooding.
+It is not yet a signed, generally available desktop release.
 
-The current `main` branch includes the production Web product shell, Web
-Complete C0-C3, and the merged CDH G1-G7 control/evidence/settings delivery:
+## Who it is for
 
-- API-authoritative workspaces, sessions, provider profiles, preferences, and
-  exact product-session/runtime bindings.
-- Workspace -> Session -> Chat navigation with a streaming transcript, inline
-  approval/input, cancellation, durable refresh restore, and a run Inspector.
-- Complete Settings routes for providers, approval defaults, workspace/session
-  management, Memory, runtime health, and keyboard controls.
-- Fail-closed browser migration with idempotent retry and preserved deep routes.
-- CLI one-shot runs, REPL, bounded full-screen TUI, resume picker, tool
-  details, configuration inspection, and session listing.
-- Durable run state, canonical event streams, bounded tool execution, layered
-  memory, provider routing, MCP stdio/deprecated SSE/Streamable HTTP with rich
-  results, negotiated server identity, and run-pinned live catalog refresh,
-  and deterministic benchmark evidence.
-- API-authoritative Steer and durable Follow-up controls, terminal-boundary
-  session Fork with inherited read-only history, and session-scoped model/
-  reasoning/approval/step-limit snapshots.
-- Usage/cost/context inspection, bounded workspace files and artifacts, image
-  validation, run/Git diff, and redacted JSON/HTML/Markdown evidence export.
-- Workspace-scoped MCP catalog management with typed probes, secret-free
-  persistence, bounded transports, and fail-closed configuration errors.
+| You need to | Rove provides |
+|---|---|
+| Work on a real repository without losing control | Exact workspace roots, Project Trust, approvals, bounded tools, and observable mutations |
+| Continue after a disconnect or restart | Canonical events, resumable task state, checkpoints, and fail-closed reconciliation |
+| Understand what the Agent actually did | Transcript, plan and tool activity, changed files, diffs, artifacts, usage, and redacted evidence export |
+| Use different model endpoints | Named provider profiles, protocol-normalized adapters, model discovery, connectivity tests, routing, and fallback |
+| Run without credentials or network | Fake-provider CLI, integration, browser, and benchmark paths |
+| Extend tool access safely | One authoritative Tool Registry plus stdio, legacy SSE, and Streamable HTTP MCP |
 
-The default Web shell is the primary product surface. `/dev/workbench` remains
-available as a bounded advanced escape hatch for direct runtime inspection.
+## Core workflow
 
-The deterministic `local-full` fake-provider gate covers migration,
-product-session continuation and refresh, tools, cancellation, Settings, deep
-routes, Steer/Follow-up, session Fork/child continuation, and one bounded
-workbench smoke.
-The external-provider browser gate has not been run, so no external-provider
-interoperability claim is made here.
-
-## Product Surfaces
-
-| Surface | Use it for | Entry point |
+| Step | User action | Product behavior |
 |---|---|---|
-| Web product shell | Workspace and session navigation, chat, streaming runs, approvals, Settings, Memory, and runtime health | `http://localhost:3000` |
-| CLI / REPL | Fast local prompts, interactive sessions, config inspection, and resume | `cargo run -p rove-cli -- ...` |
-| Full-screen TUI | Keyboard-driven transcript, approvals, input, tool details, and resume | `cargo run -p rove-cli -- tui ...` |
-| HTTP API | Jobs, SSE events, approvals, inputs, cancellation, resume, provider operations, and product control | `http://127.0.0.1:8787` |
-| Benchmarks | Repeatable no-network tasks with reports and artifact checks | `apps/bench/` and `benchmarks/` |
+| 1. Open | Select a Folder or Repo | Rove binds an exact canonical workspace root |
+| 2. Trust | Review project capabilities | Project config, instructions, MCP, hooks, credentials, and external paths remain deferred until explicitly granted |
+| 3. Configure | Choose Fake or a provider profile | Raw keys stay in the server/Desktop process environment, never browser state |
+| 4. Ask | Send a task in Chat, CLI, or TUI | The shared Engine selects the profile, plan, budgets, tools, and immutable run identity |
+| 5. Control | Approve, answer, steer, queue follow-up work, stop, or resume | Every control crosses the same durable runtime boundary |
+| 6. Review | Inspect the answer, diff, files, artifacts, and evidence | Canonical events remain the source for persistence and product projections |
 
-## Quick Start
+## What ships today
 
-### Try the runtime without a provider key
+### Agent execution
 
-Requirements: Git, Rust stable from [`rust-toolchain.toml`](rust-toolchain.toml),
-and Cargo.
+- One Runtime-neutral Core Agent kernel drives embedded, unplanned, and
+  planned-step model/tool coordination.
+- Rule-first plan decisions can use bounded model evaluation only for typed
+  ambiguity; deterministic fallback remains available.
+- An independent evidence-grounded Finalizer reports success, partial,
+  blocked, rejected, cancelled, exhausted, indeterminate, and failed outcomes
+  without relabeling them as complete.
+- Multidimensional execution budgets, immutable plan revisions, StepRecords,
+  trace-tail reconciliation, cancellation, and resume are part of the durable
+  lifecycle.
 
-```bash
+### Workspace intelligence and tools
+
+- Bounded ranged reads, deterministic search/glob/list continuation, observed
+  writes and edits, workspace checkpoints, artifact projection, and foreground
+  or background shell execution.
+- Exact path, traversal, symlink/reparse, timeout, output, approval, and
+  capability checks remain Runtime-owned.
+- Versioned AgentDefinition packages, trusted root/nested <code>AGENTS.md</code>
+  discovery, immutable run profiles, and typed procedure selection/hydration.
+- Planner, StepRunner, Evaluator, and Finalizer consume bounded procedure
+  material; the OnCall V2 suite evaluates behavior against independent truth
+  and hard safety gates.
+
+### Product continuity and control
+
+- API-authoritative workspaces, sessions, preferences, provider profiles, and
+  exact product-session/runtime bindings.
+- Streaming canonical transcript restore with explicit loading, partial,
+  failure, retry, reconnect, and background-attention states.
+- Durable Steer and Follow-up controls, terminal-boundary session Fork,
+  per-session model/reasoning/approval/step-limit snapshots, and single-active-
+  turn ownership.
+- Memory, runtime health, workspace files, images, artifacts, run/Git diff,
+  usage/context/cost, and JSON/HTML/Markdown evidence views.
+
+### Providers, MCP, and artifacts
+
+- Provider-specific payloads stay behind normalized model messages, tool calls,
+  usage, and errors.
+- OpenAI Chat, OpenAI Responses, Anthropic Messages, Ollama, Fake, and an
+  opt-in external process adapter share the first-party factory.
+- MCP supports stdio, deprecated HTTP+SSE, and negotiated Streamable HTTP.
+- Rich tool results use bounded content blocks and canonical durable Tool
+  Artifacts. Streamable HTTP catalogs can refresh for future runs while active
+  runs retain pinned tool bindings.
+
+## Get started
+
+### Requirements
+
+- Git
+- Rust stable from [rust-toolchain.toml](rust-toolchain.toml)
+- Node.js 22 and pnpm 10 for Web/Desktop development
+
+### Try the CLI with no provider key
+
+~~~powershell
 cargo run -p rove-cli -- --model fake "echo hello from rove"
-```
+~~~
 
-Start an interactive REPL:
+Interactive REPL:
 
-```bash
+~~~powershell
 cargo run -p rove-cli -- --model fake
-```
+~~~
 
-Run a non-interactive prompt:
+Non-interactive execution:
 
-```bash
+~~~powershell
 cargo run -p rove-cli -- exec --model fake "inspect this workspace"
-```
+~~~
 
-Run the deterministic benchmark suite:
+### Run the Web product
 
-```bash
-cargo run -p rove-bench -- --suite benchmarks/agent-smoke.json --output-dir .rove/bench
-```
+Install the locked Web dependencies once:
 
-### Run the Web product shell
-
-Requirements: Node.js compatible with the lockfile and pnpm 10.
-
-From the repository root, start the local API and Web app together:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/dev.ps1
-```
-
-Open <http://localhost:3000>. The launcher starts the API on
-`127.0.0.1:8787`, starts Next.js in fake-provider mode, and stops both process
-trees when it exits. Use custom ports when needed:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/dev.ps1 `
-  -ApiAddr 127.0.0.1:18787 `
-  -WebPort 3001
-```
-
-To start the pieces separately:
-
-```powershell
-cargo run -p rove-api
+~~~powershell
 cd apps/web
 pnpm install --frozen-lockfile
-pnpm dev
-```
+cd ../..
+~~~
 
-The API publishes generated OpenAPI and Swagger UI at
+Start the local API and Web application together in fake-provider mode:
+
+~~~powershell
+powershell -ExecutionPolicy Bypass -File scripts/dev.ps1
+~~~
+
+Open <http://localhost:3000>. The API listens on
+<http://127.0.0.1:8787>; OpenAPI and Swagger UI are available at
 <http://127.0.0.1:8787/api/openapi.json> and
 <http://127.0.0.1:8787/swagger-ui>.
 
-### Use a real provider
+### Run Desktop
 
-The fake provider is the default for local evaluation. For an OpenAI-compatible
-Chat Completions API, relay, or gateway:
+From <code>apps/desktop</code>:
 
-```powershell
-$env:ROVE_PROVIDER = "openai"
-$env:ROVE_MODEL = "<model-id>"
-$env:OPENAI_API_BASE = "https://<provider-or-gateway>/v1"
+~~~powershell
+pnpm dlx @tauri-apps/cli@2 dev
+~~~
+
+Build Windows packages:
+
+~~~powershell
+pnpm dlx @tauri-apps/cli@2 build --target x86_64-pc-windows-msvc
+~~~
+
+Desktop is a thin Tauri host. It starts the shared API on a random loopback
+port, injects a persistent local bearer token before page scripts run, and
+loads the same static Web product. It does not own a second Engine or
+ProductStore.
+
+### Configure a real provider
+
+Rove configures real providers through named profiles. Choose a provider type,
+endpoint, model, and credential environment-variable name. The browser never
+receives the credential value.
+
+For Web development, export the key before starting the API:
+
+~~~powershell
 $env:OPENAI_API_KEY = "<secret>"
 powershell -ExecutionPolicy Bypass -File scripts/dev.ps1 -Provider
-```
+~~~
 
-The Web Settings surface can manage provider profiles and model selection. Raw
-provider keys stay server-side; the browser sends environment variable names,
-not secret values.
+Then open **Settings -> Providers**, create a profile, set the key reference to
+<code>OPENAI_API_KEY</code>, test the endpoint/model, and activate the profile.
+Official services and compatible gateways use the same profile types; only
+endpoint, model, and credential reference differ.
 
-## Capabilities
-
-| Area | Implemented behavior |
-|---|---|
-| Execution | One Runtime-neutral Core kernel drives embedded, unplanned, and planned-step model/tool coordination; Runtime hosts retain context checkpoints, safety, persistence, and canonical lifecycle events. |
-| Tools | Filesystem and shell access are workspace-bounded. Shell timeout, output limits, environment policy, denylist, and approval controls are configurable. |
-| Human control | Tool approval, `request_input`, cancellation, resume, Steer/Follow-up, session Fork, and terminal-visible status are part of the shared runtime/product contract. |
-| Providers | Provider-specific payloads stay behind the model boundary. Routing supports retries and fallback models where configured. |
-| Memory | Session memory, durable `MEMORY.md`, topics, and deterministic summaries are stored as readable Markdown. |
-| Retrieval | Workspace context comes from bounded filesystem/shell tools and layered memory. There is no built-in vector database or embedding index. |
-| Evidence | Each run records canonical trace events, resumable task state, a derived report, and a SQLite index for listing and restart-aware access. |
+See [Provider smoke testing](docs/runtime/provider-smoke.md) for CLI/config
+examples and honest external-service gates.
 
 ## Architecture
 
-All first-party surfaces use the same runtime assembly and execution contracts:
+~~~text
+Tauri Desktop ---+
+Next.js Web -----+-- HTTP / SSE --> rove-api --+
+                                               |
+CLI / TUI -------------------------------------+
+Benchmarks ------------------------------------+
+                                               v
+                         rove-app-bootstrap
+                         config, trust, assembly
+                                    |
+                                    v
+                             rove-runtime
+                 Engine, planning, state, tools, memory
+                                    |
+                                    v
+                               rove-core
+                   Agent kernel and Tool Registry contract
+                                    |
+                                    v
+                              rove-models
+                  normalized providers, routing, fake model
+~~~
 
-```text
-Web product shell -- HTTP/SSE --> API
+The package direction is intentionally one-way:
 
-CLI / API / benchmark
-        |
-        v
-  app-bootstrap       config, provider factory, product assembly
-        |
-        v
-  runtime             Engine, state, tools, memory, planning
-        |
-        v
-  core                in-memory Agent and tool loop
-        |
-        v
-  models              normalized protocol, providers, routing, fake model
-```
+~~~text
+rove-models <- rove-core <- rove-runtime <- rove-app-bootstrap
+                                               ^
+                                               |
+                         rove-cli / rove-api / rove-bench
+                                      ^
+                                      |
+                                rove-desktop
+~~~
 
-The important boundaries are deliberate:
+## Data and safety
 
-- Web, API, CLI, benchmark, and embedding surfaces do not own independent Agent
-  loops; durable hosts and the in-memory embedding host use one Runtime-neutral
-  Core Agent kernel.
-- Provider payloads do not leak into core execution.
-- Tool descriptions, MCP annotations, prompts, and model requests cannot grant
-  permission.
-- Workspace paths are resolved and bounded by the selected workspace.
-- `trace.jsonl` is the event fact log, `task_state.json` is resumable state, and
-  `report.json` is a derived summary.
+Rove is local-first, not permission-free.
 
-## Durable State
+- The API binds to loopback by default; remote binding requires bearer
+  authentication unless an explicit unsafe override is supplied.
+- Project-owned config, instructions, MCP processes, hooks, credential
+  selectors, and external paths are restricted until the exact workspace and
+  capability digest are trusted.
+- Tool descriptions, prompts, procedures, MCP annotations, and model output
+  cannot grant approval or capability.
+- Workspace paths are resolved at execution boundaries. Remote names, URIs,
+  MIME metadata, and artifact IDs never become trusted local paths.
+- Secrets are excluded from browser requests, normal logs, traces, reports,
+  evidence, screenshots, and committed fixtures.
 
-By default, runtime state is written under `.rove/`:
+Default durable workspace data:
 
-```text
+~~~text
 .rove/
   state.sqlite
   runs/<run_id>/trace.jsonl
   runs/<run_id>/task_state.json
   runs/<run_id>/report.json
+  runs/<run_id>/tool_artifacts/
   memory/MEMORY.md
-  memory/topics/*.md
-  memory/sessions/<session_id>.md
-```
+  memory/topics/
+  memory/sessions/
+~~~
 
-SQLite is the index for listing, replay, and restart-aware API job state. The
-readable files remain the durable run facts. `rove state repair` can rebuild
-the index from task, trace, and report artifacts.
-
-## Configuration
-
-Project-owned configuration is disabled until the selected workspace is
-explicitly activated with CLI `--trust-project` or its canonical path is listed
-in process-level `ROVE_TRUSTED_WORKSPACES`. A workspace `.env` or config file
-cannot grant activation to itself. Once activated, configuration is layered in
-this order:
-
-```text
-defaults < .rove/config.toml < environment < CLI overrides
-```
-
-Common variables:
-
-| Variable | Purpose |
-|---|---|
-| `ROVE_PROVIDER` | `fake`, `openai`, `openai-responses`, `anthropic`, or `ollama` |
-| `ROVE_MODEL` | Primary model override; use `fake` for deterministic local runs |
-| `ROVE_API_BIND_ADDR` | API bind address; defaults to `127.0.0.1:8787` |
-| `ROVE_API_TOKEN` | Optional bearer token for protected API deployments |
-| `ROVE_API_BASE` | Web server-side proxy target; defaults to the local API |
-| `ROVE_WEB_PORT` | Web port used by `scripts/dev.ps1`; defaults to `3000` |
-| `ROVE_FALLBACK_MODELS` | Comma-separated fallback model list |
-| `ROVE_SHELL_TIMEOUT_MS` | Shell timeout; defaults to `30000` |
-| `ROVE_SHELL_MAX_OUTPUT_BYTES` | Captured output limit per stream; defaults to `65536` |
-| `ROVE_TRUSTED_WORKSPACES` | OS path-list of exact workspace roots allowed to load project config and MCP |
-
-Use `cargo run -p rove-cli -- dump-config` to inspect effective values and
-secret-redacted provider fields. The complete configuration and security
-behavior are documented in [runtime subsystems](docs/runtime/subsystems.md).
+<code>trace.jsonl</code> records canonical event facts,
+<code>task_state.json</code> records resumable state, and
+<code>report.json</code> is a derived summary. The report is not the only
+durable truth.
 
 ## Verification
 
-Default Rust checks:
+Rust:
 
-```powershell
+~~~powershell
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
-```
+~~~
 
-Web checks:
+Web:
 
-```powershell
+~~~powershell
 cd apps/web
-pnpm install --frozen-lockfile
 pnpm test
 pnpm typecheck
 pnpm build
-```
-
-For changes affecting browser-visible flows, SSE, approvals, input,
-cancellation, resume, or the API proxy, also run:
-
-```powershell
 pnpm test:e2e
-```
+~~~
 
-The local full-stack acceptance runner is:
+Aggregate local acceptance writes real exits to
+<code>PRODUCT_ACCEPTANCE_REPORT.json</code>:
 
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/integration-smoke.ps1
-```
-
-The aggregate product acceptance runner records real exit codes in
-`PRODUCT_ACCEPTANCE_REPORT.json`:
-
-```powershell
+~~~powershell
 powershell -ExecutionPolicy Bypass -File scripts/product-acceptance.ps1
-```
+~~~
 
-Provider, MCP, PTY, and stress checks are opt-in. A skipped external gate is
-not evidence of external interoperability. See the integration testing and
-release readiness documents before making release claims.
+The final full-delivery report passed all 11 required checks. Provider, real
+filesystem MCP, platform packaging, and other opt-in gates remain separate;
+skipped evidence is never counted as interoperability.
 
-## Current Boundaries
+## Current boundaries
 
-The current source tree does not include:
-
-- A Tauri Desktop host or Browser/Desktop automation workspace.
-- Hosted multi-user identity, billing, remote gateway, device pairing, or
-  distributed rate limiting.
-- Full shell sandboxing beyond the current local policy controls.
-- Built-in vector or provider-backed RAG retrieval.
-- Live MCP catalog refresh for stdio/deprecated SSE; refresh is implemented for
-  Streamable HTTP, and real third-party MCP interoperability remains unclaimed.
-- Phase-specific procedure consumption by Planner, Evaluator, and Finalizer,
-  or the proposed OnCall reference evaluation suite.
-- Subagents.
-
-The shared Core/Runtime Agent kernel, Project Trust activation, the shared
-Execution Environment, Coding Tool V2, MCP Streamable HTTP, rich Tool Results
-and durable Tool Artifacts, versioned AgentDefinition packages, runtime
-`AGENTS.md` discovery, typed procedure selection/hydration, the independent
-Finalizer, model-on-ambiguity plan evaluation, and public multidimensional
-execution budgets are implemented in the runtime.
-
-These boundaries are maintained explicitly in the current runtime docs and
-future designs. Optional external interoperability remains unclaimed until its
-explicit gates run successfully.
+| Area | Current boundary |
+|---|---|
+| Distribution | Windows MSI/NSIS packages have been built and the release process launched; public signing, installation, and general release are not complete |
+| Platforms | Linux CI compiles/tests Desktop; macOS/Linux package and interactive evidence remain unverified |
+| Providers | Deterministic and protocol tests pass; the final external-provider interoperability gate was not run |
+| MCP | Mock transports and negotiated behavior are covered; the optional official filesystem smoke and broader third-party interoperability remain unrun |
+| Shell isolation | Local shell is policy-bounded and approval-gated, not container/seccomp/user-namespace sandboxed |
+| Retrieval | Workspace tools plus layered Markdown memory; no built-in vector database, embedding index, or semantic RAG |
+| Delegation | Tool batches can run safe calls concurrently; product subagents are not implemented |
+| PTY | Native PTY remains a typed unsupported execution capability |
+| Hosted product | No multi-user identity, billing, device sync, remote execution gateway, or distributed rate limiting |
 
 ## Documentation
 
-Current runtime source of truth is [`docs/runtime/`](docs/runtime/). Proposed
-work is not part of the runtime contract until implementation, tests, and these
-current-state documents agree.
+Current behavior lives in [docs/runtime/](docs/runtime/). A proposed design is
+not evidence that the runtime supports it.
 
 | Read this | For |
 |---|---|
-| [Runtime README](docs/runtime/README.md) | Current-state documentation map and implementation boundary |
-| [MVP definition](docs/runtime/mvp-definition.md) | Included capabilities, exclusions, golden paths, and evidence baseline |
-| [Architecture](docs/runtime/architecture.md) | Runtime components and ownership boundaries |
-| [Plan plus ReAct loop](docs/runtime/react-loop.md) | Current execution behavior and resume semantics |
-| [Subsystems](docs/runtime/subsystems.md) | Config, state, providers, tools, memory, API, MCP, and Web details |
-| [Integration testing](docs/runtime/integration-testing.md) | Local-full, provider, MCP, browser, PTY, and stress gates |
-| [Release readiness](docs/runtime/release-readiness.md) | Evidence and security checklist for release-oriented claims |
-| [Maintainer onboarding](docs/ONBOARDING.md) | Repository map, change workflows, and verification guidance |
-| [`AGENTS.md`](AGENTS.md) | Repository-wide source-of-truth and engineering rules |
-| [Kernel, Message, and Provider brief](docs/plans/2026-08-06-kernel-message-provider-implementation.md) | Active typed-session, provider-protocol, and shared-kernel implementation track |
-| [Project Trust, Execution Environment, and Coding Tools brief](docs/plans/2026-08-06-project-trust-execution-tools-implementation.md) | Active trust, execution-adapter, and coding-tool implementation track |
+| [Maintainer onboarding](docs/ONBOARDING.md) | Repository map, source-of-truth order, development workflow, and verification |
+| [Runtime documentation](docs/runtime/README.md) | Current implementation map and supported behavior |
+| [Architecture](docs/runtime/architecture.md) | Package ownership and cross-surface boundaries |
+| [Runtime subsystems](docs/runtime/subsystems.md) | Trust, config, providers, tools, state, memory, MCP, API, Web, and Desktop |
+| [Implementation status](docs/runtime/implementation-status.md) | Implemented contracts and remaining gaps |
+| [Acceptance matrix](docs/runtime/acceptance-matrix.md) | Evidence commands and optional-gate classification |
+| [Integration testing](docs/runtime/integration-testing.md) | Local, browser, provider, MCP, PTY, and stress gates |
+| [Release readiness](docs/runtime/release-readiness.md) | Release-oriented evidence and security checklist |
+| [Productization program](docs/plans/2026-08-10-post-full-delivery-productization.md) | Proposed next work after the completed full-delivery program |
+| [Repository rules](AGENTS.md) | Engineering invariants and coding-agent instructions |
 
-Future architecture is kept under [`docs/design/`](docs/design/) and marked as
-proposed when it is not implemented. Historical material lives under
-[`docs/Archive/`](docs/Archive/).
+Historical designs and early plans remain under [docs/Archive/](docs/Archive/).
+The dated 2026-08-09 audit documents are supporting evidence for the
+productization program, not independent implementation plans.

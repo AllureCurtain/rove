@@ -55,7 +55,7 @@ Security-hardened commands exposed to the WebView:
 ### Prerequisites
 
 - The repository Rust toolchain
-- Node.js 18+
+- Node.js 22
 - pnpm
 - Tauri CLI through `pnpm dlx @tauri-apps/cli@2`
 
@@ -208,7 +208,8 @@ These limitations are acceptable for D0 (internal dogfooding) and will be addres
 
 1. Verify bearer token is injected: Open DevTools Console, type `window.__ROVE_TOKEN__`
 2. Check that Web UI is sending `Authorization: Bearer <token>` header
-3. Verify token matches the one in `~/.rove/config/desktop.json`
+3. Verify the token matches the platform-specific `desktop.json` path listed
+   under [Configuration](#2-configuration-srcconfigrs)
 
 ### Port conflict
 
@@ -250,6 +251,8 @@ after the embedded API is ready and before the static page scripts run.
 
 **Trade-off**: Port changes on each launch. Acceptable because WebView is controlled and receives the URL automatically.
 
-## License
+## Licensing
 
-See [../../LICENSE](../../LICENSE)
+The desktop crate currently declares MIT package metadata. The repository does
+not yet contain a root license file; add and review one before making a public
+distribution claim.

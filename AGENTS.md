@@ -101,7 +101,7 @@ and updates its tests and current documentation:
 
 ## 5. Current implementation boundaries
 
-As of 2026-08-10:
+As of 2026-08-12:
 
 - rove is a local-first Rust runtime with CLI, API, Web, persisted run state,
   resume, provider routing, tools, layered memory, optional future external retrieval, and
@@ -188,9 +188,12 @@ As of 2026-08-10:
   terminal-boundary Fork/lineage, session model/reasoning/approval/step-limit
   snapshots, usage/context/cost, bounded files/artifacts/images/diff, redacted
   evidence export, and workspace-scoped Settings/MCP management; they are on
-  `main` through PR #29 at `f9e88a7`. The `program/full-delivery` branch also
-  contains the Tauri Desktop D0 host; current-platform Windows package and
-  process evidence are recorded, while macOS/Linux packaging remains unverified.
+  `main` through PR #29 at `f9e88a7`. Post-Coding-Tool full delivery,
+  including the Tauri Desktop D0 host, is on `main` through PR #30 at
+  `4b740d3`; PR #31 at `1b57b36` contains the whitespace-only documentation
+  cleanup. Windows MSI/NSIS and release-process evidence are recorded, while
+  macOS/Linux packaging and a complete installed-Desktop journey remain
+  unverified.
 - This repository-level `AGENTS.md` guides maintainers and coding agents. A
   trusted rove run also loads it as the workspace root instruction layer; that
   runtime admission does not turn its text into tool permission or approval.
@@ -209,7 +212,7 @@ implemented design record with the deterministic V2 suite in the repository;
 external-provider and holdout evidence remain optional. Use `docs/runtime/` and
 tests to describe current behavior.
 
-The active implementation work follows these briefs:
+The completed post-CDH and full-delivery implementation records are:
 
 - `docs/plans/2026-08-06-kernel-message-provider-implementation.md`
 - `docs/plans/2026-08-06-project-trust-execution-tools-implementation.md`
@@ -217,6 +220,13 @@ The active implementation work follows these briefs:
 - `docs/plans/2026-08-07-coding-tool-v2-implementation.md`
 - `docs/plans/2026-08-07-post-coding-tool-v2-master-program.md`
 - `docs/plans/2026-08-07-post-coding-tool-v2-full-delivery.md`
+
+The next proposed implementation program is:
+
+- `docs/plans/2026-08-10-post-full-delivery-productization.md`
+
+Its status is `Proposed / Not Implemented`. The dated 2026-08-09 documents it
+links are supporting audit evidence, not additional implementation plans.
 
 The optional terminal-interface direction is documented separately in
 `docs/design/2026-07-16-grok-build-reference-and-tui-design.md`.

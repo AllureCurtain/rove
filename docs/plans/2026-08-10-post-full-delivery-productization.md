@@ -1,12 +1,13 @@
 # Post-Full-Delivery Productization Program
 
-> Status: **Proposed / Not Implemented**
+> Status: **Proposed / Not Implemented; full-delivery baseline verified**
 >
-> Planning baseline: the final `program/full-delivery` branch has completed and
-> passed Checkpoints 0-9. This is a planning assumption until that branch is
-> merged, its final commit is recorded, and `docs/runtime/` is sealed against
-> reproducible evidence. This document must not be used to claim that `main`
-> already contains those outcomes.
+> Verified baseline: Checkpoints 0-9 were delivered at `45143a5` and merged
+> through PR #30 as `4b740d3`. The machine-generated acceptance report was
+> produced from clean code commit `32ba252`: all 11 required checks passed,
+> with zero failures and zero required checks unrun. PR #31 merged the
+> whitespace-only documentation cleanup as `1b57b36`. The productization
+> workstreams below remain proposed and must not be described as implemented.
 >
 > This is the single active productization brief after full-delivery. The dated
 > 2026-08-09 documents are current-state corrections, audit evidence,
@@ -23,7 +24,7 @@
 ## 0. Implementation Authority
 
 This document is the only implementation contract for the productization work
-that follows the assumed completed `program/full-delivery` program. All target
+that follows the verified full-delivery program. All target
 behavior, in-scope deliverables, compatibility requirements, exclusions, and
 acceptance evidence for this round must be stated here.
 
@@ -76,12 +77,12 @@ Do not ask an implementation agent to "complete" a dated supporting document.
 Do not infer extra requirements from it, and do not recreate a gap register or
 checkpoint plan unless the user materially changes this product contract.
 
-## 2. Assumed Completion Baseline
+## 2. Verified Completion Baseline
 
-Full-delivery is treated as complete for planning purposes only. Its expected
-baseline is:
+Full-delivery is present on `main` and verified by code, tests, CI, the
+machine-generated acceptance report, and the PR #30/#31 merge history:
 
-| Area | Assumed result |
+| Area | Verified result |
 |---|---|
 | Execution | One shared Agent kernel for embedded and durable execution |
 | Lifecycle | Rule-first decisions, bounded ambiguity evaluation, Finalizer, budgets, reconciliation, resume |
@@ -91,10 +92,10 @@ baseline is:
 | Evaluation | OnCall reference fixtures, deterministic oracles, safety gates, evidence packages |
 | Product host | Shared Web/API/Engine/ProductStore plus verified Desktop host and packaging evidence |
 
-The first operation of this program is to replace this assumption with the
-actual final commit, gate report, optional-gate classification, and clean-tree
-record. No downstream task may silently treat a design document as proof of
-implementation.
+Optional external-provider, official filesystem MCP, macOS/Linux packaging,
+manual installer, and complete installed-Desktop interaction evidence remain
+unverified. No downstream task may turn those explicit boundaries into passing
+claims or treat a design document as proof of implementation.
 
 ## 3. Product Definition Of Done
 
@@ -512,4 +513,5 @@ appears only in one of these files and not above, it is outside this round.
 - [`2026-08-09-deferred-capabilities.md`](2026-08-09-deferred-capabilities.md)
   — intentionally deferred Subagent/sandbox boundary record and historical G-F rationale;
 - [`2026-08-07-post-coding-tool-v2-full-delivery.md`](2026-08-07-post-coding-tool-v2-full-delivery.md)
-  — assumed completed foundation to verify, not remaining implementation scope.
+  — verified completed foundation and historical delivery record, not remaining
+  implementation scope.

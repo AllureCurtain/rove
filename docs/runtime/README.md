@@ -4,8 +4,10 @@ This directory is the authoritative current-state documentation surface. It
 summarizes the implemented runtime, API, Web M1 product shell, verified Web
 Complete C0-C3 implementation, and CDH G1-G7 control/evidence/Settings
 completion. C1-C3 are integrated on `main` through PRs #24-#26; CDH G1-G7
-merged through PR #29 at `f9e88a7`. The deterministic live-API gates passed.
-The current source also includes the post-Coding-Tool full-delivery shared
+merged through PR #29 at `f9e88a7`. Post-Coding-Tool full delivery merged
+through PR #30 at `4b740d3`, followed by the whitespace-only PR #31 cleanup at
+`1b57b36`. The deterministic live-API gates passed. The current source includes
+the full-delivery shared
 kernel/lifecycle, MCP Streamable HTTP plus rich Tool Result/Artifact and live
 catalog refresh, AgentDefinition/instruction/procedure checkpoints, and the
 implemented Tauri Desktop D0 host. Desktop reuses the API router and ProductStore;
@@ -96,20 +98,27 @@ The Web product line is tracked separately:
   workspace-scoped MCP catalog shared by Settings and job assembly. See the
   [`acceptance matrix`](acceptance-matrix.md) and the
   [`completed CDH plan`](../plans/2026-08-03-cdh-alder-merge.md).
-- Active post-CDH kernel/message/provider work follows the
-  [`Kernel, Message, and Provider implementation brief`](../plans/2026-08-06-kernel-message-provider-implementation.md).
-- Authoritative bounded Tool Schema validation, atomic registry/MCP catalogs,
-  and the Runtime capability snapshot foundation follow the
-  [`Tool Schema and Runtime validation plan`](../plans/2026-08-07-authoritative-tool-schema-runtime-validation.md).
-- Project Trust and Execution Environment work follows the
+- The completed
+  [`Kernel, Message, and Provider implementation record`](../plans/2026-08-06-kernel-message-provider-implementation.md)
+  covers typed messages, provider normalization, and shared-kernel migration.
+- The completed
+  [`Tool Schema and Runtime validation record`](../plans/2026-08-07-authoritative-tool-schema-runtime-validation.md)
+  covers bounded schema validation, atomic catalogs, model preflight, and
+  Runtime capability snapshots.
+- The completed
   [`Project Trust, Execution Environment, and Coding Tools implementation
-  brief`](../plans/2026-08-06-project-trust-execution-tools-implementation.md).
+  record`](../plans/2026-08-06-project-trust-execution-tools-implementation.md)
+  covers durable trust, Runtime-owned execution adapters, and the Coding Tool
+  foundation.
 - Coding Tool V2 is implemented and verified by the
   [`Coding Tool V2 implementation plan`](../plans/2026-08-07-coding-tool-v2-implementation.md).
-- A Tauri Desktop product host exists in `apps/desktop` on the full-delivery
-  branch and reuses the API router, ProductStore, and shared static Web build.
+- A Tauri Desktop product host exists in `apps/desktop` on `main` through PR
+  #30 and reuses the API router, ProductStore, and shared static Web build.
   `desktop-workspace-spec.md` remains an automation workspace note, not the
   Desktop product-shell design.
+- The next productization work is proposed, not implemented, in
+  [`2026-08-10-post-full-delivery-productization.md`](../plans/2026-08-10-post-full-delivery-productization.md).
+  Its dated audit inputs are evidence and rationale, not independent plans.
 
 Historical May/June hardening and RAG design notes live under
 [`docs/Archive/design/`](../Archive/design/). These runtime docs describe what

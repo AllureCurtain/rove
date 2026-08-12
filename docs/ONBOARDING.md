@@ -637,8 +637,8 @@ documents are partially implemented design records.
 
 - [Agent Desktop + Web shared UI](design/2026-07-25-agent-desktop-web-ui-design.md)
   — Web M1 and Web Complete C0–C3 are implemented on `main`; the Tauri Desktop
-  D0 host is implemented on `program/full-delivery` and has Windows MSI/process
-  evidence, while macOS/Linux packaging remains unverified.
+  D0 host is implemented on `main` through PR #30 and has Windows
+  MSI/NSIS/process evidence, while macOS/Linux packaging remains unverified.
 - [Web Complete design](design/2026-07-26-web-complete-design.md) and
   [delivery plan](plans/2026-07-26-web-complete.md) — C0–C3 implementation,
   ordered coordinator integration, and post-merge local acceptance are complete.
@@ -648,15 +648,19 @@ documents are partially implemented design records.
 - [CDH G1-G7 delivery](plans/2026-08-03-cdh-alder-merge.md) — completed through
   PR #29; G8 Desktop was out of scope.
 - [Kernel, Message, and Provider Implementation](plans/2026-08-06-kernel-message-provider-implementation.md)
-  — active brief for typed message/session projection, provider protocol
-  normalization, and the implemented shared-kernel migration.
+  — completed implementation record for typed message/session projection,
+  provider protocol normalization, and the shared-kernel migration.
 - [Authoritative Tool Schema and Runtime Validation](plans/2026-08-07-authoritative-tool-schema-runtime-validation.md)
-  — bounded schema compilation, deterministic/atomic tool catalogs, model
-  preflight, and Runtime capability snapshot binding; Coding Tool V2 is a
-  later dependent wave.
+  — completed implementation record for bounded schema compilation,
+  deterministic/atomic tool catalogs, model preflight, and Runtime capability
+  snapshot binding.
 - [Project Trust, Execution Environment, and Coding Tools Implementation](plans/2026-08-06-project-trust-execution-tools-implementation.md)
-  — active brief for persistent Project Trust, Runtime-owned execution
-  adapters, and the later Coding Tool V2 work.
+  — completed implementation record for persistent Project Trust,
+  Runtime-owned execution adapters, and the Coding Tool foundation.
+- [Post-Full-Delivery Productization Program](plans/2026-08-10-post-full-delivery-productization.md)
+  — the single proposed next implementation contract. Its linked 2026-08-09
+  documents are supporting audits and deferred-boundary records, not parallel
+  plans.
 
 ### Independent terminal interface direction
 
@@ -685,8 +689,8 @@ Use them for rationale, not as current API/runtime truth when they disagree with
 
 - Browser/Desktop automation workspace specs are future. The Web product shell
   and C0–C3 persistence/continuity/Settings/migration/polish implementation
-  exist on `main`; the Tauri Desktop product host is implemented on the
-  full-delivery branch with current-platform Windows evidence.
+  exist on `main`; the Tauri Desktop product host is also on `main` through
+  PR #30 with current-platform Windows evidence.
 - Hosted multi-user identity and distributed rate limiting are outside the MVP.
 - Built-in vector RAG is not provided.
 - Real provider/MCP tests are gated.
