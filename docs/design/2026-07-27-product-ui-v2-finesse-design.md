@@ -1,6 +1,6 @@
 # Rove Product UI V2
 
-> Status: **Proposed / Not Implemented**
+> Status: **Superseded historical proposal / Not an implementation plan**
 >
 > Date: 2026-07-27
 >
@@ -408,6 +408,13 @@ select product session
 
 An unknown session, partial projection, ambiguous start response, or failed
 attachment never becomes an empty successful conversation.
+
+> **Post-full-delivery amendment (2026-08-10):** Section 8.2 below records the
+> original V2 proposal and is retained as design history. It is superseded for
+> the next implementation by the unified conversation-control contract in
+> [`2026-08-10-post-full-delivery-productization.md`](../plans/2026-08-10-post-full-delivery-productization.md).
+> This document records the earlier design and does not define any remaining
+> implementation task, migration, priority, or acceptance criterion.
 
 ### 8.2 Active composer
 

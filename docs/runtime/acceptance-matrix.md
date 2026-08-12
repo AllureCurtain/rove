@@ -81,9 +81,9 @@ the broader C1 race/fault-injection cases as live evidence.
 ## CDH Control Completion (G1-G7)
 
 G7 is the Settings/MCP gap-fill over the main Settings baseline, not a full alder
-port. Desktop D0 is implemented on the full-delivery branch as a Tauri delivery
-shell over the shared API/Web contracts; platform evidence below is intentionally
-limited to the current Windows environment.
+port. Desktop D0 is implemented on `main` through PR #30 as a Tauri delivery
+shell over the shared API/Web contracts; platform evidence below is
+intentionally limited to the current Windows environment.
 
 | CDH contract | Current status | Test evidence surface |
 |---|---|---|
@@ -93,8 +93,8 @@ limited to the current Windows environment.
 | G4 Usage, cost, and context occupancy | Implemented: real aggregates with explicit unavailable-when-unpriced | `product_session_usage_aggregates_report_totals_with_local_zero_cost` in `tests/api.rs` |
 | G5 Files, artifacts, images, and diff | Implemented including binary stream and image format/byte/pixel validation | `product_workspace_files_list_and_content_reject_traversal`, `product_workspace_files_are_bounded_typed_and_safely_delivered`, `product_artifacts_are_hashed_session_bound_and_report_cleanup`, `product_diff_returns_canonical_tool_and_git_patches` in `tests/api.rs` |
 | G6 Evidence export in JSON/HTML/Markdown, redacted | Implemented: script-free offline HTML; canary secrets scrubbed | `product_session_evidence_export_is_complete_bounded_and_redacted_in_all_formats` in `tests/api.rs` |
-| G7 Settings/MCP gap-fill | Implemented: workspace-scoped catalog shared by Settings and Jobs; secret-free persistence; typed probe failures; 1 MiB transport bounds; fail-closed catalog errors | `product_mcp_crud_is_workspace_scoped_secret_free_and_used_by_product_jobs`, `product_mcp_probe_returns_typed_stdio_failures`, `product_mcp_probe_discovers_tools_over_legacy_sse`, `product_mcp_maps_corrupt_locked_and_unsafe_config_to_typed_conflicts` in `tests/api.rs`; `mcp_sse_rejects_oversized_discovery_and_json_responses`, `disabled_mcp_servers_are_never_assembled_or_environment_resolved`, `mcp_environment_resolution_rejects_invalid_and_unavailable_names` in `tests/mcp.rs`; `apps/web/settings/MCPSettings.test.tsx` and the MCP scenarios in `apps/web/tests/e2e/settings.spec.ts` | |
-| Desktop D0 | Implemented: embedded API router/state with bearer auth and complete shutdown drain, API-ready random loopback port, document-start WebView token injection, authenticated direct Web/SSE/binary resource transport, bounded native workspace picker wired into both shared-Web workspace forms, open/reveal commands, static Web build, and Windows MSI/NSIS/process evidence. | `cargo test -p rove-desktop --all-targets -j 1`; `pnpm test`; `pnpm typecheck`; `pnpm build:desktop`; Windows `pnpm dlx @tauri-apps/cli@2 build --ci` and release process smoke | macOS/Linux packaging, manual installation, and full interactive WebView evidence remain unverified |
+| G7 Settings/MCP gap-fill | Implemented: workspace-scoped catalog shared by Settings and Jobs; secret-free persistence; typed probe failures; 1 MiB transport bounds; fail-closed catalog errors | `product_mcp_crud_is_workspace_scoped_secret_free_and_used_by_product_jobs`, `product_mcp_probe_returns_typed_stdio_failures`, `product_mcp_probe_discovers_tools_over_legacy_sse`, `product_mcp_maps_corrupt_locked_and_unsafe_config_to_typed_conflicts` in `tests/api.rs`; `mcp_sse_rejects_oversized_discovery_and_json_responses`, `disabled_mcp_servers_are_never_assembled_or_environment_resolved`, `mcp_environment_resolution_rejects_invalid_and_unavailable_names` in `tests/mcp.rs`; `apps/web/settings/MCPSettings.test.tsx` and the MCP scenarios in `apps/web/tests/e2e/settings.spec.ts` |
+| Desktop D0 | Implemented: embedded API router/state with bearer auth and complete shutdown drain, API-ready random loopback port, document-start WebView token injection, authenticated direct Web/SSE/binary resource transport, bounded native workspace picker wired into both shared-Web workspace forms, open/reveal commands, static Web build, and Windows MSI/NSIS/process evidence. macOS/Linux packaging, manual installation, and full interactive WebView evidence remain unverified. | `cargo test -p rove-desktop --all-targets -j 1`; `pnpm test`; `pnpm typecheck`; `pnpm build:desktop`; Windows `pnpm dlx @tauri-apps/cli@2 build --ci` and release process smoke |
 
 ### CDH hardening
 

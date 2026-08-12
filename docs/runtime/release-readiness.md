@@ -349,9 +349,10 @@ Before a packaged release:
 - include required runtime prerequisites: Rust/Cargo for source builds, Node.js
   and pnpm for the Web application, provider keys for real models.
 
-The full-delivery branch defines a Tauri Desktop bundle and has produced a
-Windows MSI locally. It does not yet provide macOS/Linux packages or a single
-binary distribution.
+`main` contains the Tauri Desktop bundle through PR #30. The final delivery
+produced Windows MSI and NSIS packages and passed a bounded release-process
+smoke. It does not yet provide signed public installers, verified manual
+installation, macOS/Linux packages, or a generally available distribution.
 
 ## Security Posture
 
