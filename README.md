@@ -54,6 +54,13 @@ benchmarks do not maintain separate Agent loops or competing state.
 Rove is currently best suited to local development and controlled dogfooding.
 It is not yet a signed, generally available desktop release.
 
+## Current MVP
+
+The current MVP is implemented across the shared runtime and its first-party
+surfaces. The sections below describe what is available on `main`; release and
+external-interoperability limits remain explicit under
+[Current boundaries](#current-boundaries).
+
 ## Who it is for
 
 | You need to | Rove provides |
@@ -333,14 +340,15 @@ skipped evidence is never counted as interoperability.
 
 ## Documentation
 
-Current behavior lives in [docs/runtime/](docs/runtime/). A proposed design is
-not evidence that the runtime supports it.
+Current runtime source of truth is [docs/runtime/](docs/runtime/). A proposed
+design is not evidence that the runtime supports it.
 
 | Read this | For |
 |---|---|
 | [Maintainer onboarding](docs/ONBOARDING.md) | Repository map, source-of-truth order, development workflow, and verification |
 | [Runtime documentation](docs/runtime/README.md) | Current implementation map and supported behavior |
 | [Architecture](docs/runtime/architecture.md) | Package ownership and cross-surface boundaries |
+| [Plan plus ReAct loop](docs/runtime/react-loop.md) | Current execution behavior, tool turns, planning, and resume semantics |
 | [Runtime subsystems](docs/runtime/subsystems.md) | Trust, config, providers, tools, state, memory, MCP, API, Web, and Desktop |
 | [Implementation status](docs/runtime/implementation-status.md) | Implemented contracts and remaining gaps |
 | [Acceptance matrix](docs/runtime/acceptance-matrix.md) | Evidence commands and optional-gate classification |
