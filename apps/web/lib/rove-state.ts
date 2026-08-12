@@ -1393,6 +1393,39 @@ function applyStreamEvent(
         ...next,
         trace: prependTrace(state.trace, event.type, event.reason),
       };
+    case "message_queued":
+      return {
+        ...next,
+        trace: prependTrace(state.trace, event.type, truncate(event.content, 220)),
+      };
+    case "message_intervention_requested":
+      return {
+        ...next,
+        statusText: "Intervention requested for the current run",
+        trace: prependTrace(state.trace, event.type, event.id),
+      };
+    case "message_applied_current_run":
+      return {
+        ...next,
+        statusText: "Message applied to the current run",
+        trace: prependTrace(state.trace, event.type, event.id),
+      };
+    case "message_claimed_successor":
+      return {
+        ...next,
+        statusText: "Starting queued message",
+        trace: prependTrace(state.trace, event.type, event.id),
+      };
+    case "message_needs_attention":
+      return {
+        ...next,
+        trace: prependTrace(state.trace, event.type, event.reason),
+      };
+    case "message_revoked":
+      return {
+        ...next,
+        trace: prependTrace(state.trace, event.type, event.id),
+      };
     default:
       return next;
   }

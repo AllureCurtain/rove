@@ -505,10 +505,11 @@ pub(crate) fn run_planned_loop<'a>(
                 if let Some(rx) = ctx.steer_rx.as_ref() {
                     let mut r = rx.lock().await;
                     while let Ok(msg) = r.try_recv() {
-                        yield LoopItem::Event(StreamEvent::SteerDropped {
-                            id: msg.id.0,
-                            reason: "cancelled".to_string(),
-                        });
+                        yield LoopItem::Event(crate::engine::control::steer_dropped_event(
+                            msg.id.0,
+                            msg.unified_message,
+                            "cancelled".to_string(),
+                        ));
                     }
                 }
                 finish_planned!(PlanFinishReason::Cancelled, None);
@@ -521,16 +522,16 @@ pub(crate) fn run_planned_loop<'a>(
             if let Some(rx) = ctx.steer_rx.as_ref() {
                 let mut r = rx.lock().await;
                 while let Ok(msg) = r.try_recv() {
-                    let id = msg.id.0;
+                    let accepted = crate::engine::control::AcceptedSteer {
+                        id: msg.id.0.clone(),
+                        unified_message: msg.unified_message,
+                    };
                     state.working_memory.push(Message::user(msg.content.clone()));
                     if let Some(lifecycle) = ctx.steer_lifecycle.as_ref() {
-                        lifecycle.accepted(id.clone()).await;
+                        lifecycle.accepted(accepted.clone()).await;
                     }
-                    yield LoopItem::Event(StreamEvent::SteerAccepted {
-                        id: id.clone(),
-                        content: msg.content,
-                    });
-                    accepted_steer_ids.push(id);
+                    yield LoopItem::Event(crate::engine::control::steer_accepted_event(msg));
+                    accepted_steer_ids.push(accepted);
                 }
             }
 

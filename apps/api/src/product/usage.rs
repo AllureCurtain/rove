@@ -425,6 +425,7 @@ mod tests {
             final_outcome: None,
             tool_artifacts: Vec::new(),
             rejected_tool_artifacts: Vec::new(),
+            message_deliveries: Vec::new(),
             output: None,
             timestamp: "2026-08-04T00:00:00Z".to_string(),
         }
@@ -597,6 +598,7 @@ mod tests {
                 agent_profile: None,
                 step_ledger: Default::default(),
                 execution_lifecycle: Default::default(),
+                message_deliveries: Vec::new(),
             }),
             plan: None,
             runtime_identity: None,

@@ -2,6 +2,8 @@ use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::error::Error;
 use std::io;
+#[cfg(test)]
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
@@ -29,6 +31,11 @@ use crate::tui::state::{
     SessionPickerError, SessionPickerState, TuiOverlay, TuiState,
 };
 use crate::tui::terminal::TerminalSession;
+use rove_runtime::conversation::{
+    MessageDomainService, MessageStatus, SendMessageCommand, SessionDeliveryState,
+};
+use rove_runtime::engine::RunControlHandle;
+use rove_runtime::events::StreamEvent;
 use rove_runtime::state::index::ResumeJobClaim;
 use rove_runtime::state::resume::resolve_resume_state;
 use rove_runtime::types::{
@@ -46,6 +53,8 @@ pub struct TuiApp {
     active_resume_state: Option<TaskState>,
     resume_claim: Option<ResumeJobClaim>,
     pressed_keys: PressedKeys,
+    pending_run_id: Option<RunId>,
+    pending_startup_events: Vec<StreamEvent>,
 }
 
 impl TuiApp {
@@ -66,6 +75,8 @@ impl TuiApp {
             active_resume_state,
             resume_claim: None,
             pressed_keys: PressedKeys::default(),
+            pending_run_id: None,
+            pending_startup_events: Vec::new(),
         }
     }
 
@@ -419,6 +430,29 @@ struct ShutdownInput<'a> {
 struct ActiveUiControl<'a> {
     cancel: CancellationToken,
     pressed_keys: &'a mut PressedKeys,
+    message_service: &'a MessageDomainService,
+    control: &'a RunControlHandle,
+    session_id: SessionId,
+    run_id: RunId,
+}
+
+#[cfg(test)]
+fn test_message_service() -> &'static MessageDomainService {
+    static SERVICE: std::sync::OnceLock<MessageDomainService> = std::sync::OnceLock::new();
+    SERVICE.get_or_init(|| {
+        MessageDomainService::new(Arc::new(
+            rove_runtime::conversation::SqliteMessageRepository::new(
+                std::env::temp_dir().join("rove-tui-test-messages.sqlite"),
+                100,
+            ),
+        ))
+    })
+}
+
+#[cfg(test)]
+fn test_control() -> &'static RunControlHandle {
+    static CONTROL: std::sync::OnceLock<RunControlHandle> = std::sync::OnceLock::new();
+    CONTROL.get_or_init(RunControlHandle::disconnected)
 }
 
 pub async fn run(
@@ -521,6 +555,8 @@ where
                 let prompt = apply_idle_effects(effects, runtime, &mut app).await?;
 
                 if let Some(message) = prompt {
+                    let startup_events = app.pending_startup_events.drain(..).collect();
+                    let requested_run_id = app.pending_run_id.take();
                     let result = run_prompt(
                         terminal,
                         events,
@@ -531,6 +567,8 @@ where
                         runtime,
                         &mut app,
                         message,
+                        startup_events,
+                        requested_run_id,
                         interactions,
                     )
                     .await?;
@@ -575,6 +613,57 @@ async fn apply_idle_effects(
     let mut prompt = None;
     while let Some(effect) = queue.pop_front() {
         match effect {
+            TuiEffect::SendMessage {
+                content,
+                session_state,
+                target_run_id,
+            } => {
+                let session_id = app
+                    .active_resume_state
+                    .as_ref()
+                    .map(|state| state.session_id)
+                    .unwrap_or_else(|| app.session_id);
+                let run_id = target_run_id
+                    .or_else(|| (session_state == SessionDeliveryState::Idle).then(RunId::new));
+                match runtime
+                    .message_service
+                    .send(
+                        &session_id.to_string(),
+                        SendMessageCommand {
+                            content: content.clone(),
+                            idempotency_key: None,
+                            session_state,
+                            target_run_id: run_id,
+                        },
+                    )
+                    .await
+                {
+                    Ok(mutation) => {
+                        app.state.upsert_message(mutation.message.clone());
+                        let queued = StreamEvent::MessageQueued {
+                            id: mutation.message.id.clone(),
+                            content: mutation.message.content.clone(),
+                        };
+                        if session_state == SessionDeliveryState::Idle {
+                            app.pending_run_id = run_id;
+                            app.pending_startup_events.push(queued);
+                            if mutation.message.status == MessageStatus::ClaimedSuccessor {
+                                app.pending_startup_events.push(
+                                    StreamEvent::MessageClaimedSuccessor {
+                                        id: mutation.message.id,
+                                    },
+                                );
+                                prompt = Some(content);
+                            }
+                        } else if state_is_active(app.state.run_lifecycle) {
+                            // Active delivery is published by the run's
+                            // canonical control ingress below.
+                            app.state.upsert_message(mutation.message);
+                        }
+                    }
+                    Err(error) => app.state.message_error = Some(error.to_string()),
+                }
+            }
             TuiEffect::Dispatch(TerminalAction::SubmitPrompt(message)) => {
                 if let Some(resume_state) = app.active_resume_state.as_ref() {
                     match runtime
@@ -696,6 +785,24 @@ async fn apply_idle_effects(
                     )),
                 }
             }
+            TuiEffect::LoadMessages => {
+                let session_id = app
+                    .active_resume_state
+                    .as_ref()
+                    .map(|state| state.session_id)
+                    .unwrap_or(app.session_id);
+                match runtime.message_service.list(&session_id.to_string()).await {
+                    Ok(messages) => queue.extend(reduce(
+                        &mut app.state,
+                        TuiAction::MessagesLoaded { messages },
+                    )),
+                    Err(error) => queue.extend(reduce(
+                        &mut app.state,
+                        TuiAction::MessageOperationFailed { error },
+                    )),
+                }
+            }
+            TuiEffect::PromoteMessage { .. } | TuiEffect::RevokeMessage { .. } => {}
         }
     }
     Ok(prompt)
@@ -753,6 +860,11 @@ fn reject_resume_submission(app: &mut TuiApp, message: String, error: SessionPic
     }));
 }
 
+fn state_is_active(lifecycle: RunLifecycle) -> bool {
+    matches!(lifecycle, RunLifecycle::Running | RunLifecycle::Cancelling)
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn run_prompt<B, E>(
     terminal: &mut Terminal<B>,
     events: &mut E,
@@ -760,6 +872,8 @@ async fn run_prompt<B, E>(
     runtime: &CliRuntime,
     app: &mut TuiApp,
     message: String,
+    startup_events: Vec<StreamEvent>,
+    requested_run_id: Option<RunId>,
     interactions: &mut TuiInteractionReceiver,
 ) -> anyhow::Result<ActiveRunResult>
 where
@@ -768,7 +882,8 @@ where
     E: Stream<Item = io::Result<Event>> + Unpin,
 {
     discard_queued_interactions(interactions);
-    let (session_id, job_id, run_id) = app.next_run_identity();
+    let (session_id, job_id, generated_run_id) = app.next_run_identity();
+    let run_id = requested_run_id.unwrap_or(generated_run_id);
     let resume_claim = app.resume_claim.take();
     let run = match runtime.state_store.start_run(session_id, job_id, run_id) {
         Ok(run) => run,
@@ -780,6 +895,22 @@ where
                     .release_job_resume_claim_async(claim)
                     .await;
             }
+            if let Some(message_id) = startup_events.iter().find_map(|event| {
+                if let StreamEvent::MessageQueued { id, .. } = event {
+                    Some(id.clone())
+                } else {
+                    None
+                }
+            }) {
+                let _ = runtime
+                    .message_service
+                    .require_attention(
+                        &session_id.to_string(),
+                        "successor run could not be started",
+                    )
+                    .await;
+                app.state.message_error = Some(format!("message {message_id} needs attention"));
+            }
             return Err(error.into());
         }
     };
@@ -787,11 +918,25 @@ where
     let request = run.request(message.clone(), resume_state.clone());
     let trace_writer = run.trace_writer.clone();
     let cancel = CancellationToken::new();
-    let stream = runtime
-        .engine
-        .run_with_cancel(request, Some(trace_writer), cancel.clone());
-    let runtime_identity = Some(stream.runtime_identity().clone());
-    let agent_profile = stream.agent_profile().cloned();
+    let mut engine_stream =
+        runtime
+            .engine
+            .run_with_cancel(request, Some(trace_writer), cancel.clone());
+    let runtime_identity = Some(engine_stream.runtime_identity().clone());
+    let agent_profile = engine_stream.agent_profile().cloned();
+    let run_control = engine_stream.control().clone();
+    let stream = async_stream::stream! {
+        let mut startup = startup_events;
+        while let Some(event) = engine_stream.next().await {
+            let is_started = matches!(event, StreamEvent::RunStarted { .. });
+            yield event;
+            if is_started {
+                for startup_event in startup.drain(..) {
+                    yield startup_event;
+                }
+            }
+        }
+    };
     let (updates_tx, updates_rx) = mpsc::channel(RUN_UPDATE_CAPACITY);
     let driver = drive_tui_run_events(
         stream,
@@ -821,6 +966,10 @@ where
         ActiveUiControl {
             cancel,
             pressed_keys: &mut app.pressed_keys,
+            message_service: &runtime.message_service,
+            control: &run_control,
+            session_id,
+            run_id,
         },
         &mut app.state,
     );
@@ -841,7 +990,7 @@ where
     })
 }
 
-fn apply_active_effects(
+async fn apply_active_effects(
     effects: Vec<TuiEffect>,
     interaction: &mut InteractionController,
     interactions: &mut TuiInteractionReceiver,
@@ -851,6 +1000,76 @@ fn apply_active_effects(
 ) {
     for effect in effects {
         match effect {
+            TuiEffect::SendMessage {
+                content,
+                session_state: SessionDeliveryState::Active,
+                ..
+            } => {
+                let mutation = control
+                    .message_service
+                    .send(
+                        &control.session_id.to_string(),
+                        SendMessageCommand {
+                            content,
+                            idempotency_key: None,
+                            session_state: SessionDeliveryState::Active,
+                            target_run_id: Some(control.run_id),
+                        },
+                    )
+                    .await;
+                match mutation {
+                    Ok(mutation) => {
+                        state.upsert_message(mutation.message.clone());
+                        let accepted =
+                            control
+                                .control
+                                .try_send_message_event(StreamEvent::MessageQueued {
+                                    id: mutation.message.id.clone(),
+                                    content: mutation.message.content.clone(),
+                                });
+                        if !accepted {
+                            state.message_error =
+                                Some("active run message channel is full".to_string());
+                        }
+                    }
+                    Err(error) => state.message_error = Some(error.to_string()),
+                }
+            }
+            TuiEffect::SendMessage { .. } => {}
+            TuiEffect::PromoteMessage { message_id } => {
+                match control
+                    .message_service
+                    .promote(&control.session_id.to_string(), &message_id)
+                    .await
+                {
+                    Ok(message) => {
+                        state.upsert_message(message.clone());
+                        let message_id = message.id.clone();
+                        let _ = control.control.try_send_steer(
+                            rove_runtime::engine::SteerMessage::for_message(
+                                message_id,
+                                message.content,
+                            ),
+                        );
+                    }
+                    Err(error) => state.message_error = Some(error.to_string()),
+                }
+            }
+            TuiEffect::RevokeMessage { message_id } => {
+                match control
+                    .message_service
+                    .revoke(&control.session_id.to_string(), &message_id)
+                    .await
+                {
+                    Ok(message) => {
+                        state.upsert_message(message.clone());
+                        let _ = control
+                            .control
+                            .try_send_message_event(StreamEvent::MessageRevoked { id: message.id });
+                    }
+                    Err(error) => state.message_error = Some(error.to_string()),
+                }
+            }
             TuiEffect::Dispatch(
                 action @ (TerminalAction::ApproveTool { .. }
                 | TerminalAction::RejectTool { .. }
@@ -874,7 +1093,10 @@ fn apply_active_effects(
                 *exit_requested = true;
                 clear_interactions(interaction, interactions, state);
             }
-            TuiEffect::Dispatch(_) | TuiEffect::LoadSessions | TuiEffect::ResolveResume { .. } => {}
+            TuiEffect::Dispatch(_)
+            | TuiEffect::LoadSessions
+            | TuiEffect::ResolveResume { .. }
+            | TuiEffect::LoadMessages => {}
         }
     }
 }
@@ -951,7 +1173,7 @@ where
                         &control,
                         state,
                         &mut exit_requested,
-                    );
+                    ).await;
                 }
                 if let Err(error) = draw_app(terminal, state) {
                     control.cancel.cancel();
@@ -1018,7 +1240,7 @@ where
                     &control,
                     state,
                     &mut exit_requested,
-                );
+                ).await;
                 dirty = true;
             }
             signal = shutdown.receiver.recv(), if *shutdown.open => {
@@ -1216,6 +1438,7 @@ mod tests {
     use super::{
         ActiveUiControl, InteractionController, PressedKeys, ShutdownInput, ShutdownSignal, TuiApp,
         active_ui_loop, apply_idle_effects, discard_queued_interactions, run_loop, run_prompt,
+        test_control, test_message_service,
     };
 
     struct FailingDrawBackend {
@@ -1815,6 +2038,10 @@ mod tests {
             ActiveUiControl {
                 cancel,
                 pressed_keys: &mut pressed_keys,
+                message_service: test_message_service(),
+                control: test_control(),
+                session_id: SessionId::new(),
+                run_id: RunId::new(),
             },
             &mut state,
         );
@@ -1989,6 +2216,10 @@ mod tests {
             ActiveUiControl {
                 cancel,
                 pressed_keys: &mut pressed_keys,
+                message_service: test_message_service(),
+                control: test_control(),
+                session_id: SessionId::new(),
+                run_id: RunId::new(),
             },
             &mut state,
         );
@@ -2081,6 +2312,10 @@ mod tests {
             ActiveUiControl {
                 cancel,
                 pressed_keys: &mut pressed_keys,
+                message_service: test_message_service(),
+                control: test_control(),
+                session_id: SessionId::new(),
+                run_id: RunId::new(),
             },
             &mut state,
         );
@@ -2176,6 +2411,10 @@ mod tests {
             ActiveUiControl {
                 cancel,
                 pressed_keys: &mut pressed_keys,
+                message_service: test_message_service(),
+                control: test_control(),
+                session_id: SessionId::new(),
+                run_id: RunId::new(),
             },
             &mut state,
         );
@@ -2214,6 +2453,12 @@ mod tests {
             workspace,
             config: AppConfig::default(),
             engine,
+            message_service: rove_runtime::conversation::MessageDomainService::new(Arc::new(
+                rove_runtime::conversation::SqliteMessageRepository::new(
+                    std::env::temp_dir().join("rove-tui-prompt-test.sqlite"),
+                    100,
+                ),
+            )),
         };
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -2234,7 +2479,7 @@ mod tests {
             .await
             .unwrap();
 
-        let run = run_prompt(
+        let run = Box::pin(run_prompt(
             &mut terminal,
             &mut events,
             ShutdownInput {
@@ -2244,8 +2489,10 @@ mod tests {
             &runtime,
             &mut app,
             "hello from tui".to_string(),
+            Vec::new(),
+            None,
             &mut interactions,
-        );
+        ));
         let stale_before_completion = async {
             entered.notified().await;
             let result =
@@ -2376,6 +2623,10 @@ mod tests {
             ActiveUiControl {
                 cancel: cancel.clone(),
                 pressed_keys: &mut pressed_keys,
+                message_service: test_message_service(),
+                control: test_control(),
+                session_id: SessionId::new(),
+                run_id: RunId::new(),
             },
             &mut state,
         );
@@ -2571,6 +2822,10 @@ mod tests {
             ActiveUiControl {
                 cancel: cancel.clone(),
                 pressed_keys: &mut pressed_keys,
+                message_service: test_message_service(),
+                control: test_control(),
+                session_id: SessionId::new(),
+                run_id: RunId::new(),
             },
             &mut state,
         );
@@ -2629,6 +2884,10 @@ mod tests {
                 ActiveUiControl {
                     cancel: cancel.clone(),
                     pressed_keys: &mut pressed_keys,
+                    message_service: test_message_service(),
+                    control: test_control(),
+                    session_id: SessionId::new(),
+                    run_id: RunId::new(),
                 },
                 &mut state,
             ),

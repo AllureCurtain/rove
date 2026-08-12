@@ -15,6 +15,7 @@ import {
 import type {
   ProductControl,
   ProductControlKind,
+  ProductMessage,
 } from "../product/product-api-types";
 import type { ProductApiClient } from "../product/product-client";
 import {
@@ -69,6 +70,7 @@ export function useSessionContinuity({
   const [approvalBusy, setApprovalBusy] = useState<string | null>(null);
   const [inputBusy, setInputBusy] = useState<string | null>(null);
   const [controls, setControls] = useState<ProductControl[]>([]);
+  const [messages, setMessages] = useState<ProductMessage[]>([]);
   const [controlsLoading, setControlsLoading] = useState(false);
   const [controlBusy, setControlBusy] = useState<string | null>(null);
   const [controlError, setControlError] = useState<string | null>(null);
@@ -89,6 +91,8 @@ export function useSessionContinuity({
   const observedJobRef = useRef<string | null>(null);
   const transcriptGenerationRef = useRef(0);
   const controlsGenerationRef = useRef(0);
+  const messagesGenerationRef = useRef(0);
+  const messageRequestsRef = useRef(new Map<string, string>());
   const controlRequestsRef = useRef(
     new Map<
       string,
@@ -114,6 +118,41 @@ export function useSessionContinuity({
     setControlsLoading(false);
     setControlBusy(null);
     setControlError(null);
+    ++messagesGenerationRef.current;
+    setMessages([]);
+  }, []);
+
+  const refreshMessages = useCallback(
+    async (sessionId: string): Promise<ProductMessage[] | null> => {
+      const generation = ++messagesGenerationRef.current;
+      try {
+        const response = await productClient.listMessages(sessionId);
+        if (
+          messagesGenerationRef.current !== generation ||
+          focusedSessionRef.current !== sessionId
+        ) {
+          return null;
+        }
+        setMessages(response.messages);
+        return response.messages;
+      } catch (error) {
+        if (focusedSessionRef.current === sessionId) {
+          setControlError(`Could not refresh messages: ${describeError(error)}`);
+        }
+        return null;
+      }
+    },
+    [productClient],
+  );
+
+  const upsertMessage = useCallback((message: ProductMessage) => {
+    if (focusedSessionRef.current !== message.product_session_id) {
+      return;
+    }
+    setMessages((current) => {
+      const rest = current.filter((item) => item.id !== message.id);
+      return [...rest, message].sort((left, right) => left.seq - right.seq);
+    });
   }, []);
 
   const refreshControls = useCallback(
@@ -195,17 +234,24 @@ export function useSessionContinuity({
               event.type !== "steer_dropped" &&
               event.type !== "followup_queued" &&
               event.type !== "followup_dequeued" &&
-              event.type !== "followup_abandoned")
+              event.type !== "followup_abandoned" &&
+              event.type !== "message_queued" &&
+              event.type !== "message_intervention_requested" &&
+              event.type !== "message_applied_current_run" &&
+              event.type !== "message_claimed_successor" &&
+              event.type !== "message_needs_attention" &&
+              event.type !== "message_revoked")
           ) {
             return;
           }
           void refreshControls(sessionId);
+          void refreshMessages(sessionId);
         },
       });
       controllerRef.current = controller;
       return controller;
     },
-    [closeFocusedObservation, refreshControls],
+    [closeFocusedObservation, refreshControls, refreshMessages],
   );
 
   const attachFocusedJob = useCallback(
@@ -269,6 +315,7 @@ export function useSessionContinuity({
             : { status: "complete", sessionId },
         );
         void refreshControls(sessionId);
+        void refreshMessages(sessionId);
 
         const session = findSession(catalogRef.current, sessionId);
         const liveJobId =
@@ -304,6 +351,7 @@ export function useSessionContinuity({
       closeFocusedObservation,
       productClient,
       refreshControls,
+      refreshMessages,
     ],
   );
 
@@ -479,6 +527,50 @@ export function useSessionContinuity({
     [catalogRef, productClient, refreshControls, setConnection, upsertControl],
   );
 
+  const promoteMessage = useCallback(
+    async (messageId: string) => {
+      const sessionId = focusedSessionRef.current ?? catalogRef.current.active.sessionId;
+      if (!sessionId) {
+        return;
+      }
+      const busyId = `promote:${messageId}`;
+      setControlBusy(busyId);
+      setControlError(null);
+      try {
+        upsertMessage(await productClient.promoteMessage(sessionId, messageId));
+        void refreshMessages(sessionId);
+      } catch (error) {
+        setControlError(`Could not request intervention: ${describeError(error)}`);
+        void refreshMessages(sessionId);
+      } finally {
+        setControlBusy((current) => (current === busyId ? null : current));
+      }
+    },
+    [catalogRef, productClient, refreshMessages, upsertMessage],
+  );
+
+  const revokeMessage = useCallback(
+    async (messageId: string) => {
+      const sessionId = focusedSessionRef.current ?? catalogRef.current.active.sessionId;
+      if (!sessionId) {
+        return;
+      }
+      const busyId = `revoke-message:${messageId}`;
+      setControlBusy(busyId);
+      setControlError(null);
+      try {
+        upsertMessage(await productClient.revokeMessage(sessionId, messageId));
+        void refreshMessages(sessionId);
+      } catch (error) {
+        setControlError(`Could not revoke message: ${describeError(error)}`);
+        void refreshMessages(sessionId);
+      } finally {
+        setControlBusy((current) => (current === busyId ? null : current));
+      }
+    },
+    [catalogRef, productClient, refreshMessages, upsertMessage],
+  );
+
   const reconcileTerminal = useCallback(
     async (
       sessionId: string,
@@ -623,130 +715,74 @@ export function useSessionContinuity({
   );
 
   const send = useCallback(
-    async (message: string) => {
-      const workspace = findWorkspace(
-        catalogRef.current,
-        catalogRef.current.active.workspaceId,
-      );
+    async (message: string): Promise<boolean> => {
       const session = findSession(
         catalogRef.current,
         catalogRef.current.active.sessionId,
       );
-      if (!workspace || !session) {
+      if (!session) {
         dispatch({ type: "set_error", error: "Open a workspace and session first." });
-        return;
+        return false;
       }
-
-      let request;
+      const trimmed = message.trim();
+      if (!trimmed) {
+        return false;
+      }
       try {
-        // Fail closed before any optimistic turn is appended below.
         assertProviderSelectionIsSatisfiable(
           selectionRef.current,
           profilesRef.current,
         );
-        request = buildTurnJobRequest({
-          message,
-          workspace,
-          session,
-        });
       } catch (error) {
         dispatch({ type: "set_error", error: describeError(error) });
-        return;
+        return false;
       }
-
-      const controller = installFocusedController(session.id);
-      dispatch({ type: "prepare_turn", preserveTools: true });
-      dispatch({ type: "append_user_message", content: message });
-      dispatch({ type: "set_status", statusText: "Submitting job" });
-      const title = session.title === "New session" ? truncateTitle(message) : session.title;
-      markSession(session.id, {
-        status: "running",
-        title,
-        activeJobId: null,
-        activeRunId: null,
-        resumedFromRunId: null,
-      });
+      const requestKey = `${session.id}\u0000${trimmed}`;
+      let idempotencyKey = messageRequestsRef.current.get(requestKey);
+      if (!idempotencyKey) {
+        idempotencyKey = createControlIdempotencyKey();
+        messageRequestsRef.current.set(requestKey, idempotencyKey);
+      }
+      const title = session.title === "New session" ? truncateTitle(trimmed) : session.title;
       if (session.title === "New session") {
         void updateSessionTitle(session.id, title).catch(() => undefined);
       }
-
       try {
-        const started = await controller.start(request);
-        if (
-          controllerRef.current !== controller ||
-          focusedSessionRef.current !== session.id
-        ) {
-          return;
-        }
-        observedJobRef.current = started.jobId;
-        markSession(session.id, {
-          activeJobId: started.jobId,
-          activeRunId: started.runId,
-          resumedFromRunId: started.resumedFromRunId,
-          hasDurableTurn: true,
-          status: "running",
+        const accepted = await productClient.sendMessage(session.id, {
+          content: trimmed,
+          idempotency_key: idempotencyKey,
         });
+        messageRequestsRef.current.delete(requestKey);
+        upsertMessage(accepted);
+        markSession(session.id, { title });
+        dispatch({ type: "set_status", statusText: messageStatusLabel(accepted.status) });
         setConnection("ok");
-      } catch (error) {
-        if (
-          isRunControllerInactive(error) ||
-          focusedSessionRef.current !== session.id
-        ) {
-          return;
-        }
-        if (isAmbiguousJobStartError(error)) {
-          dispatch({
-            type: "set_status",
-            statusText: "Confirming whether the server started this turn",
-          });
-          if (await reconcileCreatedTurn(workspace.id, session, controller)) {
-            return;
+        void refreshMessages(session.id);
+        void refreshStatusesRef.current().then(() => {
+          const current = findSession(catalogRef.current, session.id);
+          if (current?.activeJobId && current.status === "running") {
+            attachFocusedJob(session.id, current.activeJobId);
           }
-          if (
-            controllerRef.current !== controller ||
-            focusedSessionRef.current !== session.id
-          ) {
-            return;
-          }
-          setConnection("error");
-          markSession(session.id, { status: "needs_attention" });
-          if (focusedSessionRef.current === session.id) {
-            restoredSessionRef.current = null;
-            await restoreSession(workspace.id, session.id);
-            if (focusedSessionRef.current === session.id) {
-              setConnection("error");
-              dispatch({
-                type: "set_error",
-                error:
-                  "The server may have accepted this turn, but its durable binding is not visible yet. Reload before sending another message.",
-              });
-            }
-          }
-          return;
-        }
-        const messageText = describeError(error);
-        const hard = session.hasDurableTurn || isHardResumeError(messageText);
-        dispatch({
-          type: "set_error",
-          error: hard ? `Exact session resume failed: ${messageText}.` : messageText,
         });
-        markSession(session.id, { status: "error" });
-        if (
-          messageText.toLowerCase().includes("fetch") ||
-          messageText.toLowerCase().includes("network")
-        ) {
+        return true;
+      } catch (error) {
+        const detail = describeError(error);
+        dispatch({ type: "set_error", error: `Could not send message: ${detail}` });
+        if (isLikelyNetworkError(detail)) {
           setConnection("error");
         }
+        return false;
       }
     },
     [
+      attachFocusedJob,
       catalogRef,
-      installFocusedController,
       markSession,
-      reconcileCreatedTurn,
+      productClient,
+      refreshMessages,
       setConnection,
-      restoreSession,
       updateSessionTitle,
+      upsertMessage,
     ],
   );
 
@@ -851,10 +887,12 @@ export function useSessionContinuity({
     approvalBusy,
     inputBusy,
     controls,
+    messages,
     controlsLoading,
     controlBusy,
     controlError,
     refreshControls,
+    refreshMessages,
     focusSession,
     prepareSession,
     leaveSession,
@@ -864,6 +902,8 @@ export function useSessionContinuity({
     submitFollowup: (content: string) => submitControl("followup", content),
     revokeControl,
     confirmFollowup,
+    promoteMessage,
+    revokeMessage,
     cancel,
     approve,
     answer,
@@ -882,6 +922,23 @@ function createControlIdempotencyKey(): string {
 
 function controlLabel(kind: ProductControlKind): string {
   return kind === "steer" ? "steer" : "follow-up";
+}
+
+function messageStatusLabel(status: ProductMessage["status"]): string {
+  switch (status) {
+    case "queued":
+      return "Message queued for the next turn";
+    case "intervention_requested":
+      return "Intervention requested";
+    case "applied_current_run":
+      return "Message applied to the current run";
+    case "claimed_successor":
+      return "Starting queued message";
+    case "needs_attention":
+      return "Message needs attention";
+    case "revoked":
+      return "Message revoked";
+  }
 }
 
 function isLikelyNetworkError(message: string): boolean {

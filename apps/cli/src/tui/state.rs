@@ -1,4 +1,5 @@
 use crate::terminal::view::{RunViewState, RunViewUpdate, ToolCallStatus};
+use rove_runtime::conversation::{ConversationMessage, MessageStatus};
 use rove_runtime::types::{CallId, RunId, SessionId, TaskState};
 
 use super::sanitize::{
@@ -13,6 +14,7 @@ pub const MAX_SESSION_GOAL_CHARS: usize = 160;
 pub const MAX_TOOL_DETAIL_ITEMS: usize = 64;
 pub const MAX_TOOL_DETAIL_TEXT_BYTES: usize = 8 * 1024;
 pub const MAX_HELP_LINES: usize = 64;
+pub const MAX_VISIBLE_MESSAGES: usize = 64;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum RunLifecycle {
@@ -336,10 +338,43 @@ pub struct HelpState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MessageQueueState {
+    pub messages: Vec<ConversationMessage>,
+    pub selected: usize,
+}
+
+impl MessageQueueState {
+    pub fn new(mut messages: Vec<ConversationMessage>) -> Self {
+        if messages.len() > MAX_VISIBLE_MESSAGES {
+            messages.drain(..messages.len() - MAX_VISIBLE_MESSAGES);
+        }
+        let selected = messages.len().saturating_sub(1);
+        Self { messages, selected }
+    }
+
+    pub fn selected(&self) -> Option<&ConversationMessage> {
+        self.messages.get(self.selected)
+    }
+
+    pub(crate) fn move_selection(&mut self, delta: isize) {
+        if self.messages.is_empty() {
+            return;
+        }
+        let last = self.messages.len() - 1;
+        self.selected = if delta.is_negative() {
+            self.selected.saturating_sub(delta.unsigned_abs()).min(last)
+        } else {
+            self.selected.saturating_add(delta as usize).min(last)
+        };
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TuiOverlay {
     SessionPicker(SessionPickerState),
     ToolDetail(ToolDetailState),
     Help(HelpState),
+    MessageQueue(MessageQueueState),
 }
 
 impl TuiOverlay {
@@ -348,6 +383,7 @@ impl TuiOverlay {
             Self::SessionPicker(_) => " Resume session ",
             Self::ToolDetail(_) => " Tool detail ",
             Self::Help(_) => " Help ",
+            Self::MessageQueue(_) => " Message delivery ",
         }
     }
 }
@@ -389,10 +425,59 @@ pub struct TuiState {
     pub should_quit: bool,
     pub overlay: Option<TuiOverlay>,
     pub active_resume: Option<ResumeCandidate>,
+    pub messages: Vec<ConversationMessage>,
+    pub message_error: Option<String>,
 }
 
 impl TuiState {
     pub fn apply_run_update(&mut self, update: RunViewUpdate) {
+        if let RunViewUpdate::MessageDelivery {
+            id,
+            content,
+            status,
+            reason,
+        } = &update
+        {
+            let mapped_status = match status {
+                crate::terminal::view::MessageDeliveryStatus::Queued => MessageStatus::Queued,
+                crate::terminal::view::MessageDeliveryStatus::InterventionRequested => {
+                    MessageStatus::InterventionRequested
+                }
+                crate::terminal::view::MessageDeliveryStatus::AppliedCurrentRun => {
+                    MessageStatus::AppliedCurrentRun
+                }
+                crate::terminal::view::MessageDeliveryStatus::ClaimedSuccessor => {
+                    MessageStatus::ClaimedSuccessor
+                }
+                crate::terminal::view::MessageDeliveryStatus::NeedsAttention => {
+                    MessageStatus::NeedsAttention
+                }
+                crate::terminal::view::MessageDeliveryStatus::Revoked => MessageStatus::Revoked,
+            };
+            if let Some(existing) = self.messages.iter_mut().find(|message| message.id == *id) {
+                existing.status = mapped_status;
+                existing.reason = reason.clone();
+                if let Some(content) = content {
+                    existing.content = content.clone();
+                }
+            } else if let Some(content) = content {
+                self.messages.push(ConversationMessage {
+                    id: id.clone(),
+                    session_id: self
+                        .active_resume
+                        .as_ref()
+                        .map(|resume| resume.session_id.to_string())
+                        .unwrap_or_default(),
+                    content: content.clone(),
+                    requested_delivery: rove_runtime::conversation::MessageDelivery::Successor,
+                    actual_delivery: None,
+                    status: mapped_status,
+                    sequence: self.messages.len() as i64 + 1,
+                    target_run_id: self.run.run_id,
+                    reason: reason.clone(),
+                });
+            }
+        }
         let starting_run_id = match &update {
             RunViewUpdate::RunStarted { run_id, .. } => Some(*run_id),
             _ => None,
@@ -444,6 +529,42 @@ impl TuiState {
         self.overlay = Some(TuiOverlay::ToolDetail(ToolDetailState::from_state(self)));
     }
 
+    pub fn replace_messages(&mut self, mut messages: Vec<ConversationMessage>) {
+        if messages.len() > MAX_VISIBLE_MESSAGES {
+            messages.drain(..messages.len() - MAX_VISIBLE_MESSAGES);
+        }
+        self.messages = messages;
+        if let Some(TuiOverlay::MessageQueue(queue)) = self.overlay.as_mut() {
+            *queue = MessageQueueState::new(self.messages.clone());
+        }
+    }
+
+    pub fn upsert_message(&mut self, message: ConversationMessage) {
+        if let Some(existing) = self.messages.iter_mut().find(|item| item.id == message.id) {
+            *existing = message;
+        } else {
+            self.messages.push(message);
+            if self.messages.len() > MAX_VISIBLE_MESSAGES {
+                self.messages.remove(0);
+            }
+        }
+        if let Some(TuiOverlay::MessageQueue(queue)) = self.overlay.as_mut() {
+            *queue = MessageQueueState::new(self.messages.clone());
+        }
+    }
+
+    pub fn eligible_message_count(&self) -> usize {
+        self.messages
+            .iter()
+            .filter(|message| {
+                matches!(
+                    message.status,
+                    MessageStatus::Queued | MessageStatus::NeedsAttention
+                )
+            })
+            .count()
+    }
+
     pub fn can_accept_resume(&self, run_id: RunId) -> bool {
         matches!(
             &self.overlay,
@@ -473,6 +594,8 @@ impl Default for TuiState {
             should_quit: false,
             overlay: None,
             active_resume: None,
+            messages: Vec::new(),
+            message_error: None,
         }
     }
 }

@@ -15,7 +15,9 @@ use crate::agents::{
 use crate::capability::CapabilitySnapshot;
 use crate::compaction::{CompactionRuntime, maybe_compact_history};
 use crate::context::ContextManager;
-use crate::engine::control::{SteerLifecycle, SteerMessage};
+use crate::engine::control::{
+    AcceptedSteer, SteerLifecycle, SteerMessage, steer_accepted_event, steer_applied_event,
+};
 use crate::environment::ExecutionEnvironment;
 use crate::events::StreamEvent;
 use crate::execution::{
@@ -524,7 +526,7 @@ struct UnplannedKernelHost<'a> {
     working_memory: Vec<Message>,
     compact_summary: Option<String>,
     compaction: Option<CompactionRuntime>,
-    pending_steer_ids: Vec<String>,
+    pending_steer_ids: Vec<AcceptedSteer>,
     initial_total_tokens: u64,
     max_total_tokens: Option<u64>,
     active_instruction_target: ActiveInstructionTarget,
@@ -556,17 +558,17 @@ impl AgentKernelHost for UnplannedKernelHost<'_> {
             if let Some(rx) = self.ctx.steer_rx.as_ref() {
                 let mut receiver = rx.lock().await;
                 while let Ok(steer) = receiver.try_recv() {
-                    let id = steer.id.0;
+                    let accepted = AcceptedSteer {
+                        id: steer.id.0.clone(),
+                        unified_message: steer.unified_message,
+                    };
                     self.working_memory
                         .push(Message::user(steer.content.clone()));
                     if let Some(lifecycle) = self.ctx.steer_lifecycle.as_ref() {
-                        lifecycle.accepted(id.clone()).await;
+                        lifecycle.accepted(accepted.clone()).await;
                     }
-                    yield KernelBeforeModelTurnItem::Event(StreamEvent::SteerAccepted {
-                        id: id.clone(),
-                        content: steer.content,
-                    });
-                    self.pending_steer_ids.push(id);
+                    yield KernelBeforeModelTurnItem::Event(steer_accepted_event(steer));
+                    self.pending_steer_ids.push(accepted);
                 }
             }
 
@@ -758,7 +760,7 @@ pub(crate) fn run_kernel_model_turn<'a>(
     tool_schemas: Vec<ModelToolSchema>,
     messages: Vec<Message>,
     cancel_token: CancellationToken,
-    accepted_steer_ids: Vec<String>,
+    accepted_steer_ids: Vec<AcceptedSteer>,
     steer_lifecycle: Option<SteerLifecycle>,
 ) -> BoxStream<'a, KernelModelTurnItem<StreamEvent>> {
     Box::pin(stream! {
@@ -771,13 +773,11 @@ pub(crate) fn run_kernel_model_turn<'a>(
         let mut applied = false;
         while let Some(item) = inner.next().await {
             if !applied {
-                for id in &accepted_steer_ids {
+                for accepted in &accepted_steer_ids {
                     if let Some(lifecycle) = steer_lifecycle.as_ref() {
-                        lifecycle.applied(id).await;
+                        lifecycle.applied(&accepted.id).await;
                     }
-                    yield KernelModelTurnItem::Event(StreamEvent::SteerApplied {
-                        id: id.clone(),
-                    });
+                    yield KernelModelTurnItem::Event(steer_applied_event(accepted));
                 }
                 applied = true;
             }

@@ -18,6 +18,15 @@ this file is the current proof map.
 | M5 | HTTP API can create jobs, stream/replay SSE events, cancel jobs, resolve approval/input requests, persist historical state, and enforce token/CORS/rate-limit controls. | Met | `cargo test -p rove-integration-tests --test api`; focused: `cargo test -p rove-integration-tests --test api api_creates_job_streams_events_and_reports_state -- --exact`; `cargo test -p rove-integration-tests --test api api_accepts_matching_bearer_token -- --exact` | Closed by phases 3, 5 |
 | M6 | Standalone Web surface consumes the API/SSE stream, supports approval/input/cancel/resume flows, token proxying, and browser E2E coverage. | Met by the default product shell and Web Complete C0-C3 on `main`. | `cd apps/web; pnpm test`; `cd apps/web; pnpm typecheck`; `cd apps/web; pnpm build`; browser checks: `cd apps/web; pnpm test:e2e`; deterministic live API: `powershell -ExecutionPolicy Bypass -File scripts/integration-smoke.ps1` | Web Complete is integrated and verified; external-provider evidence remains a separate opt-in gate |
 
+## Productization F (Unified Conversation Control)
+
+| Contract | Current status | Verification surface |
+|---|---|---|
+| One durable Send Message command with FIFO, idempotency, promotion/revoke CAS, and six delivery states | Implemented in Runtime schema v3 and ProductStore schema v12; legacy control routes remain compatibility-only | `cargo test -p rove-runtime conversation::tests::sqlite_adapter_is_fifo_idempotent_and_cas_safe --lib`; `cargo test -p rove-api unified_message --lib` |
+| Canonical event, TaskState/checkpoint/report, SSE/replay, and product projection consistency | Implemented through existing trace/event path and API reflection; approvals/input/capability/cancel remain separate | Runtime event/state/report tests and API product lifecycle tests |
+| Conversation-first Web transcript with bounded paging, streaming follow, stable prepend anchoring, and delivery-state actions | Implemented; Web package/browser gates need rerun in this worktree | `apps/web/chat/*`, `apps/web/state/*`, `pnpm test`, `pnpm typecheck`, `pnpm build`, `pnpm test:e2e` |
+| TUI shared in-process adapter, durable queue projection, modal precedence, bounded rendering/resume | Implemented and unit-tested; Windows ConPTY/PTY smoke remains unverified | `cargo test -p rove-cli --lib` |
+
 Evidence boundary: `shell.spec.ts`, `continuity.spec.ts`, `settings.spec.ts`,
 `migration.spec.ts`, and `polish.spec.ts` use browser-boundary mocks for broad
 deterministic product, state-race, fault, recovery, and visual coverage. The

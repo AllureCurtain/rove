@@ -9,6 +9,7 @@ use rove_app_bootstrap::{AppConfig, AppConfigOverrides};
 use rove_app_bootstrap::{EngineOptions, build_engine};
 use rove_models::ModelClient;
 use rove_models::fake::FakeModelClient;
+use rove_runtime::conversation::{MessageDomainService, SqliteMessageRepository};
 use rove_runtime::engine::Engine;
 use rove_runtime::state::store::StateStore;
 use rove_runtime::types::{ApprovalPolicy, ToolApprovalProvider, UserInputProvider};
@@ -66,6 +67,7 @@ pub struct CliRuntime {
     pub config: AppConfig,
     pub engine: Engine,
     pub state_store: StateStore,
+    pub message_service: MessageDomainService,
 }
 
 pub async fn build_cli_runtime(options: CliRuntimeOptions) -> anyhow::Result<CliRuntime> {
@@ -153,12 +155,18 @@ pub async fn build_cli_runtime(options: CliRuntimeOptions) -> anyhow::Result<Cli
         config.sqlite_path(),
         config.state.sqlite_busy_timeout_ms,
     );
+    state_store.index.initialize()?;
+    let message_service = MessageDomainService::new(Arc::new(SqliteMessageRepository::new(
+        state_store.index.path(),
+        state_store.index.busy_timeout_ms(),
+    )));
 
     Ok(CliRuntime {
         workspace,
         config,
         engine,
         state_store,
+        message_service,
     })
 }
 

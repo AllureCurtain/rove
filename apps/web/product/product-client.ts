@@ -10,6 +10,8 @@ import {
   parseProductPreferences,
   parseProductControl,
   parseProductControlsResponse,
+  parseProductMessage,
+  parseProductMessagesResponse,
   parseProductForkResponse,
   parseProductForksResponse,
   parseProductProviderProfile,
@@ -43,6 +45,9 @@ import {
   type ProductControl,
   type ProductControlsResponse,
   type ProductControlStatusFilter,
+  type CreateProductMessageRequest,
+  type ProductMessage,
+  type ProductMessagesResponse,
   type ProductForkResponse,
   type ProductForksResponse,
   type ProductProviderProfile,
@@ -155,6 +160,10 @@ export interface ProductApiClient {
   ): Promise<ProductForkResponse>;
   listForks(sessionId: string): Promise<ProductForksResponse>;
   getTranscript(sessionId: string): Promise<ProductTranscriptResponse>;
+  sendMessage(sessionId: string, request: CreateProductMessageRequest): Promise<ProductMessage>;
+  listMessages(sessionId: string): Promise<ProductMessagesResponse>;
+  promoteMessage(sessionId: string, messageId: string): Promise<ProductMessage>;
+  revokeMessage(sessionId: string, messageId: string): Promise<ProductMessage>;
   enqueueSteer(
     sessionId: string,
     request: CreateProductControlRequest,
@@ -714,6 +723,43 @@ export function createProductApiClient(
         sessionId,
         "steers",
         input,
+      );
+    },
+
+    async sendMessage(sessionId, input) {
+      const request = parseCreateProductControlRequest(input);
+      return requestJson(
+        fetchImpl,
+        productUrl(apiPrefix, `/product/sessions/${encodeURIComponent(sessionId)}/messages`),
+        jsonRequest("POST", JSON.stringify(request)),
+        parseProductMessage,
+      );
+    },
+
+    listMessages(sessionId) {
+      return requestJson(
+        fetchImpl,
+        productUrl(apiPrefix, `/product/sessions/${encodeURIComponent(sessionId)}/messages`),
+        undefined,
+        parseProductMessagesResponse,
+      );
+    },
+
+    promoteMessage(sessionId, messageId) {
+      return requestJson(
+        fetchImpl,
+        productUrl(apiPrefix, `/product/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(messageId)}/promote`),
+        jsonRequest("POST", "{}"),
+        parseProductMessage,
+      );
+    },
+
+    revokeMessage(sessionId, messageId) {
+      return requestJson(
+        fetchImpl,
+        productUrl(apiPrefix, `/product/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(messageId)}/revoke`),
+        jsonRequest("POST", "{}"),
+        parseProductMessage,
       );
     },
 

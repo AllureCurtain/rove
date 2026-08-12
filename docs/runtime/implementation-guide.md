@@ -193,7 +193,7 @@ identity, and per-capability executable digests. Bootstrap, CLI, API, and
 runtime use one operator-owned SQLite authority (`project-trust.sqlite` in the
 platform user-state directory, or `ROVE_PROJECT_TRUST_STORE`). Product Web
 sends only the workspace ID and explicit capability decision; the API resolves
-that ID and calls the same repository. ProductStore schema v11 trust rows are a
+that ID and calls the same repository. ProductStore schema v12 trust rows are a
 one-way compatibility import source only, never a second write authority.
 
 Legacy `project-trust.json` is validated and imported once, then retained as
@@ -597,6 +597,17 @@ task snapshots, and reports remain in the selected execution workspace. The
 transcript endpoint walks the product session's ordered run bindings and reads
 canonical indexed events from those workspace stores. Missing or inconsistent
 facts produce typed partial reasons rather than a silently complete response.
+
+The unified conversation command is implemented by
+`rove_runtime::conversation::MessageDomainService`. The API ProductStore and
+local Runtime SQLite adapters implement the same FIFO/idempotency/CAS contract.
+`POST /product/sessions/{id}/messages` is the product send path; active runs
+persist `queued` messages and can promote them at a safe provider/tool
+boundary, while idle sends claim a successor turn. Canonical message events
+are reflected through the existing trace/SSE/replay path. Approval, input,
+capability, and cancellation remain separate typed controls. The Web shell
+renders delivery state in the transcript, and TUI uses the same service
+in-process without a private durable queue.
 
 Product Memory operations are workspace-scoped. `GET
 /product/memory/topics`, `GET /product/memory/topics/{slug}`, and `DELETE

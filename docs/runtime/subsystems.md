@@ -18,7 +18,7 @@ Bootstrap, CLI, API, and runtime all use the same operator-owned SQLite
 authority selected by `ROVE_PROJECT_TRUST_STORE` or the platform user-state
 directory (`project-trust.sqlite` by default). Product Web sends a server-owned
 workspace ID; the API resolves that ID to the canonical root before calling the
-same repository. ProductStore schema v11 retains `project_trust_records` only
+same repository. ProductStore schema v12 retains `project_trust_records` only
 as a one-way compatibility import source. It is not written by the API and is
 not a second live authority. Missing canonical records are imported at API
 startup without overwriting an existing canonical decision.
@@ -688,7 +688,12 @@ turn abandons it for explicit confirmation or revoke. Startup recovery drains
 only idle sessions with safely pending work and does not replay a reserved
 side effect.
 
-The Composer exposes Steer and Follow-up modes while a run is active, retains
+The Composer uses one unified Send Message command. While a run is active,
+messages enter the durable FIFO queue and can be promoted at a safe boundary;
+idle sends claim a successor turn. The legacy Steer and Follow-up routes remain
+compatibility endpoints but are not a second lifecycle authority. The Web
+transcript renders delivery states and keeps diagnostics/Inspector projections
+separate from the main conversation.
 the Stop action in either mode, and displays the server-backed control queue.
 The queue reflects durable status, supports revoke, and offers explicit
 confirmation for an abandoned follow-up. It does not synthesize a client-side
@@ -704,6 +709,9 @@ marks the source prefix `inherited` and keeps child events in a separate local
 ledger. The product shell exposes Fork only for a completed latest turn and
 renders parent/child rows with the persisted fork point; catalog session loading
 has a fixed ProductStore collection limit rather than unbounded tree traversal.
+The TUI uses the Runtime message-domain service through an in-process adapter,
+with no private durable queue; approval/input/cancel remain typed interaction
+paths and take modal precedence.
 
 CDH G3-G7 are also implemented on `main`. Session model/reasoning/approval/
 step-limit configuration uses revision CAS and immutable per-run snapshots;

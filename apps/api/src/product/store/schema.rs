@@ -6,7 +6,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 use crate::product::{ProductErrorCode, ProductStoreError};
 
-const CURRENT_SCHEMA_VERSION: i64 = 11;
+const CURRENT_SCHEMA_VERSION: i64 = 12;
 const MAX_BUSY_TIMEOUT_MS: u64 = 120_000;
 
 const MIGRATION_001: &str = r#"
@@ -428,6 +428,19 @@ CREATE INDEX IF NOT EXISTS idx_project_trust_state
     ON project_trust_records(state, updated_at DESC);
 "#;
 
+const MIGRATION_012: &str = r#"
+ALTER TABLE product_session_controls
+ADD COLUMN message_contract_version INTEGER NOT NULL DEFAULT 0
+CHECK(message_contract_version IN (0, 1));
+ALTER TABLE product_session_controls
+ADD COLUMN requested_delivery TEXT
+CHECK(requested_delivery IS NULL OR requested_delivery IN ('successor', 'current_run'));
+CREATE INDEX IF NOT EXISTS idx_product_session_messages_delivery
+    ON product_session_controls(
+        product_session_id, message_contract_version, requested_delivery, status, seq
+    );
+"#;
+
 #[derive(Debug, Clone)]
 pub(super) struct ProductDatabase {
     path: Arc<PathBuf>,
@@ -532,6 +545,7 @@ fn apply_migrations(connection: &mut Connection) -> Result<(), ProductStoreError
     apply_migration_009(connection)?;
     apply_migration_010(connection)?;
     apply_migration_011(connection)?;
+    apply_migration_012(connection)?;
     Ok(())
 }
 
@@ -911,6 +925,33 @@ fn apply_migration_011(connection: &mut Connection) -> Result<(), ProductStoreEr
     Ok(())
 }
 
+fn apply_migration_012(connection: &mut Connection) -> Result<(), ProductStoreError> {
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|_| database_error(true))?;
+    if migration_is_applied(&transaction, 12)? {
+        transaction.commit().map_err(|_| database_error(true))?;
+        return Ok(());
+    }
+    if table_exists(&transaction, "product_session_controls")? {
+        transaction
+            .execute_batch(MIGRATION_012)
+            .map_err(|_| database_error(true))?;
+    }
+    transaction
+        .execute(
+            "INSERT INTO product_schema_migrations(version, name, applied_at) VALUES (?1, ?2, ?3)",
+            params![
+                12,
+                "unified_product_message_lifecycle",
+                super::repository::now_rfc3339()
+            ],
+        )
+        .map_err(|_| database_error(true))?;
+    transaction.commit().map_err(|_| database_error(true))?;
+    Ok(())
+}
+
 fn database_error(startup: bool) -> ProductStoreError {
     if startup {
         ProductStoreError::new(
@@ -1041,7 +1082,7 @@ mod tests {
     }
 
     #[test]
-    fn schema_newer_than_v11_is_rejected_without_rollback() {
+    fn schema_newer_than_v12_is_rejected_without_rollback() {
         let mut connection = Connection::open_in_memory().unwrap();
         connection
             .execute_batch(
@@ -1052,7 +1093,7 @@ mod tests {
                     applied_at TEXT NOT NULL
                 );
                 INSERT INTO product_schema_migrations(version, name, applied_at)
-                VALUES (12, 'future_schema', '2026-08-07T00:00:00Z');
+                VALUES (13, 'future_schema', '2026-08-07T00:00:00Z');
                 "#,
             )
             .unwrap();
@@ -1063,7 +1104,7 @@ mod tests {
         assert_eq!(
             connection
                 .query_row(
-                    "SELECT COUNT(*) FROM product_schema_migrations WHERE version = 12",
+                    "SELECT COUNT(*) FROM product_schema_migrations WHERE version = 13",
                     [],
                     |row| row.get::<_, i64>(0),
                 )

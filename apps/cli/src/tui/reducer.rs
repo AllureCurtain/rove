@@ -3,9 +3,10 @@ use crate::tui::action::TuiAction;
 use crate::tui::effect::TuiEffect;
 use crate::tui::state::{
     HelpState, InteractionKeyMode, InteractionModalView, MAX_COMPOSER_BYTES,
-    MAX_INTERACTION_INPUT_BYTES, RunLifecycle, SessionPickerError, SessionPickerState, TuiFocus,
-    TuiOverlay, TuiState,
+    MAX_INTERACTION_INPUT_BYTES, MessageQueueState, RunLifecycle, SessionPickerError,
+    SessionPickerState, TuiFocus, TuiOverlay, TuiState,
 };
+use rove_runtime::conversation::{MessageStatus, SessionDeliveryState};
 use rove_runtime::types::CallId;
 
 pub fn reduce(state: &mut TuiState, action: TuiAction) -> Vec<TuiEffect> {
@@ -48,6 +49,7 @@ pub fn reduce(state: &mut TuiState, action: TuiAction) -> Vec<TuiEffect> {
         TuiAction::OpenSessionPicker => open_session_picker(state),
         TuiAction::OpenToolDetail => open_tool_detail(state),
         TuiAction::OpenHelp => open_help(state),
+        TuiAction::OpenMessageQueue => open_message_queue(state),
         TuiAction::CloseOverlay => {
             if state.modal.is_none() {
                 state.overlay = None;
@@ -59,6 +61,22 @@ pub fn reduce(state: &mut TuiState, action: TuiAction) -> Vec<TuiEffect> {
         TuiAction::OverlayPageUp => page_overlay(state, false),
         TuiAction::OverlayPageDown => page_overlay(state, true),
         TuiAction::ConfirmOverlay => confirm_overlay(state),
+        TuiAction::PromoteSelectedMessage => message_action(state, true),
+        TuiAction::RevokeSelectedMessage => message_action(state, false),
+        TuiAction::MessagesLoaded { messages } => {
+            state.message_error = None;
+            state.replace_messages(messages);
+            Vec::new()
+        }
+        TuiAction::MessageUpdated { message } => {
+            state.message_error = None;
+            state.upsert_message(message);
+            Vec::new()
+        }
+        TuiAction::MessageOperationFailed { error } => {
+            state.message_error = Some(error.to_string());
+            Vec::new()
+        }
         TuiAction::SessionsLoaded { candidates } => {
             if matches!(state.overlay, Some(TuiOverlay::SessionPicker(_))) {
                 state.overlay = Some(TuiOverlay::SessionPicker(SessionPickerState::ready(
@@ -188,7 +206,7 @@ pub fn reduce(state: &mut TuiState, action: TuiAction) -> Vec<TuiEffect> {
             if state.modal.is_some()
                 || state.overlay.is_some()
                 || state.focus != TuiFocus::Composer
-                || !state.run_lifecycle.accepts_prompt()
+                || state.run_lifecycle == RunLifecycle::Cancelling
             {
                 return Vec::new();
             }
@@ -197,7 +215,16 @@ pub fn reduce(state: &mut TuiState, action: TuiAction) -> Vec<TuiEffect> {
                 Vec::new()
             } else {
                 state.composer.clear();
-                dispatch_prompt(state, message)
+                let session_state = if state.run_lifecycle == RunLifecycle::Running {
+                    SessionDeliveryState::Active
+                } else {
+                    SessionDeliveryState::Idle
+                };
+                vec![TuiEffect::SendMessage {
+                    content: message,
+                    session_state,
+                    target_run_id: None,
+                }]
             }
         }
         TuiAction::FocusNext => {
@@ -365,6 +392,7 @@ fn move_overlay(state: &mut TuiState, delta: isize) -> Vec<TuiEffect> {
                     .min(crate::tui::state::MAX_HELP_LINES as u16)
             };
         }
+        TuiOverlay::MessageQueue(queue) => queue.move_selection(delta),
     }
     Vec::new()
 }
@@ -393,6 +421,9 @@ fn page_overlay(state: &mut TuiState, down: bool) -> Vec<TuiEffect> {
             } else {
                 help.scroll.saturating_sub(8)
             };
+        }
+        TuiOverlay::MessageQueue(queue) => {
+            queue.move_selection(if down { 8 } else { -8 });
         }
     }
     Vec::new()
@@ -423,6 +454,49 @@ fn confirm_overlay(state: &mut TuiState) -> Vec<TuiEffect> {
         *error = None;
     }
     vec![TuiEffect::ResolveResume { run_id }]
+}
+
+fn open_message_queue(state: &mut TuiState) -> Vec<TuiEffect> {
+    if state.modal.is_some() {
+        return Vec::new();
+    }
+    if matches!(state.overlay, Some(TuiOverlay::MessageQueue(_))) {
+        state.overlay = None;
+        return Vec::new();
+    }
+    state.overlay = Some(TuiOverlay::MessageQueue(MessageQueueState::new(
+        state.messages.clone(),
+    )));
+    vec![TuiEffect::LoadMessages]
+}
+
+fn message_action(state: &mut TuiState, promote: bool) -> Vec<TuiEffect> {
+    if state.modal.is_some() {
+        return Vec::new();
+    }
+    let Some(TuiOverlay::MessageQueue(queue)) = state.overlay.as_ref() else {
+        return Vec::new();
+    };
+    let Some(message) = queue.selected() else {
+        return Vec::new();
+    };
+    if promote {
+        if state.run_lifecycle != RunLifecycle::Running || message.status != MessageStatus::Queued {
+            return Vec::new();
+        }
+        vec![TuiEffect::PromoteMessage {
+            message_id: message.id.clone(),
+        }]
+    } else if matches!(
+        message.status,
+        MessageStatus::Queued | MessageStatus::NeedsAttention
+    ) {
+        vec![TuiEffect::RevokeMessage {
+            message_id: message.id.clone(),
+        }]
+    } else {
+        Vec::new()
+    }
 }
 
 fn resolve_approval(state: &mut TuiState, call_id: CallId, approve: bool) -> Vec<TuiEffect> {
@@ -527,12 +601,14 @@ mod tests {
         let effects = reduce(&mut state, TuiAction::SubmitComposer);
 
         assert_eq!(state.composer, "");
-        assert_eq!(state.run_lifecycle, RunLifecycle::Running);
+        assert_eq!(state.run_lifecycle, RunLifecycle::Idle);
         assert_eq!(
             effects,
-            vec![TuiEffect::Dispatch(TerminalAction::SubmitPrompt(
-                "hello".to_string()
-            ))]
+            vec![TuiEffect::SendMessage {
+                content: "hello".to_string(),
+                session_state: rove_runtime::conversation::SessionDeliveryState::Idle,
+                target_run_id: None,
+            }]
         );
     }
 
@@ -576,10 +652,17 @@ mod tests {
         assert_eq!(state.run_lifecycle, RunLifecycle::Idle);
         assert_eq!(state.composer, "   \t");
 
-        state.composer = "queued without queueing".to_string();
+        state.composer = "queued while running".to_string();
         state.run_lifecycle = RunLifecycle::Running;
-        assert!(reduce(&mut state, TuiAction::SubmitComposer).is_empty());
-        assert_eq!(state.composer, "queued without queueing");
+        assert_eq!(
+            reduce(&mut state, TuiAction::SubmitComposer),
+            vec![TuiEffect::SendMessage {
+                content: "queued while running".to_string(),
+                session_state: rove_runtime::conversation::SessionDeliveryState::Active,
+                target_run_id: None,
+            }]
+        );
+        assert!(state.composer.is_empty());
     }
 
     #[test]

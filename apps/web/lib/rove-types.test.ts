@@ -442,6 +442,12 @@ const streamEventFixtures: StreamEvent[] = [
     id: "followup-2",
     reason: "run cancelled",
   },
+  { type: "message_queued", id: "message-1", content: "queued" },
+  { type: "message_intervention_requested", id: "message-1" },
+  { type: "message_applied_current_run", id: "message-1" },
+  { type: "message_claimed_successor", id: "message-2" },
+  { type: "message_needs_attention", id: "message-2", reason: "restart" },
+  { type: "message_revoked", id: "message-3" },
 ];
 
 const providerProfileFixtures = [

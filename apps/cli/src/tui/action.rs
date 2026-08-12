@@ -2,6 +2,7 @@ use crate::terminal::action::TerminalAction;
 use crate::tui::state::{
     InteractionModalKind, InteractionModalView, ResumeCandidate, SessionPickerError,
 };
+use rove_runtime::conversation::{ConversationMessage, MessageDomainError};
 use rove_runtime::types::{CallId, RunId};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -27,12 +28,24 @@ pub enum TuiAction {
     OpenSessionPicker,
     OpenToolDetail,
     OpenHelp,
+    OpenMessageQueue,
     CloseOverlay,
     OverlayNext,
     OverlayPrevious,
     OverlayPageUp,
     OverlayPageDown,
     ConfirmOverlay,
+    PromoteSelectedMessage,
+    RevokeSelectedMessage,
+    MessagesLoaded {
+        messages: Vec<ConversationMessage>,
+    },
+    MessageUpdated {
+        message: ConversationMessage,
+    },
+    MessageOperationFailed {
+        error: MessageDomainError,
+    },
     SessionsLoaded {
         candidates: Vec<ResumeCandidate>,
     },

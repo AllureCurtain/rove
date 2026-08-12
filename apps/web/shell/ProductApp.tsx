@@ -134,10 +134,7 @@ function ServerProductApp({ uiVersion }: { uiVersion: ProductUiVersion }) {
     server.sessionModelConfig === null ||
     routing.routeError !== null;
   const composerDisabled =
-    composerPrerequisiteUnavailable ||
-    busy ||
-    activeSession?.status === "running" ||
-    activeSession?.status === "needs_attention";
+    composerPrerequisiteUnavailable;
   const controlAvailable =
     !composerPrerequisiteUnavailable &&
     activeSession !== undefined &&
@@ -157,11 +154,7 @@ function ServerProductApp({ uiVersion }: { uiVersion: ProductUiVersion }) {
       ? "Retry transcript restore before sending."
       : server.sessionModelConfigLoading || server.sessionModelConfig === null
         ? "Loading session model settings."
-      : activeSession?.status === "needs_attention"
-          ? "Resolve the canonical approval or input in the timeline."
-          : activeSession?.status === "running"
-            ? "A run is active. Send is available after it reaches a terminal state."
-            : routing.routeError
+      : routing.routeError
               ? "Resolve the product route before sending."
               : undefined;
   const resumeLabel = activeSession?.hasDurableTurn
@@ -473,6 +466,9 @@ function ServerProductApp({ uiVersion }: { uiVersion: ProductUiVersion }) {
                 </div>
                 <Transcript
                   timeline={selectTranscriptTimeline(continuity.runState)}
+                  messages={continuity.messages}
+                  messageBusy={continuity.controlBusy}
+                  canPromote={controlAvailable}
                   approvalBusy={continuity.approvalBusy}
                   inputBusy={continuity.inputBusy}
                   restoreState={transcriptRestoreState}
@@ -484,11 +480,12 @@ function ServerProductApp({ uiVersion }: { uiVersion: ProductUiVersion }) {
                   }
                   onApproval={continuity.approve}
                   onInputSubmit={continuity.answer}
+                  onPromoteMessage={(messageId) => void continuity.promoteMessage(messageId)}
+                  onRevokeMessage={(messageId) => void continuity.revokeMessage(messageId)}
                 />
                 <Composer
                   disabled={composerDisabled}
                   busy={busy}
-                  controlAvailable={controlAvailable}
                   resumeLabel={resumeLabel}
                   disabledReason={composerDisabledReason}
                   error={continuity.runState.error}
@@ -497,24 +494,10 @@ function ServerProductApp({ uiVersion }: { uiVersion: ProductUiVersion }) {
                   modelConfigSaving={server.sessionModelConfigMutationBusy}
                   textareaRef={composerRef}
                   onSend={continuity.send}
-                  onSteer={continuity.submitSteer}
-                  onFollowup={continuity.submitFollowup}
                   onCancel={() => void continuity.cancel()}
                   onLoadProviderModels={server.productClient.listProviderModels}
                   onModelConfigChange={server.changeSessionModelConfig}
-                  controls={continuity.controls}
-                  controlsLoading={continuity.controlsLoading}
-                  controlBusy={continuity.controlBusy}
                   controlError={continuity.controlError}
-                  onRefreshControls={() => {
-                    if (activeSession) {
-                      void continuity.refreshControls(activeSession.id);
-                    }
-                  }}
-                  onRevokeControl={(controlId) => void continuity.revokeControl(controlId)}
-                  onConfirmFollowup={(controlId) =>
-                    void continuity.confirmFollowup(controlId)
-                  }
                 />
               </div>
             )}

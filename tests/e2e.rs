@@ -3342,12 +3342,14 @@ async fn planner_resume_checkpoint_does_not_repeat_completed_steps() {
                 agent_profile: None,
                 step_ledger: Default::default(),
                 execution_lifecycle: Default::default(),
+                message_deliveries: Vec::new(),
             }),
             plan: None,
             runtime_identity: None,
             agent_profile: None,
             step_ledger: Default::default(),
             execution_lifecycle: Default::default(),
+            message_deliveries: Vec::new(),
         }),
     };
     let engine = build_planner_test_engine(vec!["step 2 done".to_string()]);
@@ -5185,6 +5187,7 @@ async fn resumed_run_prefers_prompt_checkpoint_tail_and_summary() {
         agent_profile: None,
         step_ledger: Default::default(),
         execution_lifecycle: Default::default(),
+        message_deliveries: Vec::new(),
     };
     let req = RunRequest {
         session_id: SessionId::new(),
@@ -6140,6 +6143,7 @@ async fn engine_resume_reprojects_canonical_openai_history_for_anthropic() {
         agent_profile: None,
         step_ledger: Default::default(),
         execution_lifecycle: Default::default(),
+        message_deliveries: Vec::new(),
     };
     let resume_state = TaskState {
         schema_version: 1,

@@ -7,15 +7,16 @@ use tempfile::TempDir;
 
 use crate::product::{
     CommitProductRunBinding, CreateProductControlRequest, CreateProductForkRequest,
-    CreateProductProviderProfileRequest, CreateProductSessionRequest,
+    CreateProductMessageRequest, CreateProductProviderProfileRequest, CreateProductSessionRequest,
     CreateProductWorkspaceRequest, M1BrowserMigrationPreflight, M1BrowserMigrationRequest,
     M1BrowserMigrationSource, M1MigrationDisposition, M1MigrationIssueCode, M1PreferencesBaseline,
     M1ProviderProfileImport, M1ProviderSelectionImport, M1SafePreferencesImport, M1SessionImport,
     M1WorkspaceImport, PreparedM1BrowserMigration, ProductApprovalPreference, ProductControlKind,
-    ProductControlStatus, ProductErrorCode, ProductProviderSelection, ProductProviderType,
-    ProductReasoningPreference, ProductSessionStatus, ProductStore, ProductThemePreference,
-    ProductWorkspaceKind, UpdateProductPreferencesRequest, UpdateProductSessionModelConfigRequest,
-    VerifiedM1SessionRunBinding, VerifiedProductForkBoundary,
+    ProductControlStatus, ProductErrorCode, ProductMessageStatus, ProductProviderSelection,
+    ProductProviderType, ProductReasoningPreference, ProductSessionStatus, ProductStore,
+    ProductThemePreference, ProductWorkspaceKind, UpdateProductPreferencesRequest,
+    UpdateProductSessionModelConfigRequest, VerifiedM1SessionRunBinding,
+    VerifiedProductForkBoundary,
 };
 
 use super::SqliteProductStore;
@@ -1627,6 +1628,143 @@ async fn controls_create_list_and_transition() {
     assert_eq!(n, 1);
     let fu2 = store.get_control(&session.id, &fu.id).await.unwrap();
     assert_eq!(fu2.status, ProductControlStatus::Abandoned);
+}
+
+#[tokio::test]
+async fn unified_messages_are_fifo_idempotent_and_race_through_one_authority() {
+    let temp = TempDir::new().unwrap();
+    let store = open_store(&temp);
+    let (_, session) = create_workspace_and_session(&store, &temp).await;
+    let claim = store.claim_session_turn(&session.id).await.unwrap();
+
+    let (first, replayed) = store
+        .create_message(
+            &session.id,
+            CreateProductMessageRequest {
+                content: " first ".to_string(),
+                idempotency_key: Some("message-1".to_string()),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(!replayed);
+    assert_eq!(first.status, ProductMessageStatus::Queued);
+    let (same, replayed) = store
+        .create_message(
+            &session.id,
+            CreateProductMessageRequest {
+                content: "first".to_string(),
+                idempotency_key: Some("message-1".to_string()),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(replayed);
+    assert_eq!(same.id, first.id);
+    let (second, _) = store
+        .create_message(
+            &session.id,
+            CreateProductMessageRequest {
+                content: "second".to_string(),
+                idempotency_key: Some("message-2".to_string()),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(first.seq < second.seq);
+
+    let promoted = store.promote_message(&session.id, &first.id).await.unwrap();
+    assert_eq!(promoted.status, ProductMessageStatus::InterventionRequested);
+    let claimed = store
+        .finish_session_turn_and_claim_followup(&claim.claim_id)
+        .await
+        .unwrap()
+        .expect("second message must retain FIFO successor delivery");
+    assert_eq!(claimed.control.id, second.id);
+    let promotion_lost = store
+        .promote_message(&session.id, &second.id)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        promotion_lost.code,
+        ProductErrorCode::ProductControlRejected
+    );
+    let revoked_after_claim = store
+        .revoke_message(&session.id, &second.id)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        revoked_after_claim.code,
+        ProductErrorCode::ProductControlRejected
+    );
+
+    let conflict = store
+        .create_message(
+            &session.id,
+            CreateProductMessageRequest {
+                content: "different".to_string(),
+                idempotency_key: Some("message-1".to_string()),
+            },
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(conflict.code, ProductErrorCode::ProductControlConflict);
+}
+
+#[tokio::test]
+async fn unified_message_rejects_legacy_idempotency_and_terminal_revoke() {
+    let temp = TempDir::new().unwrap();
+    let store = open_store(&temp);
+    let (_workspace, session) = create_workspace_and_session(&store, &temp).await;
+
+    store
+        .create_control(
+            &session.id,
+            ProductControlKind::Followup,
+            CreateProductControlRequest {
+                content: "legacy".to_string(),
+                idempotency_key: Some("same-key".to_string()),
+            },
+        )
+        .await
+        .unwrap();
+    let conflict = store
+        .create_message(
+            &session.id,
+            CreateProductMessageRequest {
+                content: "legacy".to_string(),
+                idempotency_key: Some("same-key".to_string()),
+            },
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(conflict.code, ProductErrorCode::ProductControlConflict);
+    store
+        .abandon_pending_controls(&session.id, "legacy compatibility test")
+        .await
+        .unwrap();
+
+    let (message, _) = store
+        .create_message(
+            &session.id,
+            CreateProductMessageRequest {
+                content: "next".to_string(),
+                idempotency_key: Some("message-key".to_string()),
+            },
+        )
+        .await
+        .unwrap();
+    let claimed = store
+        .claim_next_followup_turn(&session.id)
+        .await
+        .unwrap()
+        .expect("idle message should be claimed");
+    assert_eq!(claimed.control.id, message.id);
+    let rejected = store
+        .revoke_message(&session.id, &message.id)
+        .await
+        .unwrap_err();
+    assert_eq!(rejected.code, ProductErrorCode::ProductControlRejected);
 }
 
 #[tokio::test]

@@ -15,16 +15,16 @@ use async_trait::async_trait;
 
 use crate::product::{
     CommitProductRunBinding, CreateProductControlRequest, CreateProductForkRequest,
-    CreateProductProviderProfileRequest, CreateProductSessionRequest,
+    CreateProductMessageRequest, CreateProductProviderProfileRequest, CreateProductSessionRequest,
     CreateProductWorkspaceRequest, M1BrowserMigrationPreflight, M1BrowserMigrationRequest,
     M1BrowserMigrationResponse, PreparedM1BrowserMigration, ProductControl, ProductControlId,
     ProductControlKind, ProductControlStatus, ProductErrorCode, ProductFollowupTurnClaim,
-    ProductFork, ProductPreferences, ProductProviderProfile, ProductProviderProfileId,
-    ProductResumeHealth, ProductSession, ProductSessionContext, ProductSessionId,
-    ProductSessionModelConfig, ProductSessionRunBinding, ProductSessionRunModelView,
-    ProductSessionStatus, ProductStore, ProductStoreError, ProductTurnClaim, ProductTurnClaimId,
-    ProductTurnControlFinish, ProductWorkspace, ProductWorkspaceId,
-    UpdateProductPreferencesRequest, UpdateProductProviderProfileRequest,
+    ProductFork, ProductMessage, ProductPreferences, ProductProviderProfile,
+    ProductProviderProfileId, ProductResumeHealth, ProductSession, ProductSessionContext,
+    ProductSessionId, ProductSessionModelConfig, ProductSessionRunBinding,
+    ProductSessionRunModelView, ProductSessionStatus, ProductStore, ProductStoreError,
+    ProductTurnClaim, ProductTurnClaimId, ProductTurnControlFinish, ProductWorkspace,
+    ProductWorkspaceId, UpdateProductPreferencesRequest, UpdateProductProviderProfileRequest,
     UpdateProductSessionModelConfigRequest, UpdateProductSessionRequest,
     VerifiedProductForkBoundary,
 };
@@ -378,6 +378,58 @@ impl ProductStore for SqliteProductStore {
     ) -> Result<(ProductControl, bool), ProductStoreError> {
         let session_id = session_id.clone();
         self.blocking(move |repository| repository.create_control(&session_id, kind, request))
+            .await
+    }
+
+    async fn create_message(
+        &self,
+        session_id: &ProductSessionId,
+        request: CreateProductMessageRequest,
+    ) -> Result<(ProductMessage, bool), ProductStoreError> {
+        let session_id = session_id.clone();
+        self.blocking(move |repository| repository.create_message(&session_id, request))
+            .await
+    }
+
+    async fn promote_message(
+        &self,
+        session_id: &ProductSessionId,
+        message_id: &ProductControlId,
+    ) -> Result<ProductMessage, ProductStoreError> {
+        let session_id = session_id.clone();
+        let message_id = message_id.clone();
+        self.blocking(move |repository| repository.promote_message(&session_id, &message_id))
+            .await
+    }
+
+    async fn revoke_message(
+        &self,
+        session_id: &ProductSessionId,
+        message_id: &ProductControlId,
+    ) -> Result<ProductMessage, ProductStoreError> {
+        let session_id = session_id.clone();
+        let message_id = message_id.clone();
+        self.blocking(move |repository| repository.revoke_message(&session_id, &message_id))
+            .await
+    }
+
+    async fn list_messages(
+        &self,
+        session_id: &ProductSessionId,
+    ) -> Result<Vec<ProductMessage>, ProductStoreError> {
+        let session_id = session_id.clone();
+        self.blocking(move |repository| repository.list_messages(&session_id))
+            .await
+    }
+
+    async fn get_message(
+        &self,
+        session_id: &ProductSessionId,
+        message_id: &ProductControlId,
+    ) -> Result<ProductMessage, ProductStoreError> {
+        let session_id = session_id.clone();
+        let message_id = message_id.clone();
+        self.blocking(move |repository| repository.get_message(&session_id, &message_id))
             .await
     }
 

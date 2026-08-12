@@ -98,6 +98,15 @@ The Web product line is tracked separately:
   workspace-scoped MCP catalog shared by Settings and job assembly. See the
   [`acceptance matrix`](acceptance-matrix.md) and the
   [`completed CDH plan`](../plans/2026-08-03-cdh-alder-merge.md).
+- Productization F.1-F.5 is implemented in this worktree for the unified
+  conversation command. Runtime canonical events now carry the six durable
+  message delivery states (`queued`, `intervention_requested`,
+  `applied_current_run`, `claimed_successor`, `needs_attention`, `revoked`).
+  The API ProductStore schema is at v12 and the Runtime state schema is at v3;
+  both retain compatibility projections and idempotent/CAS migration paths.
+  API routes, SSE/replay reflection, Web reducers/transcript, and the TUI all
+  consume the shared message-domain vocabulary. Web/TUI delivery and browser
+  dependency/live-service gates remain to be rerun in this worktree.
 - The completed
   [`Kernel, Message, and Provider implementation record`](../plans/2026-08-06-kernel-message-provider-implementation.md)
   covers typed messages, provider normalization, and shared-kernel migration.

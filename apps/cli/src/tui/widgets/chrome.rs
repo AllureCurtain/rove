@@ -97,12 +97,15 @@ pub(crate) fn status_line(state: &TuiState, width: u16) -> Paragraph<'static> {
         TuiFocus::Transcript => "transcript",
         TuiFocus::Composer => "composer",
     };
+    let queued = state.eligible_message_count();
     let content = if width >= 72 {
-        format!(" workspace: - | run: {run_status} | focus: {focus} | Tab focus | Ctrl+Q quit")
+        format!(
+            " workspace: - | run: {run_status} | queued: {queued} | focus: {focus} | Ctrl+M messages"
+        )
     } else if width >= 36 {
-        format!(" ws:- | run:{run_status} | focus:{focus}")
+        format!(" ws:- | run:{run_status} | q:{queued} | focus:{focus}")
     } else {
-        format!("run:{run_status} | {focus}")
+        format!("run:{run_status} | q:{queued}")
     };
 
     Paragraph::new(Span::styled(content, status_style)).style(Style::default().bg(Color::Black))

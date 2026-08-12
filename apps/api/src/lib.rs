@@ -266,6 +266,10 @@ pub fn router(state: ApiState) -> Router {
         .routes(routes!(product::routes::update_product_preferences))
         .routes(routes!(product::routes::create_product_session_steer))
         .routes(routes!(product::routes::create_product_session_followup))
+        .routes(routes!(product::routes::create_product_session_message))
+        .routes(routes!(product::routes::list_product_session_messages))
+        .routes(routes!(product::routes::promote_product_session_message))
+        .routes(routes!(product::routes::revoke_product_session_message))
         .routes(routes!(product::routes::list_product_session_controls))
         .routes(routes!(product::routes::revoke_product_session_control))
         .routes(routes!(product::routes::confirm_product_session_followup))
@@ -1511,13 +1515,27 @@ async fn prepare_claimed_product_job_launch(
         record,
         engine,
         run,
-        product_turn: Some(ProductTurnSupervisor { store, claim_id }),
-        startup_events: followup_control_id
-            .into_iter()
-            .map(|control_id| StreamEvent::FollowupDequeued {
-                id: control_id.to_string(),
-            })
-            .collect(),
+        product_turn: Some(ProductTurnSupervisor {
+            store: store.clone(),
+            claim_id,
+        }),
+        startup_events: match followup_control_id {
+            Some(control_id) => match store.get_message(&product_session_id, &control_id).await {
+                Ok(message) => vec![
+                    StreamEvent::MessageQueued {
+                        id: control_id.to_string(),
+                        content: message.content,
+                    },
+                    StreamEvent::MessageClaimedSuccessor {
+                        id: control_id.to_string(),
+                    },
+                ],
+                Err(_) => vec![StreamEvent::FollowupDequeued {
+                    id: control_id.to_string(),
+                }],
+            },
+            None => Vec::new(),
+        },
     })
 }
 
@@ -2576,6 +2594,96 @@ async fn reflect_control_event(record: &JobRecord, event: &StreamEvent) {
                 )
                 .await;
         }
+        StreamEvent::MessageInterventionRequested { id } => {
+            let Ok(message_id) = id.parse::<ProductControlId>() else {
+                return;
+            };
+            let _ = store
+                .transition_control(
+                    product_session_id,
+                    &message_id,
+                    ProductControlStatus::Pending,
+                    ProductControlStatus::Accepted,
+                    Some(&record.run_id),
+                )
+                .await;
+        }
+        StreamEvent::MessageAppliedCurrentRun { id } => {
+            let Ok(message_id) = id.parse::<ProductControlId>() else {
+                return;
+            };
+            let _ = store
+                .transition_control(
+                    product_session_id,
+                    &message_id,
+                    ProductControlStatus::Accepted,
+                    ProductControlStatus::Applied,
+                    Some(&record.run_id),
+                )
+                .await;
+        }
+        StreamEvent::MessageNeedsAttention { id, .. } => {
+            let Ok(message_id) = id.parse::<ProductControlId>() else {
+                return;
+            };
+            let pending = store
+                .transition_control(
+                    product_session_id,
+                    &message_id,
+                    ProductControlStatus::Pending,
+                    ProductControlStatus::Abandoned,
+                    Some(&record.run_id),
+                )
+                .await;
+            if pending.is_err() {
+                let _ = store
+                    .transition_control(
+                        product_session_id,
+                        &message_id,
+                        ProductControlStatus::Accepted,
+                        ProductControlStatus::Abandoned,
+                        Some(&record.run_id),
+                    )
+                    .await;
+            }
+        }
+        StreamEvent::MessageClaimedSuccessor { id } => {
+            let Ok(message_id) = id.parse::<ProductControlId>() else {
+                return;
+            };
+            let _ = store
+                .transition_control(
+                    product_session_id,
+                    &message_id,
+                    ProductControlStatus::Accepted,
+                    ProductControlStatus::Applied,
+                    Some(&record.run_id),
+                )
+                .await;
+        }
+        StreamEvent::MessageRevoked { id } => {
+            let Ok(message_id) = id.parse::<ProductControlId>() else {
+                return;
+            };
+            let _ = store
+                .transition_control(
+                    product_session_id,
+                    &message_id,
+                    ProductControlStatus::Pending,
+                    ProductControlStatus::Revoked,
+                    Some(&record.run_id),
+                )
+                .await;
+            let _ = store
+                .transition_control(
+                    product_session_id,
+                    &message_id,
+                    ProductControlStatus::Abandoned,
+                    ProductControlStatus::Revoked,
+                    Some(&record.run_id),
+                )
+                .await;
+        }
         _ => {}
     }
 }
@@ -2605,10 +2713,13 @@ async fn replay_pending_product_steers(record: &JobRecord) {
         .into_iter()
         .filter(|control| control.kind == ProductControlKind::Steer)
     {
-        if !handle.try_send_steer(rove_runtime::engine::SteerMessage::with_id(
-            control.id.as_str(),
-            control.content,
-        )) {
+        let unified = store.get_message(session_id, &control.id).await.is_ok();
+        let steer = if unified {
+            rove_runtime::engine::SteerMessage::for_message(control.id.as_str(), control.content)
+        } else {
+            rove_runtime::engine::SteerMessage::with_id(control.id.as_str(), control.content)
+        };
+        if !handle.try_send_steer(steer) {
             tracing::warn!(
                 job_id = %record.job_id,
                 control_id = %control.id,

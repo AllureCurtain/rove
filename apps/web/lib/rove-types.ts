@@ -754,6 +754,32 @@ export type StreamEvent =
       type: "followup_abandoned";
       id: string;
       reason: string;
+    }
+  | {
+      type: "message_queued";
+      id: string;
+      content: string;
+    }
+  | {
+      type: "message_intervention_requested";
+      id: string;
+    }
+  | {
+      type: "message_applied_current_run";
+      id: string;
+    }
+  | {
+      type: "message_claimed_successor";
+      id: string;
+    }
+  | {
+      type: "message_needs_attention";
+      id: string;
+      reason: string;
+    }
+  | {
+      type: "message_revoked";
+      id: string;
     };
 
 export interface AgentProfileIdentity {
@@ -997,6 +1023,12 @@ export const STREAM_EVENT_NAMES = [
   "followup_queued",
   "followup_dequeued",
   "followup_abandoned",
+  "message_queued",
+  "message_intervention_requested",
+  "message_applied_current_run",
+  "message_claimed_successor",
+  "message_needs_attention",
+  "message_revoked",
 ] as const;
 
 export type StreamEventName = (typeof STREAM_EVENT_NAMES)[number];
