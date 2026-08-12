@@ -10,7 +10,7 @@ use crate::execution::ExecutionBudgetDimension;
 use crate::memory::session::append_session_notes_to_dir_sync;
 use crate::run_loop::{
     ActiveInstructionTarget, LoopContext, active_target_covers, enrich_prompt_metadata,
-    extract_session_memory_notes, run_kernel_model_turn, scoped_paths_for_action,
+    extract_session_memory_notes, run_kernel_model_turn, runtime_guidance, scoped_paths_for_action,
     scoped_prompt_events, scoped_prompt_for_target, shell_path_declaration_missing,
 };
 use crate::tool_turn::{
@@ -294,7 +294,7 @@ impl AgentKernelHost for StepKernelHost<'_> {
             }
 
             let mut turn_working_memory = self.working_memory.clone();
-            turn_working_memory.extend(state.history.iter().cloned());
+            turn_working_memory.push(runtime_guidance(&self.ctx));
             let scoped = scoped_prompt_for_target(&self.ctx, &self.active_instruction_target);
             for event in scoped_prompt_events(
                 &self.ctx,
@@ -304,11 +304,12 @@ impl AgentKernelHost for StepKernelHost<'_> {
                 yield KernelBeforeModelTurnItem::Event(event);
             }
             turn_working_memory.extend(scoped.messages);
-            let mut context = self.ctx.context_manager.build_with_checkpoint(
+            let mut context = self.ctx.context_manager.build_with_required_history(
                 &self.step_prompt,
                 &turn_working_memory,
                 self.compact_summary.as_deref(),
                 &self.history,
+                &state.history,
             );
 
             if context.over_hard_limit {
@@ -361,11 +362,12 @@ impl AgentKernelHost for StepKernelHost<'_> {
                     });
                 }
 
-                context = self.ctx.context_manager.build_with_checkpoint(
+                context = self.ctx.context_manager.build_with_required_history(
                     &self.step_prompt,
                     &turn_working_memory,
                     self.compact_summary.as_deref(),
                     &self.history,
+                    &state.history,
                 );
                 if context.over_hard_limit {
                     yield KernelBeforeModelTurnItem::Stop {

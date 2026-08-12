@@ -23,7 +23,7 @@ max_procedure_selections = 2
 
 [capability_policy]
 required = ["workspace.fs.read"]
-allow = ["workspace.fs.read"]
+allow = ["runtime.artifact.read", "workspace.fs.read", "workspace.repository.map"]
 deny = ["workspace.fs.write", "workspace.shell.run"]
 
 [procedure_policy]

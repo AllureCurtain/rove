@@ -314,10 +314,25 @@ impl RunArtifactRecorder {
                     call.name.clone(),
                     result.output.clone(),
                 );
-                let canonical = CanonicalToolResult {
+                let mut canonical = CanonicalToolResult {
                     status: canonical_status(&result.metadata.status),
                     ..canonical
                 };
+                if let Some(envelope) = &result.envelope {
+                    canonical
+                        .content
+                        .extend(envelope.artifacts.iter().map(|artifact| {
+                            ContentBlock::RichReference {
+                                kind: "tool_artifact".to_string(),
+                                reference: artifact.artifact_id.to_string(),
+                                mime_type: artifact.mime_type.clone(),
+                                title: Some(format!(
+                                    "{} bytes sha256:{}",
+                                    artifact.byte_length, artifact.sha256
+                                )),
+                            }
+                        }));
+                }
                 if let Err(error) = self.session.append(SessionEntry::tool_result(
                     format!("tool-result-{}", call_id),
                     canonical,

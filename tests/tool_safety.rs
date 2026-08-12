@@ -71,6 +71,10 @@ impl ModelClient for FakeModelClient {
     fn model_id(&self) -> &str {
         "fake-model"
     }
+
+    fn compatibility_text_tool_calls(&self) -> bool {
+        true
+    }
 }
 
 struct NestedFixtureTool {

@@ -8,8 +8,10 @@ use rove_runtime::tools::coding::{
     WorkspaceCheckpointTool, WorkspaceDiffTool, WorkspaceRewindTool,
 };
 use rove_runtime::tools::fs::{FsReadTool, FsWriteTool};
+use rove_runtime::tools::history::ResolveToolArtifactTool;
 use rove_runtime::tools::mcp_proxy::register_mcp_tools_from_file_with_environment;
 use rove_runtime::tools::memory::{ReadMemoryTopicTool, SaveMemoryTool, UpdateMemoryIndexTool};
+use rove_runtime::tools::repository::RepositoryMapTool;
 use rove_runtime::tools::request_input::RequestInputTool;
 use rove_runtime::tools::search::SearchCodeTool;
 use rove_runtime::tools::shell::{
@@ -43,6 +45,8 @@ pub fn tool_registry_with_shell_policy(
     registry.register(Box::new(WorkspaceDiffTool::new()));
     registry.register(Box::new(WorkspaceRewindTool::new()));
     registry.register(Box::new(SearchCodeTool::new(workspace.root.clone())));
+    registry.register(Box::new(RepositoryMapTool));
+    registry.register(Box::new(ResolveToolArtifactTool));
     registry.register(Box::new(ReadMemoryTopicTool::new()));
     registry.register(Box::new(SaveMemoryTool::new()));
     registry.register(Box::new(UpdateMemoryIndexTool::new()));

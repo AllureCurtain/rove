@@ -25,6 +25,9 @@ pub enum ToolError {
     #[error("Invalid arguments: {reason}")]
     InvalidArgs { reason: String },
 
+    #[error("Tool artifact unavailable: {reason}")]
+    ArtifactUnavailable { reason: String },
+
     #[error("Invalid input: {reason}")]
     InvalidInput { reason: String },
 
@@ -51,6 +54,7 @@ impl ToolError {
         match self {
             Self::UnknownTool { .. } => "unknown_tool",
             Self::InvalidArgs { .. } => "invalid_args",
+            Self::ArtifactUnavailable { .. } => "artifact_unavailable",
             Self::InvalidInput { .. } => "invalid_input",
             Self::PreconditionRequired { .. } => "precondition_required",
             Self::HookBlocked { .. } => "hook_blocked",

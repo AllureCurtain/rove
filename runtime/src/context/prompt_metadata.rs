@@ -16,6 +16,16 @@ pub struct PromptBuildMetadata {
     pub token_estimate: usize,
     pub included_history_messages: usize,
     pub dropped_history_messages: usize,
+    #[serde(default)]
+    pub system_prompt_bytes: usize,
+    #[serde(default)]
+    pub stable_prefix_bytes: usize,
+    #[serde(default)]
+    pub history_bytes: usize,
+    #[serde(default)]
+    pub total_bytes: usize,
+    #[serde(default)]
+    pub referenced_tool_results: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_cache_key: Option<String>,
 }
@@ -54,6 +64,12 @@ pub fn estimate_message_tokens(message: &Message) -> usize {
         + estimate_text_tokens(&message.content)
         + tool_call_tokens
         + tool_call_id_tokens
+}
+
+pub fn message_bytes(message: &Message) -> usize {
+    serde_json::to_vec(message)
+        .map(|bytes| bytes.len())
+        .unwrap_or_default()
 }
 
 fn estimate_text_tokens(text: &str) -> usize {

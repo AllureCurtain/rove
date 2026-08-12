@@ -4,7 +4,7 @@
 //! local adapter is the only implementation that touches the process host;
 //! deterministic tests can use the in-memory adapter.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -120,6 +120,27 @@ pub struct WorkspaceEntry {
     pub byte_len: usize,
 }
 
+/// Operator/model-selected traversal behavior. Ignored and hidden paths are
+/// independent opt-ins; sensitive paths and links are never traversed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct WorkspaceTraversalOptions {
+    pub recursive: bool,
+    pub include_ignored: bool,
+    pub include_hidden: bool,
+}
+
+/// Deterministic bounded traversal plus explicit exclusion/truncation facts.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WorkspaceTraversal {
+    pub entries: Vec<WorkspaceEntry>,
+    pub scanned_entries: usize,
+    pub ignored_entries: usize,
+    pub hidden_entries: usize,
+    pub sensitive_entries: usize,
+    pub link_entries: usize,
+    pub truncated: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VersionedFile {
     pub bytes: Vec<u8>,
@@ -165,6 +186,23 @@ pub trait WorkspaceFileSystem: Send + Sync {
         recursive: bool,
         max_entries: usize,
     ) -> Result<Vec<WorkspaceEntry>, EnvironmentError>;
+    async fn traverse_entries(
+        &self,
+        raw_path: Option<&str>,
+        options: WorkspaceTraversalOptions,
+        max_entries: usize,
+    ) -> Result<WorkspaceTraversal, EnvironmentError> {
+        let entries = self
+            .list_entries(raw_path, options.recursive, max_entries.saturating_add(1))
+            .await?;
+        let truncated = entries.len() > max_entries;
+        Ok(WorkspaceTraversal {
+            scanned_entries: entries.len(),
+            entries: entries.into_iter().take(max_entries).collect(),
+            truncated,
+            ..WorkspaceTraversal::default()
+        })
+    }
     async fn delete_path(&self, raw_path: &str, recursive: bool) -> Result<(), EnvironmentError>;
     async fn move_path(
         &self,
@@ -691,6 +729,25 @@ impl WorkspaceFileSystem for LocalFileSystem {
         recursive: bool,
         max_entries: usize,
     ) -> Result<Vec<WorkspaceEntry>, EnvironmentError> {
+        Ok(self
+            .traverse_entries(
+                raw_path,
+                WorkspaceTraversalOptions {
+                    recursive,
+                    ..WorkspaceTraversalOptions::default()
+                },
+                max_entries,
+            )
+            .await?
+            .entries)
+    }
+
+    async fn traverse_entries(
+        &self,
+        raw_path: Option<&str>,
+        options: WorkspaceTraversalOptions,
+        max_entries: usize,
+    ) -> Result<WorkspaceTraversal, EnvironmentError> {
         let root = self.root.clone();
         let raw_path = raw_path.map(str::to_string);
         tokio::task::spawn_blocking(move || {
@@ -699,8 +756,7 @@ impl WorkspaceFileSystem for LocalFileSystem {
                 .map_err(|error| EnvironmentError::InvalidPath(error.to_string()))?;
             let search_root = match raw_path.as_deref() {
                 None | Some("") | Some(".") => canonical_root.clone(),
-                Some(path) => resolve_workspace_read_path(&root, path)
-                    .map_err(|error| EnvironmentError::InvalidPath(error.to_string()))?,
+                Some(path) => resolve_local_read_path(&root, path)?,
             };
             if !search_root.starts_with(&canonical_root) {
                 return Err(EnvironmentError::Boundary);
@@ -708,11 +764,39 @@ impl WorkspaceFileSystem for LocalFileSystem {
             let search_metadata = std::fs::metadata(&search_root)
                 .map_err(|error| EnvironmentError::Host(error.to_string()))?;
             if search_metadata.is_file() {
-                return Ok(vec![WorkspaceEntry {
-                    relative_path: relative_workspace_path(&canonical_root, &search_root)?,
-                    kind: WorkspaceEntryKind::File,
-                    byte_len: search_metadata.len() as usize,
-                }]);
+                let relative = relative_workspace_path(&canonical_root, &search_root)?;
+                if is_sensitive_traversal_path(&relative) {
+                    return Ok(WorkspaceTraversal {
+                        scanned_entries: 1,
+                        sensitive_entries: 1,
+                        ..WorkspaceTraversal::default()
+                    });
+                }
+                if !options.include_hidden && path_has_hidden_component(&relative) {
+                    return Ok(WorkspaceTraversal {
+                        scanned_entries: 1,
+                        hidden_entries: 1,
+                        ..WorkspaceTraversal::default()
+                    });
+                }
+                if !options.include_ignored
+                    && direct_path_is_ignored(&canonical_root, &search_root)?
+                {
+                    return Ok(WorkspaceTraversal {
+                        scanned_entries: 1,
+                        ignored_entries: 1,
+                        ..WorkspaceTraversal::default()
+                    });
+                }
+                return Ok(WorkspaceTraversal {
+                    entries: vec![WorkspaceEntry {
+                        relative_path: relative,
+                        kind: WorkspaceEntryKind::File,
+                        byte_len: search_metadata.len() as usize,
+                    }],
+                    scanned_entries: 1,
+                    ..WorkspaceTraversal::default()
+                });
             }
             if !search_metadata.is_dir() {
                 return Err(EnvironmentError::InvalidPath(
@@ -720,17 +804,44 @@ impl WorkspaceFileSystem for LocalFileSystem {
                 ));
             }
 
-            let mut entries = Vec::new();
-            let max_depth = if recursive { usize::MAX } else { 1 };
-            for entry in walkdir::WalkDir::new(&search_root)
-                .min_depth(1)
-                .max_depth(max_depth)
+            let mut traversal = WorkspaceTraversal::default();
+            let max_depth = if options.recursive { None } else { Some(1) };
+            let mut builder = ignore::WalkBuilder::new(&search_root);
+            builder
                 .follow_links(false)
-                .into_iter()
-                .filter_entry(|entry| !is_noise_entry(entry))
-            {
+                .hidden(!options.include_hidden)
+                .ignore(!options.include_ignored)
+                .git_ignore(!options.include_ignored)
+                .git_exclude(!options.include_ignored)
+                .git_global(false)
+                .require_git(false)
+                .parents(true)
+                .max_depth(max_depth);
+            for entry in builder.build() {
                 let entry = entry.map_err(|error| EnvironmentError::Host(error.to_string()))?;
+                if entry.depth() == 0 {
+                    continue;
+                }
+                traversal.scanned_entries = traversal.scanned_entries.saturating_add(1);
                 let file_type = entry.file_type();
+                if file_type.is_some_and(|kind| kind.is_symlink())
+                    || std::fs::symlink_metadata(entry.path())
+                        .map(|metadata| {
+                            crate::workspace::boundary::is_symlink_or_reparse(&metadata)
+                        })
+                        .unwrap_or(false)
+                {
+                    traversal.link_entries = traversal.link_entries.saturating_add(1);
+                    continue;
+                }
+                let relative = relative_workspace_path(&canonical_root, entry.path())?;
+                if is_sensitive_traversal_path(&relative) {
+                    traversal.sensitive_entries = traversal.sensitive_entries.saturating_add(1);
+                    continue;
+                }
+                let Some(file_type) = file_type else {
+                    continue;
+                };
                 if !file_type.is_file() && !file_type.is_dir() {
                     continue;
                 }
@@ -743,8 +854,8 @@ impl WorkspaceFileSystem for LocalFileSystem {
                 }
                 let metadata = std::fs::metadata(&canonical)
                     .map_err(|error| EnvironmentError::Host(error.to_string()))?;
-                entries.push(WorkspaceEntry {
-                    relative_path: relative_workspace_path(&canonical_root, &canonical)?,
+                traversal.entries.push(WorkspaceEntry {
+                    relative_path: relative,
                     kind: if file_type.is_file() {
                         WorkspaceEntryKind::File
                     } else {
@@ -756,12 +867,49 @@ impl WorkspaceFileSystem for LocalFileSystem {
                         0
                     },
                 });
-                if entries.len() > max_entries {
+                if traversal.entries.len() > max_entries {
+                    traversal.truncated = true;
                     break;
                 }
             }
-            entries.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
-            Ok(entries)
+            traversal
+                .entries
+                .sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+            traversal.entries.truncate(max_entries);
+            traversal.sensitive_entries = traversal_sensitive_count(
+                &canonical_root,
+                &search_root,
+                options.recursive,
+                max_entries.saturating_mul(2).max(1),
+            )?;
+            let admitted = traversal
+                .entries
+                .iter()
+                .map(|entry| entry.relative_path.clone())
+                .collect::<BTreeSet<_>>();
+            if !options.include_ignored {
+                let ignored_visible = traversal_path_set(
+                    &canonical_root,
+                    &search_root,
+                    options.recursive,
+                    true,
+                    options.include_hidden,
+                    max_entries.saturating_mul(2).max(1),
+                )?;
+                traversal.ignored_entries = ignored_visible.difference(&admitted).count();
+            }
+            if !options.include_hidden {
+                let hidden_visible = traversal_path_set(
+                    &canonical_root,
+                    &search_root,
+                    options.recursive,
+                    options.include_ignored,
+                    true,
+                    max_entries.saturating_mul(2).max(1),
+                )?;
+                traversal.hidden_entries = hidden_visible.difference(&admitted).count();
+            }
+            Ok(traversal)
         })
         .await
         .map_err(|error| EnvironmentError::Host(error.to_string()))?
@@ -1098,6 +1246,35 @@ impl WorkspaceFileSystem for InMemoryFileSystem {
             }
         }
         Ok(entries.into_values().collect())
+    }
+
+    async fn traverse_entries(
+        &self,
+        raw_path: Option<&str>,
+        options: WorkspaceTraversalOptions,
+        max_entries: usize,
+    ) -> Result<WorkspaceTraversal, EnvironmentError> {
+        let entries = self
+            .list_entries(raw_path, options.recursive, max_entries.saturating_add(1))
+            .await?;
+        let mut result = WorkspaceTraversal::default();
+        for entry in entries {
+            if is_sensitive_traversal_path(&entry.relative_path) {
+                result.sensitive_entries += 1;
+                continue;
+            }
+            if !options.include_hidden && path_has_hidden_component(&entry.relative_path) {
+                result.hidden_entries += 1;
+                continue;
+            }
+            result.scanned_entries += 1;
+            if result.entries.len() == max_entries {
+                result.truncated = true;
+                break;
+            }
+            result.entries.push(entry);
+        }
+        Ok(result)
     }
 
     async fn delete_path(&self, raw_path: &str, recursive: bool) -> Result<(), EnvironmentError> {
@@ -2088,13 +2265,248 @@ fn relative_workspace_path(root: &Path, path: &Path) -> Result<String, Environme
         .map(|relative| relative.to_string_lossy().replace('\\', "/"))
 }
 
-fn is_noise_entry(entry: &walkdir::DirEntry) -> bool {
-    matches!(
-        entry.file_name().to_string_lossy().as_ref(),
-        ".git" | "target" | "node_modules" | ".next" | "dist" | "build" | "__pycache__" | ".rove"
-    )
+fn path_has_hidden_component(path: &str) -> bool {
+    path.split('/')
+        .any(|component| component.starts_with('.') && component != ".")
+}
+
+fn traversal_path_set(
+    canonical_root: &Path,
+    search_root: &Path,
+    recursive: bool,
+    include_ignored: bool,
+    include_hidden: bool,
+    max_entries: usize,
+) -> Result<BTreeSet<String>, EnvironmentError> {
+    let mut builder = ignore::WalkBuilder::new(search_root);
+    builder
+        .follow_links(false)
+        .hidden(!include_hidden)
+        .ignore(!include_ignored)
+        .git_ignore(!include_ignored)
+        .git_exclude(!include_ignored)
+        .git_global(false)
+        .require_git(false)
+        .parents(true)
+        .max_depth(if recursive { None } else { Some(1) });
+    let mut paths = BTreeSet::new();
+    for entry in builder.build() {
+        let entry = entry.map_err(|error| EnvironmentError::Host(error.to_string()))?;
+        if entry.depth() == 0 {
+            continue;
+        }
+        let metadata = std::fs::symlink_metadata(entry.path())
+            .map_err(|error| EnvironmentError::Host(error.to_string()))?;
+        if crate::workspace::boundary::is_symlink_or_reparse(&metadata) {
+            continue;
+        }
+        let relative = relative_workspace_path(canonical_root, entry.path())?;
+        if is_sensitive_traversal_path(&relative) {
+            continue;
+        }
+        paths.insert(relative);
+        if paths.len() >= max_entries {
+            break;
+        }
+    }
+    Ok(paths)
+}
+
+fn traversal_sensitive_count(
+    canonical_root: &Path,
+    search_root: &Path,
+    recursive: bool,
+    max_entries: usize,
+) -> Result<usize, EnvironmentError> {
+    let mut builder = ignore::WalkBuilder::new(search_root);
+    builder
+        .follow_links(false)
+        .hidden(false)
+        .ignore(false)
+        .git_ignore(false)
+        .git_exclude(false)
+        .git_global(false)
+        .parents(true)
+        .max_depth(if recursive { None } else { Some(1) });
+    let mut count = 0usize;
+    for (index, entry) in builder.build().enumerate() {
+        if index >= max_entries {
+            break;
+        }
+        let entry = entry.map_err(|error| EnvironmentError::Host(error.to_string()))?;
+        if entry.depth() == 0 {
+            continue;
+        }
+        let relative = relative_workspace_path(canonical_root, entry.path())?;
+        count += usize::from(is_sensitive_traversal_path(&relative));
+    }
+    Ok(count)
+}
+
+pub(crate) fn is_sensitive_traversal_path(path: &str) -> bool {
+    path.split('/').any(|component| {
+        let name = component.to_ascii_lowercase();
+        name == ".git"
+            || name == ".rove"
+            || name == ".env"
+            || name.starts_with(".env.")
+            || name.ends_with(".pem")
+            || name.ends_with(".key")
+            || matches!(
+                name.as_str(),
+                "credentials" | "credentials.json" | "id_rsa" | "id_ed25519"
+            )
+    })
+}
+
+fn direct_path_is_ignored(root: &Path, target: &Path) -> Result<bool, EnvironmentError> {
+    let mut ignored = false;
+    let mut ancestor = root.to_path_buf();
+    ignored = match_ignore_file(root, ".gitignore", target, false, ignored)?;
+    ignored = match_ignore_file(root, ".ignore", target, false, ignored)?;
+    let relative_parent = target
+        .parent()
+        .and_then(|parent| parent.strip_prefix(root).ok())
+        .unwrap_or_else(|| Path::new(""));
+    for component in relative_parent.components() {
+        ancestor.push(component.as_os_str());
+        ignored = match_ignore_file(&ancestor, ".gitignore", target, false, ignored)?;
+        ignored = match_ignore_file(&ancestor, ".ignore", target, false, ignored)?;
+    }
+    Ok(ignored)
+}
+
+fn match_ignore_file(
+    root: &Path,
+    file_name: &str,
+    target: &Path,
+    is_dir: bool,
+    current: bool,
+) -> Result<bool, EnvironmentError> {
+    let path = root.join(file_name);
+    if !path.is_file() {
+        return Ok(current);
+    }
+    let mut builder = ignore::gitignore::GitignoreBuilder::new(root);
+    if let Some(error) = builder.add(&path) {
+        return Err(EnvironmentError::Host(error.to_string()));
+    }
+    let matcher = builder
+        .build()
+        .map_err(|error| EnvironmentError::Host(error.to_string()))?;
+    let matched = matcher.matched_path_or_any_parents(target, is_dir);
+    Ok(if matched.is_ignore() {
+        true
+    } else if matched.is_whitelist() {
+        false
+    } else {
+        current
+    })
 }
 
 fn rove_runtime_hash_workspace(workspace: &Workspace) -> String {
     crate::context::prompt_metadata::workspace_fingerprint(workspace)
+}
+
+#[cfg(test)]
+mod productization_traversal_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn local_traversal_is_ignore_hidden_sensitive_and_sort_aware() {
+        let temp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(temp.path().join("src")).unwrap();
+        std::fs::create_dir_all(temp.path().join("ignored")).unwrap();
+        std::fs::create_dir_all(temp.path().join("also-ignored")).unwrap();
+        std::fs::create_dir_all(temp.path().join(".hidden")).unwrap();
+        std::fs::write(temp.path().join(".gitignore"), "ignored/\n").unwrap();
+        std::fs::write(temp.path().join(".ignore"), "also-ignored/\n").unwrap();
+        std::fs::write(temp.path().join("src/b.rs"), "b").unwrap();
+        std::fs::write(temp.path().join("src/a.rs"), "a").unwrap();
+        std::fs::write(temp.path().join("ignored/noise.rs"), "ignored").unwrap();
+        std::fs::write(temp.path().join("also-ignored/noise.rs"), "ignored").unwrap();
+        std::fs::write(temp.path().join(".hidden/note.rs"), "hidden").unwrap();
+        std::fs::write(temp.path().join(".env"), "SECRET=value").unwrap();
+        let filesystem = LocalFileSystem {
+            root: temp.path().to_path_buf(),
+        };
+
+        let default = filesystem
+            .traverse_entries(
+                None,
+                WorkspaceTraversalOptions {
+                    recursive: true,
+                    include_ignored: false,
+                    include_hidden: false,
+                },
+                100,
+            )
+            .await
+            .unwrap();
+        let paths = default
+            .entries
+            .iter()
+            .map(|entry| entry.relative_path.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(paths, {
+            let mut sorted = paths.clone();
+            sorted.sort();
+            sorted
+        });
+        assert!(!paths.contains(&"ignored/noise.rs"));
+        assert!(!paths.contains(&"also-ignored/noise.rs"));
+        assert!(!paths.contains(&".hidden/note.rs"));
+        assert!(!paths.contains(&".env"));
+        assert!(default.ignored_entries > 0);
+        assert!(default.hidden_entries > 0);
+        assert!(default.sensitive_entries > 0);
+
+        let opted_in = filesystem
+            .traverse_entries(
+                None,
+                WorkspaceTraversalOptions {
+                    recursive: true,
+                    include_ignored: true,
+                    include_hidden: true,
+                },
+                100,
+            )
+            .await
+            .unwrap();
+        let paths = opted_in
+            .entries
+            .iter()
+            .map(|entry| entry.relative_path.as_str())
+            .collect::<Vec<_>>();
+        assert!(paths.contains(&"ignored/noise.rs"));
+        assert!(paths.contains(&"also-ignored/noise.rs"));
+        assert!(paths.contains(&".hidden/note.rs"));
+        assert!(!paths.contains(&".env"));
+
+        let direct_sensitive = filesystem
+            .traverse_entries(
+                Some(".env"),
+                WorkspaceTraversalOptions {
+                    recursive: true,
+                    include_ignored: true,
+                    include_hidden: true,
+                },
+                100,
+            )
+            .await
+            .unwrap();
+        assert!(direct_sensitive.entries.is_empty());
+        assert_eq!(direct_sensitive.sensitive_entries, 1);
+
+        let direct_ignored = filesystem
+            .traverse_entries(
+                Some("also-ignored/noise.rs"),
+                WorkspaceTraversalOptions::default(),
+                100,
+            )
+            .await
+            .unwrap();
+        assert!(direct_ignored.entries.is_empty());
+        assert_eq!(direct_ignored.ignored_entries, 1);
+    }
 }

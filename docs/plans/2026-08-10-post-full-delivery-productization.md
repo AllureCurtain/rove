@@ -1,13 +1,15 @@
 # Post-Full-Delivery Productization Program
 
-> Status: **Proposed / Not Implemented; full-delivery baseline verified**
+> Status: **B/C/D implemented on `productization/runtime-intelligence`; A/E/F/G remain Proposed / Not Implemented**
 >
 > Verified baseline: Checkpoints 0-9 were delivered at `45143a5` and merged
 > through PR #30 as `4b740d3`. The machine-generated acceptance report was
 > produced from clean code commit `32ba252`: all 11 required checks passed,
 > with zero failures and zero required checks unrun. PR #31 merged the
-> whitespace-only documentation cleanup as `1b57b36`. The productization
-> workstreams below remain proposed and must not be described as implemented.
+> whitespace-only documentation cleanup as `1b57b36`. Workstreams B, C, and D
+> are implemented on this branch with focused negative tests. Workstreams A,
+> E, F, and G remain proposed and are not part of this branch's completion
+> claim.
 >
 > This is the single active productization brief after full-delivery. The dated
 > 2026-08-09 documents are current-state corrections, audit evidence,

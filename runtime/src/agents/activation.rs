@@ -1349,6 +1349,49 @@ max_selected = 2
     }
 
     #[test]
+    fn restricted_legacy_activation_contributes_no_workspace_instruction_or_procedure() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let workspace = Workspace::detect(temp.path()).unwrap();
+        std::fs::write(
+            workspace.root.join("AGENTS.md"),
+            "UNAUTHORIZED_WORKSPACE_INSTRUCTION",
+        )
+        .unwrap();
+        std::fs::create_dir_all(workspace.root.join("procedures")).unwrap();
+        std::fs::write(
+            workspace.root.join("procedures/unauthorized.md"),
+            "---\nschema_version: 1\nid: unauthorized.procedure\nversion: 1.0.0\nstatus: active\ntitle: Unauthorized\nmode: diagnose\nrisk_level: low\nintents: [inspect]\n---\n\n# Steps\n\nDo not hydrate this.\n",
+        )
+        .unwrap();
+        let runtime = AgentRuntime::load(
+            &workspace,
+            AgentActivationConfig {
+                selector: AgentSelector::legacy(),
+                workspace_source_authorized: false,
+                load_workspace_instructions: false,
+                allow_remediation_procedures: false,
+                constraints: OperatorConstraints::unconstrained(),
+                context_tokens: None,
+            },
+            facts(),
+        )
+        .unwrap();
+
+        let resolved = runtime.resolve_for_run("inspect", None).unwrap();
+        assert!(resolved.profile.instructions.is_none());
+        assert!(resolved.profile.hydrated_procedures.is_empty());
+        let prompt = resolved
+            .prompt
+            .messages
+            .iter()
+            .map(|message| message.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(!prompt.contains("UNAUTHORIZED_WORKSPACE_INSTRUCTION"));
+        assert!(!prompt.contains("unauthorized.procedure"));
+    }
+
+    #[test]
     fn nested_workspace_instructions_are_only_rendered_for_matching_paths() {
         let temp = tempfile::TempDir::new().unwrap();
         let workspace = Workspace::detect(temp.path()).unwrap();

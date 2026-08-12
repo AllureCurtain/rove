@@ -9,6 +9,16 @@ kernel; `core/src/agent.rs` supplies its in-memory embedding host;
 `AgentEvent` plus `Action`; and `core/src/parser.rs` owns the compatibility JSON
 action parser.
 
+Structured provider tool calls are authoritative. `ModelClient` exposes an
+explicit `compatibility_text_tool_calls()` opt-in, and only clients that require
+it (currently the `fake-raw` test profile) parse JSON text actions. Native
+OpenAI Completions/Responses, Anthropic, Ollama, and the default Fake client do
+not reinterpret ordinary assistant text as a tool call. Malformed opted-in
+payloads become typed `Action::Malformed` recoverable failures; they cannot be
+accepted as a terminal answer. Executor schema diagnostics are deterministic
+and identify the field, expected/received JSON types and value, and a bounded
+correction example.
+
 `rove-runtime` owns the durable execution surface: IDs, resumable
 task/checkpoint and execution-policy data, Workspace/path safety,
 prompt/runtime identity, approval/input contracts, canonical `StreamEvent`,
@@ -76,6 +86,24 @@ trimmable global history. This guarantees that the next model turn receives the
 current tool result even when the configured global history window is zero or
 older history is being compacted. When compaction changes the summary, the
 runner rebuilds the actual model prompt before issuing the turn.
+
+Every model turn also receives bounded runtime facts: provider mode, workspace
+and capability state, available tool names, active approval policy, execution
+bounds, and typed recovery behavior. Prompt component byte counts, profile
+identity, stable prefix/tool signatures, and cache identity are content
+addressed and remain stable for stable inputs. Restricted workspaces are
+tested to ensure project instructions and procedures do not activate without
+their independent trust capabilities.
+
+Tool history keeps the current tool round inline. Older repeated artifact-backed
+results project to deterministic `RichReference` blocks while the canonical
+`ToolArtifactStore` retains content, provenance, quota, MIME, sensitivity, and
+retention facts. Planned-step in-flight history is supplied through the required
+history path so it is not discarded by stable-prefix compaction. After resume or
+cleanup, `resolve_tool_artifact` resolves bounded UTF-8 ranges through the
+canonical authority and returns typed malformed, missing/expired, sensitive,
+non-text, or invalid-boundary failures. Provider history projection preserves
+tool-call/result pairing for every supported wire protocol.
 
 The engine now resolves the legacy `plan_enabled` and `max_steps` fields through
 the typed `runtime::execution::ExecutionPolicy` boundary before selecting a loop.

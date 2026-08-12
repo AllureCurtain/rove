@@ -240,7 +240,14 @@ Fallback can be configured as:
 - `provider.fallback_models`: model names using the primary provider;
 - `provider.fallback_profiles`: named target profiles.
 
-Native provider tool-use and JSON text action parsing are both supported. Native tool-use is preferred for real providers because it preserves provider IDs through `Message.tool_calls` and `tool_call_id` history. The JSON text path remains for fake and compatibility scenarios and is used only when a model turn emitted no native tool calls. Planned, unplanned, and embedded execution share the conversion in `core/src/model_turn.rs`; `runtime/src/engine/model_turn.rs` translates its `AgentEvent` values to durable `StreamEvent` values.
+Native provider tool-use is authoritative and preserves provider IDs through
+`Message.tool_calls` and `tool_call_id` history. JSON text action parsing is an
+explicit compatibility mode for clients that require it (currently the
+`fake-raw` fixture); the default Fake client and native providers leave it
+disabled. Planned, unplanned, and embedded execution share the conversion in
+`core/src/model_turn.rs`; `runtime/src/engine/model_turn.rs` translates its
+`AgentEvent` values to durable `StreamEvent` values. Malformed compatibility
+payloads become typed recoverable failures rather than terminal success.
 
 `RoutingModelClient` can fall back before user-visible content or committed tool-use begins. It tracks provider health with a failure threshold and cooldown. For each routed candidate, `routing.retry_max_attempts`, `routing.retry_backoff_base_ms`, and `routing.retry_backoff_max_ms` control retry behavior for retryable pre-commit failures; rate-limit `retry-after` values are honored directly. Auth and context-length errors are not retried, and once text or native tool-use has committed, no retry or fallback is attempted.
 
@@ -317,6 +324,16 @@ streams are drained or explicit termination completes. PTY is a
 registered typed unsupported capability. Observations, artifact projections,
 process identities, and workspace checkpoints are Engine-local and do not
 survive recreation or resume.
+
+Filesystem discovery shares one deterministic `WorkspaceTraversal` authority.
+Recursive listing, globbing, and search honor `.gitignore` and `.ignore`, sort
+lexically, never follow symlink/reparse boundaries, and report scanned, ignored,
+hidden, sensitive, link, and scan-truncation facts. `list_directory`,
+`glob_paths`, and `search_code` expose output-byte limits and typed continuation
+metadata. Globs support recursive `**`, braces, and character classes while
+rejecting absolute or escaping patterns. Search coalesces overlapping context
+ranges and charges exact serialized UTF-8 bytes; binary, non-UTF-8, oversized,
+missing, hidden, ignored, and sensitive inputs remain explicit bounded outcomes.
 
 MCP stdio transport is bounded by per-server policy. Initialize, list, and call requests time out; stderr is captured up to the configured diagnostic limit; JSON-RPC errors are mapped to structured tool execution failures; and child processes are killed and asynchronously reaped when their client is dropped, including Unix zombie cleanup without relying on the caller's Tokio runtime to remain active. `tests/mcp.rs` and `cargo test -p rove-integration-tests --test mcp` cover mock stdio registration, annotation safety, timeout/error/cleanup behavior, and include an opt-in real filesystem MCP smoke test gated by `ROVE_MCP_FILESYSTEM_SMOKE=1`.
 
@@ -512,6 +529,15 @@ appends one entry to the append-only `tool_artifacts.jsonl` ledger, and
 `expire_payload` removes bytes while retaining metadata, so a cleaned artifact
 stays as evidence that it existed rather than silently disappearing.
 
+Eligible local read/search/list/glob outputs are retained in this same durable
+store. Content-addressed writes deduplicate bytes while each call retains its
+own provenance. Context projection replaces only older duplicate payloads with
+deterministic `RichReference` blocks; the current round remains inline.
+`resolve_tool_artifact` performs bounded, capability-gated UTF-8 resolution and
+returns explicit malformed, missing/expired, sensitive, non-text, or invalid
+boundary outcomes after resume or cleanup. No second artifact database or
+observation lifecycle is introduced.
+
 Two `StreamEvent` variants report this to consumers: `ToolArtifactStored` and
 `ToolArtifactRejected`. Because the stream enum is matched exhaustively, adding
 them forced every consumer to state what it does with them.
@@ -592,7 +618,14 @@ same type; only base URL, key, and model differ.
 
 ## Workspace retrieval
 
-rove does not ship a built-in vector database. Agents retrieve workspace context with filesystem/shell tools and layered session/durable memory. Future semantic retrieval, if any, would be an optional external service and is not implemented.
+rove does not ship a built-in vector database. Agents retrieve workspace context
+with the ignore-aware filesystem tools (`read_file`, `list_directory`,
+`glob_paths`, and `search_code`) and layered session/durable file memory. The
+on-demand `repository_map` tool is bounded and content-addressed, and derives
+members only from verified Cargo/npm workspace manifests; README prose and
+unverified generated output are never promoted into the map. There is no vector
+DB, embedding index, LSP, auto-downloaded binary, or dependency on external
+`rg`/`fd` binaries.
 
 
 ## Web
