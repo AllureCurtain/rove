@@ -8,7 +8,7 @@ local-first single-user MVP.
 
 Included:
 
-- CLI one-shot and REPL runs, plus the optional bounded full-screen TUI.
+- CLI one-shot and explicit REPL runs, plus the default bounded full-screen TUI.
 - Local HTTP API with jobs, SSE, approvals, inputs, cancel, resume, and history.
 - Standalone Web product shell, plus the advanced
   `/dev/workbench`, backed by the local API.

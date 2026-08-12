@@ -12,10 +12,11 @@ This MVP is not a SaaS product, browser automation runtime, desktop automation r
 
 ## Included
 
-- CLI one-shot runs, line-oriented REPL, and the optional full-screen TUI with
+- CLI one-shot runs, explicit line-oriented `rove repl`, and the default
+  full-screen TUI with
   bounded approval/input interaction, session navigation/resume selection,
   tool-detail/help overlays, chronological visible timeline, resize handling,
-  and terminal restoration (`rove tui --model fake`). Non-Windows terminals
+  and terminal restoration (bare `rove`; explicit alias `rove tui`). Non-Windows terminals
   with keyboard enhancement use direct `Y`/`Enter` actions; Windows uses the
   non-text `F8` confirmation/submission path. Unsupported terminals retain the
   basic TUI and fail closed for live interaction. Unix PTY smoke is opt-in;

@@ -34,9 +34,10 @@ fn rove_bin() -> PathBuf {
 }
 
 #[test]
-fn no_args_accepts_exit_command_and_exits_zero() {
+fn repl_subcommand_accepts_exit_command_and_exits_zero() {
     let tmp = tempfile::TempDir::new().unwrap();
     let output = Command::new(rove_bin())
+        .arg("repl")
         .arg("--cwd")
         .arg(tmp.path())
         .arg("--model")
@@ -73,6 +74,7 @@ fn no_args_accepts_exit_command_and_exits_zero() {
 fn repl_status_command_prints_runtime_context() {
     let tmp = tempfile::TempDir::new().unwrap();
     let output = Command::new(rove_bin())
+        .arg("repl")
         .arg("--cwd")
         .arg(tmp.path())
         .arg("--model")
@@ -112,6 +114,7 @@ fn repl_status_command_prints_runtime_context() {
 fn repl_fake_run_uses_compact_sections() {
     let tmp = tempfile::TempDir::new().unwrap();
     let output = Command::new(rove_bin())
+        .arg("repl")
         .arg("--cwd")
         .arg(tmp.path())
         .arg("--model")

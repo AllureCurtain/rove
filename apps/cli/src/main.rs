@@ -89,19 +89,11 @@ async fn async_main(args: Args) -> anyhow::Result<()> {
             unreachable!("provider commands are handled before runtime startup")
         }
         Some(Command::Tui) => {
-            let (interaction, interaction_rx) = TuiInteractionBroker::default().into_parts();
-            let runtime = build_runtime_with_interaction(
-                &args,
-                None,
-                CliRuntimeInteraction::Providers {
-                    input_provider: Some(interaction.input_provider),
-                    approval_provider: Some(interaction.approval_provider),
-                },
-            )
-            .await?;
-            let resume_state =
-                resolve_resume_state(&runtime.state_store, args.resume.as_deref()).await?;
-            return tui_app::run(runtime, resume_state, interaction_rx).await;
+            return run_tui(&args).await;
+        }
+        Some(Command::Repl) => {
+            let runtime = build_runtime(&args, None).await?;
+            return repl::run(runtime, None).await;
         }
         Some(Command::Exec { message }) => {
             let message = join_message(message);
@@ -113,9 +105,27 @@ async fn async_main(args: Args) -> anyhow::Result<()> {
     }
 
     let message = args.message();
+    if message.is_none() {
+        return run_tui(&args).await;
+    }
     let runtime = build_runtime(&args, message.as_ref()).await?;
 
     repl::run(runtime, message).await
+}
+
+async fn run_tui(args: &Args) -> anyhow::Result<()> {
+    let (interaction, interaction_rx) = TuiInteractionBroker::default().into_parts();
+    let runtime = build_runtime_with_interaction(
+        args,
+        None,
+        CliRuntimeInteraction::Providers {
+            input_provider: Some(interaction.input_provider),
+            approval_provider: Some(interaction.approval_provider),
+        },
+    )
+    .await?;
+    let resume_state = resolve_resume_state(&runtime.state_store, args.resume.as_deref()).await?;
+    tui_app::run(runtime, resume_state, interaction_rx).await
 }
 
 async fn build_runtime(

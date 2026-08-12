@@ -126,10 +126,16 @@ and untracked files may be user work.
 
 ### 5.1 CLI with no network
 
-Interactive:
+Default full-screen TUI:
 
 ```powershell
 cargo run -p rove-cli -- --model fake
+```
+
+Line-oriented REPL:
+
+```powershell
+cargo run -p rove-cli -- repl --model fake
 ```
 
 One initial prompt:
@@ -715,8 +721,9 @@ documents are partially implemented design records.
 
 - [Grok Build reference and TUI direction](design/2026-07-16-grok-build-reference-and-tui-design.md)
 
-This design is implemented at the bounded single-session TUI MVP: `rove tui`
-preserves the existing REPL and `rove exec` contracts and supports bounded,
+This design is implemented at the bounded single-session TUI MVP. Bare `rove`
+starts the TUI, `rove tui` remains an explicit alias, and `rove repl` preserves
+the line-oriented interface. The TUI supports bounded,
 fail-closed approval/input modals, session navigation/resume selection, bounded
 tool detail, keymap-derived help, a canonical-order visible timeline, and
 terminal setup/restore hardening. Non-Windows terminals with keyboard-event

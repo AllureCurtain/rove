@@ -4,7 +4,7 @@
 
 User-facing terminal product:
 
-- CLI arguments, one-shot/exec, REPL
+- CLI arguments, default full-screen TUI, one-shot/exec, explicit `repl`
 - sessions/state maintenance commands
 - terminal rendering and full-screen TUI
 - default-run `rove` binary
@@ -43,6 +43,8 @@ assert!(!registry.descriptors().is_empty());
 ```powershell
 cargo test -p rove-cli
 cargo run -p rove-cli -- --help
+cargo run -p rove-cli -- --model fake
+cargo run -p rove-cli -- repl --model fake
 cargo run -p rove-cli -- --model fake "echo hello"
 cargo run -p rove-cli -- --trust-project --model fake "use project tools"
 cargo test -p rove-integration-tests --test cli_repl

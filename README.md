@@ -76,6 +76,8 @@ release and external-interoperability limits remain explicit under
 
 | Step | User action | Product behavior |
 |---|---|---|
+| Step | User action | Product behavior |
+|---|---|---|
 | 1. Open | Select a Folder or Repo | Rove binds an exact canonical workspace root |
 | 2. Trust | Review project capabilities | Project config, instructions, MCP, hooks, credentials, and external paths remain deferred until explicitly granted |
 | 3. Configure | Choose Fake or a provider profile | Raw keys stay in the server/Desktop process environment, never browser state |
@@ -150,13 +152,19 @@ release and external-interoperability limits remain explicit under
 cargo run -p rove-cli -- --model fake "echo hello from rove"
 ~~~
 
-Interactive REPL:
+Start the full-screen TUI:
 
 ~~~powershell
 cargo run -p rove-cli -- --model fake
 ~~~
 
-Non-interactive execution:
+Start the line-oriented REPL:
+
+~~~powershell
+cargo run -p rove-cli -- repl --model fake
+~~~
+
+Run a non-interactive prompt:
 
 ~~~powershell
 cargo run -p rove-cli -- exec --model fake "inspect this workspace"
@@ -241,6 +249,21 @@ Then open **Settings -> Providers**, create a profile, set the key reference to
 Official services and compatible gateways use the same profile types; only
 endpoint, model, and credential reference differ. Settings mutates the same
 user catalog with revision/CAS protection; the browser never receives the key.
+
+For the installed terminal product, configure a named provider profile once,
+then launch the full-screen interface from the directory to work in:
+
+~~~powershell
+cargo install --path apps/cli
+cd D:\path\to\workspace
+rove
+~~~
+
+`cargo install --path apps/cli` builds and installs the `rove` executable; it
+does not install this workspace's Rust dependency libraries. The selected real
+provider and model come from the normal configuration layers, so `rove` does
+not require a repeated `--model` flag. Keep credentials in referenced
+environment variables, not in `.rove/config.toml`.
 
 See [Provider smoke testing](docs/runtime/provider-smoke.md) for CLI/config
 examples and honest external-service gates.

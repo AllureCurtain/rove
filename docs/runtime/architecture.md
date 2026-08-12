@@ -71,7 +71,7 @@ embed-only for libraries and tests; it is not the product default entry.
 
 The interface layers are shells. They detect the workspace, load a config snapshot, construct tools and providers, then consume the same engine events.
 
-The optional full-screen TUI adds only a presentation shell around that path:
+The default full-screen TUI adds only a presentation shell around that path:
 `EventStream -> TuiAction -> reducer -> shared Engine`, followed by an awaited
 bounded run-update sink into Ratatui. Approval and input providers additionally
 register process-local responders through a bounded channel; the TUI exposes a

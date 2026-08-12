@@ -21,7 +21,7 @@ member is `apps/cli`, with independent packages `rove-models`, `rove-core`,
 ## 1. Runtime Shape
 
 `rove` is a local-first agent runtime with three user-facing shells. The CLI
-offers REPL, exec, and optional full-screen TUI modes:
+offers a default full-screen TUI plus explicit REPL and exec modes:
 
 ```text
 CLI (REPL / exec / TUI) / API / Web
@@ -359,19 +359,19 @@ High-level flow in `src/main.rs`:
     credential reference, freeze a secret-free `RunModelSnapshot`, and build a
     fresh `RunAssembly` containing the model client and `Engine` for that turn.
 12. Persist canonical events and artifacts through the stable `StateStore`.
-14. If `tui` is present, split a bounded interaction broker into providers for
+14. If `tui` is present, or no message and no subcommand are present, split a
+    bounded interaction broker into providers for
     the shared Engine and one receiver for the alternate-screen application
     loop.
 15. If `exec <message>` is present, run the non-interactive exec backend.
 16. If a bare message argument is present, enter the rich terminal REPL and
     submit that message as the first prompt.
-17. If no message and no subcommand are present, enter the rich terminal REPL
-    and wait for input.
+17. If `repl` is present, enter the rich terminal REPL and wait for input.
 
 Interactive REPL smoke command:
 
 ```powershell
-cargo run -p rove-cli -- --model fake
+cargo run -p rove-cli -- repl --model fake
 ```
 
 Interactive REPL with an initial prompt:
@@ -396,9 +396,9 @@ cargo run -p rove-cli -- exec --model fake inspect this workspace
 
 `Cargo.toml` sets `default-run = "rove"`, so plain `cargo run -p rove-cli -- ...` uses the CLI binary.
 
-Running `rove` with no task enters the rich scrollback terminal REPL in the
-current terminal. Startup prints the active workspace, model, provider, state
-directory, session status, and common commands:
+Running `rove repl` enters the rich scrollback terminal REPL in the current
+terminal. Startup prints the active workspace, model, provider, state directory,
+session status, and common commands:
 
 ```text
 rove
@@ -419,7 +419,7 @@ advanced `/dev/workbench` retains direct run history/report inspection.
 
 The compact REPL is backed by a terminal view/action layer. `StreamEvent` values
 are first projected into terminal view updates and accumulated into view state;
-the current REPL renders those updates as line-oriented output. The optional TUI
+the current REPL renders those updates as line-oriented output. The default TUI
 uses the same projection and run-artifact path without adding a second engine
 loop or persistence format.
 
@@ -430,9 +430,11 @@ and programmatic deterministic tests remain explicit offline paths.
 
 ### Full-screen TUI
 
-The current full-screen TUI is available with:
+The current full-screen TUI is the default no-argument interface. `tui` remains
+an explicit alias:
 
 ```powershell
+cargo run -p rove-cli -- --model fake
 cargo run -p rove-cli -- tui --model fake
 ```
 

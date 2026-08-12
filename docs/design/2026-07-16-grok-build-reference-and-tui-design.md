@@ -11,6 +11,11 @@
 > fail closed。Unix 提供 opt-in PTY smoke；Windows 只会明确 skip，因为仓库尚无
 > native ConPTY 自动化。本文仍不是完整当前运行时说明。
 > 当前事实仍以 [`docs/runtime/`](../runtime/README.md) 为准。
+>
+> **Entry-point update (2026-08-12):** the bounded TUI became the bare `rove`
+> default. `rove tui` remains an explicit alias, while `rove repl` preserves
+> the earlier line-oriented interface. This replaces the original optional-TUI
+> entry decision below without changing the shared runtime design.
 
 ## 1. 决策摘要
 

@@ -60,6 +60,7 @@ impl Args {
 
     pub fn is_tui(&self) -> bool {
         matches!(self.command, Some(Command::Tui))
+            || (self.command.is_none() && self.message().is_none())
     }
 
     pub fn message(&self) -> Option<String> {
@@ -85,6 +86,8 @@ pub enum Command {
     DumpConfig,
     /// Start the full-screen terminal interface.
     Tui,
+    /// Start the line-oriented terminal REPL.
+    Repl,
     /// Run a prompt non-interactively and exit.
     Exec {
         /// The task or question to give the agent.
@@ -277,12 +280,13 @@ mod tests {
     }
 
     #[test]
-    fn no_args_enters_async_cli_path() {
+    fn no_args_selects_tui_async_path() {
         let args = Args::parse_from(["rove"]);
 
         assert!(args.message().is_none());
         assert!(args.command.is_none());
         assert!(!args.is_sync_fast_path());
+        assert!(args.is_tui());
     }
 
     #[test]
@@ -293,6 +297,16 @@ mod tests {
         assert!(matches!(args.command, Some(Command::Tui)));
         assert_eq!(args.model.as_deref(), Some("fake"));
         assert!(matches!(args.approval, CliApprovalPolicy::Never));
+        assert!(args.message().is_none());
+    }
+
+    #[test]
+    fn repl_subcommand_selects_line_oriented_interface() {
+        let args = Args::parse_from(["rove", "repl", "--model", "fake"]);
+
+        assert!(matches!(args.command, Some(Command::Repl)));
+        assert_eq!(args.model.as_deref(), Some("fake"));
+        assert!(!args.is_tui());
         assert!(args.message().is_none());
     }
 
