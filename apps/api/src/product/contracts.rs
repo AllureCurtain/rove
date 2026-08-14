@@ -275,6 +275,63 @@ pub enum ProductControlStatus {
     Revoked,
 }
 
+/// Canonical product-facing delivery state for a user message. The legacy
+/// control rows remain the storage representation during migration; this
+/// projection is the only state exposed by the unified composer contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductMessageStatus {
+    Queued,
+    InterventionRequested,
+    AppliedCurrentRun,
+    ClaimedSuccessor,
+    NeedsAttention,
+    Revoked,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductMessageDelivery {
+    Successor,
+    CurrentRun,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductMessage {
+    pub id: ProductControlId,
+    pub product_session_id: ProductSessionId,
+    pub content: String,
+    pub requested_delivery: ProductMessageDelivery,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actual_delivery: Option<ProductMessageDelivery>,
+    pub status: ProductMessageStatus,
+    pub seq: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>, format = "ulid")]
+    pub run_id: Option<RunId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>, format = "ulid")]
+    pub successor_run_id: Option<RunId>,
+    pub created_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub applied_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CreateProductMessageRequest {
+    pub content: String,
+    #[serde(default)]
+    pub idempotency_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductMessagesResponse {
+    pub messages: Vec<ProductMessage>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ProductControl {
     pub id: ProductControlId,
@@ -1796,6 +1853,41 @@ pub trait ProductStore: Send + Sync {
         kind: ProductControlKind,
         request: CreateProductControlRequest,
     ) -> Result<(ProductControl, bool /* already_existed */), ProductStoreError>;
+
+    /// Durably accept one product message and atomically classify its default
+    /// delivery from the server-owned session state. The returned control row
+    /// is the compatibility storage projection of the same message identity.
+    async fn create_message(
+        &self,
+        session_id: &ProductSessionId,
+        request: CreateProductMessageRequest,
+    ) -> Result<(ProductMessage, bool /* already_existed */), ProductStoreError>;
+
+    /// Promote a still-queued successor message to the current run. This CAS
+    /// races the terminal successor claim inside the same SQLite authority.
+    async fn promote_message(
+        &self,
+        session_id: &ProductSessionId,
+        message_id: &ProductControlId,
+    ) -> Result<ProductMessage, ProductStoreError>;
+
+    /// Idempotently revoke a still-queued or needs-attention message.
+    async fn revoke_message(
+        &self,
+        session_id: &ProductSessionId,
+        message_id: &ProductControlId,
+    ) -> Result<ProductMessage, ProductStoreError>;
+
+    async fn list_messages(
+        &self,
+        session_id: &ProductSessionId,
+    ) -> Result<Vec<ProductMessage>, ProductStoreError>;
+
+    async fn get_message(
+        &self,
+        session_id: &ProductSessionId,
+        message_id: &ProductControlId,
+    ) -> Result<ProductMessage, ProductStoreError>;
 
     async fn list_controls(
         &self,

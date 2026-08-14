@@ -14,6 +14,7 @@ use rove_app_bootstrap::{
 use rove_core::ToolRegistry;
 use rove_models::fake::FakeModelClient;
 use rove_models::health::{HealthConfig, ModelHealthStore};
+use rove_runtime::conversation::{MessageDomainService, SqliteMessageRepository};
 use rove_runtime::engine::Engine;
 use rove_runtime::environment::{ExecutionEnvironment, local_environment};
 use rove_runtime::state::store::StateStore;
@@ -73,6 +74,7 @@ pub struct CliRuntime {
     pub state_store: StateStore,
     pub provider_catalog: ProviderCatalogService,
     pub session_selections: SessionSelectionStore,
+    pub message_service: MessageDomainService,
     tool_registry: ToolRegistry,
     environment: Arc<dyn ExecutionEnvironment>,
     model_health: Arc<ModelHealthStore>,
@@ -340,6 +342,11 @@ pub async fn build_cli_runtime(options: CliRuntimeOptions) -> anyhow::Result<Cli
         config.sqlite_path(),
         config.state.sqlite_busy_timeout_ms,
     );
+    state_store.index.initialize()?;
+    let message_service = MessageDomainService::new(Arc::new(SqliteMessageRepository::new(
+        state_store.index.path(),
+        state_store.index.busy_timeout_ms(),
+    )));
     let model_health = Arc::new(ModelHealthStore::with_persistence(
         HealthConfig {
             failure_threshold: config.routing.failure_threshold,
@@ -355,6 +362,7 @@ pub async fn build_cli_runtime(options: CliRuntimeOptions) -> anyhow::Result<Cli
         state_store,
         provider_catalog: ProviderCatalogService::discover(),
         session_selections,
+        message_service,
         tool_registry,
         environment,
         model_health,

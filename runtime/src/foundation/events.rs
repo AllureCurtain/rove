@@ -295,6 +295,19 @@ pub enum StreamEvent {
     /// the ProductStore with status `abandoned` until the user revokes or
     /// explicitly restarts.
     FollowupAbandoned { id: String, reason: String },
+
+    /// One unified product message was durably accepted for FIFO delivery.
+    MessageQueued { id: String, content: String },
+    /// The same queued identity won the CAS race for current-run delivery.
+    MessageInterventionRequested { id: String },
+    /// Harness included the intervention in a successfully-polled model turn.
+    MessageAppliedCurrentRun { id: String },
+    /// The terminal transition claimed this message for one successor turn.
+    MessageClaimedSuccessor { id: String },
+    /// Delivery stopped at an ambiguous or failed boundary and needs recovery.
+    MessageNeedsAttention { id: String, reason: String },
+    /// The still-eligible message was revoked through the durable authority.
+    MessageRevoked { id: String },
 }
 
 impl StreamEvent {
@@ -341,6 +354,12 @@ impl StreamEvent {
             Self::FollowupQueued { .. } => "followup_queued",
             Self::FollowupDequeued { .. } => "followup_dequeued",
             Self::FollowupAbandoned { .. } => "followup_abandoned",
+            Self::MessageQueued { .. } => "message_queued",
+            Self::MessageInterventionRequested { .. } => "message_intervention_requested",
+            Self::MessageAppliedCurrentRun { .. } => "message_applied_current_run",
+            Self::MessageClaimedSuccessor { .. } => "message_claimed_successor",
+            Self::MessageNeedsAttention { .. } => "message_needs_attention",
+            Self::MessageRevoked { .. } => "message_revoked",
         }
     }
 }

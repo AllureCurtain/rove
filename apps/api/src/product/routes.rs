@@ -762,6 +762,183 @@ pub(crate) async fn create_product_session_followup(
     create_control(state, session_id, ProductControlKind::Followup, body).await
 }
 
+#[utoipa::path(
+    post,
+    path = "/product/sessions/{session_id}/messages",
+    tag = docs::PRODUCT_TAG,
+    security(("BearerAuth" = [])),
+    params(("session_id" = String, Path, description = "Product session ULID")),
+    request_body = CreateProductMessageRequest,
+    responses(
+        (status = 201, description = "Message durably accepted", body = ProductMessage),
+        (status = 200, description = "Idempotent replay", body = ProductMessage),
+        (status = 400, description = "Invalid input", body = ApiErrorResponse),
+        (status = 404, description = "Product session not found", body = ApiErrorResponse),
+        (status = 409, description = "Idempotency conflict", body = ApiErrorResponse),
+    )
+)]
+pub(crate) async fn create_product_session_message(
+    State(state): State<ApiState>,
+    Path(session_id): Path<ProductSessionId>,
+    body: Result<Json<CreateProductMessageRequest>, JsonRejection>,
+) -> Result<(StatusCode, Json<ProductMessage>), ApiError> {
+    let request = product_json(body)?;
+    let store = state.product_store()?;
+    let live = live_product_job(&state, &session_id).await;
+    let lifecycle = match &live {
+        Some(record) => Some(record.control_lifecycle_lock.lock().await),
+        None => None,
+    };
+    let service = super::message_adapter::service(store.clone());
+    let content = request.content.clone();
+    let mutation = service
+        .send(
+            session_id.as_str(),
+            rove_runtime::conversation::SendMessageCommand {
+                content,
+                idempotency_key: request.idempotency_key.clone(),
+                session_state: match live.as_ref() {
+                    Some(_) => rove_runtime::conversation::SessionDeliveryState::Active,
+                    None => rove_runtime::conversation::SessionDeliveryState::Idle,
+                },
+                target_run_id: live.as_ref().map(|record| record.run_id),
+            },
+        )
+        .await
+        .map_err(super::message_adapter::map_domain_error)?;
+    let already_exists = mutation.replayed;
+    let message = store
+        .get_message(
+            &session_id,
+            &mutation
+                .message
+                .id
+                .parse()
+                .map_err(|_| ApiError::bad_request("invalid message id"))?,
+        )
+        .await?;
+    if !already_exists && message.status == ProductMessageStatus::Queued {
+        if let Some(record) = live.as_ref() {
+            crate::queue_or_publish_product_control_event(
+                record,
+                rove_runtime::events::StreamEvent::MessageQueued {
+                    id: message.id.to_string(),
+                    content: message.content.clone(),
+                },
+            )
+            .await;
+        } else {
+            try_start_idle_followup(&state, &session_id).await;
+        }
+    }
+    drop(lifecycle);
+    Ok((
+        if already_exists {
+            StatusCode::OK
+        } else {
+            StatusCode::CREATED
+        },
+        Json(message),
+    ))
+}
+
+#[utoipa::path(
+    get,
+    path = "/product/sessions/{session_id}/messages",
+    tag = docs::PRODUCT_TAG,
+    security(("BearerAuth" = [])),
+    params(("session_id" = String, Path)),
+    responses((status = 200, description = "Unified messages", body = ProductMessagesResponse))
+)]
+pub(crate) async fn list_product_session_messages(
+    State(state): State<ApiState>,
+    Path(session_id): Path<ProductSessionId>,
+) -> Result<Json<ProductMessagesResponse>, ApiError> {
+    Ok(Json(ProductMessagesResponse {
+        messages: state.product_store()?.list_messages(&session_id).await?,
+    }))
+}
+
+#[utoipa::path(
+    post,
+    path = "/product/sessions/{session_id}/messages/{message_id}/promote",
+    tag = docs::PRODUCT_TAG,
+    security(("BearerAuth" = [])),
+    params(("session_id" = String, Path), ("message_id" = String, Path)),
+    responses((status = 200, description = "Intervention requested", body = ProductMessage))
+)]
+pub(crate) async fn promote_product_session_message(
+    State(state): State<ApiState>,
+    Path((session_id, message_id)): Path<(ProductSessionId, ProductControlId)>,
+) -> Result<Json<ProductMessage>, ApiError> {
+    let live = live_product_job(&state, &session_id).await;
+    let Some(record) = live else {
+        return Err(ApiError::conflict_with_code(
+            ProductErrorCode::ProductControlRejected.as_str(),
+            "message can only be promoted while its session turn is active",
+        ));
+    };
+    let _lifecycle = record.control_lifecycle_lock.lock().await;
+    let store = state.product_store()?;
+    let service = super::message_adapter::service(store.clone());
+    let _promoted = service
+        .promote(session_id.as_str(), message_id.as_str())
+        .await
+        .map_err(super::message_adapter::map_domain_error)?;
+    let message = store.get_message(&session_id, &message_id).await?;
+    let handle = record.control.lock().await.clone();
+    let accepted = handle.is_some_and(|handle| {
+        handle.try_send_steer(rove_runtime::engine::SteerMessage::for_message(
+            message.id.as_str(),
+            message.content.clone(),
+        ))
+    });
+    if !accepted {
+        let _ = store
+            .transition_control(
+                &session_id,
+                &message_id,
+                ProductControlStatus::Pending,
+                ProductControlStatus::Abandoned,
+                Some(&record.run_id),
+            )
+            .await;
+        return Ok(Json(store.get_message(&session_id, &message_id).await?));
+    }
+    Ok(Json(message))
+}
+
+#[utoipa::path(
+    post,
+    path = "/product/sessions/{session_id}/messages/{message_id}/revoke",
+    tag = docs::PRODUCT_TAG,
+    security(("BearerAuth" = [])),
+    params(("session_id" = String, Path), ("message_id" = String, Path)),
+    responses((status = 200, description = "Message revoked", body = ProductMessage))
+)]
+pub(crate) async fn revoke_product_session_message(
+    State(state): State<ApiState>,
+    Path((session_id, message_id)): Path<(ProductSessionId, ProductControlId)>,
+) -> Result<Json<ProductMessage>, ApiError> {
+    let store = state.product_store()?;
+    let service = super::message_adapter::service(store.clone());
+    let _revoked = service
+        .revoke(session_id.as_str(), message_id.as_str())
+        .await
+        .map_err(super::message_adapter::map_domain_error)?;
+    let message = store.get_message(&session_id, &message_id).await?;
+    if let Some(record) = live_product_job(&state, &session_id).await {
+        crate::queue_or_publish_product_control_event(
+            &record,
+            rove_runtime::events::StreamEvent::MessageRevoked {
+                id: message.id.to_string(),
+            },
+        )
+        .await;
+    }
+    Ok(Json(message))
+}
+
 async fn create_control(
     state: ApiState,
     session_id: ProductSessionId,

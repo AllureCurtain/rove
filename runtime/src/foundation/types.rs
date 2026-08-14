@@ -68,6 +68,16 @@ pub struct TaskState {
     pub execution_lifecycle: crate::execution::ExecutionLifecycleState,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MessageDeliveryRecord {
+    pub id: String,
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_run_id: Option<RunId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
 /// Resumable prompt checkpoint used to rebuild context without replaying the full audit history.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PromptCheckpoint {
@@ -95,6 +105,8 @@ pub struct PromptCheckpoint {
     pub step_ledger: crate::execution::StepLedgerCheckpoint,
     #[serde(default)]
     pub execution_lifecycle: crate::execution::ExecutionLifecycleCheckpoint,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub message_deliveries: Vec<MessageDeliveryRecord>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

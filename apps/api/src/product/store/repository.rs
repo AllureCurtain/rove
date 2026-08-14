@@ -10,7 +10,7 @@ use rove_runtime::types::{JobId, RunId, SessionId};
 
 use crate::product::{
     CommitProductRunBinding, CreateProductControlRequest, CreateProductForkRequest,
-    CreateProductProviderProfileRequest, CreateProductSessionRequest,
+    CreateProductMessageRequest, CreateProductProviderProfileRequest, CreateProductSessionRequest,
     CreateProductWorkspaceRequest, DEFAULT_PRODUCT_MAX_STEPS, M1BrowserMigrationPreflight,
     M1BrowserMigrationResponse, M1MigrationDisposition, M1MigrationIssue, M1MigrationIssueCode,
     M1PreferencesBaseline, M1ProviderProfileIdMapping, M1SessionIdMapping, M1WorkspaceIdMapping,
@@ -18,10 +18,10 @@ use crate::product::{
     MAX_PRODUCT_SESSIONS, MAX_PRODUCT_TEXT_BYTES, MAX_PRODUCT_WORKSPACES,
     PreparedM1BrowserMigration, ProductApprovalPreference, ProductControl, ProductControlId,
     ProductControlKind, ProductControlStatus, ProductErrorCode, ProductFollowupTurnClaim,
-    ProductFork, ProductForkContext, ProductForkId, ProductForkInheritedRun,
-    ProductMigrationReceiptId, ProductPreferences, ProductPricingAvailability,
-    ProductProviderProfile, ProductProviderProfileId, ProductProviderSelection,
-    ProductProviderType, ProductReasoningPreference, ProductResumeHealth,
+    ProductFork, ProductForkContext, ProductForkId, ProductForkInheritedRun, ProductMessage,
+    ProductMessageDelivery, ProductMessageStatus, ProductMigrationReceiptId, ProductPreferences,
+    ProductPricingAvailability, ProductProviderProfile, ProductProviderProfileId,
+    ProductProviderSelection, ProductProviderType, ProductReasoningPreference, ProductResumeHealth,
     ProductResumeHealthStatus, ProductRuntimeBinding, ProductSession, ProductSessionContext,
     ProductSessionId, ProductSessionModelConfig, ProductSessionRunBinding,
     ProductSessionRunModelView, ProductSessionStatus, ProductStoreError, ProductThemePreference,
@@ -48,6 +48,33 @@ const MIGRATION_PREPARATION_TTL_SECS: i64 = 24 * 60 * 60;
 // steers within this capacity guarantees a run attaching after an HTTP/API
 // race can inject every pending message at its first declared safe point.
 const MAX_PENDING_STEERS_PER_SESSION: i64 = 64;
+
+fn validate_control_message(
+    content: &str,
+    idempotency_key: Option<&str>,
+) -> Result<(), ProductStoreError> {
+    if content.is_empty() {
+        return Err(ProductStoreError::new(
+            ProductErrorCode::ProductInvalidInput,
+            "message content must not be empty",
+        ));
+    }
+    if content.len() > 32_768 {
+        return Err(ProductStoreError::new(
+            ProductErrorCode::ProductInvalidInput,
+            "message content exceeds the 32KiB limit",
+        ));
+    }
+    if let Some(key) = idempotency_key
+        && (key.is_empty() || key.len() > 128)
+    {
+        return Err(ProductStoreError::new(
+            ProductErrorCode::ProductInvalidInput,
+            "idempotency_key must be 1..128 characters",
+        ));
+    }
+    Ok(())
+}
 
 #[derive(Debug, Clone)]
 pub(super) struct ProductRepository {
@@ -1702,26 +1729,7 @@ impl ProductRepository {
         request: CreateProductControlRequest,
     ) -> Result<(ProductControl, bool), ProductStoreError> {
         let content = request.content.trim();
-        if content.is_empty() {
-            return Err(ProductStoreError::new(
-                ProductErrorCode::ProductInvalidInput,
-                "control content must not be empty",
-            ));
-        }
-        if content.len() > 32_768 {
-            return Err(ProductStoreError::new(
-                ProductErrorCode::ProductInvalidInput,
-                "control content exceeds the 32KiB limit",
-            ));
-        }
-        if let Some(key) = request.idempotency_key.as_deref()
-            && (key.is_empty() || key.len() > 128)
-        {
-            return Err(ProductStoreError::new(
-                ProductErrorCode::ProductInvalidInput,
-                "idempotency_key must be 1..128 characters",
-            ));
-        }
+        validate_control_message(content, request.idempotency_key.as_deref())?;
 
         let mut connection = self.database.connect()?;
         let transaction = immediate_transaction(&mut connection)?;
@@ -1819,6 +1827,257 @@ impl ProductRepository {
         };
         transaction.commit().map_err(storage_error)?;
         Ok((control, false))
+    }
+
+    pub(super) fn create_message(
+        &self,
+        session_id: &ProductSessionId,
+        request: CreateProductMessageRequest,
+    ) -> Result<(ProductMessage, bool), ProductStoreError> {
+        let content = request.content.trim();
+        validate_control_message(content, request.idempotency_key.as_deref())?;
+        let mut connection = self.database.connect()?;
+        let transaction = immediate_transaction(&mut connection)?;
+        let session = get_session(&transaction, session_id)?;
+        let digest = rove_runtime::context::stable_hash(content);
+        if let Some(key) = request.idempotency_key.as_deref()
+            && let Some(existing) = transaction
+                .query_row(
+                    r#"
+                    SELECT control_id, product_session_id, kind, idempotency_key, content,
+                           status, run_id, seq, created_at, applied_at
+                    FROM product_session_controls
+                    WHERE product_session_id = ?1 AND idempotency_key = ?2
+                    "#,
+                    params![session_id.to_string(), key],
+                    row_to_control,
+                )
+                .optional()
+                .map_err(storage_error)?
+        {
+            if existing.content != content {
+                return Err(ProductStoreError::new(
+                    ProductErrorCode::ProductControlConflict,
+                    "idempotency_key already exists with different message content",
+                ));
+            }
+            let contract_version: i64 = transaction
+                .query_row(
+                    r#"
+                    SELECT message_contract_version
+                    FROM product_session_controls
+                    WHERE product_session_id = ?1 AND control_id = ?2
+                    "#,
+                    params![session_id.to_string(), existing.id.to_string()],
+                    |row| row.get(0),
+                )
+                .map_err(storage_error)?;
+            if contract_version != 1 {
+                return Err(ProductStoreError::new(
+                    ProductErrorCode::ProductControlConflict,
+                    "idempotency_key belongs to a legacy control, not a product message",
+                ));
+            }
+            let message = get_message_in_transaction(&transaction, session_id, &existing.id)?;
+            transaction.commit().map_err(storage_error)?;
+            return Ok((message, true));
+        }
+        let pending_count: i64 = transaction
+            .query_row(
+                r#"
+                SELECT COUNT(*) FROM product_session_controls
+                WHERE product_session_id = ?1
+                  AND message_contract_version = 1
+                  AND status IN ('pending', 'accepted')
+                "#,
+                params![session_id.to_string()],
+                |row| row.get(0),
+            )
+            .map_err(storage_error)?;
+        if pending_count >= MAX_PENDING_STEERS_PER_SESSION {
+            return Err(ProductStoreError::new(
+                ProductErrorCode::ProductControlRejected,
+                "message queue is full",
+            ));
+        }
+        let control_id = ProductControlId::new();
+        let seq: i64 = transaction
+            .query_row(
+                "SELECT COALESCE(MAX(seq), 0) + 1 FROM product_session_controls WHERE product_session_id = ?1",
+                params![session_id.to_string()],
+                |row| row.get(0),
+            )
+            .map_err(storage_error)?;
+        let now = now_rfc3339();
+        let (status, reason) = match session.status {
+            ProductSessionStatus::Idle | ProductSessionStatus::Running => ("pending", None),
+            ProductSessionStatus::Error | ProductSessionStatus::NeedsAttention => (
+                "abandoned",
+                Some("session requires an explicit recovery decision"),
+            ),
+            ProductSessionStatus::Archived => {
+                return Err(invalid("archived product sessions cannot accept messages"));
+            }
+        };
+        transaction
+            .execute(
+                r#"
+                INSERT INTO product_session_controls(
+                    control_id, product_session_id, kind, idempotency_key,
+                    request_digest, content, status, seq, abandoned_reason,
+                    created_at, message_contract_version, requested_delivery
+                ) VALUES (?1, ?2, 'followup', ?3, ?4, ?5, ?6, ?7, ?8, ?9, 1, 'successor')
+                "#,
+                params![
+                    control_id.to_string(),
+                    session_id.to_string(),
+                    request.idempotency_key,
+                    digest,
+                    content,
+                    status,
+                    seq,
+                    reason,
+                    now,
+                ],
+            )
+            .map_err(storage_error)?;
+        let message = get_message_in_transaction(&transaction, session_id, &control_id)?;
+        transaction.commit().map_err(storage_error)?;
+        Ok((message, false))
+    }
+
+    pub(super) fn promote_message(
+        &self,
+        session_id: &ProductSessionId,
+        message_id: &ProductControlId,
+    ) -> Result<ProductMessage, ProductStoreError> {
+        let mut connection = self.database.connect()?;
+        let transaction = immediate_transaction(&mut connection)?;
+        let session = get_session(&transaction, session_id)?;
+        if session.status != ProductSessionStatus::Running
+            || !has_active_claim_for_session(&transaction, session_id)?
+        {
+            return Err(ProductStoreError::new(
+                ProductErrorCode::ProductControlRejected,
+                "message can only be promoted while its session turn is active",
+            ));
+        }
+        let existing = get_control_in_transaction(&transaction, session_id, message_id)?;
+        if existing.kind != ProductControlKind::Followup
+            || existing.status != ProductControlStatus::Pending
+        {
+            return Err(ProductStoreError::new(
+                ProductErrorCode::ProductControlRejected,
+                "message is no longer eligible for promotion",
+            ));
+        }
+        let changed = transaction
+            .execute(
+                r#"
+                UPDATE product_session_controls
+                SET kind = 'steer', message_contract_version = 1,
+                    requested_delivery = 'current_run'
+                WHERE product_session_id = ?1 AND control_id = ?2 AND status = 'pending'
+                "#,
+                params![session_id.to_string(), message_id.to_string()],
+            )
+            .map_err(storage_error)?;
+        if changed != 1 {
+            return Err(ProductStoreError::new(
+                ProductErrorCode::ProductControlRejected,
+                "message promotion lost its compare-and-set race",
+            ));
+        }
+        let updated = get_message_in_transaction(&transaction, session_id, message_id)?;
+        transaction.commit().map_err(storage_error)?;
+        Ok(updated)
+    }
+
+    pub(super) fn revoke_message(
+        &self,
+        session_id: &ProductSessionId,
+        message_id: &ProductControlId,
+    ) -> Result<ProductMessage, ProductStoreError> {
+        let mut connection = self.database.connect()?;
+        let transaction = immediate_transaction(&mut connection)?;
+        let existing = get_control_in_transaction(&transaction, session_id, message_id)?;
+        if existing.status == ProductControlStatus::Revoked {
+            let message = get_message_in_transaction(&transaction, session_id, message_id)?;
+            transaction.commit().map_err(storage_error)?;
+            return Ok(message);
+        }
+        if matches!(
+            existing.status,
+            ProductControlStatus::Accepted
+                | ProductControlStatus::Applied
+                | ProductControlStatus::Dropped
+        ) {
+            return Err(ProductStoreError::new(
+                ProductErrorCode::ProductControlRejected,
+                "message already has a terminal or claimed delivery outcome",
+            ));
+        }
+        let changed = transaction
+            .execute(
+                r#"
+                UPDATE product_session_controls
+                SET status = 'revoked'
+                WHERE product_session_id = ?1 AND control_id = ?2
+                  AND status IN ('pending', 'abandoned')
+                "#,
+                params![session_id.to_string(), message_id.to_string()],
+            )
+            .map_err(storage_error)?;
+        if changed != 1 {
+            return Err(ProductStoreError::new(
+                ProductErrorCode::ProductControlRejected,
+                "message revoke lost its compare-and-set race",
+            ));
+        }
+        let updated = get_message_in_transaction(&transaction, session_id, message_id)?;
+        transaction.commit().map_err(storage_error)?;
+        Ok(updated)
+    }
+
+    pub(super) fn list_messages(
+        &self,
+        session_id: &ProductSessionId,
+    ) -> Result<Vec<ProductMessage>, ProductStoreError> {
+        let mut connection = self.database.connect()?;
+        let transaction = connection.transaction().map_err(storage_error)?;
+        get_session(&transaction, session_id)?;
+        let messages = {
+            let mut statement = transaction
+                .prepare(
+                    r#"
+                    SELECT control_id, product_session_id, content, status, run_id, seq,
+                           created_at, applied_at, abandoned_reason, requested_delivery
+                    FROM product_session_controls
+                    WHERE product_session_id = ?1 AND message_contract_version = 1
+                    ORDER BY seq ASC
+                    "#,
+                )
+                .map_err(storage_error)?;
+            statement
+                .query_map(params![session_id.to_string()], row_to_message)
+                .map_err(storage_error)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(storage_error)?
+        };
+        transaction.commit().map_err(storage_error)?;
+        Ok(messages)
+    }
+
+    pub(super) fn get_message(
+        &self,
+        session_id: &ProductSessionId,
+        message_id: &ProductControlId,
+    ) -> Result<ProductMessage, ProductStoreError> {
+        let mut connection = self.database.connect()?;
+        let transaction = connection.transaction().map_err(storage_error)?;
+        let message = get_message_in_transaction(&transaction, session_id, message_id)?;
+        transaction.commit().map_err(storage_error)?;
+        Ok(message)
     }
 
     pub(super) fn list_controls(
@@ -6004,6 +6263,110 @@ fn row_to_control(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProductControl> {
             seq,
             created_at,
             applied_at,
+        })
+    })();
+    mapped.map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(
+            0,
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::other(error.message)),
+        )
+    })
+}
+
+fn get_message_in_transaction(
+    transaction: &Transaction<'_>,
+    session_id: &ProductSessionId,
+    message_id: &ProductControlId,
+) -> Result<ProductMessage, ProductStoreError> {
+    transaction
+        .query_row(
+            r#"
+            SELECT control_id, product_session_id, content, status, run_id, seq,
+                   created_at, applied_at, abandoned_reason, requested_delivery
+            FROM product_session_controls
+            WHERE product_session_id = ?1 AND control_id = ?2
+              AND message_contract_version = 1
+            "#,
+            params![session_id.to_string(), message_id.to_string()],
+            row_to_message,
+        )
+        .optional()
+        .map_err(storage_error)?
+        .ok_or_else(|| not_found("message not found"))
+}
+
+fn row_to_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProductMessage> {
+    let id: String = row.get(0)?;
+    let product_session_id: String = row.get(1)?;
+    let content: String = row.get(2)?;
+    let status: String = row.get(3)?;
+    let run_id: Option<String> = row.get(4)?;
+    let seq: i64 = row.get(5)?;
+    let created_at: String = row.get(6)?;
+    let applied_at: Option<String> = row.get(7)?;
+    let persisted_reason: Option<String> = row.get(8)?;
+    let requested_delivery: String = row.get(9)?;
+    let mapped = (|| {
+        let stored_status = control_status_from_db(&status)?;
+        let requested_delivery = match requested_delivery.as_str() {
+            "successor" => ProductMessageDelivery::Successor,
+            "current_run" => ProductMessageDelivery::CurrentRun,
+            _ => {
+                return Err(ProductStoreError::new(
+                    ProductErrorCode::ProductStorageFailure,
+                    "persisted product message delivery is invalid",
+                ));
+            }
+        };
+        let run_id = run_id
+            .as_deref()
+            .map(|value| parse_runtime_id(value, "message run id"))
+            .transpose()?;
+        let status = match stored_status {
+            ProductControlStatus::Pending => match requested_delivery {
+                ProductMessageDelivery::Successor => ProductMessageStatus::Queued,
+                ProductMessageDelivery::CurrentRun => ProductMessageStatus::InterventionRequested,
+            },
+            ProductControlStatus::Accepted => match requested_delivery {
+                ProductMessageDelivery::Successor => ProductMessageStatus::ClaimedSuccessor,
+                ProductMessageDelivery::CurrentRun => ProductMessageStatus::InterventionRequested,
+            },
+            ProductControlStatus::Applied => match requested_delivery {
+                ProductMessageDelivery::Successor => ProductMessageStatus::ClaimedSuccessor,
+                ProductMessageDelivery::CurrentRun => ProductMessageStatus::AppliedCurrentRun,
+            },
+            ProductControlStatus::Dropped | ProductControlStatus::Abandoned => {
+                ProductMessageStatus::NeedsAttention
+            }
+            ProductControlStatus::Revoked => ProductMessageStatus::Revoked,
+        };
+        Ok::<_, ProductStoreError>(ProductMessage {
+            id: parse_product_id(&id, "message id")?,
+            product_session_id: parse_product_id(&product_session_id, "product session id")?,
+            content,
+            requested_delivery,
+            actual_delivery: matches!(
+                status,
+                ProductMessageStatus::AppliedCurrentRun | ProductMessageStatus::ClaimedSuccessor
+            )
+            .then_some(requested_delivery),
+            status,
+            seq,
+            run_id: (requested_delivery == ProductMessageDelivery::CurrentRun)
+                .then_some(run_id)
+                .flatten(),
+            successor_run_id: (requested_delivery == ProductMessageDelivery::Successor)
+                .then_some(run_id)
+                .flatten(),
+            created_at,
+            applied_at,
+            reason: match status {
+                ProductMessageStatus::NeedsAttention => persisted_reason.or_else(|| {
+                    Some("message delivery requires an explicit recovery decision".to_string())
+                }),
+                _ => persisted_reason,
+            },
         })
     })();
     mapped.map_err(|error| {

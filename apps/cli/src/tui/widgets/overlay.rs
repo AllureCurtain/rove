@@ -9,6 +9,7 @@ use crate::tui::keymap::key_bindings;
 use crate::tui::state::{
     ModelPickerState, SessionPickerState, ToolDetailEntry, ToolDetailState, TuiOverlay,
 };
+use rove_runtime::conversation::MessageStatus;
 
 const MAX_OVERLAY_WIDTH: u16 = 96;
 const MAX_OVERLAY_HEIGHT: u16 = 26;
@@ -25,6 +26,7 @@ pub(crate) fn render_overlay(frame: &mut Frame<'_>, overlay: &TuiOverlay, viewpo
         TuiOverlay::ModelPicker(_) => Color::Green,
         TuiOverlay::ToolDetail(_) => Color::Blue,
         TuiOverlay::Help(_) => Color::Magenta,
+        TuiOverlay::MessageQueue(_) => Color::Yellow,
     };
     let block = Block::default()
         .borders(Borders::ALL)
@@ -50,6 +52,59 @@ pub(crate) fn render_overlay(frame: &mut Frame<'_>, overlay: &TuiOverlay, viewpo
             let max_scroll = u16::try_from(max_scroll).unwrap_or(u16::MAX);
             let paragraph = paragraph.scroll((help.scroll.min(max_scroll), 0));
             frame.render_widget(paragraph, inner);
+        }
+        TuiOverlay::MessageQueue(queue) => {
+            let (body, footer) = split_footer(inner);
+            let mut lines = Vec::new();
+            if queue.messages.is_empty() {
+                lines.push(Line::styled(
+                    "No durable messages in this session.",
+                    Style::default().fg(Color::DarkGray),
+                ));
+            } else {
+                let visible = usize::from(body.height).max(1);
+                let start = queue
+                    .selected
+                    .saturating_add(1)
+                    .saturating_sub(visible)
+                    .min(queue.messages.len().saturating_sub(visible));
+                for (index, message) in queue.messages.iter().enumerate().skip(start).take(visible)
+                {
+                    let selected = index == queue.selected;
+                    let marker = if selected { ">" } else { " " };
+                    let status = match message.status {
+                        MessageStatus::Queued => "queued",
+                        MessageStatus::InterventionRequested => "promoted",
+                        MessageStatus::AppliedCurrentRun => "applied",
+                        MessageStatus::ClaimedSuccessor => "successor",
+                        MessageStatus::NeedsAttention => "attention",
+                        MessageStatus::Revoked => "revoked",
+                    };
+                    let style = if selected {
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::White)
+                    };
+                    lines.push(Line::from(vec![
+                        Span::styled(format!("{marker} {:<10} ", status), style),
+                        Span::styled(
+                            crate::tui::sanitize::sanitize_display_text(&message.content, 160),
+                            style,
+                        ),
+                    ]));
+                }
+            }
+            frame.render_widget(
+                Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }),
+                body,
+            );
+            frame.render_widget(
+                Paragraph::new("Up/Down select  P promote  X revoke  Esc close")
+                    .style(Style::default().fg(Color::Yellow)),
+                footer,
+            );
         }
     }
 }

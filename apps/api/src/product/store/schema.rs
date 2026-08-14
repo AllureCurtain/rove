@@ -6,7 +6,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 use crate::product::{ProductErrorCode, ProductStoreError};
 
-const CURRENT_SCHEMA_VERSION: i64 = 12;
+const CURRENT_SCHEMA_VERSION: i64 = 13;
 const MAX_BUSY_TIMEOUT_MS: u64 = 120_000;
 
 const MIGRATION_001: &str = r#"
@@ -428,7 +428,7 @@ CREATE INDEX IF NOT EXISTS idx_project_trust_state
     ON project_trust_records(state, updated_at DESC);
 "#;
 
-const MIGRATION_012: &str = r#"
+const MIGRATION_012_PROVIDER_CATALOG: &str = r#"
 CREATE TABLE IF NOT EXISTS product_provider_profile_catalog_mappings (
     source TEXT NOT NULL,
     source_profile_id TEXT NOT NULL,
@@ -553,6 +553,7 @@ fn apply_migrations(connection: &mut Connection) -> Result<(), ProductStoreError
     apply_migration_010(connection)?;
     apply_migration_011(connection)?;
     apply_migration_012(connection)?;
+    apply_migration_013(connection)?;
     Ok(())
 }
 
@@ -940,15 +941,56 @@ fn apply_migration_012(connection: &mut Connection) -> Result<(), ProductStoreEr
         transaction.commit().map_err(|_| database_error(true))?;
         return Ok(());
     }
+    reconcile_productization_schema(&transaction)?;
     transaction
-        .execute_batch(MIGRATION_012)
+        .execute(
+            "INSERT INTO product_schema_migrations(version, name, applied_at) VALUES (?1, ?2, ?3)",
+            params![
+                12,
+                "parallel_productization_workstreams",
+                super::repository::now_rfc3339()
+            ],
+        )
         .map_err(|_| database_error(true))?;
-    if table_exists(&transaction, "product_provider_profiles")? {
+    transaction.commit().map_err(|_| database_error(true))?;
+    Ok(())
+}
+
+fn apply_migration_013(connection: &mut Connection) -> Result<(), ProductStoreError> {
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|_| database_error(true))?;
+    if migration_is_applied(&transaction, 13)? {
+        transaction.commit().map_err(|_| database_error(true))?;
+        return Ok(());
+    }
+    reconcile_productization_schema(&transaction)?;
+    transaction
+        .execute(
+            "INSERT INTO product_schema_migrations(version, name, applied_at) VALUES (?1, ?2, ?3)",
+            params![
+                13,
+                "productization_integration_reconciliation",
+                super::repository::now_rfc3339()
+            ],
+        )
+        .map_err(|_| database_error(true))?;
+    transaction.commit().map_err(|_| database_error(true))?;
+    Ok(())
+}
+
+fn reconcile_productization_schema(
+    transaction: &rusqlite::Transaction<'_>,
+) -> Result<(), ProductStoreError> {
+    transaction
+        .execute_batch(MIGRATION_012_PROVIDER_CATALOG)
+        .map_err(|_| database_error(true))?;
+    if table_exists(transaction, "product_provider_profiles")? {
         transaction
             .execute_batch(MIGRATION_012_LEGACY_PROVIDER_MAPPINGS)
             .map_err(|_| database_error(true))?;
     }
-    if table_exists(&transaction, "product_session_run_models")? {
+    if table_exists(transaction, "product_session_run_models")? {
         for (column, declaration) in [
             ("provider_type", "TEXT"),
             ("wire_protocol", "TEXT"),
@@ -956,7 +998,7 @@ fn apply_migration_012(connection: &mut Connection) -> Result<(), ProductStoreEr
             ("catalog_revision", "TEXT"),
             ("safe_config_digest", "TEXT"),
         ] {
-            if !table_has_column(&transaction, "product_session_run_models", column)? {
+            if !table_has_column(transaction, "product_session_run_models", column)? {
                 transaction
                     .execute_batch(&format!(
                         "ALTER TABLE product_session_run_models ADD COLUMN {column} {declaration};"
@@ -965,17 +1007,35 @@ fn apply_migration_012(connection: &mut Connection) -> Result<(), ProductStoreEr
             }
         }
     }
-    transaction
-        .execute(
-            "INSERT INTO product_schema_migrations(version, name, applied_at) VALUES (?1, ?2, ?3)",
-            params![
-                12,
-                "provider_catalog_mapping",
-                super::repository::now_rfc3339()
-            ],
-        )
-        .map_err(|_| database_error(true))?;
-    transaction.commit().map_err(|_| database_error(true))?;
+    if table_exists(transaction, "product_session_controls")? {
+        if !table_has_column(
+            transaction,
+            "product_session_controls",
+            "message_contract_version",
+        )? {
+            transaction
+                .execute_batch(
+                    "ALTER TABLE product_session_controls ADD COLUMN message_contract_version INTEGER NOT NULL DEFAULT 0 CHECK(message_contract_version IN (0, 1));",
+                )
+                .map_err(|_| database_error(true))?;
+        }
+        if !table_has_column(
+            transaction,
+            "product_session_controls",
+            "requested_delivery",
+        )? {
+            transaction
+                .execute_batch(
+                    "ALTER TABLE product_session_controls ADD COLUMN requested_delivery TEXT CHECK(requested_delivery IS NULL OR requested_delivery IN ('successor', 'current_run'));",
+                )
+                .map_err(|_| database_error(true))?;
+        }
+        transaction
+            .execute_batch(
+                "CREATE INDEX IF NOT EXISTS idx_product_session_messages_delivery ON product_session_controls(product_session_id, message_contract_version, requested_delivery, status, seq);",
+            )
+            .map_err(|_| database_error(true))?;
+    }
     Ok(())
 }
 

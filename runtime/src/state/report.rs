@@ -8,6 +8,7 @@ use crate::execution::{
 };
 use crate::prompt_metadata::PromptBuildMetadata;
 use crate::runtime_identity::RuntimeIdentity;
+use crate::types::MessageDeliveryRecord;
 use crate::types::{JobId, RunId, SessionId, TerminationReason};
 use crate::workspace::WorkspaceKind;
 use rove_core::{
@@ -60,6 +61,8 @@ pub struct RunReport {
     /// the fact rather than looking like the tool returned nothing.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rejected_tool_artifacts: Vec<ReportArtifactRejection>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub message_deliveries: Vec<MessageDeliveryRecord>,
     pub output: Option<String>,
     pub timestamp: String,
 }
@@ -151,6 +154,7 @@ impl RunReport {
             final_outcome: None,
             tool_artifacts: Vec::new(),
             rejected_tool_artifacts: Vec::new(),
+            message_deliveries: Vec::new(),
             output: None,
             timestamp: chrono::Utc::now().to_rfc3339(),
         }

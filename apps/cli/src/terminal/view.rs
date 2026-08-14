@@ -88,6 +88,12 @@ pub enum RunTimelineEntryKind {
         input_id: CallId,
         prompt: String,
     },
+    MessageDelivery {
+        id: String,
+        content: Option<String>,
+        status: MessageDeliveryStatus,
+        reason: Option<String>,
+    },
     Compaction {
         mode: rove_runtime::types::PromptCompactionMode,
         source_message_count: usize,
@@ -101,6 +107,16 @@ pub enum RunTimelineEntryKind {
         reason: TerminationReason,
         output: Option<String>,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MessageDeliveryStatus {
+    Queued,
+    InterventionRequested,
+    AppliedCurrentRun,
+    ClaimedSuccessor,
+    NeedsAttention,
+    Revoked,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -158,6 +174,12 @@ pub enum RunViewUpdate {
     InputNeeded {
         input_id: CallId,
         prompt: String,
+    },
+    MessageDelivery {
+        id: String,
+        content: Option<String>,
+        status: MessageDeliveryStatus,
+        reason: Option<String>,
     },
     PlanCreated {
         plan: TaskPlan,
@@ -565,6 +587,7 @@ impl RunViewState {
                         .push(PendingInputView { input_id, prompt });
                 }
             }
+            RunViewUpdate::MessageDelivery { .. } => {}
             RunViewUpdate::PlanCreated { plan, revision } => {
                 self.plan = Some(plan);
                 if let Some(revision) = revision
@@ -739,6 +762,17 @@ impl RunViewState {
             RunViewUpdate::InputNeeded { input_id, prompt } => Some(RunTimelineEntryKind::Input {
                 input_id: *input_id,
                 prompt: bounded_visible_text(prompt),
+            }),
+            RunViewUpdate::MessageDelivery {
+                id,
+                content,
+                status,
+                reason,
+            } => Some(RunTimelineEntryKind::MessageDelivery {
+                id: bounded_visible_text(id),
+                content: content.as_deref().map(bounded_visible_text),
+                status: *status,
+                reason: reason.as_deref().map(bounded_visible_text),
             }),
             RunViewUpdate::PlanCreated { plan, .. } => Some(RunTimelineEntryKind::Plan {
                 goal: bounded_visible_text(&plan.goal),
@@ -1287,6 +1321,42 @@ impl From<&StreamEvent> for RunViewUpdate {
             StreamEvent::FollowupAbandoned { reason, .. } => Self::ModelStatus {
                 status: "follow-up".to_string(),
                 message: format!("Follow-up needs confirmation: {reason}"),
+            },
+            StreamEvent::MessageQueued { id, content } => Self::MessageDelivery {
+                id: id.clone(),
+                content: Some(content.clone()),
+                status: MessageDeliveryStatus::Queued,
+                reason: None,
+            },
+            StreamEvent::MessageInterventionRequested { id } => Self::MessageDelivery {
+                id: id.clone(),
+                content: None,
+                status: MessageDeliveryStatus::InterventionRequested,
+                reason: None,
+            },
+            StreamEvent::MessageAppliedCurrentRun { id } => Self::MessageDelivery {
+                id: id.clone(),
+                content: None,
+                status: MessageDeliveryStatus::AppliedCurrentRun,
+                reason: None,
+            },
+            StreamEvent::MessageClaimedSuccessor { id } => Self::MessageDelivery {
+                id: id.clone(),
+                content: None,
+                status: MessageDeliveryStatus::ClaimedSuccessor,
+                reason: None,
+            },
+            StreamEvent::MessageNeedsAttention { id, reason } => Self::MessageDelivery {
+                id: id.clone(),
+                content: None,
+                status: MessageDeliveryStatus::NeedsAttention,
+                reason: Some(reason.clone()),
+            },
+            StreamEvent::MessageRevoked { id } => Self::MessageDelivery {
+                id: id.clone(),
+                content: None,
+                status: MessageDeliveryStatus::Revoked,
+                reason: None,
             },
         }
     }

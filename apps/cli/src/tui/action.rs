@@ -4,6 +4,7 @@ use crate::tui::state::{
 };
 use crate::tui::state::{ModelCandidate, ModelPickerError};
 use rove_app_bootstrap::ModelSelection;
+use rove_runtime::conversation::{ConversationMessage, MessageDomainError};
 use rove_runtime::types::{CallId, RunId};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,6 +30,7 @@ pub enum TuiAction {
     OpenSessionPicker,
     OpenToolDetail,
     OpenHelp,
+    OpenMessageQueue,
     CloseOverlay,
     OverlayNext,
     OverlayPrevious,
@@ -49,6 +51,17 @@ pub enum TuiAction {
     },
     ModelSelectionFailed {
         error: ModelPickerError,
+    },
+    PromoteSelectedMessage,
+    RevokeSelectedMessage,
+    MessagesLoaded {
+        messages: Vec<ConversationMessage>,
+    },
+    MessageUpdated {
+        message: ConversationMessage,
+    },
+    MessageOperationFailed {
+        error: MessageDomainError,
     },
     SessionsLoaded {
         candidates: Vec<ResumeCandidate>,

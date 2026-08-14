@@ -374,6 +374,7 @@ mod tests {
             agent_profile: None,
             step_ledger: Default::default(),
             execution_lifecycle: Default::default(),
+            message_deliveries: Vec::new(),
         }
     }
 

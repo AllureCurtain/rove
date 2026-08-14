@@ -2,13 +2,14 @@
 
 import {
   CheckIcon,
+  ArrowUpIcon,
   ChevronDownIcon,
   CodeIcon,
   Cross2Icon,
   FileIcon,
   LockClosedIcon,
 } from "@radix-ui/react-icons";
-import { FormEvent, useEffect, useRef, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import type {
   ToolCallView,
@@ -21,9 +22,16 @@ import {
 } from "../state/transcript-projection";
 import { DiffView } from "../product-v2/DiffView";
 import { RichText } from "../product-v2/RichText";
+import type { ProductMessage } from "../product/product-api-types";
+
+const INITIAL_VISIBLE_RUNS = 24;
+const RUN_PAGE_SIZE = 16;
 
 export function Transcript({
   timeline,
+  messages = [],
+  messageBusy = null,
+  canPromote = false,
   approvalBusy,
   inputBusy,
   restoreState,
@@ -31,8 +39,13 @@ export function Transcript({
   onStartNewSession,
   onApproval,
   onInputSubmit,
+  onPromoteMessage = () => {},
+  onRevokeMessage = () => {},
 }: {
   timeline: TranscriptRunGroup[];
+  messages?: ProductMessage[];
+  messageBusy?: string | null;
+  canPromote?: boolean;
   approvalBusy: string | null;
   inputBusy: string | null;
   restoreState: TranscriptRestoreState;
@@ -40,24 +53,53 @@ export function Transcript({
   onStartNewSession: () => void;
   onApproval: (tool: ToolCallView, decision: "approve" | "reject") => void;
   onInputSubmit: (inputId: string, answer: string) => void;
+  onPromoteMessage?: (messageId: string) => void;
+  onRevokeMessage?: (messageId: string) => void;
 }) {
-  const itemCount = timeline.reduce((total, group) => total + group.items.length, 0);
+  const [visibleRunCount, setVisibleRunCount] = useState(INITIAL_VISIBLE_RUNS);
+  const visibleTimeline = useMemo(
+    () => timeline.slice(Math.max(0, timeline.length - visibleRunCount)),
+    [timeline, visibleRunCount],
+  );
+  const hiddenRunCount = Math.max(0, timeline.length - visibleTimeline.length);
+  const itemCount = visibleTimeline.reduce((total, group) => total + group.items.length, 0)
+    + messages.length;
   const transcriptRef = useRef<HTMLDivElement>(null);
-  const previousItemCountRef = useRef(0);
+  const prependHeightRef = useRef<number | null>(null);
   const [atLatest, setAtLatest] = useState(true);
 
   useEffect(() => {
     const transcript = transcriptRef.current;
-    const previousItemCount = previousItemCountRef.current;
-    previousItemCountRef.current = itemCount;
-    if (!transcript || !atLatest || itemCount < previousItemCount) {
+    if (!transcript) {
       return;
     }
-    const frame = window.requestAnimationFrame(() => {
-      transcript.scrollTop = transcript.scrollHeight;
+    const observer = new ResizeObserver(() => {
+      if (prependHeightRef.current !== null) {
+        transcript.scrollTop += transcript.scrollHeight - prependHeightRef.current;
+        prependHeightRef.current = null;
+      } else if (atLatest) {
+        transcript.scrollTop = transcript.scrollHeight;
+      }
     });
-    return () => window.cancelAnimationFrame(frame);
-  }, [atLatest, itemCount]);
+    const content = transcript.firstElementChild ?? transcript;
+    observer.observe(content);
+    if (atLatest) {
+      transcript.scrollTop = transcript.scrollHeight;
+    }
+    return () => observer.disconnect();
+  }, [atLatest]);
+
+  useEffect(() => {
+    setVisibleRunCount(INITIAL_VISIBLE_RUNS);
+  }, [restoreState.status === "idle" ? "idle" : restoreState.sessionId]);
+
+  function loadOlderRuns() {
+    const transcript = transcriptRef.current;
+    if (transcript) {
+      prependHeightRef.current = transcript.scrollHeight;
+    }
+    setVisibleRunCount((count) => Math.min(timeline.length, count + RUN_PAGE_SIZE));
+  }
 
   function syncScrollPosition() {
     const transcript = transcriptRef.current;
@@ -89,16 +131,22 @@ export function Transcript({
         aria-relevant="additions text"
         onScroll={syncScrollPosition}
       >
-        <RestoreNotice
-          state={restoreState}
-          onRetry={onRetryRestore}
-          onStartNewSession={onStartNewSession}
-        />
-        {itemCount === 0 &&
-        (restoreState.status === "complete" || restoreState.status === "idle") ? (
-          <p className="transcript-empty">Send a message to start a run in this session.</p>
-        ) : null}
-        {timeline.map((group) => (
+        <div className="chat-transcript__content">
+          <RestoreNotice
+            state={restoreState}
+            onRetry={onRetryRestore}
+            onStartNewSession={onStartNewSession}
+          />
+          {hiddenRunCount > 0 ? (
+            <button type="button" className="load-older-turns" onClick={loadOlderRuns}>
+              Load {Math.min(RUN_PAGE_SIZE, hiddenRunCount)} older turns
+            </button>
+          ) : null}
+          {itemCount === 0 &&
+          (restoreState.status === "complete" || restoreState.status === "idle") ? (
+            <p className="transcript-empty">Send a message to start a run in this session.</p>
+          ) : null}
+          {visibleTimeline.map((group) => (
           <section
             key={group.id}
             className="transcript-run"
@@ -129,7 +177,18 @@ export function Transcript({
               />
             ))}
           </section>
-        ))}
+          ))}
+          {messages.map((message) => (
+            <QueuedMessage
+              key={message.id}
+              message={message}
+              busy={messageBusy !== null}
+              canPromote={canPromote}
+              onPromote={onPromoteMessage}
+              onRevoke={onRevokeMessage}
+            />
+          ))}
+        </div>
       </div>
       {!atLatest && itemCount > 0 ? (
         <button type="button" className="return-to-latest" onClick={returnToLatest}>
@@ -138,6 +197,59 @@ export function Transcript({
       ) : null}
     </div>
   );
+}
+
+function QueuedMessage({
+  message,
+  busy,
+  canPromote,
+  onPromote,
+  onRevoke,
+}: {
+  message: ProductMessage;
+  busy: boolean;
+  canPromote: boolean;
+  onPromote: (messageId: string) => void;
+  onRevoke: (messageId: string) => void;
+}) {
+  const promotable = message.status === "queued" && canPromote;
+  const revocable = message.status === "queued" || message.status === "needs_attention";
+  return (
+    <article className="chat-bubble queued-message" data-role="user" data-status={message.status}>
+      <div className="message-byline">
+        <strong>You</strong>
+        <span>{messageStatusLabel(message.status)}</span>
+      </div>
+      <RichText content={message.content} />
+      {message.reason ? <p className="queued-message__reason">{message.reason}</p> : null}
+      {promotable || revocable ? (
+        <div className="queued-message__actions">
+          {promotable ? (
+            <button type="button" className="secondary" disabled={busy} onClick={() => onPromote(message.id)}>
+              <ArrowUpIcon />
+              Apply to current run
+            </button>
+          ) : null}
+          {revocable ? (
+            <button type="button" className="icon-button" disabled={busy} onClick={() => onRevoke(message.id)} aria-label="Revoke message" title="Revoke message">
+              <Cross2Icon />
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+    </article>
+  );
+}
+
+function messageStatusLabel(status: ProductMessage["status"]): string {
+  switch (status) {
+    case "queued": return "queued for the next turn";
+    case "intervention_requested": return "intervention requested";
+    case "applied_current_run": return "applied to current run";
+    case "claimed_successor": return "claimed for successor turn";
+    case "needs_attention": return "needs attention";
+    case "revoked": return "revoked";
+  }
 }
 
 function TranscriptItem({

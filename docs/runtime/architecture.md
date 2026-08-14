@@ -49,6 +49,14 @@ API product control plane
     -> exact product-session -> runtime session/job/run bindings
     -> bounded live steer delivery + durable follow-up drain
     -> transcript read projection over per-workspace StateStore events
+
+Unified conversation control
+    -> rove-runtime::conversation::MessageDomainService
+    -> API ProductStore adapter / Runtime SQLite adapter / TUI in-process adapter
+    -> one durable FIFO identity with CAS promotion, successor claim, revoke,
+       and needs-attention recovery
+    -> canonical message events are persisted in the existing trace/SSE path;
+       no second event log or queue authority is introduced
 ```
 
 Product shells assemble and run `rove-runtime::Engine`. `rove-core::Agent` is

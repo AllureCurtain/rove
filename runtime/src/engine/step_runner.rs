@@ -5,6 +5,7 @@ use futures::stream::BoxStream;
 use tokio_util::sync::CancellationToken;
 
 use crate::compaction::maybe_compact_history;
+use crate::engine::control::{AcceptedSteer, steer_accepted_event};
 use crate::events::StreamEvent;
 use crate::execution::ExecutionBudgetDimension;
 use crate::memory::session::append_session_notes_to_dir_sync;
@@ -39,7 +40,7 @@ pub(crate) struct StepRunnerInput {
     pub compaction: crate::compaction::CompactionRuntime,
     /// Steers accepted before this runner started. Steers arriving while the
     /// step is running are accepted at its internal model-turn safe points.
-    pub accepted_steer_ids: Vec<String>,
+    pub accepted_steer_ids: Vec<AcceptedSteer>,
     pub max_model_turns: u32,
     pub max_tool_calls: u32,
     pub max_repairs: u32,
@@ -249,7 +250,7 @@ struct StepKernelHost<'a> {
     compact_summary: Option<String>,
     history: Vec<Message>,
     compaction: Option<crate::compaction::CompactionRuntime>,
-    pending_steer_ids: Vec<String>,
+    pending_steer_ids: Vec<AcceptedSteer>,
     max_total_tokens: Option<u64>,
     active_instruction_target: ActiveInstructionTarget,
 }
@@ -279,17 +280,17 @@ impl AgentKernelHost for StepKernelHost<'_> {
             if let Some(rx) = self.ctx.steer_rx.as_ref() {
                 let mut receiver = rx.lock().await;
                 while let Ok(steer) = receiver.try_recv() {
-                    let id = steer.id.0;
+                    let accepted = AcceptedSteer {
+                        id: steer.id.0.clone(),
+                        unified_message: steer.unified_message,
+                    };
                     self.working_memory
                         .push(Message::user(steer.content.clone()));
                     if let Some(lifecycle) = self.ctx.steer_lifecycle.as_ref() {
-                        lifecycle.accepted(id.clone()).await;
+                        lifecycle.accepted(accepted.clone()).await;
                     }
-                    yield KernelBeforeModelTurnItem::Event(StreamEvent::SteerAccepted {
-                        id: id.clone(),
-                        content: steer.content,
-                    });
-                    self.pending_steer_ids.push(id);
+                    yield KernelBeforeModelTurnItem::Event(steer_accepted_event(steer));
+                    self.pending_steer_ids.push(accepted);
                 }
             }
 

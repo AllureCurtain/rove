@@ -329,7 +329,7 @@ mod tests {
         assert!(rendered.contains("Activity"));
         assert!(rendered.contains("Composer [focused]"));
         assert!(rendered.contains("hello"));
-        assert!(row_text(&buffer, 40, 11).contains("ws:- | run:idle | focus:composer"));
+        assert!(row_text(&buffer, 40, 11).contains("ws:- | run:idle | q:0 | focus:composer"));
     }
 
     #[test]

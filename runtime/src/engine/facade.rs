@@ -591,7 +591,7 @@ impl Engine {
             .as_ref()
             .ok()
             .map(|agent| agent.profile.clone());
-        let (control_handle, steer_rx) = control_channel();
+        let (control_handle, steer_rx, mut message_event_rx) = control_channel();
         let steer_rx: SteerReceiver = Arc::new(AsyncMutex::new(steer_rx));
         let steer_lifecycle = SteerLifecycle::default();
 
@@ -620,22 +620,28 @@ impl Engine {
                         // is surfaced as a dropped lifecycle event below.
                         pending_steers.close();
                         while let Ok(steer) = pending_steers.try_recv() {
-                            let dropped = StreamEvent::SteerDropped {
-                                id: steer.id.0,
-                                reason: "run completed before the steer reached a safe point"
-                                    .to_string(),
-                            };
+                            let dropped = crate::engine::control::steer_dropped_event(
+                                steer.id.0,
+                                steer.unified_message,
+                                "run completed before the steer reached a safe point".to_string(),
+                            );
                             run_summary.record_event(&dropped);
                             append_trace(&trace_writer, &dropped);
                             yield dropped;
                         }
                         drop(pending_steers);
-                        for id in steer_lifecycle.take_unapplied().await {
-                            let dropped = StreamEvent::SteerDropped {
-                                id,
-                                reason: "run completed before the accepted steer reached a model turn"
-                                    .to_string(),
-                            };
+                        message_event_rx.close();
+                        while let Ok(message_event) = message_event_rx.try_recv() {
+                            run_summary.record_event(&message_event);
+                            append_trace(&trace_writer, &message_event);
+                            yield message_event;
+                        }
+                        for accepted in steer_lifecycle.take_unapplied().await {
+                            let dropped = crate::engine::control::steer_dropped_event(
+                                accepted.id,
+                                accepted.unified_message,
+                                "run completed before the accepted steer reached a model turn".to_string(),
+                            );
                             run_summary.record_event(&dropped);
                             append_trace(&trace_writer, &dropped);
                             yield dropped;
@@ -947,14 +953,24 @@ impl Engine {
                     ),
                 };
 
-                while let Some(item) = runtime.next().await {
-                    match item {
-                        LoopItem::Event(event) => {
-                            run_summary.record_event(&event);
-                            yield_traced!(event);
+                loop {
+                    tokio::select! {
+                        biased;
+                        Some(message_event) = message_event_rx.recv() => {
+                            run_summary.record_event(&message_event);
+                            yield_traced!(message_event);
                         }
-                        LoopItem::Complete { reason, output } => {
-                            complete_run!(reason, output);
+                        item = runtime.next() => {
+                            match item {
+                                Some(LoopItem::Event(event)) => {
+                                    run_summary.record_event(&event);
+                                    yield_traced!(event);
+                                }
+                                Some(LoopItem::Complete { reason, output }) => {
+                                    complete_run!(reason, output);
+                                }
+                                None => break,
+                            }
                         }
                     }
                 }

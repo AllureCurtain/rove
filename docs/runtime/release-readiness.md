@@ -24,6 +24,11 @@ Included:
 - CDH G1-G7 durable controls and Fork/lineage, session configuration snapshots,
   usage/context/cost, bounded files/artifacts/images/diff, redacted evidence
   export, and workspace-scoped Settings/MCP management.
+- Productization F unified Send Message lifecycle across Runtime, API/SSE,
+  ProductStore, Web, and TUI: durable FIFO queue, safe-boundary intervention,
+  successor claims, revoke/attention recovery, and idempotent CAS races.
+  Focused Runtime/API/TUI tests pass in this worktree; Web dependency/browser
+  gates and Windows ConPTY/PTY smoke remain unverified here.
 - Tauri Desktop D0 delivery shell with embedded authenticated API, shared static
   Web build, native workspace commands, and current-platform Windows MSI/process
   evidence. macOS/Linux packaging and manual installation remain unverified.

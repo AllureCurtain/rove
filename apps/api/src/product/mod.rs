@@ -9,6 +9,7 @@ pub(crate) mod diff;
 pub(crate) mod export;
 pub(crate) mod files;
 pub(crate) mod mcp;
+pub(crate) mod message_adapter;
 pub(crate) mod migration;
 pub(crate) mod platform;
 pub(crate) mod provider_catalog;

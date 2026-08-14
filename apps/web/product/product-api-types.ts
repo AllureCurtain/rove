@@ -803,6 +803,38 @@ export interface ProductControlsResponse {
   controls: ProductControl[];
 }
 
+export const PRODUCT_MESSAGE_DELIVERIES = ["successor", "current_run"] as const;
+export type ProductMessageDelivery = (typeof PRODUCT_MESSAGE_DELIVERIES)[number];
+export const PRODUCT_MESSAGE_STATUSES = [
+  "queued",
+  "intervention_requested",
+  "applied_current_run",
+  "claimed_successor",
+  "needs_attention",
+  "revoked",
+] as const;
+export type ProductMessageStatus = (typeof PRODUCT_MESSAGE_STATUSES)[number];
+
+export interface ProductMessage {
+  id: ProductControlId;
+  product_session_id: ProductSessionId;
+  content: string;
+  requested_delivery: ProductMessageDelivery;
+  actual_delivery?: ProductMessageDelivery;
+  status: ProductMessageStatus;
+  seq: number;
+  run_id?: string;
+  successor_run_id?: string;
+  created_at: string;
+  applied_at?: string;
+  reason?: string;
+}
+
+export type CreateProductMessageRequest = CreateProductControlRequest;
+export interface ProductMessagesResponse {
+  messages: ProductMessage[];
+}
+
 export type ProductControlStatusFilter = ProductControlStatus | "all";
 
 export interface ProductJobStreamEvent {
@@ -2320,6 +2352,55 @@ export function parseProductControlsResponse(
       record.controls,
       "product controls response.controls",
       parseProductControl,
+    ),
+  };
+}
+
+export function parseProductMessage(
+  value: unknown,
+  path = "product message",
+): ProductMessage {
+  const record = expectRecord(value, path);
+  const message: ProductMessage = {
+    id: expectId(record.id, `${path}.id`),
+    product_session_id: expectId(record.product_session_id, `${path}.product_session_id`),
+    content: expectString(record.content, `${path}.content`, {
+      nonEmpty: true,
+      maxBytes: MAX_PRODUCT_CONTROL_CONTENT_BYTES,
+    }),
+    requested_delivery: expectEnum(
+      record.requested_delivery,
+      PRODUCT_MESSAGE_DELIVERIES,
+      `${path}.requested_delivery`,
+    ),
+    status: expectEnum(record.status, PRODUCT_MESSAGE_STATUSES, `${path}.status`),
+    seq: expectInteger(record.seq, `${path}.seq`, { min: 1 }),
+    created_at: expectRfc3339Timestamp(record.created_at, `${path}.created_at`),
+  };
+  if (record.actual_delivery !== undefined && record.actual_delivery !== null) {
+    message.actual_delivery = expectEnum(
+      record.actual_delivery,
+      PRODUCT_MESSAGE_DELIVERIES,
+      `${path}.actual_delivery`,
+    );
+  }
+  assignOptional(message, "run_id", optionalString(record, "run_id", path, { nonEmpty: true }));
+  assignOptional(message, "successor_run_id", optionalString(record, "successor_run_id", path, { nonEmpty: true }));
+  assignOptional(message, "reason", optionalString(record, "reason", path, { maxBytes: MAX_PRODUCT_TEXT_BYTES }));
+  const appliedAt = optionalString(record, "applied_at", path, { nonEmpty: true });
+  if (appliedAt !== undefined) {
+    message.applied_at = expectRfc3339Timestamp(appliedAt, `${path}.applied_at`);
+  }
+  return message;
+}
+
+export function parseProductMessagesResponse(value: unknown): ProductMessagesResponse {
+  const record = expectRecord(value, "product messages response");
+  return {
+    messages: expectArray(
+      record.messages,
+      "product messages response.messages",
+      parseProductMessage,
     ),
   };
 }
@@ -4095,6 +4176,29 @@ export function parseStreamEvent(
         id: expectId(record.id, `${path}.id`),
       };
     case "followup_abandoned":
+      return {
+        type,
+        id: expectId(record.id, `${path}.id`),
+        reason: expectString(record.reason, `${path}.reason`, {
+          nonEmpty: true,
+          maxBytes: MAX_PRODUCT_TEXT_BYTES,
+        }),
+      };
+    case "message_queued":
+      return {
+        type,
+        id: expectId(record.id, `${path}.id`),
+        content: expectString(record.content, `${path}.content`, {
+          nonEmpty: true,
+          maxBytes: MAX_PRODUCT_CONTROL_CONTENT_BYTES,
+        }),
+      };
+    case "message_intervention_requested":
+    case "message_applied_current_run":
+    case "message_claimed_successor":
+    case "message_revoked":
+      return { type, id: expectId(record.id, `${path}.id`) };
+    case "message_needs_attention":
       return {
         type,
         id: expectId(record.id, `${path}.id`),

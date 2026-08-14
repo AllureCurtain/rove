@@ -41,6 +41,7 @@ impl Default for SteerId {
 pub struct SteerMessage {
     pub id: SteerId,
     pub content: String,
+    pub(crate) unified_message: bool,
 }
 
 impl SteerMessage {
@@ -48,6 +49,7 @@ impl SteerMessage {
         Self {
             id: SteerId::new(),
             content: content.into(),
+            unified_message: false,
         }
     }
 
@@ -57,7 +59,57 @@ impl SteerMessage {
         Self {
             id: SteerId(id.into()),
             content: content.into(),
+            unified_message: false,
         }
+    }
+
+    pub fn for_message(id: impl Into<String>, content: impl Into<String>) -> Self {
+        Self {
+            id: SteerId(id.into()),
+            content: content.into(),
+            unified_message: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct AcceptedSteer {
+    pub id: String,
+    pub unified_message: bool,
+}
+
+pub(crate) fn steer_accepted_event(steer: SteerMessage) -> crate::events::StreamEvent {
+    if steer.unified_message {
+        crate::events::StreamEvent::MessageInterventionRequested { id: steer.id.0 }
+    } else {
+        crate::events::StreamEvent::SteerAccepted {
+            id: steer.id.0,
+            content: steer.content,
+        }
+    }
+}
+
+pub(crate) fn steer_applied_event(steer: &AcceptedSteer) -> crate::events::StreamEvent {
+    if steer.unified_message {
+        crate::events::StreamEvent::MessageAppliedCurrentRun {
+            id: steer.id.clone(),
+        }
+    } else {
+        crate::events::StreamEvent::SteerApplied {
+            id: steer.id.clone(),
+        }
+    }
+}
+
+pub(crate) fn steer_dropped_event(
+    id: String,
+    unified_message: bool,
+    reason: String,
+) -> crate::events::StreamEvent {
+    if unified_message {
+        crate::events::StreamEvent::MessageNeedsAttention { id, reason }
+    } else {
+        crate::events::StreamEvent::SteerDropped { id, reason }
     }
 }
 
@@ -74,6 +126,7 @@ const STEER_BUFFER: usize = 64;
 #[derive(Clone, Default)]
 pub struct RunControlHandle {
     pub steer: Option<mpsc::Sender<SteerMessage>>,
+    message_events: Option<mpsc::Sender<crate::events::StreamEvent>>,
 }
 
 /// Tracks steers that have crossed a safe point but have not yet been handed
@@ -82,22 +135,22 @@ pub struct RunControlHandle {
 /// prepared next turn from starting.
 #[derive(Clone, Default)]
 pub(crate) struct SteerLifecycle {
-    accepted_ids: Arc<Mutex<Vec<String>>>,
+    accepted_ids: Arc<Mutex<Vec<AcceptedSteer>>>,
 }
 
 impl SteerLifecycle {
-    pub(crate) async fn accepted(&self, id: String) {
-        self.accepted_ids.lock().await.push(id);
+    pub(crate) async fn accepted(&self, steer: AcceptedSteer) {
+        self.accepted_ids.lock().await.push(steer);
     }
 
     pub(crate) async fn applied(&self, id: &str) {
         self.accepted_ids
             .lock()
             .await
-            .retain(|pending| pending != id);
+            .retain(|pending| pending.id != id);
     }
 
-    pub(crate) async fn take_unapplied(&self) -> Vec<String> {
+    pub(crate) async fn take_unapplied(&self) -> Vec<AcceptedSteer> {
         std::mem::take(&mut *self.accepted_ids.lock().await)
     }
 }
@@ -117,17 +170,44 @@ impl RunControlHandle {
             None => false,
         }
     }
+
+    /// Publish a product-message lifecycle fact through the running Engine's
+    /// canonical stream. This ingress accepts only message events; approvals,
+    /// input, cancellation, and capability decisions retain their typed paths.
+    pub fn try_send_message_event(&self, event: crate::events::StreamEvent) -> bool {
+        if !matches!(
+            event,
+            crate::events::StreamEvent::MessageQueued { .. }
+                | crate::events::StreamEvent::MessageInterventionRequested { .. }
+                | crate::events::StreamEvent::MessageAppliedCurrentRun { .. }
+                | crate::events::StreamEvent::MessageClaimedSuccessor { .. }
+                | crate::events::StreamEvent::MessageNeedsAttention { .. }
+                | crate::events::StreamEvent::MessageRevoked { .. }
+        ) {
+            return false;
+        }
+        self.message_events
+            .as_ref()
+            .is_some_and(|sender| sender.try_send(event).is_ok())
+    }
 }
 
 /// Create a matched sender/receiver pair. The handle is given to the API; the
 /// receiver is threaded into the run loops via LoopContext.
-pub fn control_channel() -> (RunControlHandle, mpsc::Receiver<SteerMessage>) {
+pub(crate) fn control_channel() -> (
+    RunControlHandle,
+    mpsc::Receiver<SteerMessage>,
+    mpsc::Receiver<crate::events::StreamEvent>,
+) {
     let (steer_tx, steer_rx) = mpsc::channel(STEER_BUFFER);
+    let (message_event_tx, message_event_rx) = mpsc::channel(STEER_BUFFER);
     (
         RunControlHandle {
             steer: Some(steer_tx),
+            message_events: Some(message_event_tx),
         },
         steer_rx,
+        message_event_rx,
     )
 }
 
@@ -143,7 +223,7 @@ mod tests {
 
     #[tokio::test]
     async fn drain_returns_all_pending_messages() {
-        let (handle, mut receiver) = control_channel();
+        let (handle, mut receiver, _message_events) = control_channel();
         handle.try_send_steer(SteerMessage::new("a"));
         handle.try_send_steer(SteerMessage::new("b"));
         let mut drained = Vec::new();

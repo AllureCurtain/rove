@@ -71,13 +71,10 @@ describe("production Product UI boundary", () => {
       join(WEB_ROOT, "state", "use-session-continuity.ts"),
       "utf8",
     );
-    expect(composer).toMatch(/>\s*Steer\s*</u);
-    expect(composer).toMatch(/>\s*Follow-up\s*</u);
-    expect(continuity).toContain("productClient.enqueueSteer");
-    expect(continuity).toContain("productClient.enqueueFollowup");
-    expect(continuity).toContain("productClient.revokeControl");
-    expect(continuity).toContain("productClient.confirmFollowup");
-    expect(continuity).not.toContain("submitFollowup: (content: string) => send(content)");
+    expect(composer).toMatch(/>\s*Send\s*</u);
+    expect(continuity).toContain("productClient.sendMessage");
+    expect(continuity).toContain("productClient.promoteMessage");
+    expect(continuity).toContain("productClient.revokeMessage");
 
     const shell = readFileSync(join(WEB_ROOT, "shell", "ProductApp.tsx"), "utf8");
     const tree = readFileSync(join(WEB_ROOT, "sidebar", "WorkspaceTree.tsx"), "utf8");
