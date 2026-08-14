@@ -6,7 +6,9 @@ use regex::{Regex, RegexBuilder};
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::environment::{EnvironmentError, Observation};
+use crate::environment::{
+    EnvironmentError, Observation, WorkspaceEntryKind, WorkspaceTraversalOptions,
+};
 use crate::tools::coding::map_environment_error;
 use crate::tools::runtime_context::runtime_tool_services;
 use rove_core::ToolDescriptor;
@@ -45,6 +47,11 @@ struct SearchMatch {
     line: usize,
     column: usize,
     text: String,
+    context_start_line: usize,
+    context_end_line: usize,
+    context: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    context_owner_line: Option<usize>,
 }
 
 #[derive(Debug, Serialize)]
@@ -54,6 +61,15 @@ struct SearchOutput {
     match_count: usize,
     matches: Vec<SearchMatch>,
     files_scanned: usize,
+    files_matched: usize,
+    files_oversized: usize,
+    files_binary: usize,
+    files_non_utf8: usize,
+    ignored_entries: usize,
+    hidden_entries: usize,
+    sensitive_entries: usize,
+    link_entries: usize,
+    output_bytes: usize,
     truncated: bool,
     truncated_reason: Option<String>,
     observation_id: String,
@@ -65,9 +81,27 @@ struct SearchOutput {
 struct SearchScan {
     matches: Vec<SearchMatch>,
     files_scanned: usize,
+    files_matched: usize,
+    files_oversized: usize,
+    files_binary: usize,
+    files_non_utf8: usize,
+    ignored_entries: usize,
+    hidden_entries: usize,
+    sensitive_entries: usize,
+    link_entries: usize,
     complete: bool,
     truncated_reason: Option<String>,
     version: String,
+}
+
+struct SearchScanRequest<'a> {
+    raw_path: Option<&'a str>,
+    pattern: &'a Regex,
+    glob: Option<&'a globset::GlobMatcher>,
+    context: usize,
+    include_ignored: bool,
+    include_hidden: bool,
+    policy: &'a SearchCodePolicy,
 }
 
 impl SearchCodeTool {
@@ -108,6 +142,23 @@ impl Tool for SearchCodeTool {
                     "case_insensitive": {
                         "type": "boolean",
                         "description": "Case-insensitive search (default false)"
+                    },
+                    "context": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 10,
+                        "default": 0,
+                        "description": "Bounded surrounding lines for each match"
+                    },
+                    "include_ignored": {
+                        "type": "boolean",
+                        "default": false,
+                        "description": "Include gitignored/.ignore paths; sensitive paths stay excluded"
+                    },
+                    "include_hidden": {
+                        "type": "boolean",
+                        "default": false,
+                        "description": "Include hidden paths; sensitive paths stay excluded"
                     },
                     "limit": {
                         "type": "integer",
@@ -174,6 +225,15 @@ impl Tool for SearchCodeTool {
             .get("case_insensitive")
             .and_then(|value| value.as_bool())
             .unwrap_or(false);
+        let context = args.get("context").and_then(Value::as_u64).unwrap_or(0) as usize;
+        let include_ignored = args
+            .get("include_ignored")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let include_hidden = args
+            .get("include_hidden")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         let limit = args
             .get("limit")
             .and_then(Value::as_u64)
@@ -209,10 +269,15 @@ impl Tool for SearchCodeTool {
             Duration::from_millis(policy.timeout_ms),
             scan_filesystem(
                 filesystem,
-                search_path.as_deref(),
-                &pattern,
-                glob_pattern.as_ref(),
-                &policy,
+                SearchScanRequest {
+                    raw_path: search_path.as_deref(),
+                    pattern: &pattern,
+                    glob: glob_pattern.as_ref(),
+                    context,
+                    include_ignored,
+                    include_hidden,
+                    policy: &policy,
+                },
             ),
         )
         .await
@@ -222,12 +287,15 @@ impl Tool for SearchCodeTool {
         .map_err(map_environment_error)?;
 
         let source = format!(
-            "search:{}|{}|{}|{}|{}",
+            "search:{}|{}|{}|{}|{}|context:{}|ignored:{}|hidden:{}",
             path_label,
             query_owned,
             glob.unwrap_or(""),
             use_regex,
-            case_insensitive
+            case_insensitive,
+            context,
+            include_ignored,
+            include_hidden
         );
         let start = search_continuation_start(
             services,
@@ -245,85 +313,123 @@ impl Tool for SearchCodeTool {
         } else {
             scan.truncated_reason.clone()
         };
-        while !page.is_empty()
-            && estimate_output_bytes(
-                &query_owned,
-                &path_label,
-                &page,
-                scan.files_scanned,
+        loop {
+            let page_end = start + page.len();
+            let payload =
+                serde_json::to_vec(&page).map_err(|error| ToolError::ExecutionFailed {
+                    reason: error.to_string(),
+                })?;
+            let has_more_page = page_end < scan.matches.len();
+            let preview_observation = Observation::from_bytes(
+                source.clone(),
+                start,
+                &payload,
+                scan.version.clone(),
+                has_more_page,
+                None,
+            );
+            // Reserve the fixed-width observation/reference fields while choosing the
+            // page. Their real content is the same length, so the final serialized
+            // output remains within the bound without retaining discarded artifacts.
+            let placeholder_artifact = format!("observation:sha256:{}", "0".repeat(64));
+            let result = SearchOutput {
+                query: query_owned.clone(),
+                path: path_label.clone(),
+                match_count: page.len(),
+                matches: page.clone(),
+                files_scanned: scan.files_scanned,
+                files_matched: scan.files_matched,
+                files_oversized: scan.files_oversized,
+                files_binary: scan.files_binary,
+                files_non_utf8: scan.files_non_utf8,
+                ignored_entries: scan.ignored_entries,
+                hidden_entries: scan.hidden_entries,
+                sensitive_entries: scan.sensitive_entries,
+                link_entries: scan.link_entries,
+                output_bytes: 0,
                 truncated,
-            ) > policy.max_output_bytes
-        {
-            page.pop();
+                truncated_reason: truncated_reason.clone(),
+                observation_id: preview_observation.id.clone(),
+                version: scan.version.clone(),
+                continuation: has_more_page
+                    .then(|| format!("search:{}:{page_end}", preview_observation.id)),
+                artifact_ref: truncated.then_some(placeholder_artifact),
+            };
+            let (result, content) = exact_search_output(result)?;
+            if content.len() <= policy.max_output_bytes {
+                let artifact_ref =
+                    if truncated && services.environment.capabilities().artifact_projection {
+                        match services.environment.artifacts() {
+                            Some(sink) => sink.put(&source, &payload).await.ok().flatten(),
+                            None => None,
+                        }
+                    } else {
+                        None
+                    };
+                let mut observation = preview_observation;
+                observation.artifact_ref = artifact_ref.clone();
+                observation.start = start;
+                observation.end = page_end;
+                services
+                    .environment
+                    .observations()
+                    .put_with_payload(observation, payload)
+                    .await
+                    .map_err(map_environment_error)?;
+                let mut result = result;
+                result.artifact_ref = artifact_ref;
+                let (result, content) = exact_search_output(result)?;
+                debug_assert_eq!(result.output_bytes, content.len());
+                return Ok(ToolOutput::text(content));
+            }
+            if page.pop().is_none() {
+                return Err(ToolError::InvalidInput {
+                    reason: "search metadata exceeds max_output_bytes".to_string(),
+                });
+            }
             truncated = true;
             truncated_reason = Some("max_output_bytes".to_string());
         }
-        let page_end = start + page.len();
-        let payload = serde_json::to_vec(&page).map_err(|error| ToolError::ExecutionFailed {
-            reason: error.to_string(),
-        })?;
-        let artifact_ref = if truncated && services.environment.capabilities().artifact_projection {
-            match services.environment.artifacts() {
-                Some(sink) => sink.put(&source, &payload).await.ok().flatten(),
-                None => None,
-            }
-        } else {
-            None
-        };
-        let has_more_page = page_end < scan.matches.len();
-        let mut observation = Observation::from_bytes(
-            source,
-            start,
-            &payload,
-            scan.version.clone(),
-            has_more_page,
-            artifact_ref.clone(),
-        );
-        observation.start = start;
-        observation.end = page_end;
-        services
-            .environment
-            .observations()
-            .put_with_payload(observation.clone(), payload)
-            .await
-            .map_err(map_environment_error)?;
-        let result = SearchOutput {
-            query: query_owned,
-            path: path_label,
-            match_count: page.len(),
-            matches: page,
-            files_scanned: scan.files_scanned,
-            truncated,
-            truncated_reason,
-            observation_id: observation.id.clone(),
-            version: scan.version,
-            continuation: has_more_page.then(|| format!("search:{}:{page_end}", observation.id)),
-            artifact_ref,
-        };
-
-        let content = serde_json::to_string(&result).map_err(|err| ToolError::ExecutionFailed {
-            reason: err.to_string(),
-        })?;
-        Ok(ToolOutput::text(content))
     }
 }
 
 async fn scan_filesystem(
     filesystem: &dyn crate::environment::WorkspaceFileSystem,
-    raw_path: Option<&str>,
-    pattern: &Regex,
-    glob: Option<&Regex>,
-    policy: &SearchCodePolicy,
+    request: SearchScanRequest<'_>,
 ) -> Result<SearchScan, EnvironmentError> {
-    let entries = filesystem
-        .list_files(raw_path, policy.max_files_scanned.saturating_add(1))
+    let SearchScanRequest {
+        raw_path,
+        pattern,
+        glob,
+        context,
+        include_ignored,
+        include_hidden,
+        policy,
+    } = request;
+    let traversal = filesystem
+        .traverse_entries(
+            raw_path,
+            WorkspaceTraversalOptions {
+                recursive: true,
+                include_ignored,
+                include_hidden,
+            },
+            policy.max_files_scanned.saturating_add(1),
+        )
         .await?;
-    let mut matches = Vec::new();
+    let mut matches = Vec::<SearchMatch>::new();
     let mut files_scanned = 0usize;
+    let mut files_matched = 0usize;
+    let mut files_oversized = 0usize;
+    let mut files_binary = 0usize;
+    let mut files_non_utf8 = 0usize;
     let mut complete = true;
     let mut truncated_reason = None;
     let mut version_material = String::new();
-    for entry in entries {
+    for entry in traversal.entries {
+        if entry.kind != WorkspaceEntryKind::File {
+            continue;
+        }
         if files_scanned >= policy.max_files_scanned {
             complete = false;
             truncated_reason = Some("max_files_scanned".to_string());
@@ -331,6 +437,7 @@ async fn scan_filesystem(
         }
         files_scanned += 1;
         if entry.byte_len > policy.max_file_bytes {
+            files_oversized += 1;
             continue;
         }
         if let Some(glob) = glob
@@ -350,20 +457,64 @@ async fn scan_filesystem(
             <sha2::Sha256 as sha2::Digest>::digest(&read.bytes)
         ));
         version_material.push('\n');
-        if read.truncated || read.bytes.contains(&0) {
+        if read.truncated {
+            files_oversized += 1;
+            continue;
+        }
+        if read.bytes.contains(&0) {
+            files_binary += 1;
             continue;
         }
         let content = match String::from_utf8(read.bytes) {
             Ok(value) => value,
-            Err(_) => continue,
+            Err(_) => {
+                files_non_utf8 += 1;
+                continue;
+            }
         };
-        for (index, line) in content.lines().enumerate() {
+        let lines = content.lines().collect::<Vec<_>>();
+        let mut file_matched = false;
+        let mut previous_context_end = 0usize;
+        let mut context_owner = None::<usize>;
+        for (index, line) in lines.iter().enumerate() {
             if let Some(found) = pattern.find(line) {
+                file_matched = true;
+                let context_start = index.saturating_sub(context);
+                let context_end = index.saturating_add(context + 1).min(lines.len());
+                let overlaps = context_owner.is_some() && context_start < previous_context_end;
+                let owner_line = if overlaps {
+                    let owner = context_owner.expect("overlap has an owner");
+                    if context_end > previous_context_end {
+                        matches[owner].context.extend(
+                            lines[previous_context_end..context_end]
+                                .iter()
+                                .map(|line| truncate_line(line, 400)),
+                        );
+                        matches[owner].context_end_line = context_end;
+                        previous_context_end = context_end;
+                    }
+                    Some(matches[owner].line)
+                } else {
+                    context_owner = Some(matches.len());
+                    previous_context_end = context_end;
+                    None
+                };
                 matches.push(SearchMatch {
                     path: entry.relative_path.clone(),
                     line: index + 1,
                     column: found.start() + 1,
                     text: truncate_line(line, 400),
+                    context_start_line: if overlaps { 0 } else { context_start + 1 },
+                    context_end_line: if overlaps { 0 } else { context_end },
+                    context: if overlaps {
+                        Vec::new()
+                    } else {
+                        lines[context_start..context_end]
+                            .iter()
+                            .map(|line| truncate_line(line, 400))
+                            .collect()
+                    },
+                    context_owner_line: owner_line,
                 });
                 if matches.len() >= policy.max_matches {
                     complete = false;
@@ -372,6 +523,7 @@ async fn scan_filesystem(
                 }
             }
         }
+        files_matched += usize::from(file_matched);
         if matches.len() >= policy.max_matches {
             complete = false;
             truncated_reason = Some("max_matches".to_string());
@@ -381,8 +533,17 @@ async fn scan_filesystem(
     Ok(SearchScan {
         matches,
         files_scanned,
+        files_matched,
+        files_oversized,
+        files_binary,
+        files_non_utf8,
+        ignored_entries: traversal.ignored_entries,
+        hidden_entries: traversal.hidden_entries,
+        sensitive_entries: traversal.sensitive_entries,
+        link_entries: traversal.link_entries,
         complete,
-        truncated_reason,
+        truncated_reason: truncated_reason
+            .or_else(|| traversal.truncated.then(|| "max_files_scanned".to_string())),
         version: crate::context::prompt_metadata::stable_hash(&version_material),
     })
 }
@@ -447,34 +608,30 @@ fn compile_query(query: &str, use_regex: bool, case_insensitive: bool) -> Result
         })
 }
 
-fn compile_glob(pattern: &str) -> Result<Regex, ToolError> {
-    let mut regex = String::from("^");
-    for ch in pattern.chars() {
-        match ch {
-            '*' => regex.push_str(".*"),
-            '?' => regex.push('.'),
-            c if r".+()|[]{}^$\\".contains(c) => {
-                regex.push('\\');
-                regex.push(c);
-            }
-            c => regex.push(c),
-        }
-    }
-    regex.push('$');
-    RegexBuilder::new(&regex)
-        .case_insensitive(cfg!(windows))
-        .build()
-        .map_err(|err| ToolError::InvalidInput {
-            reason: format!("invalid glob: {err}"),
-        })
+fn compile_glob(pattern: &str) -> Result<globset::GlobMatcher, ToolError> {
+    let pattern = if pattern.contains('/') || pattern.contains('\\') {
+        pattern.to_string()
+    } else {
+        format!("**/{pattern}")
+    };
+    crate::tools::coding::compile_workspace_glob(&pattern)
 }
 
-#[allow(dead_code)]
-fn is_noise_dir_name(name: &str) -> bool {
-    matches!(
-        name,
-        ".git" | "target" | "node_modules" | ".next" | "dist" | "build" | "__pycache__" | ".rove"
-    )
+fn exact_search_output(mut result: SearchOutput) -> Result<(SearchOutput, String), ToolError> {
+    for _ in 0..4 {
+        let encoded =
+            serde_json::to_string(&result).map_err(|error| ToolError::ExecutionFailed {
+                reason: error.to_string(),
+            })?;
+        if result.output_bytes == encoded.len() {
+            return Ok((result, encoded));
+        }
+        result.output_bytes = encoded.len();
+    }
+    let encoded = serde_json::to_string(&result).map_err(|error| ToolError::ExecutionFailed {
+        reason: error.to_string(),
+    })?;
+    Ok((result, encoded))
 }
 
 fn truncate_line(line: &str, max_chars: usize) -> String {
@@ -485,24 +642,6 @@ fn truncate_line(line: &str, max_chars: usize) -> String {
     let mut out: String = line.chars().take(max_chars).collect();
     out.push('…');
     out
-}
-
-fn estimate_output_bytes(
-    query: &str,
-    path_label: &str,
-    matches: &[SearchMatch],
-    files_scanned: usize,
-    truncated: bool,
-) -> usize {
-    // Conservative estimate so we cap before serde; avoids building huge strings first.
-    let mut total = query.len() + path_label.len() + 128 + files_scanned.to_string().len();
-    if truncated {
-        total += 32;
-    }
-    for item in matches {
-        total += item.path.len() + item.text.len() + 48;
-    }
-    total
 }
 
 #[cfg(test)]
@@ -518,15 +657,8 @@ mod tests {
 
     #[test]
     fn glob_star_matches_suffix() {
-        let pattern = compile_glob("*.rs").unwrap();
+        let pattern = compile_glob("**/*.rs").unwrap();
         assert!(pattern.is_match("src/main.rs"));
         assert!(!pattern.is_match("src/main.toml"));
-    }
-
-    #[test]
-    fn noise_dirs_are_recognized() {
-        assert!(is_noise_dir_name("target"));
-        assert!(is_noise_dir_name(".git"));
-        assert!(!is_noise_dir_name("src"));
     }
 }

@@ -2,13 +2,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
 
 use async_trait::async_trait;
-use regex::RegexBuilder;
 use serde::Serialize;
 use serde_json::Value;
 
 use crate::environment::{
-    CheckpointFile, EnvironmentError, Observation, VersionedFile, WorkspaceEntry,
-    WorkspaceEntryKind,
+    CheckpointFile, EnvironmentError, Observation, VersionedFile, WorkspaceEntryKind,
+    WorkspaceTraversal, WorkspaceTraversalOptions,
 };
 use crate::tools::runtime_context::{RuntimeToolServices, runtime_tool_services};
 use rove_core::{
@@ -20,6 +19,7 @@ pub(crate) const MAX_TOOL_CONTENT_BYTES: usize = 1024 * 1024;
 const DEFAULT_PAGE_ENTRIES: usize = 200;
 const MAX_PAGE_ENTRIES: usize = 500;
 const MAX_DISCOVERY_ENTRIES: usize = 10_000;
+const MAX_DISCOVERY_OUTPUT_BYTES: usize = 64 * 1024;
 const MAX_CHECKPOINT_FILES: usize = 512;
 const MAX_CHECKPOINT_CONTENT_BYTES: usize = 8 * 1024 * 1024;
 const MAX_REWIND_FILES: usize = 64;
@@ -199,18 +199,18 @@ impl Tool for DeletePathTool {
             }
             WorkspaceEntryKind::Directory => {
                 let (current_entries, current_version) =
-                    directory_entries_and_version(services, path, true).await?;
+                    directory_entries_and_version(services, path, true, false, false).await?;
                 let observation = services
                     .environment
                     .observations()
                     .require_version(observation_id, version)
                     .await
                     .map_err(map_environment_error)?;
-                if observation.source != directory_source(path, true)?
+                if observation.source != directory_source(path, true, false, false)?
                     || observation.version != current_version
                     || observation.truncated
                     || observation.start != 0
-                    || observation.end != current_entries.len()
+                    || observation.end != current_entries.entries.len()
                     || !recursive
                 {
                     return Err(ToolError::InvalidInput {
@@ -312,18 +312,18 @@ impl Tool for MovePathTool {
             }
             WorkspaceEntryKind::Directory => {
                 let (current_entries, current_version) =
-                    directory_entries_and_version(services, from, true).await?;
+                    directory_entries_and_version(services, from, true, false, false).await?;
                 let observation = services
                     .environment
                     .observations()
                     .require_version(observation_id, version)
                     .await
                     .map_err(map_environment_error)?;
-                if observation.source != directory_source(from, true)?
+                if observation.source != directory_source(from, true, false, false)?
                     || observation.version != current_version
                     || observation.truncated
                     || observation.start != 0
-                    || observation.end != current_entries.len()
+                    || observation.end != current_entries.entries.len()
                 {
                     return Err(ToolError::InvalidInput {
                         reason: "directory move requires a complete current directory observation"
@@ -377,6 +377,14 @@ struct DirectoryPage {
     recursive: bool,
     entries: Vec<DirectoryPageEntry>,
     total_entries: usize,
+    scanned_entries: usize,
+    ignored_entries: usize,
+    hidden_entries: usize,
+    sensitive_entries: usize,
+    link_entries: usize,
+    output_bytes: usize,
+    scan_truncated: bool,
+    output_truncated: bool,
     observation_id: String,
     version: String,
     truncated: bool,
@@ -384,7 +392,7 @@ struct DirectoryPage {
     artifact_ref: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct DirectoryPageEntry {
     path: String,
     kind: WorkspaceEntryKind,
@@ -413,16 +421,31 @@ impl Tool for ListDirectoryTool {
             .unwrap_or(false);
         let limit = page_limit(&args)?;
         let continuation = args.get("continuation").and_then(Value::as_str);
+        let include_ignored = args
+            .get("include_ignored")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let include_hidden = args
+            .get("include_hidden")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         let services = readable_services(ctx)?;
-        let (entries, version) = directory_entries_and_version(services, path, recursive).await?;
-        let source = directory_source(path, recursive)?;
+        let (traversal, version) = directory_entries_and_version(
+            services,
+            path,
+            recursive,
+            include_ignored,
+            include_hidden,
+        )
+        .await?;
+        let source = directory_source(path, recursive, include_ignored, include_hidden)?;
         let start = continuation_start(
             services,
             continuation,
             "list",
             &source,
             &version,
-            entries.len(),
+            traversal.entries.len(),
         )
         .await?;
         directory_page_output(
@@ -430,7 +453,7 @@ impl Tool for ListDirectoryTool {
             DirectoryPageRequest {
                 path,
                 recursive,
-                entries,
+                traversal,
                 version,
                 source,
                 start,
@@ -471,22 +494,38 @@ impl Tool for GlobPathsTool {
         let path = args.get("path").and_then(Value::as_str).unwrap_or(".");
         let limit = page_limit(&args)?;
         let continuation = args.get("continuation").and_then(Value::as_str);
+        let include_ignored = args
+            .get("include_ignored")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let include_hidden = args
+            .get("include_hidden")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         let services = readable_services(ctx)?;
-        let (all_entries, catalog_version) =
-            directory_entries_and_version(services, path, true).await?;
-        let matcher = compile_glob(pattern)?;
-        let entries = all_entries
+        let (mut traversal, catalog_version) =
+            directory_entries_and_version(services, path, true, include_ignored, include_hidden)
+                .await?;
+        let matcher = compile_workspace_glob(pattern)?;
+        traversal.entries = traversal
+            .entries
             .into_iter()
             .filter(|entry| matcher.is_match(&entry.relative_path))
             .collect::<Vec<_>>();
-        let source = format!("glob:{}|{}", normalize_tool_path(path)?, pattern);
+        let source = format!(
+            "glob:{}|{}|ignored:{}|hidden:{}",
+            normalize_tool_path(path)?,
+            pattern,
+            include_ignored,
+            include_hidden
+        );
         let start = continuation_start(
             services,
             continuation,
             "glob",
             &source,
             &catalog_version,
-            entries.len(),
+            traversal.entries.len(),
         )
         .await?;
         directory_page_output(
@@ -494,7 +533,7 @@ impl Tool for GlobPathsTool {
             DirectoryPageRequest {
                 path,
                 recursive: true,
-                entries,
+                traversal,
                 version: catalog_version,
                 source,
                 start,
@@ -812,7 +851,7 @@ impl Tool for WorkspaceRewindTool {
 struct DirectoryPageRequest<'a> {
     path: &'a str,
     recursive: bool,
-    entries: Vec<WorkspaceEntry>,
+    traversal: WorkspaceTraversal,
     version: String,
     source: String,
     start: usize,
@@ -826,14 +865,14 @@ async fn directory_page_output(
     let DirectoryPageRequest {
         path,
         recursive,
-        entries,
+        traversal,
         version,
         source,
         start,
         limit,
     } = request;
-    let end = start.saturating_add(limit).min(entries.len());
-    let page_entries = entries[start..end]
+    let requested_end = start.saturating_add(limit).min(traversal.entries.len());
+    let mut page_entries = traversal.entries[start..requested_end]
         .iter()
         .map(|entry| DirectoryPageEntry {
             path: entry.relative_path.clone(),
@@ -841,11 +880,52 @@ async fn directory_page_output(
             byte_len: entry.byte_len,
         })
         .collect::<Vec<_>>();
+    let mut output_truncated = false;
+    loop {
+        let end = start + page_entries.len();
+        let candidate = DirectoryPage {
+            path: normalize_tool_path(path)?,
+            recursive,
+            entries: page_entries.clone(),
+            total_entries: traversal.entries.len(),
+            scanned_entries: traversal.scanned_entries,
+            ignored_entries: traversal.ignored_entries,
+            hidden_entries: traversal.hidden_entries,
+            sensitive_entries: traversal.sensitive_entries,
+            link_entries: traversal.link_entries,
+            output_bytes: MAX_DISCOVERY_OUTPUT_BYTES,
+            scan_truncated: traversal.truncated,
+            output_truncated,
+            observation_id: format!("sha256:{}", "0".repeat(64)),
+            version: version.clone(),
+            truncated: end < traversal.entries.len() || traversal.truncated || output_truncated,
+            continuation: (end < traversal.entries.len())
+                .then(|| format!("page:sha256:{}:{end}", "0".repeat(64))),
+            artifact_ref: Some("x".repeat(512)),
+        };
+        if serde_json::to_vec(&candidate)
+            .map_err(|error| ToolError::ExecutionFailed {
+                reason: error.to_string(),
+            })?
+            .len()
+            <= MAX_DISCOVERY_OUTPUT_BYTES
+        {
+            break;
+        }
+        if page_entries.pop().is_none() {
+            return Err(ToolError::InvalidInput {
+                reason: "discovery metadata exceeds the output byte limit".to_string(),
+            });
+        }
+        output_truncated = true;
+    }
+    let end = start + page_entries.len();
     let payload =
         serde_json::to_vec(&page_entries).map_err(|error| ToolError::ExecutionFailed {
             reason: error.to_string(),
         })?;
-    let truncated = end < entries.len();
+    let page_truncated = end < traversal.entries.len();
+    let truncated = page_truncated || traversal.truncated || output_truncated;
     let artifact_ref = if truncated {
         match services.environment.artifacts() {
             Some(sink) => sink.put(&source, &payload).await.ok().flatten(),
@@ -870,23 +950,47 @@ async fn directory_page_output(
         .put_with_payload(observation.clone(), payload)
         .await
         .map_err(map_environment_error)?;
-    let continuation = truncated.then(|| format!("page:{}:{end}", observation.id));
-    Ok(ToolOutput::text(
-        serde_json::to_string(&DirectoryPage {
-            path: normalize_tool_path(path)?,
-            recursive,
-            entries: page_entries,
-            total_entries: entries.len(),
-            observation_id: observation.id,
-            version,
-            truncated,
-            continuation,
-            artifact_ref,
-        })
-        .map_err(|error| ToolError::ExecutionFailed {
-            reason: error.to_string(),
-        })?,
-    ))
+    let continuation = page_truncated.then(|| format!("page:{}:{end}", observation.id));
+    let result = DirectoryPage {
+        path: normalize_tool_path(path)?,
+        recursive,
+        entries: page_entries,
+        total_entries: traversal.entries.len(),
+        scanned_entries: traversal.scanned_entries,
+        ignored_entries: traversal.ignored_entries,
+        hidden_entries: traversal.hidden_entries,
+        sensitive_entries: traversal.sensitive_entries,
+        link_entries: traversal.link_entries,
+        output_bytes: 0,
+        scan_truncated: traversal.truncated,
+        output_truncated,
+        observation_id: observation.id,
+        version,
+        truncated,
+        continuation,
+        artifact_ref,
+    };
+    let (result, encoded) = exact_directory_output(result)?;
+    debug_assert_eq!(result.output_bytes, encoded.len());
+    debug_assert!(encoded.len() <= MAX_DISCOVERY_OUTPUT_BYTES);
+    Ok(ToolOutput::text(encoded))
+}
+
+fn exact_directory_output(mut result: DirectoryPage) -> Result<(DirectoryPage, String), ToolError> {
+    for _ in 0..4 {
+        let encoded =
+            serde_json::to_string(&result).map_err(|error| ToolError::ExecutionFailed {
+                reason: error.to_string(),
+            })?;
+        if result.output_bytes == encoded.len() {
+            return Ok((result, encoded));
+        }
+        result.output_bytes = encoded.len();
+    }
+    let encoded = serde_json::to_string(&result).map_err(|error| ToolError::ExecutionFailed {
+        reason: error.to_string(),
+    })?;
+    Ok((result, encoded))
 }
 
 async fn continuation_start(
@@ -938,23 +1042,25 @@ async fn directory_entries_and_version(
     services: &RuntimeToolServices,
     path: &str,
     recursive: bool,
-) -> Result<(Vec<WorkspaceEntry>, String), ToolError> {
-    let entries = services
+    include_ignored: bool,
+    include_hidden: bool,
+) -> Result<(WorkspaceTraversal, String), ToolError> {
+    let traversal = services
         .environment
         .filesystem()
-        .list_entries(
+        .traverse_entries(
             Some(path),
-            recursive,
-            MAX_DISCOVERY_ENTRIES.saturating_add(1),
+            WorkspaceTraversalOptions {
+                recursive,
+                include_ignored,
+                include_hidden,
+            },
+            MAX_DISCOVERY_ENTRIES,
         )
         .await
         .map_err(map_environment_error)?;
-    if entries.len() > MAX_DISCOVERY_ENTRIES {
-        return Err(ToolError::InvalidInput {
-            reason: "directory exceeds the deterministic discovery limit".to_string(),
-        });
-    }
-    let identity = entries
+    let identity = traversal
+        .entries
         .iter()
         .map(|entry| {
             format!(
@@ -964,7 +1070,7 @@ async fn directory_entries_and_version(
         })
         .collect::<Vec<_>>()
         .join("\n");
-    Ok((entries, version_bytes(identity.as_bytes())))
+    Ok((traversal, version_bytes(identity.as_bytes())))
 }
 
 async fn checkpoint_paths(
@@ -1083,10 +1189,15 @@ pub(crate) fn file_source(path: &str) -> Result<String, ToolError> {
     Ok(format!("file:{}", normalize_tool_path(path)?))
 }
 
-fn directory_source(path: &str, recursive: bool) -> Result<String, ToolError> {
+fn directory_source(
+    path: &str,
+    recursive: bool,
+    include_ignored: bool,
+    include_hidden: bool,
+) -> Result<String, ToolError> {
     Ok(format!(
-        "directory:{}|recursive:{recursive}",
-        normalize_tool_path(path)?
+        "directory:{}|recursive:{recursive}|ignored:{include_ignored}|hidden:{include_hidden}",
+        normalize_tool_path(path)?,
     ))
 }
 
@@ -1241,34 +1352,26 @@ fn version_bytes(bytes: &[u8]) -> String {
     format!("sha256:{:x}", Sha256::digest(bytes))
 }
 
-fn compile_glob(pattern: &str) -> Result<regex::Regex, ToolError> {
+pub(crate) fn compile_workspace_glob(pattern: &str) -> Result<globset::GlobMatcher, ToolError> {
     if pattern.is_empty() || pattern.contains('\0') {
         return Err(ToolError::InvalidInput {
             reason: "glob pattern must be non-empty and contain no NUL bytes".to_string(),
         });
     }
-    let mut source = String::from("^");
-    let mut chars = pattern.chars().peekable();
-    while let Some(ch) = chars.next() {
-        match ch {
-            '*' if chars.peek() == Some(&'*') => {
-                chars.next();
-                source.push_str(".*");
-            }
-            '*' => source.push_str("[^/]*"),
-            '?' => source.push_str("[^/]"),
-            ch if r".+()|[]{}^$\\".contains(ch) => {
-                source.push('\\');
-                source.push(ch);
-            }
-            ch => source.push(ch),
-        }
+    let normalized = pattern.replace('\\', "/");
+    if Path::new(&normalized).is_absolute()
+        || normalized.split('/').any(|component| component == "..")
+    {
+        return Err(ToolError::PermissionDenied {
+            reason: "glob pattern escapes workspace".to_string(),
+        });
     }
-    source.push('$');
-    RegexBuilder::new(&source)
+    globset::GlobBuilder::new(&normalized)
+        .literal_separator(true)
+        .backslash_escape(false)
         .case_insensitive(cfg!(windows))
-        .size_limit(1 << 20)
         .build()
+        .map(|glob| glob.compile_matcher())
         .map_err(|error| ToolError::InvalidInput {
             reason: format!("invalid glob: {error}"),
         })
@@ -1282,6 +1385,14 @@ fn discovery_schema(include_pattern: bool) -> Value {
     );
     properties.insert(
         "recursive".to_string(),
+        serde_json::json!({ "type": "boolean", "default": false }),
+    );
+    properties.insert(
+        "include_ignored".to_string(),
+        serde_json::json!({ "type": "boolean", "default": false }),
+    );
+    properties.insert(
+        "include_hidden".to_string(),
         serde_json::json!({ "type": "boolean", "default": false }),
     );
     properties.insert(
@@ -1419,5 +1530,34 @@ pub(crate) fn map_environment_error(error: EnvironmentError) -> ToolError {
             reason: format!("execution resource limit reached: {resource}"),
         },
         EnvironmentError::Host(reason) => ToolError::ExecutionFailed { reason },
+    }
+}
+
+#[cfg(test)]
+mod productization_tests {
+    use super::*;
+
+    #[test]
+    fn maintained_globs_cover_recursive_braces_and_character_classes() {
+        let recursive = compile_workspace_glob("**/*.rs").unwrap();
+        let braces = compile_workspace_glob("src/*.{rs,toml}").unwrap();
+        let class = compile_workspace_glob("tests/case[0-9].txt").unwrap();
+        assert!(recursive.is_match("runtime/src/lib.rs"));
+        assert!(braces.is_match("src/main.rs"));
+        assert!(braces.is_match("src/config.toml"));
+        assert!(class.is_match("tests/case7.txt"));
+        assert!(!class.is_match("tests/casex.txt"));
+    }
+
+    #[test]
+    fn glob_escape_and_absolute_patterns_fail_closed() {
+        assert!(matches!(
+            compile_workspace_glob("../*.rs"),
+            Err(ToolError::PermissionDenied { .. })
+        ));
+        assert!(matches!(
+            compile_workspace_glob("C:/secret/*"),
+            Err(ToolError::PermissionDenied { .. })
+        ));
     }
 }

@@ -178,7 +178,11 @@ pub fn run_model_turn<'a>(
             })
             .collect::<Vec<_>>();
         let tool_calls = tool_refs_from_actions(&native_tool_calls);
-        let action = build_action_from_model_output(native_tool_calls, &full_response);
+        let action = build_action_from_model_output(
+            native_tool_calls,
+            &full_response,
+            model.compatibility_text_tool_calls(),
+        );
         if assistant_turn.tool_calls.is_empty() {
             assistant_turn.tool_calls = canonical_calls_from_compatibility_action(&action);
             if !assistant_turn.tool_calls.is_empty() {
@@ -263,9 +267,16 @@ fn tool_refs_from_actions(calls: &[ToolCallAction]) -> Vec<ToolCallRef> {
         .collect()
 }
 
-fn build_action_from_model_output(calls: Vec<ToolCallAction>, full_response: &str) -> Action {
+fn build_action_from_model_output(
+    calls: Vec<ToolCallAction>,
+    full_response: &str,
+    compatibility_text_tool_calls: bool,
+) -> Action {
     match calls.len() {
-        0 => parse_action(full_response),
+        0 if compatibility_text_tool_calls => parse_action(full_response),
+        0 => Action::Final {
+            text: full_response.to_string(),
+        },
         1 => {
             let call = calls.into_iter().next().expect("one tool call");
             Action::ToolCall {
@@ -399,6 +410,7 @@ mod tests {
                 args: serde_json::json!({"message":"native"}),
             }],
             r#"{"tool":"read_file","args":{"path":"Cargo.toml"}}"#,
+            true,
         );
 
         assert!(matches!(
@@ -415,6 +427,7 @@ mod tests {
         let action = build_action_from_model_output(
             Vec::new(),
             r#"{"tool":"read_file","args":{"path":"Cargo.toml"}}"#,
+            true,
         );
 
         assert!(matches!(
@@ -423,6 +436,15 @@ mod tests {
                 if tool_use_id.is_none()
                     && name == "read_file"
                     && args["path"] == "Cargo.toml"
+        ));
+    }
+
+    #[test]
+    fn native_clients_do_not_promote_text_json_to_tool_calls() {
+        let text = r#"{"tool":"read_file","args":{"path":"Cargo.toml"}}"#;
+        assert!(matches!(
+            build_action_from_model_output(Vec::new(), text, false),
+            Action::Final { text: value } if value == text
         ));
     }
 

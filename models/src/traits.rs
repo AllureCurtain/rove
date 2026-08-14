@@ -144,6 +144,12 @@ pub trait ModelClient: Send + Sync {
         "legacy".to_string()
     }
 
+    /// Explicit opt-in for legacy clients which encode tool calls as JSON
+    /// assistant text. Native wire protocols must leave this disabled.
+    fn compatibility_text_tool_calls(&self) -> bool {
+        false
+    }
+
     /// Whether this client participates in the explicit terminal-event
     /// contract introduced by the typed turn boundary.
     ///

@@ -16,6 +16,14 @@ for packaging and process launch; macOS/Linux packaging remains unverified.
 
 New maintainers should start with [`docs/ONBOARDING.md`](../ONBOARDING.md), then use this directory for current subsystem truth.
 
+The productization branch `productization/runtime-intelligence` implements
+workstreams B (agent/tool-call recovery), C (ignore-aware repository traversal
+and bounded retrieval), and D (artifact-backed context history). Their current
+contracts and evidence are recorded in [`react-loop.md`](react-loop.md),
+[`subsystems.md`](subsystems.md), and [`acceptance-matrix.md`](acceptance-matrix.md).
+Provider catalog/onboarding, the unified product message lifecycle, and the
+release-confidence workstreams A, E, F, and G remain proposed here.
+
 ## Documents
 
 | File | Purpose |

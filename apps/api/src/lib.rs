@@ -3183,7 +3183,9 @@ async fn assemble_job_engine(
         .unwrap_or_else(|| config.provider.model.clone());
     let model: Box<dyn ModelClient> = match model_id.as_str() {
         "fake" => Box::new(FakeModelClient::new(format!("fake response: {message}"))),
-        "fake-raw" => Box::new(FakeModelClient::new(message.to_string())),
+        "fake-raw" => Box::new(FakeModelClient::with_compatibility_text(
+            message.to_string(),
+        )),
         _ => build_model_client_with_health(&config, model_id, state.inner.model_health.clone()),
     };
 

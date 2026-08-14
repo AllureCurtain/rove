@@ -128,6 +128,7 @@ pub(crate) fn defer_tool_turn(
                 call: call.clone(),
                 history_output: format!("Error: {error}"),
                 error_reason: Some(error.to_string()),
+                artifacts: Vec::new(),
             });
             yield ToolTurnItem::Event(StreamEvent::ToolCallFailed {
                 call_id: call.call_id,
@@ -162,6 +163,7 @@ pub(crate) struct ToolExecutionRecord {
     pub call: ToolCallAction,
     pub history_output: String,
     pub error_reason: Option<String>,
+    pub artifacts: Vec<rove_core::ToolArtifactRef>,
 }
 
 #[derive(Debug)]
@@ -533,6 +535,11 @@ pub(crate) fn run_tool_turn<'a>(
                         call: execution.call.clone(),
                         history_output: result.output.clone(),
                         error_reason: None,
+                        artifacts: result
+                            .envelope
+                            .as_ref()
+                            .map(|envelope| envelope.artifacts.clone())
+                            .unwrap_or_default(),
                     });
                     if let Some(envelope) = result.envelope.as_ref() {
                         for artifact in &envelope.artifacts {
@@ -577,6 +584,7 @@ pub(crate) fn run_tool_turn<'a>(
                         call: execution.call.clone(),
                         history_output: format!("Error: {reason}"),
                         error_reason: Some(reason),
+                        artifacts: Vec::new(),
                     });
                     yield ToolTurnItem::Event(StreamEvent::ToolCallFailed {
                         call_id: execution.call.call_id,
@@ -662,13 +670,32 @@ pub(crate) fn append_tool_history(
         } else {
             ToolResultStatus::Ok
         };
-        history.push(Message::tool_with_status(
+        let mut message = Message::tool_with_status(
             record.history_output.clone(),
             record.call.tool_use_id.clone(),
             Some(internal_call_id),
             Some(record.call.name.clone()),
             status,
-        ));
+        );
+        if !record.artifacts.is_empty() {
+            message.content_blocks.push(rove_models::ContentBlock::text(
+                record.history_output.clone(),
+            ));
+            message
+                .content_blocks
+                .extend(record.artifacts.iter().map(|artifact| {
+                    rove_models::ContentBlock::RichReference {
+                        kind: "tool_artifact".to_string(),
+                        reference: artifact.artifact_id.to_string(),
+                        mime_type: artifact.mime_type.clone(),
+                        title: Some(format!(
+                            "{} bytes sha256:{}",
+                            artifact.byte_length, artifact.sha256
+                        )),
+                    }
+                }));
+        }
+        history.push(message);
     }
 }
 

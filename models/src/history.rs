@@ -153,13 +153,15 @@ impl HistoryProjector {
                     });
                 }
                 let wire_id = aliases.alias_for(&result.internal_call_id)?;
-                output.push(Message::tool_with_status(
+                let mut projected = Message::tool_with_status(
                     flatten_content(&result.content, index, &mut diagnostics),
                     Some(wire_id),
                     Some(result.internal_call_id.clone()),
                     Some(result.tool_name.clone()),
                     result.status.clone(),
-                ));
+                );
+                projected.content_blocks = result.content.clone();
+                output.push(projected);
                 pending.remove(&result.internal_call_id);
                 completed.insert(result.internal_call_id.clone());
                 continue;
@@ -554,5 +556,62 @@ mod tests {
                 .iter()
                 .any(|item| matches!(item, ProjectionDiagnostic::LegacyToolResultId { .. }))
         );
+    }
+
+    #[test]
+    fn artifact_reference_history_projects_for_every_supported_wire_protocol() {
+        let call = call("artifact-call", "read_file");
+        let result = ModelMessage::tool(ToolResult {
+            internal_call_id: call.internal_call_id.clone(),
+            tool_name: call.name.clone(),
+            content: vec![
+                ContentBlock::text("[tool result reference] artifact art_abc"),
+                ContentBlock::RichReference {
+                    kind: "tool_artifact".to_string(),
+                    reference: "art_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+                    mime_type: Some("text/plain".to_string()),
+                    title: Some("12 bytes sha256:abc".to_string()),
+                },
+            ],
+            status: ToolResultStatus::Ok,
+            error_code: None,
+        });
+        let source = vec![
+            ModelMessage {
+                schema_version: 1,
+                role: Role::Assistant,
+                content: Vec::new(),
+                tool_calls: vec![call],
+                tool_result: None,
+            },
+            result,
+        ];
+
+        for protocol in [
+            "openai-completions",
+            "openai-responses",
+            "anthropic-messages",
+            "ollama",
+            "fake",
+        ] {
+            let projected = HistoryProjector::new(protocol).project(&source).unwrap();
+            assert_eq!(
+                projected.messages[0].tool_calls[0].id,
+                projected.messages[1].tool_call_id.clone().unwrap()
+            );
+            assert!(
+                projected.messages[1]
+                    .content
+                    .contains("[rich tool_artifact: art_aaaaaaaa")
+            );
+            assert!(projected.messages[1].content_blocks.iter().any(|block| {
+                matches!(
+                    block,
+                    ContentBlock::RichReference { kind, reference, .. }
+                        if kind == "tool_artifact"
+                            && reference == "art_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                )
+            }));
+        }
     }
 }

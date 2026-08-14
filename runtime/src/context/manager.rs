@@ -1,7 +1,7 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
-use crate::prompt_metadata::{PromptBuildMetadata, prompt_hash, stable_hash};
+use crate::prompt_metadata::{PromptBuildMetadata, message_bytes, prompt_hash, stable_hash};
 use rove_models::{Message, Role};
 
 pub use crate::prompt_metadata::{estimate_message_tokens, estimate_messages_tokens};
@@ -18,6 +18,15 @@ pub use crate::prompt_metadata::{estimate_message_tokens, estimate_messages_toke
 pub struct ContextManager {
     system_prompt: String,
     history_limit: HistoryLimit,
+}
+
+struct HistoryBuildInputs<'a> {
+    user_message: &'a str,
+    working_memory: &'a [Message],
+    compact_summary: Option<&'a str>,
+    history: &'a [Message],
+    required_history: &'a [Message],
+    stable_prefix_hash: &'a str,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -148,56 +157,88 @@ impl ContextManager {
         compact_summary: Option<&str>,
         history: &[Message],
     ) -> ContextBuild {
+        self.build_with_required_history(
+            user_message,
+            working_memory,
+            compact_summary,
+            history,
+            &[],
+        )
+    }
+
+    /// Build a prompt with a bounded recent suffix that must remain available
+    /// for the next model turn. Planned steps use this for their in-flight
+    /// model/tool round instead of placing volatile results in the stable
+    /// working-memory prefix.
+    pub fn build_with_required_history(
+        &self,
+        user_message: &str,
+        working_memory: &[Message],
+        compact_summary: Option<&str>,
+        history: &[Message],
+        required_history: &[Message],
+    ) -> ContextBuild {
         let stable_prefix_hash = self.stable_prefix_hash(working_memory, compact_summary);
         match self.history_limit {
             HistoryLimit::MessageCount(max_history) => self.build_by_message_count(
-                user_message,
-                working_memory,
-                compact_summary,
-                history,
+                &HistoryBuildInputs {
+                    user_message,
+                    working_memory,
+                    compact_summary,
+                    history,
+                    required_history,
+                    stable_prefix_hash: &stable_prefix_hash,
+                },
                 max_history,
-                &stable_prefix_hash,
             ),
             HistoryLimit::TokenBudget(budget) => self.build_by_token_budget(
-                user_message,
-                working_memory,
-                compact_summary,
-                history,
+                &HistoryBuildInputs {
+                    user_message,
+                    working_memory,
+                    compact_summary,
+                    history,
+                    required_history,
+                    stable_prefix_hash: &stable_prefix_hash,
+                },
                 budget,
-                &stable_prefix_hash,
             ),
         }
     }
 
     fn build_by_message_count(
         &self,
-        user_message: &str,
-        working_memory: &[Message],
-        compact_summary: Option<&str>,
-        history: &[Message],
+        input: &HistoryBuildInputs<'_>,
         max_history: usize,
-        stable_prefix_hash: &str,
     ) -> ContextBuild {
         let mut messages = Vec::new();
 
         messages.push(Message::system(self.system_prompt.clone()));
-        messages.extend_from_slice(working_memory);
-        if let Some(summary) = compact_summary {
+        messages.extend_from_slice(input.working_memory);
+        if let Some(summary) = input.compact_summary {
             messages.push(compact_summary_message(summary));
         }
 
-        let mut start = history.len();
-        let mut included_history_messages = 0;
-        for unit in replay_safe_history_suffix_units(history).iter().rev() {
+        let mut start = input.history.len();
+        let mut included_history_messages = input.required_history.len();
+        let selectable_limit = max_history.saturating_sub(input.required_history.len());
+        for unit in replay_safe_history_suffix_units(input.history).iter().rev() {
             let unit_messages = unit.end - unit.start;
-            if included_history_messages + unit_messages > max_history {
+            if included_history_messages.saturating_sub(input.required_history.len())
+                + unit_messages
+                > selectable_limit
+            {
                 break;
             }
             included_history_messages += unit_messages;
             start = unit.start;
         }
-        messages.extend_from_slice(&history[start..]);
-        messages.push(Message::user(user_message));
+        let mut retained_history = input.history[start..].to_vec();
+        retained_history.extend_from_slice(input.required_history);
+        let protected_start = retained_history
+            .len()
+            .saturating_sub(input.required_history.len());
+        messages.extend(project_history_results(&retained_history, protected_start));
+        messages.push(Message::user(input.user_message));
 
         let token_estimate = estimate_messages_tokens(&messages);
         let metadata = self.build_metadata(
@@ -205,7 +246,7 @@ impl ContextManager {
             token_estimate,
             included_history_messages,
             start,
-            stable_prefix_hash,
+            input.stable_prefix_hash,
         );
         ContextBuild {
             messages,
@@ -220,29 +261,26 @@ impl ContextManager {
 
     fn build_by_token_budget(
         &self,
-        user_message: &str,
-        working_memory: &[Message],
-        compact_summary: Option<&str>,
-        history: &[Message],
+        input: &HistoryBuildInputs<'_>,
         budget: ContextBudget,
-        stable_prefix_hash: &str,
     ) -> ContextBuild {
-        let current_user = Message::user(user_message);
+        let current_user = Message::user(input.user_message);
         let mut prefix = Vec::new();
         prefix.push(Message::system(self.system_prompt.clone()));
-        prefix.extend_from_slice(working_memory);
-        if let Some(summary) = compact_summary {
+        prefix.extend_from_slice(input.working_memory);
+        if let Some(summary) = input.compact_summary {
             prefix.push(compact_summary_message(summary));
         }
-        let required_tokens =
-            estimate_messages_tokens(&prefix) + estimate_message_tokens(&current_user);
+        let required_tokens = estimate_messages_tokens(&prefix)
+            + estimate_messages_tokens(input.required_history)
+            + estimate_message_tokens(&current_user);
         let target_limit = prompt_target_limit(budget, required_tokens);
 
-        let mut start = history.len();
+        let mut start = input.history.len();
         let mut selected_tokens = 0;
-        let mut included_history_messages = 0;
-        for unit in replay_safe_history_suffix_units(history).iter().rev() {
-            let unit_tokens = estimate_messages_tokens(&history[unit.clone()]);
+        let mut included_history_messages = input.required_history.len();
+        for unit in replay_safe_history_suffix_units(input.history).iter().rev() {
+            let unit_tokens = estimate_messages_tokens(&input.history[unit.clone()]);
             if required_tokens + selected_tokens + unit_tokens > target_limit {
                 break;
             }
@@ -252,7 +290,12 @@ impl ContextManager {
         }
 
         let mut messages = prefix;
-        messages.extend_from_slice(&history[start..]);
+        let mut retained_history = input.history[start..].to_vec();
+        retained_history.extend_from_slice(input.required_history);
+        let protected_start = retained_history
+            .len()
+            .saturating_sub(input.required_history.len());
+        messages.extend(project_history_results(&retained_history, protected_start));
         messages.push(current_user);
 
         let token_estimate = estimate_messages_tokens(&messages);
@@ -272,7 +315,7 @@ impl ContextManager {
             token_estimate,
             included_history_messages,
             dropped_history_messages,
-            stable_prefix_hash,
+            input.stable_prefix_hash,
         );
         ContextBuild {
             messages,
@@ -306,6 +349,25 @@ impl ContextManager {
             token_estimate,
             included_history_messages,
             dropped_history_messages,
+            system_prompt_bytes: self.system_prompt.len(),
+            stable_prefix_bytes: messages
+                .iter()
+                .take_while(|message| message.role == Role::System)
+                .map(message_bytes)
+                .sum(),
+            history_bytes: messages
+                .iter()
+                .filter(|message| matches!(message.role, Role::Assistant | Role::Tool))
+                .map(message_bytes)
+                .sum(),
+            total_bytes: messages.iter().map(message_bytes).sum(),
+            referenced_tool_results: messages
+                .iter()
+                .filter(|message| {
+                    message.role == Role::Tool
+                        && message.content.starts_with("[tool result reference]")
+                })
+                .count(),
             prompt_cache_key: None,
         }
     }
@@ -327,6 +389,69 @@ impl ContextManager {
             .to_string(),
         )
     }
+}
+
+/// Keep the most recent occurrence of each retained artifact inline. Older
+/// duplicate payloads become deterministic references. This only transforms
+/// the provider working set; canonical Session/trace/artifact bytes remain
+/// unchanged and the current round is always available to the model.
+fn project_history_results(history: &[Message], protected_start: usize) -> Vec<Message> {
+    let mut latest = HashMap::<String, usize>::new();
+    for (index, message) in history.iter().enumerate() {
+        if message.role != Role::Tool {
+            continue;
+        }
+        for block in &message.content_blocks {
+            if let rove_models::ContentBlock::RichReference {
+                kind, reference, ..
+            } = block
+                && kind == "tool_artifact"
+            {
+                latest.insert(reference.clone(), index);
+            }
+        }
+    }
+    let current_round_start = history
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(index, message)| {
+            (message.role == Role::Assistant && !message.tool_calls.is_empty()).then_some(index)
+        });
+    history.iter().enumerate().map(|(index, message)| {
+            let Some((reference, title, mime_type)) = message.content_blocks.iter().find_map(|block| {
+                if let rove_models::ContentBlock::RichReference {
+                    kind,
+                    reference,
+                    title,
+                    mime_type,
+                } = block
+                    && kind == "tool_artifact"
+                {
+                    return Some((reference, title, mime_type));
+                }
+                None
+            }) else {
+                return message.clone();
+            };
+            let in_current_round = current_round_start.is_some_and(|round_start| index > round_start);
+            if index >= protected_start || in_current_round {
+                return message.clone();
+            }
+            let mut projected = message.clone();
+            projected.content = format!(
+                "[tool result reference] artifact {reference}; {}. Full retained content can be resolved through the canonical artifact authority.",
+                title.as_deref().unwrap_or("content-addressed result")
+            );
+            projected.content_blocks = vec![rove_models::ContentBlock::RichReference {
+                kind: "tool_artifact".to_string(),
+                reference: reference.clone(),
+                mime_type: mime_type.clone(),
+                title: title.clone(),
+            }];
+            projected
+        })
+        .collect()
 }
 
 fn replay_safe_history_suffix_units(history: &[Message]) -> Vec<Range<usize>> {
@@ -409,7 +534,7 @@ fn prompt_target_limit(budget: ContextBudget, required_tokens: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rove_models::ToolCallRef;
+    use rove_models::{ContentBlock, ToolCallRef};
 
     fn parallel_native_tool_round() -> Vec<Message> {
         vec![
@@ -640,5 +765,121 @@ mod tests {
             first.metadata.stable_prefix_hash,
             second.metadata.stable_prefix_hash
         );
+    }
+
+    fn artifact_result(call: &str, content: &str, artifact: &str) -> Vec<Message> {
+        let mut result = Message::tool(content, Some(call.to_string()));
+        result.content_blocks = vec![
+            ContentBlock::text(content),
+            ContentBlock::RichReference {
+                kind: "tool_artifact".to_string(),
+                reference: artifact.to_string(),
+                mime_type: Some("text/plain".to_string()),
+                title: Some(format!("{} bytes sha256:abc", content.len())),
+            },
+        ];
+        vec![
+            Message::assistant_with_tool_calls(
+                "",
+                vec![ToolCallRef {
+                    id: call.to_string(),
+                    name: "read_file".to_string(),
+                    args: serde_json::json!({"path":"Cargo.toml"}),
+                }],
+            ),
+            result,
+        ]
+    }
+
+    #[test]
+    fn old_artifact_results_become_references_while_current_result_stays_inline() {
+        let mut history = artifact_result(
+            "call-a",
+            "full old payload",
+            "art_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        );
+        history.extend(artifact_result(
+            "call-b",
+            "full current payload",
+            "art_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        ));
+        let context = ContextManager::with_max_history("system".to_string(), 8)
+            .build_with_checkpoint("continue", &[], None, &history);
+        let tools = context
+            .messages
+            .iter()
+            .filter(|message| message.role == Role::Tool)
+            .collect::<Vec<_>>();
+        assert_eq!(tools.len(), 2);
+        assert!(tools[0].content.starts_with("[tool result reference]"));
+        assert_eq!(tools[1].content, "full current payload");
+        assert_eq!(context.metadata.referenced_tool_results, 1);
+        assert_eq!(
+            context.metadata.total_bytes,
+            context.messages.iter().map(message_bytes).sum::<usize>()
+        );
+
+        let replay = ContextManager::with_max_history("system".to_string(), 8)
+            .build_with_checkpoint("continue", &[], None, &history);
+        assert_eq!(
+            serde_json::to_vec(&context.messages).unwrap(),
+            serde_json::to_vec(&replay.messages).unwrap()
+        );
+    }
+
+    #[test]
+    fn every_result_in_the_current_parallel_tool_round_stays_inline() {
+        let mut history =
+            artifact_result("old", "old payload", "art_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        history.push(Message::assistant_with_tool_calls(
+            "",
+            vec![
+                ToolCallRef {
+                    id: "batch-a".to_string(),
+                    name: "read_file".to_string(),
+                    args: serde_json::json!({"path":"a"}),
+                },
+                ToolCallRef {
+                    id: "batch-b".to_string(),
+                    name: "read_file".to_string(),
+                    args: serde_json::json!({"path":"b"}),
+                },
+            ],
+        ));
+        for (call, content, artifact) in [
+            (
+                "batch-a",
+                "current a",
+                "art_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            ),
+            (
+                "batch-b",
+                "current b",
+                "art_cccccccccccccccccccccccccccccccc",
+            ),
+        ] {
+            let mut result = Message::tool(content, Some(call.to_string()));
+            result.content_blocks = vec![
+                ContentBlock::text(content),
+                ContentBlock::RichReference {
+                    kind: "tool_artifact".to_string(),
+                    reference: artifact.to_string(),
+                    mime_type: Some("text/plain".to_string()),
+                    title: None,
+                },
+            ];
+            history.push(result);
+        }
+
+        let context = ContextManager::with_max_history("system".to_string(), 10)
+            .build_with_checkpoint("continue", &[], None, &history);
+        let tools = context
+            .messages
+            .iter()
+            .filter(|message| message.role == Role::Tool)
+            .map(|message| message.content.as_str())
+            .collect::<Vec<_>>();
+        assert!(tools[0].starts_with("[tool result reference]"));
+        assert_eq!(&tools[1..], &["current a", "current b"]);
     }
 }

@@ -132,6 +132,10 @@ impl ModelClient for FakeModelClient {
     fn model_id(&self) -> &str {
         "fake-model"
     }
+
+    fn compatibility_text_tool_calls(&self) -> bool {
+        true
+    }
 }
 
 struct StepFailureModelClient {
@@ -216,6 +220,10 @@ impl ModelClient for FailingAfterFirstCallModelClient {
     fn model_id(&self) -> &str {
         "failing-after-first-call"
     }
+
+    fn compatibility_text_tool_calls(&self) -> bool {
+        true
+    }
 }
 
 struct CapturingFakeModelClient {
@@ -261,6 +269,10 @@ impl ModelClient for CapturingFakeModelClient {
 
     fn model_id(&self) -> &str {
         "capturing-fake-model"
+    }
+
+    fn compatibility_text_tool_calls(&self) -> bool {
+        true
     }
 }
 
@@ -4080,13 +4092,14 @@ async fn planner_repairs_recoverable_tool_error_within_the_same_step() {
 
     let events = collect_events(&engine, "fix the docs").await;
 
-    assert!(events.iter().any(|event| {
-        matches!(
-            event,
-            StreamEvent::ToolCallFailed { error, .. }
-                if error.to_string().contains("tool arguments must be")
-        )
-    }));
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, StreamEvent::ToolCallStarted { .. }))
+            .count(),
+        0,
+        "malformed compatibility output must be repaired before tool dispatch"
+    );
     assert_eq!(
         events
             .iter()
