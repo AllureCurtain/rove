@@ -22,7 +22,8 @@ use utoipa_swagger_ui::SwaggerUi;
 
 use rove_app_bootstrap::build_model_client_with_health;
 use rove_app_bootstrap::{
-    AppConfig, AppConfigOverrides, ProjectActivationState, ProjectTrustRepository,
+    AppConfig, AppConfigOverrides, ProjectActivationState, ProjectTrustRepository, ProviderCatalog,
+    ProviderCatalogService, UserConfigPaths,
 };
 use rove_app_bootstrap::{EngineOptions, build_engine};
 use rove_core::ToolError;
@@ -32,6 +33,7 @@ use rove_models::health::{HealthConfig, ModelHealthStore};
 use rove_runtime::agents::{AgentActivationError, SelectorError};
 use rove_runtime::engine::{Engine, RunControlHandle};
 use rove_runtime::events::StreamEvent;
+use rove_runtime::runtime_identity::RunModelSnapshot;
 use rove_runtime::state::artifacts::RunArtifactRecorder;
 use rove_runtime::state::index::{ResumeJobClaim, RunIndexRecord, StateIndex};
 use rove_runtime::state::resume::resolve_resume_state;
@@ -75,6 +77,7 @@ struct ApiStateInner {
     config: AppConfig,
     product_store_path: PathBuf,
     product_store: Option<Arc<dyn ProductStore>>,
+    provider_catalog: ProviderCatalogService,
     project_trust: Option<Arc<ProjectTrustRepository>>,
     product_transcript_reader: Option<Arc<dyn ProductTranscriptReader>>,
     shutdown_token: CancellationToken,
@@ -146,6 +149,7 @@ pub(crate) struct JobRecord {
     /// Captured by ProductStore while claiming this turn. It is intentionally
     /// immutable for the lifetime of the runtime job.
     product_model_config: Option<ProductSessionModelConfig>,
+    run_model_snapshot: Option<RunModelSnapshot>,
     status: Mutex<RunStatus>,
     events: Mutex<Vec<JobStreamEvent>>,
     pending_approvals: Mutex<HashMap<CallId, PendingApproval>>,
@@ -474,6 +478,9 @@ impl ApiState {
             tracing::warn!("failed to mark stale API jobs interrupted: {err}");
         }
         let product_store_path = config.state_dir().join("product.sqlite");
+        let provider_catalog = ProviderCatalogService::new(UserConfigPaths::for_config_file(
+            &config.source_summary.user_config_path,
+        ));
         let product_store = match product::store::open_product_store(
             product_store_path.clone(),
             config.state.sqlite_busy_timeout_ms,
@@ -515,6 +522,7 @@ impl ApiState {
                 config,
                 product_store_path,
                 product_store,
+                provider_catalog,
                 project_trust,
                 product_transcript_reader,
                 shutdown_token,
@@ -539,6 +547,18 @@ impl ApiState {
             .product_store
             .clone()
             .ok_or_else(|| ProductStoreError::unavailable().into())
+    }
+
+    pub(crate) fn provider_catalog_service(&self) -> ProviderCatalogService {
+        self.inner.provider_catalog.clone()
+    }
+
+    pub(crate) async fn provider_catalog(&self) -> Result<ProviderCatalog, ApiError> {
+        let service = self.provider_catalog_service();
+        tokio::task::spawn_blocking(move || service.load())
+            .await
+            .map_err(|_| ApiError::internal("provider catalog operation did not complete"))?
+            .map_err(product::provider_catalog::catalog_error)
     }
 
     pub(crate) fn project_trust(&self) -> Result<Arc<ProjectTrustRepository>, ApiError> {
@@ -1112,6 +1132,7 @@ async fn prepare_generic_job_launch(
         product_session_id: None,
         product_store: None,
         product_model_config: None,
+        run_model_snapshot: None,
     });
     let engine = match assemble_job_engine(
         state,
@@ -1245,23 +1266,28 @@ async fn prepare_claimed_product_job_launch(
     let previous_product_status = claim.previous_status;
     let product_model_config = claim.model_config.clone();
 
-    let (workspace, config) = match workspace_and_config_for_product_job(
+    let (workspace, config, run_model_snapshot) = match workspace_and_config_for_product_job(
         state,
         req,
         &claim.context.workspace,
         &store,
         &product_model_config,
+        claim.previous_binding.is_some(),
     )
     .await
     {
         Ok(value) => value,
         Err(error) => {
+            let provider_resume_failure = matches!(
+                error.code,
+                "provider_unavailable_for_resume" | "provider_changed_for_resume"
+            );
             if let Some(control_id) = &followup_control_id {
                 release_failed_followup_start(
                     &store,
                     &claim_id,
                     control_id,
-                    false,
+                    provider_resume_failure,
                     "workspace validation",
                 )
                 .await;
@@ -1270,7 +1296,11 @@ async fn prepare_claimed_product_job_launch(
                     &store,
                     &claim_id,
                     None,
-                    previous_product_status,
+                    if provider_resume_failure {
+                        ProductSessionStatus::NeedsAttention
+                    } else {
+                        previous_product_status
+                    },
                     "workspace validation",
                 )
                 .await;
@@ -1284,31 +1314,33 @@ async fn prepare_claimed_product_job_launch(
     // and job identities keep cancellation, controls, and later follow-ups
     // isolated from the parent. Subsequent child turns use their own binding.
     let (resume_state, mut resume_claim, fork_bootstrap) = match claim.previous_binding.as_ref() {
-        Some(previous) => match load_and_claim_product_resume(&state_store, previous).await {
-            Ok((resume_state, resume_claim)) => (Some(resume_state), Some(resume_claim), false),
-            Err(error) => {
-                if let Some(control_id) = &followup_control_id {
-                    release_failed_followup_start(
-                        &store,
-                        &claim_id,
-                        control_id,
-                        true,
-                        "exact runtime resume validation",
-                    )
-                    .await;
-                } else {
-                    finish_failed_product_start(
-                        &store,
-                        &claim_id,
-                        None,
-                        ProductSessionStatus::NeedsAttention,
-                        "exact runtime resume validation",
-                    )
-                    .await;
+        Some(previous) => {
+            match load_and_claim_product_resume(&state_store, previous, &run_model_snapshot).await {
+                Ok((resume_state, resume_claim)) => (Some(resume_state), Some(resume_claim), false),
+                Err(error) => {
+                    if let Some(control_id) = &followup_control_id {
+                        release_failed_followup_start(
+                            &store,
+                            &claim_id,
+                            control_id,
+                            true,
+                            "exact runtime resume validation",
+                        )
+                        .await;
+                    } else {
+                        finish_failed_product_start(
+                            &store,
+                            &claim_id,
+                            None,
+                            ProductSessionStatus::NeedsAttention,
+                            "exact runtime resume validation",
+                        )
+                        .await;
+                    }
+                    return Err(error);
                 }
-                return Err(error);
             }
-        },
+        }
         None => match claim.context.fork.as_ref() {
             Some(fork) => match load_product_fork_resume(&state_store, &fork.fork).await {
                 Ok(resume_state) => (Some(resume_state), None, true),
@@ -1374,6 +1406,7 @@ async fn prepare_claimed_product_job_launch(
         product_session_id: Some(product_session_id.clone()),
         product_store: Some(store.clone()),
         product_model_config: Some(product_model_config),
+        run_model_snapshot: Some(run_model_snapshot),
     });
     let engine = match assemble_job_engine(
         state,
@@ -1475,6 +1508,7 @@ async fn prepare_claimed_product_job_launch(
                     "product run is missing its claimed model configuration",
                 )
             })?,
+            run_model_snapshot: record.run_model_snapshot.clone(),
         })
         .await
     {
@@ -1533,6 +1567,7 @@ struct NewJobRecord<'a> {
     product_session_id: Option<ProductSessionId>,
     product_store: Option<Arc<dyn ProductStore>>,
     product_model_config: Option<ProductSessionModelConfig>,
+    run_model_snapshot: Option<RunModelSnapshot>,
 }
 
 fn new_job_record(input: NewJobRecord<'_>) -> Arc<JobRecord> {
@@ -1548,6 +1583,7 @@ fn new_job_record(input: NewJobRecord<'_>) -> Arc<JobRecord> {
         product_session_id,
         product_store,
         product_model_config,
+        run_model_snapshot,
     } = input;
     let run_id = RunId::new();
     let (tx, _) = broadcast::channel(EVENT_BUFFER);
@@ -1564,6 +1600,7 @@ fn new_job_record(input: NewJobRecord<'_>) -> Arc<JobRecord> {
         product_session_id,
         product_store,
         product_model_config,
+        run_model_snapshot,
         status: Mutex::new(RunStatus::Running),
         events: Mutex::new(Vec::new()),
         pending_approvals: Mutex::new(HashMap::new()),
@@ -1623,6 +1660,7 @@ async fn release_runtime_resume_claim(state_store: &StateStore, claim: Option<Re
 async fn load_and_claim_product_resume(
     state_store: &StateStore,
     previous: &ProductRuntimeBinding,
+    current_run_model: &RunModelSnapshot,
 ) -> Result<(TaskState, ResumeJobClaim), ApiError> {
     let job = state_store
         .index
@@ -1687,6 +1725,7 @@ async fn load_and_claim_product_resume(
         )
         .into());
     }
+    validate_product_resume_model(&resume_state, current_run_model)?;
     let resume_state = project_product_follow_up_state(resume_state)?;
     let Some(claim) = claim_runtime_resume(state_store, Some(&resume_state), true).await? else {
         return Err(ApiError::internal(
@@ -1694,6 +1733,40 @@ async fn load_and_claim_product_resume(
         ));
     };
     Ok((resume_state, claim))
+}
+
+fn validate_product_resume_model(
+    resume_state: &TaskState,
+    current: &RunModelSnapshot,
+) -> Result<(), ApiError> {
+    let saved = resume_state
+        .checkpoint
+        .as_ref()
+        .and_then(|checkpoint| checkpoint.runtime_identity.as_ref())
+        .or(resume_state.runtime_identity.as_ref())
+        .and_then(|identity| identity.run_model.as_ref());
+    let Some(saved) = saved else {
+        return Ok(());
+    };
+
+    let selection_changed = saved.profile_id != current.profile_id
+        || saved.model != current.model
+        || saved.reasoning != current.reasoning;
+    if selection_changed {
+        return Ok(());
+    }
+    let compatible = saved.provider_type == current.provider_type
+        && saved.wire_protocol == current.wire_protocol
+        && saved.endpoint == current.endpoint
+        && saved.safe_config_digest == current.safe_config_digest;
+    if compatible {
+        Ok(())
+    } else {
+        Err(ApiError::conflict_with_code(
+            ProductErrorCode::ProviderChangedForResume.as_str(),
+            "the selected Provider changed since the previous run; start a new session or restore the original Provider identity",
+        ))
+    }
 }
 
 /// Verify a fork request against the parent session's immutable product binding
@@ -2253,9 +2326,11 @@ async fn start_project_trust_monitor(
     let provider_selector = if let (Some(store), Some(product_session_id)) =
         (&record.product_store, &record.product_session_id)
     {
+        let catalog = state.provider_catalog().await.ok()?;
         match store.get_session_context(product_session_id).await {
             Ok(context) => product::trust::product_provider_capability_selector(
                 store,
+                &catalog,
                 &context.workspace.id,
                 &record.workspace.root,
             )
@@ -3217,6 +3292,7 @@ async fn assemble_job_engine(
         input_provider: Some(input_provider),
         approval_provider,
         environment: None,
+        run_model_snapshot: record.run_model_snapshot.clone(),
     })
     .await?;
     let mcp_config_path = config.workspace_bounded_mcp_config_path()?;
@@ -3252,7 +3328,8 @@ async fn workspace_and_config_for_product_job(
     product_workspace: &ProductWorkspace,
     store: &Arc<dyn ProductStore>,
     model_config: &ProductSessionModelConfig,
-) -> Result<(Workspace, AppConfig), ApiError> {
+    resume_expected: bool,
+) -> Result<(Workspace, AppConfig, RunModelSnapshot), ApiError> {
     if req.model.is_some()
         || req.max_steps.is_some()
         || req.approval.is_some()
@@ -3269,8 +3346,19 @@ async fn workspace_and_config_for_product_job(
     }
     let (workspace, mut config) = rebased_workspace_config(state, workspace)?;
     let authority = state.project_trust()?;
+    let catalog = state.provider_catalog().await.map_err(|error| {
+        if resume_expected {
+            ApiError::conflict_with_code(
+                ProductErrorCode::ProviderUnavailableForResume.as_str(),
+                "the Provider catalog required to resume this session is unavailable",
+            )
+        } else {
+            error
+        }
+    })?;
     let provider_selector = product::trust::product_provider_capability_selector(
         store,
+        &catalog,
         &product_workspace.id,
         &workspace.root,
     )
@@ -3289,43 +3377,103 @@ async fn workspace_and_config_for_product_job(
         ));
     }
     config.apply_project_trust_resolution(trust);
-    let provider_type = if let Some(profile_id) = &model_config.profile_id {
-        let stored = store.get_provider_profile(profile_id).await?;
-        let provider_type = product_provider_type_name(stored.provider_type);
-        require_product_provider_trust(&config, provider_type)?;
-        let profile = ProviderProfileRequest {
-            provider_type: Some(provider_type.to_string()),
-            name: stored.label,
-            api_base: stored.api_base,
-            api_key_env: stored.api_key_env,
-        };
-        apply_provider_profile(&mut config, &profile, Some(&model_config.model))?;
-        provider_type.to_string()
-    } else {
-        config.provider.model = model_config.model.clone();
-        config
-            .provider
-            .active
-            .as_ref()
-            .and_then(|active| config.provider.profiles.get(active))
-            .map(|profile| profile.provider_type.clone())
-            .unwrap_or_else(|| "fake".to_string())
-    };
-    require_product_provider_trust(&config, &provider_type)?;
-    apply_product_reasoning(&mut config, &provider_type, model_config.reasoning)?;
-    Ok((workspace, config))
-}
-
-fn require_product_provider_trust(config: &AppConfig, provider_type: &str) -> Result<(), ApiError> {
-    if provider_type == "fake"
-        || config.project_capability_allowed(rove_app_bootstrap::CAP_PROVIDER_CREDENTIALS)
-    {
-        return Ok(());
+    if let Some(profile_id) = model_config.profile_id.as_ref() {
+        let provider_identity = store.get_provider_profile(profile_id).await?;
+        if provider_identity.provider_type != ProductProviderType::Fake
+            && !config.project_capability_allowed(rove_app_bootstrap::CAP_PROVIDER_CREDENTIALS)
+        {
+            return Err(ApiError::conflict_with_code(
+                ProductErrorCode::ProjectTrustRequired.as_str(),
+                "project trust must grant provider_credentials before using the selected Provider",
+            ));
+        }
     }
-    Err(ApiError::conflict_with_code(
-        ProductErrorCode::ProjectTrustRequired.as_str(),
-        "project trust for the selected provider endpoint and credential selector is required",
-    ))
+    let Some(profile_id) = model_config.profile_id.as_ref() else {
+        if matches!(model_config.model.as_str(), "fake" | "fake-raw")
+            && config
+                .provider
+                .profiles
+                .values()
+                .any(|profile| profile.provider_type == "fake")
+        {
+            config.provider.model = model_config.model.clone();
+            let snapshot = RunModelSnapshot {
+                profile_id: "programmatic-fake".to_string(),
+                provider_type: "fake".to_string(),
+                wire_protocol: "fake".to_string(),
+                endpoint: String::new(),
+                model: model_config.model.clone(),
+                reasoning: model_config.reasoning.as_str().to_string(),
+                catalog_revision: "programmatic".to_string(),
+                safe_config_digest: rove_runtime::context::stable_hash("programmatic-fake"),
+            };
+            return Ok((workspace, config, snapshot));
+        }
+        return Err(ApiError::conflict_with_code(
+            ProductErrorCode::ProductProviderProfileUnavailable.as_str(),
+            "product session has no Provider profile selection; configure ~/.rove/config.toml and select a profile",
+        ));
+    };
+    let catalog_profile_id = product::provider_catalog::catalog_id(profile_id)?;
+    let selection = rove_app_bootstrap::ModelSelection {
+        profile_id: catalog_profile_id.clone(),
+        model: model_config.model.clone(),
+        reasoning: model_config.reasoning.as_str().to_string(),
+        revision: catalog.revision().to_string(),
+    };
+    let run_model_snapshot = catalog
+        .snapshot(&selection, &workspace.root)
+        .map_err(|error| {
+            if resume_expected {
+                ApiError::conflict_with_code(
+                    ProductErrorCode::ProviderUnavailableForResume.as_str(),
+                    "the Provider profile required to resume this session is unavailable",
+                )
+            } else {
+                product::provider_catalog::catalog_error(error)
+            }
+        })?;
+    let profile = catalog
+        .profile_config(&catalog_profile_id)
+        .map_err(|error| {
+            if resume_expected {
+                ApiError::conflict_with_code(
+                    ProductErrorCode::ProviderUnavailableForResume.as_str(),
+                    "the Provider profile required to resume this session is unavailable",
+                )
+            } else {
+                product::provider_catalog::catalog_error(error)
+            }
+        })?
+        .clone();
+    profile
+        .resolve(&workspace.root, true, Some(&model_config.model))
+        .map_err(|_| {
+            let (code, message) = if resume_expected {
+                (
+                    ProductErrorCode::ProviderUnavailableForResume.as_str(),
+                    "the credential required to resume this session is unavailable",
+                )
+            } else {
+                (
+                    ProductErrorCode::ProductProviderProfileUnavailable.as_str(),
+                    "the selected Provider credential is unavailable",
+                )
+            };
+            ApiError::conflict_with_code(code, message)
+        })?;
+    config.provider.active = Some(catalog_profile_id.to_string());
+    config.provider.profiles.clear();
+    config
+        .provider
+        .profiles
+        .insert(catalog_profile_id.to_string(), profile.clone());
+    config.provider.fallback_profiles.clear();
+    config.provider.fallback_models.clear();
+    config.provider.model = model_config.model.clone();
+    let provider_type = profile.provider_type;
+    apply_product_reasoning(&mut config, &provider_type, model_config.reasoning)?;
+    Ok((workspace, config, run_model_snapshot))
 }
 
 fn apply_product_reasoning(
@@ -3354,16 +3502,6 @@ fn apply_product_reasoning(
         "reasoning_effort": reasoning.as_str(),
     });
     Ok(())
-}
-
-fn product_provider_type_name(provider_type: ProductProviderType) -> &'static str {
-    match provider_type {
-        ProductProviderType::Openai => "openai",
-        ProductProviderType::OpenaiResponses => "openai-responses",
-        ProductProviderType::Anthropic => "anthropic",
-        ProductProviderType::Ollama => "ollama",
-        ProductProviderType::Fake => "fake",
-    }
 }
 
 fn open_product_workspace(product_workspace: &ProductWorkspace) -> Result<Workspace, ApiError> {
@@ -4061,7 +4199,9 @@ impl From<ProductStoreError> for ApiError {
             | ProductErrorCode::ProductControlRejected
             | ProductErrorCode::ProductForkConflict
             | ProductErrorCode::ProductForkSourceInvalid
-            | ProductErrorCode::ProductSessionModelConfigConflict => StatusCode::CONFLICT,
+            | ProductErrorCode::ProductSessionModelConfigConflict
+            | ProductErrorCode::ProviderUnavailableForResume
+            | ProductErrorCode::ProviderChangedForResume => StatusCode::CONFLICT,
             ProductErrorCode::ProductProviderProfileUnavailable => StatusCode::NOT_FOUND,
         };
         let message = if error.code == ProductErrorCode::ProductStorageFailure {
@@ -4257,6 +4397,7 @@ mod tests {
             product_session_id: None,
             product_store: None,
             product_model_config: None,
+            run_model_snapshot: None,
             status: Mutex::new(RunStatus::Running),
             events: Mutex::new(Vec::new()),
             pending_approvals: Mutex::new(HashMap::new()),
@@ -4446,6 +4587,7 @@ mod tests {
             product_session_id: None,
             product_store: None,
             product_model_config: None,
+            run_model_snapshot: None,
             status: Mutex::new(RunStatus::Running),
             events: Mutex::new(Vec::new()),
             pending_approvals: Mutex::new(HashMap::new()),
@@ -4535,6 +4677,7 @@ mod tests {
             product_session_id: None,
             product_store: None,
             product_model_config: None,
+            run_model_snapshot: None,
             status: Mutex::new(RunStatus::Running),
             events: Mutex::new(Vec::new()),
             pending_approvals: Mutex::new(HashMap::new()),
@@ -4614,6 +4757,18 @@ mod tests {
         let mut config = AppConfig::default();
         config.state.state_dir = PathBuf::from("api-state");
         config.state.sqlite_busy_timeout_ms = 5_000;
+        let user_paths = UserConfigPaths::from_root(server.path().join("user-config"));
+        let mut user_document = rove_app_bootstrap::UserConfigDocument::default();
+        user_document.provider.profiles.insert(
+            "test-fake".to_string(),
+            config.provider.profiles["default"].clone(),
+        );
+        user_document.model.default_profile = Some("test-fake".to_string());
+        user_document.model.default_model = Some("fake".to_string());
+        rove_app_bootstrap::UserConfigWriter::new(user_paths.clone())
+            .update(None, &user_document)
+            .unwrap();
+        config.source_summary.user_config_path = user_paths.config_file;
         let state = ApiState::new(workspace, config);
         let store = state.product_store().unwrap();
         let product_workspace = store
@@ -4630,6 +4785,29 @@ mod tests {
                 workspace_id: product_workspace.id.clone(),
                 title: Some("Disconnect during claim".to_string()),
             })
+            .await
+            .unwrap();
+        let test_profile_id = ProductProviderProfileId::from_catalog_id("test-fake").unwrap();
+        store
+            .upsert_provider_catalog_identity(
+                &test_profile_id,
+                "Test Fake",
+                ProductProviderType::Fake,
+                &user_document.revision(),
+            )
+            .await
+            .unwrap();
+        store
+            .update_session_model_config(
+                &product_session.id,
+                UpdateProductSessionModelConfigRequest {
+                    profile_id: Some(test_profile_id),
+                    model: "fake".to_string(),
+                    reasoning: ProductReasoningPreference::Default,
+                    max_steps: DEFAULT_PRODUCT_MAX_STEPS,
+                    expected_revision: None,
+                },
+            )
             .await
             .unwrap();
 

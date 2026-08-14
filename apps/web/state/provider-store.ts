@@ -89,6 +89,10 @@ export function upsertProviderProfile(
     apiKeyEnv: input.apiKeyEnv,
     defaultModel: input.defaultModel,
     updatedAt: now,
+    catalogRevision: input.id
+      ? profiles.find((profile) => profile.id === input.id)?.catalogRevision ??
+        "legacy-local"
+      : "legacy-local",
   };
   return [record, ...profiles.filter((profile) => profile.id !== record.id)];
 }

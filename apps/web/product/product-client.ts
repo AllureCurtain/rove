@@ -177,7 +177,7 @@ export interface ProductApiClient {
     profileId: string,
     request: UpdateProductProviderProfileRequest,
   ): Promise<ProductProviderProfile>;
-  deleteProviderProfile(profileId: string): Promise<void>;
+  deleteProviderProfile(profileId: string, expectedRevision?: string): Promise<void>;
   listProviderModels(profileId: string): Promise<ProductProviderModelsResponse>;
   getPreferences(): Promise<ProductPreferences>;
   updatePreferences(
@@ -796,12 +796,15 @@ export function createProductApiClient(
       );
     },
 
-    deleteProviderProfile(profileId) {
+    deleteProviderProfile(profileId, expectedRevision) {
+      const query = expectedRevision
+        ? `?expected_revision=${encodeURIComponent(expectedRevision)}`
+        : "";
       return requestNoContent(
         fetchImpl,
         productUrl(
           apiPrefix,
-          `/product/provider-profiles/${encodeURIComponent(profileId)}`,
+          `/product/provider-profiles/${encodeURIComponent(profileId)}${query}`,
         ),
       );
     },

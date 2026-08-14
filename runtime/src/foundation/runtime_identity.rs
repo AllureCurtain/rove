@@ -7,12 +7,30 @@ use crate::types::ApprovalPolicy;
 use crate::workspace::{Workspace, WorkspaceKind};
 use rove_core::ToolDescriptor;
 
+/// Secret-free provider/model fact pinned for one run.
+///
+/// This contract lives in Runtime so every shell can persist and compare it
+/// without making Runtime depend on first-party bootstrap configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RunModelSnapshot {
+    pub profile_id: String,
+    pub provider_type: String,
+    pub wire_protocol: String,
+    pub endpoint: String,
+    pub model: String,
+    pub reasoning: String,
+    pub catalog_revision: String,
+    pub safe_config_digest: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RuntimeIdentity {
     pub cwd: String,
     pub workspace_kind: WorkspaceKind,
     pub model_id: String,
     pub provider_target: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_model: Option<RunModelSnapshot>,
     pub approval_policy: ApprovalPolicy,
     pub max_steps: u32,
     pub plan_enabled: bool,
@@ -72,6 +90,7 @@ pub struct RuntimeIdentityInput<'a> {
     pub workspace: &'a Workspace,
     pub model_id: &'a str,
     pub provider_target: &'a str,
+    pub run_model: Option<&'a RunModelSnapshot>,
     pub approval_policy: ApprovalPolicy,
     pub max_steps: u32,
     pub plan_enabled: bool,
@@ -107,6 +126,7 @@ pub fn build_runtime_identity(input: RuntimeIdentityInput<'_>) -> RuntimeIdentit
         workspace_kind: input.workspace.kind.clone(),
         model_id: input.model_id.to_string(),
         provider_target: input.provider_target.to_string(),
+        run_model: input.run_model.cloned(),
         approval_policy: input.approval_policy,
         max_steps: input.max_steps,
         plan_enabled: input.plan_enabled,
@@ -148,6 +168,9 @@ pub fn evaluate_runtime_identity(
     }
     if saved.provider_target != current.provider_target {
         mismatch_fields.push("provider_target".to_string());
+    }
+    if saved.run_model.is_some() && saved.run_model != current.run_model {
+        mismatch_fields.push("run_model".to_string());
     }
     if saved.approval_policy != current.approval_policy {
         mismatch_fields.push("approval_policy".to_string());
@@ -294,6 +317,7 @@ mod tests {
             execution_environment: None,
             execution_capabilities: None,
             agent: None,
+            run_model: None,
         });
 
         assert_eq!(identity.cwd, workspace.root.display().to_string());
@@ -345,6 +369,7 @@ mod tests {
             execution_environment: None,
             execution_capabilities: None,
             agent: None,
+            run_model: None,
         });
         let current = build_runtime_identity(RuntimeIdentityInput {
             workspace: &workspace,
@@ -363,6 +388,7 @@ mod tests {
             execution_environment: None,
             execution_capabilities: None,
             agent: None,
+            run_model: None,
         });
 
         let evaluation = evaluate_runtime_identity(Some(&saved), &current);
@@ -416,6 +442,7 @@ mod tests {
             execution_environment: None,
             execution_capabilities: None,
             agent: None,
+            run_model: None,
         });
 
         let evaluation = evaluate_runtime_identity(None, &current);
@@ -458,6 +485,7 @@ mod tests {
                 artifact_projection: true,
             }),
             agent: None,
+            run_model: None,
         });
         let mut legacy_value = serde_json::to_value(&current).unwrap();
         legacy_value
@@ -499,6 +527,7 @@ mod tests {
             execution_environment: None,
             execution_capabilities: None,
             agent: None,
+            run_model: None,
         })
     }
 

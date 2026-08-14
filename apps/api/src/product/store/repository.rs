@@ -514,21 +514,6 @@ impl ProductRepository {
         let mut connection = self.database.connect()?;
         let transaction = immediate_transaction(&mut connection)?;
         get_session(&transaction, session_id)?;
-        if let Some(profile_id) = request.profile_id.as_ref() {
-            let exists: bool = transaction
-                .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM product_provider_profiles WHERE profile_id = ?1)",
-                    params![profile_id.to_string()],
-                    |row| row.get(0),
-                )
-                .map_err(storage_error)?;
-            if !exists {
-                return Err(ProductStoreError::new(
-                    ProductErrorCode::ProductProviderProfileUnavailable,
-                    "the selected provider profile was not found",
-                ));
-            }
-        }
         let current_revision = transaction
             .query_row(
                 "SELECT revision FROM product_session_model_configs WHERE product_session_id = ?1",
@@ -586,6 +571,8 @@ impl ProductRepository {
                 r#"
                 SELECT product_session_id, ordinal, runtime_run_id, profile_id,
                        model, reasoning, max_steps,
+                       provider_type, wire_protocol, endpoint, catalog_revision,
+                       safe_config_digest,
                        context_window,
                        pricing_source, pricing_version, pricing_currency,
                        pricing_availability, per_mtok_prompt, per_mtok_completion,
@@ -607,14 +594,19 @@ impl ProductRepository {
                     model: row.get(4)?,
                     reasoning: row.get(5)?,
                     max_steps: row.get(6)?,
-                    context_window: row.get(7)?,
-                    pricing_source: row.get(8)?,
-                    pricing_version: row.get(9)?,
-                    pricing_currency: row.get(10)?,
-                    pricing_availability: row.get(11)?,
-                    per_mtok_prompt: row.get(12)?,
-                    per_mtok_completion: row.get(13)?,
-                    per_mtok_cache_read: row.get(14)?,
+                    provider_type: row.get(7)?,
+                    wire_protocol: row.get(8)?,
+                    endpoint: row.get(9)?,
+                    catalog_revision: row.get(10)?,
+                    safe_config_digest: row.get(11)?,
+                    context_window: row.get(12)?,
+                    pricing_source: row.get(13)?,
+                    pricing_version: row.get(14)?,
+                    pricing_currency: row.get(15)?,
+                    pricing_availability: row.get(16)?,
+                    per_mtok_prompt: row.get(17)?,
+                    per_mtok_completion: row.get(18)?,
+                    per_mtok_cache_read: row.get(19)?,
                 })
             })
             .map_err(storage_error)?;
@@ -1104,6 +1096,7 @@ impl ProductRepository {
             created.ordinal,
             &binding.runtime_run_id,
             &binding.model_config,
+            binding.run_model_snapshot.as_ref(),
         )?;
         if let Some(control_id) = &binding.followup_control_id {
             let claimable = transaction
@@ -1501,6 +1494,62 @@ impl ProductRepository {
         let preferences = get_preferences(&transaction)?;
         transaction.commit().map_err(storage_error)?;
         Ok(preferences)
+    }
+
+    pub(super) fn upsert_provider_catalog_identity(
+        &self,
+        profile_id: &ProductProviderProfileId,
+        label: &str,
+        provider_type: ProductProviderType,
+        catalog_revision: &str,
+    ) -> Result<(), ProductStoreError> {
+        let label = validate_required_text("provider profile label", label)?;
+        if catalog_revision.is_empty()
+            || catalog_revision.len() > 128
+            || catalog_revision.chars().any(char::is_control)
+        {
+            return Err(invalid("provider catalog revision is invalid"));
+        }
+        let mut connection = self.database.connect()?;
+        let transaction = immediate_transaction(&mut connection)?;
+        let now = now_rfc3339();
+        transaction
+            .execute(
+                r#"
+                INSERT INTO product_provider_profiles(
+                    profile_id, label, provider_type, api_base, api_key_env,
+                    default_model, created_at, updated_at
+                ) VALUES (?1, ?2, ?3, '', NULL, NULL, ?4, ?4)
+                ON CONFLICT(profile_id) DO UPDATE SET
+                    label = excluded.label,
+                    provider_type = excluded.provider_type,
+                    api_base = '', api_key_env = NULL, default_model = NULL,
+                    updated_at = excluded.updated_at
+                "#,
+                params![
+                    profile_id.to_string(),
+                    label,
+                    provider_type_to_db(provider_type),
+                    now,
+                ],
+            )
+            .map_err(storage_error)?;
+        transaction
+            .execute(
+                r#"
+                INSERT INTO product_provider_profile_catalog_mappings(
+                    source, source_profile_id, catalog_profile_id, source_digest, migrated_at
+                ) VALUES ('user_catalog', ?1, ?1, ?2, ?3)
+                ON CONFLICT(source, source_profile_id) DO UPDATE SET
+                    catalog_profile_id = excluded.catalog_profile_id,
+                    source_digest = excluded.source_digest,
+                    migrated_at = excluded.migrated_at
+                "#,
+                params![profile_id.to_string(), catalog_revision, now],
+            )
+            .map_err(storage_error)?;
+        transaction.commit().map_err(storage_error)?;
+        Ok(())
     }
 
     pub(super) fn get_resume_health(&self) -> Result<ProductResumeHealth, ProductStoreError> {
@@ -3047,6 +3096,11 @@ struct RawSessionRunModel {
     model: String,
     reasoning: String,
     max_steps: i64,
+    provider_type: Option<String>,
+    wire_protocol: Option<String>,
+    endpoint: Option<String>,
+    catalog_revision: Option<String>,
+    safe_config_digest: Option<String>,
     context_window: Option<i64>,
     pricing_source: Option<String>,
     pricing_version: Option<String>,
@@ -3087,6 +3141,11 @@ impl RawSessionRunModel {
             reasoning: ProductReasoningPreference::from_str(&self.reasoning)?,
             max_steps: u32::try_from(self.max_steps)
                 .map_err(|_| binding_corrupt("run model max_steps is invalid"))?,
+            provider_type: self.provider_type,
+            wire_protocol: self.wire_protocol,
+            endpoint: self.endpoint,
+            catalog_revision: self.catalog_revision,
+            safe_config_digest: self.safe_config_digest,
             context_window: self
                 .context_window
                 .map(|value| {
@@ -3118,6 +3177,7 @@ impl RawProviderProfile {
             default_model: self.default_model,
             created_at: self.created_at,
             updated_at: self.updated_at,
+            catalog_revision: "legacy-product-store".to_string(),
         })
     }
 }
@@ -3760,11 +3820,34 @@ fn insert_session_run_model_snapshot(
     ordinal: u64,
     runtime_run_id: &RunId,
     config: &ProductSessionModelConfig,
+    snapshot: Option<&rove_runtime::runtime_identity::RunModelSnapshot>,
 ) -> Result<(), ProductStoreError> {
     if config.product_session_id != *session_id {
         return Err(resume_conflict(
             "run model snapshot does not belong to the claimed product session",
         ));
+    }
+    if let Some(snapshot) = snapshot {
+        let programmatic_fake = config.profile_id.is_none()
+            && snapshot.profile_id == "programmatic-fake"
+            && snapshot.provider_type == "fake"
+            && snapshot.wire_protocol == "fake"
+            && snapshot.endpoint.is_empty()
+            && snapshot.catalog_revision == "programmatic";
+        let profile_matches = config
+            .profile_id
+            .as_ref()
+            .map(ToString::to_string)
+            .is_some_and(|profile_id| profile_id == snapshot.profile_id)
+            || programmatic_fake;
+        if snapshot.model != config.model
+            || snapshot.reasoning != config.reasoning.as_str()
+            || !profile_matches
+        {
+            return Err(resume_conflict(
+                "run model snapshot does not match the claimed session selection",
+            ));
+        }
     }
     let pricing = crate::pricing::PricingSnapshot::bundled_for_model(&config.model);
     let inserted = transaction
@@ -3773,11 +3856,13 @@ fn insert_session_run_model_snapshot(
             INSERT OR IGNORE INTO product_session_run_models(
                 product_session_id, ordinal, runtime_run_id, profile_id,
                 model, reasoning, max_steps, started_at,
+                provider_type, wire_protocol, endpoint, catalog_revision,
+                safe_config_digest,
                 context_window,
                 pricing_source, pricing_version, pricing_currency,
                 pricing_availability, per_mtok_prompt, per_mtok_completion,
                 per_mtok_cache_read
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)
             "#,
             params![
                 session_id.to_string(),
@@ -3788,6 +3873,11 @@ fn insert_session_run_model_snapshot(
                 config.reasoning.as_str(),
                 i64::from(config.max_steps),
                 now_rfc3339(),
+                snapshot.map(|value| value.provider_type.as_str()),
+                snapshot.map(|value| value.wire_protocol.as_str()),
+                snapshot.map(|value| value.endpoint.as_str()),
+                snapshot.map(|value| value.catalog_revision.as_str()),
+                snapshot.map(|value| value.safe_config_digest.as_str()),
                 crate::pricing::bundled_context_window(&config.model)
                     .and_then(|value| i64::try_from(value).ok()),
                 pricing.source,
@@ -3806,6 +3896,8 @@ fn insert_session_run_model_snapshot(
                 r#"
                 SELECT product_session_id, ordinal, runtime_run_id, profile_id,
                        model, reasoning, max_steps,
+                       provider_type, wire_protocol, endpoint, catalog_revision,
+                       safe_config_digest,
                        context_window,
                        pricing_source, pricing_version, pricing_currency,
                        pricing_availability, per_mtok_prompt, per_mtok_completion,
@@ -3823,14 +3915,19 @@ fn insert_session_run_model_snapshot(
                         model: row.get(4)?,
                         reasoning: row.get(5)?,
                         max_steps: row.get(6)?,
-                        context_window: row.get(7)?,
-                        pricing_source: row.get(8)?,
-                        pricing_version: row.get(9)?,
-                        pricing_currency: row.get(10)?,
-                        pricing_availability: row.get(11)?,
-                        per_mtok_prompt: row.get(12)?,
-                        per_mtok_completion: row.get(13)?,
-                        per_mtok_cache_read: row.get(14)?,
+                        provider_type: row.get(7)?,
+                        wire_protocol: row.get(8)?,
+                        endpoint: row.get(9)?,
+                        catalog_revision: row.get(10)?,
+                        safe_config_digest: row.get(11)?,
+                        context_window: row.get(12)?,
+                        pricing_source: row.get(13)?,
+                        pricing_version: row.get(14)?,
+                        pricing_currency: row.get(15)?,
+                        pricing_availability: row.get(16)?,
+                        per_mtok_prompt: row.get(17)?,
+                        per_mtok_completion: row.get(18)?,
+                        per_mtok_cache_read: row.get(19)?,
                     })
                 },
             )
@@ -3842,7 +3939,13 @@ fn insert_session_run_model_snapshot(
             && existing.profile_id == config.profile_id
             && existing.model == config.model
             && existing.reasoning == config.reasoning
-            && existing.max_steps == config.max_steps;
+            && existing.max_steps == config.max_steps
+            && existing.provider_type == snapshot.map(|value| value.provider_type.clone())
+            && existing.wire_protocol == snapshot.map(|value| value.wire_protocol.clone())
+            && existing.endpoint == snapshot.map(|value| value.endpoint.clone())
+            && existing.catalog_revision == snapshot.map(|value| value.catalog_revision.clone())
+            && existing.safe_config_digest
+                == snapshot.map(|value| value.safe_config_digest.clone());
         if !same_identity {
             return Err(resume_conflict(
                 "runtime run already has a different model snapshot",

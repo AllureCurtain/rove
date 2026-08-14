@@ -1,19 +1,42 @@
 # rove 用户级 Provider 配置与 TUI 模型选择设计 - 2026-08-12
 
-> Status: **Proposed / Not Implemented**
+> Status: **Implemented through Phase 0-5 / External Provider Smoke Unverified**
 >
 > Scope: 用户级配置文件、Provider catalog、CLI/TUI `/model`、API/Web
 > Provider 配置收敛、运行快照与迁移。
 >
-> 本文不表示当前运行时已支持 `~/.rove/config.toml` 或 TUI `/model`。
-> 当前事实仍以 [`docs/runtime/`](../runtime/README.md)、源代码和测试为准。
-> 实现必须在审阅本文后从独立 Git worktree 开始；当前工作树只新增本设计。
+> 当前运行时已支持 `~/.rove/config.toml`、共享 catalog、per-turn assembly、
+> run model snapshot、API/Web 收敛、legacy migration 和 TUI `/model`。当前事实
+> 仍以 [`docs/runtime/`](../runtime/README.md)、源代码和测试为准。真实外部
+> Provider gate 未运行，因此该状态不表示外部互操作已验证。
 >
 > Implementation authority: 本文细化 Provider 配置所有权和模型选择设计，不取代
 > [`Post-Full-Delivery Productization Program`](../plans/2026-08-10-post-full-delivery-productization.md)
 > 的总实施权威。新 worktree 开始前，应把获批切片纳入该 program（主要是
 > Provider onboarding workstream 与 TUI parity），并保持其“无 TUI 私有
 > Provider/setup backend”约束。
+
+## 0. 实现结果（2026-08-13）
+
+Phase 0-5 的代码、focused tests、OpenAPI/Web 类型和 current-state 文档已经
+落地。实现保持原 Provider kernel，不引入 CLI 对 `rove-api` 的依赖，也没有建立
+TUI 私有 backend 或通用消息队列生命周期。
+
+实现时对本文早期草案做了两项兼容性收敛：实际 user TOML profile 字段为
+`model`，凭据采用 profile-local `auth.secret = { env | file | keyring }`，而不是
+第 5.2 节草案中的 profile `default_model` 与独立 `[credentials.*]` 表。当前 TUI
+picker 投影 catalog 中每个 profile 已配置的模型，并明确
+`inventory_fresh=false`；实时远端 inventory 仍通过 API list-models 路径获取。
+
+安全和一致性结果包括 authority filter、literal secret/symlink/权限负向测试、
+catalog 与 session-selection CAS/锁/原子写、ProductStore v12 mapping、API 409
+冲突、运行快照脱敏以及严格 resume。普通 CLI 缺少 Provider 时返回真实
+onboarding error，只有显式 `--model fake`、Fake profile 或程序化 deterministic
+路径使用 Fake。
+
+尚未执行需要真实凭据、网络或本地模型服务的 external Provider smoke。因此，
+下方涉及真实 Provider 两 turn 和互操作的验收项仍保持未验证；这不影响 Phase
+0-5 实现状态，但阻止发布级互操作声明。
 
 ## 1. 决策摘要
 
@@ -523,6 +546,8 @@ resume 默认保持原运行快照语义：
 
 ### Phase 0 - 证据与冻结契约
 
+**Implementation: Complete.**
+
 - 为当前 AppConfig、CLI fixed Engine、API Provider CRUD 和 run snapshot 补齐
   focused characterization tests。
 - 修正 current runtime guide 对 legacy flat Provider fields 的矛盾描述，并用
@@ -533,6 +558,8 @@ resume 默认保持原运行快照语义：
 
 ### Phase 1 - 用户配置与共享 catalog
 
+**Implementation: Complete.**
+
 - 在 `apps/bootstrap` 实现 `~/.rove/config.toml` loader、authority filter、redacted
   credential resolver、atomic writer 和 catalog service。
 - 先支持现有 env/file credential reference；keyring 可在同阶段完成，或明确标记
@@ -541,6 +568,8 @@ resume 默认保持原运行快照语义：
 
 ### Phase 2 - API/Web 收敛
 
+**Implementation: Complete.**
+
 - API Provider CRUD/inventory 改用共享 catalog。
 - ProductStore Provider rows 做 migration/mapping，session selection 和 run
   snapshot 保持 revision/CAS。
@@ -548,11 +577,15 @@ resume 默认保持原运行快照语义：
 
 ### Phase 3 - CLI per-turn assembly
 
+**Implementation: Complete.**
+
 - 将 `CliRuntime` 拆为稳定 service 和 per-turn `RunAssembly`。
 - 共享 health/state/tool/environment，验证多 turn 上下文连续性、取消和 resume。
 - 普通 `rove` 缺少真实 Provider 时进入 onboarding，不再 implicit Fake。
 
 ### Phase 4 - TUI `/model`
+
+**Implementation: Complete.**
 
 - 实现 slash-command parser、model picker overlay、catalog effects、session
   selection persistence 和 busy/CAS error UI。
@@ -561,30 +594,32 @@ resume 默认保持原运行快照语义：
 
 ### Phase 5 - 凭据与迁移收尾
 
+**Implementation: Complete; opt-in external Provider smoke not run.**
+
 - 完成 OS keyring、导入/dry-run/receipt、旧配置读取窗口和移除条件。
 - 执行真实 Provider opt-in smoke；没有运行该 gate 时不得声明真实 Provider
   interoperability。
 
 ## 13. 验收标准
 
-全部满足后才能把本文标记为 Implemented：
+实现和确定性验收已经完成；需要真实服务的互操作项单独保留为未验证：
 
 - [ ] 新用户在 `~/.rove/config.toml` 配置一个真实 Provider 后，可在任意目录执行
   `rove` 进入 TUI，并完成至少两个连续 turn。
-- [ ] 日常启动不需要 `--model`、`ROVE_MODEL` 或 JSON Provider 环境变量。
-- [ ] `/model` picker 能列出 catalog/model inventory，选择后只影响下一 turn。
-- [ ] active run 期间切换被明确拒绝，当前流不受影响。
-- [ ] CLI、API、Web 使用同一 Provider definition catalog，不存在双写 authority。
-- [ ] 项目 config 尝试定义 endpoint/auth/header/adapter command 时在网络和进程
+- [x] 日常启动不需要 `--model`、`ROVE_MODEL` 或 JSON Provider 环境变量。
+- [x] `/model` picker 能列出 configured catalog models，选择后只影响下一 turn。
+- [x] active run 期间切换被明确拒绝，当前流不受影响。
+- [x] CLI、API、Web 使用同一 Provider definition catalog，不存在双写 authority。
+- [x] 项目 config 尝试定义 endpoint/auth/header/adapter command 时在网络和进程
   side effect 前失败。
-- [ ] run snapshot 不含 secret，且 resume 不会静默漂移到当前选择。
-- [ ] 无 Provider、配置损坏和 credential 缺失均显示真实状态，不返回 Fake 文本。
-- [ ] 显式 Fake、benchmark 和无网络 deterministic tests 继续通过。
-- [ ] 配置写入具备 CAS、锁和原子替换测试；并发写不会丢失更新。
-- [ ] workspace/env/API 旧 profile 有 dry-run、冲突、幂等和 redaction 迁移测试。
-- [ ] 当前 `docs/runtime/`、README、OpenAPI 和 TUI help 在实现同一 change 中更新。
-- [ ] Rust fmt/clippy/workspace tests、CLI/TUI/API focused tests、Web tests/typecheck/
-  build 通过；真实 Provider smoke 单独记录执行或跳过原因。
+- [x] run snapshot 不含 secret，且 resume 不会静默漂移到当前选择。
+- [x] 无 Provider、配置损坏和 credential 缺失均显示真实状态，不返回 Fake 文本。
+- [x] 显式 Fake、benchmark 和无网络 deterministic tests 继续通过。
+- [x] 配置写入具备 CAS、锁和原子替换测试；并发写不会丢失更新。
+- [x] workspace/env/API 旧 profile 有 dry-run、冲突、幂等和 redaction 迁移测试。
+- [x] 当前 `docs/runtime/`、README、OpenAPI 和 TUI help 在实现同一 change 中更新。
+- [x] Rust fmt/clippy/workspace tests、CLI/TUI/API focused tests、Web tests/typecheck/
+  build 通过；真实 Provider smoke 单独记录为未运行。
 
 ## 14. Worktree 实施约定
 

@@ -165,6 +165,18 @@ pub fn map_key_event_with_overlay_mode(
 }
 
 fn map_overlay_key_event(event: KeyEvent, overlay: &TuiOverlay) -> Option<TuiAction> {
+    if !matches!(event.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
+        return None;
+    }
+    if matches!(overlay, TuiOverlay::ModelPicker(_)) {
+        match (event.code, event.modifiers) {
+            (KeyCode::Backspace, KeyModifiers::NONE) => return Some(TuiAction::Backspace),
+            (KeyCode::Char(ch), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
+                return Some(TuiAction::InsertChar(ch));
+            }
+            _ => {}
+        }
+    }
     if event.kind != KeyEventKind::Press {
         return None;
     }

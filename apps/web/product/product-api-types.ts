@@ -159,6 +159,7 @@ export interface ProductProviderProfile {
   default_model?: string;
   created_at: string;
   updated_at: string;
+  catalog_revision: string;
 }
 
 export interface ProductProviderSelection {
@@ -208,6 +209,11 @@ export interface ProductSessionRunModelView {
   model: string;
   reasoning: ProductReasoningPreference;
   max_steps: number;
+  provider_type?: string;
+  wire_protocol?: string;
+  endpoint?: string;
+  catalog_revision?: string;
+  safe_config_digest?: string;
   context_window?: number;
   pricing_source?: string;
   pricing_version?: string;
@@ -460,6 +466,7 @@ export interface CreateProductProviderProfileRequest {
   api_base: string;
   api_key_env?: string;
   default_model?: string;
+  expected_revision?: string;
 }
 
 export type UpdateProductProviderProfileRequest =
@@ -484,6 +491,7 @@ export interface ProductSessionsResponse {
 }
 
 export interface ProductProviderProfilesResponse {
+  catalog_revision: string;
   provider_profiles: ProductProviderProfile[];
 }
 
@@ -1369,6 +1377,11 @@ export function parseProductProviderProfile(
     updated_at: expectString(record.updated_at, `${path}.updated_at`, {
       nonEmpty: true,
     }),
+    catalog_revision: expectString(
+      record.catalog_revision,
+      `${path}.catalog_revision`,
+      { nonEmpty: true },
+    ),
   };
   assignOptional(profile, "api_key_env", apiKeyEnv);
   assignOptional(
@@ -2039,7 +2052,14 @@ export function parseProductProviderProfileRequest(
   const record = expectRecord(value, path);
   expectOnlyKeys(
     record,
-    ["label", "provider_type", "api_base", "api_key_env", "default_model"],
+    [
+      "label",
+      "provider_type",
+      "api_base",
+      "api_key_env",
+      "default_model",
+      "expected_revision",
+    ],
     path,
   );
   const providerType = expectEnum(
@@ -2076,6 +2096,11 @@ export function parseProductProviderProfileRequest(
       nonEmpty: true,
       maxBytes: MAX_PRODUCT_TEXT_BYTES,
     }),
+  );
+  assignOptional(
+    request,
+    "expected_revision",
+    optionalString(record, "expected_revision", path, { nonEmpty: true }),
   );
   return request;
 }
@@ -2219,6 +2244,11 @@ export function parseProductProviderProfilesResponse(
 ): ProductProviderProfilesResponse {
   const record = expectRecord(value, "product provider profiles response");
   return {
+    catalog_revision: expectString(
+      record.catalog_revision,
+      "product provider profiles response.catalog_revision",
+      { nonEmpty: true },
+    ),
     provider_profiles: expectArray(
       record.provider_profiles,
       "product provider profiles response.provider_profiles",

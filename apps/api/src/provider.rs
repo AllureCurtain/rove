@@ -106,6 +106,7 @@ pub(super) fn apply_provider_profile(
     profiles.insert(
         JOB_PROVIDER_PROFILE.to_string(),
         ProviderProfileConfig {
+            label: Some(profile.name.clone()),
             provider_type: profile.provider_type.clone(),
             base_url: if profile.inventory_family == InventoryFamily::Fake {
                 String::new()

@@ -4,6 +4,7 @@ pub mod config;
 pub mod exec;
 pub mod input;
 pub mod oneshot;
+pub mod provider;
 pub mod render;
 pub mod repl;
 pub mod runtime;

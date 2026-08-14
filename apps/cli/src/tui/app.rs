@@ -506,6 +506,13 @@ where
 {
     let mut app = TuiApp::new(active_resume_state);
     app.state.interaction_key_mode = interaction_key_mode;
+    match runtime.selection_for_session(app.session_id) {
+        Ok((selection, revision)) => {
+            app.state.model_selection = Some(selection);
+            app.state.model_selection_revision = revision;
+        }
+        Err(error) => app.state.model_notice = Some(error.to_string()),
+    }
     let mut shutdown_open = true;
     draw_app(terminal, &mut app.state)?;
 
@@ -696,9 +703,108 @@ async fn apply_idle_effects(
                     )),
                 }
             }
+            TuiEffect::LoadModels { query, auto_select } => {
+                let action = load_model_candidates(runtime, &app.state, query, auto_select);
+                queue.extend(reduce(&mut app.state, action));
+            }
+            TuiEffect::PersistModel {
+                selection,
+                expected_revision,
+            } => {
+                let action = match runtime.persist_session_selection(
+                    app.session_id,
+                    expected_revision,
+                    selection,
+                ) {
+                    Ok(saved) => TuiAction::ModelSelectionPersisted {
+                        selection: saved.selection,
+                        revision: saved.revision,
+                    },
+                    Err(error) => TuiAction::ModelSelectionFailed {
+                        error: classify_model_error(&error),
+                    },
+                };
+                queue.extend(reduce(&mut app.state, action));
+            }
+            TuiEffect::ResetModel { expected_revision } => {
+                let action = match runtime.default_selection().and_then(|selection| {
+                    runtime.persist_session_selection(app.session_id, expected_revision, selection)
+                }) {
+                    Ok(saved) => TuiAction::ModelSelectionPersisted {
+                        selection: saved.selection,
+                        revision: saved.revision,
+                    },
+                    Err(error) => TuiAction::ModelSelectionFailed {
+                        error: classify_model_error(&error),
+                    },
+                };
+                queue.extend(reduce(&mut app.state, action));
+            }
         }
     }
     Ok(prompt)
+}
+
+fn load_model_candidates(
+    runtime: &CliRuntime,
+    state: &TuiState,
+    query: String,
+    auto_select: bool,
+) -> TuiAction {
+    let catalog = match runtime.catalog() {
+        Ok(catalog) => catalog,
+        Err(_) => {
+            return TuiAction::ModelsLoadFailed {
+                error: crate::tui::state::ModelPickerError::LoadFailed,
+            };
+        }
+    };
+    let current = state.model_selection.as_ref();
+    let candidates = catalog
+        .profiles()
+        .into_iter()
+        .map(|profile| {
+            let credential_ready = profile
+                .auth_source
+                .ready(&runtime.workspace.root)
+                .unwrap_or(false);
+            crate::tui::state::ModelCandidate {
+                selection: rove_app_bootstrap::ModelSelection {
+                    profile_id: profile.id.clone(),
+                    model: profile.model.clone(),
+                    reasoning: current
+                        .map(|selection| selection.reasoning.clone())
+                        .unwrap_or_else(|| "default".to_string()),
+                    revision: catalog.revision().to_string(),
+                },
+                label: profile.label,
+                provider_type: profile.provider_type,
+                credential_ready,
+                inventory_fresh: false,
+                current: current.is_some_and(|selection| {
+                    selection.profile_id == profile.id && selection.model == profile.model
+                }),
+            }
+        })
+        .collect();
+    TuiAction::ModelsLoaded {
+        candidates,
+        query,
+        auto_select,
+    }
+}
+
+fn classify_model_error(error: &anyhow::Error) -> crate::tui::state::ModelPickerError {
+    let text = error.to_string();
+    if text.contains("revision conflict") {
+        crate::tui::state::ModelPickerError::CatalogChanged
+    } else if text.contains("credential") || text.contains("provider_unavailable") {
+        crate::tui::state::ModelPickerError::CredentialUnavailable
+    } else if text.contains("busy") {
+        crate::tui::state::ModelPickerError::Busy
+    } else {
+        crate::tui::state::ModelPickerError::LoadFailed
+    }
 }
 
 fn classify_io_error(error: &io::Error) -> SessionPickerError {
@@ -768,6 +874,73 @@ where
     E: Stream<Item = io::Result<Event>> + Unpin,
 {
     discard_queued_interactions(interactions);
+    let assembly = match runtime
+        .assemble_run(
+            &message,
+            app.state.model_selection.as_ref(),
+            app.active_resume_state.as_ref(),
+            app.state.model_selection_changed,
+        )
+        .await
+    {
+        Ok(assembly) => assembly,
+        Err(error) => {
+            if let Some(claim) = app.resume_claim.take() {
+                let _ = runtime
+                    .state_store
+                    .index
+                    .release_job_resume_claim_async(claim)
+                    .await;
+            }
+            app.state.run_lifecycle = RunLifecycle::Idle;
+            app.state.composer = message;
+            return Err(error);
+        }
+    };
+    app.state.model_selection = Some(assembly.selection.clone());
+    app.state.model_selection_changed = false;
+    run_prompt_with_engine(
+        terminal,
+        events,
+        shutdown,
+        TuiEngineRun {
+            runtime,
+            engine: &assembly.engine,
+            app,
+            message,
+            interactions,
+        },
+    )
+    .await
+}
+
+struct TuiEngineRun<'a> {
+    runtime: &'a CliRuntime,
+    engine: &'a rove_runtime::engine::Engine,
+    app: &'a mut TuiApp,
+    message: String,
+    interactions: &'a mut TuiInteractionReceiver,
+}
+
+async fn run_prompt_with_engine<B, E>(
+    terminal: &mut Terminal<B>,
+    events: &mut E,
+    shutdown: ShutdownInput<'_>,
+    input: TuiEngineRun<'_>,
+) -> anyhow::Result<ActiveRunResult>
+where
+    B: Backend,
+    B::Error: Error + Send + Sync + 'static,
+    E: Stream<Item = io::Result<Event>> + Unpin,
+{
+    let TuiEngineRun {
+        runtime,
+        engine,
+        app,
+        message,
+        interactions,
+    } = input;
+    discard_queued_interactions(interactions);
     let (session_id, job_id, run_id) = app.next_run_identity();
     let resume_claim = app.resume_claim.take();
     let run = match runtime.state_store.start_run(session_id, job_id, run_id) {
@@ -787,9 +960,7 @@ where
     let request = run.request(message.clone(), resume_state.clone());
     let trace_writer = run.trace_writer.clone();
     let cancel = CancellationToken::new();
-    let stream = runtime
-        .engine
-        .run_with_cancel(request, Some(trace_writer), cancel.clone());
+    let stream = engine.run_with_cancel(request, Some(trace_writer), cancel.clone());
     let runtime_identity = Some(stream.runtime_identity().clone());
     let agent_profile = stream.agent_profile().cloned();
     let (updates_tx, updates_rx) = mpsc::channel(RUN_UPDATE_CAPACITY);
@@ -801,7 +972,7 @@ where
             resume_state,
             state_store: &runtime.state_store,
             workspace: &runtime.workspace,
-            model_id: runtime.engine.model_id(),
+            model_id: engine.model_id(),
             runtime_identity,
             agent_profile,
         },
@@ -874,7 +1045,12 @@ fn apply_active_effects(
                 *exit_requested = true;
                 clear_interactions(interaction, interactions, state);
             }
-            TuiEffect::Dispatch(_) | TuiEffect::LoadSessions | TuiEffect::ResolveResume { .. } => {}
+            TuiEffect::Dispatch(_)
+            | TuiEffect::LoadSessions
+            | TuiEffect::ResolveResume { .. }
+            | TuiEffect::LoadModels { .. }
+            | TuiEffect::PersistModel { .. }
+            | TuiEffect::ResetModel { .. } => {}
         }
     }
 }
@@ -1186,9 +1362,7 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     use crate::cli::args::CliApprovalPolicy;
-    use crate::cli::runtime::{
-        CliRuntime, CliRuntimeInteraction, CliRuntimeOptions, build_cli_runtime,
-    };
+    use crate::cli::runtime::{CliRuntimeInteraction, CliRuntimeOptions, build_cli_runtime};
     use crate::terminal::action::TerminalAction;
     use crate::terminal::interaction::{
         TerminalInteractionProviders, TerminalInteractionRequest, bounded_interaction_channel,
@@ -1197,7 +1371,6 @@ mod tests {
     use crate::tui::action::TuiAction;
     use crate::tui::reducer::reduce;
     use crate::tui::state::{InteractionKeyMode, InteractionModalView, RunLifecycle, TuiState};
-    use rove_app_bootstrap::AppConfig;
     use rove_app_bootstrap::tool_registry;
     use rove_models::ModelError;
     use rove_models::fake::{FakeModelClient, FakeTurn};
@@ -1205,7 +1378,6 @@ mod tests {
     use rove_runtime::context::ContextManager;
     use rove_runtime::engine::{Engine, EngineConfig};
     use rove_runtime::events::StreamEvent;
-    use rove_runtime::state::store::StateStore;
     use rove_runtime::types::{
         ApprovalDecision, ApprovalPolicy, CallId, JobId, Message, ModelToolSchema, RunId,
         RunRequest, SessionId, TaskState, TerminationReason, ToolApprovalRequest, Usage,
@@ -1215,7 +1387,8 @@ mod tests {
 
     use super::{
         ActiveUiControl, InteractionController, PressedKeys, ShutdownInput, ShutdownSignal, TuiApp,
-        active_ui_loop, apply_idle_effects, discard_queued_interactions, run_loop, run_prompt,
+        TuiEngineRun, active_ui_loop, apply_idle_effects, discard_queued_interactions, run_loop,
+        run_prompt_with_engine,
     };
 
     struct FailingDrawBackend {
@@ -2209,12 +2382,21 @@ mod tests {
             workspace.clone(),
             ApprovalPolicy::Never,
         );
-        let runtime = CliRuntime {
-            state_store: StateStore::new(&workspace.state_dir),
-            workspace,
-            config: AppConfig::default(),
-            engine,
-        };
+        let runtime =
+            crate::cli::runtime::build_cli_runtime(crate::cli::runtime::CliRuntimeOptions {
+                cwd: Some(workspace.root.clone()),
+                model: Some("fake".to_string()),
+                max_steps: Some(1),
+                agent: None,
+                trust_project: false,
+                approval: crate::cli::args::CliApprovalPolicy::Never,
+                task_workspace: None,
+                task_base: None,
+                initial_fake_response: Some("unused".to_string()),
+                interaction: Default::default(),
+            })
+            .await
+            .unwrap();
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut events = stream::pending::<io::Result<Event>>();
@@ -2234,17 +2416,20 @@ mod tests {
             .await
             .unwrap();
 
-        let run = run_prompt(
+        let run = run_prompt_with_engine(
             &mut terminal,
             &mut events,
             ShutdownInput {
                 receiver: &mut shutdown,
                 open: &mut shutdown_open,
             },
-            &runtime,
-            &mut app,
-            "hello from tui".to_string(),
-            &mut interactions,
+            TuiEngineRun {
+                runtime: &runtime,
+                engine: &engine,
+                app: &mut app,
+                message: "hello from tui".to_string(),
+                interactions: &mut interactions,
+            },
         );
         let stale_before_completion = async {
             entered.notified().await;

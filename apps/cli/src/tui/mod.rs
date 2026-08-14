@@ -7,6 +7,7 @@ pub mod reducer;
 pub mod render;
 pub mod run;
 pub(crate) mod sanitize;
+pub mod slash;
 pub mod state;
 pub mod terminal;
 pub mod widgets;

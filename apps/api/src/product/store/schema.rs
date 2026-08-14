@@ -6,7 +6,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 use crate::product::{ProductErrorCode, ProductStoreError};
 
-const CURRENT_SCHEMA_VERSION: i64 = 11;
+const CURRENT_SCHEMA_VERSION: i64 = 12;
 const MAX_BUSY_TIMEOUT_MS: u64 = 120_000;
 
 const MIGRATION_001: &str = r#"
@@ -428,6 +428,26 @@ CREATE INDEX IF NOT EXISTS idx_project_trust_state
     ON project_trust_records(state, updated_at DESC);
 "#;
 
+const MIGRATION_012: &str = r#"
+CREATE TABLE IF NOT EXISTS product_provider_profile_catalog_mappings (
+    source TEXT NOT NULL,
+    source_profile_id TEXT NOT NULL,
+    catalog_profile_id TEXT NOT NULL,
+    source_digest TEXT NOT NULL,
+    migrated_at TEXT NOT NULL,
+    PRIMARY KEY(source, source_profile_id)
+);
+"#;
+
+const MIGRATION_012_LEGACY_PROVIDER_MAPPINGS: &str = r#"
+INSERT OR IGNORE INTO product_provider_profile_catalog_mappings(
+    source, source_profile_id, catalog_profile_id, source_digest, migrated_at
+)
+SELECT 'product_store_v11', profile_id, profile_id,
+       'legacy-definition-pending-import', updated_at
+FROM product_provider_profiles;
+"#;
+
 #[derive(Debug, Clone)]
 pub(super) struct ProductDatabase {
     path: Arc<PathBuf>,
@@ -532,6 +552,7 @@ fn apply_migrations(connection: &mut Connection) -> Result<(), ProductStoreError
     apply_migration_009(connection)?;
     apply_migration_010(connection)?;
     apply_migration_011(connection)?;
+    apply_migration_012(connection)?;
     Ok(())
 }
 
@@ -911,6 +932,53 @@ fn apply_migration_011(connection: &mut Connection) -> Result<(), ProductStoreEr
     Ok(())
 }
 
+fn apply_migration_012(connection: &mut Connection) -> Result<(), ProductStoreError> {
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|_| database_error(true))?;
+    if migration_is_applied(&transaction, 12)? {
+        transaction.commit().map_err(|_| database_error(true))?;
+        return Ok(());
+    }
+    transaction
+        .execute_batch(MIGRATION_012)
+        .map_err(|_| database_error(true))?;
+    if table_exists(&transaction, "product_provider_profiles")? {
+        transaction
+            .execute_batch(MIGRATION_012_LEGACY_PROVIDER_MAPPINGS)
+            .map_err(|_| database_error(true))?;
+    }
+    if table_exists(&transaction, "product_session_run_models")? {
+        for (column, declaration) in [
+            ("provider_type", "TEXT"),
+            ("wire_protocol", "TEXT"),
+            ("endpoint", "TEXT"),
+            ("catalog_revision", "TEXT"),
+            ("safe_config_digest", "TEXT"),
+        ] {
+            if !table_has_column(&transaction, "product_session_run_models", column)? {
+                transaction
+                    .execute_batch(&format!(
+                        "ALTER TABLE product_session_run_models ADD COLUMN {column} {declaration};"
+                    ))
+                    .map_err(|_| database_error(true))?;
+            }
+        }
+    }
+    transaction
+        .execute(
+            "INSERT INTO product_schema_migrations(version, name, applied_at) VALUES (?1, ?2, ?3)",
+            params![
+                12,
+                "provider_catalog_mapping",
+                super::repository::now_rfc3339()
+            ],
+        )
+        .map_err(|_| database_error(true))?;
+    transaction.commit().map_err(|_| database_error(true))?;
+    Ok(())
+}
+
 fn database_error(startup: bool) -> ProductStoreError {
     if startup {
         ProductStoreError::new(
@@ -1021,6 +1089,7 @@ mod tests {
         assert!(migration_is_applied(&connection, 5).unwrap());
         assert!(migration_is_applied(&connection, 6).unwrap());
         assert!(migration_is_applied(&connection, 11).unwrap());
+        assert!(migration_is_applied(&connection, 12).unwrap());
         let preparations_table: i64 = connection
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_schema WHERE type = 'table' AND name = 'product_migration_preparations'",
@@ -1038,10 +1107,11 @@ mod tests {
             .unwrap();
         assert_eq!(controls_table, 1);
         assert!(table_exists(&connection, "project_trust_records").unwrap());
+        assert!(table_exists(&connection, "product_provider_profile_catalog_mappings").unwrap());
     }
 
     #[test]
-    fn schema_newer_than_v11_is_rejected_without_rollback() {
+    fn schema_newer_than_v12_is_rejected_without_rollback() {
         let mut connection = Connection::open_in_memory().unwrap();
         connection
             .execute_batch(
@@ -1052,7 +1122,7 @@ mod tests {
                     applied_at TEXT NOT NULL
                 );
                 INSERT INTO product_schema_migrations(version, name, applied_at)
-                VALUES (12, 'future_schema', '2026-08-07T00:00:00Z');
+                VALUES (13, 'future_schema', '2026-08-07T00:00:00Z');
                 "#,
             )
             .unwrap();
@@ -1063,7 +1133,7 @@ mod tests {
         assert_eq!(
             connection
                 .query_row(
-                    "SELECT COUNT(*) FROM product_schema_migrations WHERE version = 12",
+                    "SELECT COUNT(*) FROM product_schema_migrations WHERE version = 13",
                     [],
                     |row| row.get::<_, i64>(0),
                 )

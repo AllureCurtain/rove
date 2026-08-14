@@ -1,4 +1,5 @@
 use crate::terminal::view::{RunViewState, RunViewUpdate, ToolCallStatus};
+use rove_app_bootstrap::ModelSelection;
 use rove_runtime::types::{CallId, RunId, SessionId, TaskState};
 
 use super::sanitize::{
@@ -13,6 +14,162 @@ pub const MAX_SESSION_GOAL_CHARS: usize = 160;
 pub const MAX_TOOL_DETAIL_ITEMS: usize = 64;
 pub const MAX_TOOL_DETAIL_TEXT_BYTES: usize = 8 * 1024;
 pub const MAX_HELP_LINES: usize = 64;
+pub const MAX_MODEL_CANDIDATES: usize = 512;
+pub const MAX_MODEL_QUERY_BYTES: usize = 1024;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelCandidate {
+    pub selection: ModelSelection,
+    pub label: String,
+    pub provider_type: String,
+    pub credential_ready: bool,
+    pub inventory_fresh: bool,
+    pub current: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelPickerError {
+    LoadFailed,
+    NoMatch,
+    Busy,
+    CatalogChanged,
+    CredentialUnavailable,
+}
+
+impl ModelPickerError {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::LoadFailed => "Unable to load the Provider catalog",
+            Self::NoMatch => "No model matches that query",
+            Self::Busy => "Cannot change model while a run is active",
+            Self::CatalogChanged => "Provider catalog changed; reload and choose again",
+            Self::CredentialUnavailable => "Selected Provider credential is unavailable",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModelPickerState {
+    Loading {
+        query: String,
+    },
+    Ready {
+        candidates: Vec<ModelCandidate>,
+        query: String,
+        selected: usize,
+        error: Option<ModelPickerError>,
+        persisting: bool,
+    },
+}
+
+impl ModelPickerState {
+    pub fn loading(query: String) -> Self {
+        Self::Loading { query }
+    }
+
+    pub fn ready(mut candidates: Vec<ModelCandidate>, query: String) -> Self {
+        candidates.truncate(MAX_MODEL_CANDIDATES);
+        let error = candidates.is_empty().then_some(ModelPickerError::NoMatch);
+        Self::Ready {
+            candidates,
+            query,
+            selected: 0,
+            error,
+            persisting: false,
+        }
+    }
+
+    pub(crate) fn move_selection(&mut self, delta: isize) {
+        let visible_len = self.visible_candidates().len();
+        let Self::Ready {
+            candidates,
+            selected,
+            persisting,
+            ..
+        } = self
+        else {
+            return;
+        };
+        if *persisting || candidates.is_empty() || visible_len == 0 {
+            return;
+        }
+        let last = visible_len - 1;
+        *selected = if delta.is_negative() {
+            selected.saturating_sub(delta.unsigned_abs()).min(last)
+        } else {
+            selected.saturating_add(delta as usize).min(last)
+        };
+    }
+
+    pub fn selected_candidate(&self) -> Option<&ModelCandidate> {
+        match self {
+            Self::Ready {
+                selected,
+                persisting: false,
+                ..
+            } => self.visible_candidates().get(*selected).copied(),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn insert_query_char(&mut self, ch: char) {
+        if let Self::Ready {
+            query,
+            selected,
+            error,
+            persisting,
+            ..
+        } = self
+            && !*persisting
+            && query.len().saturating_add(ch.len_utf8()) <= MAX_MODEL_QUERY_BYTES
+        {
+            query.push(ch);
+            *selected = 0;
+            *error = None;
+        }
+    }
+
+    pub(crate) fn backspace_query(&mut self) {
+        if let Self::Ready {
+            query,
+            selected,
+            error,
+            persisting,
+            ..
+        } = self
+            && !*persisting
+        {
+            query.pop();
+            *selected = 0;
+            *error = None;
+        }
+    }
+
+    pub fn visible_candidates(&self) -> Vec<&ModelCandidate> {
+        let Self::Ready {
+            candidates, query, ..
+        } = self
+        else {
+            return Vec::new();
+        };
+        let query = query.trim().to_lowercase();
+        candidates
+            .iter()
+            .filter(|candidate| {
+                query.is_empty()
+                    || candidate.label.to_lowercase().contains(&query)
+                    || candidate.provider_type.to_lowercase().contains(&query)
+                    || candidate.selection.model.to_lowercase().contains(&query)
+                    || candidate
+                        .selection
+                        .profile_id
+                        .to_string()
+                        .to_lowercase()
+                        .contains(&query)
+            })
+            .collect()
+    }
+}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum RunLifecycle {
@@ -338,6 +495,7 @@ pub struct HelpState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TuiOverlay {
     SessionPicker(SessionPickerState),
+    ModelPicker(ModelPickerState),
     ToolDetail(ToolDetailState),
     Help(HelpState),
 }
@@ -346,6 +504,7 @@ impl TuiOverlay {
     pub fn title(&self) -> &'static str {
         match self {
             Self::SessionPicker(_) => " Resume session ",
+            Self::ModelPicker(_) => " Select model ",
             Self::ToolDetail(_) => " Tool detail ",
             Self::Help(_) => " Help ",
         }
@@ -389,6 +548,10 @@ pub struct TuiState {
     pub should_quit: bool,
     pub overlay: Option<TuiOverlay>,
     pub active_resume: Option<ResumeCandidate>,
+    pub model_selection: Option<ModelSelection>,
+    pub model_selection_revision: u64,
+    pub model_notice: Option<String>,
+    pub model_selection_changed: bool,
 }
 
 impl TuiState {
@@ -473,6 +636,10 @@ impl Default for TuiState {
             should_quit: false,
             overlay: None,
             active_resume: None,
+            model_selection: None,
+            model_selection_revision: 0,
+            model_notice: None,
+            model_selection_changed: false,
         }
     }
 }

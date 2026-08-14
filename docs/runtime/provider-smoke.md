@@ -2,6 +2,39 @@
 
 Provider smoke tests are opt-in checks for real model endpoints. They are not part of the default deterministic test suite because they require credentials, network access, local Ollama availability, or provider-specific quota.
 
+The user-owned Provider catalog and CLI/TUI model-selection behavior have
+deterministic coverage, but the external-provider gate has not been run for the
+2026-08-12 implementation slice. A skipped gate proves only the skip path.
+
+## User catalog setup
+
+Normal CLI/TUI startup reads `~/.rove/config.toml` (or
+`$env:ROVE_CONFIG_ROOT\config.toml` for an isolated test setup). Store only a
+credential reference:
+
+```toml
+schema_version = 1
+
+[model]
+default_profile = "openai-main"
+default_model = "gpt-4.1-mini"
+reasoning = "default"
+
+[provider.profiles.openai-main]
+label = "OpenAI"
+provider_type = "openai"
+base_url = "https://api.openai.com/v1"
+model = "gpt-4.1-mini"
+auth = { style = "bearer", secret = { env = "OPENAI_API_KEY" } }
+```
+
+`auth.secret` may instead reference a bounded file or keyring entry. Never put
+the credential value in TOML. With no configured profile, normal startup
+returns `provider_onboarding_required`; use `--model fake` only when the local
+deterministic path is intended. TUI `/model` lists the models configured in the
+catalog (`inventory_fresh=false`), while the API inventory route performs the
+live remote list operation.
+
 ## Default behavior
 
 ```powershell

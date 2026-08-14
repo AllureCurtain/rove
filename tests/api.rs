@@ -27,7 +27,8 @@ use rove_api::{
 };
 use rove_app_bootstrap::{
     AppConfig, AppConfigOverrides, ProjectActivationState, ProjectTrustDecision,
-    ProjectTrustRepository, capability_digest_map, provider_capability_selector_for_workspace,
+    ProjectTrustRepository, UserConfigPaths, capability_digest_map,
+    provider_capability_selector_for_workspace,
 };
 use rove_runtime::events::StreamEvent;
 use rove_runtime::execution::StepRecordStatus;
@@ -223,6 +224,124 @@ async fn product_preferences_support_legacy_updates_and_revision_cas() {
     assert_eq!(stale.status(), StatusCode::CONFLICT);
     let stale: serde_json::Value = decode_json(stale).await;
     assert_eq!(stale["code"], "product_revision_conflict");
+}
+
+#[tokio::test]
+async fn product_provider_catalog_exposes_revision_and_rejects_stale_crud() {
+    let server = tempfile::TempDir::new().unwrap();
+    let mut config = test_config();
+    config.state.state_dir = "api-state".into();
+    config.source_summary.user_config_path = server.path().join("user/config.toml");
+    let app = router(ApiState::new(
+        Workspace::detect(server.path()).unwrap(),
+        config,
+    ));
+
+    let listed = get_response(&app, "/product/provider-profiles").await;
+    assert_eq!(listed.status(), StatusCode::OK);
+    let listed: serde_json::Value = decode_json(listed).await;
+    let initial_revision = listed["catalog_revision"].as_str().unwrap();
+    assert!(initial_revision.starts_with("sha256:"));
+    assert_eq!(listed["provider_profiles"], serde_json::json!([]));
+
+    let created = post_json(
+        &app,
+        "/product/provider-profiles",
+        serde_json::json!({
+            "label": "Local deterministic",
+            "provider_type": "fake",
+            "api_base": "",
+            "default_model": "fake",
+            "expected_revision": initial_revision
+        }),
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let created: serde_json::Value = decode_json(created).await;
+    let profile_id = created["id"].as_str().unwrap();
+    let created_revision = created["catalog_revision"].as_str().unwrap();
+    assert_ne!(created_revision, initial_revision);
+
+    let stale_create = post_json(
+        &app,
+        "/product/provider-profiles",
+        serde_json::json!({
+            "label": "Stale create",
+            "provider_type": "fake",
+            "api_base": "",
+            "default_model": "fake",
+            "expected_revision": initial_revision
+        }),
+    )
+    .await;
+    assert_eq!(stale_create.status(), StatusCode::CONFLICT);
+    let stale_create: serde_json::Value = decode_json(stale_create).await;
+    assert_eq!(stale_create["code"], "product_revision_conflict");
+
+    let stale_update = request_json(
+        &app,
+        "PUT",
+        &format!("/product/provider-profiles/{profile_id}"),
+        serde_json::json!({
+            "label": "Stale update",
+            "provider_type": "fake",
+            "api_base": "",
+            "default_model": "fake",
+            "expected_revision": initial_revision
+        }),
+    )
+    .await;
+    assert_eq!(stale_update.status(), StatusCode::CONFLICT);
+    let stale_update: serde_json::Value = decode_json(stale_update).await;
+    assert_eq!(stale_update["code"], "product_revision_conflict");
+
+    let updated = request_json(
+        &app,
+        "PUT",
+        &format!("/product/provider-profiles/{profile_id}"),
+        serde_json::json!({
+            "label": "Updated local deterministic",
+            "provider_type": "fake",
+            "api_base": "",
+            "default_model": "fake",
+            "expected_revision": created_revision
+        }),
+    )
+    .await;
+    assert_eq!(updated.status(), StatusCode::OK);
+    let updated: serde_json::Value = decode_json(updated).await;
+    let updated_revision = updated["catalog_revision"].as_str().unwrap();
+
+    let stale_delete = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!(
+                    "/product/provider-profiles/{profile_id}?expected_revision={initial_revision}"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(stale_delete.status(), StatusCode::CONFLICT);
+    let stale_delete: serde_json::Value = decode_json(stale_delete).await;
+    assert_eq!(stale_delete["code"], "product_revision_conflict");
+
+    let deleted = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!(
+                    "/product/provider-profiles/{profile_id}?expected_revision={updated_revision}"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(deleted.status(), StatusCode::NO_CONTENT);
 }
 
 #[tokio::test]
@@ -1988,6 +2107,8 @@ async fn api_exposes_openapi_json_for_all_routes() {
         "ProductMemorySource",
         "UpdateProductMemoryTopicRequest",
         "ProductPreferences",
+        "ProductProviderProfile",
+        "ProductProviderProfilesResponse",
         "ProductProviderModelsResponse",
         "ProductReasoningPreference",
         "ProductRuntimeInfo",
@@ -2020,6 +2141,8 @@ async fn api_exposes_openapi_json_for_all_routes() {
         "RecallTestResponse",
         "SubmitApprovalRequest",
         "SubmitInputRequest",
+        "CreateProductProviderProfileRequest",
+        "UpdateProductProviderProfileRequest",
         "UpdateProductSessionModelConfigRequest",
         "UpdateProductPreferencesRequest",
     ] {
@@ -2096,6 +2219,48 @@ async fn api_exposes_openapi_json_for_all_routes() {
             .get("default_approval_policy")
             .is_some()
     );
+    let provider_list_schema = schemas
+        .get("ProductProviderProfilesResponse")
+        .expect("ProductProviderProfilesResponse schema");
+    assert!(
+        provider_list_schema["properties"]
+            .get("catalog_revision")
+            .is_some()
+    );
+    let provider_schema = schemas
+        .get("ProductProviderProfile")
+        .expect("ProductProviderProfile schema");
+    assert!(
+        provider_schema["properties"]
+            .get("catalog_revision")
+            .is_some()
+    );
+    for request_schema in [
+        "CreateProductProviderProfileRequest",
+        "UpdateProductProviderProfileRequest",
+    ] {
+        let schema = schemas
+            .get(request_schema)
+            .expect("Provider request schema");
+        let revision_type = &schema["properties"]["expected_revision"]["type"];
+        assert!(
+            revision_type == "string"
+                || revision_type
+                    .as_array()
+                    .is_some_and(|types| types.iter().any(|value| value == "string")),
+            "{request_schema}.expected_revision must accept a string"
+        );
+    }
+    for (path, method) in [
+        ("/product/provider-profiles", "post"),
+        ("/product/provider-profiles/{profile_id}", "put"),
+        ("/product/provider-profiles/{profile_id}", "delete"),
+    ] {
+        let responses = spec["paths"][path][method]["responses"]
+            .as_object()
+            .expect("Provider mutation responses");
+        assert!(responses.contains_key("409"));
+    }
     let memory_responses = spec["paths"]["/product/memory/topics/{slug}"]["get"]["responses"]
         .as_object()
         .expect("product memory GET responses");
@@ -2882,6 +3047,181 @@ async fn product_session_resume_fails_closed_when_exact_task_state_is_missing() 
     assert_eq!(sessions["sessions"][0]["status"], "needs_attention");
     assert_eq!(
         sessions["sessions"][0]["runtime_binding"]["latest_run_id"],
+        first.run_id.to_string()
+    );
+}
+
+#[tokio::test]
+async fn product_resume_reports_unavailable_when_the_catalog_profile_is_deleted() {
+    let server = tempfile::TempDir::new().unwrap();
+    let folder = tempfile::TempDir::new().unwrap();
+    let mut config = test_config();
+    config.state.state_dir = "api-state".into();
+    config.source_summary.user_config_path = server.path().join("user/config.toml");
+    let app = router(ApiState::new(
+        Workspace::detect(server.path()).unwrap(),
+        config,
+    ));
+    let workspace = create_product_workspace(&app, folder.path()).await;
+    let workspace_id = workspace["id"].as_str().unwrap();
+    let session = create_product_session(&app, workspace_id, "Deleted Provider resume").await;
+    let session_id = session["id"].as_str().unwrap();
+    let profile = post_json(
+        &app,
+        "/product/provider-profiles",
+        serde_json::json!({
+            "label": "Snapshot fake",
+            "provider_type": "fake",
+            "api_base": "",
+            "default_model": "fake"
+        }),
+    )
+    .await;
+    assert_eq!(profile.status(), StatusCode::CREATED);
+    let profile: serde_json::Value = decode_json(profile).await;
+    let profile_id = profile["id"].as_str().unwrap();
+    let initial = get_response(
+        &app,
+        &format!("/product/sessions/{session_id}/model-config"),
+    )
+    .await;
+    let initial: serde_json::Value = decode_json(initial).await;
+    let configured = request_json(
+        &app,
+        "PUT",
+        &format!("/product/sessions/{session_id}/model-config"),
+        serde_json::json!({
+            "profile_id": profile_id,
+            "model": "fake",
+            "reasoning": "default",
+            "max_steps": 1,
+            "expected_revision": initial["revision"]
+        }),
+    )
+    .await;
+    assert_eq!(configured.status(), StatusCode::OK);
+    let first = create_product_job(&app, session_id, "freeze Provider snapshot").await;
+    wait_for_done(app.clone(), first.job_id.to_string()).await;
+
+    let deleted = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!(
+                    "/product/provider-profiles/{profile_id}?expected_revision={}",
+                    profile["catalog_revision"].as_str().unwrap()
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(deleted.status(), StatusCode::NO_CONTENT);
+
+    let resumed = post_json(
+        &app,
+        "/jobs",
+        serde_json::json!({
+            "message": "must not silently select another Provider",
+            "product_session_id": session_id
+        }),
+    )
+    .await;
+    assert_eq!(resumed.status(), StatusCode::CONFLICT);
+    let resumed: serde_json::Value = decode_json(resumed).await;
+    assert_eq!(resumed["code"], "provider_unavailable_for_resume");
+    let session = get_product_session(&app, workspace_id, session_id).await;
+    assert_eq!(session["status"], "needs_attention");
+    assert_eq!(
+        session["runtime_binding"]["latest_run_id"],
+        first.run_id.to_string()
+    );
+}
+
+#[tokio::test]
+async fn product_resume_rejects_same_selection_after_provider_identity_drift() {
+    let server = tempfile::TempDir::new().unwrap();
+    let folder = tempfile::TempDir::new().unwrap();
+    let mut config = test_config();
+    config.state.state_dir = "api-state".into();
+    config.source_summary.user_config_path = server.path().join("user/config.toml");
+    let app = router(ApiState::new(
+        Workspace::detect(server.path()).unwrap(),
+        config,
+    ));
+    let workspace = create_product_workspace(&app, folder.path()).await;
+    let workspace_id = workspace["id"].as_str().unwrap();
+    let session = create_product_session(&app, workspace_id, "Changed Provider resume").await;
+    let session_id = session["id"].as_str().unwrap();
+    let profile = post_json(
+        &app,
+        "/product/provider-profiles",
+        serde_json::json!({
+            "label": "Snapshot fake",
+            "provider_type": "fake",
+            "api_base": "",
+            "default_model": "fake"
+        }),
+    )
+    .await;
+    assert_eq!(profile.status(), StatusCode::CREATED);
+    let profile: serde_json::Value = decode_json(profile).await;
+    let profile_id = profile["id"].as_str().unwrap();
+    let initial = get_response(
+        &app,
+        &format!("/product/sessions/{session_id}/model-config"),
+    )
+    .await;
+    let initial: serde_json::Value = decode_json(initial).await;
+    let configured = request_json(
+        &app,
+        "PUT",
+        &format!("/product/sessions/{session_id}/model-config"),
+        serde_json::json!({
+            "profile_id": profile_id,
+            "model": "fake",
+            "reasoning": "default",
+            "max_steps": 1,
+            "expected_revision": initial["revision"]
+        }),
+    )
+    .await;
+    assert_eq!(configured.status(), StatusCode::OK);
+    let first = create_product_job(&app, session_id, "freeze original Provider").await;
+    wait_for_done(app.clone(), first.job_id.to_string()).await;
+
+    let changed = request_json(
+        &app,
+        "PUT",
+        &format!("/product/provider-profiles/{profile_id}"),
+        serde_json::json!({
+            "label": "Drifted local endpoint",
+            "provider_type": "ollama",
+            "api_base": "http://127.0.0.1:9",
+            "default_model": "fake",
+            "expected_revision": profile["catalog_revision"]
+        }),
+    )
+    .await;
+    assert_eq!(changed.status(), StatusCode::OK);
+
+    let resumed = post_json(
+        &app,
+        "/jobs",
+        serde_json::json!({
+            "message": "must reject identity drift before network activity",
+            "product_session_id": session_id
+        }),
+    )
+    .await;
+    assert_eq!(resumed.status(), StatusCode::CONFLICT);
+    let resumed: serde_json::Value = decode_json(resumed).await;
+    assert_eq!(resumed["code"], "provider_changed_for_resume");
+    let session = get_product_session(&app, workspace_id, session_id).await;
+    assert_eq!(session["status"], "needs_attention");
+    assert_eq!(
+        session["runtime_binding"]["latest_run_id"],
         first.run_id.to_string()
     );
 }
@@ -3851,7 +4191,13 @@ async fn project_trust_is_exact_root_digest_bound_and_revocable() {
 async fn product_provider_selection_is_part_of_trust_and_non_fake_jobs_fail_closed() {
     let server = tempfile::TempDir::new().unwrap();
     let target = tempfile::TempDir::new().unwrap();
-    let mut config = AppConfig::load(server.path(), AppConfigOverrides::default()).unwrap();
+    let user_paths = UserConfigPaths::from_root(server.path().join("user-config"));
+    let mut config = AppConfig::load_with_user_config_paths(
+        server.path(),
+        AppConfigOverrides::default(),
+        user_paths,
+    )
+    .unwrap();
     config.state.state_dir = "api-state".into();
     let app = router(ApiState::new(
         Workspace::detect(server.path()).unwrap(),
@@ -3960,7 +4306,15 @@ async fn operator_store_revocation_cancels_an_active_api_job() {
     let target = tempfile::TempDir::new().unwrap();
     let authority_path = server.path().join("operator-project-trust.sqlite");
     let authority = Arc::new(ProjectTrustRepository::new(&authority_path));
-    let mut config = AppConfig::load(server.path(), AppConfigOverrides::default()).unwrap();
+    let mut config = AppConfig::load_with_user_config_paths(
+        server.path(),
+        AppConfigOverrides {
+            model: Some("fake".to_string()),
+            ..AppConfigOverrides::default()
+        },
+        UserConfigPaths::from_root(server.path().join("user-config")),
+    )
+    .unwrap();
     config.state.state_dir = "api-state".into();
     let app = router(ApiState::with_project_trust_repository(
         Workspace::detect(server.path()).unwrap(),
@@ -4021,6 +4375,7 @@ async fn api_and_bootstrap_share_one_canonical_project_trust_authority() {
     let authority = Arc::new(ProjectTrustRepository::new(
         server.path().join("canonical-project-trust.sqlite"),
     ));
+    let user_paths = UserConfigPaths::from_root(server.path().join("user-config"));
     let mut config = test_config();
     config.state.state_dir = "api-state".into();
     let app = router(ApiState::with_project_trust_repository(
@@ -4040,10 +4395,11 @@ async fn api_and_bootstrap_share_one_canonical_project_trust_authority() {
     )
     .await;
     assert_eq!(granted.status(), StatusCode::OK);
-    let bootstrap = AppConfig::load_with_project_trust_repository(
+    let bootstrap = AppConfig::load_with_authorities(
         target.path(),
         AppConfigOverrides::default(),
         authority.as_ref(),
+        user_paths,
     )
     .unwrap();
     assert_eq!(
@@ -8098,7 +8454,15 @@ async fn product_mcp_crud_is_workspace_scoped_secret_free_and_used_by_product_jo
 async fn restricted_product_workspace_cannot_probe_or_activate_mcp() {
     let server = tempfile::TempDir::new().unwrap();
     let folder = tempfile::TempDir::new().unwrap();
-    let mut config = AppConfig::load(server.path(), AppConfigOverrides::default()).unwrap();
+    let mut config = AppConfig::load_with_user_config_paths(
+        server.path(),
+        AppConfigOverrides {
+            model: Some("fake".to_string()),
+            ..AppConfigOverrides::default()
+        },
+        UserConfigPaths::from_root(server.path().join("user-config")),
+    )
+    .unwrap();
     config.state.state_dir = "api-state".into();
     let app = router(ApiState::new(
         Workspace::detect(server.path()).unwrap(),
@@ -10694,6 +11058,9 @@ fn test_config() -> AppConfig {
     // Default profiles-only config already uses a fake provider.
     config.provider.model = "fake".to_string();
     config.runtime.max_steps = 4;
+    config.source_summary.user_config_path = workspace_path("target/test-provider-catalogs")
+        .join(ulid::Ulid::new().to_string())
+        .join("config.toml");
     config
 }
 

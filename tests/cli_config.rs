@@ -17,6 +17,7 @@ fn format_effective_config_prints_json_without_secret_value() {
         (
             "primary".to_string(),
             ProviderProfileConfig {
+                label: None,
                 provider_type: "openai".to_string(),
                 base_url: "https://example.test/v1".to_string(),
                 model: "model-a".to_string(),
@@ -33,6 +34,7 @@ fn format_effective_config_prints_json_without_secret_value() {
         (
             "claude".to_string(),
             ProviderProfileConfig {
+                label: None,
                 provider_type: "anthropic".to_string(),
                 base_url: "https://api.anthropic.com".to_string(),
                 model: "fallback-provider-model".to_string(),
@@ -152,6 +154,7 @@ fn format_effective_config_summarizes_profile_secret_sources() {
     config.provider.profiles.insert(
         "gateway".to_string(),
         ProviderProfileConfig {
+            label: None,
             provider_type: "openai-responses".to_string(),
             base_url: "https://gateway.example.test/v1".to_string(),
             model: "gateway-model".to_string(),
@@ -182,6 +185,7 @@ fn format_effective_config_summarizes_profile_secret_sources() {
     config.provider.profiles.insert(
         "local".to_string(),
         ProviderProfileConfig {
+            label: None,
             provider_type: "ollama".to_string(),
             base_url: "http://localhost:11434".to_string(),
             model: "local-model".to_string(),

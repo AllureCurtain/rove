@@ -7,6 +7,7 @@ use rove_runtime::context::{ContextBudget, ContextManager};
 use rove_runtime::engine::{Engine, EngineConfig, EngineEnvironmentOptions};
 use rove_runtime::environment::{ExecutionEnvironment, local_environment};
 use rove_runtime::execution::ExecutionPolicy;
+use rove_runtime::runtime_identity::RunModelSnapshot;
 use rove_runtime::types::{
     ApprovalDecision, ApprovalPolicy, ToolApprovalProvider, UserInputProvider,
 };
@@ -29,6 +30,7 @@ pub struct EngineOptions<'a> {
     pub input_provider: Option<Arc<dyn UserInputProvider>>,
     pub approval_provider: Option<Arc<dyn ToolApprovalProvider>>,
     pub environment: Option<Arc<dyn ExecutionEnvironment>>,
+    pub run_model_snapshot: Option<RunModelSnapshot>,
 }
 
 /// Build the shared first-party Engine used by CLI and API.
@@ -121,6 +123,7 @@ pub fn build_engine_with_registry(
         options.config.runtime.model_compaction_enabled,
         options.config.runtime.compaction_failure_threshold,
     )
+    .with_run_model_snapshot(options.run_model_snapshot)
     .with_agent_activation(agent_activation)
     .map_err(anyhow::Error::new)?;
 
@@ -170,6 +173,7 @@ mod tests {
                 input_provider: None,
                 approval_provider: None,
                 environment: None,
+                run_model_snapshot: None,
             },
             ToolRegistry::new(),
         );

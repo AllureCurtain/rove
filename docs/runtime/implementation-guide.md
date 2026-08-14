@@ -184,8 +184,43 @@ Relevant code:
 `AppConfig::load` merges configuration in this order:
 
 ```text
-defaults < trusted .rove/config.toml < environment < CLI/API overrides
+defaults < user ~/.rove/config.toml < trusted workspace selection
+         < environment < CLI/API overrides
 ```
+
+`~/.rove/config.toml` is the machine-local Provider authority. On Windows the
+home directory is resolved through `USERPROFILE`; on other supported systems it
+uses `HOME`. `ROVE_CONFIG_ROOT` is an explicit test/embedder override for the
+directory containing `config.toml`. User config schema v1 owns complete
+Provider definitions and defaults. The implemented shape uses profile-local
+`model` and `auth.secret = { env | file | keyring }` references:
+
+```toml
+schema_version = 1
+
+[model]
+default_profile = "team"
+default_model = "team/model"
+reasoning = "default"
+
+[provider]
+fallback_profiles = []
+
+[provider.profiles.team]
+label = "Team gateway"
+provider_type = "openai"
+base_url = "https://gateway.example.test/v1"
+model = "team/model"
+auth = { style = "bearer", secret = { env = "TEAM_GATEWAY_KEY" } }
+```
+
+Credential values are never serialized. Env references, bounded UTF-8 files,
+and OS keyring `{ service, account }` references are resolved only at use time.
+Literal credentials, URL userinfo, unsafe headers, unknown fields, oversized
+documents, and invalid profile IDs fail before network or process side effects.
+Catalog writes require the expected SHA-256 revision, take a bounded file lock,
+reject symbolic-link targets, use an atomic replace, and restrict Unix
+permissions to `0700`/`0600`.
 
 Workspace project config and local `.env` are deferred by default. Persistent
 Project Trust binds an exact canonical root, workspace kind, stable platform
@@ -193,7 +228,7 @@ identity, and per-capability executable digests. Bootstrap, CLI, API, and
 runtime use one operator-owned SQLite authority (`project-trust.sqlite` in the
 platform user-state directory, or `ROVE_PROJECT_TRUST_STORE`). Product Web
 sends only the workspace ID and explicit capability decision; the API resolves
-that ID and calls the same repository. ProductStore schema v11 trust rows are a
+that ID and calls the same repository. ProductStore's legacy v11 trust rows are a
 one-way compatibility import source only, never a second write authority.
 
 Legacy `project-trust.json` is validated and imported once, then retained as
@@ -228,12 +263,16 @@ API jobs poll the canonical trust authority at a bounded interval, so a CLI or
 other-process revocation cancels the run even when it bypasses the API route.
 
 The config is grouped by runtime, provider, tool, memory, state, API, web, and
-routing. Provider configuration supports named profiles with explicit wire
-protocol IDs, active/fallback references, environment or bounded-file secret
-references, custom headers, provider options, and protocol options. Legacy
-flat provider fields remain compatible. `dump-config` prints the effective
-config, source summary, resolved paths, legacy secret-presence flags, and
-profile secret/header source summaries without resolved values.
+routing. Workspace config may select only `provider.active` and
+`provider.model` from the user catalog. A workspace attempt to define profiles,
+endpoints, auth, headers, fallbacks, protocol data, or adapter commands returns
+`project_provider_authority_violation`; it is not silently overridden. Access
+to workspace `.env` Provider selectors and credential values additionally
+requires `provider_credentials`, and the trust check precedes credential
+existence checks. Legacy Provider definitions are handled by the explicit
+`rove provider migrate` path, not accepted as a second live authority.
+`dump-config` prints effective non-secret configuration, source attribution,
+resolved paths, and credential source summaries without resolved values.
 
 Common paths and defaults:
 
@@ -269,7 +308,16 @@ Useful commands:
 
 ```powershell
 cargo run -p rove-cli -- dump-config
+cargo run -p rove-cli -- provider migrate
+cargo run -p rove-cli -- provider migrate --apply
 ```
+
+Migration is dry-run by default. It inventories legacy workspace, environment,
+and optional ProductStore profiles, reports safe identity digests and conflicts,
+and writes a redacted receipt only with `--apply`. Conflicts require an explicit
+repeatable `--rename SOURCE:PROFILE=NEW_PROFILE`. Rewriting workspace config to
+selection-only form additionally requires `--rewrite-workspace-config` and an
+explicit trusted-workspace grant.
 
 Relevant code:
 
@@ -298,13 +346,15 @@ High-level flow in `src/main.rs`:
 6. Load `AppConfig`.
 7. If `--task-workspace` is set, create or reuse that Task workspace and rebase
    config paths to the task root.
-8. Construct the model client.
+8. Create stable CLI services, including the shared Provider catalog, state,
+   health, tools, execution environment, and per-session model-selection store.
 9. Register the shared runtime tool registry; configured MCP tools are included
    only when the exact workspace has a valid `mcp_processes` capability.
-10. Build `ContextManager`.
-11. Build `Engine`.
-12. Create `StateStore`.
-13. Resolve optional CLI resume state when an exec or TUI run starts.
+10. Resolve optional CLI resume state when an exec or TUI run starts.
+11. Before each turn, load the current catalog/session selection, resolve the
+    credential reference, freeze a secret-free `RunModelSnapshot`, and build a
+    fresh `RunAssembly` containing the model client and `Engine` for that turn.
+12. Persist canonical events and artifacts through the stable `StateStore`.
 14. If `tui` is present, split a bounded interaction broker into providers for
     the shared Engine and one receiver for the alternate-screen application
     loop.
@@ -369,6 +419,11 @@ the current REPL renders those updates as line-oriented output. The optional TUI
 uses the same projection and run-artifact path without adding a second engine
 loop or persistence format.
 
+A normal product invocation with no configured Provider returns
+`provider_onboarding_required` and points to `~/.rove/config.toml`. It never
+falls back to Fake implicitly. `--model fake`, the fake profile, benchmarks,
+and programmatic deterministic tests remain explicit offline paths.
+
 ### Full-screen TUI
 
 The current full-screen TUI is available with:
@@ -376,6 +431,18 @@ The current full-screen TUI is available with:
 ```powershell
 cargo run -p rove-cli -- tui --model fake
 ```
+
+The composer has a real slash-command parser. `/model` opens a searchable
+picker, `/model current` reports the session selection and source, `/model
+<query>` filters profile label/type/model and selects a unique match, and
+`/model reset` restores current catalog/project defaults. Selection is stored
+per session with a numeric revision and atomic lock/write/CAS semantics. A
+catalog change or stale session revision is shown as a conflict; selection is
+rejected as busy while a run is active and can affect only the next turn. The
+status bar shows only profile/model identity. The current picker projects one
+configured model per catalog profile and therefore reports
+`inventory_fresh=false`; live remote inventory remains available through the
+API model-list endpoint and is not implied by the picker.
 
 `rove tui` enters raw mode and the alternate screen through the RAII
 `TerminalSession`, then runs a fair asynchronous loop over Crossterm input,
@@ -1293,7 +1360,14 @@ planned attempts use `step_result` as their canonical ledger transition.
 - summary;
 - prompt checkpoint;
 - plan state;
-- materialized terminal step records and any active step attempt.
+- materialized terminal step records and any active step attempt;
+- a secret-free `RunModelSnapshot` containing the profile/provider/protocol/
+  endpoint/model/reasoning identity, catalog revision, and safe config digest.
+
+Resume validates that snapshot before model or credential work. A profile/model
+change or a changed safe Provider identity returns
+`provider_changed_for_resume`; current `/model` state never silently replaces
+the model of an existing run.
 
 `report.json` is the final aggregate report. It includes:
 
@@ -1371,9 +1445,16 @@ Web Complete C0 adds a separate API-global SQLite database at
 - schema versions, durable M1 migration preparations, and migration
   receipts/mappings/issues.
 
-Schema v11 is an additive, transaction-scoped migration. Startup rolls back a
-failed v11 attempt, refuses a database with a future schema version, and does
-not implement automatic downgrade after a successful migration.
+The current ProductStore schema is v12. It adds user-catalog mapping metadata
+and secret-free model identity fields to immutable session-run snapshots while
+retaining legacy Provider rows only for compatibility/migration. Startup rolls
+back a failed migration attempt, refuses a database with a future schema
+version, and does not implement automatic downgrade.
+
+API Provider CRUD reads and writes the shared user catalog, returns
+`catalog_revision`, and uses request `expected_revision` plus HTTP 409 for stale
+or busy mutations. Session selection and resume continue to use ProductStore
+mappings; ProductStore is not a second Provider-definition authority.
 
 It intentionally does not copy canonical runtime event payloads, task state, or
 reports. Those facts remain in each execution workspace's `StateStore` and are

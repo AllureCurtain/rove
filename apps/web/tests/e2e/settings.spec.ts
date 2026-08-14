@@ -45,6 +45,7 @@ test("all nine settings sections expose a usable surface", async ({ page }) => {
 
 test("provider profiles support durable create and update", async ({ page }) => {
   const api = await installMockProductApi(page);
+  const initialCatalogRevision = api.providerCatalogRevision;
   await page.goto("/settings/providers");
 
   await page.getByLabel("Label").fill("Relay A");
@@ -55,6 +56,12 @@ test("provider profiles support durable create and update", async ({ page }) => 
 
   const originalRow = page.locator(".profile-row").filter({ hasText: "Relay A" });
   await expect(originalRow).toBeVisible();
+  const createdCatalogRevision = api.providerCatalogRevision;
+  expect(createdCatalogRevision).not.toBe(initialCatalogRevision);
+  expect(api.providerProfileMutationRequests[0]).toEqual({
+    method: "POST",
+    expectedRevision: initialCatalogRevision,
+  });
   await originalRow.getByRole("button", { name: "Edit" }).click();
   await expect(page.getByRole("heading", { name: "Edit profile" })).toBeVisible();
 
@@ -67,6 +74,11 @@ test("provider profiles support durable create and update", async ({ page }) => 
     page.locator(".profile-row").filter({ hasText: "Relay Updated" }),
   ).toBeVisible();
   await expect.poll(() => api.providerProfiles[0]?.label).toBe("Relay Updated");
+  expect(api.providerCatalogRevision).not.toBe(createdCatalogRevision);
+  expect(api.providerProfileMutationRequests[1]).toMatchObject({
+    method: "PUT",
+    expectedRevision: createdCatalogRevision,
+  });
   expect(api.providerProfiles[0]).toMatchObject({
     api_base: "https://relay-updated.test/v1",
     default_model: "relay/model-b",

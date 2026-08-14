@@ -321,9 +321,14 @@ async fn product_mcp_config_path_with_activation(
     let workspace = crate::open_product_workspace(&product_workspace)?;
     let (workspace, mut config) = crate::rebased_workspace_config(state, workspace)?;
     let authority = state.project_trust()?;
-    let provider_selector =
-        super::trust::product_provider_capability_selector(&store, workspace_id, &workspace.root)
-            .await?;
+    let catalog = state.provider_catalog().await?;
+    let provider_selector = super::trust::product_provider_capability_selector(
+        &store,
+        &catalog,
+        workspace_id,
+        &workspace.root,
+    )
+    .await?;
     let trust = super::trust::resolve_product_workspace_trust(
         &authority,
         &workspace.root,

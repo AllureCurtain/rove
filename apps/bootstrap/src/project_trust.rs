@@ -965,6 +965,9 @@ fn header_selector(value: &ProviderHeaderValue) -> String {
         ProviderHeaderValue::Literal(value) => format!("literal:{}", stable_hash(value)),
         ProviderHeaderValue::Env { env } => format!("env:{env}"),
         ProviderHeaderValue::File { file } => format!("file:{}", file.to_string_lossy()),
+        ProviderHeaderValue::Keyring { keyring } => {
+            format!("keyring:{}:{}", keyring.service, keyring.account)
+        }
     }
 }
 
@@ -972,6 +975,9 @@ fn secret_selector(secret: &SecretSource) -> String {
     match secret {
         SecretSource::Env { env } => format!("env:{env}"),
         SecretSource::File { file } => format!("file:{}", file.to_string_lossy()),
+        SecretSource::Keyring { keyring } => {
+            format!("keyring:{}:{}", keyring.service, keyring.account)
+        }
         SecretSource::Literal(value) => format!("literal:{}", stable_hash(value)),
     }
 }

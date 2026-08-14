@@ -97,7 +97,16 @@ pub(crate) fn status_line(state: &TuiState, width: u16) -> Paragraph<'static> {
         TuiFocus::Transcript => "transcript",
         TuiFocus::Composer => "composer",
     };
-    let content = if width >= 72 {
+    let model = state
+        .model_selection
+        .as_ref()
+        .map(|selection| format!("{}/{}", selection.profile_id, selection.model));
+    let content = if width >= 96 {
+        format!(
+            " workspace: - | run: {run_status} | model: {} | focus: {focus} | Tab focus | Ctrl+Q quit",
+            model.as_deref().unwrap_or("unconfigured")
+        )
+    } else if width >= 72 {
         format!(" workspace: - | run: {run_status} | focus: {focus} | Tab focus | Ctrl+Q quit")
     } else if width >= 36 {
         format!(" ws:- | run:{run_status} | focus:{focus}")
@@ -158,6 +167,9 @@ fn activity_content(state: &TuiState) -> (&'static str, String, Style) {
             termination_label(&completed.reason).to_string(),
             style,
         );
+    }
+    if let Some(notice) = &state.model_notice {
+        return ("Model", notice.clone(), Style::default().fg(Color::Cyan));
     }
     if let Some(approval) = run.pending_approvals.last() {
         return (

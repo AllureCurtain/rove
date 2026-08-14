@@ -6,7 +6,9 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
 use crate::terminal::view::ToolCallStatus;
 use crate::tui::keymap::key_bindings;
-use crate::tui::state::{SessionPickerState, ToolDetailEntry, ToolDetailState, TuiOverlay};
+use crate::tui::state::{
+    ModelPickerState, SessionPickerState, ToolDetailEntry, ToolDetailState, TuiOverlay,
+};
 
 const MAX_OVERLAY_WIDTH: u16 = 96;
 const MAX_OVERLAY_HEIGHT: u16 = 26;
@@ -20,6 +22,7 @@ pub(crate) fn render_overlay(frame: &mut Frame<'_>, overlay: &TuiOverlay, viewpo
     frame.render_widget(Clear, area);
     let accent = match overlay {
         TuiOverlay::SessionPicker(_) => Color::Cyan,
+        TuiOverlay::ModelPicker(_) => Color::Green,
         TuiOverlay::ToolDetail(_) => Color::Blue,
         TuiOverlay::Help(_) => Color::Magenta,
     };
@@ -36,6 +39,7 @@ pub(crate) fn render_overlay(frame: &mut Frame<'_>, overlay: &TuiOverlay, viewpo
 
     match overlay {
         TuiOverlay::SessionPicker(picker) => render_session_picker(frame, picker, inner),
+        TuiOverlay::ModelPicker(picker) => render_model_picker(frame, picker, inner),
         TuiOverlay::ToolDetail(detail) => render_tool_detail(frame, detail, inner),
         TuiOverlay::Help(help) => {
             let text = help_text();
@@ -48,6 +52,109 @@ pub(crate) fn render_overlay(frame: &mut Frame<'_>, overlay: &TuiOverlay, viewpo
             frame.render_widget(paragraph, inner);
         }
     }
+}
+
+fn render_model_picker(frame: &mut Frame<'_>, picker: &ModelPickerState, area: Rect) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let (body, footer) = split_footer(area);
+    let mut lines = Vec::new();
+    match picker {
+        ModelPickerState::Loading { query } => lines.push(Line::styled(
+            format!("Loading Provider catalog...  filter: {query}"),
+            Style::default().fg(Color::Green),
+        )),
+        ModelPickerState::Ready {
+            query,
+            selected,
+            error,
+            persisting,
+            ..
+        } => {
+            lines.push(Line::from(vec![
+                Span::styled("Filter  ", Style::default().fg(Color::DarkGray)),
+                Span::styled(query.clone(), Style::default().fg(Color::White)),
+            ]));
+            if let Some(error) = error {
+                lines.push(Line::styled(
+                    error.label(),
+                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                ));
+            }
+            let visible_candidates = picker.visible_candidates();
+            if visible_candidates.is_empty() && error.is_none() {
+                lines.push(Line::styled(
+                    "No matching Provider models.",
+                    Style::default().fg(Color::DarkGray),
+                ));
+            }
+            let reserved = 1 + usize::from(error.is_some());
+            let visible = usize::from(body.height).saturating_sub(reserved).max(1);
+            let start = selected
+                .saturating_add(1)
+                .saturating_sub(visible)
+                .min(visible_candidates.len().saturating_sub(visible));
+            for (index, candidate) in visible_candidates
+                .iter()
+                .enumerate()
+                .skip(start)
+                .take(visible)
+            {
+                let focused = index == *selected;
+                let marker = if focused { ">" } else { " " };
+                let current = if candidate.current { " current" } else { "" };
+                let readiness = if candidate.credential_ready {
+                    "ready"
+                } else {
+                    "credential missing"
+                };
+                let freshness = if candidate.inventory_fresh {
+                    "inventory fresh"
+                } else {
+                    "configured"
+                };
+                let style = if focused {
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!(
+                            "{marker} {}  {}  ",
+                            candidate.selection.model, candidate.label
+                        ),
+                        style,
+                    ),
+                    Span::styled(
+                        format!(
+                            "{}  {}  {}{current}",
+                            candidate.provider_type, readiness, freshness
+                        ),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ]));
+            }
+            if *persisting {
+                lines.push(Line::styled(
+                    "Saving selection...",
+                    Style::default().fg(Color::Yellow),
+                ));
+            }
+        }
+    }
+    frame.render_widget(
+        Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }),
+        body,
+    );
+    frame.render_widget(
+        Paragraph::new("Type filter  Up/Down select  Enter use next turn  Esc cancel")
+            .style(Style::default().fg(Color::Green)),
+        footer,
+    );
 }
 
 pub(crate) fn overlay_area(viewport: Rect) -> Rect {
@@ -272,6 +379,10 @@ fn help_text() -> Text<'static> {
         ])
     }));
     lines.push(Line::default());
+    lines.push(Line::styled(
+        "Slash commands: /model, /model current, /model <query>, /model reset",
+        Style::default().fg(Color::Green),
+    ));
     lines.push(Line::styled(
         "Esc closes this view. PageUp/PageDown scrolls.",
         Style::default().fg(Color::DarkGray),

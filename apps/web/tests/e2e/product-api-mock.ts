@@ -64,7 +64,12 @@ export interface MockProviderProfile {
   default_model?: string;
   created_at: string;
   updated_at: string;
+  catalog_revision: string;
 }
+
+type MockProviderProfileSeed = Omit<MockProviderProfile, "catalog_revision"> & {
+  catalog_revision?: string;
+};
 
 export interface MockSessionModelConfig {
   product_session_id: string;
@@ -86,7 +91,7 @@ export interface MockProductApiOptions {
   workspaces?: MockWorkspace[];
   sessions?: MockSession[];
   transcripts?: Record<string, MockTranscript>;
-  providerProfiles?: MockProviderProfile[];
+  providerProfiles?: MockProviderProfileSeed[];
   memoryTopics?: Record<string, ProductMemoryTopicContentResponse>;
   memoryMutationFailures?: number;
   mcpServers?: Record<string, ProductMcpServerConfig[]>;
@@ -117,6 +122,12 @@ export interface MockProductApiState {
   sessionModelConfigs: Record<string, MockSessionModelConfig>;
   transcripts: Record<string, MockTranscript>;
   providerProfiles: MockProviderProfile[];
+  providerCatalogRevision: string;
+  providerProfileMutationRequests: Array<{
+    method: "POST" | "PUT" | "DELETE";
+    profileId?: string;
+    expectedRevision?: string;
+  }>;
   memoryTopics: Record<string, ProductMemoryTopicContentResponse>;
   memoryWorkspaceRequests: Array<string | null>;
   memoryMutationRequests: number;
@@ -176,6 +187,7 @@ interface ProviderProfileMutation {
   api_base: string;
   api_key_env?: string;
   default_model?: string;
+  expected_revision?: string;
 }
 
 interface DelayedSessionVisibility {
@@ -187,6 +199,10 @@ export async function installMockProductApi(
   page: Page,
   options: MockProductApiOptions = {},
 ): Promise<MockProductApiState> {
+  let providerCatalogGeneration = 0;
+  const initialProviderCatalogRevision = mockProviderCatalogRevision(
+    providerCatalogGeneration,
+  );
   const state: MockProductApiState = {
     workspaces: structuredClone(options.workspaces ?? []),
     sessions: structuredClone(options.sessions ?? []),
@@ -197,7 +213,14 @@ export async function installMockProductApi(
       ]),
     ),
     transcripts: structuredClone(options.transcripts ?? {}),
-    providerProfiles: structuredClone(options.providerProfiles ?? []),
+    providerProfiles: structuredClone(options.providerProfiles ?? []).map(
+      (profile) => ({
+        ...profile,
+        catalog_revision: initialProviderCatalogRevision,
+      }),
+    ),
+    providerCatalogRevision: initialProviderCatalogRevision,
+    providerProfileMutationRequests: [],
     memoryTopics: structuredClone(options.memoryTopics ?? {}),
     memoryWorkspaceRequests: [],
     memoryMutationRequests: 0,
@@ -247,6 +270,15 @@ export async function installMockProductApi(
   const migratedSessionIds = new Map<string, string>();
   const migratedProfileIds = new Map<string, string>();
   const migrationReceipts = new Map<string, M1BrowserMigrationResponse>();
+  const advanceProviderCatalogRevision = () => {
+    providerCatalogGeneration += 1;
+    state.providerCatalogRevision = mockProviderCatalogRevision(
+      providerCatalogGeneration,
+    );
+    for (const profile of state.providerProfiles) {
+      profile.catalog_revision = state.providerCatalogRevision;
+    }
+  };
 
   await page.route(/\/api\/product(?:\/.*)?(?:\?.*)?$/, async (route) => {
     const request = route.request();
@@ -311,9 +343,11 @@ export async function installMockProductApi(
         }
         return [{ source_id: session.source_id, product_session_id: sessionId }];
       });
+      let importedProviderProfile = false;
       const providerProfileMappings = body.provider_profiles.map((profile) => {
         let profileId = migratedProfileIds.get(profile.source_id);
         if (!profileId) {
+          importedProviderProfile = true;
           providerProfileCounter += 1;
           profileId = `provider-${providerProfileCounter}`;
           migratedProfileIds.set(profile.source_id, profileId);
@@ -324,12 +358,16 @@ export async function installMockProductApi(
             api_base: profile.api_base,
             created_at: NOW,
             updated_at: profile.updated_at,
+            catalog_revision: state.providerCatalogRevision,
             ...(profile.api_key_env ? { api_key_env: profile.api_key_env } : {}),
             ...(profile.default_model ? { default_model: profile.default_model } : {}),
           });
         }
         return { source_id: profile.source_id, provider_profile_id: profileId };
       });
+      if (importedProviderProfile) {
+        advanceProviderCatalogRevision();
+      }
 
       const importedSelection = body.safe_preferences.provider_selection;
       const mappedProfileId = importedSelection?.source_profile_id
@@ -1231,10 +1269,25 @@ export async function installMockProductApi(
     }
     if (path === "/product/provider-profiles" && method === "GET") {
       state.initialStateReadRequests += 1;
-      return json(route, { provider_profiles: state.providerProfiles });
+      return json(route, {
+        catalog_revision: state.providerCatalogRevision,
+        provider_profiles: state.providerProfiles,
+      });
     }
     if (path === "/product/provider-profiles" && method === "POST") {
       const body = request.postDataJSON() as ProviderProfileMutation;
+      state.providerProfileMutationRequests.push({
+        method: "POST",
+        ...(body.expected_revision
+          ? { expectedRevision: body.expected_revision }
+          : {}),
+      });
+      if (
+        body.expected_revision !== undefined &&
+        body.expected_revision !== state.providerCatalogRevision
+      ) {
+        return providerCatalogConflict(route);
+      }
       providerProfileCounter += 1;
       const profile: MockProviderProfile = {
         id: `provider-${providerProfileCounter}`,
@@ -1243,10 +1296,12 @@ export async function installMockProductApi(
         api_base: body.api_base,
         created_at: NOW,
         updated_at: NOW,
+        catalog_revision: state.providerCatalogRevision,
         ...(body.api_key_env ? { api_key_env: body.api_key_env } : {}),
         ...(body.default_model ? { default_model: body.default_model } : {}),
       };
       state.providerProfiles.unshift(profile);
+      advanceProviderCatalogRevision();
       return json(route, profile, 201);
     }
     const providerModelsMatch = path.match(
@@ -1299,16 +1354,36 @@ export async function installMockProductApi(
         );
       }
       const body = request.postDataJSON() as ProviderProfileMutation;
+      state.providerProfileMutationRequests.push({
+        method: "PUT",
+        profileId,
+        ...(body.expected_revision
+          ? { expectedRevision: body.expected_revision }
+          : {}),
+      });
+      if (
+        body.expected_revision !== undefined &&
+        body.expected_revision !== state.providerCatalogRevision
+      ) {
+        return providerCatalogConflict(route);
+      }
       profile.label = body.label;
       profile.provider_type = body.provider_type;
       profile.api_base = body.api_base;
       profile.updated_at = NOW;
       replaceOptional(profile, "api_key_env", body.api_key_env);
       replaceOptional(profile, "default_model", body.default_model);
+      advanceProviderCatalogRevision();
       return json(route, profile);
     }
     if (providerProfileMatch && method === "DELETE") {
       const profileId = decodeURIComponent(providerProfileMatch[1]!);
+      const expectedRevision = url.searchParams.get("expected_revision") ?? undefined;
+      state.providerProfileMutationRequests.push({
+        method: "DELETE",
+        profileId,
+        ...(expectedRevision ? { expectedRevision } : {}),
+      });
       const profileIndex = state.providerProfiles.findIndex(
         (item) => item.id === profileId,
       );
@@ -1319,6 +1394,12 @@ export async function installMockProductApi(
           404,
         );
       }
+      if (
+        expectedRevision !== undefined &&
+        expectedRevision !== state.providerCatalogRevision
+      ) {
+        return providerCatalogConflict(route);
+      }
       state.providerProfiles.splice(profileIndex, 1);
       for (const config of Object.values(state.sessionModelConfigs)) {
         if (config.profile_id === profileId) {
@@ -1327,6 +1408,7 @@ export async function installMockProductApi(
           config.updated_at = NOW;
         }
       }
+      advanceProviderCatalogRevision();
       return route.fulfill({ status: 204, body: "" });
     }
     return json(route, { code: "product_not_found", error: `unmocked ${method} ${path}` }, 404);
@@ -1735,6 +1817,21 @@ function replaceOptional(
   } else {
     delete profile[key];
   }
+}
+
+function mockProviderCatalogRevision(generation: number): string {
+  return `sha256:mock-provider-catalog-${generation}`;
+}
+
+function providerCatalogConflict(route: Route) {
+  return json(
+    route,
+    {
+      code: "product_revision_conflict",
+      error: "provider catalog revision does not match",
+    },
+    409,
+  );
 }
 
 async function fulfillJobState(

@@ -31,7 +31,8 @@ use crate::plan_loop::{PlanLoopState, run_planned_loop};
 use crate::planner::Planner;
 use crate::run_loop::{LoopContext, LoopItem, RunLoopState, SteerReceiver, run_unplanned_loop};
 use crate::runtime_identity::{
-    RuntimeIdentity, RuntimeIdentityInput, RuntimeIdentityStatus, build_runtime_identity,
+    RunModelSnapshot, RuntimeIdentity, RuntimeIdentityInput, RuntimeIdentityStatus,
+    build_runtime_identity,
 };
 use crate::session::CHECKPOINT_SESSION_TAIL_ENTRIES;
 use crate::state::tool_artifacts::ToolArtifactStore;
@@ -194,6 +195,7 @@ pub struct Engine {
     model_compaction_enabled: bool,
     compaction_failure_threshold: u32,
     agent_runtime: AgentRuntime,
+    run_model: Option<RunModelSnapshot>,
 }
 
 impl Engine {
@@ -302,6 +304,7 @@ impl Engine {
             model_compaction_enabled: false,
             compaction_failure_threshold: 3,
             agent_runtime,
+            run_model: None,
         }
     }
 
@@ -365,6 +368,11 @@ impl Engine {
         self
     }
 
+    pub fn with_run_model_snapshot(mut self, snapshot: Option<RunModelSnapshot>) -> Self {
+        self.run_model = snapshot;
+        self
+    }
+
     /// Configure the Runtime-owned Agent source for this Engine.
     pub fn with_agent_activation(
         mut self,
@@ -413,6 +421,7 @@ impl Engine {
             workspace: &self.workspace,
             model_id: self.model.model_id(),
             provider_target: self.model.client_id().as_str(),
+            run_model: self.run_model.as_ref(),
             approval_policy: self.approval_policy,
             max_steps: self.config.max_steps,
             plan_enabled: self.config.plan_enabled,

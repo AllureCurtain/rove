@@ -202,9 +202,30 @@ ProductStore.
 
 ### Configure a real provider
 
-Rove configures real providers through named profiles. Choose a provider type,
-endpoint, model, and credential environment-variable name. The browser never
-receives the credential value.
+Rove configures real providers through the user-owned catalog at
+`~/.rove/config.toml`. Choose a provider type, endpoint, model, and credential
+reference; never put the credential value in this file.
+
+~~~toml
+schema_version = 1
+
+[model]
+default_profile = "openai-main"
+default_model = "gpt-4.1-mini"
+reasoning = "default"
+
+[provider.profiles.openai-main]
+label = "OpenAI"
+provider_type = "openai"
+base_url = "https://api.openai.com/v1"
+model = "gpt-4.1-mini"
+auth = { style = "bearer", secret = { env = "OPENAI_API_KEY" } }
+~~~
+
+Normal CLI/TUI startup uses that default without `--model`. With no configured
+Provider it reports onboarding instead of silently choosing Fake. In `rove tui`,
+`/model` opens the configured-model picker; the selection applies to the next
+turn only. Use `--model fake` for an explicit deterministic no-network run.
 
 For Web development, export the key before starting the API:
 
@@ -216,7 +237,8 @@ powershell -ExecutionPolicy Bypass -File scripts/dev.ps1 -Provider
 Then open **Settings -> Providers**, create a profile, set the key reference to
 <code>OPENAI_API_KEY</code>, test the endpoint/model, and activate the profile.
 Official services and compatible gateways use the same profile types; only
-endpoint, model, and credential reference differ.
+endpoint, model, and credential reference differ. Settings mutates the same
+user catalog with revision/CAS protection; the browser never receives the key.
 
 See [Provider smoke testing](docs/runtime/provider-smoke.md) for CLI/config
 examples and honest external-service gates.

@@ -11,6 +11,7 @@ pub(crate) mod files;
 pub(crate) mod mcp;
 pub(crate) mod migration;
 pub(crate) mod platform;
+pub(crate) mod provider_catalog;
 pub(crate) mod routes;
 pub(crate) mod store;
 pub(crate) mod transcript;
