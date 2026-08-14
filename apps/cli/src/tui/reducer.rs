@@ -1,10 +1,11 @@
 use crate::terminal::action::TerminalAction;
 use crate::tui::action::TuiAction;
 use crate::tui::effect::TuiEffect;
+use crate::tui::slash::TuiSlashCommand;
 use crate::tui::state::{
     HelpState, InteractionKeyMode, InteractionModalView, MAX_COMPOSER_BYTES,
-    MAX_INTERACTION_INPUT_BYTES, RunLifecycle, SessionPickerError, SessionPickerState, TuiFocus,
-    TuiOverlay, TuiState,
+    MAX_INTERACTION_INPUT_BYTES, ModelPickerError, ModelPickerState, RunLifecycle,
+    SessionPickerError, SessionPickerState, TuiFocus, TuiOverlay, TuiState,
 };
 use rove_runtime::types::CallId;
 
@@ -16,6 +17,10 @@ pub fn reduce(state: &mut TuiState, action: TuiAction) -> Vec<TuiEffect> {
             | TuiAction::Resize { .. }
             | TuiAction::SessionsLoaded { .. }
             | TuiAction::SessionsLoadFailed { .. }
+            | TuiAction::ModelsLoaded { .. }
+            | TuiAction::ModelsLoadFailed { .. }
+            | TuiAction::ModelSelectionPersisted { .. }
+            | TuiAction::ModelSelectionFailed { .. }
             | TuiAction::ResumeSelectionFailed { .. }
     ) {
         state.quit_confirmation = false;
@@ -59,6 +64,58 @@ pub fn reduce(state: &mut TuiState, action: TuiAction) -> Vec<TuiEffect> {
         TuiAction::OverlayPageUp => page_overlay(state, false),
         TuiAction::OverlayPageDown => page_overlay(state, true),
         TuiAction::ConfirmOverlay => confirm_overlay(state),
+        TuiAction::ModelsLoaded {
+            candidates,
+            query,
+            auto_select,
+        } => {
+            let picker = ModelPickerState::ready(candidates, query);
+            let unique = picker.visible_candidates().len() == 1;
+            state.overlay = Some(TuiOverlay::ModelPicker(picker));
+            if auto_select && unique && !state.run_lifecycle.is_active() {
+                confirm_overlay(state)
+            } else {
+                Vec::new()
+            }
+        }
+        TuiAction::ModelsLoadFailed { error } => {
+            state.overlay = Some(TuiOverlay::ModelPicker(ModelPickerState::Ready {
+                candidates: Vec::new(),
+                query: String::new(),
+                selected: 0,
+                error: Some(error),
+                persisting: false,
+            }));
+            Vec::new()
+        }
+        TuiAction::ModelSelectionPersisted {
+            selection,
+            revision,
+        } => {
+            state.model_selection = Some(selection.clone());
+            state.model_selection_revision = revision;
+            state.model_selection_changed = true;
+            state.model_notice = Some(format!(
+                "Model selected: {}/{} (next turn)",
+                selection.profile_id, selection.model
+            ));
+            state.overlay = None;
+            Vec::new()
+        }
+        TuiAction::ModelSelectionFailed { error } => {
+            if let Some(TuiOverlay::ModelPicker(ModelPickerState::Ready {
+                error: slot,
+                persisting,
+                ..
+            })) = state.overlay.as_mut()
+            {
+                *persisting = false;
+                *slot = Some(error);
+            } else {
+                state.model_notice = Some(error.label().to_string());
+            }
+            Vec::new()
+        }
         TuiAction::SessionsLoaded { candidates } => {
             if matches!(state.overlay, Some(TuiOverlay::SessionPicker(_))) {
                 state.overlay = Some(TuiOverlay::SessionPicker(SessionPickerState::ready(
@@ -164,6 +221,17 @@ pub fn reduce(state: &mut TuiState, action: TuiAction) -> Vec<TuiEffect> {
                 if draft.len().saturating_add(ch.len_utf8()) <= MAX_INTERACTION_INPUT_BYTES {
                     draft.push(ch);
                 }
+            } else if let Some(TuiOverlay::ModelPicker(picker)) = state.overlay.as_mut() {
+                picker.insert_query_char(ch);
+                let query = match picker {
+                    ModelPickerState::Loading { query } | ModelPickerState::Ready { query, .. } => {
+                        query.clone()
+                    }
+                };
+                return vec![TuiEffect::LoadModels {
+                    query,
+                    auto_select: false,
+                }];
             } else if state.modal.is_none()
                 && state.overlay.is_none()
                 && state.focus == TuiFocus::Composer
@@ -176,6 +244,17 @@ pub fn reduce(state: &mut TuiState, action: TuiAction) -> Vec<TuiEffect> {
         TuiAction::Backspace => {
             if let Some(InteractionModalView::Input { draft, .. }) = state.modal.as_mut() {
                 draft.pop();
+            } else if let Some(TuiOverlay::ModelPicker(picker)) = state.overlay.as_mut() {
+                picker.backspace_query();
+                let query = match picker {
+                    ModelPickerState::Loading { query } | ModelPickerState::Ready { query, .. } => {
+                        query.clone()
+                    }
+                };
+                return vec![TuiEffect::LoadModels {
+                    query,
+                    auto_select: false,
+                }];
             } else if state.modal.is_none()
                 && state.overlay.is_none()
                 && state.focus == TuiFocus::Composer
@@ -185,15 +264,17 @@ pub fn reduce(state: &mut TuiState, action: TuiAction) -> Vec<TuiEffect> {
             Vec::new()
         }
         TuiAction::SubmitComposer => {
-            if state.modal.is_some()
-                || state.overlay.is_some()
-                || state.focus != TuiFocus::Composer
-                || !state.run_lifecycle.accepts_prompt()
+            if state.modal.is_some() || state.overlay.is_some() || state.focus != TuiFocus::Composer
             {
                 return Vec::new();
             }
             let message = state.composer.trim().to_string();
             if message.is_empty() {
+                Vec::new()
+            } else if let Some(command) = TuiSlashCommand::parse(&message) {
+                state.composer.clear();
+                dispatch_slash_command(state, command)
+            } else if !state.run_lifecycle.accepts_prompt() {
                 Vec::new()
             } else {
                 state.composer.clear();
@@ -309,6 +390,7 @@ fn dispatch_prompt(state: &mut TuiState, message: String) -> Vec<TuiEffect> {
         return Vec::new();
     }
 
+    state.model_notice = None;
     state.run_lifecycle = RunLifecycle::Running;
     vec![TuiEffect::Dispatch(TerminalAction::SubmitPrompt(message))]
 }
@@ -355,6 +437,7 @@ fn move_overlay(state: &mut TuiState, delta: isize) -> Vec<TuiEffect> {
     };
     match overlay {
         TuiOverlay::SessionPicker(picker) => picker.move_selection(delta),
+        TuiOverlay::ModelPicker(picker) => picker.move_selection(delta),
         TuiOverlay::ToolDetail(detail) => detail.move_selection(delta),
         TuiOverlay::Help(help) => {
             help.scroll = if delta.is_negative() {
@@ -375,6 +458,7 @@ fn page_overlay(state: &mut TuiState, down: bool) -> Vec<TuiEffect> {
     };
     match overlay {
         TuiOverlay::SessionPicker(picker) => picker.move_selection(if down { 8 } else { -8 }),
+        TuiOverlay::ModelPicker(picker) => picker.move_selection(if down { 8 } else { -8 }),
         TuiOverlay::ToolDetail(detail) => {
             detail.scroll = if down {
                 detail
@@ -407,7 +491,33 @@ fn confirm_overlay(state: &mut TuiState) -> Vec<TuiEffect> {
             *resolving = None;
             *error = Some(SessionPickerError::Busy);
         }
+        if let Some(TuiOverlay::ModelPicker(ModelPickerState::Ready {
+            error, persisting, ..
+        })) = state.overlay.as_mut()
+        {
+            *persisting = false;
+            *error = Some(ModelPickerError::Busy);
+        }
         return Vec::new();
+    }
+    if let Some(TuiOverlay::ModelPicker(picker)) = state.overlay.as_mut() {
+        let Some(selection) = picker
+            .selected_candidate()
+            .map(|candidate| candidate.selection.clone())
+        else {
+            return Vec::new();
+        };
+        if let ModelPickerState::Ready {
+            persisting, error, ..
+        } = picker
+        {
+            *persisting = true;
+            *error = None;
+        }
+        return vec![TuiEffect::PersistModel {
+            selection,
+            expected_revision: state.model_selection_revision,
+        }];
     }
     let Some(TuiOverlay::SessionPicker(picker)) = state.overlay.as_mut() else {
         return Vec::new();
@@ -423,6 +533,75 @@ fn confirm_overlay(state: &mut TuiState) -> Vec<TuiEffect> {
         *error = None;
     }
     vec![TuiEffect::ResolveResume { run_id }]
+}
+
+fn dispatch_slash_command(state: &mut TuiState, command: TuiSlashCommand) -> Vec<TuiEffect> {
+    match command {
+        TuiSlashCommand::ModelPicker => {
+            if state.run_lifecycle.is_active() {
+                state.overlay = Some(TuiOverlay::ModelPicker(ModelPickerState::Ready {
+                    candidates: Vec::new(),
+                    query: String::new(),
+                    selected: 0,
+                    error: Some(ModelPickerError::Busy),
+                    persisting: false,
+                }));
+                return Vec::new();
+            }
+            state.overlay = Some(TuiOverlay::ModelPicker(ModelPickerState::loading(
+                String::new(),
+            )));
+            vec![TuiEffect::LoadModels {
+                query: String::new(),
+                auto_select: false,
+            }]
+        }
+        TuiSlashCommand::ModelCurrent => {
+            state.model_notice = Some(state.model_selection.as_ref().map_or_else(
+                || "No model selected; configure ~/.rove/config.toml".to_string(),
+                |selection| {
+                    format!(
+                        "Current model: {}/{} (catalog {})",
+                        selection.profile_id, selection.model, selection.revision
+                    )
+                },
+            ));
+            Vec::new()
+        }
+        TuiSlashCommand::ModelQuery(query) => {
+            if state.run_lifecycle.is_active() {
+                state.overlay = Some(TuiOverlay::ModelPicker(ModelPickerState::Ready {
+                    candidates: Vec::new(),
+                    query,
+                    selected: 0,
+                    error: Some(ModelPickerError::Busy),
+                    persisting: false,
+                }));
+                return Vec::new();
+            }
+            state.overlay = Some(TuiOverlay::ModelPicker(ModelPickerState::loading(
+                query.clone(),
+            )));
+            vec![TuiEffect::LoadModels {
+                query,
+                auto_select: true,
+            }]
+        }
+        TuiSlashCommand::ModelReset => {
+            if state.run_lifecycle.is_active() {
+                state.model_notice = Some(ModelPickerError::Busy.label().to_string());
+                Vec::new()
+            } else {
+                vec![TuiEffect::ResetModel {
+                    expected_revision: state.model_selection_revision,
+                }]
+            }
+        }
+        TuiSlashCommand::Unknown(command) => {
+            state.model_notice = Some(format!("Unknown command `{command}`; use /model or F1"));
+            Vec::new()
+        }
+    }
 }
 
 fn resolve_approval(state: &mut TuiState, call_id: CallId, approve: bool) -> Vec<TuiEffect> {
@@ -493,9 +672,10 @@ mod tests {
     use crate::tui::effect::TuiEffect;
     use crate::tui::state::{
         InteractionKeyMode, InteractionModalKind, InteractionModalView,
-        MAX_INTERACTION_INPUT_BYTES, ResumeCandidate, RunLifecycle, SessionPickerError, TuiFocus,
-        TuiOverlay, TuiState,
+        MAX_INTERACTION_INPUT_BYTES, ModelCandidate, ModelPickerError, ModelPickerState,
+        ResumeCandidate, RunLifecycle, SessionPickerError, TuiFocus, TuiOverlay, TuiState,
     };
+    use rove_app_bootstrap::{ModelSelection, ProviderProfileId};
     use rove_runtime::types::{CallId, JobId, RunId, SessionId};
 
     use super::reduce;
@@ -1114,6 +1294,113 @@ mod tests {
                 error: Some(SessionPickerError::Busy),
                 ..
             }
+        ));
+    }
+
+    fn model_candidate() -> ModelCandidate {
+        ModelCandidate {
+            selection: ModelSelection {
+                profile_id: ProviderProfileId::new("local").unwrap(),
+                model: "model-模型".to_string(),
+                reasoning: "default".to_string(),
+                revision: "sha256:catalog".to_string(),
+            },
+            label: "本地 Local".to_string(),
+            provider_type: "ollama".to_string(),
+            credential_ready: true,
+            inventory_fresh: false,
+            current: false,
+        }
+    }
+
+    #[test]
+    fn slash_model_is_local_and_unknown_slashes_never_reach_the_model() {
+        let mut state = TuiState {
+            composer: "/model current".to_string(),
+            ..TuiState::default()
+        };
+        assert!(reduce(&mut state, TuiAction::SubmitComposer).is_empty());
+        assert_eq!(state.run_lifecycle, RunLifecycle::Idle);
+        assert!(
+            state
+                .model_notice
+                .as_deref()
+                .unwrap()
+                .contains("No model selected")
+        );
+
+        state.composer = "/modle typo".to_string();
+        assert!(reduce(&mut state, TuiAction::SubmitComposer).is_empty());
+        assert_eq!(state.run_lifecycle, RunLifecycle::Idle);
+        assert!(
+            state
+                .model_notice
+                .as_deref()
+                .unwrap()
+                .contains("Unknown command")
+        );
+    }
+
+    #[test]
+    fn model_picker_filters_unicode_and_persists_with_session_cas() {
+        let mut state = TuiState {
+            composer: "/model 模型".to_string(),
+            model_selection_revision: 4,
+            ..TuiState::default()
+        };
+        assert_eq!(
+            reduce(&mut state, TuiAction::SubmitComposer),
+            vec![TuiEffect::LoadModels {
+                query: "模型".to_string(),
+                auto_select: true,
+            }]
+        );
+        let candidate = model_candidate();
+        let selection = candidate.selection.clone();
+        let effects = reduce(
+            &mut state,
+            TuiAction::ModelsLoaded {
+                candidates: vec![candidate],
+                query: "模型".to_string(),
+                auto_select: true,
+            },
+        );
+        assert_eq!(
+            effects,
+            vec![TuiEffect::PersistModel {
+                selection: selection.clone(),
+                expected_revision: 4,
+            }]
+        );
+        reduce(
+            &mut state,
+            TuiAction::ModelSelectionPersisted {
+                selection: selection.clone(),
+                revision: 5,
+            },
+        );
+        assert_eq!(state.model_selection, Some(selection));
+        assert_eq!(state.model_selection_revision, 5);
+        assert!(state.model_selection_changed);
+    }
+
+    #[test]
+    fn model_confirmation_is_busy_during_active_run() {
+        let mut state = TuiState {
+            run_lifecycle: RunLifecycle::Running,
+            overlay: Some(TuiOverlay::ModelPicker(ModelPickerState::ready(
+                vec![model_candidate()],
+                String::new(),
+            ))),
+            ..TuiState::default()
+        };
+        assert!(reduce(&mut state, TuiAction::ConfirmOverlay).is_empty());
+        assert!(matches!(
+            state.overlay,
+            Some(TuiOverlay::ModelPicker(ModelPickerState::Ready {
+                error: Some(ModelPickerError::Busy),
+                ..
+            }))
         ));
     }
 }

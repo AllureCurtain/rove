@@ -4,7 +4,8 @@ use std::sync::Arc;
 use axum::Json;
 use axum::extract::{Path, State};
 use rove_app_bootstrap::{
-    ProjectActivationState, ProjectTrustDecision, ProjectTrustRepository, capability_digest_map,
+    ModelSelection, ProjectActivationState, ProjectTrustDecision, ProjectTrustRepository,
+    ProviderCatalog, ProviderProfileId, capability_digest_map,
     provider_capability_selector_for_workspace,
 };
 use rove_runtime::workspace::{Workspace, WorkspaceKind};
@@ -37,10 +38,11 @@ pub(crate) async fn get_project_trust(
 ) -> Result<Json<ProductTrustStatus>, ApiError> {
     let authority = state.project_trust()?;
     let store = state.product_store()?;
+    let catalog = state.provider_catalog().await?;
     let workspace = store.get_workspace(&workspace_id).await?;
     let (root, kind) = open_workspace(&workspace)?;
     Ok(Json(
-        trust_status(&authority, &store, &workspace_id, &root, kind).await?,
+        trust_status(&authority, &store, &catalog, &workspace_id, &root, kind).await?,
     ))
 }
 
@@ -74,10 +76,11 @@ pub(crate) async fn decide_project_trust(
     }
     let authority = state.project_trust()?;
     let store = state.product_store()?;
+    let catalog = state.provider_catalog().await?;
     let workspace = store.get_workspace(&workspace_id).await?;
     let (root, kind) = open_workspace(&workspace)?;
     let provider_selector =
-        product_provider_capability_selector(&store, &workspace_id, &root).await?;
+        product_provider_capability_selector(&store, &catalog, &workspace_id, &root).await?;
     let all_digests = capability_digest_map(&root, None, Some(&provider_selector));
     let requested = selected_capability_digests(&request, all_digests)?;
     let trust_state = match request.decision {
@@ -106,7 +109,7 @@ pub(crate) async fn decide_project_trust(
         state.quarantine_workspace_jobs(&root).await;
     }
     Ok(Json(
-        trust_status(&authority, &store, &workspace_id, &root, kind).await?,
+        trust_status(&authority, &store, &catalog, &workspace_id, &root, kind).await?,
     ))
 }
 
@@ -161,11 +164,13 @@ pub(crate) async fn resolve_product_workspace_trust(
 async fn trust_status(
     authority: &Arc<ProjectTrustRepository>,
     store: &Arc<dyn ProductStore>,
+    catalog: &ProviderCatalog,
     workspace_id: &ProductWorkspaceId,
     root: &std::path::Path,
     kind: WorkspaceKind,
 ) -> Result<ProductTrustStatus, ApiError> {
-    let provider_selector = product_provider_capability_selector(store, workspace_id, root).await?;
+    let provider_selector =
+        product_provider_capability_selector(store, catalog, workspace_id, root).await?;
     let resolution =
         resolve_product_workspace_trust(authority, root, kind, &provider_selector).await?;
     Ok(ProductTrustStatus {
@@ -179,6 +184,7 @@ async fn trust_status(
 
 pub(crate) async fn product_provider_capability_selector(
     store: &Arc<dyn ProductStore>,
+    catalog: &ProviderCatalog,
     workspace_id: &ProductWorkspaceId,
     root: &std::path::Path,
 ) -> Result<String, ApiError> {
@@ -190,15 +196,29 @@ pub(crate) async fn product_provider_capability_selector(
     for session in store.list_sessions(workspace_id).await? {
         let model_config = store.get_session_model_config(&session.id).await?;
         let selector = if let Some(profile_id) = &model_config.profile_id {
-            let profile = store.get_provider_profile(profile_id).await?;
-            format!(
-                "profile={};type={};endpoint={};credential_env={};model={}",
-                profile.id,
-                product_provider_type_name(profile.provider_type),
-                profile.api_base.trim().trim_end_matches('/'),
-                profile.api_key_env.as_deref().unwrap_or_default(),
-                model_config.model.trim(),
-            )
+            let catalog_profile_id = ProviderProfileId::new(profile_id.to_string())
+                .map_err(super::provider_catalog::catalog_error)?;
+            let selection = ModelSelection {
+                profile_id: catalog_profile_id,
+                model: model_config.model.clone(),
+                reasoning: model_config.reasoning.as_str().to_string(),
+                revision: catalog.revision().to_string(),
+            };
+            match catalog.snapshot(&selection, root) {
+                Ok(snapshot) => format!(
+                    "profile={};identity={}",
+                    snapshot.profile_id, snapshot.safe_config_digest
+                ),
+                Err(_) => {
+                    let profile = store.get_provider_profile(profile_id).await?;
+                    format!(
+                        "profile={};type={};identity=unavailable;model={}",
+                        profile.id,
+                        product_provider_type_name(profile.provider_type),
+                        model_config.model.trim(),
+                    )
+                }
+            }
         } else {
             format!(
                 "profile=none;type=fake;endpoint=;credential_env=;model={}",

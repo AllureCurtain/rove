@@ -18,7 +18,7 @@ Bootstrap, CLI, API, and runtime all use the same operator-owned SQLite
 authority selected by `ROVE_PROJECT_TRUST_STORE` or the platform user-state
 directory (`project-trust.sqlite` by default). Product Web sends a server-owned
 workspace ID; the API resolves that ID to the canonical root before calling the
-same repository. ProductStore schema v11 retains `project_trust_records` only
+same repository. ProductStore's legacy v11 data retains `project_trust_records` only
 as a one-way compatibility import source. It is not written by the API and is
 not a second live authority. Missing canonical records are imported at API
 startup without overwriting an existing canonical decision.
@@ -49,8 +49,18 @@ persisted.
 Merge order for an explicitly trusted workspace:
 
 ```text
-defaults < .rove/config.toml < environment < CLI/API overrides
+defaults < user ~/.rove/config.toml < trusted workspace selection
+         < environment < CLI/API overrides
 ```
+
+The user file is schema v1 and is discovered below the platform home
+directory, with `ROVE_CONFIG_ROOT` available for tests and embedders. It owns
+complete Provider profiles, fallback membership, and model defaults. Workspace
+`.rove/config.toml` may only select an existing `provider.active` and
+`provider.model`; definitions for endpoints, auth, headers, fallbacks, protocol
+options, or adapters fail with `project_provider_authority_violation` before
+side effects. User catalog writes use a bounded file lock, SHA-256 revision CAS,
+atomic replacement, symlink rejection, and restrictive Unix permissions.
 
 For a restricted or revoked workspace, the project-config layer is reported as
 present but deferred, and process environment plus explicit overrides apply
@@ -67,13 +77,16 @@ never credential values. The existing cancellation path terminates foreground
 child work and records the normal canonical cancellation lifecycle; no new
 event family was introduced.
 
-Validation covers legacy and named provider selection, profile/fallback
+Validation covers named provider selection, profile/fallback
 references, endpoints, model and protocol-option bounds, auth/header names,
 workspace-bounded secret files, routing thresholds and retry/backoff fields,
 compaction thresholds, token budgets, SQLite timeout, memory recall limit, API
 remote-bind safety, and workspace-relative paths. `rove dump-config` prints the
-effective config with legacy key-presence flags and named-profile secret/header
-source summaries; resolved secret values and literal header values are omitted.
+effective config with named-profile secret/header source summaries; resolved
+secret values and literal header values are omitted. `rove provider migrate`
+is the explicit dry-run-by-default path for legacy workspace/environment/
+ProductStore definitions; `--apply` writes the catalog and redacted receipt,
+while workspace rewriting requires explicit trust.
 
 ## Workspace
 
@@ -207,8 +220,14 @@ model = "claude-sonnet"
 auth = { style = "header", header = "x-api-key", secret = { env = "ANTHROPIC_API_KEY" } }
 ```
 
+For the user-owned file, add `schema_version = 1` and place defaults under
+`[model]` (`default_profile`, `default_model`, and `reasoning`). The profile
+field itself is `model`; credential references use
+`auth.secret = { env | file | keyring }`. Literal credentials are rejected.
+
 Secret references may use bounded environment variables or UTF-8 files. Files
-are limited to the workspace unless `state.allow_external_paths` is enabled.
+are limited to the configured authority boundary unless external paths are
+explicitly allowed; user catalog references can also use the OS keyring.
 Known wire protocols work with official APIs, self-hosted endpoints, and
 compatible gateways by changing profile data. Applications may inject a
 custom in-process `WireProtocolRegistry` through `ModelClientFactory`; unknown
@@ -239,6 +258,30 @@ Fallback can be configured as:
 
 - `provider.fallback_models`: model names using the primary provider;
 - `provider.fallback_profiles`: named target profiles.
+
+`ProviderCatalogService` is the shared UI-neutral contract used by CLI and API;
+Web consumes the API projection rather than maintaining a separate backend.
+API/Web create, update, and delete operations mutate the user catalog with
+`expected_revision` CAS and expose `catalog_revision`; stale/busy writes are
+HTTP 409. ProductStore schema v12 persists stable legacy-to-catalog mappings,
+session selections, and immutable secret-free run model facts, not duplicate
+endpoint or credential authority.
+
+CLI keeps state, health, tools, and execution environment as stable services,
+but constructs a fresh `RunAssembly` at every turn. The assembly resolves the
+current selection, builds the model client/Engine, and freezes
+`RunModelSnapshot`. Resume requires the saved profile/model identity and safe
+configuration digest; mismatch returns `provider_changed_for_resume` instead of
+silently using the current selection. Missing configuration returns
+`provider_onboarding_required`. Fake remains available only through explicit
+configuration or the deterministic programmatic path.
+
+The TUI parser consumes slash commands before prompt submission. `/model`,
+`/model current`, `/model <query>`, and `/model reset` use the shared catalog
+and a per-session revisioned selection file. Active runs reject changes as
+busy; stale catalog or selection revisions are visible conflicts. The picker
+currently lists configured profile models, so each descriptor has
+`inventory_fresh=false`; it does not claim live remote discovery.
 
 Native provider tool-use and JSON text action parsing are both supported. Native tool-use is preferred for real providers because it preserves provider IDs through `Message.tool_calls` and `tool_call_id` history. The JSON text path remains for fake and compatibility scenarios and is used only when a model turn emitted no native tool calls. Planned, unplanned, and embedded execution share the conversion in `core/src/model_turn.rs`; `runtime/src/engine/model_turn.rs` translates its `AgentEvent` values to durable `StreamEvent` values.
 

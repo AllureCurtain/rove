@@ -37,6 +37,9 @@ pub enum SecretSource {
     File {
         file: PathBuf,
     },
+    Keyring {
+        keyring: KeyringReference,
+    },
     /// In-memory only. Never loaded from durable config files; used for
     /// request-scoped API profiles that must embed a secret already resolved
     /// from the environment before the caller may clear that environment.
@@ -44,11 +47,19 @@ pub enum SecretSource {
     Literal(#[serde(skip_serializing)] String),
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct KeyringReference {
+    pub service: String,
+    pub account: String,
+}
+
 impl fmt::Debug for SecretSource {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Env { env } => formatter.debug_struct("Env").field("env", env).finish(),
             Self::File { file } => formatter.debug_struct("File").field("file", file).finish(),
+            Self::Keyring { keyring } => formatter.debug_tuple("Keyring").field(keyring).finish(),
             Self::Literal(_) => formatter.write_str("Literal([REDACTED])"),
         }
     }
@@ -76,6 +87,7 @@ pub enum ProviderHeaderValue {
     Literal(String),
     Env { env: String },
     File { file: PathBuf },
+    Keyring { keyring: KeyringReference },
 }
 
 impl fmt::Debug for ProviderHeaderValue {
@@ -84,6 +96,7 @@ impl fmt::Debug for ProviderHeaderValue {
             Self::Literal(_) => formatter.write_str("[REDACTED]"),
             Self::Env { env } => formatter.debug_struct("Env").field("env", env).finish(),
             Self::File { file } => formatter.debug_struct("File").field("file", file).finish(),
+            Self::Keyring { keyring } => formatter.debug_tuple("Keyring").field(keyring).finish(),
         }
     }
 }
@@ -93,6 +106,9 @@ impl ProviderHeaderValue {
         match self {
             Self::Env { env } => Some(SecretSource::Env { env: env.clone() }),
             Self::File { file } => Some(SecretSource::File { file: file.clone() }),
+            Self::Keyring { keyring } => Some(SecretSource::Keyring {
+                keyring: keyring.clone(),
+            }),
             Self::Literal(_) => None,
         }
     }
@@ -100,7 +116,7 @@ impl ProviderHeaderValue {
     fn literal_value(&self) -> Option<&str> {
         match self {
             Self::Literal(value) => Some(value),
-            Self::Env { .. } | Self::File { .. } => None,
+            Self::Env { .. } | Self::File { .. } | Self::Keyring { .. } => None,
         }
     }
 }
@@ -108,6 +124,8 @@ impl ProviderHeaderValue {
 /// Serializable, named endpoint profile.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProviderProfileConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
     /// Product type: openai | openai-responses | anthropic | ollama | fake.
     /// System maps this to an internal wire protocol id.
     pub provider_type: String,
@@ -141,6 +159,11 @@ impl ProviderProfileConfig {
         workspace_root: &Path,
         allow_external_paths: bool,
     ) -> anyhow::Result<()> {
+        if self.label.as_ref().is_some_and(|label| {
+            label.trim().is_empty() || label.len() > 512 || label.chars().any(char::is_control)
+        }) {
+            anyhow::bail!("profile.label is empty, too long, or invalid");
+        }
         let protocol_id = wire_protocol_for_provider_type(&self.provider_type)?;
         let protocol = protocol_id.as_str();
         if protocol == "fake" {
@@ -431,6 +454,10 @@ fn validate_secret_source(
             }
             Ok(())
         }
+        SecretSource::Keyring { keyring } => {
+            validate_keyring_component("service", &keyring.service)?;
+            validate_keyring_component("account", &keyring.account)
+        }
         SecretSource::Literal(value) => {
             if value.trim().is_empty() {
                 anyhow::bail!("profile secret literal is empty");
@@ -473,6 +500,11 @@ fn resolve_secret(
             allow_external_paths,
             workspace_root,
         )?,
+        SecretSource::Keyring { keyring } => {
+            keyring::Entry::new(&keyring.service, &keyring.account)
+                .and_then(|entry| entry.get_password())
+                .with_context(|| "profile keyring credential is unavailable")?
+        }
         SecretSource::Literal(value) => value.clone(),
     };
     let value = value.trim().to_string();
@@ -483,6 +515,13 @@ fn resolve_secret(
         anyhow::bail!("profile secret exceeds {MAX_SECRET_BYTES} bytes");
     }
     Ok(value)
+}
+
+fn validate_keyring_component(field: &str, value: &str) -> anyhow::Result<()> {
+    if value.is_empty() || value.len() > 256 || value.chars().any(char::is_control) {
+        anyhow::bail!("profile keyring {field} is empty, too long, or invalid");
+    }
+    Ok(())
 }
 
 fn read_secret_file(
@@ -581,6 +620,7 @@ mod tests {
 
     fn test_profile() -> ProviderProfileConfig {
         ProviderProfileConfig {
+            label: None,
             provider_type: "openai".to_string(),
             base_url: "https://gateway.example.test/v1".to_string(),
             model: "team/model".to_string(),

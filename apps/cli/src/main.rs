@@ -7,6 +7,7 @@ use rove_app_bootstrap::AppConfigOverrides;
 use rove_cli::cli::args::{Args, Command};
 use rove_cli::cli::config as cli_config;
 use rove_cli::cli::exec::run_exec_with_cancel;
+use rove_cli::cli::provider as cli_provider;
 use rove_cli::cli::repl;
 use rove_cli::cli::runtime::{CliRuntimeInteraction, CliRuntimeOptions, build_cli_runtime};
 use rove_cli::cli::sessions;
@@ -70,6 +71,11 @@ fn run_sync_fast_path(args: Args) -> anyhow::Result<()> {
                 trust_project: args.trust_project,
             },
         ),
+        Some(Command::Provider { command }) => cli_provider::run(
+            args.cwd.clone().map(PathBuf::from),
+            args.trust_project,
+            command,
+        ),
         _ => Ok(()),
     }
 }
@@ -79,6 +85,9 @@ async fn async_main(args: Args) -> anyhow::Result<()> {
         Some(Command::Sessions) => return sessions::run(args.cwd.clone()).await,
         Some(Command::State { command }) => return cli_state::run(args.cwd.clone(), command).await,
         Some(Command::Trust { command }) => return cli_trust::run(args.cwd.clone(), command),
+        Some(Command::Provider { .. }) => {
+            unreachable!("provider commands are handled before runtime startup")
+        }
         Some(Command::Tui) => {
             let (interaction, interaction_rx) = TuiInteractionBroker::default().into_parts();
             let runtime = build_runtime_with_interaction(
@@ -146,6 +155,9 @@ async fn run_exec(
     message: String,
 ) -> anyhow::Result<()> {
     let resume_state = resolve_resume_state(&runtime.state_store, args.resume.as_deref()).await?;
+    let assembly = runtime
+        .assemble_run(&message, None, resume_state.as_ref(), false)
+        .await?;
     let run_id = RunId::new();
     let run_handle = runtime.state_store.start_run(
         resume_state
@@ -164,7 +176,7 @@ async fn run_exec(
     let cli_cancel = CancellationToken::new();
     let signal_exit_code = spawn_cli_signal_listener(cli_cancel.clone());
     let termination = run_exec_with_cancel(
-        &runtime.engine,
+        &assembly.engine,
         message,
         run_handle,
         resume_state,

@@ -238,7 +238,7 @@ fn overlay<T: Copy>(slot: &mut Option<T>, configured: Option<T>) {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct ProviderConfig {
     pub active: Option<String>,
@@ -333,6 +333,10 @@ pub struct RoutingConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ConfigSourceSummary {
     pub workspace_root: PathBuf,
+    pub user_config_path: PathBuf,
+    pub user_config_present: bool,
+    pub user_config_loaded: bool,
+    pub user_config_revision: Option<String>,
     pub project_config_path: PathBuf,
     pub project_config_present: bool,
     pub project_config_loaded: bool,
@@ -372,21 +376,9 @@ impl Default for RuntimeConfig {
     }
 }
 
-impl Default for ProviderConfig {
-    fn default() -> Self {
-        Self {
-            active: None,
-            profiles: BTreeMap::new(),
-            fallback_profiles: Vec::new(),
-            model: "fake".to_string(),
-            fallback_models: Vec::new(),
-            options: ProviderOptions::default(),
-        }
-    }
-}
-
 fn default_fake_provider_profile() -> ProviderProfileConfig {
     ProviderProfileConfig {
+        label: Some("Local deterministic Fake".to_string()),
         provider_type: "fake".to_string(),
         base_url: String::new(),
         model: "fake".to_string(),
@@ -491,6 +483,10 @@ impl Default for ConfigSourceSummary {
         let activation = ProjectActivation::programmatic();
         Self {
             workspace_root: PathBuf::from("."),
+            user_config_path: crate::user_config::UserConfigPaths::discover().config_file,
+            user_config_present: false,
+            user_config_loaded: false,
+            user_config_revision: None,
             project_config_path: PathBuf::from(".rove/config.toml"),
             project_config_present: false,
             project_config_loaded: false,
@@ -536,6 +532,25 @@ impl AppConfig {
             workspace_root,
             overrides,
             repository.as_ref(),
+            crate::user_config::UserConfigPaths::discover(),
+        )
+    }
+
+    /// Load configuration from an explicit user catalog location.
+    ///
+    /// This is useful for embedders and concurrent tests that must not depend
+    /// on process-global home-directory overrides.
+    pub fn load_with_user_config_paths(
+        workspace_root: impl AsRef<Path>,
+        overrides: AppConfigOverrides,
+        user_paths: crate::user_config::UserConfigPaths,
+    ) -> anyhow::Result<Self> {
+        let repository = ProjectTrustRepository::operator_default().ok();
+        Self::load_with_optional_project_trust_repository(
+            workspace_root,
+            overrides,
+            repository.as_ref(),
+            user_paths,
         )
     }
 
@@ -551,6 +566,22 @@ impl AppConfig {
             workspace_root,
             overrides,
             Some(repository),
+            crate::user_config::UserConfigPaths::discover(),
+        )
+    }
+
+    /// Load against explicit Provider and Project Trust authorities.
+    pub fn load_with_authorities(
+        workspace_root: impl AsRef<Path>,
+        overrides: AppConfigOverrides,
+        repository: &ProjectTrustRepository,
+        user_paths: crate::user_config::UserConfigPaths,
+    ) -> anyhow::Result<Self> {
+        Self::load_with_optional_project_trust_repository(
+            workspace_root,
+            overrides,
+            Some(repository),
+            user_paths,
         )
     }
 
@@ -558,7 +589,10 @@ impl AppConfig {
         workspace_root: impl AsRef<Path>,
         overrides: AppConfigOverrides,
         repository: Option<&ProjectTrustRepository>,
+        user_paths: crate::user_config::UserConfigPaths,
     ) -> anyhow::Result<Self> {
+        let explicit_fake = overrides.model.as_deref() == Some("fake")
+            || std::env::var("ROVE_MODEL").ok().as_deref() == Some("fake");
         let workspace_root = workspace_root
             .as_ref()
             .canonicalize()
@@ -638,7 +672,16 @@ impl AppConfig {
         let cli_layer = overrides.into_layer();
         let cli_keys = cli_layer.keys.clone();
 
+        let user_config_present = user_paths.config_file.is_file();
+        let user_document = crate::user_config::UserConfigLoader::new(user_paths.clone())
+            .load_or_default()
+            .map_err(anyhow::Error::from)?;
+        let user_config_loaded = user_config_present;
+        let user_config_revision = user_config_loaded.then(|| user_document.revision());
+        let user_layer = user_document_to_app_layer(&user_document);
+
         let mut figment = Figment::from(Serialized::defaults(AppConfig::defaults()));
+        figment = figment.merge(Serialized::defaults(user_layer));
         if let Some(path) = safe_project_config_path.filter(|_| project_config_loaded) {
             let project_layer = filtered_project_config(
                 &path,
@@ -653,10 +696,17 @@ impl AppConfig {
         figment = figment.merge(Serialized::defaults(cli_layer.config));
 
         let mut config: AppConfig = figment.extract()?;
-        // Only inject the built-in fake profile when no profiles were configured.
-        ensure_default_provider_profile(&mut config.provider);
+        // Programmatic AppConfig::default remains deterministic. Product loads
+        // get Fake only when the invocation explicitly selected it.
+        if explicit_fake && config.provider.profiles.is_empty() {
+            ensure_default_provider_profile(&mut config.provider);
+        }
         config.source_summary = ConfigSourceSummary {
             workspace_root,
+            user_config_path: user_paths.config_file,
+            user_config_present,
+            user_config_loaded,
+            user_config_revision,
             project_config_path,
             project_config_present,
             project_config_loaded,
@@ -880,7 +930,7 @@ impl AppConfig {
                 .cli_keys
                 .iter()
                 .any(|key| key == "provider.model");
-        if model_overridden {
+        if model_overridden || !self.provider.model.trim().is_empty() {
             return;
         }
         let Some(active) = self.provider.active.as_deref() else {
@@ -893,7 +943,7 @@ impl AppConfig {
 
     fn validate(&self) -> anyhow::Result<()> {
         self.validate_provider_config()?;
-        if self.provider.model.trim().is_empty() {
+        if !self.provider.profiles.is_empty() && self.provider.model.trim().is_empty() {
             anyhow::bail!("provider.model must not be empty");
         }
         if self
@@ -954,9 +1004,15 @@ impl AppConfig {
 
     fn validate_provider_config(&self) -> anyhow::Result<()> {
         if self.provider.profiles.is_empty() {
-            anyhow::bail!(
-                "provider.profiles is required; flat provider.name/api_base/api_key config is no longer supported"
-            );
+            if self.provider.active.is_some()
+                || !self.provider.fallback_profiles.is_empty()
+                || !self.provider.fallback_models.is_empty()
+            {
+                anyhow::bail!(
+                    "provider.profiles is required when provider selection or fallback fields are configured; flat provider.name/api_base/api_key config is no longer supported"
+                );
+            }
+            return Ok(());
         }
         let active =
             self.provider.active.as_deref().ok_or_else(|| {
@@ -1104,17 +1160,11 @@ impl AppConfig {
 }
 
 fn validate_profile_name(name: &str, field: &str) -> anyhow::Result<()> {
-    let bytes = name.as_bytes();
-    if bytes.is_empty()
-        || bytes.len() > 64
-        || (!bytes[0].is_ascii_lowercase() && !bytes[0].is_ascii_digit())
-        || !bytes.iter().all(|byte| {
-            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_' | b'.')
+    crate::provider_catalog::ProviderProfileId::new(name.to_string())
+        .map(|_| ())
+        .map_err(|_| {
+            anyhow::anyhow!("{field} must use 1-128 ASCII letters, digits, '-', '_', or '.'")
         })
-    {
-        anyhow::bail!("{field} must use 1-64 lowercase ASCII letters, digits, '-', '_', or '.'");
-    }
-    Ok(())
 }
 
 fn normalize_path(path: impl AsRef<Path>) -> PathBuf {
@@ -1308,6 +1358,21 @@ struct ProjectEnvironmentCapabilities {
     provider_credentials: bool,
     mcp_processes: bool,
     external_paths: bool,
+}
+
+fn user_document_to_app_layer(document: &crate::user_config::UserConfigDocument) -> AppConfigLayer {
+    AppConfigLayer {
+        provider: Some(ProviderConfigLayer {
+            active: document.model.default_profile.clone(),
+            profiles: (!document.provider.profiles.is_empty())
+                .then(|| document.provider.profiles.clone()),
+            fallback_profiles: (!document.provider.fallback_profiles.is_empty())
+                .then(|| document.provider.fallback_profiles.clone()),
+            model: document.model.default_model.clone(),
+            ..ProviderConfigLayer::default()
+        }),
+        ..AppConfigLayer::default()
+    }
 }
 
 impl AppConfigOverrides {
@@ -1627,18 +1692,27 @@ fn load_project_environment(
 fn filtered_project_config(
     path: &Path,
     workspace_instructions_granted: bool,
-    provider_credentials_granted: bool,
+    _provider_credentials_granted: bool,
     mcp_processes_granted: bool,
     external_paths_granted: bool,
 ) -> anyhow::Result<serde_json::Value> {
     let mut value = Figment::new()
         .merge(Toml::file(path))
         .extract::<serde_json::Value>()?;
+    reject_project_provider_definitions(&value)?;
+    if let Some(provider) = value
+        .get_mut("provider")
+        .and_then(serde_json::Value::as_object_mut)
+        && provider.contains_key("active")
+        && !provider.contains_key("model")
+    {
+        provider.insert(
+            "model".to_string(),
+            serde_json::Value::String(String::new()),
+        );
+    }
     if !workspace_instructions_granted {
         remove_project_config_value(&mut value, &["runtime", "agent"]);
-    }
-    if !provider_credentials_granted {
-        remove_project_config_value(&mut value, &["provider"]);
     }
     if !mcp_processes_granted {
         remove_project_config_value(&mut value, &["tool", "mcp_config_path"]);
@@ -1657,6 +1731,32 @@ fn filtered_project_config(
         }
     }
     Ok(value)
+}
+
+fn reject_project_provider_definitions(value: &serde_json::Value) -> anyhow::Result<()> {
+    let Some(provider) = value.get("provider").and_then(serde_json::Value::as_object) else {
+        return Ok(());
+    };
+    let forbidden = [
+        "profiles",
+        "fallback_profiles",
+        "fallback_models",
+        "options",
+        "base_url",
+        "auth",
+        "headers",
+        "protocol_options",
+        "wire_protocol",
+    ];
+    if let Some(field) = forbidden
+        .iter()
+        .find(|field| provider.contains_key(**field))
+    {
+        anyhow::bail!(
+            "project_provider_authority_violation: workspace provider.{field} cannot define provider endpoints, credentials, headers, fallbacks, or protocol options; select a user profile with provider.active and provider.model"
+        );
+    }
+    Ok(())
 }
 
 fn remove_project_config_value(value: &mut serde_json::Value, path: &[&str]) {
@@ -1793,7 +1893,7 @@ mod tests {
         ENV_LOCK
             .get_or_init(|| Mutex::new(()))
             .lock()
-            .expect("env lock should not be poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     fn trusted_overrides() -> AppConfigOverrides {
@@ -1856,6 +1956,7 @@ mod tests {
             "ROVE_API_CORS_ORIGINS",
             "ROVE_API_RATE_LIMIT_PER_MINUTE",
             "ROVE_WEB_API_BASE",
+            crate::user_config::USER_CONFIG_ROOT_ENV,
             crate::project_trust::PROJECT_TRUST_STORE_ENV,
             TRUSTED_WORKSPACES_ENV,
         ] {
@@ -1863,6 +1964,13 @@ mod tests {
                 std::env::remove_var(key);
             }
         }
+    }
+
+    fn write_user_config(temp: &tempfile::TempDir, text: &str) {
+        let root = temp.path().join("user-config");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("config.toml"), text).unwrap();
+        unsafe { std::env::set_var(crate::user_config::USER_CONFIG_ROOT_ENV, root) };
     }
 
     #[test]
@@ -1912,6 +2020,19 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let config_dir = tmp.path().join(".rove");
         std::fs::create_dir_all(&config_dir).unwrap();
+        write_user_config(
+            &tmp,
+            r#"
+schema_version = 1
+[model]
+default_profile = "default"
+default_model = "user-model"
+[provider.profiles.default]
+provider_type = "ollama"
+base_url = "http://localhost:11434"
+model = "user-model"
+"#,
+        );
         std::fs::write(
             config_dir.join("config.toml"),
             r#"
@@ -1920,11 +2041,6 @@ max_steps = 9
 
 [provider]
 active = "default"
-model = "project-model"
-
-[provider.profiles.default]
-provider_type = "ollama"
-base_url = "http://localhost:11434"
 model = "project-model"
 
 [routing]
@@ -1982,6 +2098,20 @@ retry_backoff_max_ms = 456
         let tmp = tempfile::TempDir::new().unwrap();
         let config_dir = tmp.path().join(".rove");
         std::fs::create_dir_all(&config_dir).unwrap();
+        write_user_config(
+            &tmp,
+            r#"
+schema_version = 1
+[model]
+default_profile = "external"
+default_model = "user-model"
+[provider.profiles.external]
+provider_type = "openai"
+base_url = "https://user.example.test/v1"
+model = "user-model"
+auth = { style = "bearer", secret = { env = "OPENAI_API_KEY" } }
+"#,
+        );
         std::fs::write(
             config_dir.join("config.toml"),
             r#"
@@ -1990,11 +2120,7 @@ max_steps = 9
 
 [provider]
 active = "external"
-
-[provider.profiles.external]
-provider_type = "openai"
-base_url = "https://untrusted.example.test/v1"
-model = "untrusted-model"
+model = "project-model"
 "#,
         )
         .unwrap();
@@ -2010,7 +2136,7 @@ model = "untrusted-model"
             restricted.runtime.max_steps,
             RuntimeConfig::default().max_steps
         );
-        assert_eq!(restricted.provider.model, "fake");
+        assert_eq!(restricted.provider.model, "user-model");
 
         let trusted = AppConfig::load(tmp.path(), trusted_overrides()).unwrap();
         assert_eq!(
@@ -2023,7 +2149,7 @@ model = "untrusted-model"
         );
         assert!(trusted.source_summary.project_config_loaded);
         assert_eq!(trusted.runtime.max_steps, 9);
-        assert_eq!(trusted.provider.model, "untrusted-model");
+        assert_eq!(trusted.provider.model, "project-model");
         clear_config_env();
     }
 
@@ -2034,6 +2160,20 @@ model = "untrusted-model"
         let tmp = tempfile::TempDir::new().unwrap();
         let config_dir = tmp.path().join(".rove");
         std::fs::create_dir_all(&config_dir).unwrap();
+        write_user_config(
+            &tmp,
+            r#"
+schema_version = 1
+[model]
+default_profile = "external"
+default_model = "user-model"
+[provider.profiles.external]
+provider_type = "openai"
+base_url = "https://user.example.test/v1"
+model = "user-model"
+auth = { style = "bearer", secret = { env = "PROJECT_PROVIDER_SECRET" } }
+"#,
+        );
         std::fs::write(
             config_dir.join("config.toml"),
             r#"
@@ -2043,12 +2183,6 @@ system_prompt_path = "../outside-system.md"
 
 [provider]
 active = "external"
-
-[provider.profiles.external]
-provider_type = "openai"
-base_url = "https://project.example.test/v1"
-model = "project-model"
-auth = { style = "bearer", secret = { env = "PROJECT_PROVIDER_SECRET" } }
 
 [tool]
 mcp_config_path = "custom-mcp.json"
@@ -2088,7 +2222,7 @@ allow_external_paths = true
         .unwrap();
 
         assert_eq!(project_only.runtime.max_steps, 9);
-        assert_eq!(project_only.provider.model, "fake");
+        assert_eq!(project_only.provider.model, "user-model");
         assert_eq!(
             project_only.runtime.system_prompt_path,
             RuntimeConfig::default().system_prompt_path
@@ -2133,7 +2267,7 @@ allow_external_paths = true
             provider_enabled.provider.model.clone(),
         )
         .unwrap();
-        assert!(model.client_id().as_str().contains("project.example.test"));
+        assert!(model.client_id().as_str().contains("user.example.test"));
 
         repository
             .decide(
@@ -2192,7 +2326,7 @@ allow_external_paths = true
         assert!(config.source_summary.project_config_present);
         assert!(!config.source_summary.project_config_loaded);
         assert_eq!(config.runtime.max_steps, RuntimeConfig::default().max_steps);
-        assert_eq!(config.provider.model, "fake");
+        assert!(config.provider.model.is_empty());
         assert!(std::env::var_os("ROVE_MODEL").is_none());
         clear_config_env();
     }
@@ -2273,17 +2407,18 @@ allow_external_paths = true
     }
 
     #[test]
-    fn project_config_parses_named_profiles_and_protocol_options() {
+    fn user_config_parses_named_profiles_and_protocol_options() {
         let _guard = env_lock();
         clear_config_env();
         let tmp = tempfile::TempDir::new().unwrap();
-        let config_dir = tmp.path().join(".rove");
-        std::fs::create_dir_all(&config_dir).unwrap();
-        std::fs::write(
-            config_dir.join("config.toml"),
+        write_user_config(
+            &tmp,
             r#"
+schema_version = 1
+[model]
+default_profile = "team-gateway"
+default_model = "project-model"
 [provider]
-active = "team-gateway"
 fallback_profiles = ["claude"]
 
 [provider.profiles.team-gateway]
@@ -2291,7 +2426,7 @@ provider_type = "openai-responses"
 base_url = "https://gateway.example.test/v1"
 model = "project-model"
 auth = { style = "bearer", secret = { env = "TEAM_GATEWAY_KEY" } }
-headers = { x-tenant = "tenant-secret" }
+headers = { x-tenant = { env = "TEAM_TENANT" } }
 protocol_options = { prompt_cache_enabled = true, prompt_cache_retention = "24h" }
 
 [provider.profiles.team-gateway.options]
@@ -2304,8 +2439,7 @@ base_url = "https://api.anthropic.com"
 model = "claude-fallback"
 auth = { style = "header", header = "x-api-key", secret = { env = "ANTHROPIC_API_KEY" } }
 "#,
-        )
-        .unwrap();
+        );
 
         let config = AppConfig::load(tmp.path(), trusted_overrides()).unwrap();
 
@@ -2327,15 +2461,25 @@ auth = { style = "header", header = "x-api-key", secret = { env = "ANTHROPIC_API
         let tmp = tempfile::TempDir::new().unwrap();
         let config_dir = tmp.path().join(".rove");
         std::fs::create_dir_all(&config_dir).unwrap();
+        write_user_config(
+            &tmp,
+            r#"
+schema_version = 1
+[model]
+default_profile = "gateway"
+default_model = "user-model"
+[provider.profiles.gateway]
+provider_type = "openai"
+base_url = "https://gateway.example.test/v1"
+model = "user-model"
+auth = { style = "bearer", secret = { env = "OPENAI_API_KEY" } }
+"#,
+        );
         std::fs::write(
             config_dir.join("config.toml"),
             r#"
 [provider]
 active = "gateway"
-
-[provider.profiles.gateway]
-provider_type = "openai"
-base_url = "https://gateway.example.test/v1"
 model = "project-model"
 "#,
         )
@@ -2366,14 +2510,17 @@ model = "project-model"
         let _guard = env_lock();
         clear_config_env();
         let tmp = tempfile::TempDir::new().unwrap();
-        let config_dir = tmp.path().join(".rove");
-        std::fs::create_dir_all(&config_dir).unwrap();
-        let path = config_dir.join("config.toml");
+        let root = tmp.path().join("user-config");
+        std::fs::create_dir_all(&root).unwrap();
+        unsafe { std::env::set_var(crate::user_config::USER_CONFIG_ROOT_ENV, &root) };
+        let path = root.join("config.toml");
         let profile = r#"
+schema_version = 1
 [provider.profiles.gateway]
 provider_type = "openai"
 base_url = "https://gateway.example.test/v1"
 model = "model"
+auth = { style = "bearer", secret = { env = "OPENAI_API_KEY" } }
 "#;
 
         std::fs::write(&path, profile).unwrap();
@@ -2384,9 +2531,7 @@ model = "model"
 
         std::fs::write(
             &path,
-            format!(
-                "[provider]\nactive = \"gateway\"\nfallback_profiles = [\"missing\"]\n{profile}"
-            ),
+            "schema_version = 1\n[model]\ndefault_profile = \"gateway\"\n[provider]\nfallback_profiles = [\"missing\"]\n[provider.profiles.gateway]\nprovider_type = \"openai\"\nbase_url = \"https://gateway.example.test/v1\"\nmodel = \"model\"\nauth = { style = \"bearer\", secret = { env = \"OPENAI_API_KEY\" } }",
         )
         .unwrap();
         let error = AppConfig::load(tmp.path(), trusted_overrides())
@@ -2396,9 +2541,7 @@ model = "model"
 
         std::fs::write(
             &path,
-            format!(
-                "[provider]\nactive = \"gateway\"\nfallback_profiles = [\"other\", \"other\"]\n{profile}\n[provider.profiles.other]\nprovider_type = \"ollama\"\nbase_url = \"http://localhost:11434\"\nmodel = \"other\"\n"
-            ),
+            "schema_version = 1\n[model]\ndefault_profile = \"gateway\"\n[provider]\nfallback_profiles = [\"other\", \"other\"]\n[provider.profiles.gateway]\nprovider_type = \"openai\"\nbase_url = \"https://gateway.example.test/v1\"\nmodel = \"model\"\nauth = { style = \"bearer\", secret = { env = \"OPENAI_API_KEY\" } }\n[provider.profiles.other]\nprovider_type = \"ollama\"\nbase_url = \"http://localhost:11434\"\nmodel = \"other\"\n",
         )
         .unwrap();
         let error = AppConfig::load(tmp.path(), trusted_overrides())
@@ -2430,7 +2573,7 @@ model = "model"
     }
 
     #[test]
-    fn project_config_parses_provider_options() {
+    fn project_config_rejects_provider_options() {
         let tmp = tempfile::TempDir::new().unwrap();
         let config_dir = tmp.path().join(".rove");
         std::fs::create_dir_all(&config_dir).unwrap();
@@ -2456,17 +2599,18 @@ presence_penalty = 0.4
         )
         .unwrap();
 
-        let config = AppConfig::load(tmp.path(), trusted_overrides()).unwrap();
-
-        assert_eq!(config.provider.options.max_tokens, Some(2048));
-        assert_eq!(config.provider.options.temperature, Some(0.2));
-        assert_eq!(config.provider.options.top_p, Some(0.8));
-        assert_eq!(config.provider.options.frequency_penalty, Some(0.3));
-        assert_eq!(config.provider.options.presence_penalty, Some(0.4));
+        let error = AppConfig::load(tmp.path(), trusted_overrides()).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("project_provider_authority_violation")
+        );
     }
 
     #[test]
     fn validation_rejects_remote_api_without_token_or_unsafe_flag() {
+        let _guard = env_lock();
+        clear_config_env();
         let tmp = tempfile::TempDir::new().unwrap();
         let err = AppConfig::load(
             tmp.path(),
@@ -2481,6 +2625,8 @@ presence_penalty = 0.4
 
     #[test]
     fn validation_rejects_relative_paths_that_escape_workspace() {
+        let _guard = env_lock();
+        clear_config_env();
         let tmp = tempfile::TempDir::new().unwrap();
         let config_dir = tmp.path().join(".rove");
         std::fs::create_dir_all(&config_dir).unwrap();

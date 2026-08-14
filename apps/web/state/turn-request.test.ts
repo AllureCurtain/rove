@@ -38,6 +38,7 @@ const profile: ProviderProfileRecord = {
   providerType: "openai",
   apiBase: "http://127.0.0.1:11434/v1",
   updatedAt: "2026-07-25T00:00:00.000Z",
+  catalogRevision: "sha256:test",
 };
 
 function selectionOf(patch: Partial<ActiveProviderSelection>): ActiveProviderSelection {

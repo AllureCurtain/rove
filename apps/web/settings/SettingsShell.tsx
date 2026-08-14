@@ -463,6 +463,7 @@ function ProvidersSettings({
       id: editingProfileId ?? "draft",
       ...profileInput(),
       updatedAt: new Date().toISOString(),
+      catalogRevision: "draft",
     };
   }
 

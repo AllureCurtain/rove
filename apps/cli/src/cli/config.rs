@@ -80,6 +80,10 @@ pub fn format_effective_config(config: &AppConfig) -> String {
         },
         "sources": {
             "workspace_root": config.source_summary.workspace_root.to_string_lossy(),
+            "user_config_path": config.source_summary.user_config_path.to_string_lossy(),
+            "user_config_present": config.source_summary.user_config_present,
+            "user_config_loaded": config.source_summary.user_config_loaded,
+            "user_config_revision": config.source_summary.user_config_revision,
             "project_config_path": config.source_summary.project_config_path.to_string_lossy(),
             "project_config_present": config.source_summary.project_config_present,
             "project_config_loaded": config.source_summary.project_config_loaded,
@@ -151,6 +155,11 @@ fn header_source_summary(value: &ProviderHeaderValue) -> serde_json::Value {
             "source": "file",
             "path": file.to_string_lossy(),
         }),
+        ProviderHeaderValue::Keyring { keyring } => serde_json::json!({
+            "source": "keyring",
+            "service": keyring.service,
+            "account": keyring.account,
+        }),
     }
 }
 
@@ -162,6 +171,11 @@ fn secret_source_summary(source: &SecretSource) -> serde_json::Value {
         SecretSource::File { file } => serde_json::json!({
             "source": "file",
             "path": file.to_string_lossy(),
+        }),
+        SecretSource::Keyring { keyring } => serde_json::json!({
+            "source": "keyring",
+            "service": keyring.service,
+            "account": keyring.account,
         }),
         SecretSource::Literal(_) => {
             serde_json::json!({ "source": "literal", "value_set": true })

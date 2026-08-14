@@ -335,6 +335,27 @@ impl ProductStore for SqliteProductStore {
             .await
     }
 
+    async fn upsert_provider_catalog_identity(
+        &self,
+        profile_id: &ProductProviderProfileId,
+        label: &str,
+        provider_type: crate::product::ProductProviderType,
+        catalog_revision: &str,
+    ) -> Result<(), ProductStoreError> {
+        let profile_id = profile_id.clone();
+        let label = label.to_string();
+        let catalog_revision = catalog_revision.to_string();
+        self.blocking(move |repository| {
+            repository.upsert_provider_catalog_identity(
+                &profile_id,
+                &label,
+                provider_type,
+                &catalog_revision,
+            )
+        })
+        .await
+    }
+
     async fn get_preferences(&self) -> Result<ProductPreferences, ProductStoreError> {
         self.blocking(|repository| repository.get_preferences())
             .await

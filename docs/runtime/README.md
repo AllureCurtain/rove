@@ -13,6 +13,11 @@ catalog refresh, AgentDefinition/instruction/procedure checkpoints, and the
 implemented Tauri Desktop D0 host. Desktop reuses the API router and ProductStore;
 it is not a second runtime or state authority. Current evidence is Windows-only
 for packaging and process launch; macOS/Linux packaging remains unverified.
+The current source also implements the 2026-08-12 user-owned Provider catalog
+and TUI model-selection slice: `~/.rove/config.toml`, authority-aware loading,
+catalog CAS/atomic writes, API/Web catalog convergence, per-turn CLI assembly,
+secret-free run model snapshots, legacy migration, and TUI `/model`. Real
+external-provider interoperability for this slice has not been run.
 
 New maintainers should start with [`docs/ONBOARDING.md`](../ONBOARDING.md), then use this directory for current subsystem truth.
 
@@ -116,6 +121,12 @@ The Web product line is tracked separately:
   #30 and reuses the API router, ProductStore, and shared static Web build.
   `desktop-workspace-spec.md` remains an automation workspace note, not the
   Desktop product-shell design.
+- The
+  [`User Provider Configuration and TUI Model Selection design`](../design/2026-08-12-user-provider-config-and-tui-model-selection-design.md)
+  is implemented through Phase 0-5. Its configured-model catalog, CAS,
+  migration, CLI/TUI, API/Web, and resume contracts have deterministic test
+  coverage. The optional real external-provider smoke remains unverified, so
+  this is not an interoperability claim.
 - The next productization work is proposed, not implemented, in
   [`2026-08-10-post-full-delivery-productization.md`](../plans/2026-08-10-post-full-delivery-productization.md).
   Its dated audit inputs are evidence and rationale, not independent plans.

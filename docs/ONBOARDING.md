@@ -258,13 +258,44 @@ do not trust model/provider/MCP strings as local paths.
 Configuration precedence:
 
 ```text
-defaults < .rove/config.toml < environment < CLI overrides
+defaults < user ~/.rove/config.toml < trusted workspace selection
+         < environment < CLI overrides
 ```
+
+The user file is Provider catalog schema v1. It owns full Provider definitions;
+a trusted workspace may only select an existing profile/model and cannot define
+an endpoint, auth source, header, fallback, protocol option, or adapter command.
+`ROVE_CONFIG_ROOT` selects an explicit user-config directory for tests and
+embedders.
+
+Minimal local Ollama example:
+
+```toml
+schema_version = 1
+
+[model]
+default_profile = "local"
+default_model = "llama3.2"
+reasoning = "default"
+
+[provider.profiles.local]
+provider_type = "ollama"
+base_url = "http://localhost:11434"
+model = "llama3.2"
+auth = { style = "none" }
+```
+
+Remote profiles use `auth.secret = { env = "NAME" }`, `{ file = "path" }`,
+or `{ keyring = { service = "...", account = "..." } }`. Literal secrets are
+rejected. Catalog writes are revision-CAS protected, locked, and atomically
+replaced. Normal startup without a Provider reports onboarding rather than
+silently using Fake; `--model fake` remains the explicit no-network path.
 
 Inspect the resolved, redacted configuration:
 
 ```powershell
 cargo run -p rove-cli -- dump-config
+cargo run -p rove-cli -- provider migrate
 ```
 
 Important rules:
@@ -275,6 +306,11 @@ Important rules:
 - config dumps must redact secrets;
 - Web provider overrides must not send raw provider keys from browser code;
 - API token configuration belongs server-side.
+
+Legacy Provider imports use `rove provider migrate`, which is read-only unless
+`--apply` is supplied. Conflicts require explicit `--rename` mappings, and
+rewriting workspace Provider definitions requires both `--apply
+--rewrite-workspace-config` and workspace trust.
 
 Provider setup and opt-in verification live in
 [`runtime/provider-smoke.md`](runtime/provider-smoke.md).
@@ -354,6 +390,15 @@ Current provider families include:
 - Ollama;
 - fake provider;
 - configured routing/fallback.
+
+CLI resolves the session selection and creates a fresh model/Engine
+`RunAssembly` for each turn. The resulting secret-free model snapshot is stored
+with the run, and resume fails with `provider_changed_for_resume` if the current
+Provider identity no longer matches. In `rove tui`, `/model`, `/model current`,
+`/model <query>`, and `/model reset` operate on a revisioned per-session
+selection; changes are busy while a run is active and affect only the next
+turn. The picker currently lists configured catalog models rather than live
+remote inventory.
 
 Core code should consume normalized provider results. Provider adapters own:
 

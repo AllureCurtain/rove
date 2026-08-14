@@ -65,6 +65,7 @@ const providerProfile = {
   default_model: "test/model",
   created_at: "2026-07-26T00:00:00.000Z",
   updated_at: "2026-07-26T00:00:00.000Z",
+  catalog_revision: "sha256:provider-catalog-1",
 };
 
 const sessionModelConfig = {
@@ -272,7 +273,10 @@ describe("product API client", () => {
           return jsonResponse({ ...control, kind: "followup", status: "pending" });
         }
         if (url === "/api/product/provider-profiles" && method === "GET") {
-          return jsonResponse({ provider_profiles: [providerProfile] });
+          return jsonResponse({
+            catalog_revision: providerProfile.catalog_revision,
+            provider_profiles: [providerProfile],
+          });
         }
         if (url === "/api/product/provider-profiles" && method === "POST") {
           return jsonResponse(providerProfile, 201);
@@ -351,6 +355,7 @@ describe("product API client", () => {
       api_base: "https://gateway.example.test/v1",
       api_key_env: "GATEWAY_API_KEY",
       default_model: "test/model",
+      expected_revision: providerProfile.catalog_revision,
     });
     await client.updateProviderProfile(providerProfile.id, {
       label: "Updated",
@@ -358,9 +363,13 @@ describe("product API client", () => {
       api_base: "https://gateway.example.test/v1",
       api_key_env: "GATEWAY_API_KEY",
       default_model: "test/model",
+      expected_revision: providerProfile.catalog_revision,
     });
     await client.listProviderModels(providerProfile.id);
-    await client.deleteProviderProfile(providerProfile.id);
+    await client.deleteProviderProfile(
+      providerProfile.id,
+      providerProfile.catalog_revision,
+    );
     await client.getPreferences();
     await client.updatePreferences({
       schema_version: 1,
@@ -400,7 +409,7 @@ describe("product API client", () => {
       "POST /api/product/provider-profiles",
       `PUT /api/product/provider-profiles/${providerProfile.id}`,
       `GET /api/product/provider-profiles/${providerProfile.id}/models`,
-      `DELETE /api/product/provider-profiles/${providerProfile.id}`,
+      `DELETE /api/product/provider-profiles/${providerProfile.id}?expected_revision=${encodeURIComponent(providerProfile.catalog_revision)}`,
       "GET /api/product/preferences",
       "PUT /api/product/preferences",
     ]);

@@ -52,9 +52,13 @@ export interface ProviderProfileRecord {
   apiKeyEnv?: string;
   defaultModel?: string;
   updatedAt: string;
+  catalogRevision: string;
 }
 
-export type ProviderProfileInput = Omit<ProviderProfileRecord, "id" | "updatedAt">;
+export type ProviderProfileInput = Omit<
+  ProviderProfileRecord,
+  "id" | "updatedAt" | "catalogRevision"
+>;
 
 export interface ActiveProviderSelection {
   mode: "default" | "profile";
@@ -139,6 +143,7 @@ export function fromProductProviderProfile(
     apiKeyEnv: profile.api_key_env,
     defaultModel: profile.default_model,
     updatedAt: profile.updated_at,
+    catalogRevision: profile.catalog_revision,
   };
 }
 

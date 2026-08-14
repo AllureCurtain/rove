@@ -97,10 +97,58 @@ product_id!(
     ProductSessionId,
     "Server-owned product conversation identity, distinct from runtime SessionId."
 );
-product_id!(
-    ProductProviderProfileId,
-    "Server-owned identity for a persisted provider profile."
-);
+/// Stable user-catalog Provider profile identity. Historical ProductStore ULIDs
+/// remain valid because they are a subset of this bounded identifier syntax.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, ToSchema)]
+#[serde(transparent)]
+#[schema(value_type = String)]
+pub struct ProductProviderProfileId(String);
+
+impl ProductProviderProfileId {
+    pub fn new() -> Self {
+        Self(SessionId::new().to_string())
+    }
+
+    pub fn from_catalog_id(value: impl Into<String>) -> Result<Self, String> {
+        let value = value.into();
+        rove_app_bootstrap::ProviderProfileId::new(value.clone())
+            .map(|_| Self(value))
+            .map_err(|_| "invalid ProductProviderProfileId".to_string())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Default for ProductProviderProfileId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl fmt::Display for ProductProviderProfileId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl FromStr for ProductProviderProfileId {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::from_catalog_id(value)
+    }
+}
+
+impl<'de> Deserialize<'de> for ProductProviderProfileId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Self::from_str(&String::deserialize(deserializer)?).map_err(D::Error::custom)
+    }
+}
 product_id!(
     ProductMigrationReceiptId,
     "Server-owned identity for a committed browser migration receipt."
@@ -485,6 +533,7 @@ pub struct ProductProviderProfile {
     pub default_model: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    pub catalog_revision: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -555,6 +604,16 @@ pub struct ProductSessionRunModelView {
     pub model: String,
     pub reasoning: ProductReasoningPreference,
     pub max_steps: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wire_protocol: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catalog_revision: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub safe_config_digest: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -742,6 +801,8 @@ pub struct CreateProductProviderProfileRequest {
     pub api_key_env: Option<String>,
     #[serde(default)]
     pub default_model: Option<String>,
+    #[serde(default)]
+    pub expected_revision: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, ToSchema)]
@@ -754,6 +815,8 @@ pub struct UpdateProductProviderProfileRequest {
     pub api_key_env: Option<String>,
     #[serde(default)]
     pub default_model: Option<String>,
+    #[serde(default)]
+    pub expected_revision: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, ToSchema)]
@@ -788,6 +851,7 @@ pub struct ProductSessionsResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ProductProviderProfilesResponse {
+    pub catalog_revision: String,
     pub provider_profiles: Vec<ProductProviderProfile>,
 }
 
@@ -1380,6 +1444,7 @@ pub struct CommitProductRunBinding {
     /// transaction records it with the run so later edits cannot rewrite the
     /// model used by an already-started run.
     pub model_config: ProductSessionModelConfig,
+    pub run_model_snapshot: Option<rove_runtime::runtime_identity::RunModelSnapshot>,
 }
 
 /// One atomically claimed queued follow-up and its exclusive product turn.
@@ -1475,6 +1540,8 @@ pub enum ProductErrorCode {
     ProductForkSourceInvalid,
     ProductSessionModelConfigConflict,
     ProductProviderProfileUnavailable,
+    ProviderUnavailableForResume,
+    ProviderChangedForResume,
     ProductStorageFailure,
 }
 
@@ -1507,6 +1574,8 @@ impl ProductErrorCode {
             Self::ProductForkSourceInvalid => "product_fork_source_invalid",
             Self::ProductSessionModelConfigConflict => "product_session_model_config_conflict",
             Self::ProductProviderProfileUnavailable => "product_provider_profile_unavailable",
+            Self::ProviderUnavailableForResume => "provider_unavailable_for_resume",
+            Self::ProviderChangedForResume => "provider_changed_for_resume",
             Self::ProductStorageFailure => "product_storage_failure",
         }
     }
@@ -1689,6 +1758,16 @@ pub trait ProductStore: Send + Sync {
     async fn delete_provider_profile(
         &self,
         profile_id: &ProductProviderProfileId,
+    ) -> Result<(), ProductStoreError>;
+    /// Persist only a catalog identity stub for SQLite foreign-key
+    /// compatibility. Endpoint, credential, and model definitions remain in
+    /// the user catalog and are never copied into ProductStore.
+    async fn upsert_provider_catalog_identity(
+        &self,
+        profile_id: &ProductProviderProfileId,
+        label: &str,
+        provider_type: ProductProviderType,
+        catalog_revision: &str,
     ) -> Result<(), ProductStoreError>;
 
     async fn get_preferences(&self) -> Result<ProductPreferences, ProductStoreError>;
