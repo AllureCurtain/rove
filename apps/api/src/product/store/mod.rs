@@ -19,9 +19,9 @@ use crate::product::{
     CreateProductWorkspaceRequest, M1BrowserMigrationPreflight, M1BrowserMigrationRequest,
     M1BrowserMigrationResponse, PreparedM1BrowserMigration, ProductControl, ProductControlId,
     ProductControlKind, ProductControlStatus, ProductErrorCode, ProductFollowupTurnClaim,
-    ProductFork, ProductMessage, ProductPreferences, ProductProviderProfile,
-    ProductProviderProfileId, ProductResumeHealth, ProductSession, ProductSessionContext,
-    ProductSessionId, ProductSessionModelConfig, ProductSessionRunBinding,
+    ProductFork, ProductMessage, ProductMessagePage, ProductMessagePageQuery, ProductPreferences,
+    ProductProviderProfile, ProductProviderProfileId, ProductResumeHealth, ProductSession,
+    ProductSessionContext, ProductSessionId, ProductSessionModelConfig, ProductSessionRunBinding,
     ProductSessionRunModelView, ProductSessionStatus, ProductStore, ProductStoreError,
     ProductTurnClaim, ProductTurnClaimId, ProductTurnControlFinish, ProductWorkspace,
     ProductWorkspaceId, UpdateProductPreferencesRequest, UpdateProductProviderProfileRequest,
@@ -437,9 +437,10 @@ impl ProductStore for SqliteProductStore {
     async fn list_messages(
         &self,
         session_id: &ProductSessionId,
-    ) -> Result<Vec<ProductMessage>, ProductStoreError> {
+        query: ProductMessagePageQuery,
+    ) -> Result<ProductMessagePage, ProductStoreError> {
         let session_id = session_id.clone();
-        self.blocking(move |repository| repository.list_messages(&session_id))
+        self.blocking(move |repository| repository.list_messages(&session_id, query))
             .await
     }
 

@@ -1,6 +1,7 @@
 import type { CreateJobWorkspaceKind, ProviderProfile, ProviderType } from "../lib/rove-types";
 import type {
   ProductProviderProfile,
+  ProductProviderCredentialSource,
   ProductSession,
   ProductSessionModelConfig,
   ProductWorkspace,
@@ -50,6 +51,7 @@ export interface ProviderProfileRecord {
   providerType: ProviderType;
   apiBase: string;
   apiKeyEnv?: string;
+  credentialSource?: ProductProviderCredentialSource;
   defaultModel?: string;
   updatedAt: string;
   catalogRevision: string;
@@ -141,6 +143,7 @@ export function fromProductProviderProfile(
     providerType: profile.provider_type,
     apiBase: profile.api_base,
     apiKeyEnv: profile.api_key_env,
+    credentialSource: profile.credential_source,
     defaultModel: profile.default_model,
     updatedAt: profile.updated_at,
     catalogRevision: profile.catalog_revision,

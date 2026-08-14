@@ -206,6 +206,39 @@ describe("product API client", () => {
     expect(headers.get("authorization")).toBe("Bearer desktop-secret");
   });
 
+  it("encodes bounded message pagination and validates continuation cursors", async () => {
+    const message = {
+      id: control.id,
+      product_session_id: session.id,
+      content: "continue in order",
+      requested_delivery: "successor",
+      status: "queued",
+      seq: 41,
+      created_at: "2026-08-14T00:00:00.000Z",
+    };
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        jsonResponse({
+          messages: [message],
+          next_after_seq: 41,
+          next_before_seq: 40,
+        }),
+    );
+    const client = createProductApiClient({ fetch: fetchMock });
+
+    const response = await client.listMessages(session.id, {
+      afterSeq: 20,
+      limit: 1,
+    });
+
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
+      `/api/product/sessions/${session.id}/messages?after_seq=20&limit=1`,
+    );
+    expect(response.next_after_seq).toBe(41);
+    expect(response.next_before_seq).toBe(40);
+    expect(response.messages[0]?.content).toBe("continue in order");
+  });
+
   it("covers the registered product CRUD, preferences, and transcript routes", async () => {
     const calls: Array<{ url: string; method: string; body?: string }> = [];
     const fetchMock: typeof globalThis.fetch = vi.fn(

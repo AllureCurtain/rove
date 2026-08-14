@@ -435,7 +435,8 @@ fn project_history_results(history: &[Message], protected_start: usize) -> Vec<M
                 return message.clone();
             };
             let in_current_round = current_round_start.is_some_and(|round_start| index > round_start);
-            if index >= protected_start || in_current_round {
+            let is_latest = latest.get(reference).is_some_and(|latest_index| *latest_index == index);
+            if index >= protected_start || in_current_round || is_latest {
                 return message.clone();
             }
             let mut projected = message.clone();
@@ -792,16 +793,16 @@ mod tests {
     }
 
     #[test]
-    fn old_artifact_results_become_references_while_current_result_stays_inline() {
+    fn older_duplicate_artifact_becomes_reference_while_latest_result_stays_inline() {
         let mut history = artifact_result(
             "call-a",
             "full old payload",
-            "art_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "art_shared_shared_shared_shared_shared12",
         );
         history.extend(artifact_result(
             "call-b",
             "full current payload",
-            "art_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "art_shared_shared_shared_shared_shared12",
         ));
         let context = ContextManager::with_max_history("system".to_string(), 8)
             .build_with_checkpoint("continue", &[], None, &history);
@@ -825,6 +826,30 @@ mod tests {
             serde_json::to_vec(&context.messages).unwrap(),
             serde_json::to_vec(&replay.messages).unwrap()
         );
+    }
+
+    #[test]
+    fn unique_older_artifact_stays_inline() {
+        let mut history = artifact_result(
+            "call-a",
+            "unique old payload",
+            "art_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        );
+        history.extend(artifact_result(
+            "call-b",
+            "current payload",
+            "art_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        ));
+        let context = ContextManager::with_max_history("system".to_string(), 8)
+            .build_with_checkpoint("continue", &[], None, &history);
+        let tools = context
+            .messages
+            .iter()
+            .filter(|message| message.role == Role::Tool)
+            .collect::<Vec<_>>();
+        assert_eq!(tools[0].content, "unique old payload");
+        assert_eq!(tools[1].content, "current payload");
+        assert_eq!(context.metadata.referenced_tool_results, 0);
     }
 
     #[test]
@@ -879,7 +904,7 @@ mod tests {
             .filter(|message| message.role == Role::Tool)
             .map(|message| message.content.as_str())
             .collect::<Vec<_>>();
-        assert!(tools[0].starts_with("[tool result reference]"));
+        assert_eq!(tools[0], "old payload");
         assert_eq!(&tools[1..], &["current a", "current b"]);
     }
 }

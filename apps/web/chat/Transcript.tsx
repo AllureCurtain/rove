@@ -61,9 +61,17 @@ export function Transcript({
     () => timeline.slice(Math.max(0, timeline.length - visibleRunCount)),
     [timeline, visibleRunCount],
   );
+  const actionableMessages = useMemo(
+    () => messages.filter((message) =>
+      message.status === "queued" ||
+      message.status === "intervention_requested" ||
+      message.status === "needs_attention"
+    ),
+    [messages],
+  );
   const hiddenRunCount = Math.max(0, timeline.length - visibleTimeline.length);
   const itemCount = visibleTimeline.reduce((total, group) => total + group.items.length, 0)
-    + messages.length;
+    + actionableMessages.length;
   const transcriptRef = useRef<HTMLDivElement>(null);
   const prependHeightRef = useRef<number | null>(null);
   const [atLatest, setAtLatest] = useState(true);
@@ -178,7 +186,7 @@ export function Transcript({
             ))}
           </section>
           ))}
-          {messages.map((message) => (
+          {actionableMessages.map((message) => (
             <QueuedMessage
               key={message.id}
               message={message}

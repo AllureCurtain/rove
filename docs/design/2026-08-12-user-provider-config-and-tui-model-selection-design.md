@@ -16,7 +16,7 @@
 > Provider onboarding workstream 与 TUI parity），并保持其“无 TUI 私有
 > Provider/setup backend”约束。
 
-## 0. 实现结果（2026-08-13）
+## 0. 实现结果（2026-08-14）
 
 Phase 0-5 的代码、focused tests、OpenAPI/Web 类型和 current-state 文档已经
 落地。实现保持原 Provider kernel，不引入 CLI 对 `rove-api` 的依赖，也没有建立
@@ -29,8 +29,10 @@ picker 投影 catalog 中每个 profile 已配置的模型，并明确
 `inventory_fresh=false`；实时远端 inventory 仍通过 API list-models 路径获取。
 
 安全和一致性结果包括 authority filter、literal secret/symlink/权限负向测试、
-catalog 与 session-selection CAS/锁/原子写、ProductStore v12 mapping、API 409
-冲突、运行快照脱敏以及严格 resume。普通 CLI 缺少 Provider 时返回真实
+catalog 与 session-selection CAS/锁/原子写、ProductStore v13 mapping、API 409
+冲突、运行快照脱敏以及严格 resume。v13 同时兼容并汇合 Provider catalog/run
+model identity 与 unified message lifecycle 两种并行 v12 数据库形态。普通 CLI
+缺少 Provider 时返回真实
 onboarding error，只有显式 `--model fake`、Fake profile 或程序化 deterministic
 路径使用 Fake。
 
@@ -621,22 +623,17 @@ resume 默认保持原运行快照语义：
 - [x] Rust fmt/clippy/workspace tests、CLI/TUI/API focused tests、Web tests/typecheck/
   build 通过；真实 Provider smoke 单独记录为未运行。
 
-## 14. Worktree 实施约定
+## 14. Worktree 实施记录
 
-本文审阅通过后再创建独立 worktree。建议从目标基线分支的最新提交创建：
+Phase 0-5 已在独立 Provider 配置 worktree 中实现，并通过提交 `3af3462` 进入
+productization integration。集成提交 `77f3ecf` 保留了 Fake deterministic path、
+共享 catalog authority 和无 TUI 私有 backend 的约束；后续 v13 migration 又将
+Provider 的 v12 数据形态与并行 unified-message v12 数据形态安全汇合。
 
-```powershell
-git worktree add ..\rove-provider-config -b feat/user-provider-config <reviewed-base>
-```
-
-实施前必须先处理当前工作树中尚未提交的 TUI 默认入口改动：要么先审阅并提交，
-要么明确选取不包含它们的基线。不要从 dirty worktree 复制文件，也不要把当前
-工作树中的用户自有 untracked evidence 带入新 worktree。
-
-建议在新 worktree 中把 Phase 0-5 拆成单独 implementation plan 和小提交；每个
-phase 都要保持 Fake deterministic path 可用，并在改变当前行为时同步更新
-`docs/runtime/`。该 implementation plan 是总 productization program 的从属执行
-记录，不能声明第二套产品化权威或第二个 TUI backend。
+该 worktree 没有复制其他工作树的未提交内容，也没有提交用户自有的本地 evidence。
+后续修改应从已审查的 integration/main 提交开始，并继续在同一变更中同步
+`docs/runtime/`；本文现在是实现后的设计记录，不再是创建新 Provider worktree 的
+操作指令。
 
 ## 15. 外部产品参考
 

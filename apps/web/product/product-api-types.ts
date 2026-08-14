@@ -150,12 +150,19 @@ export interface ProductFork {
   created_at: string;
 }
 
+export type ProductProviderCredentialSource =
+  | { source: "env"; name: string }
+  | { source: "file"; path: string }
+  | { source: "keyring"; service: string; account: string }
+  | { source: "none" };
+
 export interface ProductProviderProfile {
   id: ProductProviderProfileId;
   label: string;
   provider_type: ProductProviderType;
   api_base: string;
   api_key_env?: string;
+  credential_source: ProductProviderCredentialSource;
   default_model?: string;
   created_at: string;
   updated_at: string;
@@ -833,6 +840,8 @@ export interface ProductMessage {
 export type CreateProductMessageRequest = CreateProductControlRequest;
 export interface ProductMessagesResponse {
   messages: ProductMessage[];
+  next_after_seq?: number;
+  next_before_seq?: number;
 }
 
 export type ProductControlStatusFilter = ProductControlStatus | "all";
@@ -1389,6 +1398,15 @@ export function parseProductProviderProfile(
     nonEmpty: true,
     maxBytes: 256,
   });
+  const credentialSource =
+    record.credential_source === undefined
+      ? apiKeyEnv
+        ? ({ source: "env", name: apiKeyEnv } as const)
+        : ({ source: "none" } as const)
+      : parseProductProviderCredentialSource(
+          record.credential_source,
+          `${path}.credential_source`,
+        );
   assertSafeProductProviderConfiguration(
     providerType,
     apiBase,
@@ -1403,6 +1421,7 @@ export function parseProductProviderProfile(
     }),
     provider_type: providerType,
     api_base: apiBase,
+    credential_source: credentialSource,
     created_at: expectString(record.created_at, `${path}.created_at`, {
       nonEmpty: true,
     }),
@@ -1425,6 +1444,50 @@ export function parseProductProviderProfile(
     }),
   );
   return profile;
+}
+
+function parseProductProviderCredentialSource(
+  value: unknown,
+  path: string,
+): ProductProviderCredentialSource {
+  const record = expectRecord(value, path);
+  const source = expectEnum(
+    record.source,
+    ["env", "file", "keyring", "none"] as const,
+    `${path}.source`,
+  );
+  switch (source) {
+    case "env":
+      return {
+        source,
+        name: expectString(record.name, `${path}.name`, {
+          nonEmpty: true,
+          maxBytes: 256,
+        }),
+      };
+    case "file":
+      return {
+        source,
+        path: expectString(record.path, `${path}.path`, {
+          nonEmpty: true,
+          maxBytes: MAX_PRODUCT_PATH_BYTES,
+        }),
+      };
+    case "keyring":
+      return {
+        source,
+        service: expectString(record.service, `${path}.service`, {
+          nonEmpty: true,
+          maxBytes: 256,
+        }),
+        account: expectString(record.account, `${path}.account`, {
+          nonEmpty: true,
+          maxBytes: 256,
+        }),
+      };
+    case "none":
+      return { source };
+  }
 }
 
 function parseProductSessionModelConfig(
@@ -2396,13 +2459,24 @@ export function parseProductMessage(
 
 export function parseProductMessagesResponse(value: unknown): ProductMessagesResponse {
   const record = expectRecord(value, "product messages response");
-  return {
+  const response: ProductMessagesResponse = {
     messages: expectArray(
       record.messages,
       "product messages response.messages",
       parseProductMessage,
     ),
   };
+  assignOptional(
+    response,
+    "next_after_seq",
+    optionalInteger(record, "next_after_seq", "product messages response", { min: 1 }),
+  );
+  assignOptional(
+    response,
+    "next_before_seq",
+    optionalInteger(record, "next_before_seq", "product messages response", { min: 1 }),
+  );
+  return response;
 }
 
 function parseStringArray(value: unknown, path: string): string[] {

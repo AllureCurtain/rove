@@ -298,8 +298,6 @@ pub fn reduce(state: &mut TuiState, action: TuiAction) -> Vec<TuiEffect> {
             } else if let Some(command) = TuiSlashCommand::parse(&message) {
                 state.composer.clear();
                 dispatch_slash_command(state, command)
-            } else if !state.run_lifecycle.accepts_prompt() {
-                Vec::new()
             } else {
                 state.composer.clear();
                 let session_state = if state.run_lifecycle == RunLifecycle::Running {
@@ -828,7 +826,7 @@ mod tests {
     }
 
     #[test]
-    fn composer_rejects_blank_or_busy_submissions() {
+    fn composer_rejects_blank_and_queues_active_submissions() {
         let mut state = TuiState {
             composer: "   \t".to_string(),
             ..TuiState::default()

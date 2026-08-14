@@ -117,7 +117,7 @@ async fn retain_eligible_output(
     let Some(store) = services.tool_artifacts.as_ref() else {
         return;
     };
-    let sensitivity = local_tool_output_sensitivity(name, &output.content);
+    let sensitivity = local_tool_output_sensitivity(&output.content);
     if sensitivity == Sensitivity::Sensitive {
         return;
     }
@@ -159,7 +159,7 @@ async fn retain_eligible_output(
     output.envelope = Some(Box::new(envelope));
 }
 
-fn local_tool_output_sensitivity(name: &str, content: &str) -> Sensitivity {
+fn local_tool_output_sensitivity(content: &str) -> Sensitivity {
     let lower = content.to_ascii_lowercase();
     let sensitive_path = lower.contains("\"path\":\".env")
         || lower.contains("\"path\":\".git/")
@@ -177,7 +177,7 @@ fn local_tool_output_sensitivity(name: &str, content: &str) -> Sensitivity {
                 .iter()
                 .any(|marker| name.contains(marker))
     });
-    if name == "read_file" && (sensitive_path || secret_assignment) {
+    if sensitive_path || secret_assignment {
         Sensitivity::Sensitive
     } else {
         Sensitivity::Normal
@@ -657,17 +657,25 @@ mod tests {
     }
 
     #[test]
-    fn secret_shaped_local_read_output_is_not_eligible_for_normal_retention() {
+    fn secret_shaped_local_output_is_not_eligible_for_normal_retention() {
         assert_eq!(
-            local_tool_output_sensitivity("read_file", "API_KEY=live-value"),
+            local_tool_output_sensitivity("API_KEY=live-value"),
             Sensitivity::Sensitive
         );
         assert_eq!(
-            local_tool_output_sensitivity("read_file", r#"{"path":".env","content":"x"}"#),
+            local_tool_output_sensitivity(r#"{"path":".env","content":"x"}"#),
             Sensitivity::Sensitive
         );
         assert_eq!(
-            local_tool_output_sensitivity("search_code", "token is discussed here"),
+            local_tool_output_sensitivity("API_KEY=live-value"),
+            Sensitivity::Sensitive
+        );
+        assert_eq!(
+            local_tool_output_sensitivity(r#"{"entries":[{"path":".rove/config.toml"}]}"#),
+            Sensitivity::Sensitive
+        );
+        assert_eq!(
+            local_tool_output_sensitivity("token is discussed here"),
             Sensitivity::Normal
         );
     }

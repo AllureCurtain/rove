@@ -18,7 +18,7 @@ pub fn parse_action(raw: &str) -> Action {
             };
         }
 
-        if value.get("tool").is_some() || value.get("args").is_some() {
+        if value.get("tool").is_some() {
             let Some(name) = value.get("tool").and_then(serde_json::Value::as_str) else {
                 return Action::Malformed {
                     reason: "compatibility tool output requires a string field 'tool'".to_string(),
@@ -51,8 +51,7 @@ pub fn parse_action(raw: &str) -> Action {
     if trimmed.starts_with('{')
         && (trimmed.contains("\"tool\"")
             || trimmed.contains("\"tools\"")
-            || trimmed.contains("\"tool_calls\"")
-            || trimmed.contains("\"args\""))
+            || trimmed.contains("\"tool_calls\""))
     {
         return Action::Malformed {
             reason:
@@ -124,6 +123,10 @@ mod tests {
         assert!(matches!(
             parse_action(r#"{"tools":[{"tool":"a","args":{}},{"tool":"b","args":{}}]}"#),
             Action::ToolBatch { calls } if calls.len() == 2
+        ));
+        assert!(matches!(
+            parse_action(r#"{"status":"ok","args":{"echo":true}}"#),
+            Action::Final { text } if text == r#"{"status":"ok","args":{"echo":true}}"#
         ));
     }
 

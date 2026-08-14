@@ -2,12 +2,16 @@
 
 This guide is for maintainers who need to understand, debug, or extend the current implementation. It describes what exists in the codebase today. Product intent and historical design rationale live in the top-level docs; the current runtime source of truth remains this `docs/runtime/` directory.
 
-> Product status note (2026-08-06): Web Complete C0-C3 is implemented on
+> Product status note (2026-08-14): Web Complete C0-C3 is implemented on
 > `main` through PRs #24–#26. CDH G1-G7 merged through PR #29 at `f9e88a7`,
 > adding controls, Fork/lineage, session configuration snapshots,
 > usage/context/cost, files/artifacts/diff, evidence export, and Settings/MCP
-> completion. Deterministic live-API gates passed; the external-provider browser
-> gate was not run.
+> completion. The current source integrates productization A-E and F.1-F.3,
+> including the user Provider catalog/TUI model picker, runtime intelligence,
+> and the core unified conversation lifecycle. F.4 older-history
+> pagination/windowing and F.5 complete TUI restart recovery remain partial.
+> Deterministic checks and five live local fake-provider browser cases pass;
+> the external-provider browser gate was not run.
 
 The root manifest is a modular resolver-3 Cargo Workspace whose default
 member is `apps/cli`, with independent packages `rove-models`, `rove-core`,
@@ -835,9 +839,11 @@ unit/type/build loop stays lightweight. `shell.spec.ts`, `continuity.spec.ts`,
 `settings.spec.ts`, `migration.spec.ts`, and `polish.spec.ts` use
 browser-boundary mocks for broad deterministic product, fault/race, recovery,
 and visual coverage. The gated `real-api.spec.ts` runs against the live Rust API.
-Through `local-full`, its C3 run passed all three cases: migration before catalog
-boot; exact A/B continuity with refresh, approval, input, cancel, Settings, and
-deep routes; and a bounded `/dev/workbench` direct-run smoke.
+Through `local-full`, the current suite passes five cases: migration before
+catalog boot; exact A/B continuity with refresh, approval, input, cancel,
+Settings, and deep routes; unified-message promotion/revocation;
+completed-session Fork with independent child continuation; and a bounded
+`/dev/workbench` direct-run smoke.
 
 Real provider smoke tests are opt-in and documented in `docs/runtime/provider-smoke.md`. They are intentionally excluded from default CI because they require credentials, network access, local Ollama availability, or provider quota.
 
@@ -1456,11 +1462,13 @@ Web Complete C0 adds a separate API-global SQLite database at
 - schema versions, durable M1 migration preparations, and migration
   receipts/mappings/issues.
 
-The current ProductStore schema is v12. It adds user-catalog mapping metadata
-and secret-free model identity fields to immutable session-run snapshots while
-retaining legacy Provider rows only for compatibility/migration. Startup rolls
-back a failed migration attempt, refuses a database with a future schema
-version, and does not implement automatic downgrade.
+The current ProductStore schema is v13. It reconciles two parallel v12
+productization layouts: user-catalog mapping plus secret-free model identity
+fields, and unified-message lifecycle columns/indexes. Fresh databases and
+either legacy v12 shape converge on the same v13 schema while retaining legacy
+Provider/control rows only for compatibility/migration. Startup rolls back a
+failed migration attempt, refuses a database with a future schema version, and
+does not implement automatic downgrade.
 
 API Provider CRUD reads and writes the shared user catalog, returns
 `catalog_revision`, and uses request `expected_revision` plus HTTP 409 for stale
@@ -1843,7 +1851,8 @@ These are implementation-level issues to keep in mind before extending the syste
 6. Browser evidence is split by route. The default product shell has
    broad mock-backed product and fault-injection coverage. The deterministic
    `local-full` runner invokes `real-api.spec.ts` for the default product shell
-   and one bounded advanced-surface smoke; its C3 run passed 3/3. The provider
+   and one bounded advanced-surface smoke; the current run passes 5/5, including
+   unified-message and Fork/child continuation cases. The provider
    integration runner now targets an exact product session, captures the
    browser's `POST /jobs` IDs, and verifies that exact report/transcript binding,
    but the external-provider Web gate was not run for C3.

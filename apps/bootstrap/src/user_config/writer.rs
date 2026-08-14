@@ -28,6 +28,7 @@ impl UserConfigWriter {
         expected_revision: Option<&str>,
         document: &UserConfigDocument,
     ) -> Result<UserConfigDocument, UserConfigError> {
+        self.paths.ensure_available()?;
         document.validate()?;
         let _process_guard = PROCESS_WRITE_LOCK
             .get_or_init(|| Mutex::new(()))

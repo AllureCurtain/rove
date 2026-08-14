@@ -27,12 +27,12 @@ use crate::tui::reducer::reduce;
 use crate::tui::render::{render, sync_viewport};
 use crate::tui::run::{TuiRunContext, drive_tui_run_events};
 use crate::tui::state::{
-    InteractionKeyMode, InteractionModalKind, InteractionModalView, ResumeCandidate, RunLifecycle,
-    SessionPickerError, SessionPickerState, TuiOverlay, TuiState,
+    InteractionKeyMode, InteractionModalKind, InteractionModalView, MAX_VISIBLE_MESSAGES,
+    ResumeCandidate, RunLifecycle, SessionPickerError, SessionPickerState, TuiOverlay, TuiState,
 };
 use crate::tui::terminal::TerminalSession;
 use rove_runtime::conversation::{
-    MessageDomainService, MessageStatus, SendMessageCommand, SessionDeliveryState,
+    MessageDomainService, MessagePageQuery, SendMessageCommand, SessionDeliveryState,
 };
 use rove_runtime::engine::RunControlHandle;
 use rove_runtime::events::StreamEvent;
@@ -562,30 +562,46 @@ where
                 let prompt = apply_idle_effects(effects, runtime, &mut app).await?;
 
                 if let Some(message) = prompt {
-                    let startup_events = app.pending_startup_events.drain(..).collect();
-                    let requested_run_id = app.pending_run_id.take();
-                    let result = run_prompt(
-                        terminal,
-                        events,
-                        ShutdownInput {
-                            receiver: shutdown,
-                            open: &mut shutdown_open,
-                        },
-                        runtime,
-                        &mut app,
+                    let mut next = Some((
                         message,
-                        startup_events,
-                        requested_run_id,
-                        interactions,
-                    )
-                    .await?;
-                    tracing::debug!(
-                        run_id = %result.run_id,
-                        reason = ?result.reason,
-                        "TUI run finished"
-                    );
-                    if result.exit_requested {
-                        return Ok(app);
+                        app.pending_startup_events.drain(..).collect(),
+                        app.pending_run_id.take(),
+                    ));
+                    while let Some((message, startup_events, requested_run_id)) = next.take() {
+                        let result = run_prompt(
+                            terminal,
+                            events,
+                            ShutdownInput {
+                                receiver: shutdown,
+                                open: &mut shutdown_open,
+                            },
+                            runtime,
+                            &mut app,
+                            message,
+                            startup_events,
+                            requested_run_id,
+                            interactions,
+                        )
+                        .await?;
+                        tracing::debug!(
+                            run_id = %result.run_id,
+                            reason = ?result.reason,
+                            "TUI run finished"
+                        );
+                        refresh_tui_messages(runtime, &mut app).await;
+                        if result.exit_requested {
+                            return Ok(app);
+                        }
+                        if result.reason == TerminationReason::Final {
+                            next = claim_next_tui_successor(runtime, &mut app).await;
+                        } else {
+                            require_tui_message_attention(
+                                runtime,
+                                &mut app,
+                                &format!("run ended with {}", termination_reason_label(&result.reason)),
+                            )
+                            .await;
+                        }
                     }
                 }
                 if app.state.should_quit {
@@ -608,6 +624,111 @@ where
                 }
             }
         }
+    }
+}
+
+fn current_tui_session_id(app: &TuiApp) -> SessionId {
+    app.active_resume_state
+        .as_ref()
+        .map(|state| state.session_id)
+        .unwrap_or(app.session_id)
+}
+
+async fn refresh_tui_messages(runtime: &CliRuntime, app: &mut TuiApp) {
+    let session_id = current_tui_session_id(app).to_string();
+    match runtime
+        .message_service
+        .list(&session_id, MessagePageQuery::latest(MAX_VISIBLE_MESSAGES))
+        .await
+    {
+        Ok(page) => app.state.replace_messages(page.messages),
+        Err(error) => app.state.message_error = Some(error.to_string()),
+    }
+}
+
+async fn claim_next_tui_successor(
+    runtime: &CliRuntime,
+    app: &mut TuiApp,
+) -> Option<(String, Vec<StreamEvent>, Option<RunId>)> {
+    let session_id = current_tui_session_id(app);
+    let run_id = RunId::new();
+    match runtime
+        .message_service
+        .claim_successor(&session_id.to_string(), run_id)
+        .await
+    {
+        Ok(Some(message)) => {
+            let content = message.content.clone();
+            let id = message.id.clone();
+            app.state.upsert_message(message);
+            Some((
+                content,
+                vec![StreamEvent::MessageClaimedSuccessor { id }],
+                Some(run_id),
+            ))
+        }
+        Ok(None) => None,
+        Err(error) => {
+            app.state.message_error = Some(error.to_string());
+            None
+        }
+    }
+}
+
+async fn require_tui_message_attention(runtime: &CliRuntime, app: &mut TuiApp, reason: &str) {
+    let session_id = current_tui_session_id(app).to_string();
+    match runtime
+        .message_service
+        .require_attention(&session_id, reason)
+        .await
+    {
+        Ok(messages) => {
+            for message in messages {
+                app.state.upsert_message(message);
+            }
+        }
+        Err(error) => app.state.message_error = Some(error.to_string()),
+    }
+    refresh_tui_messages(runtime, app).await;
+}
+
+async fn mark_claimed_successor_start_failed(
+    runtime: &CliRuntime,
+    app: &mut TuiApp,
+    run_id: RunId,
+    startup_events: &[StreamEvent],
+    reason: &str,
+) {
+    let session_id = current_tui_session_id(app).to_string();
+    if let Some(message_id) = startup_events.iter().find_map(|event| match event {
+        StreamEvent::MessageClaimedSuccessor { id } => Some(id.clone()),
+        _ => None,
+    }) {
+        let event = StreamEvent::MessageNeedsAttention {
+            id: message_id.clone(),
+            reason: reason.to_string(),
+        };
+        if let Err(error) = runtime
+            .message_service
+            .observe_event(&session_id, run_id, &event)
+            .await
+        {
+            app.state.message_error = Some(error.to_string());
+        } else {
+            app.state.message_error = Some(format!("message {message_id} needs attention"));
+        }
+    }
+    require_tui_message_attention(runtime, app, reason).await;
+}
+
+fn termination_reason_label(reason: &TerminationReason) -> &'static str {
+    match reason {
+        TerminationReason::Final => "final",
+        TerminationReason::StepLimit => "step limit",
+        TerminationReason::TokenLimit => "token limit",
+        TerminationReason::TimeLimit => "time limit",
+        TerminationReason::Error => "error",
+        TerminationReason::Cancelled => "cancelled",
     }
 }
 
@@ -647,20 +768,19 @@ async fn apply_idle_effects(
                 {
                     Ok(mutation) => {
                         app.state.upsert_message(mutation.message.clone());
-                        let queued = StreamEvent::MessageQueued {
-                            id: mutation.message.id.clone(),
-                            content: mutation.message.content.clone(),
-                        };
                         if session_state == SessionDeliveryState::Idle {
-                            app.pending_run_id = run_id;
-                            app.pending_startup_events.push(queued);
-                            if mutation.message.status == MessageStatus::ClaimedSuccessor {
-                                app.pending_startup_events.push(
-                                    StreamEvent::MessageClaimedSuccessor {
-                                        id: mutation.message.id,
-                                    },
-                                );
-                                prompt = Some(content);
+                            if !mutation.replayed {
+                                app.pending_startup_events.push(StreamEvent::MessageQueued {
+                                    id: mutation.message.id.clone(),
+                                    content: mutation.message.content.clone(),
+                                });
+                            }
+                            if let Some(claimed) = mutation.claimed_successor {
+                                app.pending_run_id = claimed.target_run_id.or(run_id);
+                                app.state.upsert_message(claimed.clone());
+                                app.pending_startup_events
+                                    .push(StreamEvent::MessageClaimedSuccessor { id: claimed.id });
+                                prompt = Some(claimed.content);
                             }
                         } else if state_is_active(app.state.run_lifecycle) {
                             // Active delivery is published by the run's
@@ -835,10 +955,19 @@ async fn apply_idle_effects(
                     .as_ref()
                     .map(|state| state.session_id)
                     .unwrap_or(app.session_id);
-                match runtime.message_service.list(&session_id.to_string()).await {
-                    Ok(messages) => queue.extend(reduce(
+                match runtime
+                    .message_service
+                    .list(
+                        &session_id.to_string(),
+                        MessagePageQuery::latest(MAX_VISIBLE_MESSAGES),
+                    )
+                    .await
+                {
+                    Ok(page) => queue.extend(reduce(
                         &mut app.state,
-                        TuiAction::MessagesLoaded { messages },
+                        TuiAction::MessagesLoaded {
+                            messages: page.messages,
+                        },
                     )),
                     Err(error) => queue.extend(reduce(
                         &mut app.state,
@@ -873,7 +1002,7 @@ fn load_model_candidates(
         .map(|profile| {
             let credential_ready = profile
                 .auth_source
-                .ready(&runtime.workspace.root)
+                .ready(&runtime.provider_catalog.paths().root)
                 .unwrap_or(false);
             crate::tui::state::ModelCandidate {
                 selection: rove_app_bootstrap::ModelSelection {
@@ -1008,6 +1137,16 @@ where
             }
             app.state.run_lifecycle = RunLifecycle::Idle;
             app.state.composer = message;
+            if let Some(run_id) = requested_run_id {
+                mark_claimed_successor_start_failed(
+                    runtime,
+                    app,
+                    run_id,
+                    &startup_events,
+                    "successor run could not be assembled",
+                )
+                .await;
+            }
             return Err(error);
         }
     };
@@ -1074,22 +1213,14 @@ where
                     .release_job_resume_claim_async(claim)
                     .await;
             }
-            if let Some(message_id) = startup_events.iter().find_map(|event| {
-                if let StreamEvent::MessageQueued { id, .. } = event {
-                    Some(id.clone())
-                } else {
-                    None
-                }
-            }) {
-                let _ = runtime
-                    .message_service
-                    .require_attention(
-                        &session_id.to_string(),
-                        "successor run could not be started",
-                    )
-                    .await;
-                app.state.message_error = Some(format!("message {message_id} needs attention"));
-            }
+            mark_claimed_successor_start_failed(
+                runtime,
+                app,
+                run_id,
+                &startup_events,
+                "successor run could not be started",
+            )
+            .await;
             return Err(error.into());
         }
     };
@@ -1101,13 +1232,35 @@ where
     let runtime_identity = Some(engine_stream.runtime_identity().clone());
     let agent_profile = engine_stream.agent_profile().cloned();
     let run_control = engine_stream.control().clone();
+    let (message_events_tx, mut message_events_rx) = mpsc::unbounded_channel();
+    let message_service = runtime.message_service.clone();
+    let message_session_id = session_id.to_string();
+    let message_observer = tokio::spawn(async move {
+        let mut last_error = None;
+        while let Some(event) = message_events_rx.recv().await {
+            if let Err(error) = message_service
+                .observe_event(&message_session_id, run_id, &event)
+                .await
+            {
+                tracing::warn!(%error, %run_id, "failed to persist TUI message lifecycle event");
+                last_error = Some(error.to_string());
+            }
+        }
+        last_error
+    });
     let stream = async_stream::stream! {
         let mut startup = startup_events;
         while let Some(event) = engine_stream.next().await {
             let is_started = matches!(event, StreamEvent::RunStarted { .. });
+            if is_message_lifecycle_event(&event) {
+                let _ = message_events_tx.send(event.clone());
+            }
             yield event;
             if is_started {
                 for startup_event in startup.drain(..) {
+                    if is_message_lifecycle_event(&startup_event) {
+                        let _ = message_events_tx.send(startup_event.clone());
+                    }
                     yield startup_event;
                 }
             }
@@ -1152,6 +1305,12 @@ where
 
     let (outcome, ui_result) = tokio::join!(driver, ui);
     discard_queued_interactions(interactions);
+    if let Some(error) = message_observer
+        .await
+        .context("TUI message observer task failed")?
+    {
+        app.state.message_error = Some(error);
+    }
     let ui_result = ui_result?;
     if !matches!(outcome.reason, TerminationReason::Cancelled)
         && let Ok(latest) = runtime.state_store.load_task_state(run_id).await
@@ -1164,6 +1323,18 @@ where
         reason: outcome.reason,
         exit_requested: ui_result.exit_requested,
     })
+}
+
+fn is_message_lifecycle_event(event: &StreamEvent) -> bool {
+    matches!(
+        event,
+        StreamEvent::MessageQueued { .. }
+            | StreamEvent::MessageInterventionRequested { .. }
+            | StreamEvent::MessageAppliedCurrentRun { .. }
+            | StreamEvent::MessageClaimedSuccessor { .. }
+            | StreamEvent::MessageNeedsAttention { .. }
+            | StreamEvent::MessageRevoked { .. }
+    )
 }
 
 async fn apply_active_effects(
@@ -1601,6 +1772,9 @@ mod tests {
     use rove_models::fake::{FakeModelClient, FakeTurn};
     use rove_models::{ModelClient, ModelClientId, ModelEvent};
     use rove_runtime::context::ContextManager;
+    use rove_runtime::conversation::{
+        MessagePageQuery, MessageStatus, SendMessageCommand, SessionDeliveryState,
+    };
     use rove_runtime::engine::{Engine, EngineConfig};
     use rove_runtime::events::StreamEvent;
     use rove_runtime::types::{
@@ -1612,8 +1786,9 @@ mod tests {
 
     use super::{
         ActiveUiControl, InteractionController, PressedKeys, ShutdownInput, ShutdownSignal, TuiApp,
-        TuiEngineRun, active_ui_loop, apply_idle_effects, discard_queued_interactions, run_loop,
-        run_prompt_with_engine, test_control, test_message_service,
+        TuiEngineRun, active_ui_loop, apply_idle_effects, claim_next_tui_successor,
+        discard_queued_interactions, run_loop, run_prompt_with_engine, test_control,
+        test_message_service,
     };
 
     struct FailingDrawBackend {
@@ -2657,7 +2832,7 @@ mod tests {
             .await
             .unwrap();
 
-        let run = run_prompt_with_engine(
+        let run = Box::pin(run_prompt_with_engine(
             &mut terminal,
             &mut events,
             ShutdownInput {
@@ -2673,7 +2848,7 @@ mod tests {
                 requested_run_id: None,
                 interactions: &mut interactions,
             },
-        );
+        ));
         let stale_before_completion = async {
             entered.notified().await;
             let result =
@@ -3195,5 +3370,92 @@ mod tests {
             stale_app.state.overlay,
             Some(crate::tui::state::TuiOverlay::SessionPicker(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn completed_tui_turn_claims_queued_successors_in_fifo_order() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let runtime = build_cli_runtime(CliRuntimeOptions {
+            cwd: Some(tmp.path().to_path_buf()),
+            model: Some("fake".to_string()),
+            max_steps: Some(1),
+            agent: None,
+            trust_project: false,
+            approval: CliApprovalPolicy::Never,
+            task_workspace: None,
+            task_base: None,
+            initial_fake_response: Some("ready".to_string()),
+            interaction: CliRuntimeInteraction::Providers {
+                input_provider: None,
+                approval_provider: None,
+            },
+        })
+        .await
+        .unwrap();
+        let mut app = TuiApp::default();
+        let session_id = app.session_id.to_string();
+        let first = runtime
+            .message_service
+            .send(
+                &session_id,
+                SendMessageCommand {
+                    content: "first queued".to_string(),
+                    idempotency_key: Some("first-queued".to_string()),
+                    session_state: SessionDeliveryState::Active,
+                    target_run_id: None,
+                },
+            )
+            .await
+            .unwrap();
+        let second = runtime
+            .message_service
+            .send(
+                &session_id,
+                SendMessageCommand {
+                    content: "second queued".to_string(),
+                    idempotency_key: Some("second-queued".to_string()),
+                    session_state: SessionDeliveryState::Active,
+                    target_run_id: None,
+                },
+            )
+            .await
+            .unwrap();
+
+        let (first_content, first_events, first_run_id) =
+            claim_next_tui_successor(&runtime, &mut app)
+                .await
+                .expect("the completed turn must start its FIFO successor");
+        assert_eq!(first_content, first.message.content);
+        assert!(first_run_id.is_some());
+        assert!(matches!(
+            first_events.as_slice(),
+            [StreamEvent::MessageClaimedSuccessor { id }] if id == &first.message.id
+        ));
+
+        let (second_content, second_events, _) = claim_next_tui_successor(&runtime, &mut app)
+            .await
+            .expect("the second queued message must remain available");
+        assert_eq!(second_content, second.message.content);
+        assert!(matches!(
+            second_events.as_slice(),
+            [StreamEvent::MessageClaimedSuccessor { id }] if id == &second.message.id
+        ));
+        assert!(claim_next_tui_successor(&runtime, &mut app).await.is_none());
+
+        let page = runtime
+            .message_service
+            .list(&session_id, MessagePageQuery::latest(2))
+            .await
+            .unwrap();
+        assert_eq!(
+            page.messages
+                .iter()
+                .map(|message| message.status)
+                .collect::<Vec<_>>(),
+            vec![
+                MessageStatus::ClaimedSuccessor,
+                MessageStatus::ClaimedSuccessor
+            ]
+        );
     }
 }

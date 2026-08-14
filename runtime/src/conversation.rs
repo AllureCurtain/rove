@@ -16,6 +16,8 @@ use crate::types::RunId;
 pub const MAX_MESSAGE_BYTES: usize = 32 * 1024;
 pub const MAX_IDEMPOTENCY_KEY_BYTES: usize = 128;
 pub const MAX_PENDING_MESSAGES: i64 = 64;
+pub const DEFAULT_MESSAGE_PAGE_SIZE: usize = 64;
+pub const MAX_MESSAGE_PAGE_SIZE: usize = 128;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -66,7 +68,56 @@ pub struct SendMessageCommand {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MessageMutation {
     pub message: ConversationMessage,
+    /// The oldest queued message atomically claimed for an idle successor.
+    /// This can differ from `message` when older work was already queued.
+    pub claimed_successor: Option<ConversationMessage>,
     pub replayed: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MessagePageQuery {
+    pub after_sequence: Option<i64>,
+    pub before_sequence: Option<i64>,
+    pub limit: usize,
+}
+
+impl MessagePageQuery {
+    pub fn after(after_sequence: i64, limit: usize) -> Self {
+        Self {
+            after_sequence: Some(after_sequence),
+            before_sequence: None,
+            limit,
+        }
+    }
+
+    pub fn latest(limit: usize) -> Self {
+        Self {
+            after_sequence: None,
+            before_sequence: None,
+            limit,
+        }
+    }
+
+    pub fn before(before_sequence: i64, limit: usize) -> Self {
+        Self {
+            after_sequence: None,
+            before_sequence: Some(before_sequence),
+            limit,
+        }
+    }
+}
+
+impl Default for MessagePageQuery {
+    fn default() -> Self {
+        Self::latest(DEFAULT_MESSAGE_PAGE_SIZE)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MessagePage {
+    pub messages: Vec<ConversationMessage>,
+    pub next_after_sequence: Option<i64>,
+    pub next_before_sequence: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -101,7 +152,11 @@ pub trait MessageRepository: Send + Sync {
         session_id: &str,
         command: SendMessageCommand,
     ) -> Result<MessageMutation, MessageDomainError>;
-    async fn list(&self, session_id: &str) -> Result<Vec<ConversationMessage>, MessageDomainError>;
+    async fn list(
+        &self,
+        session_id: &str,
+        query: MessagePageQuery,
+    ) -> Result<MessagePage, MessageDomainError>;
     async fn promote(
         &self,
         session_id: &str,
@@ -165,8 +220,21 @@ impl MessageDomainService {
     pub async fn list(
         &self,
         session_id: &str,
-    ) -> Result<Vec<ConversationMessage>, MessageDomainError> {
-        self.repository.list(session_id).await
+        query: MessagePageQuery,
+    ) -> Result<MessagePage, MessageDomainError> {
+        if session_id.is_empty()
+            || query.limit == 0
+            || query.limit > MAX_MESSAGE_PAGE_SIZE
+            || query.after_sequence.is_some_and(|sequence| sequence < 0)
+            || query.before_sequence.is_some_and(|sequence| sequence <= 0)
+            || (query.after_sequence.is_some() && query.before_sequence.is_some())
+        {
+            return Err(MessageDomainError::new(
+                MessageErrorKind::Invalid,
+                "message page query is invalid",
+            ));
+        }
+        self.repository.list(session_id, query).await
     }
 
     pub async fn promote(
@@ -272,6 +340,7 @@ impl MessageRepository for SqliteMessageRepository {
             transaction.commit().map_err(storage)?;
             return Ok(MessageMutation {
                 message: existing,
+                claimed_successor: None,
                 replayed: true,
             });
         }
@@ -296,45 +365,89 @@ impl MessageRepository for SqliteMessageRepository {
             )
             .map_err(storage)?;
         let id = crate::types::SessionId::new().to_string();
-        let (status, actual, reason, target_run_id) = match command.session_state {
-            SessionDeliveryState::Idle => (
-                "claimed_successor",
-                Some("successor"),
-                None,
-                command.target_run_id.map(|id| id.to_string()),
-            ),
-            SessionDeliveryState::Active => ("queued", None, None, None),
+        let (status, reason) = match command.session_state {
+            SessionDeliveryState::Idle => ("queued", None),
+            SessionDeliveryState::Active => ("queued", None),
             SessionDeliveryState::NeedsAttention => (
                 "needs_attention",
-                None,
                 Some("session requires an explicit recovery decision"),
-                None,
             ),
         };
         transaction
             .execute(
                 "INSERT INTO conversation_messages(message_id, session_id, idempotency_key, content, requested_delivery, actual_delivery, status, sequence, target_run_id, reason, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, 'successor', ?5, ?6, ?7, ?8, ?9, ?10, ?10)",
-                params![id, session_id, command.idempotency_key, command.content, actual, status, sequence, target_run_id, reason, chrono::Utc::now().to_rfc3339()],
+                params![id, session_id, command.idempotency_key, command.content, Option::<String>::None, status, sequence, Option::<String>::None, reason, chrono::Utc::now().to_rfc3339()],
             )
             .map_err(storage)?;
+        let claimed_successor = if command.session_state == SessionDeliveryState::Idle {
+            claim_oldest_queued(&transaction, session_id, command.target_run_id)?
+        } else {
+            None
+        };
         let message = get_message(&transaction, session_id, &id)?;
         transaction.commit().map_err(storage)?;
         Ok(MessageMutation {
             message,
+            claimed_successor,
             replayed: false,
         })
     }
 
-    async fn list(&self, session_id: &str) -> Result<Vec<ConversationMessage>, MessageDomainError> {
+    async fn list(
+        &self,
+        session_id: &str,
+        query: MessagePageQuery,
+    ) -> Result<MessagePage, MessageDomainError> {
         let connection = self.connect()?;
-        let mut statement = connection
-            .prepare("SELECT message_id, session_id, content, requested_delivery, actual_delivery, status, sequence, target_run_id, reason FROM conversation_messages WHERE session_id = ?1 ORDER BY sequence")
-            .map_err(storage)?;
-        statement
-            .query_map(params![session_id], message_from_row)
-            .map_err(storage)?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(storage)
+        let fetch_limit = i64::try_from(query.limit + 1).map_err(storage)?;
+        let (mut messages, reverse) = if let Some(after_sequence) = query.after_sequence {
+            let mut statement = connection
+                .prepare("SELECT message_id, session_id, content, requested_delivery, actual_delivery, status, sequence, target_run_id, reason FROM conversation_messages WHERE session_id = ?1 AND sequence > ?2 ORDER BY sequence ASC LIMIT ?3")
+                .map_err(storage)?;
+            let messages = statement
+                .query_map(
+                    params![session_id, after_sequence, fetch_limit],
+                    message_from_row,
+                )
+                .map_err(storage)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(storage)?;
+            (messages, false)
+        } else {
+            let before_sequence = query.before_sequence.unwrap_or(i64::MAX);
+            let mut statement = connection
+                .prepare("SELECT message_id, session_id, content, requested_delivery, actual_delivery, status, sequence, target_run_id, reason FROM conversation_messages WHERE session_id = ?1 AND sequence < ?2 ORDER BY sequence DESC LIMIT ?3")
+                .map_err(storage)?;
+            let messages = statement
+                .query_map(
+                    params![session_id, before_sequence, fetch_limit],
+                    message_from_row,
+                )
+                .map_err(storage)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(storage)?;
+            (messages, true)
+        };
+        let has_more = messages.len() > query.limit;
+        if has_more {
+            messages.pop();
+        }
+        if reverse {
+            messages.reverse();
+        }
+        Ok(MessagePage {
+            next_after_sequence: if !reverse && has_more {
+                messages.last().map(|message| message.sequence)
+            } else {
+                None
+            },
+            next_before_sequence: if reverse && has_more {
+                messages.first().map(|message| message.sequence)
+            } else {
+                None
+            },
+            messages,
+        })
     }
 
     async fn promote(
@@ -418,7 +531,12 @@ impl MessageRepository for SqliteMessageRepository {
             ),
             StreamEvent::MessageNeedsAttention { id, reason } => (
                 id,
-                &["queued", "intervention_requested", "needs_attention"][..],
+                &[
+                    "queued",
+                    "intervention_requested",
+                    "claimed_successor",
+                    "needs_attention",
+                ][..],
                 "needs_attention",
                 None,
                 Some(reason.as_str()),
@@ -446,33 +564,9 @@ impl MessageRepository for SqliteMessageRepository {
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(storage)?;
-        let id: Option<String> = transaction
-            .query_row(
-                "SELECT message_id FROM conversation_messages WHERE session_id = ?1 AND status = 'queued' ORDER BY sequence LIMIT 1",
-                params![session_id],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(storage)?;
-        let Some(id) = id else {
-            transaction.commit().map_err(storage)?;
-            return Ok(None);
-        };
-        let changed = transaction
-            .execute(
-                "UPDATE conversation_messages SET status = 'claimed_successor', actual_delivery = 'successor', target_run_id = ?3, updated_at = ?4 WHERE session_id = ?1 AND message_id = ?2 AND status = 'queued'",
-                params![session_id, id, run_id.to_string(), chrono::Utc::now().to_rfc3339()],
-            )
-            .map_err(storage)?;
-        if changed != 1 {
-            return Err(MessageDomainError::new(
-                MessageErrorKind::Conflict,
-                "successor claim lost its compare-and-set race",
-            ));
-        }
-        let message = get_message(&transaction, session_id, &id)?;
+        let message = claim_oldest_queued(&transaction, session_id, Some(run_id))?;
         transaction.commit().map_err(storage)?;
-        Ok(Some(message))
+        Ok(message)
     }
 
     async fn require_attention(
@@ -506,6 +600,42 @@ impl MessageRepository for SqliteMessageRepository {
         transaction.commit().map_err(storage)?;
         Ok(messages)
     }
+}
+
+fn claim_oldest_queued(
+    transaction: &rusqlite::Transaction<'_>,
+    session_id: &str,
+    run_id: Option<RunId>,
+) -> Result<Option<ConversationMessage>, MessageDomainError> {
+    let id: Option<String> = transaction
+        .query_row(
+            "SELECT message_id FROM conversation_messages WHERE session_id = ?1 AND status = 'queued' ORDER BY sequence LIMIT 1",
+            params![session_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(storage)?;
+    let Some(id) = id else {
+        return Ok(None);
+    };
+    let changed = transaction
+        .execute(
+            "UPDATE conversation_messages SET status = 'claimed_successor', actual_delivery = 'successor', target_run_id = ?3, updated_at = ?4 WHERE session_id = ?1 AND message_id = ?2 AND status = 'queued'",
+            params![
+                session_id,
+                id,
+                run_id.map(|run_id| run_id.to_string()),
+                chrono::Utc::now().to_rfc3339()
+            ],
+        )
+        .map_err(storage)?;
+    if changed != 1 {
+        return Err(MessageDomainError::new(
+            MessageErrorKind::Conflict,
+            "successor claim lost its compare-and-set race",
+        ));
+    }
+    get_message(transaction, session_id, &id).map(Some)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -697,5 +827,71 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(claimed.id, second.message.id);
+    }
+
+    #[tokio::test]
+    async fn idle_send_claims_the_oldest_queued_message_and_pages_are_bounded() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let index = StateIndex::new(temp.path());
+        index.initialize().unwrap();
+        let service = MessageDomainService::new(Arc::new(SqliteMessageRepository::new(
+            index.path(),
+            index.busy_timeout_ms(),
+        )));
+        let first = service
+            .send(
+                "session",
+                SendMessageCommand {
+                    content: "first".to_string(),
+                    idempotency_key: Some("first".to_string()),
+                    session_state: SessionDeliveryState::Active,
+                    target_run_id: None,
+                },
+            )
+            .await
+            .unwrap();
+        let first_run_id = RunId::new();
+        let second = service
+            .send(
+                "session",
+                SendMessageCommand {
+                    content: "second".to_string(),
+                    idempotency_key: Some("second".to_string()),
+                    session_state: SessionDeliveryState::Idle,
+                    target_run_id: Some(first_run_id),
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(second.message.status, MessageStatus::Queued);
+        let claimed = second
+            .claimed_successor
+            .expect("idle send must atomically claim the FIFO head");
+        assert_eq!(claimed.id, first.message.id);
+        assert_eq!(claimed.target_run_id, Some(first_run_id));
+
+        let latest = service
+            .list("session", MessagePageQuery::latest(1))
+            .await
+            .unwrap();
+        assert_eq!(latest.messages, vec![second.message.clone()]);
+        assert_eq!(latest.next_before_sequence, Some(second.message.sequence));
+        let older = service
+            .list(
+                "session",
+                MessagePageQuery::before(second.message.sequence, 1),
+            )
+            .await
+            .unwrap();
+        assert_eq!(older.messages, vec![claimed]);
+        assert_eq!(older.next_before_sequence, None);
+
+        let next = service
+            .claim_successor("session", RunId::new())
+            .await
+            .unwrap()
+            .expect("the newly inserted message must remain queued");
+        assert_eq!(next.id, second.message.id);
     }
 }

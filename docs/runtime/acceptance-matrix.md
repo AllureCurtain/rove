@@ -30,24 +30,34 @@ this file is the current proof map.
 | Current tool results stay inline; older repeated results use deterministic content-addressed references; canonical artifact authority retains provenance/quota/redaction/MIME/sensitivity/retention and explicit resolution works after cleanup. | Met | `cargo test -p rove-runtime --lib context::manager::tests`; `cargo test -p rove-runtime --lib tools::history::tests`; `cargo test -p rove-runtime --lib state::tool_artifacts`; `cargo test -p rove-models --lib history`; stale observation/version tests in `runtime/tests/tool_contract.rs`. |
 | Fake-provider runtime evidence is separated from native-provider interoperability evidence. | Fake-provider evidence available and deterministic; native-provider gate unrun/unverified. | `cargo test -p rove-integration-tests --test bench oncall_benchmark_v2_passes_independent_truth_and_hard_safety_gates -- --exact`; `cargo run -p rove-bench -- --suite benchmarks/agent-smoke.json --output-dir .rove/bench`; no external credentials were used. |
 
+## Productization E (Provider Configuration And Onboarding)
+
+| Contract | Current status | Verification surface |
+|---|---|---|
+| User-owned Provider catalog with authority-aware configuration, secret references, CAS/lock/atomic writes, and no implicit Fake fallback | Implemented with user schema v1; env/file/keyring references resolve only at use time and literal secrets are rejected | `cargo test -p rove-app-bootstrap --lib`; `cargo test -p rove-integration-tests --test cli_config`; Provider catalog/user-config tests |
+| CLI per-turn assembly, immutable secret-free run model snapshots, and strict resume identity | Implemented; selection changes affect only future turns and Provider drift fails closed | `cargo test -p rove-cli --lib`; `cargo test -p rove-integration-tests --test e2e`; `cargo test -p rove-integration-tests --test api` |
+| API/Web Provider CRUD, model inventory/probe, migration, and TUI `/model` share the catalog authority | Implemented with revision conflicts mapped to HTTP 409; TUI uses configured catalog models and reports inventory as not fresh | API Provider/catalog tests, Web client/Settings tests, TUI reducer/app tests, and `rove provider migrate` tests |
+| Real Provider can complete the credentialed two-turn/tool interoperability gate | Unverified; deterministic protocol/catalog evidence is not external interoperability evidence | Follow `provider-smoke.md` and the opt-in provider runner with real credentials/network/quota |
+
 ## Productization F (Unified Conversation Control)
 
 | Contract | Current status | Verification surface |
 |---|---|---|
-| One durable Send Message command with FIFO, idempotency, promotion/revoke CAS, and six delivery states | Implemented in Runtime schema v3 and ProductStore schema v12; legacy control routes remain compatibility-only | `cargo test -p rove-runtime conversation::tests::sqlite_adapter_is_fifo_idempotent_and_cas_safe --lib`; `cargo test -p rove-api unified_message --lib` |
+| One durable Send Message command with FIFO, idempotency, promotion/revoke CAS, and six delivery states | Implemented in Runtime schema v3 and ProductStore schema v13; v13 reconciles both parallel v12 layouts and legacy control routes remain compatibility-only | `cargo test -p rove-runtime conversation::tests::sqlite_adapter_is_fifo_idempotent_and_cas_safe --lib`; ProductStore parallel-v12 migration tests; `cargo test -p rove-api unified_message --lib` |
 | Canonical event, TaskState/checkpoint/report, SSE/replay, and product projection consistency | Implemented through existing trace/event path and API reflection; approvals/input/capability/cancel remain separate | Runtime event/state/report tests and API product lifecycle tests |
-| Conversation-first Web transcript with bounded paging, streaming follow, stable prepend anchoring, and delivery-state actions | Implemented; Web package/browser gates need rerun in this worktree | `apps/web/chat/*`, `apps/web/state/*`, `pnpm test`, `pnpm typecheck`, `pnpm build`, `pnpm test:e2e` |
-| TUI shared in-process adapter, durable queue projection, modal precedence, bounded rendering/resume | Implemented and unit-tested; Windows ConPTY/PTY smoke remains unverified | `cargo test -p rove-cli --lib` |
+| Conversation-first Web transcript with streaming follow, exact `(job_id, run_id)` attachment, and delivery-state actions | Core lifecycle implemented and verified by unit/type/build, mocked browser, and live local fake-provider gates; F.4 older-history pagination/windowing, bounded lazy rendering, and stable prepend anchoring remain open | `apps/web/chat/*`, `apps/web/state/*`, `apps/web/api/run-controller.test.ts`, `pnpm test`, `pnpm typecheck`, `pnpm build`, `pnpm test:e2e`, `scripts/integration-smoke.ps1` |
+| TUI shared in-process adapter, durable queue projection, modal precedence, bounded rendering/resume | Core lifecycle implemented and unit-tested; F.5 restart draining/reconciliation and long-session prepend remain open, and Windows ConPTY/PTY smoke remains unverified | `cargo test -p rove-cli --lib` |
 
 Evidence boundary: `shell.spec.ts`, `continuity.spec.ts`, `settings.spec.ts`,
 `migration.spec.ts`, and `polish.spec.ts` use browser-boundary mocks for broad
 deterministic product, state-race, fault, recovery, and visual coverage. The
-gated `real-api.spec.ts` is run by `local-full` against the live Rust API. Its C3
-run passed all three cases: migration before catalog boot; exact A/B session
-continuity with refresh, approval, input, cancellation, Settings, and deep
-routes; and one bounded `/dev/workbench` direct-run smoke. The updated provider
-runner also targets the product shell and exact returned IDs, but no external
-provider C3 gate has been run.
+gated `real-api.spec.ts` is run by `local-full` against the live Rust API. The
+current integration run passed five cases: migration before catalog boot; exact
+A/B session continuity with refresh, approval, input, cancellation, Settings,
+and deep routes; unified-message promotion/revocation; completed-session Fork
+with independent child continuation; and one bounded `/dev/workbench`
+direct-run smoke. The updated provider runner also targets the product shell
+and exact returned IDs, but no external-provider gate has been run.
 
 ## Web Complete C0
 

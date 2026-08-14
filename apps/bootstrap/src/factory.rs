@@ -185,8 +185,8 @@ fn named_targets(
         })?;
     let primary = active_profile
         .resolve_with_environment(
-            &config.source_summary.workspace_root,
-            config.state.allow_external_paths,
+            config.provider_config_root(),
+            config.provider_allows_external_paths(),
             Some(model_id),
             config.project_environment.values(),
         )
@@ -218,8 +218,8 @@ fn named_targets(
         fallbacks.push(
             profile
                 .resolve_with_environment(
-                    &config.source_summary.workspace_root,
-                    config.state.allow_external_paths,
+                    config.provider_config_root(),
+                    config.provider_allows_external_paths(),
                     None,
                     config.project_environment.values(),
                 )

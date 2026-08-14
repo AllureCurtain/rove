@@ -13,11 +13,11 @@ use crate::product::{
     M1BrowserMigrationSource, M1MigrationDisposition, M1MigrationIssueCode, M1PreferencesBaseline,
     M1ProviderProfileImport, M1ProviderSelectionImport, M1SafePreferencesImport, M1SessionImport,
     M1WorkspaceImport, PreparedM1BrowserMigration, ProductApprovalPreference, ProductControlKind,
-    ProductControlStatus, ProductErrorCode, ProductMessageStatus, ProductProviderSelection,
-    ProductProviderType, ProductReasoningPreference, ProductSessionStatus, ProductStore,
-    ProductThemePreference, ProductWorkspaceKind, UpdateProductPreferencesRequest,
-    UpdateProductSessionModelConfigRequest, VerifiedM1SessionRunBinding,
-    VerifiedProductForkBoundary,
+    ProductControlStatus, ProductErrorCode, ProductMessagePageQuery, ProductMessageStatus,
+    ProductProviderSelection, ProductProviderType, ProductReasoningPreference,
+    ProductSessionStatus, ProductStore, ProductThemePreference, ProductWorkspaceKind,
+    UpdateProductPreferencesRequest, UpdateProductSessionModelConfigRequest,
+    VerifiedM1SessionRunBinding, VerifiedProductForkBoundary,
 };
 
 use super::SqliteProductStore;
@@ -1830,6 +1830,49 @@ async fn unified_messages_are_fifo_idempotent_and_race_through_one_authority() {
 
     let promoted = store.promote_message(&session.id, &first.id).await.unwrap();
     assert_eq!(promoted.status, ProductMessageStatus::InterventionRequested);
+    let promotion_replay = store.promote_message(&session.id, &first.id).await.unwrap();
+    assert_eq!(promotion_replay, promoted);
+
+    let first_page = store
+        .list_messages(
+            &session.id,
+            ProductMessagePageQuery {
+                after_seq: Some(0),
+                before_seq: None,
+                limit: 1,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(first_page.messages, vec![promoted.clone()]);
+    assert_eq!(first_page.next_after_seq, Some(first.seq));
+    let second_page = store
+        .list_messages(
+            &session.id,
+            ProductMessagePageQuery {
+                after_seq: first_page.next_after_seq,
+                before_seq: None,
+                limit: 1,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(second_page.messages, vec![second.clone()]);
+    assert_eq!(second_page.next_after_seq, None);
+    let latest_page = store
+        .list_messages(
+            &session.id,
+            ProductMessagePageQuery {
+                after_seq: None,
+                before_seq: None,
+                limit: 1,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(latest_page.messages, vec![second.clone()]);
+    assert_eq!(latest_page.next_before_seq, Some(second.seq));
+
     let claimed = store
         .finish_session_turn_and_claim_followup(&claim.claim_id)
         .await

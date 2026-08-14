@@ -15,6 +15,8 @@ import {
   M1_BROWSER_STORAGE_KEYS,
 } from "../../product/m1-storage-keys";
 import type {
+  ProductMessageStatus,
+  ProductSession,
   ProductSessionsResponse,
   ProductWorkspacesResponse,
 } from "../../product/product-api-types";
@@ -50,6 +52,9 @@ interface ProductTranscriptSnapshot {
 
 interface StartedTurn {
   body: Record<string, unknown>;
+  requestPath: string;
+  messageId: string;
+  messageStatus: ProductMessageStatus;
   jobId: string;
   runId: string;
   resumedFromRunId: string | null;
@@ -102,7 +107,9 @@ test.describe("real API product shell integration", () => {
       await detachActiveProductRoute(request, baseline);
       await seedLegacyState(page, workspaceRoot);
 
-      await page.goto(
+      await gotoWithReadiness(
+        page,
+        request,
         "/w/live-legacy-workspace/s/live-legacy-session?inspector=open#latest",
       );
       await expect.poll(() => migrationStatus).toBe(200);
@@ -194,24 +201,26 @@ test.describe("real API product shell integration", () => {
       const routeA = productSessionRoute(workspaceId, sessionA);
 
       const promptA1 = `real API A1 ${Date.now()}`;
-      const turnA1 = await sendMessage(page, promptA1, created);
+      const turnA1 = await sendMessage(page, request, sessionA, promptA1, created);
       expectProductSessionRequest(turnA1, sessionA);
       expect(turnA1.resumedFromRunId).toBeNull();
       await expectTurnCompleted(page, `fake response: ${promptA1}`);
 
       const sessionB = await createSession(page, workspaceId, created);
       const promptB1 = `real API B1 ${Date.now()}`;
-      const turnB1 = await sendMessage(page, promptB1, created);
+      const turnB1 = await sendMessage(page, request, sessionB, promptB1, created);
       expectProductSessionRequest(turnB1, sessionB);
       expect(turnB1.resumedFromRunId).toBeNull();
       await expectTurnCompleted(page, `fake response: ${promptB1}`);
 
       await page.goto(routeA);
       await expect(
-        page.getByLabel("Conversation").getByText(`fake response: ${promptA1}`),
+        page
+          .getByLabel("Conversation")
+          .getByText(`fake response: ${promptA1}`, { exact: true }),
       ).toBeVisible();
       const promptA2 = `real API A2 ${Date.now()}`;
-      const turnA2 = await sendMessage(page, promptA2, created);
+      const turnA2 = await sendMessage(page, request, sessionA, promptA2, created);
       expectProductSessionRequest(turnA2, sessionA);
       expect(turnA2.resumedFromRunId).toBe(turnA1.runId);
       expect(turnA2.resumedFromRunId).not.toBe(turnB1.runId);
@@ -223,7 +232,7 @@ test.describe("real API product shell integration", () => {
       await expect(conversation.getByText(promptA1, { exact: true })).toBeVisible();
       await expect(conversation.getByText(promptA2, { exact: true })).toBeVisible();
       const promptA3 = `real API A3 ${Date.now()}`;
-      const turnA3 = await sendMessage(page, promptA3, created);
+      const turnA3 = await sendMessage(page, request, sessionA, promptA3, created);
       expectProductSessionRequest(turnA3, sessionA);
       expect(turnA3.resumedFromRunId).toBe(turnA2.runId);
       await expectTurnCompleted(page, `fake response: ${promptA3}`);
@@ -320,13 +329,15 @@ test.describe("real API product shell integration", () => {
       const outputContent = "ok from the real product shell";
       const approvalTurn = await sendMessage(
         page,
+        request,
+        sessionA,
         JSON.stringify({
           tool: "write_file",
           args: { path: outputName, content: outputContent },
         }),
         created,
       );
-      expectServerOwnedProductJobRequest(approvalTurn);
+      expectServerOwnedProductMessageRequest(approvalTurn);
       const approval = page.getByLabel("Pending approval");
       await expect(approval.getByText(/Approval needed.*write_file/u)).toBeVisible();
       await Promise.all([
@@ -345,18 +356,20 @@ test.describe("real API product shell integration", () => {
       expect(await readFile(join(workspaceRoot, outputName), "utf8")).toBe(
         outputContent,
       );
-      await cancelCurrentRun(page);
+      await cancelCurrentRun(page, true);
 
       const inputPrompt = "Which branch should the real product shell use?";
       const inputTurn = await sendMessage(
         page,
+        request,
+        sessionA,
         JSON.stringify({
           tool: "request_input",
           args: { prompt: inputPrompt },
         }),
         created,
       );
-      expectServerOwnedProductJobRequest(inputTurn);
+      expectServerOwnedProductMessageRequest(inputTurn);
       const inputCard = page.locator(".input-card").filter({ hasText: inputPrompt });
       await expect(inputCard.getByText("Input requested")).toBeVisible();
       await inputCard.getByRole("textbox", { name: inputPrompt }).fill("main");
@@ -373,18 +386,20 @@ test.describe("real API product shell integration", () => {
       await expect(
         page.getByLabel("Conversation").getByText("main", { exact: true }),
       ).toBeVisible({ timeout: 30_000 });
-      await cancelCurrentRun(page);
+      await cancelCurrentRun(page, true);
 
       const cancelPrompt = "Cancel this real product input";
       const cancelTurn = await sendMessage(
         page,
+        request,
+        sessionA,
         JSON.stringify({
           tool: "request_input",
           args: { prompt: cancelPrompt },
         }),
         created,
       );
-      expectServerOwnedProductJobRequest(cancelTurn);
+      expectServerOwnedProductMessageRequest(cancelTurn);
       await expect(
         page.locator(".input-card").filter({ hasText: cancelPrompt }),
       ).toBeVisible();
@@ -429,7 +444,7 @@ test.describe("real API product shell integration", () => {
     }
   });
 
-  test("applies steer and revokes a queued follow-up through the live product shell", async ({
+  test("promotes and revokes unified messages during an active run", async ({
     page,
     request,
   }) => {
@@ -460,6 +475,8 @@ test.describe("real API product shell integration", () => {
       const inputPrompt = "Which release branch should this control test use?";
       const inputTurn = await sendMessage(
         page,
+        request,
+        sessionId,
         JSON.stringify({
           tool: "request_input",
           args: { prompt: inputPrompt },
@@ -467,59 +484,66 @@ test.describe("real API product shell integration", () => {
         created,
       );
       expectProductSessionRequest(inputTurn, sessionId);
-      expectServerOwnedProductJobRequest(inputTurn);
+      expectServerOwnedProductMessageRequest(inputTurn);
       const inputCard = page.locator(".input-card").filter({ hasText: inputPrompt });
       await expect(inputCard.getByText("Input requested")).toBeVisible();
 
-      const composer = page.getByLabel("Message composer");
-      const modes = composer.locator(".chat-composer__modes");
-      await expect(modes).toBeVisible();
-
-      const steerText = "Prioritize the release notes after the input.";
-      await modes.getByRole("button", { name: "Steer", exact: true }).click();
-      await composer.getByRole("textbox", { name: "Message" }).fill(steerText);
-      const steerResponse = page.waitForResponse(
+      const promotedText = "Prioritize the release notes after the input.";
+      const promotedTurn = await sendMessage(
+        page,
+        request,
+        sessionId,
+        promotedText,
+        created,
+      );
+      expectProductSessionRequest(promotedTurn, sessionId);
+      expect(promotedTurn.messageStatus).toBe("queued");
+      const promotedMessage = page
+        .locator(".queued-message")
+        .filter({ hasText: promotedText });
+      await expect(promotedMessage).toBeVisible();
+      const promoteResponse = page.waitForResponse(
         (response) =>
           response.request().method() === "POST" &&
           new URL(response.url()).pathname ===
-            `/api/product/sessions/${sessionId}/steers`,
+            `/api/product/sessions/${sessionId}/messages/${promotedTurn.messageId}/promote` &&
+          response.ok(),
       );
-      await composer
-        .locator(".chat-composer__row")
-        .getByRole("button", { name: "Steer", exact: true })
+      await promotedMessage
+        .getByRole("button", { name: "Apply to current run", exact: true })
         .click();
-      const steerId = await responseId(await steerResponse);
-      await expect(composer.getByText(steerText, { exact: true })).toBeVisible();
-
-      const followupText = "This follow-up must be revoked before completion.";
-      await modes.getByRole("button", { name: "Follow-up", exact: true }).click();
-      await composer.getByRole("textbox", { name: "Message" }).fill(followupText);
-      const followupResponse = page.waitForResponse(
-        (response) =>
-          response.request().method() === "POST" &&
-          new URL(response.url()).pathname ===
-            `/api/product/sessions/${sessionId}/followups`,
+      const promotedMessageResponse = await promoteResponse;
+      expect((await promotedMessageResponse.json()).status).toBe(
+        "intervention_requested",
       );
-      await composer
-        .locator(".chat-composer__row")
-        .getByRole("button", { name: "Queue", exact: true })
-        .click();
-      const followupId = await responseId(await followupResponse);
-      const queue = composer.getByLabel("Server-backed control queue");
-      const followupItem = queue.locator("li").filter({ hasText: followupText });
-      await expect(followupItem).toBeVisible();
+      await expect(promotedMessage).toContainText("intervention requested");
 
+      const revokedText = "This queued message must be revoked before completion.";
+      const revokedTurn = await sendMessage(
+        page,
+        request,
+        sessionId,
+        revokedText,
+        created,
+      );
+      expectProductSessionRequest(revokedTurn, sessionId);
+      expect(revokedTurn.messageStatus).toBe("queued");
+      const revokedMessage = page
+        .locator(".queued-message")
+        .filter({ hasText: revokedText });
+      await expect(revokedMessage).toBeVisible();
       const revokeResponse = page.waitForResponse(
         (response) =>
           response.request().method() === "POST" &&
           new URL(response.url()).pathname ===
-            `/api/product/sessions/${sessionId}/controls/${followupId}/revoke`,
+            `/api/product/sessions/${sessionId}/messages/${revokedTurn.messageId}/revoke` &&
+          response.ok(),
       );
-      await followupItem
-        .getByRole("button", { name: "Revoke control" })
+      await revokedMessage
+        .getByRole("button", { name: "Revoke message", exact: true })
         .click();
-      await revokeResponse;
-      await expect(followupItem).toHaveCount(0);
+      expect((await (await revokeResponse).json()).status).toBe("revoked");
+      await expect(revokedMessage).toHaveCount(0);
 
       await inputCard.getByRole("textbox", { name: inputPrompt }).fill("main");
       await Promise.all([
@@ -534,10 +558,14 @@ test.describe("real API product shell integration", () => {
       ]);
       await expectTurnCompleted(page, "main");
       await expect
-        .poll(() => controlStatus(request, sessionId, steerId))
-        .toBe("applied");
+        .poll(async () => (await readMessages(request, sessionId)).find(
+          (message) => message.id === promotedTurn.messageId,
+        )?.status)
+        .toBe("applied_current_run");
       await expect
-        .poll(() => controlStatus(request, sessionId, followupId))
+        .poll(async () => (await readMessages(request, sessionId)).find(
+          (message) => message.id === revokedTurn.messageId,
+        )?.status)
         .toBe("revoked");
     } catch (error) {
       primaryError = error;
@@ -573,7 +601,13 @@ test.describe("real API product shell integration", () => {
       );
       const parentRoute = productSessionRoute(workspaceId, parentSessionId);
       const parentPrompt = `fork parent ${Date.now()}`;
-      const parentTurn = await sendMessage(page, parentPrompt, created);
+      const parentTurn = await sendMessage(
+        page,
+        request,
+        parentSessionId,
+        parentPrompt,
+        created,
+      );
       expectProductSessionRequest(parentTurn, parentSessionId);
       await expectTurnCompleted(page, `fake response: ${parentPrompt}`);
 
@@ -605,7 +639,13 @@ test.describe("real API product shell integration", () => {
       await expect(branches.locator(".session-item__lineage")).toContainText("Fork");
 
       const childPrompt = `fork child ${Date.now()}`;
-      const childTurn = await sendMessage(page, childPrompt, created);
+      const childTurn = await sendMessage(
+        page,
+        request,
+        childSessionId,
+        childPrompt,
+        created,
+      );
       expectProductSessionRequest(childTurn, childSessionId);
       expect(childTurn.resumedFromRunId).toBeNull();
       await expectTurnCompleted(page, `fake response: ${childPrompt}`);
@@ -661,7 +701,10 @@ test.describe("optional real API advanced workbench smoke", () => {
   test("keeps the bounded advanced direct-run surface available", async ({ page }) => {
     await page.goto("/dev/workbench");
     const task = `advanced workbench smoke ${Date.now()}`;
-    await page.getByLabel("Task").fill(task);
+    const taskInput = page.getByLabel("Task");
+    await expect(taskInput).toHaveValue("inspect this workspace");
+    await taskInput.fill(task);
+    await expect(taskInput).toHaveValue(task);
     await page.getByLabel("Model").fill("fake");
     await page.getByLabel("Steps").fill("4");
     await page.getByRole("button", { name: "Run" }).click();
@@ -670,7 +713,7 @@ test.describe("optional real API advanced workbench smoke", () => {
       page.getByLabel("Run summary").getByText("Run completed").first(),
     ).toBeVisible({ timeout: 20_000 });
     await expect(
-      page.locator(".message-stream").getByText(`fake response: ${task}`),
+      page.locator(".message-stream").getByText(`fake response: ${task}`, { exact: true }),
     ).toBeVisible();
   });
 });
@@ -772,35 +815,110 @@ async function responseId(response: { json(): Promise<unknown> }): Promise<strin
 
 async function sendMessage(
   page: Page,
+  request: APIRequestContext,
+  sessionId: string,
   message: string,
   created: CreatedProductRecords,
 ): Promise<StartedTurn> {
+  const workspaceId = workspaceIdFromPage(page);
+  const beforeTranscript = await readTranscript(request, sessionId);
+  const beforeSession = await readProductSession(request, workspaceId, sessionId);
+  const beforeBinding = beforeSession.runtime_binding;
+  const beforeRunId =
+    beforeBinding?.latest_run_id ??
+    latestTranscriptBinding(beforeTranscript)?.runtime_run_id ??
+    null;
+  const requestPath = `/api/product/sessions/${encodeURIComponent(sessionId)}/messages`;
   const responsePromise = page.waitForResponse(
     (response) =>
       response.request().method() === "POST" &&
-      new URL(response.url()).pathname === "/api/jobs",
+      new URL(response.url()).pathname === requestPath,
   );
-  await page.getByRole("textbox", { name: "Message" }).fill(message);
-  await page.getByRole("button", { name: "Send" }).click();
+  const composer = page.getByLabel("Message composer");
+  await composer.getByRole("textbox", { name: "Message" }).fill(message);
+  await composer
+    .getByRole("button", { name: "Send message", exact: true })
+    .click();
   const response = await responsePromise;
   expect(response.ok()).toBe(true);
-  const started = (await response.json()) as {
-    job_id?: unknown;
-    run_id?: unknown;
-    resumed_from_run_id?: unknown;
+  const requestBody = jobBody(response.request());
+  expect(requestBody.content).toBe(message);
+  expect(typeof requestBody.idempotency_key).toBe("string");
+  const accepted = (await response.json()) as {
+    id?: unknown;
+    product_session_id?: unknown;
+    content?: unknown;
+    status?: unknown;
   };
-  if (typeof started.job_id !== "string" || typeof started.run_id !== "string") {
-    throw new Error("product job response did not include exact job/run ids");
+  if (
+    typeof accepted.id !== "string" ||
+    typeof accepted.product_session_id !== "string" ||
+    typeof accepted.content !== "string" ||
+    typeof accepted.status !== "string"
+  ) {
+    throw new Error("product message response did not include its durable identity");
   }
-  const resumedFromRunId = started.resumed_from_run_id ?? null;
-  if (resumedFromRunId !== null && typeof resumedFromRunId !== "string") {
-    throw new Error("product job response contained an invalid resume id");
+  expect(accepted.product_session_id).toBe(sessionId);
+  expect(accepted.content).toBe(message);
+  if (!isProductMessageStatus(accepted.status)) {
+    throw new Error(`product message response contained an invalid status: ${accepted.status}`);
   }
-  created.jobIds.push(started.job_id);
+  const activeBefore =
+    beforeSession.status === "running" || beforeSession.status === "needs_attention";
+  let binding: {
+    runtime_job_id: string;
+    runtime_run_id: string;
+    resumed_from_run_id?: string;
+  } | undefined = activeBefore && beforeBinding
+    ? {
+        runtime_job_id: beforeBinding.latest_job_id,
+        runtime_run_id: beforeBinding.latest_run_id,
+      }
+    : undefined;
+  if (!binding) {
+    await expect
+      .poll(
+        async () => {
+          const [transcript, session] = await Promise.all([
+            readTranscript(request, sessionId),
+            readProductSession(request, workspaceId, sessionId),
+          ]);
+          const candidate = latestTranscriptBinding(transcript);
+          const current = session.runtime_binding;
+          return candidate &&
+            current &&
+            candidate.runtime_run_id !== beforeRunId &&
+            current.latest_run_id === candidate.runtime_run_id
+            ? candidate.runtime_run_id
+            : null;
+        },
+        { timeout: 30_000, intervals: [100, 200, 400, 800, 1_000] },
+      )
+      .not.toBeNull();
+    const afterTranscript = await readTranscript(request, sessionId);
+    const afterSession = await readProductSession(request, workspaceId, sessionId);
+    const candidate = latestTranscriptBinding(afterTranscript);
+    if (!candidate || !afterSession.runtime_binding) {
+      throw new Error("product message was accepted without a durable run binding");
+    }
+    binding = afterSession.runtime_binding.latest_run_id === candidate.runtime_run_id
+      ? candidate
+      : undefined;
+  }
+  if (!binding) {
+    throw new Error("active product message did not have a current run binding");
+  }
+  const resumedFromRunId = activeBefore
+    ? null
+    : binding.resumed_from_run_id ?? null;
+  pushUnique(created.jobIds, binding.runtime_job_id);
   return {
-    body: jobBody(response.request()),
-    jobId: started.job_id,
-    runId: started.run_id,
+    body: requestBody,
+    requestPath,
+    messageId: accepted.id,
+    messageStatus: accepted.status,
+    jobId: binding.runtime_job_id,
+    runId: binding.runtime_run_id,
     resumedFromRunId,
   };
 }
@@ -814,12 +932,17 @@ function jobBody(request: Request): Record<string, unknown> {
 }
 
 function expectProductSessionRequest(turn: StartedTurn, sessionId: string) {
-  expect(turn.body.product_session_id).toBe(sessionId);
+  expect(turn.requestPath).toBe(
+    `/api/product/sessions/${encodeURIComponent(sessionId)}/messages`,
+  );
+  expect(turn.body).not.toHaveProperty("product_session_id");
+  expect(typeof turn.body.content).toBe("string");
+  expect(typeof turn.body.idempotency_key).toBe("string");
   expect(turn.body).not.toHaveProperty("resume");
-  expectServerOwnedProductJobRequest(turn);
+  expectServerOwnedProductMessageRequest(turn);
 }
 
-function expectServerOwnedProductJobRequest(turn: StartedTurn) {
+function expectServerOwnedProductMessageRequest(turn: StartedTurn) {
   expect(turn.body).not.toHaveProperty("model");
   expect(turn.body).not.toHaveProperty("max_steps");
   expect(turn.body).not.toHaveProperty("provider");
@@ -841,7 +964,7 @@ async function expectRunCompleted(page: Page) {
   await expect(page.getByRole("textbox", { name: "Message" })).toBeEnabled();
 }
 
-async function cancelCurrentRun(page: Page) {
+async function cancelCurrentRun(page: Page, allowCompleted = false) {
   await Promise.all([
     page.waitForResponse(
       (response) =>
@@ -855,9 +978,12 @@ async function cancelCurrentRun(page: Page) {
   const status = inspector
     .getByText("status", { exact: true })
     .locator("xpath=following-sibling::strong");
-  await expect(status).toHaveText("Run cancelled", {
+  await expect(status).toHaveText(
+    allowCompleted ? /Run (?:cancelled|completed)/u : "Run cancelled",
+    {
     timeout: 30_000,
-  });
+    },
+  );
   await expect(page.getByRole("textbox", { name: "Message" })).toBeEnabled();
 }
 
@@ -874,20 +1000,94 @@ async function readTranscript(
   return transcript;
 }
 
-async function controlStatus(
+async function readProductSession(
+  request: APIRequestContext,
+  workspaceId: string,
+  sessionId: string,
+): Promise<ProductSession> {
+  const response = await request.get(
+    `/api/product/sessions?workspace_id=${encodeURIComponent(workspaceId)}`,
+  );
+  expect(response.ok()).toBe(true);
+  const body = (await response.json()) as ProductSessionsResponse;
+  const session = body.sessions.find((item) => item.id === sessionId);
+  if (!session) {
+    throw new Error(`product session ${sessionId} was not returned for its workspace`);
+  }
+  return session;
+}
+
+async function readMessages(
   request: APIRequestContext,
   sessionId: string,
-  controlId: string,
-): Promise<string | null> {
+): Promise<Array<{ id: string; status: ProductMessageStatus }>> {
   const response = await request.get(
-    `/api/product/sessions/${encodeURIComponent(sessionId)}/controls`,
+    `/api/product/sessions/${encodeURIComponent(sessionId)}/messages`,
   );
   expect(response.ok()).toBe(true);
   const body = (await response.json()) as {
-    controls?: Array<{ id?: unknown; status?: unknown }>;
+    messages?: Array<{ id?: unknown; status?: unknown }>;
   };
-  const control = body.controls?.find((item) => item.id === controlId);
-  return typeof control?.status === "string" ? control.status : null;
+  return (body.messages ?? []).flatMap((message) =>
+    typeof message.id === "string" && isProductMessageStatus(message.status)
+      ? [{ id: message.id, status: message.status }]
+      : [],
+  );
+}
+
+function latestTranscriptBinding(
+  transcript: ProductTranscriptSnapshot,
+): ProductTranscriptSnapshot["segments"][number]["binding"] | null {
+  for (const segment of [...transcript.segments].reverse()) {
+    if (segment.binding) {
+      return segment.binding;
+    }
+  }
+  return null;
+}
+
+function isProductMessageStatus(value: unknown): value is ProductMessageStatus {
+  return (
+    value === "queued" ||
+    value === "intervention_requested" ||
+    value === "applied_current_run" ||
+    value === "claimed_successor" ||
+    value === "needs_attention" ||
+    value === "revoked"
+  );
+}
+
+function workspaceIdFromPage(page: Page): string {
+  const match = new URL(page.url()).pathname.match(/^\/w\/([^/]+)\/s\/([^/]+)$/u);
+  if (!match) {
+    throw new Error(`expected a product session route, received ${page.url()}`);
+  }
+  return decodeURIComponent(match[1]!);
+}
+
+async function gotoWithReadiness(
+  page: Page,
+  request: APIRequestContext,
+  path: string,
+) {
+  let lastStatus: number | null = null;
+  let lastError: unknown = null;
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    try {
+      const response = await request.get(path);
+      lastStatus = response.status();
+      if (lastStatus >= 200 && lastStatus < 400) {
+        await page.goto(path, { waitUntil: "domcontentloaded" });
+        return;
+      }
+    } catch (error) {
+      lastError = error;
+    }
+    await page.waitForTimeout(500);
+  }
+  throw new Error(
+    `product route was not ready after bounded retries (status=${lastStatus}, error=${String(lastError)})`,
+  );
 }
 
 async function selectFakeRawProfile(

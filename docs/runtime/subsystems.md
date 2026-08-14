@@ -263,9 +263,10 @@ Fallback can be configured as:
 Web consumes the API projection rather than maintaining a separate backend.
 API/Web create, update, and delete operations mutate the user catalog with
 `expected_revision` CAS and expose `catalog_revision`; stale/busy writes are
-HTTP 409. ProductStore schema v12 persists stable legacy-to-catalog mappings,
-session selections, and immutable secret-free run model facts, not duplicate
-endpoint or credential authority.
+HTTP 409. ProductStore schema v13 persists stable legacy-to-catalog mappings,
+session selections, immutable secret-free run model facts, and the unified
+message compatibility projection, not duplicate endpoint or credential
+authority. Its reconciliation migration accepts either parallel v12 layout.
 
 CLI keeps state, health, tools, and execution environment as stable services,
 but constructs a fresh `RunAssembly` at every turn. The assembly resolves the
@@ -770,10 +771,10 @@ idle sends claim a successor turn. The legacy Steer and Follow-up routes remain
 compatibility endpoints but are not a second lifecycle authority. The Web
 transcript renders delivery states and keeps diagnostics/Inspector projections
 separate from the main conversation.
-the Stop action in either mode, and displays the server-backed control queue.
-The queue reflects durable status, supports revoke, and offers explicit
-confirmation for an abandoned follow-up. It does not synthesize a client-side
-follow-up run when the session appears idle.
+It renders eligible promote/revoke actions on the same transcript message and
+retains Stop as the separate cancellation action. It does not expose a
+Steer/Follow-up mode selector or maintain a client-side queue, and it never
+synthesizes a successor run from presentation timing.
 
 The current CDH G2 fork surface permits a branch only from an API-verified,
 terminal canonical run boundary. `product_session_forks` and its inherited-run
@@ -822,12 +823,12 @@ pnpm test:e2e
 and `polish.spec.ts` cover broad product behavior, fault/race injection,
 recovery, and visual states with browser-boundary mocks. The gated
 `real-api.spec.ts` used by `local-full` exercises the default `/` product shell
-against the live Rust API and retains one bounded `/dev/workbench` smoke. The C3
-run passed migration, exact A/B continuation with refresh and product
-interactions, and the bounded advanced case. The merged CDH live path also
-passes wait-for-input Steer, Follow-up enqueue/revoke, final control status, and
-completed-session Fork/child continuation (five real-API scenarios total). The
-provider runner now uses
+against the live Rust API and retains one bounded `/dev/workbench` smoke. The
+current five-case run passes migration; exact A/B continuation with refresh and
+product interactions; unified-message promotion/revocation; completed-session
+Fork/child continuation; and the bounded advanced case. Successor runs retain
+the stable product `job_id` while exact `(job_id, run_id)` checks prevent stale
+SSE attachment. The provider runner now uses
 the product shell and verifies exact browser-returned job/run IDs, but its
 external-provider Web gate was not run for C3.
 

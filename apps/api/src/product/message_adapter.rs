@@ -10,15 +10,15 @@ use async_trait::async_trait;
 
 use rove_runtime::conversation::{
     ConversationMessage, MessageDelivery, MessageDomainError, MessageErrorKind, MessageMutation,
-    MessageRepository, MessageStatus, SendMessageCommand,
+    MessagePage, MessagePageQuery, MessageRepository, MessageStatus, SendMessageCommand,
 };
 use rove_runtime::events::StreamEvent;
 use rove_runtime::types::RunId;
 
 use super::{
     CreateProductMessageRequest, ProductControlId, ProductControlStatus, ProductMessage,
-    ProductMessageDelivery, ProductMessageStatus, ProductSessionId, ProductStore,
-    ProductStoreError,
+    ProductMessageDelivery, ProductMessagePageQuery, ProductMessageStatus, ProductSessionId,
+    ProductStore, ProductStoreError,
 };
 
 #[derive(Clone)]
@@ -73,16 +73,32 @@ impl MessageRepository for ProductMessageRepository {
             .map_err(map_product_error)?;
         Ok(MessageMutation {
             message: to_domain(message),
+            claimed_successor: None,
             replayed,
         })
     }
 
-    async fn list(&self, session_id: &str) -> Result<Vec<ConversationMessage>, MessageDomainError> {
+    async fn list(
+        &self,
+        session_id: &str,
+        query: MessagePageQuery,
+    ) -> Result<MessagePage, MessageDomainError> {
         let session_id = Self::session_id(session_id)?;
         self.store
-            .list_messages(&session_id)
+            .list_messages(
+                &session_id,
+                ProductMessagePageQuery {
+                    after_seq: query.after_sequence,
+                    before_seq: query.before_sequence,
+                    limit: query.limit,
+                },
+            )
             .await
-            .map(|messages| messages.into_iter().map(to_domain).collect())
+            .map(|page| MessagePage {
+                messages: page.messages.into_iter().map(to_domain).collect(),
+                next_after_sequence: page.next_after_seq,
+                next_before_sequence: page.next_before_seq,
+            })
             .map_err(map_product_error)
     }
 

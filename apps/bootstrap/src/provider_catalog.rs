@@ -1,6 +1,7 @@
 //! Shared, UI-neutral Provider catalog and selection contracts.
 
 use std::path::Path;
+use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -156,6 +157,7 @@ pub enum ProviderCatalogError {
 pub struct ProviderCatalog {
     document: UserConfigDocument,
     revision: String,
+    modified_at: Option<SystemTime>,
 }
 
 #[derive(Debug, Clone)]
@@ -180,7 +182,7 @@ impl ProviderCatalogService {
         let document = UserConfigLoader::new(self.paths.clone())
             .load_or_default()
             .map_err(map_user_config_error)?;
-        ProviderCatalog::from_document(document)
+        ProviderCatalog::from_document_with_modified_at(document, self.config_modified_at())
     }
 
     pub fn replace(
@@ -191,7 +193,7 @@ impl ProviderCatalogService {
         let document = UserConfigWriter::new(self.paths.clone())
             .update(Some(expected_revision), document)
             .map_err(map_user_config_error)?;
-        ProviderCatalog::from_document(document)
+        ProviderCatalog::from_document_with_modified_at(document, self.config_modified_at())
     }
 
     pub fn upsert_profile(
@@ -237,6 +239,12 @@ impl ProviderCatalogService {
         }
         self.replace(expected_revision, &document)
     }
+
+    fn config_modified_at(&self) -> Option<SystemTime> {
+        std::fs::metadata(&self.paths.config_file)
+            .and_then(|metadata| metadata.modified())
+            .ok()
+    }
 }
 
 fn map_user_config_error(error: crate::user_config::UserConfigError) -> ProviderCatalogError {
@@ -251,15 +259,30 @@ fn map_user_config_error(error: crate::user_config::UserConfigError) -> Provider
 
 impl ProviderCatalog {
     pub fn from_document(document: UserConfigDocument) -> Result<Self, ProviderCatalogError> {
+        Self::from_document_with_modified_at(document, None)
+    }
+
+    fn from_document_with_modified_at(
+        document: UserConfigDocument,
+        modified_at: Option<SystemTime>,
+    ) -> Result<Self, ProviderCatalogError> {
         document
             .validate()
             .map_err(|error| ProviderCatalogError::Invalid(error.to_string()))?;
         let revision = document.revision();
-        Ok(Self { document, revision })
+        Ok(Self {
+            document,
+            revision,
+            modified_at,
+        })
     }
 
     pub fn revision(&self) -> &str {
         &self.revision
+    }
+
+    pub fn modified_at(&self) -> Option<SystemTime> {
+        self.modified_at
     }
 
     pub fn profiles(&self) -> Vec<ProviderProfile> {

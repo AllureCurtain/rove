@@ -506,6 +506,22 @@ impl Default for ConfigSourceSummary {
 }
 
 impl AppConfig {
+    pub fn provider_config_root(&self) -> &Path {
+        if self.source_summary.user_config_loaded {
+            self.source_summary
+                .user_config_path
+                .parent()
+                .filter(|path| !path.as_os_str().is_empty())
+                .unwrap_or(&self.source_summary.workspace_root)
+        } else {
+            &self.source_summary.workspace_root
+        }
+    }
+
+    pub fn provider_allows_external_paths(&self) -> bool {
+        self.source_summary.user_config_loaded || self.state.allow_external_paths
+    }
+
     pub fn defaults() -> Self {
         // Empty provider profiles so layered TOML maps replace cleanly rather
         // than merging with a built-in fake profile entry.
@@ -678,7 +694,7 @@ impl AppConfig {
             .map_err(anyhow::Error::from)?;
         let user_config_loaded = user_config_present;
         let user_config_revision = user_config_loaded.then(|| user_document.revision());
-        let user_layer = user_document_to_app_layer(&user_document);
+        let user_layer = user_document_to_app_layer(&user_document, &user_paths.root);
 
         let mut figment = Figment::from(Serialized::defaults(AppConfig::defaults()));
         figment = figment.merge(Serialized::defaults(user_layer));
@@ -1039,8 +1055,8 @@ impl AppConfig {
             validate_profile_name(name, "provider.profiles")?;
             profile
                 .validate(
-                    &self.source_summary.workspace_root,
-                    self.state.allow_external_paths,
+                    self.provider_config_root(),
+                    self.provider_allows_external_paths(),
                 )
                 .map_err(|error| {
                     anyhow::anyhow!("provider profile `{name}` is invalid: {error}")
@@ -1360,12 +1376,18 @@ struct ProjectEnvironmentCapabilities {
     external_paths: bool,
 }
 
-fn user_document_to_app_layer(document: &crate::user_config::UserConfigDocument) -> AppConfigLayer {
+fn user_document_to_app_layer(
+    document: &crate::user_config::UserConfigDocument,
+    credential_root: &Path,
+) -> AppConfigLayer {
+    let mut profiles = document.provider.profiles.clone();
+    for profile in profiles.values_mut() {
+        profile.rebase_secret_paths(credential_root);
+    }
     AppConfigLayer {
         provider: Some(ProviderConfigLayer {
             active: document.model.default_profile.clone(),
-            profiles: (!document.provider.profiles.is_empty())
-                .then(|| document.provider.profiles.clone()),
+            profiles: (!profiles.is_empty()).then_some(profiles),
             fallback_profiles: (!document.provider.fallback_profiles.is_empty())
                 .then(|| document.provider.fallback_profiles.clone()),
             model: document.model.default_model.clone(),
@@ -1886,6 +1908,7 @@ mod tests {
     use std::sync::{Mutex, OnceLock};
 
     use super::*;
+    use crate::provider::{ProviderAuthConfig, ProviderHeaderValue, SecretSource};
 
     static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
@@ -2451,6 +2474,51 @@ auth = { style = "header", header = "x-api-key", secret = { env = "ANTHROPIC_API
         assert_eq!(profile.options.max_tokens, Some(1024));
         assert_eq!(profile.protocol_options["prompt_cache_enabled"], true);
         assert_eq!(profile.protocol_options["prompt_cache_retention"], "24h");
+        clear_config_env();
+    }
+
+    #[test]
+    fn user_profile_relative_secret_files_are_rebased_to_the_user_config_root() {
+        let _guard = env_lock();
+        clear_config_env();
+        let temp = tempfile::TempDir::new().unwrap();
+        let user_root = temp.path().join("user-config");
+        std::fs::create_dir_all(&user_root).unwrap();
+        std::fs::write(
+            user_root.join("config.toml"),
+            r#"
+schema_version = 1
+[model]
+default_profile = "gateway"
+default_model = "model"
+[provider.profiles.gateway]
+provider_type = "openai"
+base_url = "https://gateway.example.test/v1"
+model = "model"
+auth = { style = "bearer", secret = { file = "credentials/provider.key" } }
+[provider.profiles.gateway.headers]
+x-tenant = { file = "credentials/tenant.txt" }
+"#,
+        )
+        .unwrap();
+        let config = AppConfig::load_with_user_config_paths(
+            temp.path(),
+            AppConfigOverrides::default(),
+            crate::user_config::UserConfigPaths::from_root(&user_root),
+        )
+        .unwrap();
+        let profile = config.provider.profiles.get("gateway").unwrap();
+        assert!(matches!(
+            &profile.auth,
+            ProviderAuthConfig::Bearer {
+                secret: SecretSource::File { file }
+            } if file == &user_root.join("credentials/provider.key")
+        ));
+        assert!(matches!(
+            profile.headers.get("x-tenant"),
+            Some(ProviderHeaderValue::File { file })
+                if file == &user_root.join("credentials/tenant.txt")
+        ));
         clear_config_env();
     }
 

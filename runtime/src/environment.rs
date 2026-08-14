@@ -30,6 +30,7 @@ const MAX_CHECKPOINTS: usize = 32;
 const MAX_CHECKPOINT_BYTES: usize = 8 * 1024 * 1024;
 const MAX_BACKGROUND_PROCESSES: usize = 64;
 const MAX_DIRECTORY_MUTATION_ENTRIES: usize = 4_096;
+const TRAVERSAL_SCAN_MULTIPLIER: usize = 8;
 const STDIO_PROCESS_REAP_TIMEOUT: Duration = Duration::from_secs(5);
 const STDIO_PROCESS_REAP_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
@@ -817,10 +818,19 @@ impl WorkspaceFileSystem for LocalFileSystem {
                 .require_git(false)
                 .parents(true)
                 .max_depth(max_depth);
+            builder.sort_by_file_path(|left, right| left.cmp(right));
+            let scan_limit = max_entries
+                .saturating_mul(TRAVERSAL_SCAN_MULTIPLIER)
+                .max(max_entries.saturating_add(1))
+                .max(1);
             for entry in builder.build() {
                 let entry = entry.map_err(|error| EnvironmentError::Host(error.to_string()))?;
                 if entry.depth() == 0 {
                     continue;
+                }
+                if traversal.scanned_entries >= scan_limit {
+                    traversal.truncated = true;
+                    break;
                 }
                 traversal.scanned_entries = traversal.scanned_entries.saturating_add(1);
                 let file_type = entry.file_type();
@@ -2289,6 +2299,7 @@ fn traversal_path_set(
         .require_git(false)
         .parents(true)
         .max_depth(if recursive { None } else { Some(1) });
+    builder.sort_by_file_path(|left, right| left.cmp(right));
     let mut paths = BTreeSet::new();
     for entry in builder.build() {
         let entry = entry.map_err(|error| EnvironmentError::Host(error.to_string()))?;
@@ -2328,6 +2339,7 @@ fn traversal_sensitive_count(
         .git_global(false)
         .parents(true)
         .max_depth(if recursive { None } else { Some(1) });
+    builder.sort_by_file_path(|left, right| left.cmp(right));
     let mut count = 0usize;
     for (index, entry) in builder.build().enumerate() {
         if index >= max_entries {
@@ -2508,5 +2520,57 @@ mod productization_traversal_tests {
             .unwrap();
         assert!(direct_ignored.entries.is_empty());
         assert_eq!(direct_ignored.ignored_entries, 1);
+    }
+
+    #[tokio::test]
+    async fn local_traversal_truncates_the_lexically_first_entries() {
+        let temp = tempfile::TempDir::new().unwrap();
+        for name in ["z.txt", "m.txt", "a.txt"] {
+            std::fs::write(temp.path().join(name), name).unwrap();
+        }
+        let filesystem = LocalFileSystem {
+            root: temp.path().to_path_buf(),
+        };
+
+        let traversal = filesystem
+            .traverse_entries(None, WorkspaceTraversalOptions::default(), 2)
+            .await
+            .unwrap();
+        assert_eq!(
+            traversal
+                .entries
+                .iter()
+                .map(|entry| entry.relative_path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a.txt", "m.txt"]
+        );
+        assert!(traversal.truncated);
+    }
+
+    #[tokio::test]
+    async fn local_traversal_bounds_scanning_when_every_entry_is_excluded() {
+        let temp = tempfile::TempDir::new().unwrap();
+        for index in 0..32 {
+            std::fs::write(temp.path().join(format!(".env.{index:02}")), "secret").unwrap();
+        }
+        let filesystem = LocalFileSystem {
+            root: temp.path().to_path_buf(),
+        };
+
+        let traversal = filesystem
+            .traverse_entries(
+                None,
+                WorkspaceTraversalOptions {
+                    recursive: false,
+                    include_ignored: true,
+                    include_hidden: true,
+                },
+                1,
+            )
+            .await
+            .unwrap();
+        assert!(traversal.entries.is_empty());
+        assert!(traversal.truncated);
+        assert!(traversal.scanned_entries <= TRAVERSAL_SCAN_MULTIPLIER);
     }
 }

@@ -161,7 +161,10 @@ export interface ProductApiClient {
   listForks(sessionId: string): Promise<ProductForksResponse>;
   getTranscript(sessionId: string): Promise<ProductTranscriptResponse>;
   sendMessage(sessionId: string, request: CreateProductMessageRequest): Promise<ProductMessage>;
-  listMessages(sessionId: string): Promise<ProductMessagesResponse>;
+  listMessages(
+    sessionId: string,
+    query?: { afterSeq?: number; beforeSeq?: number; limit?: number },
+  ): Promise<ProductMessagesResponse>;
   promoteMessage(sessionId: string, messageId: string): Promise<ProductMessage>;
   revokeMessage(sessionId: string, messageId: string): Promise<ProductMessage>;
   enqueueSteer(
@@ -736,10 +739,24 @@ export function createProductApiClient(
       );
     },
 
-    listMessages(sessionId) {
+    listMessages(sessionId, query) {
+      const params = new URLSearchParams();
+      if (query?.afterSeq !== undefined) {
+        params.set("after_seq", String(query.afterSeq));
+      }
+      if (query?.beforeSeq !== undefined) {
+        params.set("before_seq", String(query.beforeSeq));
+      }
+      if (query?.limit !== undefined) {
+        params.set("limit", String(query.limit));
+      }
+      const encoded = params.toString();
       return requestJson(
         fetchImpl,
-        productUrl(apiPrefix, `/product/sessions/${encodeURIComponent(sessionId)}/messages`),
+        productUrl(
+          apiPrefix,
+          `/product/sessions/${encodeURIComponent(sessionId)}/messages${encoded ? `?${encoded}` : ""}`,
+        ),
         undefined,
         parseProductMessagesResponse,
       );

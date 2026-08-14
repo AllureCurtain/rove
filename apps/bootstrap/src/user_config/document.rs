@@ -54,6 +54,8 @@ impl Default for ModelDefaults {
 
 #[derive(Debug, thiserror::Error)]
 pub enum UserConfigError {
+    #[error("user provider configuration is unavailable: {message}")]
+    Unavailable { message: String },
     #[error("user provider configuration is missing at {path}")]
     Missing { path: String },
     #[error("user provider configuration is invalid: {message}")]

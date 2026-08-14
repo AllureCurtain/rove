@@ -135,7 +135,11 @@ impl CliRuntime {
         let profile = catalog.profile_config(&selection.profile_id)?;
         catalog.resolve(&selection, &self.workspace.root)?;
         profile
-            .resolve(&self.workspace.root, true, Some(&selection.model))
+            .resolve(
+                &self.provider_catalog.paths().root,
+                true,
+                Some(&selection.model),
+            )
             .map_err(|_| {
                 anyhow::anyhow!(
                     "provider_unavailable: the selected Provider credential is unavailable"
@@ -184,6 +188,11 @@ impl CliRuntime {
         config.provider.active = Some(selection.profile_id.to_string());
         config.provider.model = selection.model.clone();
         config.provider.profiles = catalog.document().provider.profiles.clone();
+        for profile in config.provider.profiles.values_mut() {
+            profile.rebase_secret_paths(&self.provider_catalog.paths().root);
+        }
+        config.source_summary.user_config_loaded = true;
+        config.source_summary.user_config_path = self.provider_catalog.paths().config_file.clone();
         config.provider.fallback_profiles = catalog.document().provider.fallback_profiles.clone();
         let profile = catalog.profile_config(&selection.profile_id)?;
         let model = if profile.provider_type == "fake" {

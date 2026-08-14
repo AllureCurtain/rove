@@ -9,7 +9,7 @@ use std::{
 };
 
 use anyhow::Context;
-use reqwest::header::{HeaderName, HeaderValue};
+use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
 
 use rove_models::ProviderOptions;
@@ -154,6 +154,25 @@ pub struct ResolvedProviderProfile {
 }
 
 impl ProviderProfileConfig {
+    /// Rebase relative credential files against their owning configuration
+    /// directory. The durable document keeps its original relative paths;
+    /// only runtime copies should be rebased.
+    pub fn rebase_secret_paths(&mut self, credential_root: &Path) {
+        match &mut self.auth {
+            ProviderAuthConfig::Bearer { secret } | ProviderAuthConfig::Header { secret, .. } => {
+                rebase_secret_source(secret, credential_root);
+            }
+            ProviderAuthConfig::None => {}
+        }
+        for value in self.headers.values_mut() {
+            if let ProviderHeaderValue::File { file } = value
+                && !file.is_absolute()
+            {
+                *file = normalize_lexical_path(&credential_root.join(&*file));
+            }
+        }
+    }
+
     pub fn validate(
         &self,
         workspace_root: &Path,
@@ -279,6 +298,61 @@ impl ProviderProfileConfig {
             options: self.options,
             protocol_options: self.protocol_options.clone(),
         })
+    }
+
+    /// Resolve the authentication and custom headers needed by an
+    /// inventory request without exposing credential values in a serializable
+    /// response type.
+    pub fn resolve_http_headers(
+        &self,
+        credential_root: &Path,
+        allow_external_paths: bool,
+        project_environment: &BTreeMap<String, String>,
+    ) -> anyhow::Result<HeaderMap> {
+        self.validate(credential_root, allow_external_paths)?;
+        let mut headers = HeaderMap::new();
+        match &self.auth {
+            ProviderAuthConfig::None => {}
+            ProviderAuthConfig::Bearer { secret } => {
+                let value = resolve_secret(
+                    secret,
+                    credential_root,
+                    allow_external_paths,
+                    project_environment,
+                )?;
+                insert_sensitive_header(&mut headers, AUTHORIZATION, format!("Bearer {value}"))?;
+            }
+            ProviderAuthConfig::Header { header, secret } => {
+                let name = HeaderName::from_bytes(header.trim().as_bytes())
+                    .map_err(|_| anyhow::anyhow!("profile auth header `{header}` is invalid"))?;
+                let value = resolve_secret(
+                    secret,
+                    credential_root,
+                    allow_external_paths,
+                    project_environment,
+                )?;
+                insert_sensitive_header(&mut headers, name, value)?;
+            }
+        }
+        for (name, value) in &self.headers {
+            let name = HeaderName::from_bytes(name.as_bytes())
+                .map_err(|_| anyhow::anyhow!("profile header name `{name}` is invalid"))?;
+            let value = value
+                .as_secret_source()
+                .map(|source| {
+                    resolve_secret(
+                        &source,
+                        credential_root,
+                        allow_external_paths,
+                        project_environment,
+                    )
+                })
+                .transpose()?
+                .or_else(|| value.literal_value().map(str::to_string))
+                .ok_or_else(|| anyhow::anyhow!("profile header `{name}` has no value"))?;
+            insert_sensitive_header(&mut headers, name, value)?;
+        }
+        Ok(headers)
     }
 }
 
@@ -564,6 +638,28 @@ fn resolve_secret_path(path: &Path, workspace_root: &Path) -> PathBuf {
     normalize_lexical_path(&resolved)
 }
 
+fn rebase_secret_source(source: &mut SecretSource, credential_root: &Path) {
+    if let SecretSource::File { file } = source
+        && !file.is_absolute()
+    {
+        *file = normalize_lexical_path(&credential_root.join(&*file));
+    }
+}
+
+fn insert_sensitive_header(
+    headers: &mut HeaderMap,
+    name: HeaderName,
+    value: String,
+) -> anyhow::Result<()> {
+    let mut value = HeaderValue::from_str(&value)
+        .map_err(|_| anyhow::anyhow!("profile header value is invalid"))?;
+    value.set_sensitive(true);
+    if headers.insert(name.clone(), value).is_some() {
+        anyhow::bail!("profile header `{name}` conflicts with the authentication header");
+    }
+    Ok(())
+}
+
 fn normalize_lexical_path(path: &Path) -> PathBuf {
     let mut normalized = PathBuf::new();
     for component in path.components() {
@@ -742,6 +838,38 @@ mod tests {
                 .to_string()
                 .contains("must be UTF-8")
         );
+    }
+
+    #[test]
+    fn inventory_headers_resolve_relative_files_from_the_supplied_credential_root() {
+        let credential_root = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            credential_root.path().join("provider.key"),
+            "provider-secret\n",
+        )
+        .unwrap();
+        std::fs::write(credential_root.path().join("tenant.txt"), "tenant-a\n").unwrap();
+        let mut profile = test_profile();
+        profile.auth = ProviderAuthConfig::Bearer {
+            secret: SecretSource::File {
+                file: PathBuf::from("provider.key"),
+            },
+        };
+        profile.headers.insert(
+            "x-tenant".to_string(),
+            ProviderHeaderValue::File {
+                file: PathBuf::from("tenant.txt"),
+            },
+        );
+
+        let headers = profile
+            .resolve_http_headers(credential_root.path(), true, &BTreeMap::new())
+            .unwrap();
+        assert_eq!(
+            headers.get(AUTHORIZATION).unwrap(),
+            "Bearer provider-secret"
+        );
+        assert_eq!(headers.get("x-tenant").unwrap(), "tenant-a");
     }
 
     #[test]

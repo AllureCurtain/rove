@@ -1554,7 +1554,7 @@ async fn prepare_claimed_product_job_launch(
             claim_id,
         }),
         startup_events: match followup_control_id {
-            Some(control_id) => match store.get_message(&product_session_id, &control_id).await {
+            Some(control_id) => match store.get_message(product_session_id, &control_id).await {
                 Ok(message) => vec![
                     StreamEvent::MessageQueued {
                         id: control_id.to_string(),

@@ -1150,6 +1150,7 @@ mod tests {
         assert!(migration_is_applied(&connection, 6).unwrap());
         assert!(migration_is_applied(&connection, 11).unwrap());
         assert!(migration_is_applied(&connection, 12).unwrap());
+        assert!(migration_is_applied(&connection, 13).unwrap());
         let preparations_table: i64 = connection
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_schema WHERE type = 'table' AND name = 'product_migration_preparations'",
@@ -1171,7 +1172,7 @@ mod tests {
     }
 
     #[test]
-    fn schema_newer_than_v12_is_rejected_without_rollback() {
+    fn schema_newer_than_v13_is_rejected_without_rollback() {
         let mut connection = Connection::open_in_memory().unwrap();
         connection
             .execute_batch(
@@ -1182,7 +1183,7 @@ mod tests {
                     applied_at TEXT NOT NULL
                 );
                 INSERT INTO product_schema_migrations(version, name, applied_at)
-                VALUES (13, 'future_schema', '2026-08-07T00:00:00Z');
+                VALUES (14, 'future_schema', '2026-08-14T00:00:00Z');
                 "#,
             )
             .unwrap();
@@ -1193,12 +1194,147 @@ mod tests {
         assert_eq!(
             connection
                 .query_row(
-                    "SELECT COUNT(*) FROM product_schema_migrations WHERE version = 13",
+                    "SELECT COUNT(*) FROM product_schema_migrations WHERE version = 14",
                     [],
                     |row| row.get::<_, i64>(0),
                 )
                 .unwrap(),
             1
+        );
+    }
+
+    #[test]
+    fn fresh_database_reaches_v13_with_both_productization_contracts() {
+        let mut connection = Connection::open_in_memory().unwrap();
+
+        apply_migrations(&mut connection).unwrap();
+
+        assert_integrated_v13(&connection);
+    }
+
+    #[test]
+    fn provider_only_v12_upgrades_to_integrated_v13() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        initialize_v11(&mut connection);
+        connection
+            .execute_batch(MIGRATION_012_PROVIDER_CATALOG)
+            .unwrap();
+        connection
+            .execute_batch(MIGRATION_012_LEGACY_PROVIDER_MAPPINGS)
+            .unwrap();
+        for (column, declaration) in [
+            ("provider_type", "TEXT"),
+            ("wire_protocol", "TEXT"),
+            ("endpoint", "TEXT"),
+            ("catalog_revision", "TEXT"),
+            ("safe_config_digest", "TEXT"),
+        ] {
+            connection
+                .execute_batch(&format!(
+                    "ALTER TABLE product_session_run_models ADD COLUMN {column} {declaration};"
+                ))
+                .unwrap();
+        }
+        record_parallel_v12(&connection, "provider_catalog_mapping");
+        assert!(
+            !table_has_column(
+                &connection,
+                "product_session_controls",
+                "message_contract_version"
+            )
+            .unwrap()
+        );
+
+        apply_migrations(&mut connection).unwrap();
+
+        assert_integrated_v13(&connection);
+    }
+
+    #[test]
+    fn conversation_only_v12_upgrades_to_integrated_v13() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        initialize_v11(&mut connection);
+        connection
+            .execute_batch(
+                r#"
+                ALTER TABLE product_session_controls
+                ADD COLUMN message_contract_version INTEGER NOT NULL DEFAULT 0
+                CHECK(message_contract_version IN (0, 1));
+                ALTER TABLE product_session_controls
+                ADD COLUMN requested_delivery TEXT
+                CHECK(requested_delivery IS NULL OR requested_delivery IN ('successor', 'current_run'));
+                CREATE INDEX IF NOT EXISTS idx_product_session_messages_delivery
+                    ON product_session_controls(
+                        product_session_id, message_contract_version,
+                        requested_delivery, status, seq
+                    );
+                "#,
+            )
+            .unwrap();
+        record_parallel_v12(&connection, "unified_product_message_lifecycle");
+        assert!(!table_exists(&connection, "product_provider_profile_catalog_mappings").unwrap());
+
+        apply_migrations(&mut connection).unwrap();
+
+        assert_integrated_v13(&connection);
+    }
+
+    fn initialize_v11(connection: &mut Connection) {
+        connection
+            .execute_batch(
+                r#"
+                CREATE TABLE product_schema_migrations (
+                    version INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    applied_at TEXT NOT NULL
+                );
+                "#,
+            )
+            .unwrap();
+        apply_migration_001(connection).unwrap();
+        apply_migration_002(connection).unwrap();
+        apply_migration_003(connection).unwrap();
+        apply_migration_004(connection).unwrap();
+        apply_migration_005(connection).unwrap();
+        apply_migration_006(connection).unwrap();
+        apply_migration_007(connection).unwrap();
+        apply_migration_008(connection).unwrap();
+        apply_migration_009(connection).unwrap();
+        apply_migration_010(connection).unwrap();
+        apply_migration_011(connection).unwrap();
+    }
+
+    fn record_parallel_v12(connection: &Connection, name: &str) {
+        connection
+            .execute(
+                "INSERT INTO product_schema_migrations(version, name, applied_at) VALUES (12, ?1, '2026-08-12T00:00:00Z')",
+                params![name],
+            )
+            .unwrap();
+    }
+
+    fn assert_integrated_v13(connection: &Connection) {
+        assert!(migration_is_applied(connection, 13).unwrap());
+        assert!(table_exists(connection, "product_provider_profile_catalog_mappings").unwrap());
+        for column in [
+            "provider_type",
+            "wire_protocol",
+            "endpoint",
+            "catalog_revision",
+            "safe_config_digest",
+        ] {
+            assert!(table_has_column(connection, "product_session_run_models", column).unwrap());
+        }
+        assert!(
+            table_has_column(
+                connection,
+                "product_session_controls",
+                "message_contract_version"
+            )
+            .unwrap()
+        );
+        assert!(
+            table_has_column(connection, "product_session_controls", "requested_delivery").unwrap()
         );
     }
 

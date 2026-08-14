@@ -30,6 +30,17 @@ pub(crate) struct DeleteProviderProfileQuery {
     pub expected_revision: Option<String>,
 }
 
+#[derive(Debug, Default, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub(crate) struct ListProductMessagesQuery {
+    #[serde(default)]
+    pub after_seq: Option<i64>,
+    #[serde(default)]
+    pub before_seq: Option<i64>,
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
 pub(super) fn product_json<T>(body: Result<Json<T>, JsonRejection>) -> Result<T, ApiError> {
     body.map(|Json(value)| value).map_err(|_| {
         ApiError::bad_request_with_code(
@@ -555,12 +566,26 @@ pub(crate) async fn list_product_provider_models(
     State(state): State<ApiState>,
     Path(profile_id): Path<ProductProviderProfileId>,
 ) -> Result<Json<ProductProviderModelsResponse>, ApiError> {
-    let catalog = state.provider_catalog().await?;
-    let (provider, default_model, provider_type) =
-        super::provider_catalog::inventory_request(&catalog, &profile_id)?;
+    let service = state.provider_catalog_service();
+    let inventory_profile_id = profile_id.clone();
+    let (provider, default_model, provider_type, headers) =
+        tokio::task::spawn_blocking(move || {
+            let catalog = service
+                .load()
+                .map_err(super::provider_catalog::catalog_error)?;
+            super::provider_catalog::inventory_request(
+                &catalog,
+                &inventory_profile_id,
+                &service.paths().root,
+            )
+        })
+        .await
+        .map_err(|_| ApiError::internal("provider catalog operation did not complete"))??;
     let normalized = crate::provider::normalize_provider_profile(&provider)?;
-    let key_env = crate::provider::provider_key_env(&normalized);
-    let inventory = crate::provider::provider_inventory(&normalized, &key_env, None).await?;
+    let key_present = !headers.is_empty();
+    let inventory =
+        crate::provider::provider_inventory_with_headers(&normalized, headers, key_present, None)
+            .await?;
     let supports_reasoning = provider_type == ProductProviderType::OpenaiResponses;
     let supported_reasoning = if supports_reasoning {
         vec![
@@ -784,11 +809,18 @@ pub(crate) async fn create_product_session_message(
 ) -> Result<(StatusCode, Json<ProductMessage>), ApiError> {
     let request = product_json(body)?;
     let store = state.product_store()?;
-    let live = live_product_job(&state, &session_id).await;
-    let lifecycle = match &live {
+    let live_candidate = live_product_job(&state, &session_id).await;
+    let lifecycle = match &live_candidate {
         Some(record) => Some(record.control_lifecycle_lock.lock().await),
         None => None,
     };
+    let live_is_active = if let Some(record) = live_candidate.as_ref() {
+        let status = record.status.lock().await;
+        !crate::is_terminal(&status)
+    } else {
+        false
+    };
+    let live = live_candidate.as_ref().filter(|_| live_is_active);
     let service = super::message_adapter::service(store.clone());
     let content = request.content.clone();
     let mutation = service
@@ -797,11 +829,11 @@ pub(crate) async fn create_product_session_message(
             rove_runtime::conversation::SendMessageCommand {
                 content,
                 idempotency_key: request.idempotency_key.clone(),
-                session_state: match live.as_ref() {
+                session_state: match live {
                     Some(_) => rove_runtime::conversation::SessionDeliveryState::Active,
                     None => rove_runtime::conversation::SessionDeliveryState::Idle,
                 },
-                target_run_id: live.as_ref().map(|record| record.run_id),
+                target_run_id: live.map(|record| record.run_id),
             },
         )
         .await
@@ -818,7 +850,7 @@ pub(crate) async fn create_product_session_message(
         )
         .await?;
     if !already_exists && message.status == ProductMessageStatus::Queued {
-        if let Some(record) = live.as_ref() {
+        if let Some(record) = live {
             crate::queue_or_publish_product_control_event(
                 record,
                 rove_runtime::events::StreamEvent::MessageQueued {
@@ -847,15 +879,44 @@ pub(crate) async fn create_product_session_message(
     path = "/product/sessions/{session_id}/messages",
     tag = docs::PRODUCT_TAG,
     security(("BearerAuth" = [])),
-    params(("session_id" = String, Path)),
+    params(
+        ("session_id" = String, Path),
+        ListProductMessagesQuery
+    ),
     responses((status = 200, description = "Unified messages", body = ProductMessagesResponse))
 )]
 pub(crate) async fn list_product_session_messages(
     State(state): State<ApiState>,
     Path(session_id): Path<ProductSessionId>,
+    Query(query): Query<ListProductMessagesQuery>,
 ) -> Result<Json<ProductMessagesResponse>, ApiError> {
+    let limit = query.limit.unwrap_or(DEFAULT_PRODUCT_MESSAGE_PAGE_LIMIT);
+    if query.after_seq.is_some_and(|sequence| sequence < 0)
+        || query.before_seq.is_some_and(|sequence| sequence <= 0)
+        || (query.after_seq.is_some() && query.before_seq.is_some())
+        || limit == 0
+        || limit > MAX_PRODUCT_MESSAGE_PAGE_LIMIT
+    {
+        return Err(ApiError::bad_request_with_code(
+            ProductErrorCode::ProductInvalidInput.as_str(),
+            "message page query is invalid",
+        ));
+    }
+    let page = state
+        .product_store()?
+        .list_messages(
+            &session_id,
+            ProductMessagePageQuery {
+                after_seq: query.after_seq,
+                before_seq: query.before_seq,
+                limit,
+            },
+        )
+        .await?;
     Ok(Json(ProductMessagesResponse {
-        messages: state.product_store()?.list_messages(&session_id).await?,
+        messages: page.messages,
+        next_after_seq: page.next_after_seq,
+        next_before_seq: page.next_before_seq,
     }))
 }
 
@@ -879,7 +940,22 @@ pub(crate) async fn promote_product_session_message(
         ));
     };
     let _lifecycle = record.control_lifecycle_lock.lock().await;
+    let is_terminal = {
+        let status = record.status.lock().await;
+        crate::is_terminal(&status)
+    };
+    if is_terminal {
+        return Err(ApiError::conflict_with_code(
+            ProductErrorCode::ProductControlRejected.as_str(),
+            "message can only be promoted while its session turn is active",
+        ));
+    }
     let store = state.product_store()?;
+    if let Ok(existing) = store.get_message(&session_id, &message_id).await
+        && existing.requested_delivery == ProductMessageDelivery::CurrentRun
+    {
+        return Ok(Json(existing));
+    }
     let service = super::message_adapter::service(store.clone());
     let _promoted = service
         .promote(session_id.as_str(), message_id.as_str())
@@ -920,6 +996,18 @@ pub(crate) async fn revoke_product_session_message(
     State(state): State<ApiState>,
     Path((session_id, message_id)): Path<(ProductSessionId, ProductControlId)>,
 ) -> Result<Json<ProductMessage>, ApiError> {
+    let live_candidate = live_product_job(&state, &session_id).await;
+    let lifecycle = match &live_candidate {
+        Some(record) => Some(record.control_lifecycle_lock.lock().await),
+        None => None,
+    };
+    let live_is_active = if let Some(record) = live_candidate.as_ref() {
+        let status = record.status.lock().await;
+        !crate::is_terminal(&status)
+    } else {
+        false
+    };
+    let live = live_candidate.as_ref().filter(|_| live_is_active);
     let store = state.product_store()?;
     let service = super::message_adapter::service(store.clone());
     let _revoked = service
@@ -927,15 +1015,16 @@ pub(crate) async fn revoke_product_session_message(
         .await
         .map_err(super::message_adapter::map_domain_error)?;
     let message = store.get_message(&session_id, &message_id).await?;
-    if let Some(record) = live_product_job(&state, &session_id).await {
+    if let Some(record) = live {
         crate::queue_or_publish_product_control_event(
-            &record,
+            record,
             rove_runtime::events::StreamEvent::MessageRevoked {
                 id: message.id.to_string(),
             },
         )
         .await;
     }
+    drop(lifecycle);
     Ok(Json(message))
 }
 

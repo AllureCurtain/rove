@@ -17,6 +17,7 @@ impl UserConfigLoader {
     }
 
     pub fn load(&self) -> Result<UserConfigDocument, UserConfigError> {
+        self.paths.ensure_available()?;
         reject_symlink(&self.paths.root, "user provider configuration directory")?;
         reject_symlink(&self.paths.config_file, "user provider configuration")?;
         let text = match fs::read_to_string(&self.paths.config_file) {

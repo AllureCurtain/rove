@@ -1,15 +1,21 @@
 # Post-Full-Delivery Productization Program
 
-> Status: **B/C/D implemented on `productization/runtime-intelligence`; A/E/F/G remain Proposed / Not Implemented**
+> Status: **A-E and F.1-F.3 implemented on `productization/integration`; F.4/F.5 and G partially complete**
 >
 > Verified baseline: Checkpoints 0-9 were delivered at `45143a5` and merged
 > through PR #30 as `4b740d3`. The machine-generated acceptance report was
 > produced from clean code commit `32ba252`: all 11 required checks passed,
 > with zero failures and zero required checks unrun. PR #31 merged the
-> whitespace-only documentation cleanup as `1b57b36`. Workstreams B, C, and D
-> are implemented on this branch with focused negative tests. Workstreams A,
-> E, F, and G remain proposed and are not part of this branch's completion
-> claim.
+> whitespace-only documentation cleanup as `1b57b36`. Productization integration
+> combines runtime intelligence (`579c60f`), Provider configuration (`77f3ecf`),
+> and unified conversation delivery (`2b7e798`) plus the cross-workstream schema,
+> exact-run attachment, browser, and isolation fixes on
+> `productization/integration`. Workstreams A-E and F.1-F.3 are implemented.
+> F.4/F.5 remain partial: older-history pagination/windowing and complete TUI
+> restart recovery are not implemented. Workstream G has deterministic and
+> live local fake-provider evidence, while the external
+> Provider, real third-party/official filesystem MCP, Windows ConPTY,
+> macOS/Linux package, signing, and installed-Desktop gates remain unverified.
 >
 > This is the single active productization brief after full-delivery. The dated
 > 2026-08-09 documents are current-state corrections, audit evidence,
@@ -98,6 +104,32 @@ Optional external-provider, official filesystem MCP, macOS/Linux packaging,
 manual installer, and complete installed-Desktop interaction evidence remain
 unverified. No downstream task may turn those explicit boundaries into passing
 claims or treat a design document as proof of implementation.
+
+### 2.1 Productization integration record
+
+| Workstream | Implementation status | Evidence boundary |
+|---|---|---|
+| A. Baseline and documentation seal | Implemented in the integration change | Root/current runtime documents, acceptance/release matrices, and this plan agree on implemented versus unverified behavior. Historical dated audits remain supporting inputs. |
+| B. Agent effectiveness and tool-call recovery | Implemented | Native-first tool calls, explicit compatibility parsing, typed recovery, bounded prompt metadata, and negative safety tests. |
+| C. Repository understanding and retrieval quality | Implemented | Ignore-aware deterministic traversal/search/glob, typed bounded outcomes, and manifest-only repository maps. |
+| D. Context economy and result history | Implemented | Current results stay inline; eligible older duplicates use deterministic durable Artifact references with explicit resolution. |
+| E. First-run configuration and Provider onboarding | Implemented | User catalog schema v1, authority-aware load/write, env/file/keyring references, API/Web CRUD and probes, migration, per-turn CLI assembly, and TUI `/model`. External interoperability is not implied. |
+| F. Unified conversation and product experience | Partially implemented | F.1-F.3 provide one durable message identity and six delivery states across Runtime, ProductStore/API/SSE, Web, and TUI; ProductStore v13 reconciles both parallel v12 layouts. F.4 older-history pagination/windowing and F.5 complete TUI restart recovery remain open. |
+| G. Real-world evaluation and release confidence | Partially complete | Deterministic Rust/Web/TUI coverage and five live local fake-provider browser scenarios pass. Credentialed Provider, real MCP, Windows ConPTY, non-Windows packaging, signing, installed-Desktop, and broader soak gates remain unverified. |
+
+The latest integration verification on 2026-08-14 recorded:
+
+| Gate | Result |
+|---|---|
+| Rust formatting, clippy, and workspace tests | Passed before the final integration fixes. The final sensitive-header change separately passed formatting and its focused unit test; full clippy/workspace tests were not repeated. |
+| `pnpm test` | 36 files and 241 tests passed. |
+| `pnpm typecheck` / `pnpm build` | Passed. |
+| `pnpm test:e2e` | 56 deterministic browser tests passed; five live-API cases were correctly skipped without the environment gate. |
+| `local-full` | 5/5 live local fake-provider cases passed: migration; A/B continuity and interactions; unified message promote/revoke; completed-session Fork with independent child continuation; bounded workbench smoke. |
+
+The successful `local-full` artifacts were kept outside the repository under
+`%TEMP%\rove-productization-integration-9\artifacts`. They are local evidence,
+not committed release artifacts and not external-provider evidence.
 
 ## 3. Product Definition Of Done
 

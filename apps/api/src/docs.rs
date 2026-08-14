@@ -94,6 +94,7 @@ pub const DEBUG_TAG: &str = "Debug";
             super::ProductModelDescriptor,
             super::ProductPreferences,
             super::ProductProviderProfile,
+            super::ProductProviderCredentialSource,
             super::ProductProviderProfileId,
             super::ProductProviderModelsResponse,
             super::ProductProviderProfilesResponse,

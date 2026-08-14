@@ -296,7 +296,7 @@ pub enum ProductMessageDelivery {
     CurrentRun,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ProductMessage {
     pub id: ProductControlId,
     pub product_session_id: ProductSessionId,
@@ -327,9 +327,30 @@ pub struct CreateProductMessageRequest {
     pub idempotency_key: Option<String>,
 }
 
+pub const DEFAULT_PRODUCT_MESSAGE_PAGE_LIMIT: usize = 64;
+pub const MAX_PRODUCT_MESSAGE_PAGE_LIMIT: usize = 128;
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ProductMessagesResponse {
     pub messages: Vec<ProductMessage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_after_seq: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_before_seq: Option<i64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProductMessagePageQuery {
+    pub after_seq: Option<i64>,
+    pub before_seq: Option<i64>,
+    pub limit: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProductMessagePage {
+    pub messages: Vec<ProductMessage>,
+    pub next_after_seq: Option<i64>,
+    pub next_before_seq: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -579,6 +600,15 @@ pub struct VerifiedProductForkBoundary {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(tag = "source", rename_all = "snake_case")]
+pub enum ProductProviderCredentialSource {
+    Env { name: String },
+    File { path: String },
+    Keyring { service: String, account: String },
+    None,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ProductProviderProfile {
     pub id: ProductProviderProfileId,
     pub label: String,
@@ -586,6 +616,7 @@ pub struct ProductProviderProfile {
     pub api_base: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_key_env: Option<String>,
+    pub credential_source: ProductProviderCredentialSource,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_model: Option<String>,
     pub created_at: String,
@@ -1881,7 +1912,8 @@ pub trait ProductStore: Send + Sync {
     async fn list_messages(
         &self,
         session_id: &ProductSessionId,
-    ) -> Result<Vec<ProductMessage>, ProductStoreError>;
+        query: ProductMessagePageQuery,
+    ) -> Result<ProductMessagePage, ProductStoreError>;
 
     async fn get_message(
         &self,

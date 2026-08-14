@@ -14,22 +14,23 @@ use crate::product::{
     CreateProductWorkspaceRequest, DEFAULT_PRODUCT_MAX_STEPS, M1BrowserMigrationPreflight,
     M1BrowserMigrationResponse, M1MigrationDisposition, M1MigrationIssue, M1MigrationIssueCode,
     M1PreferencesBaseline, M1ProviderProfileIdMapping, M1SessionIdMapping, M1WorkspaceIdMapping,
-    MAX_PRODUCT_FORK_INHERITED_RUNS, MAX_PRODUCT_MAX_STEPS, MAX_PRODUCT_PROVIDER_PROFILES,
-    MAX_PRODUCT_SESSIONS, MAX_PRODUCT_TEXT_BYTES, MAX_PRODUCT_WORKSPACES,
-    PreparedM1BrowserMigration, ProductApprovalPreference, ProductControl, ProductControlId,
-    ProductControlKind, ProductControlStatus, ProductErrorCode, ProductFollowupTurnClaim,
-    ProductFork, ProductForkContext, ProductForkId, ProductForkInheritedRun, ProductMessage,
-    ProductMessageDelivery, ProductMessageStatus, ProductMigrationReceiptId, ProductPreferences,
-    ProductPricingAvailability, ProductProviderProfile, ProductProviderProfileId,
-    ProductProviderSelection, ProductProviderType, ProductReasoningPreference, ProductResumeHealth,
-    ProductResumeHealthStatus, ProductRuntimeBinding, ProductSession, ProductSessionContext,
-    ProductSessionId, ProductSessionModelConfig, ProductSessionRunBinding,
-    ProductSessionRunModelView, ProductSessionStatus, ProductStoreError, ProductThemePreference,
-    ProductTurnClaim, ProductTurnClaimId, ProductTurnControlFinish, ProductWorkspace,
-    ProductWorkspaceId, ProductWorkspaceKind, UpdateProductPreferencesRequest,
-    UpdateProductProviderProfileRequest, UpdateProductSessionModelConfigRequest,
-    UpdateProductSessionRequest, VerifiedM1SessionRunBinding, VerifiedProductForkBoundary,
-    m1_browser_migration_digest,
+    MAX_PRODUCT_FORK_INHERITED_RUNS, MAX_PRODUCT_MAX_STEPS, MAX_PRODUCT_MESSAGE_PAGE_LIMIT,
+    MAX_PRODUCT_PROVIDER_PROFILES, MAX_PRODUCT_SESSIONS, MAX_PRODUCT_TEXT_BYTES,
+    MAX_PRODUCT_WORKSPACES, PreparedM1BrowserMigration, ProductApprovalPreference, ProductControl,
+    ProductControlId, ProductControlKind, ProductControlStatus, ProductErrorCode,
+    ProductFollowupTurnClaim, ProductFork, ProductForkContext, ProductForkId,
+    ProductForkInheritedRun, ProductMessage, ProductMessageDelivery, ProductMessagePage,
+    ProductMessagePageQuery, ProductMessageStatus, ProductMigrationReceiptId, ProductPreferences,
+    ProductPricingAvailability, ProductProviderCredentialSource, ProductProviderProfile,
+    ProductProviderProfileId, ProductProviderSelection, ProductProviderType,
+    ProductReasoningPreference, ProductResumeHealth, ProductResumeHealthStatus,
+    ProductRuntimeBinding, ProductSession, ProductSessionContext, ProductSessionId,
+    ProductSessionModelConfig, ProductSessionRunBinding, ProductSessionRunModelView,
+    ProductSessionStatus, ProductStoreError, ProductThemePreference, ProductTurnClaim,
+    ProductTurnClaimId, ProductTurnControlFinish, ProductWorkspace, ProductWorkspaceId,
+    ProductWorkspaceKind, UpdateProductPreferencesRequest, UpdateProductProviderProfileRequest,
+    UpdateProductSessionModelConfigRequest, UpdateProductSessionRequest,
+    VerifiedM1SessionRunBinding, VerifiedProductForkBoundary, m1_browser_migration_digest,
 };
 
 use super::schema::{ProductDatabase, storage_error};
@@ -1953,6 +1954,11 @@ impl ProductRepository {
     ) -> Result<ProductMessage, ProductStoreError> {
         let mut connection = self.database.connect()?;
         let transaction = immediate_transaction(&mut connection)?;
+        let existing_message = get_message_in_transaction(&transaction, session_id, message_id)?;
+        if existing_message.requested_delivery == ProductMessageDelivery::CurrentRun {
+            transaction.commit().map_err(storage_error)?;
+            return Ok(existing_message);
+        }
         let session = get_session(&transaction, session_id)?;
         if session.status != ProductSessionStatus::Running
             || !has_active_claim_for_session(&transaction, session_id)?
@@ -2042,11 +2048,21 @@ impl ProductRepository {
     pub(super) fn list_messages(
         &self,
         session_id: &ProductSessionId,
-    ) -> Result<Vec<ProductMessage>, ProductStoreError> {
+        query: ProductMessagePageQuery,
+    ) -> Result<ProductMessagePage, ProductStoreError> {
+        if query.limit == 0
+            || query.limit > MAX_PRODUCT_MESSAGE_PAGE_LIMIT
+            || query.after_seq.is_some_and(|sequence| sequence < 0)
+            || query.before_seq.is_some_and(|sequence| sequence <= 0)
+            || (query.after_seq.is_some() && query.before_seq.is_some())
+        {
+            return Err(invalid("message page query is invalid"));
+        }
         let mut connection = self.database.connect()?;
         let transaction = connection.transaction().map_err(storage_error)?;
         get_session(&transaction, session_id)?;
-        let messages = {
+        let fetch_limit = i64::try_from(query.limit + 1).map_err(storage_error)?;
+        let (mut messages, reverse) = if let Some(after_seq) = query.after_seq {
             let mut statement = transaction
                 .prepare(
                     r#"
@@ -2054,18 +2070,68 @@ impl ProductRepository {
                            created_at, applied_at, abandoned_reason, requested_delivery
                     FROM product_session_controls
                     WHERE product_session_id = ?1 AND message_contract_version = 1
+                      AND seq > ?2
                     ORDER BY seq ASC
+                    LIMIT ?3
                     "#,
                 )
                 .map_err(storage_error)?;
-            statement
-                .query_map(params![session_id.to_string()], row_to_message)
+            let messages = statement
+                .query_map(
+                    params![session_id.to_string(), after_seq, fetch_limit],
+                    row_to_message,
+                )
                 .map_err(storage_error)?
                 .collect::<Result<Vec<_>, _>>()
+                .map_err(storage_error)?;
+            (messages, false)
+        } else {
+            let before_seq = query.before_seq.unwrap_or(i64::MAX);
+            let mut statement = transaction
+                .prepare(
+                    r#"
+                    SELECT control_id, product_session_id, content, status, run_id, seq,
+                           created_at, applied_at, abandoned_reason, requested_delivery
+                    FROM product_session_controls
+                    WHERE product_session_id = ?1 AND message_contract_version = 1
+                      AND seq < ?2
+                    ORDER BY seq DESC
+                    LIMIT ?3
+                    "#,
+                )
+                .map_err(storage_error)?;
+            let messages = statement
+                .query_map(
+                    params![session_id.to_string(), before_seq, fetch_limit],
+                    row_to_message,
+                )
                 .map_err(storage_error)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(storage_error)?;
+            (messages, true)
+        };
+        let has_more = messages.len() > query.limit;
+        if has_more {
+            messages.pop();
+        }
+        if reverse {
+            messages.reverse();
+        }
+        let page = ProductMessagePage {
+            next_after_seq: if !reverse && has_more {
+                messages.last().map(|message| message.seq)
+            } else {
+                None
+            },
+            next_before_seq: if reverse && has_more {
+                messages.first().map(|message| message.seq)
+            } else {
+                None
+            },
+            messages,
         };
         transaction.commit().map_err(storage_error)?;
-        Ok(messages)
+        Ok(page)
     }
 
     pub(super) fn get_message(
@@ -3427,12 +3493,18 @@ impl RawSessionRunModel {
 
 impl RawProviderProfile {
     fn into_product(self) -> Result<ProductProviderProfile, ProductStoreError> {
+        let credential_source = self
+            .api_key_env
+            .as_ref()
+            .map(|name| ProductProviderCredentialSource::Env { name: name.clone() })
+            .unwrap_or(ProductProviderCredentialSource::None);
         Ok(ProductProviderProfile {
             id: parse_product_id(&self.id, "provider profile id")?,
             label: self.label,
             provider_type: provider_type_from_db(&self.provider_type)?,
             api_base: self.api_base,
             api_key_env: self.api_key_env,
+            credential_source,
             default_model: self.default_model,
             created_at: self.created_at,
             updated_at: self.updated_at,

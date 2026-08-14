@@ -2,6 +2,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
 import type { TranscriptRunGroup } from "../lib/rove-state";
+import type { ProductMessage, ProductMessageStatus } from "../product/product-api-types";
 import { Transcript } from "./Transcript";
 
 describe("Transcript", () => {
@@ -121,6 +122,49 @@ describe("Transcript", () => {
 
     expect(html).toContain("Read-only inherited history");
     expect(html).toContain('data-inherited="true"');
+  });
+
+  it("renders only actionable ledger messages beside canonical history", () => {
+    const statuses: ProductMessageStatus[] = [
+      "queued",
+      "intervention_requested",
+      "applied_current_run",
+      "claimed_successor",
+      "needs_attention",
+      "revoked",
+    ];
+    const messages: ProductMessage[] = statuses.map((status, index) => ({
+      id: `message-${index + 1}`,
+      product_session_id: "session-1",
+      content: `ledger-${status}`,
+      requested_delivery: status === "intervention_requested" || status === "applied_current_run"
+        ? "current_run"
+        : "successor",
+      status,
+      seq: index + 1,
+      created_at: "2026-08-14T00:00:00Z",
+    }));
+
+    const html = renderToStaticMarkup(
+      <Transcript
+        timeline={[]}
+        messages={messages}
+        approvalBusy={null}
+        inputBusy={null}
+        restoreState={{ status: "complete", sessionId: "session-1" }}
+        onRetryRestore={vi.fn()}
+        onStartNewSession={vi.fn()}
+        onApproval={vi.fn()}
+        onInputSubmit={vi.fn()}
+      />,
+    );
+
+    expect(html).toContain("ledger-queued");
+    expect(html).toContain("ledger-intervention_requested");
+    expect(html).toContain("ledger-needs_attention");
+    expect(html).not.toContain("ledger-applied_current_run");
+    expect(html).not.toContain("ledger-claimed_successor");
+    expect(html).not.toContain("ledger-revoked");
   });
 });
 

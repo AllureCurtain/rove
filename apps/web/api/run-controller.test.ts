@@ -99,7 +99,46 @@ describe("run controller focus generation", () => {
 
     await expect(attach).rejects.toBeInstanceOf(RunControllerInactiveError);
     expect(dispatch).not.toHaveBeenCalled();
+    expect(client.openJobStream).not.toHaveBeenCalled();
+  });
+
+  it("waits for the exact run before streaming a reused job id", async () => {
+    const oldState = {
+      job_id: "job-1",
+      run_id: "run-1",
+      status: "done" as const,
+      event_count: 8,
+      events: [],
+      pending_approvals: [],
+      pending_inputs: [],
+    };
+    const nextState = {
+      job_id: "job-1",
+      run_id: "run-2",
+      status: "running" as const,
+      event_count: 1,
+      events: [],
+      pending_approvals: [],
+      pending_inputs: [],
+    };
+    client.fetchJobState
+      .mockResolvedValueOnce(oldState)
+      .mockResolvedValueOnce(nextState);
+    const dispatch = vi.fn();
+    const controller = createRunController(dispatch);
+
+    await expect(controller.attach("job-1", "run-2")).resolves.toEqual(nextState);
+
+    expect(client.fetchJobState).toHaveBeenCalledTimes(2);
     expect(client.openJobStream).toHaveBeenCalledTimes(1);
+    expect(dispatch).toHaveBeenCalledWith({
+      type: "job_state_synced",
+      state: nextState,
+    });
+    expect(dispatch).not.toHaveBeenCalledWith({
+      type: "job_state_synced",
+      state: oldState,
+    });
   });
 
   it("keeps one live observation after cancellation fails", async () => {

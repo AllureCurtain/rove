@@ -17,7 +17,7 @@ the reproducible local-runtime evidence and may cover parser recovery, prompt
 identity, traversal, context projection, artifact dedupe, resume, and replay.
 Native-provider results must be recorded in a separate provider-gate package;
 no native external-provider credentials or interoperability gate was run for
-this branch, so that result is `unverified`, not a pass. The existing OnCall V2
+this integration, so that result is `unverified`, not a pass. The existing OnCall V2
 suite remains an independent truth/safety-gated fake-provider evaluation and
 must not be merged into a native-provider claim.
 

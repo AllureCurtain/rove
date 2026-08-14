@@ -20,7 +20,6 @@ import type {
 import type { ProductApiClient } from "../product/product-client";
 import {
   findSession,
-  findWorkspace,
   updateSession,
   type ProductCatalog,
 } from "./product-catalog";
@@ -35,10 +34,13 @@ import {
 } from "./transcript-projection";
 import {
   assertProviderSelectionIsSatisfiable,
-  buildTurnJobRequest,
-  isHardResumeError,
 } from "./turn-request";
 import { hasAdvancedRuntimeBinding } from "./server-product-state";
+
+interface ObservedRunBinding {
+  jobId: string;
+  runId: string | null;
+}
 
 export function useSessionContinuity({
   productClient,
@@ -88,7 +90,7 @@ export function useSessionContinuity({
   profilesRef.current = profiles;
   const focusedSessionRef = useRef<string | null>(null);
   const restoredSessionRef = useRef<string | null>(null);
-  const observedJobRef = useRef<string | null>(null);
+  const observedBindingRef = useRef<ObservedRunBinding | null>(null);
   const transcriptGenerationRef = useRef(0);
   const controlsGenerationRef = useRef(0);
   const messagesGenerationRef = useRef(0);
@@ -104,7 +106,7 @@ export function useSessionContinuity({
     (
       sessionId: string,
       controller: ReturnType<typeof createRunController>,
-      completedJobId: string | null,
+      completedBinding: ObservedRunBinding | null,
     ) => void
   >(() => undefined);
 
@@ -207,7 +209,7 @@ export function useSessionContinuity({
   const closeFocusedObservation = useCallback(() => {
     controllerRef.current?.close();
     controllerRef.current = null;
-    observedJobRef.current = null;
+    observedBindingRef.current = null;
   }, []);
 
   const installFocusedController = useCallback(
@@ -222,9 +224,9 @@ export function useSessionContinuity({
           ) {
             return;
           }
-          const completedJobId = observedJobRef.current;
-          observedJobRef.current = null;
-          terminalReconciliationRef.current(sessionId, controller, completedJobId);
+          const completedBinding = observedBindingRef.current;
+          observedBindingRef.current = null;
+          terminalReconciliationRef.current(sessionId, controller, completedBinding);
         },
         onStreamEvent: (event) => {
           if (
@@ -255,17 +257,18 @@ export function useSessionContinuity({
   );
 
   const attachFocusedJob = useCallback(
-    (sessionId: string, jobId: string) => {
+    (sessionId: string, jobId: string, runId: string | null) => {
+      const observed = observedBindingRef.current;
       if (
         focusedSessionRef.current !== sessionId ||
-        observedJobRef.current === jobId
+        (observed?.jobId === jobId && observed.runId === runId)
       ) {
         return;
       }
       const controller = installFocusedController(sessionId);
-      observedJobRef.current = jobId;
-      dispatch({ type: "prepare_job_attachment", jobId });
-      void controller.attach(jobId).catch((error) => {
+      observedBindingRef.current = { jobId, runId };
+      dispatch({ type: "prepare_job_attachment", jobId, runId });
+      void controller.attach(jobId, runId).catch((error) => {
         if (
           isRunControllerInactive(error) ||
           focusedSessionRef.current !== sessionId ||
@@ -325,8 +328,15 @@ export function useSessionContinuity({
                 (session.status === "running" || session.status === "needs_attention")
               ? session.activeJobId ?? null
               : null;
+        const liveRunId =
+          projected.busy && projected.activeJobId
+            ? projected.activeRunId
+            : session &&
+                (session.status === "running" || session.status === "needs_attention")
+              ? session.activeRunId ?? null
+              : null;
         if (liveJobId) {
-          attachFocusedJob(sessionId, liveJobId);
+          attachFocusedJob(sessionId, liveJobId, liveRunId);
         }
       } catch (error) {
         if (
@@ -575,7 +585,7 @@ export function useSessionContinuity({
     async (
       sessionId: string,
       controller: ReturnType<typeof createRunController>,
-      completedJobId: string | null,
+      completedBinding: ObservedRunBinding | null,
     ) => {
       for (const delayMs of TERMINAL_RECONCILIATION_DELAYS_MS) {
         if (delayMs > 0) {
@@ -605,13 +615,17 @@ export function useSessionContinuity({
         }
         const currentSession = findSession(catalogRef.current, sessionId);
         const successorJobId = currentSession?.activeJobId ?? null;
+        const successorRunId = currentSession?.activeRunId ?? null;
         const successorIsLive =
           (currentSession?.status === "running" ||
             currentSession?.status === "needs_attention") &&
           successorJobId !== null &&
-          successorJobId !== completedJobId;
+          successorRunId !== null &&
+          (completedBinding === null ||
+            successorJobId !== completedBinding.jobId ||
+            successorRunId !== completedBinding.runId);
         if (successorIsLive) {
-          attachFocusedJob(sessionId, successorJobId);
+          attachFocusedJob(sessionId, successorJobId, successorRunId);
           return;
         }
 
@@ -645,36 +659,28 @@ export function useSessionContinuity({
   );
 
   useEffect(() => {
-    terminalReconciliationRef.current = (sessionId, controller, completedJobId) => {
-      void reconcileTerminal(sessionId, controller, completedJobId);
+    terminalReconciliationRef.current = (sessionId, controller, completedBinding) => {
+      void reconcileTerminal(sessionId, controller, completedBinding);
     };
     return () => {
       terminalReconciliationRef.current = () => undefined;
     };
   }, [reconcileTerminal]);
 
-  const reconcileCreatedTurn = useCallback(
-    async (
-      workspaceId: string,
-      previousSession: SessionRecord,
-      controller: ReturnType<typeof createRunController>,
-    ) => {
+  const reconcileAcceptedSuccessor = useCallback(
+    async (previousSession: SessionRecord) => {
       dispatch({ type: "set_status", statusText: "Reconciling durable session" });
       for (const delayMs of AMBIGUOUS_START_RECONCILIATION_DELAYS_MS) {
         if (delayMs > 0) {
           await waitForReconciliationDelay(delayMs);
         }
-        if (
-          controllerRef.current !== controller ||
-          focusedSessionRef.current !== previousSession.id
-        ) {
+        if (focusedSessionRef.current !== previousSession.id) {
           return false;
         }
 
         const refreshed = await refreshStatusesRef.current();
         if (
           !refreshed ||
-          controllerRef.current !== controller ||
           focusedSessionRef.current !== previousSession.id
         ) {
           continue;
@@ -686,24 +692,11 @@ export function useSessionContinuity({
         if (!hasAdvancedRuntimeBinding(previousSession, currentSession)) {
           continue;
         }
-
-        observedJobRef.current = currentSession.activeJobId;
-        dispatch({
-          type: "prepare_job_attachment",
-          jobId: currentSession.activeJobId,
-        });
-        try {
-          await controller.attach(currentSession.activeJobId);
-        } catch (error) {
-          if (
-            isRunControllerInactive(error) ||
-            focusedSessionRef.current !== previousSession.id
-          ) {
-            return true;
-          }
-          restoredSessionRef.current = null;
-          await restoreSession(workspaceId, previousSession.id);
-        }
+        attachFocusedJob(
+          previousSession.id,
+          currentSession.activeJobId,
+          currentSession.activeRunId,
+        );
         if (focusedSessionRef.current === previousSession.id) {
           setConnection("ok");
         }
@@ -711,7 +704,7 @@ export function useSessionContinuity({
       }
       return false;
     },
-    [catalogRef, restoreSession, setConnection],
+    [attachFocusedJob, catalogRef, setConnection],
   );
 
   const send = useCallback(
@@ -740,6 +733,13 @@ export function useSessionContinuity({
       const requestKey = `${session.id}\u0000${trimmed}`;
       let idempotencyKey = messageRequestsRef.current.get(requestKey);
       if (!idempotencyKey) {
+        if (messageRequestsRef.current.size >= MAX_PENDING_MESSAGE_REQUESTS) {
+          dispatch({
+            type: "set_error",
+            error: "Too many message submissions are awaiting reconciliation.",
+          });
+          return false;
+        }
         idempotencyKey = createControlIdempotencyKey();
         messageRequestsRef.current.set(requestKey, idempotencyKey);
       }
@@ -747,38 +747,72 @@ export function useSessionContinuity({
       if (session.title === "New session") {
         void updateSessionTitle(session.id, title).catch(() => undefined);
       }
-      try {
-        const accepted = await productClient.sendMessage(session.id, {
-          content: trimmed,
-          idempotency_key: idempotencyKey,
-        });
-        messageRequestsRef.current.delete(requestKey);
-        upsertMessage(accepted);
-        markSession(session.id, { title });
-        dispatch({ type: "set_status", statusText: messageStatusLabel(accepted.status) });
-        setConnection("ok");
-        void refreshMessages(session.id);
-        void refreshStatusesRef.current().then(() => {
-          const current = findSession(catalogRef.current, session.id);
-          if (current?.activeJobId && current.status === "running") {
-            attachFocusedJob(session.id, current.activeJobId);
+      let accepted: ProductMessage | null = null;
+      let lastError: unknown;
+      for (const delayMs of MESSAGE_SUBMISSION_RETRY_DELAYS_MS) {
+        if (delayMs > 0) {
+          await waitForReconciliationDelay(delayMs);
+        }
+        if (focusedSessionRef.current !== session.id) {
+          return false;
+        }
+        try {
+          accepted = await productClient.sendMessage(session.id, {
+            content: trimmed,
+            idempotency_key: idempotencyKey,
+          });
+          break;
+        } catch (error) {
+          lastError = error;
+          if (!isAmbiguousJobStartError(error)) {
+            break;
           }
-        });
-        return true;
-      } catch (error) {
-        const detail = describeError(error);
+          dispatch({
+            type: "set_status",
+            statusText: "Confirming whether the server accepted this message",
+          });
+        }
+      }
+      if (!accepted) {
+        const detail = describeError(lastError);
+        if (!isAmbiguousJobStartError(lastError)) {
+          messageRequestsRef.current.delete(requestKey);
+        }
         dispatch({ type: "set_error", error: `Could not send message: ${detail}` });
         if (isLikelyNetworkError(detail)) {
           setConnection("error");
         }
         return false;
       }
+
+      messageRequestsRef.current.delete(requestKey);
+      upsertMessage(accepted);
+      markSession(session.id, { title });
+      dispatch({ type: "set_status", statusText: messageStatusLabel(accepted.status) });
+      setConnection("ok");
+      void refreshMessages(session.id);
+      const successorExpected =
+        accepted.status === "claimed_successor" ||
+        (accepted.status === "queued" && session.status === "idle");
+      if (successorExpected) {
+        const attached = await reconcileAcceptedSuccessor(session);
+        if (!attached && focusedSessionRef.current === session.id) {
+          await refreshMessages(session.id);
+          setConnection("error");
+          dispatch({
+            type: "set_error",
+            error:
+              "The message was accepted, but its successor run binding is not visible yet. Reload before sending another message.",
+          });
+        }
+      }
+      return true;
     },
     [
-      attachFocusedJob,
       catalogRef,
       markSession,
       productClient,
+      reconcileAcceptedSuccessor,
       refreshMessages,
       setConnection,
       updateSessionTitle,
@@ -866,11 +900,16 @@ export function useSessionContinuity({
       (restoreState.status !== "complete" && restoreState.status !== "partial") ||
       (activeSession.status !== "running" &&
         activeSession.status !== "needs_attention") ||
-      !activeSession.activeJobId
+      !activeSession.activeJobId ||
+      !activeSession.activeRunId
     ) {
       return;
     }
-    attachFocusedJob(activeSession.id, activeSession.activeJobId);
+    attachFocusedJob(
+      activeSession.id,
+      activeSession.activeJobId,
+      activeSession.activeRunId,
+    );
   }, [activeSession, attachFocusedJob, restoreState.status]);
 
   useEffect(
@@ -911,6 +950,8 @@ export function useSessionContinuity({
 }
 
 const MAX_PENDING_CONTROL_REQUESTS = 32;
+const MAX_PENDING_MESSAGE_REQUESTS = 32;
+const MESSAGE_SUBMISSION_RETRY_DELAYS_MS = [0, 100, 200, 400] as const;
 const TERMINAL_RECONCILIATION_DELAYS_MS = [0, 100, 200, 400, 800, 1_000] as const;
 
 function createControlIdempotencyKey(): string {
