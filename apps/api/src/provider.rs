@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use futures::StreamExt;
+use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 use rove_app_bootstrap::AppConfig;
 use rove_app_bootstrap::provider::{ProviderAuthConfig, ProviderProfileConfig, SecretSource};
 use rove_models::provider::WireProtocolId;
@@ -106,6 +107,7 @@ pub(super) fn apply_provider_profile(
     profiles.insert(
         JOB_PROVIDER_PROFILE.to_string(),
         ProviderProfileConfig {
+            label: Some(profile.name.clone()),
             provider_type: profile.provider_type.clone(),
             base_url: if profile.inventory_family == InventoryFamily::Fake {
                 String::new()
@@ -292,12 +294,48 @@ pub(super) async fn provider_inventory(
     key_env: &str,
     requested_endpoint: Option<&str>,
 ) -> Result<ProviderInventory, ApiError> {
+    let mut headers = HeaderMap::new();
     match profile.inventory_family {
-        InventoryFamily::OpenAi => openai_inventory(profile, key_env, requested_endpoint).await,
-        InventoryFamily::Anthropic => {
-            anthropic_inventory(profile, key_env, requested_endpoint).await
+        InventoryFamily::OpenAi => {
+            let api_key = provider_api_key(&profile.inventory_family, key_env)?;
+            headers.insert(
+                AUTHORIZATION,
+                sensitive_provider_header(format!("Bearer {api_key}"))?,
+            );
         }
-        InventoryFamily::Ollama => ollama_inventory(profile, requested_endpoint).await,
+        InventoryFamily::Anthropic => {
+            let api_key = provider_api_key(&profile.inventory_family, key_env)?;
+            headers.insert(
+                reqwest::header::HeaderName::from_static("x-api-key"),
+                sensitive_provider_header(api_key)?,
+            );
+        }
+        InventoryFamily::Ollama | InventoryFamily::Fake => {}
+    }
+    provider_inventory_with_headers(profile, headers, true, requested_endpoint).await
+}
+
+fn sensitive_provider_header(value: String) -> Result<HeaderValue, ApiError> {
+    let mut value = HeaderValue::try_from(value)
+        .map_err(|_| ApiError::bad_request("provider credential is invalid"))?;
+    value.set_sensitive(true);
+    Ok(value)
+}
+
+pub(super) async fn provider_inventory_with_headers(
+    profile: &NormalizedProviderProfile,
+    headers: HeaderMap,
+    key_present: bool,
+    requested_endpoint: Option<&str>,
+) -> Result<ProviderInventory, ApiError> {
+    match profile.inventory_family {
+        InventoryFamily::OpenAi => {
+            openai_inventory(profile, headers, key_present, requested_endpoint).await
+        }
+        InventoryFamily::Anthropic => {
+            anthropic_inventory(profile, headers, key_present, requested_endpoint).await
+        }
+        InventoryFamily::Ollama => ollama_inventory(profile, headers, requested_endpoint).await,
         InventoryFamily::Fake => Ok(ProviderInventory {
             key_present: false,
             models: vec!["fake".to_string(), "fake-raw".to_string()],
@@ -307,45 +345,50 @@ pub(super) async fn provider_inventory(
 
 async fn openai_inventory(
     profile: &NormalizedProviderProfile,
-    key_env: &str,
+    headers: HeaderMap,
+    key_present: bool,
     requested_endpoint: Option<&str>,
 ) -> Result<ProviderInventory, ApiError> {
-    let api_key = provider_api_key(&profile.inventory_family, key_env)?;
     let endpoint = inventory_endpoint(
         requested_endpoint,
         &format!("{}/models", profile.api_base.trim_end_matches('/')),
     )?;
     let response = provider_inventory_client()?
         .get(&endpoint)
-        .bearer_auth(&api_key)
+        .headers(headers)
         .send()
         .await
         .map_err(classify_inventory_transport_error)?;
-    model_inventory_response(response, "data", "id", true).await
+    model_inventory_response(response, "data", "id", key_present).await
 }
 
 async fn anthropic_inventory(
     profile: &NormalizedProviderProfile,
-    key_env: &str,
+    mut headers: HeaderMap,
+    key_present: bool,
     requested_endpoint: Option<&str>,
 ) -> Result<ProviderInventory, ApiError> {
-    let api_key = provider_api_key(&profile.inventory_family, key_env)?;
     let endpoint = inventory_endpoint(
         requested_endpoint,
         &format!("{}/v1/models", profile.api_base.trim_end_matches('/')),
     )?;
+    headers
+        .entry(reqwest::header::HeaderName::from_static(
+            "anthropic-version",
+        ))
+        .or_insert(HeaderValue::from_static("2023-06-01"));
     let response = provider_inventory_client()?
         .get(&endpoint)
-        .header("x-api-key", api_key)
-        .header("anthropic-version", "2023-06-01")
+        .headers(headers)
         .send()
         .await
         .map_err(classify_inventory_transport_error)?;
-    model_inventory_response(response, "data", "id", true).await
+    model_inventory_response(response, "data", "id", key_present).await
 }
 
 async fn ollama_inventory(
     profile: &NormalizedProviderProfile,
+    headers: HeaderMap,
     requested_endpoint: Option<&str>,
 ) -> Result<ProviderInventory, ApiError> {
     let endpoint = inventory_endpoint(
@@ -354,6 +397,7 @@ async fn ollama_inventory(
     )?;
     let response = provider_inventory_client()?
         .get(&endpoint)
+        .headers(headers)
         .send()
         .await
         .map_err(classify_inventory_transport_error)?;
@@ -595,5 +639,13 @@ mod tests {
             "unexpected error: {}",
             error.message
         );
+    }
+
+    #[test]
+    fn inventory_credentials_are_marked_sensitive() {
+        let header = sensitive_provider_header("Bearer provider-secret".to_string()).unwrap();
+
+        assert!(header.is_sensitive());
+        assert_eq!(header, "Bearer provider-secret");
     }
 }

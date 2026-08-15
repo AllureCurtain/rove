@@ -53,7 +53,7 @@ export interface RunController {
     runId: string;
     resumedFromRunId: string | null;
   }>;
-  attach(jobId: string): Promise<JobStateResponse>;
+  attach(jobId: string, expectedRunId?: string | null): Promise<JobStateResponse>;
   cancel(jobId: string): Promise<void>;
   approve(jobId: string, callId: string, decision: "approve" | "reject"): Promise<void>;
   answer(jobId: string, inputId: string, answer: string): Promise<void>;
@@ -165,6 +165,27 @@ export function createRunController(
     }
   }
 
+  async function fetchExpectedJobState(
+    jobId: string,
+    expectedRunId: string | null | undefined,
+    expectedGeneration: number,
+  ): Promise<JobStateResponse> {
+    for (const delayMs of ATTACH_RUN_RETRY_DELAYS_MS) {
+      if (delayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
+      assertCurrent(expectedGeneration);
+      const jobState = await fetchJobState(jobId);
+      assertCurrent(expectedGeneration);
+      if (!expectedRunId || jobState.run_id === expectedRunId) {
+        return jobState;
+      }
+    }
+    throw new Error(
+      `job ${jobId} did not expose expected run ${expectedRunId} before attachment`,
+    );
+  }
+
   return {
     async start(request) {
       const expectedGeneration = beginObservation();
@@ -184,15 +205,21 @@ export function createRunController(
       };
     },
 
-    async attach(jobId) {
+    async attach(jobId, expectedRunId) {
       const expectedGeneration = beginObservation();
-      attachStream(jobId, expectedGeneration);
-      const jobState = await fetchJobState(jobId);
-      assertCurrent(expectedGeneration);
+      const jobState = await fetchExpectedJobState(
+        jobId,
+        expectedRunId,
+        expectedGeneration,
+      );
       dispatch({ type: "job_state_synced", state: jobState });
       if (isTerminalStatus(jobState.status)) {
         closeStream();
         options.onTerminal?.();
+      } else {
+        // The server replays buffered events, so opening the stream only after
+        // exact run verification avoids attaching a reused job id to its prior run.
+        attachStream(jobId, expectedGeneration);
       }
       return jobState;
     },
@@ -240,5 +267,18 @@ export function createRunController(
     },
   };
 }
+
+const ATTACH_RUN_RETRY_DELAYS_MS = [
+  0,
+  25,
+  50,
+  100,
+  200,
+  400,
+  800,
+  1_000,
+  1_000,
+  1_000,
+] as const;
 
 export { createJob, testProvider, listProviderModels, fetchJobState };

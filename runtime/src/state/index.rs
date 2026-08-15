@@ -9,7 +9,7 @@ use crate::events::StreamEvent;
 use crate::types::{JobId, RunId, SessionId, TaskState};
 use rove_core::CallId;
 
-const CURRENT_SCHEMA_VERSION: i64 = 2;
+const CURRENT_SCHEMA_VERSION: i64 = 3;
 const DEFAULT_BUSY_TIMEOUT_MS: u64 = 5_000;
 const MAX_SNAPSHOT_EVENTS: usize = 2_000;
 const MAX_SNAPSHOT_EVENT_JSON_BYTES: usize = 1_048_576;
@@ -145,9 +145,34 @@ CREATE INDEX IF NOT EXISTS idx_runs_job_started
     ON runs(job_id, started_at ASC, run_id ASC);
 "#;
 
+const MIGRATION_003: &str = r#"
+CREATE TABLE IF NOT EXISTS conversation_messages (
+    message_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    idempotency_key TEXT,
+    content TEXT NOT NULL,
+    requested_delivery TEXT NOT NULL CHECK(requested_delivery IN ('successor', 'current_run')),
+    actual_delivery TEXT CHECK(actual_delivery IS NULL OR actual_delivery IN ('successor', 'current_run')),
+    status TEXT NOT NULL CHECK(status IN (
+        'queued', 'intervention_requested', 'applied_current_run',
+        'claimed_successor', 'needs_attention', 'revoked'
+    )),
+    sequence INTEGER NOT NULL CHECK(sequence >= 1),
+    target_run_id TEXT,
+    reason TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(session_id, sequence),
+    UNIQUE(session_id, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS idx_conversation_messages_delivery
+    ON conversation_messages(session_id, status, sequence);
+"#;
+
 const MIGRATIONS: &[(i64, &str, &str)] = &[
     (1, "runtime_state_index", MIGRATION_001),
     (2, "runs_by_job_index", MIGRATION_002),
+    (3, "conversation_messages", MIGRATION_003),
 ];
 
 #[derive(Debug, Clone)]

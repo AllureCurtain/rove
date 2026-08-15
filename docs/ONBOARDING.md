@@ -2,7 +2,7 @@
 
 > Status: **Current Maintainer Guide**
 >
-> Last reviewed: 2026-07-26. This guide explains the repository as it exists
+> Last reviewed: 2026-08-14. This guide explains the repository as it exists
 > today. For exact subsystem contracts and implementation status, follow
 > [`docs/runtime/`](runtime/README.md). Documents marked
 > `Proposed / Not Implemented` describe future work.
@@ -258,13 +258,44 @@ do not trust model/provider/MCP strings as local paths.
 Configuration precedence:
 
 ```text
-defaults < .rove/config.toml < environment < CLI overrides
+defaults < user ~/.rove/config.toml < trusted workspace selection
+         < environment < CLI overrides
 ```
+
+The user file is Provider catalog schema v1. It owns full Provider definitions;
+a trusted workspace may only select an existing profile/model and cannot define
+an endpoint, auth source, header, fallback, protocol option, or adapter command.
+`ROVE_CONFIG_ROOT` selects an explicit user-config directory for tests and
+embedders.
+
+Minimal local Ollama example:
+
+```toml
+schema_version = 1
+
+[model]
+default_profile = "local"
+default_model = "llama3.2"
+reasoning = "default"
+
+[provider.profiles.local]
+provider_type = "ollama"
+base_url = "http://localhost:11434"
+model = "llama3.2"
+auth = { style = "none" }
+```
+
+Remote profiles use `auth.secret = { env = "NAME" }`, `{ file = "path" }`,
+or `{ keyring = { service = "...", account = "..." } }`. Literal secrets are
+rejected. Catalog writes are revision-CAS protected, locked, and atomically
+replaced. Normal startup without a Provider reports onboarding rather than
+silently using Fake; `--model fake` remains the explicit no-network path.
 
 Inspect the resolved, redacted configuration:
 
 ```powershell
 cargo run -p rove-cli -- dump-config
+cargo run -p rove-cli -- provider migrate
 ```
 
 Important rules:
@@ -275,6 +306,11 @@ Important rules:
 - config dumps must redact secrets;
 - Web provider overrides must not send raw provider keys from browser code;
 - API token configuration belongs server-side.
+
+Legacy Provider imports use `rove provider migrate`, which is read-only unless
+`--apply` is supplied. Conflicts require explicit `--rename` mappings, and
+rewriting workspace Provider definitions requires both `--apply
+--rewrite-workspace-config` and workspace trust.
 
 Provider setup and opt-in verification live in
 [`runtime/provider-smoke.md`](runtime/provider-smoke.md).
@@ -355,6 +391,15 @@ Current provider families include:
 - fake provider;
 - configured routing/fallback.
 
+CLI resolves the session selection and creates a fresh model/Engine
+`RunAssembly` for each turn. The resulting secret-free model snapshot is stored
+with the run, and resume fails with `provider_changed_for_resume` if the current
+Provider identity no longer matches. In `rove tui`, `/model`, `/model current`,
+`/model <query>`, and `/model reset` operate on a revisioned per-session
+selection; changes are busy while a run is active and affect only the next
+turn. The picker currently lists configured catalog models rather than live
+remote inventory.
+
 Core code should consume normalized provider results. Provider adapters own:
 
 - request/response shape;
@@ -434,7 +479,8 @@ polish for the default shell. C0–C3 are integrated on `main` through PRs
 #24–#26 and passed the post-merge deterministic gates.
 
 CDH G1-G7 merged through PR #29 at `f9e88a7`. The default product shell and API
-also expose durable Steer/Follow-up, terminal-boundary Fork/lineage, immutable
+retain Steer/Follow-up compatibility routes beneath the unified Send Message
+lifecycle and also expose terminal-boundary Fork/lineage, immutable
 session run configuration snapshots, usage/context/cost, bounded files and
 artifacts, image validation, run/Git diff, redacted evidence export, and a
 workspace-scoped MCP catalog shared by Settings and job assembly.
@@ -464,9 +510,11 @@ Current browser evidence remains explicit about its boundary: `shell.spec.ts`,
 `real-api.spec.ts` used by `local-full` now exercises live M1 migration and the
 default `/` product shell across exact A/B continuation, refresh, tools,
 cancellation, Settings, and deep routes; it retains one bounded
-`/dev/workbench` advanced smoke. The latest local fake-provider run passed all
-three real-API scenarios. The external-provider gate was not run and this is
-not external-provider interoperability evidence.
+`/dev/workbench` advanced smoke. The current suite also covers unified-message
+promotion/revocation and completed-session Fork with independent child
+continuation. The latest local fake-provider run passed all five real-API
+scenarios. The external-provider gate was not run and this is not
+external-provider interoperability evidence.
 
 Keep provider/API tokens server-side. Browser JavaScript must not receive raw
 provider secrets.
@@ -658,9 +706,10 @@ documents are partially implemented design records.
   — completed implementation record for persistent Project Trust,
   Runtime-owned execution adapters, and the Coding Tool foundation.
 - [Post-Full-Delivery Productization Program](plans/2026-08-10-post-full-delivery-productization.md)
-  — the single proposed next implementation contract. Its linked 2026-08-09
-  documents are supporting audits and deferred-boundary records, not parallel
-  plans.
+  — implementation record for completed workstreams A-E and F.1-F.3, plus the
+  partially complete F.4/F.5 and release-confidence workstream G. Its linked
+  2026-08-09 documents are supporting audits and deferred-boundary records, not
+  parallel plans.
 
 ### Independent terminal interface direction
 

@@ -52,7 +52,10 @@ pub struct Args {
 
 impl Args {
     pub fn is_sync_fast_path(&self) -> bool {
-        matches!(self.command, Some(Command::DumpConfig))
+        matches!(
+            self.command,
+            Some(Command::DumpConfig | Command::Provider { .. })
+        )
     }
 
     pub fn is_tui(&self) -> bool {
@@ -99,6 +102,30 @@ pub enum Command {
     Trust {
         #[command(subcommand)]
         command: TrustCommand,
+    },
+    /// Inspect or migrate legacy Provider configuration.
+    Provider {
+        #[command(subcommand)]
+        command: ProviderCommand,
+    },
+}
+
+#[derive(Clone, Debug, Subcommand)]
+pub enum ProviderCommand {
+    /// Import legacy Provider profiles into the user catalog (dry-run by default).
+    Migrate {
+        /// Apply the migration. Without this flag no files or databases are changed.
+        #[arg(long)]
+        apply: bool,
+        /// Rewrite the trusted workspace config to selection-only Provider fields.
+        #[arg(long, requires = "apply")]
+        rewrite_workspace_config: bool,
+        /// Legacy API ProductStore to inspect. Defaults to <cwd>/.rove/product.sqlite.
+        #[arg(long, value_name = "PATH")]
+        product_store: Option<PathBuf>,
+        /// Resolve a conflict as SOURCE:PROFILE=NEW_PROFILE (repeatable).
+        #[arg(long, value_name = "SOURCE:PROFILE=NEW_PROFILE")]
+        rename: Vec<String>,
     },
 }
 
@@ -169,7 +196,9 @@ mod tests {
 
     use clap::Parser;
 
-    use super::{Args, CliApprovalPolicy, CliProjectTrustCapability, Command, TrustCommand};
+    use super::{
+        Args, CliApprovalPolicy, CliProjectTrustCapability, Command, ProviderCommand, TrustCommand,
+    };
 
     #[test]
     fn approval_defaults_to_ask() {
@@ -214,6 +243,37 @@ mod tests {
         let args = Args::parse_from(["rove", "dump-config"]);
 
         assert!(args.is_sync_fast_path());
+    }
+
+    #[test]
+    fn provider_migrate_is_dry_run_by_default_and_accepts_explicit_apply() {
+        let dry_run = Args::parse_from(["rove", "provider", "migrate"]);
+        assert!(matches!(
+            dry_run.command,
+            Some(Command::Provider {
+                command: ProviderCommand::Migrate { apply: false, .. }
+            })
+        ));
+        assert!(dry_run.is_sync_fast_path());
+
+        let apply = Args::parse_from([
+            "rove",
+            "--trust-project",
+            "provider",
+            "migrate",
+            "--apply",
+            "--rewrite-workspace-config",
+        ]);
+        assert!(matches!(
+            apply.command,
+            Some(Command::Provider {
+                command: ProviderCommand::Migrate {
+                    apply: true,
+                    rewrite_workspace_config: true,
+                    ..
+                }
+            })
+        ));
     }
 
     #[test]

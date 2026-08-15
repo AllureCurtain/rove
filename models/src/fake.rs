@@ -25,6 +25,7 @@ pub enum FakeTurn {
 pub struct FakeModelClient {
     response: String,
     turns: Mutex<Vec<FakeTurn>>,
+    compatibility_text_tool_calls: bool,
 }
 
 impl FakeModelClient {
@@ -32,6 +33,17 @@ impl FakeModelClient {
         Self {
             response,
             turns: Mutex::new(Vec::new()),
+            compatibility_text_tool_calls: false,
+        }
+    }
+
+    /// Explicit legacy fixture for product surfaces which intentionally feed
+    /// JSON tool envelopes as assistant text (for example `fake-raw`).
+    pub fn with_compatibility_text(response: String) -> Self {
+        Self {
+            response,
+            turns: Mutex::new(Vec::new()),
+            compatibility_text_tool_calls: true,
         }
     }
 
@@ -43,6 +55,7 @@ impl FakeModelClient {
         Self {
             response,
             turns: Mutex::new(reversed),
+            compatibility_text_tool_calls: false,
         }
     }
 }
@@ -162,6 +175,10 @@ impl ModelClient for FakeModelClient {
 
     fn history_protocol(&self) -> String {
         "fake".to_string()
+    }
+
+    fn compatibility_text_tool_calls(&self) -> bool {
+        self.compatibility_text_tool_calls
     }
 
     fn client_id(&self) -> ModelClientId {

@@ -17,6 +17,7 @@ import type {
   M1BrowserMigrationRequest,
   M1BrowserMigrationResponse,
   M1MigrationIssue,
+  ProductMessage,
 } from "../../product/product-api-types";
 
 const NOW = "2026-07-26T00:00:00.000Z";
@@ -64,7 +65,12 @@ export interface MockProviderProfile {
   default_model?: string;
   created_at: string;
   updated_at: string;
+  catalog_revision: string;
 }
+
+type MockProviderProfileSeed = Omit<MockProviderProfile, "catalog_revision"> & {
+  catalog_revision?: string;
+};
 
 export interface MockSessionModelConfig {
   product_session_id: string;
@@ -86,7 +92,7 @@ export interface MockProductApiOptions {
   workspaces?: MockWorkspace[];
   sessions?: MockSession[];
   transcripts?: Record<string, MockTranscript>;
-  providerProfiles?: MockProviderProfile[];
+  providerProfiles?: MockProviderProfileSeed[];
   memoryTopics?: Record<string, ProductMemoryTopicContentResponse>;
   memoryMutationFailures?: number;
   mcpServers?: Record<string, ProductMcpServerConfig[]>;
@@ -116,7 +122,14 @@ export interface MockProductApiState {
   sessions: MockSession[];
   sessionModelConfigs: Record<string, MockSessionModelConfig>;
   transcripts: Record<string, MockTranscript>;
+  messages: Record<string, ProductMessage[]>;
   providerProfiles: MockProviderProfile[];
+  providerCatalogRevision: string;
+  providerProfileMutationRequests: Array<{
+    method: "POST" | "PUT" | "DELETE";
+    profileId?: string;
+    expectedRevision?: string;
+  }>;
   memoryTopics: Record<string, ProductMemoryTopicContentResponse>;
   memoryWorkspaceRequests: Array<string | null>;
   memoryMutationRequests: number;
@@ -163,6 +176,7 @@ export interface MockProductApiState {
 interface MockJob {
   jobId: string;
   runId: string;
+  resumedFromRunId: string | null;
   sessionId: string;
   message: string;
   mode: "completed" | "approval";
@@ -176,6 +190,7 @@ interface ProviderProfileMutation {
   api_base: string;
   api_key_env?: string;
   default_model?: string;
+  expected_revision?: string;
 }
 
 interface DelayedSessionVisibility {
@@ -187,6 +202,10 @@ export async function installMockProductApi(
   page: Page,
   options: MockProductApiOptions = {},
 ): Promise<MockProductApiState> {
+  let providerCatalogGeneration = 0;
+  const initialProviderCatalogRevision = mockProviderCatalogRevision(
+    providerCatalogGeneration,
+  );
   const state: MockProductApiState = {
     workspaces: structuredClone(options.workspaces ?? []),
     sessions: structuredClone(options.sessions ?? []),
@@ -197,7 +216,17 @@ export async function installMockProductApi(
       ]),
     ),
     transcripts: structuredClone(options.transcripts ?? {}),
-    providerProfiles: structuredClone(options.providerProfiles ?? []),
+    messages: Object.fromEntries(
+      (options.sessions ?? []).map((session) => [session.id, []]),
+    ),
+    providerProfiles: structuredClone(options.providerProfiles ?? []).map(
+      (profile) => ({
+        ...profile,
+        catalog_revision: initialProviderCatalogRevision,
+      }),
+    ),
+    providerCatalogRevision: initialProviderCatalogRevision,
+    providerProfileMutationRequests: [],
     memoryTopics: structuredClone(options.memoryTopics ?? {}),
     memoryWorkspaceRequests: [],
     memoryMutationRequests: 0,
@@ -241,12 +270,140 @@ export async function installMockProductApi(
   const delayedSessionVisibility = new Map<string, DelayedSessionVisibility>();
   let workspaceCounter = state.workspaces.length;
   let sessionCounter = state.sessions.length;
+  let messageCounter = 0;
   let providerProfileCounter = state.providerProfiles.length;
   let migrationReceiptCounter = 0;
   const migratedWorkspaceIds = new Map<string, string>();
   const migratedSessionIds = new Map<string, string>();
   const migratedProfileIds = new Map<string, string>();
   const migrationReceipts = new Map<string, M1BrowserMigrationResponse>();
+  const messageIdempotency = new Map<string, ProductMessage>();
+  const advanceProviderCatalogRevision = () => {
+    providerCatalogGeneration += 1;
+    state.providerCatalogRevision = mockProviderCatalogRevision(
+      providerCatalogGeneration,
+    );
+    for (const profile of state.providerProfiles) {
+      profile.catalog_revision = state.providerCatalogRevision;
+    }
+  };
+
+  const startMockJob = (
+    body: Record<string, unknown> & {
+      message: string;
+      product_session_id: string;
+    },
+    keepActiveUntilObserved = false,
+  ) => {
+    state.jobs.push(body);
+    const session = state.sessions.find(
+      (item) => item.id === body.product_session_id,
+    );
+    if (!session) {
+      return {
+        ok: false,
+        error: {
+          status: 404,
+          body: { code: "product_not_found", error: "session not found" },
+        },
+      } as const;
+    }
+    if (body.resume !== undefined) {
+      return {
+        ok: false,
+        error: {
+          status: 409,
+          body: {
+            code: "product_session_resume_conflict",
+            error: "resume must be omitted",
+          },
+        },
+      } as const;
+    }
+
+    const modelConfig = state.sessionModelConfigs[session.id]!;
+    state.jobEffectiveConfigs.push({
+      product_session_id: session.id,
+      approval: state.preferences.default_approval_policy as
+        | "ask"
+        | "auto"
+        | "never",
+      model: modelConfig.model,
+      max_steps: modelConfig.max_steps,
+    });
+    const sessionBeforeJobStart = structuredClone(session);
+    const ordinal = (session.runtime_binding?.ordinal ?? 0) + 1;
+    const resumedFromRunId = session.runtime_binding?.latest_run_id ?? null;
+    const jobId = session.runtime_binding?.latest_job_id ?? `job-${state.jobs.length}`;
+    const runId = `run-${state.jobs.length}`;
+    const mode = options.mode ?? "completed";
+    const output = outputFor(body.message);
+    const events =
+      mode === "approval"
+        ? approvalEvents(jobId, runId, body.message)
+        : completedEvents(jobId, runId, body.message, output);
+    const job: MockJob = {
+      jobId,
+      runId,
+      resumedFromRunId,
+      sessionId: session.id,
+      message: body.message,
+      mode,
+      status: mode === "approval" ? "running" : "done",
+      events,
+    };
+    jobs.set(jobId, job);
+    session.runtime_binding = {
+      ordinal,
+      runtime_session_id: `runtime-${session.id}`,
+      latest_job_id: jobId,
+      latest_run_id: runId,
+    };
+    session.status = keepActiveUntilObserved
+      ? "running"
+      : mode === "approval"
+        ? "needs_attention"
+        : "idle";
+    session.updated_at = NOW;
+    const transcript = state.transcripts[session.id] ?? emptyTranscript(session);
+    transcript.segments.push(
+      transcriptSegment(
+        session,
+        ordinal,
+        jobId,
+        runId,
+        resumedFromRunId,
+        mode === "approval" ? "running" : "done",
+        events,
+      ),
+    );
+    state.transcripts[session.id] = transcript;
+    const delayedReads = options.jobBindingVisibilityDelayReads ?? 0;
+    if (delayedReads > 0) {
+      delayedSessionVisibility.set(session.id, {
+        session: sessionBeforeJobStart,
+        remainingReads: delayedReads,
+      });
+    }
+    const started = {
+      job_id: jobId,
+      run_id: runId,
+      resumed_from_run_id: resumedFromRunId,
+    };
+    state.jobStarts.push(started);
+    return { ok: true, started, session } as const;
+  };
+
+  const shouldDisconnectJobStart = () => {
+    if (
+      state.disconnectedJobStartResponses >=
+      (options.disconnectJobStartResponses ?? 0)
+    ) {
+      return false;
+    }
+    state.disconnectedJobStartResponses += 1;
+    return true;
+  };
 
   await page.route(/\/api\/product(?:\/.*)?(?:\?.*)?$/, async (route) => {
     const request = route.request();
@@ -305,15 +462,18 @@ export async function installMockProductApi(
           imported.updated_at = session.updated_at;
           state.sessions.unshift(imported);
           state.transcripts[sessionId] = emptyTranscript(imported);
+          state.messages[sessionId] = [];
           state.sessionModelConfigs[sessionId] = createMockSessionModelConfig(
             sessionId,
           );
         }
         return [{ source_id: session.source_id, product_session_id: sessionId }];
       });
+      let importedProviderProfile = false;
       const providerProfileMappings = body.provider_profiles.map((profile) => {
         let profileId = migratedProfileIds.get(profile.source_id);
         if (!profileId) {
+          importedProviderProfile = true;
           providerProfileCounter += 1;
           profileId = `provider-${providerProfileCounter}`;
           migratedProfileIds.set(profile.source_id, profileId);
@@ -324,12 +484,16 @@ export async function installMockProductApi(
             api_base: profile.api_base,
             created_at: NOW,
             updated_at: profile.updated_at,
+            catalog_revision: state.providerCatalogRevision,
             ...(profile.api_key_env ? { api_key_env: profile.api_key_env } : {}),
             ...(profile.default_model ? { default_model: profile.default_model } : {}),
           });
         }
         return { source_id: profile.source_id, provider_profile_id: profileId };
       });
+      if (importedProviderProfile) {
+        advanceProviderCatalogRevision();
+      }
 
       const importedSelection = body.safe_preferences.provider_selection;
       const mappedProfileId = importedSelection?.source_profile_id
@@ -479,6 +643,7 @@ export async function installMockProductApi(
       for (const sessionId of Object.keys(state.sessionModelConfigs)) {
         if (!state.sessions.some((session) => session.id === sessionId)) {
           delete state.sessionModelConfigs[sessionId];
+          delete state.messages[sessionId];
         }
       }
       delete state.mcpServers[workspaceId];
@@ -520,6 +685,7 @@ export async function installMockProductApi(
       );
       state.sessions.unshift(session);
       state.transcripts[session.id] = emptyTranscript(session);
+      state.messages[session.id] = [];
       const selection = state.preferences.provider_selection as
         | { profile_id?: string; model?: string; max_steps?: number }
         | undefined;
@@ -530,6 +696,193 @@ export async function installMockProductApi(
         selection?.max_steps ?? 8,
       );
       return json(route, session, 201);
+    }
+    const messageActionMatch = path.match(
+      /^\/product\/sessions\/([^/]+)\/messages\/([^/]+)\/(promote|revoke)$/u,
+    );
+    if (messageActionMatch && method === "POST") {
+      const sessionId = decodeURIComponent(messageActionMatch[1]!);
+      const messageId = decodeURIComponent(messageActionMatch[2]!);
+      const action = messageActionMatch[3]!;
+      const message = (state.messages[sessionId] ?? []).find(
+        (item) => item.id === messageId,
+      );
+      if (!message) {
+        return json(
+          route,
+          { code: "product_not_found", error: "message not found" },
+          404,
+        );
+      }
+      if (action === "promote") {
+        const activeJob = message.run_id
+          ? [...jobs.values()].find(
+              (job) => job.runId === message.run_id && job.status === "running",
+            )
+          : undefined;
+        if (message.status !== "queued" || !activeJob) {
+          return json(
+            route,
+            {
+              code: "product_control_rejected",
+              error: "message is not eligible for promotion",
+            },
+            409,
+          );
+        }
+        message.requested_delivery = "current_run";
+        message.status = "intervention_requested";
+      } else {
+        if (message.status !== "queued" && message.status !== "needs_attention") {
+          return json(
+            route,
+            {
+              code: "product_control_rejected",
+              error: "message is not eligible for revoke",
+            },
+            409,
+          );
+        }
+        message.status = "revoked";
+      }
+      return json(route, message);
+    }
+    const messagesMatch = path.match(
+      /^\/product\/sessions\/([^/]+)\/messages$/u,
+    );
+    if (messagesMatch && method === "GET") {
+      const sessionId = decodeURIComponent(messagesMatch[1]!);
+      if (!state.sessions.some((session) => session.id === sessionId)) {
+        return json(
+          route,
+          { code: "product_not_found", error: "session not found" },
+          404,
+        );
+      }
+      const all = state.messages[sessionId] ?? [];
+      const limit = Math.max(1, Math.min(128, Number(url.searchParams.get("limit") ?? 64)));
+      const after = url.searchParams.get("after_seq");
+      const before = url.searchParams.get("before_seq");
+      if (after !== null) {
+        const eligible = all.filter((message) => message.seq > Number(after));
+        const messages = eligible.slice(0, limit);
+        return json(route, {
+          messages,
+          ...(eligible.length > limit && messages.length > 0
+            ? { next_after_seq: messages.at(-1)!.seq }
+            : {}),
+        });
+      }
+      const boundary = before === null ? Number.POSITIVE_INFINITY : Number(before);
+      const eligible = all.filter((message) => message.seq < boundary);
+      const first = Math.max(0, eligible.length - limit);
+      const messages = eligible.slice(first);
+      return json(route, {
+        messages,
+        ...(first > 0 && messages.length > 0
+          ? { next_before_seq: messages[0]!.seq }
+          : {}),
+      });
+    }
+    if (messagesMatch && method === "POST") {
+      const sessionId = decodeURIComponent(messagesMatch[1]!);
+      const session = state.sessions.find((item) => item.id === sessionId);
+      if (!session) {
+        return json(
+          route,
+          { code: "product_not_found", error: "session not found" },
+          404,
+        );
+      }
+      const body = request.postDataJSON() as {
+        content: string;
+        idempotency_key?: string;
+      };
+      const content = body.content?.trim();
+      if (!content) {
+        return json(
+          route,
+          { code: "product_invalid_input", error: "message is empty" },
+          400,
+        );
+      }
+      const idempotencyKey = body.idempotency_key
+        ? `${sessionId}\u0000${body.idempotency_key}`
+        : undefined;
+      const replayed = idempotencyKey
+        ? messageIdempotency.get(idempotencyKey)
+        : undefined;
+      if (replayed) {
+        if (replayed.content !== content) {
+          return json(
+            route,
+            {
+              code: "product_idempotency_conflict",
+              error: "idempotency key already has different content",
+            },
+            409,
+          );
+        }
+        return json(route, replayed);
+      }
+
+      messageCounter += 1;
+      const messages = (state.messages[sessionId] ??= []);
+      const activeJobId = session.runtime_binding?.latest_job_id;
+      const activeJob = activeJobId ? jobs.get(activeJobId) : undefined;
+      const message: ProductMessage = {
+        id: `message-${messageCounter}`,
+        product_session_id: sessionId,
+        content,
+        requested_delivery: "successor",
+        status: activeJob?.status === "running" ? "queued" : "claimed_successor",
+        seq: (messages.at(-1)?.seq ?? 0) + 1,
+        created_at: NOW,
+        ...(activeJob?.status === "running"
+          ? { run_id: activeJob.runId }
+          : {}),
+      };
+      const responseMessage = structuredClone(message);
+      if (message.status === "claimed_successor") {
+        responseMessage.status = "queued";
+      }
+      messages.push(message);
+      if (idempotencyKey) {
+        messageIdempotency.set(idempotencyKey, message);
+      }
+
+      if (message.status === "claimed_successor") {
+        const workspace = state.workspaces.find(
+          (item) => item.id === session.workspace_id,
+        );
+        if (!workspace) {
+          message.status = "needs_attention";
+          message.reason = "workspace is unavailable";
+        } else {
+          const started = startMockJob(
+            {
+              message: content,
+              product_session_id: sessionId,
+              workspace: {
+                kind: workspace.kind,
+                root: workspace.canonical_root,
+              },
+            },
+            true,
+          );
+          if (!started.ok) {
+            message.status = "needs_attention";
+            message.reason = started.error.body.error;
+          } else {
+            message.actual_delivery = "successor";
+            message.successor_run_id = started.started.run_id;
+          }
+        }
+      }
+      if (shouldDisconnectJobStart()) {
+        return route.abort("connectionreset");
+      }
+      return json(route, responseMessage, 201);
     }
     const transcriptMatch = path.match(
       /^\/product\/sessions\/([^/]+)\/transcript$/u,
@@ -739,6 +1092,7 @@ export async function installMockProductApi(
       const sessionId = decodeURIComponent(sessionMatch[1]!);
       state.sessions = state.sessions.filter((item) => item.id !== sessionId);
       delete state.transcripts[sessionId];
+      delete state.messages[sessionId];
       delete state.sessionModelConfigs[sessionId];
       return route.fulfill({ status: 204, body: "" });
     }
@@ -1231,10 +1585,25 @@ export async function installMockProductApi(
     }
     if (path === "/product/provider-profiles" && method === "GET") {
       state.initialStateReadRequests += 1;
-      return json(route, { provider_profiles: state.providerProfiles });
+      return json(route, {
+        catalog_revision: state.providerCatalogRevision,
+        provider_profiles: state.providerProfiles,
+      });
     }
     if (path === "/product/provider-profiles" && method === "POST") {
       const body = request.postDataJSON() as ProviderProfileMutation;
+      state.providerProfileMutationRequests.push({
+        method: "POST",
+        ...(body.expected_revision
+          ? { expectedRevision: body.expected_revision }
+          : {}),
+      });
+      if (
+        body.expected_revision !== undefined &&
+        body.expected_revision !== state.providerCatalogRevision
+      ) {
+        return providerCatalogConflict(route);
+      }
       providerProfileCounter += 1;
       const profile: MockProviderProfile = {
         id: `provider-${providerProfileCounter}`,
@@ -1243,10 +1612,12 @@ export async function installMockProductApi(
         api_base: body.api_base,
         created_at: NOW,
         updated_at: NOW,
+        catalog_revision: state.providerCatalogRevision,
         ...(body.api_key_env ? { api_key_env: body.api_key_env } : {}),
         ...(body.default_model ? { default_model: body.default_model } : {}),
       };
       state.providerProfiles.unshift(profile);
+      advanceProviderCatalogRevision();
       return json(route, profile, 201);
     }
     const providerModelsMatch = path.match(
@@ -1299,16 +1670,36 @@ export async function installMockProductApi(
         );
       }
       const body = request.postDataJSON() as ProviderProfileMutation;
+      state.providerProfileMutationRequests.push({
+        method: "PUT",
+        profileId,
+        ...(body.expected_revision
+          ? { expectedRevision: body.expected_revision }
+          : {}),
+      });
+      if (
+        body.expected_revision !== undefined &&
+        body.expected_revision !== state.providerCatalogRevision
+      ) {
+        return providerCatalogConflict(route);
+      }
       profile.label = body.label;
       profile.provider_type = body.provider_type;
       profile.api_base = body.api_base;
       profile.updated_at = NOW;
       replaceOptional(profile, "api_key_env", body.api_key_env);
       replaceOptional(profile, "default_model", body.default_model);
+      advanceProviderCatalogRevision();
       return json(route, profile);
     }
     if (providerProfileMatch && method === "DELETE") {
       const profileId = decodeURIComponent(providerProfileMatch[1]!);
+      const expectedRevision = url.searchParams.get("expected_revision") ?? undefined;
+      state.providerProfileMutationRequests.push({
+        method: "DELETE",
+        profileId,
+        ...(expectedRevision ? { expectedRevision } : {}),
+      });
       const profileIndex = state.providerProfiles.findIndex(
         (item) => item.id === profileId,
       );
@@ -1319,6 +1710,12 @@ export async function installMockProductApi(
           404,
         );
       }
+      if (
+        expectedRevision !== undefined &&
+        expectedRevision !== state.providerCatalogRevision
+      ) {
+        return providerCatalogConflict(route);
+      }
       state.providerProfiles.splice(profileIndex, 1);
       for (const config of Object.values(state.sessionModelConfigs)) {
         if (config.profile_id === profileId) {
@@ -1327,6 +1724,7 @@ export async function installMockProductApi(
           config.updated_at = NOW;
         }
       }
+      advanceProviderCatalogRevision();
       return route.fulfill({ status: 204, body: "" });
     }
     return json(route, { code: "product_not_found", error: `unmocked ${method} ${path}` }, 404);
@@ -1337,99 +1735,25 @@ export async function installMockProductApi(
       message: string;
       product_session_id: string;
     };
-    state.jobs.push(body);
-    const session = state.sessions.find(
-      (item) => item.id === body.product_session_id,
-    );
-    if (!session) {
-      return json(route, { code: "product_not_found", error: "session not found" }, 404);
+    const result = startMockJob(body);
+    if (!result.ok) {
+      return json(route, result.error.body, result.error.status);
     }
-    if (body.resume !== undefined) {
-      return json(
-        route,
-        { code: "product_session_resume_conflict", error: "resume must be omitted" },
-        409,
-      );
-    }
-    const modelConfig = state.sessionModelConfigs[session.id]!;
-    state.jobEffectiveConfigs.push({
-      product_session_id: session.id,
-      approval: state.preferences.default_approval_policy as
-        | "ask"
-        | "auto"
-        | "never",
-      model: modelConfig.model,
-      max_steps: modelConfig.max_steps,
-    });
-    const sessionBeforeJobStart = structuredClone(session);
-    const ordinal = (session.runtime_binding?.ordinal ?? 0) + 1;
-    const resumedFromRunId = session.runtime_binding?.latest_run_id ?? null;
-    const jobId = `job-${state.jobs.length}`;
-    const runId = `run-${state.jobs.length}`;
-    const mode = options.mode ?? "completed";
-    const output = outputFor(body.message);
-    const events =
-      mode === "approval"
-        ? approvalEvents(jobId, runId, body.message)
-        : completedEvents(jobId, runId, body.message, output);
-    const job: MockJob = {
-      jobId,
-      runId,
-      sessionId: session.id,
-      message: body.message,
-      mode,
-      status: mode === "approval" ? "running" : "done",
-      events,
-    };
-    jobs.set(jobId, job);
-    session.runtime_binding = {
-      ordinal,
-      runtime_session_id: `runtime-${session.id}`,
-      latest_job_id: jobId,
-      latest_run_id: runId,
-    };
-    session.status = mode === "approval" ? "needs_attention" : "idle";
-    session.updated_at = NOW;
-    const transcript = state.transcripts[session.id] ?? emptyTranscript(session);
-    transcript.segments.push(
-      transcriptSegment(
-        session,
-        ordinal,
-        jobId,
-        runId,
-        resumedFromRunId,
-        mode === "approval" ? "running" : "done",
-        events,
-      ),
-    );
-    state.transcripts[session.id] = transcript;
-    const delayedReads = options.jobBindingVisibilityDelayReads ?? 0;
-    if (delayedReads > 0) {
-      delayedSessionVisibility.set(session.id, {
-        session: sessionBeforeJobStart,
-        remainingReads: delayedReads,
-      });
-    }
-    const started = {
-      job_id: jobId,
-      run_id: runId,
-      resumed_from_run_id: resumedFromRunId,
-    };
-    state.jobStarts.push(started);
-    if (
-      state.disconnectedJobStartResponses <
-      (options.disconnectJobStartResponses ?? 0)
-    ) {
-      state.disconnectedJobStartResponses += 1;
+    if (shouldDisconnectJobStart()) {
       return route.abort("connectionreset");
     }
-    return json(route, started);
+    return json(route, result.started);
   });
 
   await page.route(/\/api\/jobs\/[^/]+\/events$/u, async (route) => {
     const job = jobFromRoute(route, jobs);
     if (!job) {
       return route.fulfill({ status: 404, body: "" });
+    }
+    const session = state.sessions.find((item) => item.id === job.sessionId);
+    if (session) {
+      session.status = job.status === "running" ? "needs_attention" : "idle";
+      session.updated_at = NOW;
     }
     state.eventConnections.push(job.jobId);
     return route.fulfill({
@@ -1444,7 +1768,15 @@ export async function installMockProductApi(
 
   await page.route(/\/api\/jobs\/[^/]+\/state$/u, async (route) => {
     const job = jobFromRoute(route, jobs);
-    return job ? fulfillJobState(route, job) : route.fulfill({ status: 404, body: "" });
+    if (!job) {
+      return route.fulfill({ status: 404, body: "" });
+    }
+    const session = state.sessions.find((item) => item.id === job.sessionId);
+    if (session) {
+      session.status = job.status === "running" ? "needs_attention" : "idle";
+      session.updated_at = NOW;
+    }
+    return fulfillJobState(route, job);
   });
 
   await page.route(/\/api\/jobs\/[^/]+\/approvals\/[^/]+$/u, async (route) => {
@@ -1737,6 +2069,21 @@ function replaceOptional(
   }
 }
 
+function mockProviderCatalogRevision(generation: number): string {
+  return `sha256:mock-provider-catalog-${generation}`;
+}
+
+function providerCatalogConflict(route: Route) {
+  return json(
+    route,
+    {
+      code: "product_revision_conflict",
+      error: "provider catalog revision does not match",
+    },
+    409,
+  );
+}
+
 async function fulfillJobState(
   route: Route,
   job: MockJob,
@@ -1746,6 +2093,7 @@ async function fulfillJobState(
   return json(route, {
     job_id: job.jobId,
     run_id: job.runId,
+    resumed_from_run_id: job.resumedFromRunId,
     status: job.status,
     event_count: job.events.length,
     events,

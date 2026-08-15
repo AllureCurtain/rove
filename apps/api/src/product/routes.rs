@@ -24,6 +24,23 @@ pub(crate) struct ListProductSessionsQuery {
     pub workspace_id: ProductWorkspaceId,
 }
 
+#[derive(Debug, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub(crate) struct DeleteProviderProfileQuery {
+    pub expected_revision: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub(crate) struct ListProductMessagesQuery {
+    #[serde(default)]
+    pub after_seq: Option<i64>,
+    #[serde(default)]
+    pub before_seq: Option<i64>,
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
 pub(super) fn product_json<T>(body: Result<Json<T>, JsonRejection>) -> Result<T, ApiError> {
     body.map(|Json(value)| value).map_err(|_| {
         ApiError::bad_request_with_code(
@@ -352,6 +369,19 @@ pub(crate) async fn update_product_session_model_config(
     body: Result<Json<UpdateProductSessionModelConfigRequest>, JsonRejection>,
 ) -> Result<Json<ProductSessionModelConfig>, ApiError> {
     let request = product_json(body)?;
+    if let Some(profile_id) = request.profile_id.as_ref() {
+        let catalog = state.provider_catalog().await?;
+        let profile = super::provider_catalog::get(&catalog, profile_id)?;
+        state
+            .product_store()?
+            .upsert_provider_catalog_identity(
+                &profile.id,
+                &profile.label,
+                profile.provider_type,
+                &profile.catalog_revision,
+            )
+            .await?;
+    }
     Ok(Json(
         state
             .product_store()?
@@ -398,8 +428,12 @@ pub(crate) async fn list_product_session_run_models(
 pub(crate) async fn list_product_provider_profiles(
     State(state): State<ApiState>,
 ) -> Result<Json<ProductProviderProfilesResponse>, ApiError> {
-    let provider_profiles = state.product_store()?.list_provider_profiles().await?;
-    Ok(Json(ProductProviderProfilesResponse { provider_profiles }))
+    let catalog = state.provider_catalog().await?;
+    let provider_profiles = super::provider_catalog::list(&catalog)?;
+    Ok(Json(ProductProviderProfilesResponse {
+        catalog_revision: catalog.revision().to_string(),
+        provider_profiles,
+    }))
 }
 
 #[utoipa::path(
@@ -411,6 +445,7 @@ pub(crate) async fn list_product_provider_profiles(
     responses(
         (status = 201, description = "Provider profile created", body = ProductProviderProfile),
         (status = 400, description = "Invalid profile or secret-shaped field", body = ApiErrorResponse),
+        (status = 409, description = "Provider catalog revision conflict", body = ApiErrorResponse),
         (status = 500, description = "Product store operation failed", body = ApiErrorResponse),
         (status = 503, description = "ProductStore is unavailable", body = ApiErrorResponse)
     )
@@ -420,9 +455,19 @@ pub(crate) async fn create_product_provider_profile(
     body: Result<Json<CreateProductProviderProfileRequest>, JsonRejection>,
 ) -> Result<(StatusCode, Json<ProductProviderProfile>), ApiError> {
     let request = product_json(body)?;
-    let profile = state
+    let service = state.provider_catalog_service();
+    let profile =
+        tokio::task::spawn_blocking(move || super::provider_catalog::create(&service, request))
+            .await
+            .map_err(|_| ApiError::internal("provider catalog operation did not complete"))??;
+    state
         .product_store()?
-        .create_provider_profile(request)
+        .upsert_provider_catalog_identity(
+            &profile.id,
+            &profile.label,
+            profile.provider_type,
+            &profile.catalog_revision,
+        )
         .await?;
     Ok((StatusCode::CREATED, Json(profile)))
 }
@@ -432,11 +477,14 @@ pub(crate) async fn create_product_provider_profile(
     path = "/product/provider-profiles/{profile_id}",
     tag = docs::PRODUCT_TAG,
     security(("BearerAuth" = [])),
-    params(("profile_id" = ProductProviderProfileId, Path, description = "Provider profile id")),
+    params(
+        ("profile_id" = ProductProviderProfileId, Path, description = "Provider profile id")
+    ),
     request_body = UpdateProductProviderProfileRequest,
     responses(
         (status = 200, description = "Provider profile updated", body = ProductProviderProfile),
         (status = 400, description = "Invalid profile or secret-shaped field", body = ApiErrorResponse),
+        (status = 409, description = "Provider catalog revision conflict", body = ApiErrorResponse),
         (status = 404, description = "Provider profile not found", body = ApiErrorResponse),
         (status = 500, description = "Product store operation failed", body = ApiErrorResponse),
         (status = 503, description = "ProductStore is unavailable", body = ApiErrorResponse)
@@ -448,9 +496,20 @@ pub(crate) async fn update_product_provider_profile(
     body: Result<Json<UpdateProductProviderProfileRequest>, JsonRejection>,
 ) -> Result<Json<ProductProviderProfile>, ApiError> {
     let request = product_json(body)?;
-    let profile = state
+    let service = state.provider_catalog_service();
+    let profile = tokio::task::spawn_blocking(move || {
+        super::provider_catalog::update(&service, &profile_id, request)
+    })
+    .await
+    .map_err(|_| ApiError::internal("provider catalog operation did not complete"))??;
+    state
         .product_store()?
-        .update_provider_profile(&profile_id, request)
+        .upsert_provider_catalog_identity(
+            &profile.id,
+            &profile.label,
+            profile.provider_type,
+            &profile.catalog_revision,
+        )
         .await?;
     Ok(Json(profile))
 }
@@ -460,10 +519,14 @@ pub(crate) async fn update_product_provider_profile(
     path = "/product/provider-profiles/{profile_id}",
     tag = docs::PRODUCT_TAG,
     security(("BearerAuth" = [])),
-    params(("profile_id" = ProductProviderProfileId, Path, description = "Provider profile id")),
+    params(
+        ("profile_id" = ProductProviderProfileId, Path, description = "Provider profile id"),
+        DeleteProviderProfileQuery,
+    ),
     responses(
         (status = 204, description = "Provider profile deleted"),
         (status = 404, description = "Provider profile not found", body = ApiErrorResponse),
+        (status = 409, description = "Provider catalog revision conflict", body = ApiErrorResponse),
         (status = 500, description = "Product store operation failed", body = ApiErrorResponse),
         (status = 503, description = "ProductStore is unavailable", body = ApiErrorResponse)
     )
@@ -471,11 +534,14 @@ pub(crate) async fn update_product_provider_profile(
 pub(crate) async fn delete_product_provider_profile(
     State(state): State<ApiState>,
     Path(profile_id): Path<ProductProviderProfileId>,
+    Query(query): Query<DeleteProviderProfileQuery>,
 ) -> Result<StatusCode, ApiError> {
-    state
-        .product_store()?
-        .delete_provider_profile(&profile_id)
-        .await?;
+    let service = state.provider_catalog_service();
+    tokio::task::spawn_blocking(move || {
+        super::provider_catalog::delete(&service, &profile_id, query.expected_revision.as_deref())
+    })
+    .await
+    .map_err(|_| ApiError::internal("provider catalog operation did not complete"))??;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -500,20 +566,27 @@ pub(crate) async fn list_product_provider_models(
     State(state): State<ApiState>,
     Path(profile_id): Path<ProductProviderProfileId>,
 ) -> Result<Json<ProductProviderModelsResponse>, ApiError> {
-    let stored = state
-        .product_store()?
-        .get_provider_profile(&profile_id)
-        .await?;
-    let provider = crate::types::ProviderProfileRequest {
-        provider_type: Some(product_provider_type_name(stored.provider_type).to_string()),
-        name: stored.label.clone(),
-        api_base: stored.api_base.clone(),
-        api_key_env: stored.api_key_env.clone(),
-    };
+    let service = state.provider_catalog_service();
+    let inventory_profile_id = profile_id.clone();
+    let (provider, default_model, provider_type, headers) =
+        tokio::task::spawn_blocking(move || {
+            let catalog = service
+                .load()
+                .map_err(super::provider_catalog::catalog_error)?;
+            super::provider_catalog::inventory_request(
+                &catalog,
+                &inventory_profile_id,
+                &service.paths().root,
+            )
+        })
+        .await
+        .map_err(|_| ApiError::internal("provider catalog operation did not complete"))??;
     let normalized = crate::provider::normalize_provider_profile(&provider)?;
-    let key_env = crate::provider::provider_key_env(&normalized);
-    let inventory = crate::provider::provider_inventory(&normalized, &key_env, None).await?;
-    let supports_reasoning = stored.provider_type == ProductProviderType::OpenaiResponses;
+    let key_present = !headers.is_empty();
+    let inventory =
+        crate::provider::provider_inventory_with_headers(&normalized, headers, key_present, None)
+            .await?;
+    let supports_reasoning = provider_type == ProductProviderType::OpenaiResponses;
     let supported_reasoning = if supports_reasoning {
         vec![
             ProductReasoningPreference::Low,
@@ -528,7 +601,7 @@ pub(crate) async fn list_product_provider_models(
     });
     Ok(Json(ProductProviderModelsResponse {
         profile_id,
-        default_model: stored.default_model,
+        default_model,
         models: inventory
             .models
             .into_iter()
@@ -542,16 +615,6 @@ pub(crate) async fn list_product_provider_models(
             })
             .collect(),
     }))
-}
-
-fn product_provider_type_name(provider_type: ProductProviderType) -> &'static str {
-    match provider_type {
-        ProductProviderType::Openai => "openai",
-        ProductProviderType::OpenaiResponses => "openai-responses",
-        ProductProviderType::Anthropic => "anthropic",
-        ProductProviderType::Ollama => "ollama",
-        ProductProviderType::Fake => "fake",
-    }
 }
 
 #[utoipa::path(
@@ -722,6 +785,247 @@ pub(crate) async fn create_product_session_followup(
     body: Result<Json<CreateProductControlRequest>, JsonRejection>,
 ) -> Result<(StatusCode, Json<ProductControl>), ApiError> {
     create_control(state, session_id, ProductControlKind::Followup, body).await
+}
+
+#[utoipa::path(
+    post,
+    path = "/product/sessions/{session_id}/messages",
+    tag = docs::PRODUCT_TAG,
+    security(("BearerAuth" = [])),
+    params(("session_id" = String, Path, description = "Product session ULID")),
+    request_body = CreateProductMessageRequest,
+    responses(
+        (status = 201, description = "Message durably accepted", body = ProductMessage),
+        (status = 200, description = "Idempotent replay", body = ProductMessage),
+        (status = 400, description = "Invalid input", body = ApiErrorResponse),
+        (status = 404, description = "Product session not found", body = ApiErrorResponse),
+        (status = 409, description = "Idempotency conflict", body = ApiErrorResponse),
+    )
+)]
+pub(crate) async fn create_product_session_message(
+    State(state): State<ApiState>,
+    Path(session_id): Path<ProductSessionId>,
+    body: Result<Json<CreateProductMessageRequest>, JsonRejection>,
+) -> Result<(StatusCode, Json<ProductMessage>), ApiError> {
+    let request = product_json(body)?;
+    let store = state.product_store()?;
+    let live_candidate = live_product_job(&state, &session_id).await;
+    let lifecycle = match &live_candidate {
+        Some(record) => Some(record.control_lifecycle_lock.lock().await),
+        None => None,
+    };
+    let live_is_active = if let Some(record) = live_candidate.as_ref() {
+        let status = record.status.lock().await;
+        !crate::is_terminal(&status)
+    } else {
+        false
+    };
+    let live = live_candidate.as_ref().filter(|_| live_is_active);
+    let service = super::message_adapter::service(store.clone());
+    let content = request.content.clone();
+    let mutation = service
+        .send(
+            session_id.as_str(),
+            rove_runtime::conversation::SendMessageCommand {
+                content,
+                idempotency_key: request.idempotency_key.clone(),
+                session_state: match live {
+                    Some(_) => rove_runtime::conversation::SessionDeliveryState::Active,
+                    None => rove_runtime::conversation::SessionDeliveryState::Idle,
+                },
+                target_run_id: live.map(|record| record.run_id),
+            },
+        )
+        .await
+        .map_err(super::message_adapter::map_domain_error)?;
+    let already_exists = mutation.replayed;
+    let message = store
+        .get_message(
+            &session_id,
+            &mutation
+                .message
+                .id
+                .parse()
+                .map_err(|_| ApiError::bad_request("invalid message id"))?,
+        )
+        .await?;
+    if !already_exists && message.status == ProductMessageStatus::Queued {
+        if let Some(record) = live {
+            crate::queue_or_publish_product_control_event(
+                record,
+                rove_runtime::events::StreamEvent::MessageQueued {
+                    id: message.id.to_string(),
+                    content: message.content.clone(),
+                },
+            )
+            .await;
+        } else {
+            try_start_idle_followup(&state, &session_id).await;
+        }
+    }
+    drop(lifecycle);
+    Ok((
+        if already_exists {
+            StatusCode::OK
+        } else {
+            StatusCode::CREATED
+        },
+        Json(message),
+    ))
+}
+
+#[utoipa::path(
+    get,
+    path = "/product/sessions/{session_id}/messages",
+    tag = docs::PRODUCT_TAG,
+    security(("BearerAuth" = [])),
+    params(
+        ("session_id" = String, Path),
+        ListProductMessagesQuery
+    ),
+    responses((status = 200, description = "Unified messages", body = ProductMessagesResponse))
+)]
+pub(crate) async fn list_product_session_messages(
+    State(state): State<ApiState>,
+    Path(session_id): Path<ProductSessionId>,
+    Query(query): Query<ListProductMessagesQuery>,
+) -> Result<Json<ProductMessagesResponse>, ApiError> {
+    let limit = query.limit.unwrap_or(DEFAULT_PRODUCT_MESSAGE_PAGE_LIMIT);
+    if query.after_seq.is_some_and(|sequence| sequence < 0)
+        || query.before_seq.is_some_and(|sequence| sequence <= 0)
+        || (query.after_seq.is_some() && query.before_seq.is_some())
+        || limit == 0
+        || limit > MAX_PRODUCT_MESSAGE_PAGE_LIMIT
+    {
+        return Err(ApiError::bad_request_with_code(
+            ProductErrorCode::ProductInvalidInput.as_str(),
+            "message page query is invalid",
+        ));
+    }
+    let page = state
+        .product_store()?
+        .list_messages(
+            &session_id,
+            ProductMessagePageQuery {
+                after_seq: query.after_seq,
+                before_seq: query.before_seq,
+                limit,
+            },
+        )
+        .await?;
+    Ok(Json(ProductMessagesResponse {
+        messages: page.messages,
+        next_after_seq: page.next_after_seq,
+        next_before_seq: page.next_before_seq,
+    }))
+}
+
+#[utoipa::path(
+    post,
+    path = "/product/sessions/{session_id}/messages/{message_id}/promote",
+    tag = docs::PRODUCT_TAG,
+    security(("BearerAuth" = [])),
+    params(("session_id" = String, Path), ("message_id" = String, Path)),
+    responses((status = 200, description = "Intervention requested", body = ProductMessage))
+)]
+pub(crate) async fn promote_product_session_message(
+    State(state): State<ApiState>,
+    Path((session_id, message_id)): Path<(ProductSessionId, ProductControlId)>,
+) -> Result<Json<ProductMessage>, ApiError> {
+    let live = live_product_job(&state, &session_id).await;
+    let Some(record) = live else {
+        return Err(ApiError::conflict_with_code(
+            ProductErrorCode::ProductControlRejected.as_str(),
+            "message can only be promoted while its session turn is active",
+        ));
+    };
+    let _lifecycle = record.control_lifecycle_lock.lock().await;
+    let is_terminal = {
+        let status = record.status.lock().await;
+        crate::is_terminal(&status)
+    };
+    if is_terminal {
+        return Err(ApiError::conflict_with_code(
+            ProductErrorCode::ProductControlRejected.as_str(),
+            "message can only be promoted while its session turn is active",
+        ));
+    }
+    let store = state.product_store()?;
+    if let Ok(existing) = store.get_message(&session_id, &message_id).await
+        && existing.requested_delivery == ProductMessageDelivery::CurrentRun
+    {
+        return Ok(Json(existing));
+    }
+    let service = super::message_adapter::service(store.clone());
+    let _promoted = service
+        .promote(session_id.as_str(), message_id.as_str())
+        .await
+        .map_err(super::message_adapter::map_domain_error)?;
+    let message = store.get_message(&session_id, &message_id).await?;
+    let handle = record.control.lock().await.clone();
+    let accepted = handle.is_some_and(|handle| {
+        handle.try_send_steer(rove_runtime::engine::SteerMessage::for_message(
+            message.id.as_str(),
+            message.content.clone(),
+        ))
+    });
+    if !accepted {
+        let _ = store
+            .transition_control(
+                &session_id,
+                &message_id,
+                ProductControlStatus::Pending,
+                ProductControlStatus::Abandoned,
+                Some(&record.run_id),
+            )
+            .await;
+        return Ok(Json(store.get_message(&session_id, &message_id).await?));
+    }
+    Ok(Json(message))
+}
+
+#[utoipa::path(
+    post,
+    path = "/product/sessions/{session_id}/messages/{message_id}/revoke",
+    tag = docs::PRODUCT_TAG,
+    security(("BearerAuth" = [])),
+    params(("session_id" = String, Path), ("message_id" = String, Path)),
+    responses((status = 200, description = "Message revoked", body = ProductMessage))
+)]
+pub(crate) async fn revoke_product_session_message(
+    State(state): State<ApiState>,
+    Path((session_id, message_id)): Path<(ProductSessionId, ProductControlId)>,
+) -> Result<Json<ProductMessage>, ApiError> {
+    let live_candidate = live_product_job(&state, &session_id).await;
+    let lifecycle = match &live_candidate {
+        Some(record) => Some(record.control_lifecycle_lock.lock().await),
+        None => None,
+    };
+    let live_is_active = if let Some(record) = live_candidate.as_ref() {
+        let status = record.status.lock().await;
+        !crate::is_terminal(&status)
+    } else {
+        false
+    };
+    let live = live_candidate.as_ref().filter(|_| live_is_active);
+    let store = state.product_store()?;
+    let service = super::message_adapter::service(store.clone());
+    let _revoked = service
+        .revoke(session_id.as_str(), message_id.as_str())
+        .await
+        .map_err(super::message_adapter::map_domain_error)?;
+    let message = store.get_message(&session_id, &message_id).await?;
+    if let Some(record) = live {
+        crate::queue_or_publish_product_control_event(
+            record,
+            rove_runtime::events::StreamEvent::MessageRevoked {
+                id: message.id.to_string(),
+            },
+        )
+        .await;
+    }
+    drop(lifecycle);
+    Ok(Json(message))
 }
 
 async fn create_control(

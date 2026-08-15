@@ -13,6 +13,7 @@ use rove_runtime::tools::coding::{
 };
 use rove_runtime::tools::fs::{FsReadTool, FsWriteTool};
 use rove_runtime::tools::memory::SaveMemoryTool;
+use rove_runtime::tools::repository::RepositoryMapTool;
 use rove_runtime::tools::request_input::RequestInputTool;
 use rove_runtime::tools::runtime_context::{
     runtime_tool_context, runtime_tool_context_with_environment, runtime_tool_services,
@@ -273,6 +274,176 @@ async fn search_code_returns_structured_matches_and_caps_output() {
         escaped,
         ToolError::PermissionDenied { .. } | ToolError::InvalidInput { .. }
     ));
+}
+
+#[tokio::test]
+async fn search_reports_binary_oversized_missing_ignored_hidden_and_sensitive_inputs() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(temp.path()).unwrap();
+    std::fs::write(workspace.root.join(".gitignore"), "ignored.txt\n").unwrap();
+    std::fs::write(workspace.root.join(".ignore"), "also-ignored.txt\n").unwrap();
+    std::fs::write(workspace.root.join("ignored.txt"), "needle").unwrap();
+    std::fs::write(workspace.root.join("also-ignored.txt"), "needle").unwrap();
+    std::fs::write(workspace.root.join(".hidden.txt"), "needle").unwrap();
+    std::fs::write(workspace.root.join(".env"), "needle=secret").unwrap();
+    std::fs::write(workspace.root.join("binary.bin"), b"needle\0binary").unwrap();
+    std::fs::write(workspace.root.join("large.txt"), "needle".repeat(64)).unwrap();
+    let context = tool_context(&workspace, MemoryPaths::from_workspace(&workspace, 8), None);
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(SearchCodeTool::with_policy(
+        workspace.root.clone(),
+        SearchCodePolicy {
+            max_file_bytes: 32,
+            max_output_bytes: 16 * 1024,
+            ..SearchCodePolicy::default()
+        },
+    )));
+
+    let output = registry
+        .execute(
+            "search_code",
+            serde_json::json!({"query":"needle"}),
+            &context,
+        )
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_str(&output.content).unwrap();
+    assert_eq!(body["match_count"], 0);
+    assert_eq!(body["files_binary"], 1);
+    assert_eq!(body["files_oversized"], 1);
+    assert!(body["ignored_entries"].as_u64().unwrap() >= 2);
+    assert!(body["hidden_entries"].as_u64().unwrap() >= 1);
+    assert!(body["sensitive_entries"].as_u64().unwrap() >= 1);
+
+    let opted_in = registry
+        .execute(
+            "search_code",
+            serde_json::json!({
+                "query":"needle",
+                "include_ignored":true,
+                "include_hidden":true
+            }),
+            &context,
+        )
+        .await
+        .unwrap();
+    let opted_in: serde_json::Value = serde_json::from_str(&opted_in.content).unwrap();
+    let paths = opted_in["matches"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["path"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert!(paths.contains(&"ignored.txt"));
+    assert!(paths.contains(&"also-ignored.txt"));
+    assert!(paths.contains(&".hidden.txt"));
+    assert!(!paths.contains(&".env"));
+
+    let missing = registry
+        .execute(
+            "search_code",
+            serde_json::json!({"query":"needle", "path":"missing.txt"}),
+            &context,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(missing.error_code(), "execution_failed");
+}
+
+#[tokio::test]
+async fn search_coalesces_context_and_enforces_exact_serialized_bytes() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(temp.path()).unwrap();
+    std::fs::write(
+        workspace.root.join("matches.txt"),
+        "before\nneedle one\nneedle two\nafter\n",
+    )
+    .unwrap();
+    let context = tool_context(&workspace, MemoryPaths::from_workspace(&workspace, 8), None);
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(SearchCodeTool::with_policy(
+        workspace.root.clone(),
+        SearchCodePolicy {
+            max_matches: 10,
+            max_output_bytes: 4 * 1024,
+            ..SearchCodePolicy::default()
+        },
+    )));
+    let output = registry
+        .execute(
+            "search_code",
+            serde_json::json!({"query":"needle", "context":1}),
+            &context,
+        )
+        .await
+        .unwrap();
+    assert!(output.content.len() <= 4 * 1024);
+    let body: serde_json::Value = serde_json::from_str(&output.content).unwrap();
+    assert_eq!(body["output_bytes"], output.content.len());
+    let matches = body["matches"].as_array().unwrap();
+    assert_eq!(matches.len(), 2);
+    assert_eq!(matches[0]["context"].as_array().unwrap().len(), 4);
+    assert_eq!(matches[1]["context"], serde_json::json!([]));
+    assert_eq!(matches[1]["context_owner_line"], 2);
+}
+
+#[tokio::test]
+async fn read_file_rejects_sensitive_binary_missing_and_oversized_paths_explicitly() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(temp.path()).unwrap();
+    std::fs::write(workspace.root.join(".env"), "SECRET=value").unwrap();
+    std::fs::write(workspace.root.join("binary.bin"), [0xff, 0xfe]).unwrap();
+    std::fs::write(
+        workspace.root.join("large.txt"),
+        vec![b'x'; 17 * 1024 * 1024],
+    )
+    .unwrap();
+    let context = tool_context(&workspace, MemoryPaths::from_workspace(&workspace, 8), None);
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(FsReadTool::new(workspace.root.clone())));
+
+    for (path, code) in [
+        (".env", "permission_denied"),
+        ("binary.bin", "invalid_input"),
+        ("missing.txt", "execution_failed"),
+        ("large.txt", "invalid_input"),
+    ] {
+        let error = registry
+            .execute("read_file", serde_json::json!({"path":path}), &context)
+            .await
+            .unwrap_err();
+        assert_eq!(error.error_code(), code, "unexpected outcome for {path}");
+    }
+}
+
+#[tokio::test]
+async fn repository_map_is_manifest_only_stable_and_bounded() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(temp.path()).unwrap();
+    std::fs::write(
+        workspace.root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"z\", \"a\", \"a\"]\n",
+    )
+    .unwrap();
+    std::fs::write(workspace.root.join("README.md"), "invented package: secret").unwrap();
+    let context = tool_context(&workspace, MemoryPaths::from_workspace(&workspace, 8), None);
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(RepositoryMapTool));
+
+    let first = registry
+        .execute("repository_map", serde_json::json!({}), &context)
+        .await
+        .unwrap();
+    let second = registry
+        .execute("repository_map", serde_json::json!({}), &context)
+        .await
+        .unwrap();
+    assert_eq!(first.content.as_bytes(), second.content.as_bytes());
+    let body: serde_json::Value = serde_json::from_str(&first.content).unwrap();
+    assert_eq!(body["source"], "verified_manifests");
+    assert_eq!(body["members"], serde_json::json!(["a", "z"]));
+    assert_eq!(body["output_bytes"], first.content.len());
+    assert!(!first.content.contains("invented package"));
 }
 
 #[tokio::test]

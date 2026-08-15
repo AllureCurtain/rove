@@ -2,7 +2,7 @@
 
 Status: MVP reached for the local-first single-user runtime.
 Date: 2026-05-30
-Last interface update: 2026-08-06 (CDH G1-G7 control, evidence, and Settings completion).
+Last interface update: 2026-08-14 (productization A-E and F.1-F.3 integration).
 
 ## Definition
 
@@ -48,12 +48,25 @@ This MVP is not a SaaS product, browser automation runtime, desktop automation r
   live-API coverage for migration, exact A/B continuation, refresh,
   approval/input/cancel, Settings, and deep routes. One bounded advanced
   `/dev/workbench` smoke remains available.
-- CDH G1-G7 completion: API-authoritative Steer/Follow-up, terminal-boundary
-  Fork with inherited read-only lineage, revision-safe session model/reasoning/
+- CDH G1-G7 completion: API-authoritative compatibility controls,
+  terminal-boundary Fork with inherited read-only lineage, revision-safe session model/reasoning/
   approval/step-limit configuration with immutable run snapshots, explicit
   usage/context/cost states, bounded workspace files/artifacts/images/diff,
   redacted JSON/HTML/Markdown evidence export, and workspace-scoped MCP catalog
   management shared by Settings and runtime assembly.
+- Productization B-D completion: native-first structured tool calls with typed
+  compatibility recovery, deterministic ignore-aware repository retrieval, and
+  Artifact-backed result-history projection.
+- Productization E completion: user-owned Provider catalog schema v1,
+  authority-aware secret-reference configuration, API/Web catalog convergence,
+  per-turn CLI assembly, migration, and TUI `/model`. External Provider
+  interoperability remains unverified.
+- Productization F.1-F.3 completion: one Send Message identity across Runtime,
+  ProductStore/API/SSE, Web, and TUI with FIFO queueing, promotion/revoke CAS,
+  safe-boundary application, successor claims, needs-attention recovery, and six
+  durable delivery states. Legacy Steer/Follow-up routes remain compatibility
+  wrappers. F.4 older-history pagination/windowing and F.5 complete TUI restart
+  recovery remain outside the implemented MVP boundary.
 - One Runtime-neutral Core Agent kernel shared by embedded, unplanned, and planned-step execution, with Runtime-owned context, tool safety, and durable events.
 - Local state under `.rove/` with trace, task state, report, and SQLite index.
 - Folder, Repo, and Task workspaces.
@@ -64,10 +77,11 @@ This MVP is not a SaaS product, browser automation runtime, desktop automation r
 Web Complete C0-C3 is implemented and verified on `main` through PRs #24–#26;
 CDH G1-G7 are implemented through PR #29 at `f9e88a7`.
 Broad deterministic race, failure, migration-recovery, and visual scenarios
-remain browser-boundary mock evidence; `local-full` separately passed three
-live-API browser cases covering migration, the default product lifecycle, and a
-bounded advanced smoke after merge. No
-external-provider C3 browser gate has been run.
+remain browser-boundary mock evidence; the current `local-full` suite separately
+passes five live-API browser cases covering migration, the default A/B product
+lifecycle, unified-message promotion/revocation, Fork/independent-child
+continuation, and a bounded advanced smoke. No external-provider browser gate
+has been run.
 
 ## Out of scope
 

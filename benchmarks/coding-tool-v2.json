@@ -80,7 +80,7 @@
             "path": ".",
             "recursive": true,
             "limit": 2,
-            "continuation": "page:sha256:850b3568c1e68abbae0146964e8b38c40eeb15e9ccd95d1b82f7e9b4b6449ce1:2"
+            "continuation": "page:sha256:1bb556155a18d7694051e1db80308740c598446d3e919d1daee13d87df7c4612:2"
           }
         },
         {
@@ -101,7 +101,7 @@
             "query": "pub fn",
             "path": "src",
             "limit": 1,
-            "continuation": "search:sha256:8c4a14d345ed52e9dea79895ec13d3e7b247357847b8e88ac5566a5fe6b6fdca:1"
+            "continuation": "search:sha256:39191dec5f62aaf6dfd202c8f981c7e6d39d7e2fa2832c9ad4c9849ff69c13de:1"
           }
         },
         {

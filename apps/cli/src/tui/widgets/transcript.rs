@@ -4,8 +4,8 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
 use crate::terminal::view::{
-    RunTimelineEntryKind, RunTimelinePlanStepStatus, RunTimelineToolStatus, RunViewState,
-    ToolCallStatus,
+    MessageDeliveryStatus, RunTimelineEntryKind, RunTimelinePlanStepStatus, RunTimelineToolStatus,
+    RunViewState, ToolCallStatus,
 };
 use crate::tui::sanitize::{sanitize_display_text, sanitize_tool_text, truncate_display_text};
 use crate::tui::state::{TuiFocus, TuiState};
@@ -276,6 +276,34 @@ fn push_timeline_kind(
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
         ),
+        RunTimelineEntryKind::MessageDelivery {
+            content,
+            status,
+            reason,
+            ..
+        } => {
+            let (label, style) = match status {
+                MessageDeliveryStatus::Queued => ("Queued", Style::default().fg(Color::Yellow)),
+                MessageDeliveryStatus::InterventionRequested => {
+                    ("Promoted", Style::default().fg(Color::Cyan))
+                }
+                MessageDeliveryStatus::AppliedCurrentRun => {
+                    ("Delivered", Style::default().fg(Color::Green))
+                }
+                MessageDeliveryStatus::ClaimedSuccessor => {
+                    ("Next turn", Style::default().fg(Color::Cyan))
+                }
+                MessageDeliveryStatus::NeedsAttention => {
+                    ("Attention", Style::default().fg(Color::Red))
+                }
+                MessageDeliveryStatus::Revoked => ("Revoked", Style::default().fg(Color::DarkGray)),
+            };
+            let detail = content
+                .as_deref()
+                .or(reason.as_deref())
+                .unwrap_or("message delivery updated");
+            push_labeled_text(lines, label, detail, style.add_modifier(Modifier::BOLD));
+        }
         RunTimelineEntryKind::Compaction {
             mode,
             source_message_count,

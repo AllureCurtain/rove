@@ -317,14 +317,14 @@ test("reload restores bubbles and the next turn resumes the exact product sessio
   expect(api.jobs[0]).not.toHaveProperty("resume");
   expect(api.jobStarts).toEqual([
     {
-      job_id: "job-1",
+      job_id: "job-restored-1",
       run_id: "run-1",
       resumed_from_run_id: "run-restored-1",
     },
   ]);
   expect(api.sessions[0]?.runtime_binding).toMatchObject({
     ordinal: 2,
-    latest_job_id: "job-1",
+    latest_job_id: "job-restored-1",
     latest_run_id: "run-1",
   });
   await expect(page.getByLabel("Run inspector").getByText("run-restor")).toBeVisible();

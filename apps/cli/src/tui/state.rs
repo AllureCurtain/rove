@@ -1,4 +1,6 @@
 use crate::terminal::view::{RunViewState, RunViewUpdate, ToolCallStatus};
+use rove_app_bootstrap::ModelSelection;
+use rove_runtime::conversation::{ConversationMessage, MessageStatus};
 use rove_runtime::types::{CallId, RunId, SessionId, TaskState};
 
 use super::sanitize::{
@@ -13,6 +15,163 @@ pub const MAX_SESSION_GOAL_CHARS: usize = 160;
 pub const MAX_TOOL_DETAIL_ITEMS: usize = 64;
 pub const MAX_TOOL_DETAIL_TEXT_BYTES: usize = 8 * 1024;
 pub const MAX_HELP_LINES: usize = 64;
+pub const MAX_MODEL_CANDIDATES: usize = 512;
+pub const MAX_MODEL_QUERY_BYTES: usize = 1024;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelCandidate {
+    pub selection: ModelSelection,
+    pub label: String,
+    pub provider_type: String,
+    pub credential_ready: bool,
+    pub inventory_fresh: bool,
+    pub current: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelPickerError {
+    LoadFailed,
+    NoMatch,
+    Busy,
+    CatalogChanged,
+    CredentialUnavailable,
+}
+
+impl ModelPickerError {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::LoadFailed => "Unable to load the Provider catalog",
+            Self::NoMatch => "No model matches that query",
+            Self::Busy => "Cannot change model while a run is active",
+            Self::CatalogChanged => "Provider catalog changed; reload and choose again",
+            Self::CredentialUnavailable => "Selected Provider credential is unavailable",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModelPickerState {
+    Loading {
+        query: String,
+    },
+    Ready {
+        candidates: Vec<ModelCandidate>,
+        query: String,
+        selected: usize,
+        error: Option<ModelPickerError>,
+        persisting: bool,
+    },
+}
+
+impl ModelPickerState {
+    pub fn loading(query: String) -> Self {
+        Self::Loading { query }
+    }
+
+    pub fn ready(mut candidates: Vec<ModelCandidate>, query: String) -> Self {
+        candidates.truncate(MAX_MODEL_CANDIDATES);
+        let error = candidates.is_empty().then_some(ModelPickerError::NoMatch);
+        Self::Ready {
+            candidates,
+            query,
+            selected: 0,
+            error,
+            persisting: false,
+        }
+    }
+
+    pub(crate) fn move_selection(&mut self, delta: isize) {
+        let visible_len = self.visible_candidates().len();
+        let Self::Ready {
+            candidates,
+            selected,
+            persisting,
+            ..
+        } = self
+        else {
+            return;
+        };
+        if *persisting || candidates.is_empty() || visible_len == 0 {
+            return;
+        }
+        let last = visible_len - 1;
+        *selected = if delta.is_negative() {
+            selected.saturating_sub(delta.unsigned_abs()).min(last)
+        } else {
+            selected.saturating_add(delta as usize).min(last)
+        };
+    }
+
+    pub fn selected_candidate(&self) -> Option<&ModelCandidate> {
+        match self {
+            Self::Ready {
+                selected,
+                persisting: false,
+                ..
+            } => self.visible_candidates().get(*selected).copied(),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn insert_query_char(&mut self, ch: char) {
+        if let Self::Ready {
+            query,
+            selected,
+            error,
+            persisting,
+            ..
+        } = self
+            && !*persisting
+            && query.len().saturating_add(ch.len_utf8()) <= MAX_MODEL_QUERY_BYTES
+        {
+            query.push(ch);
+            *selected = 0;
+            *error = None;
+        }
+    }
+
+    pub(crate) fn backspace_query(&mut self) {
+        if let Self::Ready {
+            query,
+            selected,
+            error,
+            persisting,
+            ..
+        } = self
+            && !*persisting
+        {
+            query.pop();
+            *selected = 0;
+            *error = None;
+        }
+    }
+
+    pub fn visible_candidates(&self) -> Vec<&ModelCandidate> {
+        let Self::Ready {
+            candidates, query, ..
+        } = self
+        else {
+            return Vec::new();
+        };
+        let query = query.trim().to_lowercase();
+        candidates
+            .iter()
+            .filter(|candidate| {
+                query.is_empty()
+                    || candidate.label.to_lowercase().contains(&query)
+                    || candidate.provider_type.to_lowercase().contains(&query)
+                    || candidate.selection.model.to_lowercase().contains(&query)
+                    || candidate
+                        .selection
+                        .profile_id
+                        .to_string()
+                        .to_lowercase()
+                        .contains(&query)
+            })
+            .collect()
+    }
+}
+pub const MAX_VISIBLE_MESSAGES: usize = 64;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum RunLifecycle {
@@ -336,18 +495,54 @@ pub struct HelpState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MessageQueueState {
+    pub messages: Vec<ConversationMessage>,
+    pub selected: usize,
+}
+
+impl MessageQueueState {
+    pub fn new(mut messages: Vec<ConversationMessage>) -> Self {
+        if messages.len() > MAX_VISIBLE_MESSAGES {
+            messages.drain(..messages.len() - MAX_VISIBLE_MESSAGES);
+        }
+        let selected = messages.len().saturating_sub(1);
+        Self { messages, selected }
+    }
+
+    pub fn selected(&self) -> Option<&ConversationMessage> {
+        self.messages.get(self.selected)
+    }
+
+    pub(crate) fn move_selection(&mut self, delta: isize) {
+        if self.messages.is_empty() {
+            return;
+        }
+        let last = self.messages.len() - 1;
+        self.selected = if delta.is_negative() {
+            self.selected.saturating_sub(delta.unsigned_abs()).min(last)
+        } else {
+            self.selected.saturating_add(delta as usize).min(last)
+        };
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TuiOverlay {
     SessionPicker(SessionPickerState),
+    ModelPicker(ModelPickerState),
     ToolDetail(ToolDetailState),
     Help(HelpState),
+    MessageQueue(MessageQueueState),
 }
 
 impl TuiOverlay {
     pub fn title(&self) -> &'static str {
         match self {
             Self::SessionPicker(_) => " Resume session ",
+            Self::ModelPicker(_) => " Select model ",
             Self::ToolDetail(_) => " Tool detail ",
             Self::Help(_) => " Help ",
+            Self::MessageQueue(_) => " Message delivery ",
         }
     }
 }
@@ -389,10 +584,63 @@ pub struct TuiState {
     pub should_quit: bool,
     pub overlay: Option<TuiOverlay>,
     pub active_resume: Option<ResumeCandidate>,
+    pub model_selection: Option<ModelSelection>,
+    pub model_selection_revision: u64,
+    pub model_notice: Option<String>,
+    pub model_selection_changed: bool,
+    pub messages: Vec<ConversationMessage>,
+    pub message_error: Option<String>,
 }
 
 impl TuiState {
     pub fn apply_run_update(&mut self, update: RunViewUpdate) {
+        if let RunViewUpdate::MessageDelivery {
+            id,
+            content,
+            status,
+            reason,
+        } = &update
+        {
+            let mapped_status = match status {
+                crate::terminal::view::MessageDeliveryStatus::Queued => MessageStatus::Queued,
+                crate::terminal::view::MessageDeliveryStatus::InterventionRequested => {
+                    MessageStatus::InterventionRequested
+                }
+                crate::terminal::view::MessageDeliveryStatus::AppliedCurrentRun => {
+                    MessageStatus::AppliedCurrentRun
+                }
+                crate::terminal::view::MessageDeliveryStatus::ClaimedSuccessor => {
+                    MessageStatus::ClaimedSuccessor
+                }
+                crate::terminal::view::MessageDeliveryStatus::NeedsAttention => {
+                    MessageStatus::NeedsAttention
+                }
+                crate::terminal::view::MessageDeliveryStatus::Revoked => MessageStatus::Revoked,
+            };
+            if let Some(existing) = self.messages.iter_mut().find(|message| message.id == *id) {
+                existing.status = mapped_status;
+                existing.reason = reason.clone();
+                if let Some(content) = content {
+                    existing.content = content.clone();
+                }
+            } else if let Some(content) = content {
+                self.messages.push(ConversationMessage {
+                    id: id.clone(),
+                    session_id: self
+                        .active_resume
+                        .as_ref()
+                        .map(|resume| resume.session_id.to_string())
+                        .unwrap_or_default(),
+                    content: content.clone(),
+                    requested_delivery: rove_runtime::conversation::MessageDelivery::Successor,
+                    actual_delivery: None,
+                    status: mapped_status,
+                    sequence: self.messages.len() as i64 + 1,
+                    target_run_id: self.run.run_id,
+                    reason: reason.clone(),
+                });
+            }
+        }
         let starting_run_id = match &update {
             RunViewUpdate::RunStarted { run_id, .. } => Some(*run_id),
             _ => None,
@@ -444,6 +692,42 @@ impl TuiState {
         self.overlay = Some(TuiOverlay::ToolDetail(ToolDetailState::from_state(self)));
     }
 
+    pub fn replace_messages(&mut self, mut messages: Vec<ConversationMessage>) {
+        if messages.len() > MAX_VISIBLE_MESSAGES {
+            messages.drain(..messages.len() - MAX_VISIBLE_MESSAGES);
+        }
+        self.messages = messages;
+        if let Some(TuiOverlay::MessageQueue(queue)) = self.overlay.as_mut() {
+            *queue = MessageQueueState::new(self.messages.clone());
+        }
+    }
+
+    pub fn upsert_message(&mut self, message: ConversationMessage) {
+        if let Some(existing) = self.messages.iter_mut().find(|item| item.id == message.id) {
+            *existing = message;
+        } else {
+            self.messages.push(message);
+            if self.messages.len() > MAX_VISIBLE_MESSAGES {
+                self.messages.remove(0);
+            }
+        }
+        if let Some(TuiOverlay::MessageQueue(queue)) = self.overlay.as_mut() {
+            *queue = MessageQueueState::new(self.messages.clone());
+        }
+    }
+
+    pub fn eligible_message_count(&self) -> usize {
+        self.messages
+            .iter()
+            .filter(|message| {
+                matches!(
+                    message.status,
+                    MessageStatus::Queued | MessageStatus::NeedsAttention
+                )
+            })
+            .count()
+    }
+
     pub fn can_accept_resume(&self, run_id: RunId) -> bool {
         matches!(
             &self.overlay,
@@ -473,6 +757,12 @@ impl Default for TuiState {
             should_quit: false,
             overlay: None,
             active_resume: None,
+            model_selection: None,
+            model_selection_revision: 0,
+            model_notice: None,
+            model_selection_changed: false,
+            messages: Vec::new(),
+            message_error: None,
         }
     }
 }

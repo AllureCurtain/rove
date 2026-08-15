@@ -5,12 +5,13 @@ use futures::stream::BoxStream;
 use tokio_util::sync::CancellationToken;
 
 use crate::compaction::maybe_compact_history;
+use crate::engine::control::{AcceptedSteer, steer_accepted_event};
 use crate::events::StreamEvent;
 use crate::execution::ExecutionBudgetDimension;
 use crate::memory::session::append_session_notes_to_dir_sync;
 use crate::run_loop::{
     ActiveInstructionTarget, LoopContext, active_target_covers, enrich_prompt_metadata,
-    extract_session_memory_notes, run_kernel_model_turn, scoped_paths_for_action,
+    extract_session_memory_notes, run_kernel_model_turn, runtime_guidance, scoped_paths_for_action,
     scoped_prompt_events, scoped_prompt_for_target, shell_path_declaration_missing,
 };
 use crate::tool_turn::{
@@ -39,7 +40,7 @@ pub(crate) struct StepRunnerInput {
     pub compaction: crate::compaction::CompactionRuntime,
     /// Steers accepted before this runner started. Steers arriving while the
     /// step is running are accepted at its internal model-turn safe points.
-    pub accepted_steer_ids: Vec<String>,
+    pub accepted_steer_ids: Vec<AcceptedSteer>,
     pub max_model_turns: u32,
     pub max_tool_calls: u32,
     pub max_repairs: u32,
@@ -249,7 +250,7 @@ struct StepKernelHost<'a> {
     compact_summary: Option<String>,
     history: Vec<Message>,
     compaction: Option<crate::compaction::CompactionRuntime>,
-    pending_steer_ids: Vec<String>,
+    pending_steer_ids: Vec<AcceptedSteer>,
     max_total_tokens: Option<u64>,
     active_instruction_target: ActiveInstructionTarget,
 }
@@ -279,22 +280,22 @@ impl AgentKernelHost for StepKernelHost<'_> {
             if let Some(rx) = self.ctx.steer_rx.as_ref() {
                 let mut receiver = rx.lock().await;
                 while let Ok(steer) = receiver.try_recv() {
-                    let id = steer.id.0;
+                    let accepted = AcceptedSteer {
+                        id: steer.id.0.clone(),
+                        unified_message: steer.unified_message,
+                    };
                     self.working_memory
                         .push(Message::user(steer.content.clone()));
                     if let Some(lifecycle) = self.ctx.steer_lifecycle.as_ref() {
-                        lifecycle.accepted(id.clone()).await;
+                        lifecycle.accepted(accepted.clone()).await;
                     }
-                    yield KernelBeforeModelTurnItem::Event(StreamEvent::SteerAccepted {
-                        id: id.clone(),
-                        content: steer.content,
-                    });
-                    self.pending_steer_ids.push(id);
+                    yield KernelBeforeModelTurnItem::Event(steer_accepted_event(steer));
+                    self.pending_steer_ids.push(accepted);
                 }
             }
 
             let mut turn_working_memory = self.working_memory.clone();
-            turn_working_memory.extend(state.history.iter().cloned());
+            turn_working_memory.push(runtime_guidance(&self.ctx));
             let scoped = scoped_prompt_for_target(&self.ctx, &self.active_instruction_target);
             for event in scoped_prompt_events(
                 &self.ctx,
@@ -304,11 +305,12 @@ impl AgentKernelHost for StepKernelHost<'_> {
                 yield KernelBeforeModelTurnItem::Event(event);
             }
             turn_working_memory.extend(scoped.messages);
-            let mut context = self.ctx.context_manager.build_with_checkpoint(
+            let mut context = self.ctx.context_manager.build_with_required_history(
                 &self.step_prompt,
                 &turn_working_memory,
                 self.compact_summary.as_deref(),
                 &self.history,
+                &state.history,
             );
 
             if context.over_hard_limit {
@@ -361,11 +363,12 @@ impl AgentKernelHost for StepKernelHost<'_> {
                     });
                 }
 
-                context = self.ctx.context_manager.build_with_checkpoint(
+                context = self.ctx.context_manager.build_with_required_history(
                     &self.step_prompt,
                     &turn_working_memory,
                     self.compact_summary.as_deref(),
                     &self.history,
+                    &state.history,
                 );
                 if context.over_hard_limit {
                     yield KernelBeforeModelTurnItem::Stop {

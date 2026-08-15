@@ -286,6 +286,7 @@ Test-CommandAvailable "pnpm"
 
 $IntegrationRoot = Resolve-RepoPath $IntegrationRoot
 $WorkspaceDir = Resolve-RepoPath $(if ($env:ROVE_INTEGRATION_WORKSPACE) { $env:ROVE_INTEGRATION_WORKSPACE } else { Join-Path $IntegrationRoot "workspace" })
+$UserConfigRoot = Join-Path $WorkspaceDir ".rove-integration-user-config"
 $StateDir = Resolve-RepoPath $(if ($env:ROVE_STATE_DIR) { $env:ROVE_STATE_DIR } else { Join-Path $WorkspaceDir ".rove-integration-state" })
 $ArtifactsDir = Resolve-RepoPath $(if ($env:ROVE_INTEGRATION_ARTIFACTS) { $env:ROVE_INTEGRATION_ARTIFACTS } else { Join-Path $IntegrationRoot "artifacts" })
 $ApiArtifacts = Join-Path $ArtifactsDir "api"
@@ -315,6 +316,7 @@ try {
     $env:ROVE_STATE_SQLITE = ".rove-integration-state/state.sqlite"
     $env:ROVE_MEMORY_SESSION_DIR = ".rove-integration-state/memory/sessions"
     $env:ROVE_MEMORY_DURABLE_DIR = ".rove-integration-state/memory"
+    $env:ROVE_CONFIG_ROOT = $UserConfigRoot
     $env:ROVE_API_BIND_ADDR = $ApiAddr
     $env:ROVE_API_BASE = $ApiBase
     if (-not $SkipWebE2E) {

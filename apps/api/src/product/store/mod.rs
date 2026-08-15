@@ -15,16 +15,16 @@ use async_trait::async_trait;
 
 use crate::product::{
     CommitProductRunBinding, CreateProductControlRequest, CreateProductForkRequest,
-    CreateProductProviderProfileRequest, CreateProductSessionRequest,
+    CreateProductMessageRequest, CreateProductProviderProfileRequest, CreateProductSessionRequest,
     CreateProductWorkspaceRequest, M1BrowserMigrationPreflight, M1BrowserMigrationRequest,
     M1BrowserMigrationResponse, PreparedM1BrowserMigration, ProductControl, ProductControlId,
     ProductControlKind, ProductControlStatus, ProductErrorCode, ProductFollowupTurnClaim,
-    ProductFork, ProductPreferences, ProductProviderProfile, ProductProviderProfileId,
-    ProductResumeHealth, ProductSession, ProductSessionContext, ProductSessionId,
-    ProductSessionModelConfig, ProductSessionRunBinding, ProductSessionRunModelView,
-    ProductSessionStatus, ProductStore, ProductStoreError, ProductTurnClaim, ProductTurnClaimId,
-    ProductTurnControlFinish, ProductWorkspace, ProductWorkspaceId,
-    UpdateProductPreferencesRequest, UpdateProductProviderProfileRequest,
+    ProductFork, ProductMessage, ProductMessagePage, ProductMessagePageQuery, ProductPreferences,
+    ProductProviderProfile, ProductProviderProfileId, ProductResumeHealth, ProductSession,
+    ProductSessionContext, ProductSessionId, ProductSessionModelConfig, ProductSessionRunBinding,
+    ProductSessionRunModelView, ProductSessionStatus, ProductStore, ProductStoreError,
+    ProductTurnClaim, ProductTurnClaimId, ProductTurnControlFinish, ProductWorkspace,
+    ProductWorkspaceId, UpdateProductPreferencesRequest, UpdateProductProviderProfileRequest,
     UpdateProductSessionModelConfigRequest, UpdateProductSessionRequest,
     VerifiedProductForkBoundary,
 };
@@ -335,6 +335,27 @@ impl ProductStore for SqliteProductStore {
             .await
     }
 
+    async fn upsert_provider_catalog_identity(
+        &self,
+        profile_id: &ProductProviderProfileId,
+        label: &str,
+        provider_type: crate::product::ProductProviderType,
+        catalog_revision: &str,
+    ) -> Result<(), ProductStoreError> {
+        let profile_id = profile_id.clone();
+        let label = label.to_string();
+        let catalog_revision = catalog_revision.to_string();
+        self.blocking(move |repository| {
+            repository.upsert_provider_catalog_identity(
+                &profile_id,
+                &label,
+                provider_type,
+                &catalog_revision,
+            )
+        })
+        .await
+    }
+
     async fn get_preferences(&self) -> Result<ProductPreferences, ProductStoreError> {
         self.blocking(|repository| repository.get_preferences())
             .await
@@ -378,6 +399,59 @@ impl ProductStore for SqliteProductStore {
     ) -> Result<(ProductControl, bool), ProductStoreError> {
         let session_id = session_id.clone();
         self.blocking(move |repository| repository.create_control(&session_id, kind, request))
+            .await
+    }
+
+    async fn create_message(
+        &self,
+        session_id: &ProductSessionId,
+        request: CreateProductMessageRequest,
+    ) -> Result<(ProductMessage, bool), ProductStoreError> {
+        let session_id = session_id.clone();
+        self.blocking(move |repository| repository.create_message(&session_id, request))
+            .await
+    }
+
+    async fn promote_message(
+        &self,
+        session_id: &ProductSessionId,
+        message_id: &ProductControlId,
+    ) -> Result<ProductMessage, ProductStoreError> {
+        let session_id = session_id.clone();
+        let message_id = message_id.clone();
+        self.blocking(move |repository| repository.promote_message(&session_id, &message_id))
+            .await
+    }
+
+    async fn revoke_message(
+        &self,
+        session_id: &ProductSessionId,
+        message_id: &ProductControlId,
+    ) -> Result<ProductMessage, ProductStoreError> {
+        let session_id = session_id.clone();
+        let message_id = message_id.clone();
+        self.blocking(move |repository| repository.revoke_message(&session_id, &message_id))
+            .await
+    }
+
+    async fn list_messages(
+        &self,
+        session_id: &ProductSessionId,
+        query: ProductMessagePageQuery,
+    ) -> Result<ProductMessagePage, ProductStoreError> {
+        let session_id = session_id.clone();
+        self.blocking(move |repository| repository.list_messages(&session_id, query))
+            .await
+    }
+
+    async fn get_message(
+        &self,
+        session_id: &ProductSessionId,
+        message_id: &ProductControlId,
+    ) -> Result<ProductMessage, ProductStoreError> {
+        let session_id = session_id.clone();
+        let message_id = message_id.clone();
+        self.blocking(move |repository| repository.get_message(&session_id, &message_id))
             .await
     }
 

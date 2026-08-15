@@ -15,11 +15,11 @@ import {
 import type {
   ProductControl,
   ProductControlKind,
+  ProductMessage,
 } from "../product/product-api-types";
 import type { ProductApiClient } from "../product/product-client";
 import {
   findSession,
-  findWorkspace,
   updateSession,
   type ProductCatalog,
 } from "./product-catalog";
@@ -34,10 +34,13 @@ import {
 } from "./transcript-projection";
 import {
   assertProviderSelectionIsSatisfiable,
-  buildTurnJobRequest,
-  isHardResumeError,
 } from "./turn-request";
 import { hasAdvancedRuntimeBinding } from "./server-product-state";
+
+interface ObservedRunBinding {
+  jobId: string;
+  runId: string | null;
+}
 
 export function useSessionContinuity({
   productClient,
@@ -69,6 +72,7 @@ export function useSessionContinuity({
   const [approvalBusy, setApprovalBusy] = useState<string | null>(null);
   const [inputBusy, setInputBusy] = useState<string | null>(null);
   const [controls, setControls] = useState<ProductControl[]>([]);
+  const [messages, setMessages] = useState<ProductMessage[]>([]);
   const [controlsLoading, setControlsLoading] = useState(false);
   const [controlBusy, setControlBusy] = useState<string | null>(null);
   const [controlError, setControlError] = useState<string | null>(null);
@@ -86,9 +90,11 @@ export function useSessionContinuity({
   profilesRef.current = profiles;
   const focusedSessionRef = useRef<string | null>(null);
   const restoredSessionRef = useRef<string | null>(null);
-  const observedJobRef = useRef<string | null>(null);
+  const observedBindingRef = useRef<ObservedRunBinding | null>(null);
   const transcriptGenerationRef = useRef(0);
   const controlsGenerationRef = useRef(0);
+  const messagesGenerationRef = useRef(0);
+  const messageRequestsRef = useRef(new Map<string, string>());
   const controlRequestsRef = useRef(
     new Map<
       string,
@@ -100,7 +106,7 @@ export function useSessionContinuity({
     (
       sessionId: string,
       controller: ReturnType<typeof createRunController>,
-      completedJobId: string | null,
+      completedBinding: ObservedRunBinding | null,
     ) => void
   >(() => undefined);
 
@@ -114,6 +120,41 @@ export function useSessionContinuity({
     setControlsLoading(false);
     setControlBusy(null);
     setControlError(null);
+    ++messagesGenerationRef.current;
+    setMessages([]);
+  }, []);
+
+  const refreshMessages = useCallback(
+    async (sessionId: string): Promise<ProductMessage[] | null> => {
+      const generation = ++messagesGenerationRef.current;
+      try {
+        const response = await productClient.listMessages(sessionId);
+        if (
+          messagesGenerationRef.current !== generation ||
+          focusedSessionRef.current !== sessionId
+        ) {
+          return null;
+        }
+        setMessages(response.messages);
+        return response.messages;
+      } catch (error) {
+        if (focusedSessionRef.current === sessionId) {
+          setControlError(`Could not refresh messages: ${describeError(error)}`);
+        }
+        return null;
+      }
+    },
+    [productClient],
+  );
+
+  const upsertMessage = useCallback((message: ProductMessage) => {
+    if (focusedSessionRef.current !== message.product_session_id) {
+      return;
+    }
+    setMessages((current) => {
+      const rest = current.filter((item) => item.id !== message.id);
+      return [...rest, message].sort((left, right) => left.seq - right.seq);
+    });
   }, []);
 
   const refreshControls = useCallback(
@@ -168,7 +209,7 @@ export function useSessionContinuity({
   const closeFocusedObservation = useCallback(() => {
     controllerRef.current?.close();
     controllerRef.current = null;
-    observedJobRef.current = null;
+    observedBindingRef.current = null;
   }, []);
 
   const installFocusedController = useCallback(
@@ -183,9 +224,9 @@ export function useSessionContinuity({
           ) {
             return;
           }
-          const completedJobId = observedJobRef.current;
-          observedJobRef.current = null;
-          terminalReconciliationRef.current(sessionId, controller, completedJobId);
+          const completedBinding = observedBindingRef.current;
+          observedBindingRef.current = null;
+          terminalReconciliationRef.current(sessionId, controller, completedBinding);
         },
         onStreamEvent: (event) => {
           if (
@@ -195,31 +236,39 @@ export function useSessionContinuity({
               event.type !== "steer_dropped" &&
               event.type !== "followup_queued" &&
               event.type !== "followup_dequeued" &&
-              event.type !== "followup_abandoned")
+              event.type !== "followup_abandoned" &&
+              event.type !== "message_queued" &&
+              event.type !== "message_intervention_requested" &&
+              event.type !== "message_applied_current_run" &&
+              event.type !== "message_claimed_successor" &&
+              event.type !== "message_needs_attention" &&
+              event.type !== "message_revoked")
           ) {
             return;
           }
           void refreshControls(sessionId);
+          void refreshMessages(sessionId);
         },
       });
       controllerRef.current = controller;
       return controller;
     },
-    [closeFocusedObservation, refreshControls],
+    [closeFocusedObservation, refreshControls, refreshMessages],
   );
 
   const attachFocusedJob = useCallback(
-    (sessionId: string, jobId: string) => {
+    (sessionId: string, jobId: string, runId: string | null) => {
+      const observed = observedBindingRef.current;
       if (
         focusedSessionRef.current !== sessionId ||
-        observedJobRef.current === jobId
+        (observed?.jobId === jobId && observed.runId === runId)
       ) {
         return;
       }
       const controller = installFocusedController(sessionId);
-      observedJobRef.current = jobId;
-      dispatch({ type: "prepare_job_attachment", jobId });
-      void controller.attach(jobId).catch((error) => {
+      observedBindingRef.current = { jobId, runId };
+      dispatch({ type: "prepare_job_attachment", jobId, runId });
+      void controller.attach(jobId, runId).catch((error) => {
         if (
           isRunControllerInactive(error) ||
           focusedSessionRef.current !== sessionId ||
@@ -269,6 +318,7 @@ export function useSessionContinuity({
             : { status: "complete", sessionId },
         );
         void refreshControls(sessionId);
+        void refreshMessages(sessionId);
 
         const session = findSession(catalogRef.current, sessionId);
         const liveJobId =
@@ -278,8 +328,15 @@ export function useSessionContinuity({
                 (session.status === "running" || session.status === "needs_attention")
               ? session.activeJobId ?? null
               : null;
+        const liveRunId =
+          projected.busy && projected.activeJobId
+            ? projected.activeRunId
+            : session &&
+                (session.status === "running" || session.status === "needs_attention")
+              ? session.activeRunId ?? null
+              : null;
         if (liveJobId) {
-          attachFocusedJob(sessionId, liveJobId);
+          attachFocusedJob(sessionId, liveJobId, liveRunId);
         }
       } catch (error) {
         if (
@@ -304,6 +361,7 @@ export function useSessionContinuity({
       closeFocusedObservation,
       productClient,
       refreshControls,
+      refreshMessages,
     ],
   );
 
@@ -479,11 +537,55 @@ export function useSessionContinuity({
     [catalogRef, productClient, refreshControls, setConnection, upsertControl],
   );
 
+  const promoteMessage = useCallback(
+    async (messageId: string) => {
+      const sessionId = focusedSessionRef.current ?? catalogRef.current.active.sessionId;
+      if (!sessionId) {
+        return;
+      }
+      const busyId = `promote:${messageId}`;
+      setControlBusy(busyId);
+      setControlError(null);
+      try {
+        upsertMessage(await productClient.promoteMessage(sessionId, messageId));
+        void refreshMessages(sessionId);
+      } catch (error) {
+        setControlError(`Could not request intervention: ${describeError(error)}`);
+        void refreshMessages(sessionId);
+      } finally {
+        setControlBusy((current) => (current === busyId ? null : current));
+      }
+    },
+    [catalogRef, productClient, refreshMessages, upsertMessage],
+  );
+
+  const revokeMessage = useCallback(
+    async (messageId: string) => {
+      const sessionId = focusedSessionRef.current ?? catalogRef.current.active.sessionId;
+      if (!sessionId) {
+        return;
+      }
+      const busyId = `revoke-message:${messageId}`;
+      setControlBusy(busyId);
+      setControlError(null);
+      try {
+        upsertMessage(await productClient.revokeMessage(sessionId, messageId));
+        void refreshMessages(sessionId);
+      } catch (error) {
+        setControlError(`Could not revoke message: ${describeError(error)}`);
+        void refreshMessages(sessionId);
+      } finally {
+        setControlBusy((current) => (current === busyId ? null : current));
+      }
+    },
+    [catalogRef, productClient, refreshMessages, upsertMessage],
+  );
+
   const reconcileTerminal = useCallback(
     async (
       sessionId: string,
       controller: ReturnType<typeof createRunController>,
-      completedJobId: string | null,
+      completedBinding: ObservedRunBinding | null,
     ) => {
       for (const delayMs of TERMINAL_RECONCILIATION_DELAYS_MS) {
         if (delayMs > 0) {
@@ -513,13 +615,17 @@ export function useSessionContinuity({
         }
         const currentSession = findSession(catalogRef.current, sessionId);
         const successorJobId = currentSession?.activeJobId ?? null;
+        const successorRunId = currentSession?.activeRunId ?? null;
         const successorIsLive =
           (currentSession?.status === "running" ||
             currentSession?.status === "needs_attention") &&
           successorJobId !== null &&
-          successorJobId !== completedJobId;
+          successorRunId !== null &&
+          (completedBinding === null ||
+            successorJobId !== completedBinding.jobId ||
+            successorRunId !== completedBinding.runId);
         if (successorIsLive) {
-          attachFocusedJob(sessionId, successorJobId);
+          attachFocusedJob(sessionId, successorJobId, successorRunId);
           return;
         }
 
@@ -553,36 +659,28 @@ export function useSessionContinuity({
   );
 
   useEffect(() => {
-    terminalReconciliationRef.current = (sessionId, controller, completedJobId) => {
-      void reconcileTerminal(sessionId, controller, completedJobId);
+    terminalReconciliationRef.current = (sessionId, controller, completedBinding) => {
+      void reconcileTerminal(sessionId, controller, completedBinding);
     };
     return () => {
       terminalReconciliationRef.current = () => undefined;
     };
   }, [reconcileTerminal]);
 
-  const reconcileCreatedTurn = useCallback(
-    async (
-      workspaceId: string,
-      previousSession: SessionRecord,
-      controller: ReturnType<typeof createRunController>,
-    ) => {
+  const reconcileAcceptedSuccessor = useCallback(
+    async (previousSession: SessionRecord) => {
       dispatch({ type: "set_status", statusText: "Reconciling durable session" });
       for (const delayMs of AMBIGUOUS_START_RECONCILIATION_DELAYS_MS) {
         if (delayMs > 0) {
           await waitForReconciliationDelay(delayMs);
         }
-        if (
-          controllerRef.current !== controller ||
-          focusedSessionRef.current !== previousSession.id
-        ) {
+        if (focusedSessionRef.current !== previousSession.id) {
           return false;
         }
 
         const refreshed = await refreshStatusesRef.current();
         if (
           !refreshed ||
-          controllerRef.current !== controller ||
           focusedSessionRef.current !== previousSession.id
         ) {
           continue;
@@ -594,24 +692,11 @@ export function useSessionContinuity({
         if (!hasAdvancedRuntimeBinding(previousSession, currentSession)) {
           continue;
         }
-
-        observedJobRef.current = currentSession.activeJobId;
-        dispatch({
-          type: "prepare_job_attachment",
-          jobId: currentSession.activeJobId,
-        });
-        try {
-          await controller.attach(currentSession.activeJobId);
-        } catch (error) {
-          if (
-            isRunControllerInactive(error) ||
-            focusedSessionRef.current !== previousSession.id
-          ) {
-            return true;
-          }
-          restoredSessionRef.current = null;
-          await restoreSession(workspaceId, previousSession.id);
-        }
+        attachFocusedJob(
+          previousSession.id,
+          currentSession.activeJobId,
+          currentSession.activeRunId,
+        );
         if (focusedSessionRef.current === previousSession.id) {
           setConnection("ok");
         }
@@ -619,134 +704,119 @@ export function useSessionContinuity({
       }
       return false;
     },
-    [catalogRef, restoreSession, setConnection],
+    [attachFocusedJob, catalogRef, setConnection],
   );
 
   const send = useCallback(
-    async (message: string) => {
-      const workspace = findWorkspace(
-        catalogRef.current,
-        catalogRef.current.active.workspaceId,
-      );
+    async (message: string): Promise<boolean> => {
       const session = findSession(
         catalogRef.current,
         catalogRef.current.active.sessionId,
       );
-      if (!workspace || !session) {
+      if (!session) {
         dispatch({ type: "set_error", error: "Open a workspace and session first." });
-        return;
+        return false;
       }
-
-      let request;
+      const trimmed = message.trim();
+      if (!trimmed) {
+        return false;
+      }
       try {
-        // Fail closed before any optimistic turn is appended below.
         assertProviderSelectionIsSatisfiable(
           selectionRef.current,
           profilesRef.current,
         );
-        request = buildTurnJobRequest({
-          message,
-          workspace,
-          session,
-        });
       } catch (error) {
         dispatch({ type: "set_error", error: describeError(error) });
-        return;
+        return false;
       }
-
-      const controller = installFocusedController(session.id);
-      dispatch({ type: "prepare_turn", preserveTools: true });
-      dispatch({ type: "append_user_message", content: message });
-      dispatch({ type: "set_status", statusText: "Submitting job" });
-      const title = session.title === "New session" ? truncateTitle(message) : session.title;
-      markSession(session.id, {
-        status: "running",
-        title,
-        activeJobId: null,
-        activeRunId: null,
-        resumedFromRunId: null,
-      });
+      const requestKey = `${session.id}\u0000${trimmed}`;
+      let idempotencyKey = messageRequestsRef.current.get(requestKey);
+      if (!idempotencyKey) {
+        if (messageRequestsRef.current.size >= MAX_PENDING_MESSAGE_REQUESTS) {
+          dispatch({
+            type: "set_error",
+            error: "Too many message submissions are awaiting reconciliation.",
+          });
+          return false;
+        }
+        idempotencyKey = createControlIdempotencyKey();
+        messageRequestsRef.current.set(requestKey, idempotencyKey);
+      }
+      const title = session.title === "New session" ? truncateTitle(trimmed) : session.title;
       if (session.title === "New session") {
         void updateSessionTitle(session.id, title).catch(() => undefined);
       }
-
-      try {
-        const started = await controller.start(request);
-        if (
-          controllerRef.current !== controller ||
-          focusedSessionRef.current !== session.id
-        ) {
-          return;
+      let accepted: ProductMessage | null = null;
+      let lastError: unknown;
+      for (const delayMs of MESSAGE_SUBMISSION_RETRY_DELAYS_MS) {
+        if (delayMs > 0) {
+          await waitForReconciliationDelay(delayMs);
         }
-        observedJobRef.current = started.jobId;
-        markSession(session.id, {
-          activeJobId: started.jobId,
-          activeRunId: started.runId,
-          resumedFromRunId: started.resumedFromRunId,
-          hasDurableTurn: true,
-          status: "running",
-        });
-        setConnection("ok");
-      } catch (error) {
-        if (
-          isRunControllerInactive(error) ||
-          focusedSessionRef.current !== session.id
-        ) {
-          return;
+        if (focusedSessionRef.current !== session.id) {
+          return false;
         }
-        if (isAmbiguousJobStartError(error)) {
+        try {
+          accepted = await productClient.sendMessage(session.id, {
+            content: trimmed,
+            idempotency_key: idempotencyKey,
+          });
+          break;
+        } catch (error) {
+          lastError = error;
+          if (!isAmbiguousJobStartError(error)) {
+            break;
+          }
           dispatch({
             type: "set_status",
-            statusText: "Confirming whether the server started this turn",
+            statusText: "Confirming whether the server accepted this message",
           });
-          if (await reconcileCreatedTurn(workspace.id, session, controller)) {
-            return;
-          }
-          if (
-            controllerRef.current !== controller ||
-            focusedSessionRef.current !== session.id
-          ) {
-            return;
-          }
-          setConnection("error");
-          markSession(session.id, { status: "needs_attention" });
-          if (focusedSessionRef.current === session.id) {
-            restoredSessionRef.current = null;
-            await restoreSession(workspace.id, session.id);
-            if (focusedSessionRef.current === session.id) {
-              setConnection("error");
-              dispatch({
-                type: "set_error",
-                error:
-                  "The server may have accepted this turn, but its durable binding is not visible yet. Reload before sending another message.",
-              });
-            }
-          }
-          return;
-        }
-        const messageText = describeError(error);
-        const hard = session.hasDurableTurn || isHardResumeError(messageText);
-        dispatch({
-          type: "set_error",
-          error: hard ? `Exact session resume failed: ${messageText}.` : messageText,
-        });
-        markSession(session.id, { status: "error" });
-        if (
-          messageText.toLowerCase().includes("fetch") ||
-          messageText.toLowerCase().includes("network")
-        ) {
-          setConnection("error");
         }
       }
+      if (!accepted) {
+        const detail = describeError(lastError);
+        if (!isAmbiguousJobStartError(lastError)) {
+          messageRequestsRef.current.delete(requestKey);
+        }
+        dispatch({ type: "set_error", error: `Could not send message: ${detail}` });
+        if (isLikelyNetworkError(detail)) {
+          setConnection("error");
+        }
+        return false;
+      }
+
+      messageRequestsRef.current.delete(requestKey);
+      upsertMessage(accepted);
+      markSession(session.id, { title });
+      dispatch({ type: "set_status", statusText: messageStatusLabel(accepted.status) });
+      setConnection("ok");
+      void refreshMessages(session.id);
+      const successorExpected =
+        accepted.status === "claimed_successor" ||
+        (accepted.status === "queued" && session.status === "idle");
+      if (successorExpected) {
+        const attached = await reconcileAcceptedSuccessor(session);
+        if (!attached && focusedSessionRef.current === session.id) {
+          await refreshMessages(session.id);
+          setConnection("error");
+          dispatch({
+            type: "set_error",
+            error:
+              "The message was accepted, but its successor run binding is not visible yet. Reload before sending another message.",
+          });
+        }
+      }
+      return true;
     },
     [
       catalogRef,
-      installFocusedController,
       markSession,
-      reconcileCreatedTurn,
+      productClient,
+      reconcileAcceptedSuccessor,
+      refreshMessages,
       setConnection,
-      restoreSession,
       updateSessionTitle,
+      upsertMessage,
     ],
   );
 
@@ -830,11 +900,16 @@ export function useSessionContinuity({
       (restoreState.status !== "complete" && restoreState.status !== "partial") ||
       (activeSession.status !== "running" &&
         activeSession.status !== "needs_attention") ||
-      !activeSession.activeJobId
+      !activeSession.activeJobId ||
+      !activeSession.activeRunId
     ) {
       return;
     }
-    attachFocusedJob(activeSession.id, activeSession.activeJobId);
+    attachFocusedJob(
+      activeSession.id,
+      activeSession.activeJobId,
+      activeSession.activeRunId,
+    );
   }, [activeSession, attachFocusedJob, restoreState.status]);
 
   useEffect(
@@ -851,10 +926,12 @@ export function useSessionContinuity({
     approvalBusy,
     inputBusy,
     controls,
+    messages,
     controlsLoading,
     controlBusy,
     controlError,
     refreshControls,
+    refreshMessages,
     focusSession,
     prepareSession,
     leaveSession,
@@ -864,6 +941,8 @@ export function useSessionContinuity({
     submitFollowup: (content: string) => submitControl("followup", content),
     revokeControl,
     confirmFollowup,
+    promoteMessage,
+    revokeMessage,
     cancel,
     approve,
     answer,
@@ -871,6 +950,8 @@ export function useSessionContinuity({
 }
 
 const MAX_PENDING_CONTROL_REQUESTS = 32;
+const MAX_PENDING_MESSAGE_REQUESTS = 32;
+const MESSAGE_SUBMISSION_RETRY_DELAYS_MS = [0, 100, 200, 400] as const;
 const TERMINAL_RECONCILIATION_DELAYS_MS = [0, 100, 200, 400, 800, 1_000] as const;
 
 function createControlIdempotencyKey(): string {
@@ -882,6 +963,23 @@ function createControlIdempotencyKey(): string {
 
 function controlLabel(kind: ProductControlKind): string {
   return kind === "steer" ? "steer" : "follow-up";
+}
+
+function messageStatusLabel(status: ProductMessage["status"]): string {
+  switch (status) {
+    case "queued":
+      return "Message queued for the next turn";
+    case "intervention_requested":
+      return "Intervention requested";
+    case "applied_current_run":
+      return "Message applied to the current run";
+    case "claimed_successor":
+      return "Starting queued message";
+    case "needs_attention":
+      return "Message needs attention";
+    case "revoked":
+      return "Message revoked";
+  }
 }
 
 function isLikelyNetworkError(message: string): boolean {

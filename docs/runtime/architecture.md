@@ -49,6 +49,14 @@ API product control plane
     -> exact product-session -> runtime session/job/run bindings
     -> bounded live steer delivery + durable follow-up drain
     -> transcript read projection over per-workspace StateStore events
+
+Unified conversation control
+    -> rove-runtime::conversation::MessageDomainService
+    -> API ProductStore adapter / Runtime SQLite adapter / TUI in-process adapter
+    -> one durable FIFO identity with CAS promotion, successor claim, revoke,
+       and needs-attention recovery
+    -> canonical message events are persisted in the existing trace/SSE path;
+       no second event log or queue authority is introduced
 ```
 
 Product shells assemble and run `rove-runtime::Engine`. `rove-core::Agent` is
@@ -101,11 +109,12 @@ cannot supply trustworthy interaction events fail closed.
 8. The API also opens one application-global ProductStore at
    `<configured state_dir>/product.sqlite`. Product routes own catalog,
    preferences, migration receipts, active-turn claims, exact runtime
-   bindings, and idempotent product-session controls there. Live steers are
-   persisted before their bounded runtime delivery. Follow-ups are durable
-   queue records: an atomic terminal-turn transition claims the oldest pending
-   follow-up and starts its successor through the API supervisor. Canonical
-   events and run artifacts remain in each selected execution workspace.
+   bindings, and idempotent product-session messages/compatibility controls
+   there. One durable Send Message identity is persisted before delivery; an
+   active-run message can be promoted at a safe boundary, while an idle
+   transition atomically claims the oldest pending message and starts its
+   successor through the API supervisor. Canonical events and run artifacts
+   remain in each selected execution workspace.
 
 CDH G2 extends that catalog with immutable fork provenance. A fork is accepted
 only after the API verifies the selected parent run's durable terminal boundary;
@@ -224,15 +233,16 @@ approvals, and input channels live only in memory and are not reconstructed
 after restart. When an explicit resume finds a persisted planned-step attempt
 without a terminal record, it appends an `interrupted` record and stops with an
 error instead of repeating model/tool work. A persisted successful terminal
-record advances the materialized plan without replaying that step. Resume does
-not yet reconcile trace events written after the latest task-state snapshot.
+record advances the materialized plan without replaying that step. Resume
+reconciles canonical trace events newer than the latest task-state/checkpoint
+sequence into the loaded projection without redispatching completed work.
 Legacy snapshots with a mutable plan but no lifecycle chain are wrapped once as
 an immutable revision-zero plan before new transitions are evaluated.
 
-Product controls have separate conservative recovery rules. On ProductStore
-open, a stale follow-up claim without a reserved runtime run is returned to the
+Product messages have separate conservative recovery rules. On ProductStore
+open, a stale successor claim without a reserved runtime run is returned to the
 durable pending queue; an already reserved run is not replayed and is surfaced
-as `needs_attention`. Once the API is ready, only idle product sessions with a
-pending follow-up are scheduled for drain. Pending or safe-point-accepted
-steers are classified as dropped at a terminal boundary when no next model turn
-can apply them.
+as `needs_attention`. Once the API is ready, only idle product sessions with
+safely pending work are scheduled for drain. A requested intervention that
+cannot reach another model turn becomes an explicit terminal delivery outcome
+rather than disappearing.

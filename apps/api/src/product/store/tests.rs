@@ -1,20 +1,22 @@
 use std::{fs, path::PathBuf};
 
 use chrono::{Duration, TimeZone, Utc};
+use rove_runtime::runtime_identity::RunModelSnapshot;
 use rove_runtime::types::{JobId, RunId, SessionId};
 use rusqlite::{Connection, params};
 use tempfile::TempDir;
 
 use crate::product::{
     CommitProductRunBinding, CreateProductControlRequest, CreateProductForkRequest,
-    CreateProductProviderProfileRequest, CreateProductSessionRequest,
+    CreateProductMessageRequest, CreateProductProviderProfileRequest, CreateProductSessionRequest,
     CreateProductWorkspaceRequest, M1BrowserMigrationPreflight, M1BrowserMigrationRequest,
     M1BrowserMigrationSource, M1MigrationDisposition, M1MigrationIssueCode, M1PreferencesBaseline,
     M1ProviderProfileImport, M1ProviderSelectionImport, M1SafePreferencesImport, M1SessionImport,
     M1WorkspaceImport, PreparedM1BrowserMigration, ProductApprovalPreference, ProductControlKind,
-    ProductControlStatus, ProductErrorCode, ProductProviderSelection, ProductProviderType,
-    ProductReasoningPreference, ProductSessionStatus, ProductStore, ProductThemePreference,
-    ProductWorkspaceKind, UpdateProductPreferencesRequest, UpdateProductSessionModelConfigRequest,
+    ProductControlStatus, ProductErrorCode, ProductMessagePageQuery, ProductMessageStatus,
+    ProductProviderSelection, ProductProviderType, ProductReasoningPreference,
+    ProductSessionStatus, ProductStore, ProductThemePreference, ProductWorkspaceKind,
+    UpdateProductPreferencesRequest, UpdateProductSessionModelConfigRequest,
     VerifiedM1SessionRunBinding, VerifiedProductForkBoundary,
 };
 
@@ -164,6 +166,7 @@ async fn create_forkable_parent(
             resumed_from_run_id: None,
             followup_control_id: None,
             model_config: claim.model_config.clone(),
+            run_model_snapshot: None,
         })
         .await
         .unwrap();
@@ -295,6 +298,7 @@ async fn run_model_snapshot_is_captured_at_claim_time() {
             resumed_from_run_id: None,
             followup_control_id: None,
             model_config: claim.model_config.clone(),
+            run_model_snapshot: None,
         })
         .await
         .unwrap();
@@ -302,6 +306,152 @@ async fn run_model_snapshot_is_captured_at_claim_time() {
     assert_eq!(snapshots.len(), 1);
     assert_eq!(snapshots[0].model, "fake-raw");
     assert_eq!(snapshots[0].max_steps, 20);
+}
+
+#[tokio::test]
+async fn programmatic_fake_snapshot_is_the_only_profileless_snapshot_identity() {
+    let temp = TempDir::new().unwrap();
+    let store = open_store(&temp);
+    let (_, session) = create_workspace_and_session(&store, &temp).await;
+    let initial = store.get_session_model_config(&session.id).await.unwrap();
+    let configured = store
+        .update_session_model_config(
+            &session.id,
+            UpdateProductSessionModelConfigRequest {
+                profile_id: None,
+                model: "fake".to_string(),
+                reasoning: ProductReasoningPreference::Default,
+                max_steps: 8,
+                expected_revision: Some(initial.revision),
+            },
+        )
+        .await
+        .unwrap();
+    let claim = store.claim_session_turn(&session.id).await.unwrap();
+    let mut snapshot = RunModelSnapshot {
+        profile_id: "programmatic-fake".to_string(),
+        provider_type: "fake".to_string(),
+        wire_protocol: "fake".to_string(),
+        endpoint: String::new(),
+        model: "fake".to_string(),
+        reasoning: "default".to_string(),
+        catalog_revision: "programmatic".to_string(),
+        safe_config_digest: "sha256:programmatic-fake".to_string(),
+    };
+    snapshot.provider_type = "openai".to_string();
+    let error = store
+        .commit_run_binding(CommitProductRunBinding {
+            claim_id: claim.claim_id.clone(),
+            product_session_id: session.id.clone(),
+            runtime_session_id: SessionId::new(),
+            runtime_job_id: JobId::new(),
+            runtime_run_id: RunId::new(),
+            resumed_from_run_id: None,
+            followup_control_id: None,
+            model_config: configured.clone(),
+            run_model_snapshot: Some(snapshot.clone()),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, ProductErrorCode::ProductSessionResumeConflict);
+
+    snapshot.provider_type = "fake".to_string();
+    store
+        .commit_run_binding(CommitProductRunBinding {
+            claim_id: claim.claim_id,
+            product_session_id: session.id.clone(),
+            runtime_session_id: SessionId::new(),
+            runtime_job_id: JobId::new(),
+            runtime_run_id: RunId::new(),
+            resumed_from_run_id: None,
+            followup_control_id: None,
+            model_config: configured,
+            run_model_snapshot: Some(snapshot),
+        })
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn run_model_snapshot_persists_secret_free_provider_identity() {
+    let temp = TempDir::new().unwrap();
+    let store = open_store(&temp);
+    let (_, session) = create_workspace_and_session(&store, &temp).await;
+    let profile = store
+        .create_provider_profile(CreateProductProviderProfileRequest {
+            label: "Local profile".to_string(),
+            provider_type: ProductProviderType::Ollama,
+            api_base: "http://127.0.0.1:11434".to_string(),
+            api_key_env: None,
+            default_model: Some("llama3".to_string()),
+            expected_revision: None,
+        })
+        .await
+        .unwrap();
+    let initial = store.get_session_model_config(&session.id).await.unwrap();
+    let configured = store
+        .update_session_model_config(
+            &session.id,
+            UpdateProductSessionModelConfigRequest {
+                profile_id: Some(profile.id.clone()),
+                model: "llama3".to_string(),
+                reasoning: ProductReasoningPreference::Default,
+                max_steps: 8,
+                expected_revision: Some(initial.revision),
+            },
+        )
+        .await
+        .unwrap();
+    let claim = store.claim_session_turn(&session.id).await.unwrap();
+    let snapshot = RunModelSnapshot {
+        profile_id: profile.id.to_string(),
+        provider_type: "ollama".to_string(),
+        wire_protocol: "openai-completions".to_string(),
+        endpoint: "http://127.0.0.1:11434".to_string(),
+        model: "llama3".to_string(),
+        reasoning: "default".to_string(),
+        catalog_revision: "sha256:catalog".to_string(),
+        safe_config_digest: "sha256:identity".to_string(),
+    };
+    store
+        .commit_run_binding(CommitProductRunBinding {
+            claim_id: claim.claim_id.clone(),
+            product_session_id: session.id.clone(),
+            runtime_session_id: SessionId::new(),
+            runtime_job_id: JobId::new(),
+            runtime_run_id: RunId::new(),
+            resumed_from_run_id: None,
+            followup_control_id: None,
+            model_config: configured,
+            run_model_snapshot: Some(snapshot.clone()),
+        })
+        .await
+        .unwrap();
+
+    let persisted = store.list_session_run_models(&session.id).await.unwrap();
+    assert_eq!(persisted.len(), 1);
+    assert_eq!(persisted[0].provider_type.as_deref(), Some("ollama"));
+    assert_eq!(
+        persisted[0].wire_protocol.as_deref(),
+        Some("openai-completions")
+    );
+    assert_eq!(
+        persisted[0].endpoint.as_deref(),
+        Some(snapshot.endpoint.as_str())
+    );
+    assert_eq!(
+        persisted[0].catalog_revision.as_deref(),
+        Some(snapshot.catalog_revision.as_str())
+    );
+    assert_eq!(
+        persisted[0].safe_config_digest.as_deref(),
+        Some(snapshot.safe_config_digest.as_str())
+    );
+    assert!(
+        !serde_json::to_string(&persisted[0])
+            .unwrap()
+            .contains("credential")
+    );
 }
 
 #[tokio::test]
@@ -316,6 +466,7 @@ async fn deleting_a_provider_profile_unbinds_session_model_configs() {
             api_base: String::new(),
             api_key_env: None,
             default_model: Some("fake".to_string()),
+            expected_revision: None,
         })
         .await
         .unwrap();
@@ -345,6 +496,7 @@ async fn deleting_a_provider_profile_unbinds_session_model_configs() {
             resumed_from_run_id: None,
             followup_control_id: None,
             model_config: claim.model_config.clone(),
+            run_model_snapshot: None,
         })
         .await
         .unwrap();
@@ -387,6 +539,7 @@ async fn claims_are_exclusive_and_bindings_are_contiguous() {
             resumed_from_run_id: None,
             followup_control_id: None,
             model_config: first_claim.model_config.clone(),
+            run_model_snapshot: None,
         })
         .await
         .unwrap();
@@ -410,6 +563,7 @@ async fn claims_are_exclusive_and_bindings_are_contiguous() {
             resumed_from_run_id: Some(first_run_id),
             followup_control_id: None,
             model_config: second_claim.model_config.clone(),
+            run_model_snapshot: None,
         })
         .await
         .unwrap();
@@ -710,6 +864,7 @@ async fn migration_rejects_an_active_source_mapped_session_then_retries_after_tu
             resumed_from_run_id: None,
             followup_control_id: None,
             model_config: claim.model_config.clone(),
+            run_model_snapshot: None,
         })
         .await
         .unwrap();
@@ -1312,6 +1467,7 @@ async fn preference_reference_cleanup_paths_increment_revision() {
             api_base: String::new(),
             api_key_env: None,
             default_model: Some("fake".to_string()),
+            expected_revision: None,
         })
         .await
         .unwrap();
@@ -1627,6 +1783,186 @@ async fn controls_create_list_and_transition() {
     assert_eq!(n, 1);
     let fu2 = store.get_control(&session.id, &fu.id).await.unwrap();
     assert_eq!(fu2.status, ProductControlStatus::Abandoned);
+}
+
+#[tokio::test]
+async fn unified_messages_are_fifo_idempotent_and_race_through_one_authority() {
+    let temp = TempDir::new().unwrap();
+    let store = open_store(&temp);
+    let (_, session) = create_workspace_and_session(&store, &temp).await;
+    let claim = store.claim_session_turn(&session.id).await.unwrap();
+
+    let (first, replayed) = store
+        .create_message(
+            &session.id,
+            CreateProductMessageRequest {
+                content: " first ".to_string(),
+                idempotency_key: Some("message-1".to_string()),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(!replayed);
+    assert_eq!(first.status, ProductMessageStatus::Queued);
+    let (same, replayed) = store
+        .create_message(
+            &session.id,
+            CreateProductMessageRequest {
+                content: "first".to_string(),
+                idempotency_key: Some("message-1".to_string()),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(replayed);
+    assert_eq!(same.id, first.id);
+    let (second, _) = store
+        .create_message(
+            &session.id,
+            CreateProductMessageRequest {
+                content: "second".to_string(),
+                idempotency_key: Some("message-2".to_string()),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(first.seq < second.seq);
+
+    let promoted = store.promote_message(&session.id, &first.id).await.unwrap();
+    assert_eq!(promoted.status, ProductMessageStatus::InterventionRequested);
+    let promotion_replay = store.promote_message(&session.id, &first.id).await.unwrap();
+    assert_eq!(promotion_replay, promoted);
+
+    let first_page = store
+        .list_messages(
+            &session.id,
+            ProductMessagePageQuery {
+                after_seq: Some(0),
+                before_seq: None,
+                limit: 1,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(first_page.messages, vec![promoted.clone()]);
+    assert_eq!(first_page.next_after_seq, Some(first.seq));
+    let second_page = store
+        .list_messages(
+            &session.id,
+            ProductMessagePageQuery {
+                after_seq: first_page.next_after_seq,
+                before_seq: None,
+                limit: 1,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(second_page.messages, vec![second.clone()]);
+    assert_eq!(second_page.next_after_seq, None);
+    let latest_page = store
+        .list_messages(
+            &session.id,
+            ProductMessagePageQuery {
+                after_seq: None,
+                before_seq: None,
+                limit: 1,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(latest_page.messages, vec![second.clone()]);
+    assert_eq!(latest_page.next_before_seq, Some(second.seq));
+
+    let claimed = store
+        .finish_session_turn_and_claim_followup(&claim.claim_id)
+        .await
+        .unwrap()
+        .expect("second message must retain FIFO successor delivery");
+    assert_eq!(claimed.control.id, second.id);
+    let promotion_lost = store
+        .promote_message(&session.id, &second.id)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        promotion_lost.code,
+        ProductErrorCode::ProductControlRejected
+    );
+    let revoked_after_claim = store
+        .revoke_message(&session.id, &second.id)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        revoked_after_claim.code,
+        ProductErrorCode::ProductControlRejected
+    );
+
+    let conflict = store
+        .create_message(
+            &session.id,
+            CreateProductMessageRequest {
+                content: "different".to_string(),
+                idempotency_key: Some("message-1".to_string()),
+            },
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(conflict.code, ProductErrorCode::ProductControlConflict);
+}
+
+#[tokio::test]
+async fn unified_message_rejects_legacy_idempotency_and_terminal_revoke() {
+    let temp = TempDir::new().unwrap();
+    let store = open_store(&temp);
+    let (_workspace, session) = create_workspace_and_session(&store, &temp).await;
+
+    store
+        .create_control(
+            &session.id,
+            ProductControlKind::Followup,
+            CreateProductControlRequest {
+                content: "legacy".to_string(),
+                idempotency_key: Some("same-key".to_string()),
+            },
+        )
+        .await
+        .unwrap();
+    let conflict = store
+        .create_message(
+            &session.id,
+            CreateProductMessageRequest {
+                content: "legacy".to_string(),
+                idempotency_key: Some("same-key".to_string()),
+            },
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(conflict.code, ProductErrorCode::ProductControlConflict);
+    store
+        .abandon_pending_controls(&session.id, "legacy compatibility test")
+        .await
+        .unwrap();
+
+    let (message, _) = store
+        .create_message(
+            &session.id,
+            CreateProductMessageRequest {
+                content: "next".to_string(),
+                idempotency_key: Some("message-key".to_string()),
+            },
+        )
+        .await
+        .unwrap();
+    let claimed = store
+        .claim_next_followup_turn(&session.id)
+        .await
+        .unwrap()
+        .expect("idle message should be claimed");
+    assert_eq!(claimed.control.id, message.id);
+    let rejected = store
+        .revoke_message(&session.id, &message.id)
+        .await
+        .unwrap_err();
+    assert_eq!(rejected.code, ProductErrorCode::ProductControlRejected);
 }
 
 #[tokio::test]
@@ -2141,6 +2477,7 @@ async fn restart_after_followup_binding_commit_never_starts_the_reserved_run_twi
             resumed_from_run_id: None,
             followup_control_id: Some(control.id.clone()),
             model_config: claimed.turn.model_config,
+            run_model_snapshot: None,
         })
         .await
         .unwrap();
@@ -2322,6 +2659,7 @@ async fn forks_are_idempotent_independent_and_survive_parent_deletion() {
             resumed_from_run_id: None,
             followup_control_id: None,
             model_config: child_claim.model_config.clone(),
+            run_model_snapshot: None,
         })
         .await
         .unwrap();

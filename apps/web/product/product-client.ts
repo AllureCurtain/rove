@@ -10,6 +10,8 @@ import {
   parseProductPreferences,
   parseProductControl,
   parseProductControlsResponse,
+  parseProductMessage,
+  parseProductMessagesResponse,
   parseProductForkResponse,
   parseProductForksResponse,
   parseProductProviderProfile,
@@ -43,6 +45,9 @@ import {
   type ProductControl,
   type ProductControlsResponse,
   type ProductControlStatusFilter,
+  type CreateProductMessageRequest,
+  type ProductMessage,
+  type ProductMessagesResponse,
   type ProductForkResponse,
   type ProductForksResponse,
   type ProductProviderProfile,
@@ -155,6 +160,13 @@ export interface ProductApiClient {
   ): Promise<ProductForkResponse>;
   listForks(sessionId: string): Promise<ProductForksResponse>;
   getTranscript(sessionId: string): Promise<ProductTranscriptResponse>;
+  sendMessage(sessionId: string, request: CreateProductMessageRequest): Promise<ProductMessage>;
+  listMessages(
+    sessionId: string,
+    query?: { afterSeq?: number; beforeSeq?: number; limit?: number },
+  ): Promise<ProductMessagesResponse>;
+  promoteMessage(sessionId: string, messageId: string): Promise<ProductMessage>;
+  revokeMessage(sessionId: string, messageId: string): Promise<ProductMessage>;
   enqueueSteer(
     sessionId: string,
     request: CreateProductControlRequest,
@@ -177,7 +189,7 @@ export interface ProductApiClient {
     profileId: string,
     request: UpdateProductProviderProfileRequest,
   ): Promise<ProductProviderProfile>;
-  deleteProviderProfile(profileId: string): Promise<void>;
+  deleteProviderProfile(profileId: string, expectedRevision?: string): Promise<void>;
   listProviderModels(profileId: string): Promise<ProductProviderModelsResponse>;
   getPreferences(): Promise<ProductPreferences>;
   updatePreferences(
@@ -717,6 +729,57 @@ export function createProductApiClient(
       );
     },
 
+    async sendMessage(sessionId, input) {
+      const request = parseCreateProductControlRequest(input);
+      return requestJson(
+        fetchImpl,
+        productUrl(apiPrefix, `/product/sessions/${encodeURIComponent(sessionId)}/messages`),
+        jsonRequest("POST", JSON.stringify(request)),
+        parseProductMessage,
+      );
+    },
+
+    listMessages(sessionId, query) {
+      const params = new URLSearchParams();
+      if (query?.afterSeq !== undefined) {
+        params.set("after_seq", String(query.afterSeq));
+      }
+      if (query?.beforeSeq !== undefined) {
+        params.set("before_seq", String(query.beforeSeq));
+      }
+      if (query?.limit !== undefined) {
+        params.set("limit", String(query.limit));
+      }
+      const encoded = params.toString();
+      return requestJson(
+        fetchImpl,
+        productUrl(
+          apiPrefix,
+          `/product/sessions/${encodeURIComponent(sessionId)}/messages${encoded ? `?${encoded}` : ""}`,
+        ),
+        undefined,
+        parseProductMessagesResponse,
+      );
+    },
+
+    promoteMessage(sessionId, messageId) {
+      return requestJson(
+        fetchImpl,
+        productUrl(apiPrefix, `/product/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(messageId)}/promote`),
+        jsonRequest("POST", "{}"),
+        parseProductMessage,
+      );
+    },
+
+    revokeMessage(sessionId, messageId) {
+      return requestJson(
+        fetchImpl,
+        productUrl(apiPrefix, `/product/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(messageId)}/revoke`),
+        jsonRequest("POST", "{}"),
+        parseProductMessage,
+      );
+    },
+
     async enqueueFollowup(sessionId, input) {
       return createProductControl(
         fetchImpl,
@@ -796,12 +859,15 @@ export function createProductApiClient(
       );
     },
 
-    deleteProviderProfile(profileId) {
+    deleteProviderProfile(profileId, expectedRevision) {
+      const query = expectedRevision
+        ? `?expected_revision=${encodeURIComponent(expectedRevision)}`
+        : "";
       return requestNoContent(
         fetchImpl,
         productUrl(
           apiPrefix,
-          `/product/provider-profiles/${encodeURIComponent(profileId)}`,
+          `/product/provider-profiles/${encodeURIComponent(profileId)}${query}`,
         ),
       );
     },

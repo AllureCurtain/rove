@@ -98,8 +98,8 @@ export function mergeWorkspaceSnapshot(
 export function hasAdvancedRuntimeBinding(
   before: SessionRecord,
   after: SessionRecord | null,
-): after is SessionRecord & { activeJobId: string } {
-  if (!after?.activeJobId) {
+): after is SessionRecord & { activeJobId: string; activeRunId: string } {
+  if (!after?.activeJobId || !after.activeRunId) {
     return false;
   }
   const beforeOrdinal = before.runtimeOrdinal ?? 0;

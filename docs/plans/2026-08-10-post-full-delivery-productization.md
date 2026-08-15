@@ -1,13 +1,21 @@
 # Post-Full-Delivery Productization Program
 
-> Status: **Proposed / Not Implemented; full-delivery baseline verified**
+> Status: **A-E and F.1-F.3 implemented on `productization/integration`; F.4/F.5 and G partially complete**
 >
 > Verified baseline: Checkpoints 0-9 were delivered at `45143a5` and merged
 > through PR #30 as `4b740d3`. The machine-generated acceptance report was
 > produced from clean code commit `32ba252`: all 11 required checks passed,
 > with zero failures and zero required checks unrun. PR #31 merged the
-> whitespace-only documentation cleanup as `1b57b36`. The productization
-> workstreams below remain proposed and must not be described as implemented.
+> whitespace-only documentation cleanup as `1b57b36`. Productization integration
+> combines runtime intelligence (`579c60f`), Provider configuration (`77f3ecf`),
+> and unified conversation delivery (`2b7e798`) plus the cross-workstream schema,
+> exact-run attachment, browser, and isolation fixes on
+> `productization/integration`. Workstreams A-E and F.1-F.3 are implemented.
+> F.4/F.5 remain partial: older-history pagination/windowing and complete TUI
+> restart recovery are not implemented. Workstream G has deterministic and
+> live local fake-provider evidence, while the external
+> Provider, real third-party/official filesystem MCP, Windows ConPTY,
+> macOS/Linux package, signing, and installed-Desktop gates remain unverified.
 >
 > This is the single active productization brief after full-delivery. The dated
 > 2026-08-09 documents are current-state corrections, audit evidence,
@@ -97,6 +105,32 @@ manual installer, and complete installed-Desktop interaction evidence remain
 unverified. No downstream task may turn those explicit boundaries into passing
 claims or treat a design document as proof of implementation.
 
+### 2.1 Productization integration record
+
+| Workstream | Implementation status | Evidence boundary |
+|---|---|---|
+| A. Baseline and documentation seal | Implemented in the integration change | Root/current runtime documents, acceptance/release matrices, and this plan agree on implemented versus unverified behavior. Historical dated audits remain supporting inputs. |
+| B. Agent effectiveness and tool-call recovery | Implemented | Native-first tool calls, explicit compatibility parsing, typed recovery, bounded prompt metadata, and negative safety tests. |
+| C. Repository understanding and retrieval quality | Implemented | Ignore-aware deterministic traversal/search/glob, typed bounded outcomes, and manifest-only repository maps. |
+| D. Context economy and result history | Implemented | Current results stay inline; eligible older duplicates use deterministic durable Artifact references with explicit resolution. |
+| E. First-run configuration and Provider onboarding | Implemented | User catalog schema v1, authority-aware load/write, env/file/keyring references, API/Web CRUD and probes, migration, per-turn CLI assembly, and TUI `/model`. External interoperability is not implied. |
+| F. Unified conversation and product experience | Partially implemented | F.1-F.3 provide one durable message identity and six delivery states across Runtime, ProductStore/API/SSE, Web, and TUI; ProductStore v13 reconciles both parallel v12 layouts. F.4 older-history pagination/windowing and F.5 complete TUI restart recovery remain open. |
+| G. Real-world evaluation and release confidence | Partially complete | Deterministic Rust/Web/TUI coverage and five live local fake-provider browser scenarios pass. Credentialed Provider, real MCP, Windows ConPTY, non-Windows packaging, signing, installed-Desktop, and broader soak gates remain unverified. |
+
+The latest integration verification on 2026-08-14 recorded:
+
+| Gate | Result |
+|---|---|
+| Rust formatting, clippy, and workspace tests | Passed before the final integration fixes. The final sensitive-header change separately passed formatting and its focused unit test; full clippy/workspace tests were not repeated. |
+| `pnpm test` | 36 files and 241 tests passed. |
+| `pnpm typecheck` / `pnpm build` | Passed. |
+| `pnpm test:e2e` | 56 deterministic browser tests passed; five live-API cases were correctly skipped without the environment gate. |
+| `local-full` | 5/5 live local fake-provider cases passed: migration; A/B continuity and interactions; unified message promote/revoke; completed-session Fork with independent child continuation; bounded workbench smoke. |
+
+The successful `local-full` artifacts were kept outside the repository under
+`%TEMP%\rove-productization-integration-9\artifacts`. They are local evidence,
+not committed release artifacts and not external-provider evidence.
+
 ## 3. Product Definition Of Done
 
 The productization program is complete when all of the following are true:
@@ -122,6 +156,9 @@ The productization program is complete when all of the following are true:
    state and can be resumed without replaying completed side effects.
 8. Deterministic local evidence, real-provider evidence, browser evidence,
    package evidence, and security review are reported separately and honestly.
+9. The optional full-screen TUI presents the same durable message states and
+   safety outcomes through terminal-native interactions without creating a
+   private queue, lifecycle, permission path, or persistence format.
 
 ## 4. Workstreams
 
@@ -278,20 +315,21 @@ Deliverables:
   protocol, quota, and unsupported-tool failures;
 - clear fake-provider mode for no-network development;
 - fallback profile behavior and active-profile persistence exposed consistently
-  through CLI, API, Web, and Desktop;
+  through CLI, API, Web, TUI, and Desktop;
 - workspace activation, Project Trust, approval defaults, and capability
   explanations presented before the first mutation-capable run.
 
 Preset data is onboarding assistance, not a replacement for the open provider
 registry or a promise that every listed endpoint has been externally verified.
 
-### F. Unified conversation control and Web/Desktop product experience
+### F. Unified conversation control and Web/Desktop/TUI product experience
 
 This is one cross-layer product task, not a cosmetic Web pass. It includes the
 ProductStore/API message lifecycle, Harness delivery boundary, canonical event
-projection, Web/Desktop interaction model, recovery, and acceptance evidence.
-The product should feel like one conversation even though the Runtime retains
-strict run, turn, tool, approval, and evidence boundaries.
+projection, Web/Desktop interaction model, terminal-native TUI projection,
+recovery, and acceptance evidence. The product should feel like one
+conversation even though the Runtime retains strict run, turn, tool, approval,
+and evidence boundaries.
 
 #### F.1 One composer and one durable message lifecycle
 
@@ -430,6 +468,70 @@ typewriter pacing, a Markdown replacement, a design-token rewrite, or an
 animation system. Any later dependency or rendering change still requires
 measured benefit, license/security review, bundle impact, and browser evidence.
 
+#### F.5 Full-screen TUI parity
+
+The existing bounded `rove tui` remains an optional terminal presentation over
+the shared CLI Runtime, Engine, canonical events, state, and artifacts. This
+program supersedes the earlier TUI non-goal that placed prompt queueing wholly
+outside the bounded MVP, but only for the durable session-message lifecycle
+defined in F.1 and F.2. It does not authorize a TUI-only queue or a second
+product backend.
+
+Required terminal-native behavior:
+
+- keep one composer action: submitting while idle starts work and submitting
+  during an active run durably queues the message in FIFO order; never require
+  the user to select `Steer` or `Follow-up` before typing;
+- project accepted messages immediately into the chronological timeline with a
+  clear queued, intervention-requested, applied, successor-claimed,
+  needs-attention, or revoked state;
+- let the user select an eligible queued message and request promotion or
+  revocation against the same durable message identity; retries, repeated key
+  events, and redraws must not duplicate either action;
+- call the shared product-message domain service through an in-process adapter
+  so local deterministic TUI use does not require an API server. The canonical
+  API is a peer adapter over the same contract. `TuiState`, reducers, effects,
+  and channels may hold bounded presentation state, but cannot become a durable
+  queue authority;
+- keep approval and `request_input` modals authoritative over composer input.
+  A queued message or promotion is never interpreted as an approval, input
+  answer, capability grant, or cancellation, and waits when a typed protocol
+  obligation blocks intervention;
+- keep the main terminal surface conversation-first. Reuse bounded overlays or
+  detail views for run activity, plan/tool details, changed files, tests,
+  diffs, artifact metadata, evidence, and diagnostics instead of reserving a
+  permanent Inspector pane. Raw run/job IDs, event sequence, prompt/cache
+  identity, and restore facts belong in diagnostics, not the main timeline;
+- bound long-session materialization and tool/output loading, preserve a stable
+  scroll anchor when older rows are loaded, follow growing streamed content
+  only while the user remains at the latest position, and never let updates or
+  resize hide the composer or an actionable modal;
+- restore queued-message state and exact delivery outcomes across session
+  resume and process restart, and show successor-turn transitions without
+  replaying a completed application;
+- retain terminal capability gating, sanitization, secret redaction, alternate
+  screen restoration, and honest unsupported/unverified platform states.
+
+The TUI remains a single-foreground-session/run presentation. Mouse support,
+inline image rendering, multiple active-session dashboards, background task
+management, a TUI-specific provider/setup backend, and pixel-equivalent
+Web/Desktop layout are outside this workstream.
+
+Required TUI verification:
+
+- reducer/effect and TestBackend coverage for idle submission, active-run
+  queueing, ordered projection, promotion, revocation, needs-attention, and
+  successor claim, including duplicate and stale actions;
+- approval/input modal precedence and tests proving that paste, repeat/release,
+  or mismatched message IDs cannot trigger promotion, revocation, approval, or
+  input submission;
+- bounded rendering at normal, narrow, and minimal terminal sizes, plus resize,
+  streaming-follow, manual-scroll, history-prepend, and long-session cases;
+- cancellation, EOF, draw failure, panic/unwind, resume, and terminal restore
+  keep durable message state honest and release all process-local responders;
+- Unix PTY smoke remains opt-in platform evidence; Windows ConPTY automation is
+  reported as unverified until a real native gate exists and passes.
+
 ### G. Real-world evaluation and release confidence
 
 Deliverables:
@@ -447,8 +549,11 @@ Deliverables:
   execution, promotion-versus-terminal completion, repeated idempotent clicks,
   revoke-versus-claim, refresh/restart recovery, and failure/cancelled
   confirmation;
-- clean-install Web and Desktop smoke, including unconfigured/fake-provider
-  onboarding;
+- deterministic TUI reducer/render coverage for the same message lifecycle and
+  terminal-native interaction rules, with platform PTY results classified
+  separately from TestBackend evidence;
+- clean-install Web, Desktop, and CLI/TUI smoke, including
+  unconfigured/fake-provider onboarding;
 - explicit residual-risk report for unsandboxed local shell execution, skipped
   external services, signing, platform coverage, and provider-specific limits.
 
@@ -463,6 +568,9 @@ Deliverables:
 - A user message is durable before acknowledgement. Queueing, promotion,
   application, successor claim, recovery, and revocation preserve one identity
   and are idempotent under retry.
+- Web, Desktop, and TUI may keep bounded local projection state, but none may
+  maintain a private durable message queue or infer a different delivery state
+  from presentation timing.
 - Immediate intervention never interrupts an in-flight provider call or tool
   side effect, never grants approval or capability, and never bypasses Runtime
   budgets or terminal reconciliation.
@@ -480,11 +588,11 @@ Deliverables:
 The final package must contain:
 
 - final commit and clean-tree record;
-- Rust and Web gate logs with real exit codes;
+- Rust, Web, and focused CLI/TUI gate logs with real exit codes;
 - live API/browser acceptance artifacts;
 - deterministic benchmark and OnCall evidence with provenance;
-- provider/MCP/Desktop gate results classified as passed, failed, skipped, or
-  unverified;
+- provider/MCP/Desktop/PTY gate results classified as passed, failed, skipped,
+  or unverified;
 - representative redacted trace/state/report/artifact projections;
 - security review covering path, secret, approval, URL, MIME, output, timeout,
   cancellation, retry, resume, and unknown-effect behavior;
@@ -512,6 +620,9 @@ appears only in one of these files and not above, it is outside this round.
   — current Web audit and third-party presentation reference only;
 - [`2026-08-09-deferred-capabilities.md`](2026-08-09-deferred-capabilities.md)
   — intentionally deferred Subagent/sandbox boundary record and historical G-F rationale;
+- [`2026-07-16-grok-build-reference-and-tui-design.md`](../design/2026-07-16-grok-build-reference-and-tui-design.md)
+  — implemented bounded TUI baseline and terminal-safety reference; its earlier
+  prompt-queue non-goal is superseded only by F.5 above;
 - [`2026-08-07-post-coding-tool-v2-full-delivery.md`](2026-08-07-post-coding-tool-v2-full-delivery.md)
   — verified completed foundation and historical delivery record, not remaining
   implementation scope.

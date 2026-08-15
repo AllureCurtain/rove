@@ -6,7 +6,10 @@ use crate::types::{
     CallId, ToolContext, ToolDescriptor, ToolExecutionMetadata, ToolMutation, ToolResult,
     ToolRiskLevel,
 };
-use rove_core::{ToolError, ToolRegistry, ToolResultOutcome};
+use rove_core::{
+    ArtifactTrust, Sensitivity, ToolArtifactKind, ToolArtifactSource, ToolError,
+    ToolOutputEnvelope, ToolRegistry, ToolResultOutcome,
+};
 use tokio::sync::mpsc;
 
 /// The executor runs tools through the pipeline.
@@ -64,12 +67,13 @@ impl<'a> Executor<'a> {
         check_tool_allowed(&schema, runtime_tool_services(ctx)?.approval_policy)?;
 
         // Step 5: execute
-        let output = crate::tool_input::scope(
+        let mut output = crate::tool_input::scope(
             call_id,
             input_events,
             self.registry.execute(name, args.clone(), ctx),
         )
         .await?;
+        retain_eligible_output(ctx, name, &mut output).await;
         let metadata = completion_metadata(&schema, &output.mutations, output.outcome());
 
         // Step 6: result wrapping
@@ -92,6 +96,91 @@ impl<'a> Executor<'a> {
             .await;
 
         Ok(result)
+    }
+}
+
+async fn retain_eligible_output(
+    ctx: &ToolContext<'_>,
+    name: &str,
+    output: &mut rove_core::ToolOutput,
+) {
+    if !matches!(
+        name,
+        "read_file" | "search_code" | "list_directory" | "glob_paths"
+    ) || output.content.is_empty()
+    {
+        return;
+    }
+    let Ok(services) = runtime_tool_services(ctx) else {
+        return;
+    };
+    let Some(store) = services.tool_artifacts.as_ref() else {
+        return;
+    };
+    let sensitivity = local_tool_output_sensitivity(&output.content);
+    if sensitivity == Sensitivity::Sensitive {
+        return;
+    }
+    let source = ToolArtifactSource {
+        run_id: store.run_id(),
+        call_id: ctx.call_id.to_string(),
+        remote_tool_name: Some(name.to_string()),
+        captured_at: chrono::Utc::now().to_rfc3339(),
+        ..ToolArtifactSource::default()
+    };
+    let Ok(artifact) = store
+        .put(
+            ToolArtifactKind::Text,
+            output.content.as_bytes(),
+            source,
+            crate::state::tool_artifacts::ArtifactClaim {
+                mime_type: Some("text/plain; charset=utf-8".to_string()),
+                ..crate::state::tool_artifacts::ArtifactClaim::default()
+            },
+            sensitivity,
+            ArtifactTrust::LocalTool,
+        )
+        .await
+    else {
+        return;
+    };
+    let mut envelope = output
+        .envelope
+        .take()
+        .map(|envelope| *envelope)
+        .unwrap_or_else(|| ToolOutputEnvelope::text(output.content.clone()));
+    if envelope
+        .artifacts
+        .iter()
+        .all(|existing| existing.artifact_id != artifact.artifact_id)
+    {
+        envelope.artifacts.push(artifact);
+    }
+    output.envelope = Some(Box::new(envelope));
+}
+
+fn local_tool_output_sensitivity(content: &str) -> Sensitivity {
+    let lower = content.to_ascii_lowercase();
+    let sensitive_path = lower.contains("\"path\":\".env")
+        || lower.contains("\"path\":\".git/")
+        || lower.contains("\"path\":\".rove/")
+        || lower.contains(".pem\"")
+        || lower.contains(".key\"");
+    let secret_assignment = content.lines().any(|line| {
+        let line = line.trim();
+        let Some((name, value)) = line.split_once('=') else {
+            return false;
+        };
+        let name = name.to_ascii_uppercase();
+        !value.trim().is_empty()
+            && ["SECRET", "TOKEN", "PASSWORD", "API_KEY", "PRIVATE_KEY"]
+                .iter()
+                .any(|marker| name.contains(marker))
+    });
+    if sensitive_path || secret_assignment {
+        Sensitivity::Sensitive
+    } else {
+        Sensitivity::Normal
     }
 }
 
@@ -226,12 +315,58 @@ fn validate_type(
         return Ok(());
     }
 
-    let reason = if path.is_root() && expected_type == "object" {
-        "tool arguments must be a JSON object".to_string()
-    } else {
-        format!("Argument {} must be {expected_type}", path.display())
-    };
+    let received_type = json_type(value);
+    let correction = deterministic_correction(path, expected_type, value);
+    let reason = format!(
+        "field '{}' must be a JSON {expected_type}; received {received_type} {}. Retry with {correction}.",
+        path.display(),
+        bounded_json(value, 96),
+    );
     invalid_args(reason)
+}
+
+fn json_type(value: &serde_json::Value) -> &'static str {
+    match value {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "boolean",
+        serde_json::Value::Number(number) if number.is_i64() || number.is_u64() => "integer",
+        serde_json::Value::Number(_) => "number",
+        serde_json::Value::String(_) => "string",
+        serde_json::Value::Array(_) => "array",
+        serde_json::Value::Object(_) => "object",
+    }
+}
+
+fn bounded_json(value: &serde_json::Value, max: usize) -> String {
+    let encoded = serde_json::to_string(value).unwrap_or_else(|_| "<unserializable>".to_string());
+    rove_core::truncate_utf8(&encoded, max).0
+}
+
+fn deterministic_correction(
+    path: &JsonPath,
+    expected_type: &str,
+    value: &serde_json::Value,
+) -> String {
+    let corrected = match (expected_type, value) {
+        ("boolean", serde_json::Value::String(text)) if text == "true" => serde_json::json!(true),
+        ("boolean", serde_json::Value::String(text)) if text == "false" => serde_json::json!(false),
+        ("integer", serde_json::Value::String(text)) => text
+            .parse::<i64>()
+            .map(serde_json::Value::from)
+            .unwrap_or(serde_json::Value::from(0)),
+        ("string", other) => serde_json::Value::String(other.to_string()),
+        ("array", _) => serde_json::json!([]),
+        ("object", _) => serde_json::json!({}),
+        ("boolean", _) => serde_json::json!(false),
+        ("integer", _) | ("number", _) => serde_json::json!(0),
+        ("null", _) => serde_json::Value::Null,
+        _ => serde_json::Value::Null,
+    };
+    if path.is_root() {
+        bounded_json(&corrected, 160)
+    } else {
+        bounded_json(&serde_json::json!({path.display(): corrected}), 160)
+    }
 }
 
 fn validate_string_constraints(
@@ -388,7 +523,7 @@ mod tests {
     use async_trait::async_trait;
     use tokio_util::sync::CancellationToken;
 
-    use super::Executor;
+    use super::{Executor, local_tool_output_sensitivity};
     use crate::memory::paths::MemoryPaths;
     use crate::tools::runtime_context::runtime_tool_context;
     use crate::types::{
@@ -396,9 +531,38 @@ mod tests {
         ToolMutationOperation, ToolRiskLevel,
     };
     use crate::workspace::Workspace;
-    use rove_core::{Tool, ToolOutput, ToolRegistry};
+    use rove_core::{Sensitivity, Tool, ToolOutput, ToolRegistry};
 
     struct MutatingTool;
+
+    struct BooleanTool;
+
+    #[async_trait]
+    impl Tool for BooleanTool {
+        fn schema(&self) -> ToolDescriptor {
+            ToolDescriptor {
+                name: "search".to_string(),
+                description: "Search".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": { "regex": { "type": "boolean" } },
+                    "additionalProperties": false
+                }),
+                destructive: true,
+                parallel_safe: false,
+                capability_id: None,
+                capability: None,
+            }
+        }
+
+        async fn execute(
+            &self,
+            _args: serde_json::Value,
+            _ctx: &ToolContext<'_>,
+        ) -> Result<ToolOutput, rove_core::ToolError> {
+            panic!("schema-invalid input must fail before permission or dispatch")
+        }
+    }
 
     #[async_trait]
     impl Tool for MutatingTool {
@@ -457,5 +621,62 @@ mod tests {
         assert!(result.metadata.workspace_changed);
         assert_eq!(result.metadata.affected_paths, vec!["notes/today.md"]);
         assert_eq!(result.metadata.diff_summary, vec!["Update: notes/today.md"]);
+    }
+
+    #[tokio::test]
+    async fn type_error_names_field_types_value_and_bounded_correction_before_approval() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let workspace = Workspace::detect(tmp.path()).unwrap();
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(BooleanTool));
+        let ctx = runtime_tool_context(
+            CallId::new(),
+            &workspace,
+            MemoryPaths::from_workspace(&workspace, 8),
+            ApprovalPolicy::Never,
+            None,
+            CancellationToken::new(),
+        );
+
+        let error = Executor::new(&registry)
+            .run(
+                &ctx,
+                "search",
+                serde_json::json!({"regex":"true"}),
+                CallId::new(),
+            )
+            .await
+            .unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("field 'regex'"));
+        assert!(message.contains("JSON boolean"));
+        assert!(message.contains("received string \"true\""));
+        assert!(message.contains(r#"Retry with {"regex":true}"#));
+        assert!(!message.contains("Permission denied"));
+        assert!(message.len() < 512);
+    }
+
+    #[test]
+    fn secret_shaped_local_output_is_not_eligible_for_normal_retention() {
+        assert_eq!(
+            local_tool_output_sensitivity("API_KEY=live-value"),
+            Sensitivity::Sensitive
+        );
+        assert_eq!(
+            local_tool_output_sensitivity(r#"{"path":".env","content":"x"}"#),
+            Sensitivity::Sensitive
+        );
+        assert_eq!(
+            local_tool_output_sensitivity("API_KEY=live-value"),
+            Sensitivity::Sensitive
+        );
+        assert_eq!(
+            local_tool_output_sensitivity(r#"{"entries":[{"path":".rove/config.toml"}]}"#),
+            Sensitivity::Sensitive
+        );
+        assert_eq!(
+            local_tool_output_sensitivity("token is discussed here"),
+            Sensitivity::Normal
+        );
     }
 }

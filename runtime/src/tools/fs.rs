@@ -93,6 +93,12 @@ impl Tool for FsReadTool {
             .ok_or_else(|| ToolError::InvalidArgs {
                 reason: "Missing required argument: path".to_string(),
             })?;
+        let normalized_path = normalize_tool_path(raw_path)?;
+        if crate::environment::is_sensitive_traversal_path(&normalized_path) {
+            return Err(ToolError::PermissionDenied {
+                reason: "sensitive workspace paths are not model-readable".to_string(),
+            });
+        }
         let services = runtime_tool_services(ctx)?;
         if !services.environment.capabilities().filesystem_read {
             return Err(map_environment_error(
@@ -207,7 +213,7 @@ impl Tool for FsReadTool {
         }
         Ok(ToolOutput::text(
             serde_json::to_string(&ReadFileOutput {
-                path: normalize_tool_path(raw_path)?,
+                path: normalized_path,
                 content,
                 offset,
                 end,

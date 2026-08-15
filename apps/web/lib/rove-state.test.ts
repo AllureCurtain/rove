@@ -772,6 +772,89 @@ describe("workbenchReducer", () => {
     expect(synced.lastSignal).toBe("Run completed");
   });
 
+  it("accepts a lower event count when the same job advances to a new run", () => {
+    let state = workbenchReducer(createWorkbenchState(), {
+      type: "job_created",
+      jobId: "job-1",
+      runId: "run-1",
+    });
+    state = workbenchReducer(state, {
+      type: "stream_event",
+      seq: 12,
+      event: { type: "run_completed", reason: "final", output: "first done" },
+    });
+    state = workbenchReducer(state, {
+      type: "prepare_job_attachment",
+      jobId: "job-1",
+      runId: "run-2",
+    });
+
+    expect(state.activeRunId).toBe("run-2");
+    expect(state.eventCount).toBe(0);
+
+    state = workbenchReducer(state, {
+      type: "job_state_synced",
+      state: {
+        job_id: "job-1",
+        run_id: "run-2",
+        resumed_from_run_id: "run-1",
+        status: "running",
+        event_count: 3,
+        events: [
+          {
+            seq: 1,
+            event: {
+              type: "run_started",
+              job_id: "job-1",
+              run_id: "run-2",
+              user_message: "write the note",
+            },
+          },
+          {
+            seq: 2,
+            event: {
+              type: "tool_call_started",
+              call_id: "call-2",
+              name: "write_file",
+              args: { path: "notes.md" },
+            },
+          },
+          {
+            seq: 3,
+            event: {
+              type: "tool_call_approval_needed",
+              call_id: "call-2",
+              name: "write_file",
+              args: { path: "notes.md" },
+              reason: "destructive tool requires explicit approval",
+            },
+          },
+        ],
+        pending_approvals: [
+          {
+            call_id: "call-2",
+            name: "write_file",
+            args: { path: "notes.md" },
+            reason: "destructive tool requires explicit approval",
+          },
+        ],
+        pending_inputs: [],
+      },
+    });
+
+    expect(state.activeJobId).toBe("job-1");
+    expect(state.activeRunId).toBe("run-2");
+    expect(state.resumedFromRunId).toBe("run-1");
+    expect(state.eventCount).toBe(3);
+    expect(state.tools).toEqual([
+      expect.objectContaining({
+        id: "call-2",
+        name: "write_file",
+        status: "waiting",
+      }),
+    ]);
+  });
+
   it("preserves state when syncing prompt-built events from job history", () => {
     const state = workbenchReducer(createWorkbenchState(), {
       type: "job_state_synced",

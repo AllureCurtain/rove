@@ -98,6 +98,7 @@ export function useServerProductState() {
   const catalogMutationRef = useRef(false);
   const preferencesQueueRef = useRef<Promise<void>>(Promise.resolve());
   const deletingProviderProfileIdsRef = useRef(new Set<string>());
+  const providerCatalogRevisionRef = useRef<string | null>(null);
   const failedActiveRouteTargetRef = useRef<string | null>(null);
   const forkIdempotencyRef = useRef(new Map<string, string>());
 
@@ -267,6 +268,7 @@ export function useServerProductState() {
       setProfiles(
         profileResponse.provider_profiles.map(fromProductProviderProfile),
       );
+      providerCatalogRevisionRef.current = profileResponse.catalog_revision;
       setSelection(selectionFromPreferences(loadedPreferences));
       const confirmedTheme = resolveProductTheme(loadedPreferences.theme);
       cacheServerConfirmedTheme(confirmedTheme);
@@ -859,8 +861,10 @@ export function useServerProductState() {
         api_base: input.apiBase,
         api_key_env: input.apiKeyEnv,
         default_model: input.defaultModel,
+        expected_revision: providerCatalogRevisionRef.current ?? undefined,
       });
       const record = fromProductProviderProfile(saved);
+      providerCatalogRevisionRef.current = record.catalogRevision;
       setProfiles((current) => [
         record,
         ...current.filter((profile) => profile.id !== record.id),
@@ -886,8 +890,13 @@ export function useServerProductState() {
           api_base: input.apiBase,
           api_key_env: input.apiKeyEnv,
           default_model: input.defaultModel,
+          expected_revision:
+            profiles.find((profile) => profile.id === profileId)?.catalogRevision ??
+            providerCatalogRevisionRef.current ??
+            undefined,
         });
         const record = fromProductProviderProfile(saved);
+        providerCatalogRevisionRef.current = record.catalogRevision;
         setProfiles((current) =>
           current.map((profile) =>
             profile.id === record.id ? record : profile,
@@ -900,7 +909,7 @@ export function useServerProductState() {
         throw error;
       }
     },
-    [productClient],
+    [productClient, profiles],
   );
 
   const deleteProviderProfile = useCallback(
@@ -923,16 +932,20 @@ export function useServerProductState() {
           setSelection(selectionFromPreferences(cleared));
           await persistPreferences(cleared);
         }
-        await productClient.deleteProviderProfile(profileId);
-        setProfiles((currentProfiles) =>
-          currentProfiles.filter((profile) => profile.id !== profileId),
-        );
+        const expectedRevision =
+          profiles.find((profile) => profile.id === profileId)?.catalogRevision ??
+          providerCatalogRevisionRef.current ??
+          undefined;
+        await productClient.deleteProviderProfile(profileId, expectedRevision);
+        const refreshed = await productClient.listProviderProfiles();
+        providerCatalogRevisionRef.current = refreshed.catalog_revision;
+        setProfiles(refreshed.provider_profiles.map(fromProductProviderProfile));
         setCatalogError(null);
       } finally {
         deletingProviderProfileIdsRef.current.delete(profileId);
       }
     },
-    [persistPreferences, productClient],
+    [persistPreferences, productClient, profiles],
   );
 
   return {

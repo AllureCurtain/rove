@@ -126,10 +126,11 @@ mod tests {
         ToolCallView,
     };
     use crate::tui::state::{
-        InteractionKeyMode, InteractionModalView, ResumeCandidate, RunLifecycle,
-        SessionPickerState, TuiFocus, TuiOverlay, TuiState,
+        InteractionKeyMode, InteractionModalView, ModelCandidate, ModelPickerState,
+        ResumeCandidate, RunLifecycle, SessionPickerState, TuiFocus, TuiOverlay, TuiState,
     };
     use crate::tui::widgets::modal_area;
+    use rove_app_bootstrap::{ModelSelection, ProviderProfileId};
     use rove_core::ToolError;
     use rove_runtime::types::{
         CallId, JobId, PlanStep, RunId, SessionId, TaskPlan, TerminationReason,
@@ -328,7 +329,7 @@ mod tests {
         assert!(rendered.contains("Activity"));
         assert!(rendered.contains("Composer [focused]"));
         assert!(rendered.contains("hello"));
-        assert!(row_text(&buffer, 40, 11).contains("ws:- | run:idle | focus:composer"));
+        assert!(row_text(&buffer, 40, 11).contains("ws:- | run:idle | q:0 | focus:composer"));
     }
 
     #[test]
@@ -758,6 +759,31 @@ mod tests {
         assert!(rendered.contains("resume target"));
         assert!(rendered.contains("Enter resume"));
 
+        let models = TuiState {
+            overlay: Some(TuiOverlay::ModelPicker(ModelPickerState::ready(
+                vec![ModelCandidate {
+                    selection: ModelSelection {
+                        profile_id: ProviderProfileId::new("local").unwrap(),
+                        model: "模型-alpha".to_string(),
+                        reasoning: "default".to_string(),
+                        revision: "sha256:catalog".to_string(),
+                    },
+                    label: "本地模型".to_string(),
+                    provider_type: "ollama".to_string(),
+                    credential_ready: true,
+                    inventory_fresh: false,
+                    current: true,
+                }],
+                "模型".to_string(),
+            ))),
+            ..TuiState::default()
+        };
+        let rendered = buffer_text(&draw(40, 10, &models));
+        assert!(rendered.contains("Select model"));
+        assert!(rendered.contains("alpha"));
+        assert!(!rendered.contains("http://"));
+        assert!(!rendered.contains("credential="));
+
         let empty_tools = TuiState {
             overlay: Some(TuiOverlay::ToolDetail(crate::tui::state::ToolDetailState {
                 entries: Vec::new(),
@@ -782,6 +808,7 @@ mod tests {
             let _ = draw(width, height, &picker);
             let _ = draw(width, height, &empty_tools);
             let _ = draw(width, height, &help);
+            let _ = draw(width, height, &models);
         }
     }
 }

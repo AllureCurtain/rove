@@ -132,6 +132,10 @@ impl ModelClient for FakeModelClient {
     fn model_id(&self) -> &str {
         "fake-model"
     }
+
+    fn compatibility_text_tool_calls(&self) -> bool {
+        true
+    }
 }
 
 struct StepFailureModelClient {
@@ -216,6 +220,10 @@ impl ModelClient for FailingAfterFirstCallModelClient {
     fn model_id(&self) -> &str {
         "failing-after-first-call"
     }
+
+    fn compatibility_text_tool_calls(&self) -> bool {
+        true
+    }
 }
 
 struct CapturingFakeModelClient {
@@ -261,6 +269,10 @@ impl ModelClient for CapturingFakeModelClient {
 
     fn model_id(&self) -> &str {
         "capturing-fake-model"
+    }
+
+    fn compatibility_text_tool_calls(&self) -> bool {
+        true
     }
 }
 
@@ -3342,6 +3354,7 @@ async fn planner_resume_checkpoint_does_not_repeat_completed_steps() {
                 agent_profile: None,
                 step_ledger: Default::default(),
                 execution_lifecycle: Default::default(),
+                message_deliveries: Vec::new(),
             }),
             plan: None,
             runtime_identity: None,
@@ -4080,13 +4093,14 @@ async fn planner_repairs_recoverable_tool_error_within_the_same_step() {
 
     let events = collect_events(&engine, "fix the docs").await;
 
-    assert!(events.iter().any(|event| {
-        matches!(
-            event,
-            StreamEvent::ToolCallFailed { error, .. }
-                if error.to_string().contains("tool arguments must be")
-        )
-    }));
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, StreamEvent::ToolCallStarted { .. }))
+            .count(),
+        0,
+        "malformed compatibility output must be repaired before tool dispatch"
+    );
     assert_eq!(
         events
             .iter()
@@ -5179,6 +5193,7 @@ async fn resumed_run_prefers_prompt_checkpoint_tail_and_summary() {
             agent_profile: None,
             step_ledger: Default::default(),
             execution_lifecycle: Default::default(),
+            message_deliveries: Vec::new(),
         }),
         plan: None,
         runtime_identity: None,
@@ -6140,6 +6155,7 @@ async fn engine_resume_reprojects_canonical_openai_history_for_anthropic() {
         agent_profile: None,
         step_ledger: Default::default(),
         execution_lifecycle: Default::default(),
+        message_deliveries: Vec::new(),
     };
     let resume_state = TaskState {
         schema_version: 1,
@@ -6273,6 +6289,7 @@ async fn engine_resume_projects_only_the_bounded_canonical_suffix_after_compacti
         agent_profile: None,
         step_ledger: Default::default(),
         execution_lifecycle: Default::default(),
+        message_deliveries: Vec::new(),
     };
     let resume_state = TaskState {
         schema_version: 1,

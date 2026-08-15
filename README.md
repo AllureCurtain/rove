@@ -57,8 +57,8 @@ It is not yet a signed, generally available desktop release.
 ## Current MVP
 
 The current MVP is implemented across the shared runtime and its first-party
-surfaces. The sections below describe what is available on `main`; release and
-external-interoperability limits remain explicit under
+surfaces. The sections below describe what is available in the current source;
+release and external-interoperability limits remain explicit under
 [Current boundaries](#current-boundaries).
 
 ## Who it is for
@@ -117,9 +117,11 @@ external-interoperability limits remain explicit under
   exact product-session/runtime bindings.
 - Streaming canonical transcript restore with explicit loading, partial,
   failure, retry, reconnect, and background-attention states.
-- Durable Steer and Follow-up controls, terminal-boundary session Fork,
-  per-session model/reasoning/approval/step-limit snapshots, and single-active-
-  turn ownership.
+- One durable Send Message lifecycle: an active-run message queues in FIFO order
+  and can be promoted or revoked without changing identity; idle delivery claims
+  the successor turn. Legacy Steer/Follow-up routes remain compatibility-only.
+- Terminal-boundary session Fork, per-session model/reasoning/approval/step-limit
+  snapshots, and single-active-turn ownership.
 - Memory, runtime health, workspace files, images, artifacts, run/Git diff,
   usage/context/cost, and JSON/HTML/Markdown evidence views.
 
@@ -202,9 +204,30 @@ ProductStore.
 
 ### Configure a real provider
 
-Rove configures real providers through named profiles. Choose a provider type,
-endpoint, model, and credential environment-variable name. The browser never
-receives the credential value.
+Rove configures real providers through the user-owned catalog at
+`~/.rove/config.toml`. Choose a provider type, endpoint, model, and credential
+reference; never put the credential value in this file.
+
+~~~toml
+schema_version = 1
+
+[model]
+default_profile = "openai-main"
+default_model = "gpt-4.1-mini"
+reasoning = "default"
+
+[provider.profiles.openai-main]
+label = "OpenAI"
+provider_type = "openai"
+base_url = "https://api.openai.com/v1"
+model = "gpt-4.1-mini"
+auth = { style = "bearer", secret = { env = "OPENAI_API_KEY" } }
+~~~
+
+Normal CLI/TUI startup uses that default without `--model`. With no configured
+Provider it reports onboarding instead of silently choosing Fake. In `rove tui`,
+`/model` opens the configured-model picker; the selection applies to the next
+turn only. Use `--model fake` for an explicit deterministic no-network run.
 
 For Web development, export the key before starting the API:
 
@@ -216,7 +239,8 @@ powershell -ExecutionPolicy Bypass -File scripts/dev.ps1 -Provider
 Then open **Settings -> Providers**, create a profile, set the key reference to
 <code>OPENAI_API_KEY</code>, test the endpoint/model, and activate the profile.
 Official services and compatible gateways use the same profile types; only
-endpoint, model, and credential reference differ.
+endpoint, model, and credential reference differ. Settings mutates the same
+user catalog with revision/CAS protection; the browser never receives the key.
 
 See [Provider smoke testing](docs/runtime/provider-smoke.md) for CLI/config
 examples and honest external-service gates.
@@ -354,7 +378,7 @@ design is not evidence that the runtime supports it.
 | [Acceptance matrix](docs/runtime/acceptance-matrix.md) | Evidence commands and optional-gate classification |
 | [Integration testing](docs/runtime/integration-testing.md) | Local, browser, provider, MCP, PTY, and stress gates |
 | [Release readiness](docs/runtime/release-readiness.md) | Release-oriented evidence and security checklist |
-| [Productization program](docs/plans/2026-08-10-post-full-delivery-productization.md) | Proposed next work after the completed full-delivery program |
+| [Productization program](docs/plans/2026-08-10-post-full-delivery-productization.md) | Implemented A-E/F.1-F.3 record and remaining F.4/F.5/G gates |
 | [Repository rules](AGENTS.md) | Engineering invariants and coding-agent instructions |
 
 Historical designs and early plans remain under [docs/Archive/](docs/Archive/).

@@ -101,7 +101,7 @@ and updates its tests and current documentation:
 
 ## 5. Current implementation boundaries
 
-As of 2026-08-12:
+As of 2026-08-14:
 
 - rove is a local-first Rust runtime with CLI, API, Web, persisted run state,
   resume, provider routing, tools, layered memory, optional future external retrieval, and
@@ -180,12 +180,14 @@ As of 2026-08-12:
   live-status, reduced-motion, theme, and screenshot-evidence polish. Mocked
   browser suites remain deterministic contract evidence, while `local-full`
   now runs live-API migration and default-product-shell acceptance plus one
-  bounded `/dev/workbench` advanced smoke; the latest local fake-provider run
-  passed all three Playwright scenarios before and after coordinator
-  integration. The external-provider gate was not run, so no external
+  bounded `/dev/workbench` advanced smoke; productization integration adds
+  unified-message promotion/revocation and completed-session Fork/independent
+  child continuation, and the latest local fake-provider run passed all five
+  Playwright scenarios. The external-provider gate was not run, so no external
   interoperability claim is made. C0–C3 are on `main` through merge commits
-  `db8f970`, `abbd7d6`, and `e3c2403`. CDH G1-G7 add durable Steer/Follow-up,
-  terminal-boundary Fork/lineage, session model/reasoning/approval/step-limit
+  `db8f970`, `abbd7d6`, and `e3c2403`. CDH G1-G7 add the durable compatibility
+  controls now projected through unified Send Message, terminal-boundary
+  Fork/lineage, session model/reasoning/approval/step-limit
   snapshots, usage/context/cost, bounded files/artifacts/images/diff, redacted
   evidence export, and workspace-scoped Settings/MCP management; they are on
   `main` through PR #29 at `f9e88a7`. Post-Coding-Tool full delivery,
@@ -194,6 +196,21 @@ As of 2026-08-12:
   cleanup. Windows MSI/NSIS and release-process evidence are recorded, while
   macOS/Linux packaging and a complete installed-Desktop journey remain
   unverified.
+- Productization workstreams A-E and the core F.1-F.3 conversation lifecycle
+  are implemented in current source. Native-first
+  tool-call recovery, deterministic ignore-aware repository retrieval,
+  Artifact-backed result history, user Provider onboarding/TUI model selection,
+  and one durable conversation-message lifecycle share the existing
+  Runtime/Engine authorities. ProductStore schema v13 reconciles both parallel
+  v12 productization layouts. Deterministic Rust/Web/TUI checks and five live
+  local fake-provider browser cases pass. F.4 remains partial because the Web
+  and TUI load only the latest bounded message page rather than supporting
+  stable older-history prepend/windowing. F.5 remains partial because TUI
+  restart recovery does not yet drain queued successors or reconcile a
+  claimed successor that has no run. Workstream G remains partial because
+  credentialed external Provider, real third-party/official filesystem MCP,
+  Windows ConPTY, macOS/Linux packaging, signing, installed-Desktop, and broader
+  stress/soak gates remain unverified.
 - This repository-level `AGENTS.md` guides maintainers and coding agents. A
   trusted rove run also loads it as the workspace root instruction layer; that
   runtime admission does not turn its text into tool permission or approval.
@@ -221,12 +238,13 @@ The completed post-CDH and full-delivery implementation records are:
 - `docs/plans/2026-08-07-post-coding-tool-v2-master-program.md`
 - `docs/plans/2026-08-07-post-coding-tool-v2-full-delivery.md`
 
-The next proposed implementation program is:
+The current productization implementation record is:
 
 - `docs/plans/2026-08-10-post-full-delivery-productization.md`
 
-Its status is `Proposed / Not Implemented`. The dated 2026-08-09 documents it
-links are supporting audit evidence, not additional implementation plans.
+Its workstreams A-E are implemented. F.1-F.3 are implemented while F.4/F.5 and
+G are partially complete. The dated 2026-08-09 documents it links are
+supporting audit evidence, not additional implementation plans.
 
 The optional terminal-interface direction is documented separately in
 `docs/design/2026-07-16-grok-build-reference-and-tui-design.md`.

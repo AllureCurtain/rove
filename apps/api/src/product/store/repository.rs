@@ -10,26 +10,27 @@ use rove_runtime::types::{JobId, RunId, SessionId};
 
 use crate::product::{
     CommitProductRunBinding, CreateProductControlRequest, CreateProductForkRequest,
-    CreateProductProviderProfileRequest, CreateProductSessionRequest,
+    CreateProductMessageRequest, CreateProductProviderProfileRequest, CreateProductSessionRequest,
     CreateProductWorkspaceRequest, DEFAULT_PRODUCT_MAX_STEPS, M1BrowserMigrationPreflight,
     M1BrowserMigrationResponse, M1MigrationDisposition, M1MigrationIssue, M1MigrationIssueCode,
     M1PreferencesBaseline, M1ProviderProfileIdMapping, M1SessionIdMapping, M1WorkspaceIdMapping,
-    MAX_PRODUCT_FORK_INHERITED_RUNS, MAX_PRODUCT_MAX_STEPS, MAX_PRODUCT_PROVIDER_PROFILES,
-    MAX_PRODUCT_SESSIONS, MAX_PRODUCT_TEXT_BYTES, MAX_PRODUCT_WORKSPACES,
-    PreparedM1BrowserMigration, ProductApprovalPreference, ProductControl, ProductControlId,
-    ProductControlKind, ProductControlStatus, ProductErrorCode, ProductFollowupTurnClaim,
-    ProductFork, ProductForkContext, ProductForkId, ProductForkInheritedRun,
-    ProductMigrationReceiptId, ProductPreferences, ProductPricingAvailability,
-    ProductProviderProfile, ProductProviderProfileId, ProductProviderSelection,
-    ProductProviderType, ProductReasoningPreference, ProductResumeHealth,
-    ProductResumeHealthStatus, ProductRuntimeBinding, ProductSession, ProductSessionContext,
-    ProductSessionId, ProductSessionModelConfig, ProductSessionRunBinding,
-    ProductSessionRunModelView, ProductSessionStatus, ProductStoreError, ProductThemePreference,
-    ProductTurnClaim, ProductTurnClaimId, ProductTurnControlFinish, ProductWorkspace,
-    ProductWorkspaceId, ProductWorkspaceKind, UpdateProductPreferencesRequest,
-    UpdateProductProviderProfileRequest, UpdateProductSessionModelConfigRequest,
-    UpdateProductSessionRequest, VerifiedM1SessionRunBinding, VerifiedProductForkBoundary,
-    m1_browser_migration_digest,
+    MAX_PRODUCT_FORK_INHERITED_RUNS, MAX_PRODUCT_MAX_STEPS, MAX_PRODUCT_MESSAGE_PAGE_LIMIT,
+    MAX_PRODUCT_PROVIDER_PROFILES, MAX_PRODUCT_SESSIONS, MAX_PRODUCT_TEXT_BYTES,
+    MAX_PRODUCT_WORKSPACES, PreparedM1BrowserMigration, ProductApprovalPreference, ProductControl,
+    ProductControlId, ProductControlKind, ProductControlStatus, ProductErrorCode,
+    ProductFollowupTurnClaim, ProductFork, ProductForkContext, ProductForkId,
+    ProductForkInheritedRun, ProductMessage, ProductMessageDelivery, ProductMessagePage,
+    ProductMessagePageQuery, ProductMessageStatus, ProductMigrationReceiptId, ProductPreferences,
+    ProductPricingAvailability, ProductProviderCredentialSource, ProductProviderProfile,
+    ProductProviderProfileId, ProductProviderSelection, ProductProviderType,
+    ProductReasoningPreference, ProductResumeHealth, ProductResumeHealthStatus,
+    ProductRuntimeBinding, ProductSession, ProductSessionContext, ProductSessionId,
+    ProductSessionModelConfig, ProductSessionRunBinding, ProductSessionRunModelView,
+    ProductSessionStatus, ProductStoreError, ProductThemePreference, ProductTurnClaim,
+    ProductTurnClaimId, ProductTurnControlFinish, ProductWorkspace, ProductWorkspaceId,
+    ProductWorkspaceKind, UpdateProductPreferencesRequest, UpdateProductProviderProfileRequest,
+    UpdateProductSessionModelConfigRequest, UpdateProductSessionRequest,
+    VerifiedM1SessionRunBinding, VerifiedProductForkBoundary, m1_browser_migration_digest,
 };
 
 use super::schema::{ProductDatabase, storage_error};
@@ -48,6 +49,33 @@ const MIGRATION_PREPARATION_TTL_SECS: i64 = 24 * 60 * 60;
 // steers within this capacity guarantees a run attaching after an HTTP/API
 // race can inject every pending message at its first declared safe point.
 const MAX_PENDING_STEERS_PER_SESSION: i64 = 64;
+
+fn validate_control_message(
+    content: &str,
+    idempotency_key: Option<&str>,
+) -> Result<(), ProductStoreError> {
+    if content.is_empty() {
+        return Err(ProductStoreError::new(
+            ProductErrorCode::ProductInvalidInput,
+            "message content must not be empty",
+        ));
+    }
+    if content.len() > 32_768 {
+        return Err(ProductStoreError::new(
+            ProductErrorCode::ProductInvalidInput,
+            "message content exceeds the 32KiB limit",
+        ));
+    }
+    if let Some(key) = idempotency_key
+        && (key.is_empty() || key.len() > 128)
+    {
+        return Err(ProductStoreError::new(
+            ProductErrorCode::ProductInvalidInput,
+            "idempotency_key must be 1..128 characters",
+        ));
+    }
+    Ok(())
+}
 
 #[derive(Debug, Clone)]
 pub(super) struct ProductRepository {
@@ -514,21 +542,6 @@ impl ProductRepository {
         let mut connection = self.database.connect()?;
         let transaction = immediate_transaction(&mut connection)?;
         get_session(&transaction, session_id)?;
-        if let Some(profile_id) = request.profile_id.as_ref() {
-            let exists: bool = transaction
-                .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM product_provider_profiles WHERE profile_id = ?1)",
-                    params![profile_id.to_string()],
-                    |row| row.get(0),
-                )
-                .map_err(storage_error)?;
-            if !exists {
-                return Err(ProductStoreError::new(
-                    ProductErrorCode::ProductProviderProfileUnavailable,
-                    "the selected provider profile was not found",
-                ));
-            }
-        }
         let current_revision = transaction
             .query_row(
                 "SELECT revision FROM product_session_model_configs WHERE product_session_id = ?1",
@@ -586,6 +599,8 @@ impl ProductRepository {
                 r#"
                 SELECT product_session_id, ordinal, runtime_run_id, profile_id,
                        model, reasoning, max_steps,
+                       provider_type, wire_protocol, endpoint, catalog_revision,
+                       safe_config_digest,
                        context_window,
                        pricing_source, pricing_version, pricing_currency,
                        pricing_availability, per_mtok_prompt, per_mtok_completion,
@@ -607,14 +622,19 @@ impl ProductRepository {
                     model: row.get(4)?,
                     reasoning: row.get(5)?,
                     max_steps: row.get(6)?,
-                    context_window: row.get(7)?,
-                    pricing_source: row.get(8)?,
-                    pricing_version: row.get(9)?,
-                    pricing_currency: row.get(10)?,
-                    pricing_availability: row.get(11)?,
-                    per_mtok_prompt: row.get(12)?,
-                    per_mtok_completion: row.get(13)?,
-                    per_mtok_cache_read: row.get(14)?,
+                    provider_type: row.get(7)?,
+                    wire_protocol: row.get(8)?,
+                    endpoint: row.get(9)?,
+                    catalog_revision: row.get(10)?,
+                    safe_config_digest: row.get(11)?,
+                    context_window: row.get(12)?,
+                    pricing_source: row.get(13)?,
+                    pricing_version: row.get(14)?,
+                    pricing_currency: row.get(15)?,
+                    pricing_availability: row.get(16)?,
+                    per_mtok_prompt: row.get(17)?,
+                    per_mtok_completion: row.get(18)?,
+                    per_mtok_cache_read: row.get(19)?,
                 })
             })
             .map_err(storage_error)?;
@@ -1104,6 +1124,7 @@ impl ProductRepository {
             created.ordinal,
             &binding.runtime_run_id,
             &binding.model_config,
+            binding.run_model_snapshot.as_ref(),
         )?;
         if let Some(control_id) = &binding.followup_control_id {
             let claimable = transaction
@@ -1503,6 +1524,62 @@ impl ProductRepository {
         Ok(preferences)
     }
 
+    pub(super) fn upsert_provider_catalog_identity(
+        &self,
+        profile_id: &ProductProviderProfileId,
+        label: &str,
+        provider_type: ProductProviderType,
+        catalog_revision: &str,
+    ) -> Result<(), ProductStoreError> {
+        let label = validate_required_text("provider profile label", label)?;
+        if catalog_revision.is_empty()
+            || catalog_revision.len() > 128
+            || catalog_revision.chars().any(char::is_control)
+        {
+            return Err(invalid("provider catalog revision is invalid"));
+        }
+        let mut connection = self.database.connect()?;
+        let transaction = immediate_transaction(&mut connection)?;
+        let now = now_rfc3339();
+        transaction
+            .execute(
+                r#"
+                INSERT INTO product_provider_profiles(
+                    profile_id, label, provider_type, api_base, api_key_env,
+                    default_model, created_at, updated_at
+                ) VALUES (?1, ?2, ?3, '', NULL, NULL, ?4, ?4)
+                ON CONFLICT(profile_id) DO UPDATE SET
+                    label = excluded.label,
+                    provider_type = excluded.provider_type,
+                    api_base = '', api_key_env = NULL, default_model = NULL,
+                    updated_at = excluded.updated_at
+                "#,
+                params![
+                    profile_id.to_string(),
+                    label,
+                    provider_type_to_db(provider_type),
+                    now,
+                ],
+            )
+            .map_err(storage_error)?;
+        transaction
+            .execute(
+                r#"
+                INSERT INTO product_provider_profile_catalog_mappings(
+                    source, source_profile_id, catalog_profile_id, source_digest, migrated_at
+                ) VALUES ('user_catalog', ?1, ?1, ?2, ?3)
+                ON CONFLICT(source, source_profile_id) DO UPDATE SET
+                    catalog_profile_id = excluded.catalog_profile_id,
+                    source_digest = excluded.source_digest,
+                    migrated_at = excluded.migrated_at
+                "#,
+                params![profile_id.to_string(), catalog_revision, now],
+            )
+            .map_err(storage_error)?;
+        transaction.commit().map_err(storage_error)?;
+        Ok(())
+    }
+
     pub(super) fn get_resume_health(&self) -> Result<ProductResumeHealth, ProductStoreError> {
         let connection = self.database.connect()?;
         let counts = connection
@@ -1653,26 +1730,7 @@ impl ProductRepository {
         request: CreateProductControlRequest,
     ) -> Result<(ProductControl, bool), ProductStoreError> {
         let content = request.content.trim();
-        if content.is_empty() {
-            return Err(ProductStoreError::new(
-                ProductErrorCode::ProductInvalidInput,
-                "control content must not be empty",
-            ));
-        }
-        if content.len() > 32_768 {
-            return Err(ProductStoreError::new(
-                ProductErrorCode::ProductInvalidInput,
-                "control content exceeds the 32KiB limit",
-            ));
-        }
-        if let Some(key) = request.idempotency_key.as_deref()
-            && (key.is_empty() || key.len() > 128)
-        {
-            return Err(ProductStoreError::new(
-                ProductErrorCode::ProductInvalidInput,
-                "idempotency_key must be 1..128 characters",
-            ));
-        }
+        validate_control_message(content, request.idempotency_key.as_deref())?;
 
         let mut connection = self.database.connect()?;
         let transaction = immediate_transaction(&mut connection)?;
@@ -1770,6 +1828,322 @@ impl ProductRepository {
         };
         transaction.commit().map_err(storage_error)?;
         Ok((control, false))
+    }
+
+    pub(super) fn create_message(
+        &self,
+        session_id: &ProductSessionId,
+        request: CreateProductMessageRequest,
+    ) -> Result<(ProductMessage, bool), ProductStoreError> {
+        let content = request.content.trim();
+        validate_control_message(content, request.idempotency_key.as_deref())?;
+        let mut connection = self.database.connect()?;
+        let transaction = immediate_transaction(&mut connection)?;
+        let session = get_session(&transaction, session_id)?;
+        let digest = rove_runtime::context::stable_hash(content);
+        if let Some(key) = request.idempotency_key.as_deref()
+            && let Some(existing) = transaction
+                .query_row(
+                    r#"
+                    SELECT control_id, product_session_id, kind, idempotency_key, content,
+                           status, run_id, seq, created_at, applied_at
+                    FROM product_session_controls
+                    WHERE product_session_id = ?1 AND idempotency_key = ?2
+                    "#,
+                    params![session_id.to_string(), key],
+                    row_to_control,
+                )
+                .optional()
+                .map_err(storage_error)?
+        {
+            if existing.content != content {
+                return Err(ProductStoreError::new(
+                    ProductErrorCode::ProductControlConflict,
+                    "idempotency_key already exists with different message content",
+                ));
+            }
+            let contract_version: i64 = transaction
+                .query_row(
+                    r#"
+                    SELECT message_contract_version
+                    FROM product_session_controls
+                    WHERE product_session_id = ?1 AND control_id = ?2
+                    "#,
+                    params![session_id.to_string(), existing.id.to_string()],
+                    |row| row.get(0),
+                )
+                .map_err(storage_error)?;
+            if contract_version != 1 {
+                return Err(ProductStoreError::new(
+                    ProductErrorCode::ProductControlConflict,
+                    "idempotency_key belongs to a legacy control, not a product message",
+                ));
+            }
+            let message = get_message_in_transaction(&transaction, session_id, &existing.id)?;
+            transaction.commit().map_err(storage_error)?;
+            return Ok((message, true));
+        }
+        let pending_count: i64 = transaction
+            .query_row(
+                r#"
+                SELECT COUNT(*) FROM product_session_controls
+                WHERE product_session_id = ?1
+                  AND message_contract_version = 1
+                  AND status IN ('pending', 'accepted')
+                "#,
+                params![session_id.to_string()],
+                |row| row.get(0),
+            )
+            .map_err(storage_error)?;
+        if pending_count >= MAX_PENDING_STEERS_PER_SESSION {
+            return Err(ProductStoreError::new(
+                ProductErrorCode::ProductControlRejected,
+                "message queue is full",
+            ));
+        }
+        let control_id = ProductControlId::new();
+        let seq: i64 = transaction
+            .query_row(
+                "SELECT COALESCE(MAX(seq), 0) + 1 FROM product_session_controls WHERE product_session_id = ?1",
+                params![session_id.to_string()],
+                |row| row.get(0),
+            )
+            .map_err(storage_error)?;
+        let now = now_rfc3339();
+        let (status, reason) = match session.status {
+            ProductSessionStatus::Idle | ProductSessionStatus::Running => ("pending", None),
+            ProductSessionStatus::Error | ProductSessionStatus::NeedsAttention => (
+                "abandoned",
+                Some("session requires an explicit recovery decision"),
+            ),
+            ProductSessionStatus::Archived => {
+                return Err(invalid("archived product sessions cannot accept messages"));
+            }
+        };
+        transaction
+            .execute(
+                r#"
+                INSERT INTO product_session_controls(
+                    control_id, product_session_id, kind, idempotency_key,
+                    request_digest, content, status, seq, abandoned_reason,
+                    created_at, message_contract_version, requested_delivery
+                ) VALUES (?1, ?2, 'followup', ?3, ?4, ?5, ?6, ?7, ?8, ?9, 1, 'successor')
+                "#,
+                params![
+                    control_id.to_string(),
+                    session_id.to_string(),
+                    request.idempotency_key,
+                    digest,
+                    content,
+                    status,
+                    seq,
+                    reason,
+                    now,
+                ],
+            )
+            .map_err(storage_error)?;
+        let message = get_message_in_transaction(&transaction, session_id, &control_id)?;
+        transaction.commit().map_err(storage_error)?;
+        Ok((message, false))
+    }
+
+    pub(super) fn promote_message(
+        &self,
+        session_id: &ProductSessionId,
+        message_id: &ProductControlId,
+    ) -> Result<ProductMessage, ProductStoreError> {
+        let mut connection = self.database.connect()?;
+        let transaction = immediate_transaction(&mut connection)?;
+        let existing_message = get_message_in_transaction(&transaction, session_id, message_id)?;
+        if existing_message.requested_delivery == ProductMessageDelivery::CurrentRun {
+            transaction.commit().map_err(storage_error)?;
+            return Ok(existing_message);
+        }
+        let session = get_session(&transaction, session_id)?;
+        if session.status != ProductSessionStatus::Running
+            || !has_active_claim_for_session(&transaction, session_id)?
+        {
+            return Err(ProductStoreError::new(
+                ProductErrorCode::ProductControlRejected,
+                "message can only be promoted while its session turn is active",
+            ));
+        }
+        let existing = get_control_in_transaction(&transaction, session_id, message_id)?;
+        if existing.kind != ProductControlKind::Followup
+            || existing.status != ProductControlStatus::Pending
+        {
+            return Err(ProductStoreError::new(
+                ProductErrorCode::ProductControlRejected,
+                "message is no longer eligible for promotion",
+            ));
+        }
+        let changed = transaction
+            .execute(
+                r#"
+                UPDATE product_session_controls
+                SET kind = 'steer', message_contract_version = 1,
+                    requested_delivery = 'current_run'
+                WHERE product_session_id = ?1 AND control_id = ?2 AND status = 'pending'
+                "#,
+                params![session_id.to_string(), message_id.to_string()],
+            )
+            .map_err(storage_error)?;
+        if changed != 1 {
+            return Err(ProductStoreError::new(
+                ProductErrorCode::ProductControlRejected,
+                "message promotion lost its compare-and-set race",
+            ));
+        }
+        let updated = get_message_in_transaction(&transaction, session_id, message_id)?;
+        transaction.commit().map_err(storage_error)?;
+        Ok(updated)
+    }
+
+    pub(super) fn revoke_message(
+        &self,
+        session_id: &ProductSessionId,
+        message_id: &ProductControlId,
+    ) -> Result<ProductMessage, ProductStoreError> {
+        let mut connection = self.database.connect()?;
+        let transaction = immediate_transaction(&mut connection)?;
+        let existing = get_control_in_transaction(&transaction, session_id, message_id)?;
+        if existing.status == ProductControlStatus::Revoked {
+            let message = get_message_in_transaction(&transaction, session_id, message_id)?;
+            transaction.commit().map_err(storage_error)?;
+            return Ok(message);
+        }
+        if matches!(
+            existing.status,
+            ProductControlStatus::Accepted
+                | ProductControlStatus::Applied
+                | ProductControlStatus::Dropped
+        ) {
+            return Err(ProductStoreError::new(
+                ProductErrorCode::ProductControlRejected,
+                "message already has a terminal or claimed delivery outcome",
+            ));
+        }
+        let changed = transaction
+            .execute(
+                r#"
+                UPDATE product_session_controls
+                SET status = 'revoked'
+                WHERE product_session_id = ?1 AND control_id = ?2
+                  AND status IN ('pending', 'abandoned')
+                "#,
+                params![session_id.to_string(), message_id.to_string()],
+            )
+            .map_err(storage_error)?;
+        if changed != 1 {
+            return Err(ProductStoreError::new(
+                ProductErrorCode::ProductControlRejected,
+                "message revoke lost its compare-and-set race",
+            ));
+        }
+        let updated = get_message_in_transaction(&transaction, session_id, message_id)?;
+        transaction.commit().map_err(storage_error)?;
+        Ok(updated)
+    }
+
+    pub(super) fn list_messages(
+        &self,
+        session_id: &ProductSessionId,
+        query: ProductMessagePageQuery,
+    ) -> Result<ProductMessagePage, ProductStoreError> {
+        if query.limit == 0
+            || query.limit > MAX_PRODUCT_MESSAGE_PAGE_LIMIT
+            || query.after_seq.is_some_and(|sequence| sequence < 0)
+            || query.before_seq.is_some_and(|sequence| sequence <= 0)
+            || (query.after_seq.is_some() && query.before_seq.is_some())
+        {
+            return Err(invalid("message page query is invalid"));
+        }
+        let mut connection = self.database.connect()?;
+        let transaction = connection.transaction().map_err(storage_error)?;
+        get_session(&transaction, session_id)?;
+        let fetch_limit = i64::try_from(query.limit + 1).map_err(storage_error)?;
+        let (mut messages, reverse) = if let Some(after_seq) = query.after_seq {
+            let mut statement = transaction
+                .prepare(
+                    r#"
+                    SELECT control_id, product_session_id, content, status, run_id, seq,
+                           created_at, applied_at, abandoned_reason, requested_delivery
+                    FROM product_session_controls
+                    WHERE product_session_id = ?1 AND message_contract_version = 1
+                      AND seq > ?2
+                    ORDER BY seq ASC
+                    LIMIT ?3
+                    "#,
+                )
+                .map_err(storage_error)?;
+            let messages = statement
+                .query_map(
+                    params![session_id.to_string(), after_seq, fetch_limit],
+                    row_to_message,
+                )
+                .map_err(storage_error)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(storage_error)?;
+            (messages, false)
+        } else {
+            let before_seq = query.before_seq.unwrap_or(i64::MAX);
+            let mut statement = transaction
+                .prepare(
+                    r#"
+                    SELECT control_id, product_session_id, content, status, run_id, seq,
+                           created_at, applied_at, abandoned_reason, requested_delivery
+                    FROM product_session_controls
+                    WHERE product_session_id = ?1 AND message_contract_version = 1
+                      AND seq < ?2
+                    ORDER BY seq DESC
+                    LIMIT ?3
+                    "#,
+                )
+                .map_err(storage_error)?;
+            let messages = statement
+                .query_map(
+                    params![session_id.to_string(), before_seq, fetch_limit],
+                    row_to_message,
+                )
+                .map_err(storage_error)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(storage_error)?;
+            (messages, true)
+        };
+        let has_more = messages.len() > query.limit;
+        if has_more {
+            messages.pop();
+        }
+        if reverse {
+            messages.reverse();
+        }
+        let page = ProductMessagePage {
+            next_after_seq: if !reverse && has_more {
+                messages.last().map(|message| message.seq)
+            } else {
+                None
+            },
+            next_before_seq: if reverse && has_more {
+                messages.first().map(|message| message.seq)
+            } else {
+                None
+            },
+            messages,
+        };
+        transaction.commit().map_err(storage_error)?;
+        Ok(page)
+    }
+
+    pub(super) fn get_message(
+        &self,
+        session_id: &ProductSessionId,
+        message_id: &ProductControlId,
+    ) -> Result<ProductMessage, ProductStoreError> {
+        let mut connection = self.database.connect()?;
+        let transaction = connection.transaction().map_err(storage_error)?;
+        let message = get_message_in_transaction(&transaction, session_id, message_id)?;
+        transaction.commit().map_err(storage_error)?;
+        Ok(message)
     }
 
     pub(super) fn list_controls(
@@ -3047,6 +3421,11 @@ struct RawSessionRunModel {
     model: String,
     reasoning: String,
     max_steps: i64,
+    provider_type: Option<String>,
+    wire_protocol: Option<String>,
+    endpoint: Option<String>,
+    catalog_revision: Option<String>,
+    safe_config_digest: Option<String>,
     context_window: Option<i64>,
     pricing_source: Option<String>,
     pricing_version: Option<String>,
@@ -3087,6 +3466,11 @@ impl RawSessionRunModel {
             reasoning: ProductReasoningPreference::from_str(&self.reasoning)?,
             max_steps: u32::try_from(self.max_steps)
                 .map_err(|_| binding_corrupt("run model max_steps is invalid"))?,
+            provider_type: self.provider_type,
+            wire_protocol: self.wire_protocol,
+            endpoint: self.endpoint,
+            catalog_revision: self.catalog_revision,
+            safe_config_digest: self.safe_config_digest,
             context_window: self
                 .context_window
                 .map(|value| {
@@ -3109,15 +3493,22 @@ impl RawSessionRunModel {
 
 impl RawProviderProfile {
     fn into_product(self) -> Result<ProductProviderProfile, ProductStoreError> {
+        let credential_source = self
+            .api_key_env
+            .as_ref()
+            .map(|name| ProductProviderCredentialSource::Env { name: name.clone() })
+            .unwrap_or(ProductProviderCredentialSource::None);
         Ok(ProductProviderProfile {
             id: parse_product_id(&self.id, "provider profile id")?,
             label: self.label,
             provider_type: provider_type_from_db(&self.provider_type)?,
             api_base: self.api_base,
             api_key_env: self.api_key_env,
+            credential_source,
             default_model: self.default_model,
             created_at: self.created_at,
             updated_at: self.updated_at,
+            catalog_revision: "legacy-product-store".to_string(),
         })
     }
 }
@@ -3760,11 +4151,34 @@ fn insert_session_run_model_snapshot(
     ordinal: u64,
     runtime_run_id: &RunId,
     config: &ProductSessionModelConfig,
+    snapshot: Option<&rove_runtime::runtime_identity::RunModelSnapshot>,
 ) -> Result<(), ProductStoreError> {
     if config.product_session_id != *session_id {
         return Err(resume_conflict(
             "run model snapshot does not belong to the claimed product session",
         ));
+    }
+    if let Some(snapshot) = snapshot {
+        let programmatic_fake = config.profile_id.is_none()
+            && snapshot.profile_id == "programmatic-fake"
+            && snapshot.provider_type == "fake"
+            && snapshot.wire_protocol == "fake"
+            && snapshot.endpoint.is_empty()
+            && snapshot.catalog_revision == "programmatic";
+        let profile_matches = config
+            .profile_id
+            .as_ref()
+            .map(ToString::to_string)
+            .is_some_and(|profile_id| profile_id == snapshot.profile_id)
+            || programmatic_fake;
+        if snapshot.model != config.model
+            || snapshot.reasoning != config.reasoning.as_str()
+            || !profile_matches
+        {
+            return Err(resume_conflict(
+                "run model snapshot does not match the claimed session selection",
+            ));
+        }
     }
     let pricing = crate::pricing::PricingSnapshot::bundled_for_model(&config.model);
     let inserted = transaction
@@ -3773,11 +4187,13 @@ fn insert_session_run_model_snapshot(
             INSERT OR IGNORE INTO product_session_run_models(
                 product_session_id, ordinal, runtime_run_id, profile_id,
                 model, reasoning, max_steps, started_at,
+                provider_type, wire_protocol, endpoint, catalog_revision,
+                safe_config_digest,
                 context_window,
                 pricing_source, pricing_version, pricing_currency,
                 pricing_availability, per_mtok_prompt, per_mtok_completion,
                 per_mtok_cache_read
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)
             "#,
             params![
                 session_id.to_string(),
@@ -3788,6 +4204,11 @@ fn insert_session_run_model_snapshot(
                 config.reasoning.as_str(),
                 i64::from(config.max_steps),
                 now_rfc3339(),
+                snapshot.map(|value| value.provider_type.as_str()),
+                snapshot.map(|value| value.wire_protocol.as_str()),
+                snapshot.map(|value| value.endpoint.as_str()),
+                snapshot.map(|value| value.catalog_revision.as_str()),
+                snapshot.map(|value| value.safe_config_digest.as_str()),
                 crate::pricing::bundled_context_window(&config.model)
                     .and_then(|value| i64::try_from(value).ok()),
                 pricing.source,
@@ -3806,6 +4227,8 @@ fn insert_session_run_model_snapshot(
                 r#"
                 SELECT product_session_id, ordinal, runtime_run_id, profile_id,
                        model, reasoning, max_steps,
+                       provider_type, wire_protocol, endpoint, catalog_revision,
+                       safe_config_digest,
                        context_window,
                        pricing_source, pricing_version, pricing_currency,
                        pricing_availability, per_mtok_prompt, per_mtok_completion,
@@ -3823,14 +4246,19 @@ fn insert_session_run_model_snapshot(
                         model: row.get(4)?,
                         reasoning: row.get(5)?,
                         max_steps: row.get(6)?,
-                        context_window: row.get(7)?,
-                        pricing_source: row.get(8)?,
-                        pricing_version: row.get(9)?,
-                        pricing_currency: row.get(10)?,
-                        pricing_availability: row.get(11)?,
-                        per_mtok_prompt: row.get(12)?,
-                        per_mtok_completion: row.get(13)?,
-                        per_mtok_cache_read: row.get(14)?,
+                        provider_type: row.get(7)?,
+                        wire_protocol: row.get(8)?,
+                        endpoint: row.get(9)?,
+                        catalog_revision: row.get(10)?,
+                        safe_config_digest: row.get(11)?,
+                        context_window: row.get(12)?,
+                        pricing_source: row.get(13)?,
+                        pricing_version: row.get(14)?,
+                        pricing_currency: row.get(15)?,
+                        pricing_availability: row.get(16)?,
+                        per_mtok_prompt: row.get(17)?,
+                        per_mtok_completion: row.get(18)?,
+                        per_mtok_cache_read: row.get(19)?,
                     })
                 },
             )
@@ -3842,7 +4270,13 @@ fn insert_session_run_model_snapshot(
             && existing.profile_id == config.profile_id
             && existing.model == config.model
             && existing.reasoning == config.reasoning
-            && existing.max_steps == config.max_steps;
+            && existing.max_steps == config.max_steps
+            && existing.provider_type == snapshot.map(|value| value.provider_type.clone())
+            && existing.wire_protocol == snapshot.map(|value| value.wire_protocol.clone())
+            && existing.endpoint == snapshot.map(|value| value.endpoint.clone())
+            && existing.catalog_revision == snapshot.map(|value| value.catalog_revision.clone())
+            && existing.safe_config_digest
+                == snapshot.map(|value| value.safe_config_digest.clone());
         if !same_identity {
             return Err(resume_conflict(
                 "runtime run already has a different model snapshot",
@@ -5901,6 +6335,110 @@ fn row_to_control(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProductControl> {
             seq,
             created_at,
             applied_at,
+        })
+    })();
+    mapped.map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(
+            0,
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::other(error.message)),
+        )
+    })
+}
+
+fn get_message_in_transaction(
+    transaction: &Transaction<'_>,
+    session_id: &ProductSessionId,
+    message_id: &ProductControlId,
+) -> Result<ProductMessage, ProductStoreError> {
+    transaction
+        .query_row(
+            r#"
+            SELECT control_id, product_session_id, content, status, run_id, seq,
+                   created_at, applied_at, abandoned_reason, requested_delivery
+            FROM product_session_controls
+            WHERE product_session_id = ?1 AND control_id = ?2
+              AND message_contract_version = 1
+            "#,
+            params![session_id.to_string(), message_id.to_string()],
+            row_to_message,
+        )
+        .optional()
+        .map_err(storage_error)?
+        .ok_or_else(|| not_found("message not found"))
+}
+
+fn row_to_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProductMessage> {
+    let id: String = row.get(0)?;
+    let product_session_id: String = row.get(1)?;
+    let content: String = row.get(2)?;
+    let status: String = row.get(3)?;
+    let run_id: Option<String> = row.get(4)?;
+    let seq: i64 = row.get(5)?;
+    let created_at: String = row.get(6)?;
+    let applied_at: Option<String> = row.get(7)?;
+    let persisted_reason: Option<String> = row.get(8)?;
+    let requested_delivery: String = row.get(9)?;
+    let mapped = (|| {
+        let stored_status = control_status_from_db(&status)?;
+        let requested_delivery = match requested_delivery.as_str() {
+            "successor" => ProductMessageDelivery::Successor,
+            "current_run" => ProductMessageDelivery::CurrentRun,
+            _ => {
+                return Err(ProductStoreError::new(
+                    ProductErrorCode::ProductStorageFailure,
+                    "persisted product message delivery is invalid",
+                ));
+            }
+        };
+        let run_id = run_id
+            .as_deref()
+            .map(|value| parse_runtime_id(value, "message run id"))
+            .transpose()?;
+        let status = match stored_status {
+            ProductControlStatus::Pending => match requested_delivery {
+                ProductMessageDelivery::Successor => ProductMessageStatus::Queued,
+                ProductMessageDelivery::CurrentRun => ProductMessageStatus::InterventionRequested,
+            },
+            ProductControlStatus::Accepted => match requested_delivery {
+                ProductMessageDelivery::Successor => ProductMessageStatus::ClaimedSuccessor,
+                ProductMessageDelivery::CurrentRun => ProductMessageStatus::InterventionRequested,
+            },
+            ProductControlStatus::Applied => match requested_delivery {
+                ProductMessageDelivery::Successor => ProductMessageStatus::ClaimedSuccessor,
+                ProductMessageDelivery::CurrentRun => ProductMessageStatus::AppliedCurrentRun,
+            },
+            ProductControlStatus::Dropped | ProductControlStatus::Abandoned => {
+                ProductMessageStatus::NeedsAttention
+            }
+            ProductControlStatus::Revoked => ProductMessageStatus::Revoked,
+        };
+        Ok::<_, ProductStoreError>(ProductMessage {
+            id: parse_product_id(&id, "message id")?,
+            product_session_id: parse_product_id(&product_session_id, "product session id")?,
+            content,
+            requested_delivery,
+            actual_delivery: matches!(
+                status,
+                ProductMessageStatus::AppliedCurrentRun | ProductMessageStatus::ClaimedSuccessor
+            )
+            .then_some(requested_delivery),
+            status,
+            seq,
+            run_id: (requested_delivery == ProductMessageDelivery::CurrentRun)
+                .then_some(run_id)
+                .flatten(),
+            successor_run_id: (requested_delivery == ProductMessageDelivery::Successor)
+                .then_some(run_id)
+                .flatten(),
+            created_at,
+            applied_at,
+            reason: match status {
+                ProductMessageStatus::NeedsAttention => persisted_reason.or_else(|| {
+                    Some("message delivery requires an explicit recovery decision".to_string())
+                }),
+                _ => persisted_reason,
+            },
         })
     })();
     mapped.map_err(|error| {

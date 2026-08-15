@@ -212,21 +212,25 @@ Scenarios covered by the runner:
 | Tool failure | Failed tool event is visible in API artifacts. |
 | Product migration | Safe M1 browser state migrates before catalog boot, the legacy route is remapped, and refresh does not replay the import. |
 | Product continuity | Interleaved A/B sessions resume their own exact chains across refresh; approval, input, cancellation, Settings, and deep routes work through `/`. |
+| Unified message delivery | Active-run messages preserve one durable identity through promotion or revoke and never duplicate transcript content. |
+| Product Fork | A completed session forks at the verified terminal boundary and the child continues without changing the parent history. |
 | Advanced escape hatch | One bounded `/dev/workbench` direct-run smoke completes against the same live API. |
 
 Acceptance:
 
 - command exits with code 0 and prints `local-full integration smoke completed`;
-- Playwright reports all three real-API cases passed: migration, default product
-  lifecycle, and bounded advanced smoke;
+- Playwright reports all five real-API cases passed: migration, default A/B
+  product lifecycle, unified-message promotion/revocation, completed-session
+  Fork/independent-child continuation, and bounded advanced smoke;
 - artifacts are written under `%TEMP%\rove-integration\artifacts` unless `ROVE_INTEGRATION_ROOT` overrides it;
 - printed run ids are present in `GET /runs?limit=25`;
 - `api/*.state.json`, product transcripts, reports, and Web assertions agree on
   exact run identities, terminal statuses, approval/input resolution, and tool
   names.
 
-The integrated C3 implementation on `main` passed this `local-full` gate 3/3
-after the ordered coordinator merge.
+The integrated C3 implementation on `main` originally passed this `local-full`
+gate 3/3 after the ordered coordinator merge. Productization integration extends
+the same live local gate to 5/5 with unified-message and Fork/child scenarios.
 
 ## Gate 2: `provider-model-inventory`
 

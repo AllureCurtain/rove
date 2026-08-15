@@ -150,15 +150,23 @@ export interface ProductFork {
   created_at: string;
 }
 
+export type ProductProviderCredentialSource =
+  | { source: "env"; name: string }
+  | { source: "file"; path: string }
+  | { source: "keyring"; service: string; account: string }
+  | { source: "none" };
+
 export interface ProductProviderProfile {
   id: ProductProviderProfileId;
   label: string;
   provider_type: ProductProviderType;
   api_base: string;
   api_key_env?: string;
+  credential_source: ProductProviderCredentialSource;
   default_model?: string;
   created_at: string;
   updated_at: string;
+  catalog_revision: string;
 }
 
 export interface ProductProviderSelection {
@@ -208,6 +216,11 @@ export interface ProductSessionRunModelView {
   model: string;
   reasoning: ProductReasoningPreference;
   max_steps: number;
+  provider_type?: string;
+  wire_protocol?: string;
+  endpoint?: string;
+  catalog_revision?: string;
+  safe_config_digest?: string;
   context_window?: number;
   pricing_source?: string;
   pricing_version?: string;
@@ -460,6 +473,7 @@ export interface CreateProductProviderProfileRequest {
   api_base: string;
   api_key_env?: string;
   default_model?: string;
+  expected_revision?: string;
 }
 
 export type UpdateProductProviderProfileRequest =
@@ -484,6 +498,7 @@ export interface ProductSessionsResponse {
 }
 
 export interface ProductProviderProfilesResponse {
+  catalog_revision: string;
   provider_profiles: ProductProviderProfile[];
 }
 
@@ -793,6 +808,40 @@ export interface CreateProductControlRequest {
 
 export interface ProductControlsResponse {
   controls: ProductControl[];
+}
+
+export const PRODUCT_MESSAGE_DELIVERIES = ["successor", "current_run"] as const;
+export type ProductMessageDelivery = (typeof PRODUCT_MESSAGE_DELIVERIES)[number];
+export const PRODUCT_MESSAGE_STATUSES = [
+  "queued",
+  "intervention_requested",
+  "applied_current_run",
+  "claimed_successor",
+  "needs_attention",
+  "revoked",
+] as const;
+export type ProductMessageStatus = (typeof PRODUCT_MESSAGE_STATUSES)[number];
+
+export interface ProductMessage {
+  id: ProductControlId;
+  product_session_id: ProductSessionId;
+  content: string;
+  requested_delivery: ProductMessageDelivery;
+  actual_delivery?: ProductMessageDelivery;
+  status: ProductMessageStatus;
+  seq: number;
+  run_id?: string;
+  successor_run_id?: string;
+  created_at: string;
+  applied_at?: string;
+  reason?: string;
+}
+
+export type CreateProductMessageRequest = CreateProductControlRequest;
+export interface ProductMessagesResponse {
+  messages: ProductMessage[];
+  next_after_seq?: number;
+  next_before_seq?: number;
 }
 
 export type ProductControlStatusFilter = ProductControlStatus | "all";
@@ -1349,6 +1398,15 @@ export function parseProductProviderProfile(
     nonEmpty: true,
     maxBytes: 256,
   });
+  const credentialSource =
+    record.credential_source === undefined
+      ? apiKeyEnv
+        ? ({ source: "env", name: apiKeyEnv } as const)
+        : ({ source: "none" } as const)
+      : parseProductProviderCredentialSource(
+          record.credential_source,
+          `${path}.credential_source`,
+        );
   assertSafeProductProviderConfiguration(
     providerType,
     apiBase,
@@ -1363,12 +1421,18 @@ export function parseProductProviderProfile(
     }),
     provider_type: providerType,
     api_base: apiBase,
+    credential_source: credentialSource,
     created_at: expectString(record.created_at, `${path}.created_at`, {
       nonEmpty: true,
     }),
     updated_at: expectString(record.updated_at, `${path}.updated_at`, {
       nonEmpty: true,
     }),
+    catalog_revision: expectString(
+      record.catalog_revision,
+      `${path}.catalog_revision`,
+      { nonEmpty: true },
+    ),
   };
   assignOptional(profile, "api_key_env", apiKeyEnv);
   assignOptional(
@@ -1380,6 +1444,50 @@ export function parseProductProviderProfile(
     }),
   );
   return profile;
+}
+
+function parseProductProviderCredentialSource(
+  value: unknown,
+  path: string,
+): ProductProviderCredentialSource {
+  const record = expectRecord(value, path);
+  const source = expectEnum(
+    record.source,
+    ["env", "file", "keyring", "none"] as const,
+    `${path}.source`,
+  );
+  switch (source) {
+    case "env":
+      return {
+        source,
+        name: expectString(record.name, `${path}.name`, {
+          nonEmpty: true,
+          maxBytes: 256,
+        }),
+      };
+    case "file":
+      return {
+        source,
+        path: expectString(record.path, `${path}.path`, {
+          nonEmpty: true,
+          maxBytes: MAX_PRODUCT_PATH_BYTES,
+        }),
+      };
+    case "keyring":
+      return {
+        source,
+        service: expectString(record.service, `${path}.service`, {
+          nonEmpty: true,
+          maxBytes: 256,
+        }),
+        account: expectString(record.account, `${path}.account`, {
+          nonEmpty: true,
+          maxBytes: 256,
+        }),
+      };
+    case "none":
+      return { source };
+  }
 }
 
 function parseProductSessionModelConfig(
@@ -2039,7 +2147,14 @@ export function parseProductProviderProfileRequest(
   const record = expectRecord(value, path);
   expectOnlyKeys(
     record,
-    ["label", "provider_type", "api_base", "api_key_env", "default_model"],
+    [
+      "label",
+      "provider_type",
+      "api_base",
+      "api_key_env",
+      "default_model",
+      "expected_revision",
+    ],
     path,
   );
   const providerType = expectEnum(
@@ -2076,6 +2191,11 @@ export function parseProductProviderProfileRequest(
       nonEmpty: true,
       maxBytes: MAX_PRODUCT_TEXT_BYTES,
     }),
+  );
+  assignOptional(
+    request,
+    "expected_revision",
+    optionalString(record, "expected_revision", path, { nonEmpty: true }),
   );
   return request;
 }
@@ -2219,6 +2339,11 @@ export function parseProductProviderProfilesResponse(
 ): ProductProviderProfilesResponse {
   const record = expectRecord(value, "product provider profiles response");
   return {
+    catalog_revision: expectString(
+      record.catalog_revision,
+      "product provider profiles response.catalog_revision",
+      { nonEmpty: true },
+    ),
     provider_profiles: expectArray(
       record.provider_profiles,
       "product provider profiles response.provider_profiles",
@@ -2292,6 +2417,66 @@ export function parseProductControlsResponse(
       parseProductControl,
     ),
   };
+}
+
+export function parseProductMessage(
+  value: unknown,
+  path = "product message",
+): ProductMessage {
+  const record = expectRecord(value, path);
+  const message: ProductMessage = {
+    id: expectId(record.id, `${path}.id`),
+    product_session_id: expectId(record.product_session_id, `${path}.product_session_id`),
+    content: expectString(record.content, `${path}.content`, {
+      nonEmpty: true,
+      maxBytes: MAX_PRODUCT_CONTROL_CONTENT_BYTES,
+    }),
+    requested_delivery: expectEnum(
+      record.requested_delivery,
+      PRODUCT_MESSAGE_DELIVERIES,
+      `${path}.requested_delivery`,
+    ),
+    status: expectEnum(record.status, PRODUCT_MESSAGE_STATUSES, `${path}.status`),
+    seq: expectInteger(record.seq, `${path}.seq`, { min: 1 }),
+    created_at: expectRfc3339Timestamp(record.created_at, `${path}.created_at`),
+  };
+  if (record.actual_delivery !== undefined && record.actual_delivery !== null) {
+    message.actual_delivery = expectEnum(
+      record.actual_delivery,
+      PRODUCT_MESSAGE_DELIVERIES,
+      `${path}.actual_delivery`,
+    );
+  }
+  assignOptional(message, "run_id", optionalString(record, "run_id", path, { nonEmpty: true }));
+  assignOptional(message, "successor_run_id", optionalString(record, "successor_run_id", path, { nonEmpty: true }));
+  assignOptional(message, "reason", optionalString(record, "reason", path, { maxBytes: MAX_PRODUCT_TEXT_BYTES }));
+  const appliedAt = optionalString(record, "applied_at", path, { nonEmpty: true });
+  if (appliedAt !== undefined) {
+    message.applied_at = expectRfc3339Timestamp(appliedAt, `${path}.applied_at`);
+  }
+  return message;
+}
+
+export function parseProductMessagesResponse(value: unknown): ProductMessagesResponse {
+  const record = expectRecord(value, "product messages response");
+  const response: ProductMessagesResponse = {
+    messages: expectArray(
+      record.messages,
+      "product messages response.messages",
+      parseProductMessage,
+    ),
+  };
+  assignOptional(
+    response,
+    "next_after_seq",
+    optionalInteger(record, "next_after_seq", "product messages response", { min: 1 }),
+  );
+  assignOptional(
+    response,
+    "next_before_seq",
+    optionalInteger(record, "next_before_seq", "product messages response", { min: 1 }),
+  );
+  return response;
 }
 
 function parseStringArray(value: unknown, path: string): string[] {
@@ -4065,6 +4250,29 @@ export function parseStreamEvent(
         id: expectId(record.id, `${path}.id`),
       };
     case "followup_abandoned":
+      return {
+        type,
+        id: expectId(record.id, `${path}.id`),
+        reason: expectString(record.reason, `${path}.reason`, {
+          nonEmpty: true,
+          maxBytes: MAX_PRODUCT_TEXT_BYTES,
+        }),
+      };
+    case "message_queued":
+      return {
+        type,
+        id: expectId(record.id, `${path}.id`),
+        content: expectString(record.content, `${path}.content`, {
+          nonEmpty: true,
+          maxBytes: MAX_PRODUCT_CONTROL_CONTENT_BYTES,
+        }),
+      };
+    case "message_intervention_requested":
+    case "message_applied_current_run":
+    case "message_claimed_successor":
+    case "message_revoked":
+      return { type, id: expectId(record.id, `${path}.id`) };
+    case "message_needs_attention":
       return {
         type,
         id: expectId(record.id, `${path}.id`),

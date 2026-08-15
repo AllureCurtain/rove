@@ -318,6 +318,7 @@ mod tests {
         config.provider.profiles.insert(
             "openai".to_string(),
             rove_app_bootstrap::ProviderProfileConfig {
+                label: None,
                 provider_type: "openai".to_string(),
                 base_url: "https://api.openai.com/v1".to_string(),
                 model: "test-model".to_string(),

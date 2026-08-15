@@ -14,6 +14,7 @@ use rove_models::{ModelError, ModelEvent, ProviderOptions};
 
 fn profile(provider_type: &str, base_url: &str, model: &str) -> ProviderProfileConfig {
     ProviderProfileConfig {
+        label: None,
         provider_type: provider_type.to_string(),
         base_url: base_url.to_string(),
         model: model.to_string(),

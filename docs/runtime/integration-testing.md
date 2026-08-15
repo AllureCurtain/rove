@@ -214,7 +214,10 @@ The runner:
 
 1. Loads `.env.integration` when present and falls back to safe `local-full` defaults.
 2. Verifies required commands are available: `cargo` and `pnpm`.
-3. Creates `<integration-root>/workspace`, `<integration-root>/workspace/.rove-integration-state`, and `<integration-root>/artifacts`.
+3. Creates `<integration-root>/workspace`, isolated runtime state and user config
+   under that workspace, and `<integration-root>/artifacts`; it sets
+   `ROVE_CONFIG_ROOT` so the gate cannot read or rewrite the operator's real
+   `~/.rove/config.toml`.
 4. Starts `cargo run -p rove-api -- --addr <addr> -C <workspace>` with integration env.
 5. Waits until `GET /runs` succeeds.
 6. Runs API smoke scenarios and saves JSON responses under `<integration-root>/artifacts/api`.
@@ -227,12 +230,16 @@ The runner:
 
 The runner does not run `provider-smoke`, `external-tools`, or `stress`; those remain explicit follow-up gates.
 
-The C3 `local-full` run passed all three `real-api.spec.ts` cases against the
-live Rust API:
+The current `local-full` run passes all five `real-api.spec.ts` cases against
+the live Rust API:
 
 - M1 migration runs before product catalog boot and does not replay on refresh;
 - the default product shell proves exact interleaved A/B continuation, refresh,
   approval, input, cancellation, Settings, and durable deep routes;
+- one queued message is promoted and another revoked through the unified
+  message lifecycle during an active run;
+- a completed session forks at its verified boundary and the child continues
+  independently;
 - `/dev/workbench` remains available through one bounded direct-run smoke.
 
 ## Generic Provider Runner

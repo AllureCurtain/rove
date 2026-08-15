@@ -160,7 +160,7 @@ export type WorkbenchAction =
   /** Clear run-scoped view state while optionally retaining terminal product tool history. */
   | { type: "prepare_turn"; preserveTools?: boolean }
   /** Reset stale run identity before following a different durable job. */
-  | { type: "prepare_job_attachment"; jobId: string }
+  | { type: "prepare_job_attachment"; jobId: string; runId?: string | null }
   | { type: "append_user_message"; content: string }
   | {
       type: "job_created";
@@ -329,10 +329,15 @@ export function workbenchReducer(
         "Preparing turn",
       );
     case "prepare_job_attachment":
-      if (!state.activeJobId || state.activeJobId === action.jobId) {
+      if (
+        !state.activeJobId ||
+        (state.activeJobId === action.jobId &&
+          (!action.runId || state.activeRunId === action.runId))
+      ) {
         return {
           ...state,
           activeJobId: action.jobId,
+          activeRunId: action.runId ?? state.activeRunId,
           statusText: "Connecting to active run",
           lastSignal: "Connecting to active run",
           busy: true,
@@ -342,6 +347,7 @@ export function workbenchReducer(
       return {
         ...prepareRunScopedState(state, true, "Connecting to active run"),
         activeJobId: action.jobId,
+        activeRunId: action.runId ?? null,
         busy: true,
       };
     case "append_user_message": {
@@ -618,6 +624,7 @@ function applyJobState(
   // Interaction responses can arrive after the SSE stream has already advanced.
   if (
     state.activeJobId === jobState.job_id &&
+    state.activeRunId === jobState.run_id &&
     jobState.event_count < state.eventCount
   ) {
     return state;
@@ -1392,6 +1399,39 @@ function applyStreamEvent(
       return {
         ...next,
         trace: prependTrace(state.trace, event.type, event.reason),
+      };
+    case "message_queued":
+      return {
+        ...next,
+        trace: prependTrace(state.trace, event.type, truncate(event.content, 220)),
+      };
+    case "message_intervention_requested":
+      return {
+        ...next,
+        statusText: "Intervention requested for the current run",
+        trace: prependTrace(state.trace, event.type, event.id),
+      };
+    case "message_applied_current_run":
+      return {
+        ...next,
+        statusText: "Message applied to the current run",
+        trace: prependTrace(state.trace, event.type, event.id),
+      };
+    case "message_claimed_successor":
+      return {
+        ...next,
+        statusText: "Starting queued message",
+        trace: prependTrace(state.trace, event.type, event.id),
+      };
+    case "message_needs_attention":
+      return {
+        ...next,
+        trace: prependTrace(state.trace, event.type, event.reason),
+      };
+    case "message_revoked":
+      return {
+        ...next,
+        trace: prependTrace(state.trace, event.type, event.id),
       };
     default:
       return next;

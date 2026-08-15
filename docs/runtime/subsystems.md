@@ -18,7 +18,7 @@ Bootstrap, CLI, API, and runtime all use the same operator-owned SQLite
 authority selected by `ROVE_PROJECT_TRUST_STORE` or the platform user-state
 directory (`project-trust.sqlite` by default). Product Web sends a server-owned
 workspace ID; the API resolves that ID to the canonical root before calling the
-same repository. ProductStore schema v11 retains `project_trust_records` only
+same repository. ProductStore's legacy v11 data retains `project_trust_records` only
 as a one-way compatibility import source. It is not written by the API and is
 not a second live authority. Missing canonical records are imported at API
 startup without overwriting an existing canonical decision.
@@ -49,8 +49,18 @@ persisted.
 Merge order for an explicitly trusted workspace:
 
 ```text
-defaults < .rove/config.toml < environment < CLI/API overrides
+defaults < user ~/.rove/config.toml < trusted workspace selection
+         < environment < CLI/API overrides
 ```
+
+The user file is schema v1 and is discovered below the platform home
+directory, with `ROVE_CONFIG_ROOT` available for tests and embedders. It owns
+complete Provider profiles, fallback membership, and model defaults. Workspace
+`.rove/config.toml` may only select an existing `provider.active` and
+`provider.model`; definitions for endpoints, auth, headers, fallbacks, protocol
+options, or adapters fail with `project_provider_authority_violation` before
+side effects. User catalog writes use a bounded file lock, SHA-256 revision CAS,
+atomic replacement, symlink rejection, and restrictive Unix permissions.
 
 For a restricted or revoked workspace, the project-config layer is reported as
 present but deferred, and process environment plus explicit overrides apply
@@ -67,13 +77,16 @@ never credential values. The existing cancellation path terminates foreground
 child work and records the normal canonical cancellation lifecycle; no new
 event family was introduced.
 
-Validation covers legacy and named provider selection, profile/fallback
+Validation covers named provider selection, profile/fallback
 references, endpoints, model and protocol-option bounds, auth/header names,
 workspace-bounded secret files, routing thresholds and retry/backoff fields,
 compaction thresholds, token budgets, SQLite timeout, memory recall limit, API
 remote-bind safety, and workspace-relative paths. `rove dump-config` prints the
-effective config with legacy key-presence flags and named-profile secret/header
-source summaries; resolved secret values and literal header values are omitted.
+effective config with named-profile secret/header source summaries; resolved
+secret values and literal header values are omitted. `rove provider migrate`
+is the explicit dry-run-by-default path for legacy workspace/environment/
+ProductStore definitions; `--apply` writes the catalog and redacted receipt,
+while workspace rewriting requires explicit trust.
 
 ## Workspace
 
@@ -207,8 +220,14 @@ model = "claude-sonnet"
 auth = { style = "header", header = "x-api-key", secret = { env = "ANTHROPIC_API_KEY" } }
 ```
 
+For the user-owned file, add `schema_version = 1` and place defaults under
+`[model]` (`default_profile`, `default_model`, and `reasoning`). The profile
+field itself is `model`; credential references use
+`auth.secret = { env | file | keyring }`. Literal credentials are rejected.
+
 Secret references may use bounded environment variables or UTF-8 files. Files
-are limited to the workspace unless `state.allow_external_paths` is enabled.
+are limited to the configured authority boundary unless external paths are
+explicitly allowed; user catalog references can also use the OS keyring.
 Known wire protocols work with official APIs, self-hosted endpoints, and
 compatible gateways by changing profile data. Applications may inject a
 custom in-process `WireProtocolRegistry` through `ModelClientFactory`; unknown
@@ -240,7 +259,39 @@ Fallback can be configured as:
 - `provider.fallback_models`: model names using the primary provider;
 - `provider.fallback_profiles`: named target profiles.
 
-Native provider tool-use and JSON text action parsing are both supported. Native tool-use is preferred for real providers because it preserves provider IDs through `Message.tool_calls` and `tool_call_id` history. The JSON text path remains for fake and compatibility scenarios and is used only when a model turn emitted no native tool calls. Planned, unplanned, and embedded execution share the conversion in `core/src/model_turn.rs`; `runtime/src/engine/model_turn.rs` translates its `AgentEvent` values to durable `StreamEvent` values.
+`ProviderCatalogService` is the shared UI-neutral contract used by CLI and API;
+Web consumes the API projection rather than maintaining a separate backend.
+API/Web create, update, and delete operations mutate the user catalog with
+`expected_revision` CAS and expose `catalog_revision`; stale/busy writes are
+HTTP 409. ProductStore schema v13 persists stable legacy-to-catalog mappings,
+session selections, immutable secret-free run model facts, and the unified
+message compatibility projection, not duplicate endpoint or credential
+authority. Its reconciliation migration accepts either parallel v12 layout.
+
+CLI keeps state, health, tools, and execution environment as stable services,
+but constructs a fresh `RunAssembly` at every turn. The assembly resolves the
+current selection, builds the model client/Engine, and freezes
+`RunModelSnapshot`. Resume requires the saved profile/model identity and safe
+configuration digest; mismatch returns `provider_changed_for_resume` instead of
+silently using the current selection. Missing configuration returns
+`provider_onboarding_required`. Fake remains available only through explicit
+configuration or the deterministic programmatic path.
+
+The TUI parser consumes slash commands before prompt submission. `/model`,
+`/model current`, `/model <query>`, and `/model reset` use the shared catalog
+and a per-session revisioned selection file. Active runs reject changes as
+busy; stale catalog or selection revisions are visible conflicts. The picker
+currently lists configured profile models, so each descriptor has
+`inventory_fresh=false`; it does not claim live remote discovery.
+
+Native provider tool-use is authoritative and preserves provider IDs through
+`Message.tool_calls` and `tool_call_id` history. JSON text action parsing is an
+explicit compatibility mode for clients that require it (currently the
+`fake-raw` fixture); the default Fake client and native providers leave it
+disabled. Planned, unplanned, and embedded execution share the conversion in
+`core/src/model_turn.rs`; `runtime/src/engine/model_turn.rs` translates its
+`AgentEvent` values to durable `StreamEvent` values. Malformed compatibility
+payloads become typed recoverable failures rather than terminal success.
 
 `RoutingModelClient` can fall back before user-visible content or committed tool-use begins. It tracks provider health with a failure threshold and cooldown. For each routed candidate, `routing.retry_max_attempts`, `routing.retry_backoff_base_ms`, and `routing.retry_backoff_max_ms` control retry behavior for retryable pre-commit failures; rate-limit `retry-after` values are honored directly. Auth and context-length errors are not retried, and once text or native tool-use has committed, no retry or fallback is attempted.
 
@@ -317,6 +368,16 @@ streams are drained or explicit termination completes. PTY is a
 registered typed unsupported capability. Observations, artifact projections,
 process identities, and workspace checkpoints are Engine-local and do not
 survive recreation or resume.
+
+Filesystem discovery shares one deterministic `WorkspaceTraversal` authority.
+Recursive listing, globbing, and search honor `.gitignore` and `.ignore`, sort
+lexically, never follow symlink/reparse boundaries, and report scanned, ignored,
+hidden, sensitive, link, and scan-truncation facts. `list_directory`,
+`glob_paths`, and `search_code` expose output-byte limits and typed continuation
+metadata. Globs support recursive `**`, braces, and character classes while
+rejecting absolute or escaping patterns. Search coalesces overlapping context
+ranges and charges exact serialized UTF-8 bytes; binary, non-UTF-8, oversized,
+missing, hidden, ignored, and sensitive inputs remain explicit bounded outcomes.
 
 MCP stdio transport is bounded by per-server policy. Initialize, list, and call requests time out; stderr is captured up to the configured diagnostic limit; JSON-RPC errors are mapped to structured tool execution failures; and child processes are killed and asynchronously reaped when their client is dropped, including Unix zombie cleanup without relying on the caller's Tokio runtime to remain active. `tests/mcp.rs` and `cargo test -p rove-integration-tests --test mcp` cover mock stdio registration, annotation safety, timeout/error/cleanup behavior, and include an opt-in real filesystem MCP smoke test gated by `ROVE_MCP_FILESYSTEM_SMOKE=1`.
 
@@ -512,6 +573,15 @@ appends one entry to the append-only `tool_artifacts.jsonl` ledger, and
 `expire_payload` removes bytes while retaining metadata, so a cleaned artifact
 stays as evidence that it existed rather than silently disappearing.
 
+Eligible local read/search/list/glob outputs are retained in this same durable
+store. Content-addressed writes deduplicate bytes while each call retains its
+own provenance. Context projection replaces only older duplicate payloads with
+deterministic `RichReference` blocks; the current round remains inline.
+`resolve_tool_artifact` performs bounded, capability-gated UTF-8 resolution and
+returns explicit malformed, missing/expired, sensitive, non-text, or invalid
+boundary outcomes after resume or cleanup. No second artifact database or
+observation lifecycle is introduced.
+
 Two `StreamEvent` variants report this to consumers: `ToolArtifactStored` and
 `ToolArtifactRejected`. Because the stream enum is matched exhaustively, adding
 them forced every consumer to state what it does with them.
@@ -592,7 +662,14 @@ same type; only base URL, key, and model differ.
 
 ## Workspace retrieval
 
-rove does not ship a built-in vector database. Agents retrieve workspace context with filesystem/shell tools and layered session/durable memory. Future semantic retrieval, if any, would be an optional external service and is not implemented.
+rove does not ship a built-in vector database. Agents retrieve workspace context
+with the ignore-aware filesystem tools (`read_file`, `list_directory`,
+`glob_paths`, and `search_code`) and layered session/durable file memory. The
+on-demand `repository_map` tool is bounded and content-addressed, and derives
+members only from verified Cargo/npm workspace manifests; README prose and
+unverified generated output are never promoted into the map. There is no vector
+DB, embedding index, LSP, auto-downloaded binary, or dependency on external
+`rg`/`fd` binaries.
 
 
 ## Web
@@ -688,11 +765,16 @@ turn abandons it for explicit confirmation or revoke. Startup recovery drains
 only idle sessions with safely pending work and does not replay a reserved
 side effect.
 
-The Composer exposes Steer and Follow-up modes while a run is active, retains
-the Stop action in either mode, and displays the server-backed control queue.
-The queue reflects durable status, supports revoke, and offers explicit
-confirmation for an abandoned follow-up. It does not synthesize a client-side
-follow-up run when the session appears idle.
+The Composer uses one unified Send Message command. While a run is active,
+messages enter the durable FIFO queue and can be promoted at a safe boundary;
+idle sends claim a successor turn. The legacy Steer and Follow-up routes remain
+compatibility endpoints but are not a second lifecycle authority. The Web
+transcript renders delivery states and keeps diagnostics/Inspector projections
+separate from the main conversation.
+It renders eligible promote/revoke actions on the same transcript message and
+retains Stop as the separate cancellation action. It does not expose a
+Steer/Follow-up mode selector or maintain a client-side queue, and it never
+synthesizes a successor run from presentation timing.
 
 The current CDH G2 fork surface permits a branch only from an API-verified,
 terminal canonical run boundary. `product_session_forks` and its inherited-run
@@ -704,6 +786,9 @@ marks the source prefix `inherited` and keeps child events in a separate local
 ledger. The product shell exposes Fork only for a completed latest turn and
 renders parent/child rows with the persisted fork point; catalog session loading
 has a fixed ProductStore collection limit rather than unbounded tree traversal.
+The TUI uses the Runtime message-domain service through an in-process adapter,
+with no private durable queue; approval/input/cancel remain typed interaction
+paths and take modal precedence.
 
 CDH G3-G7 are also implemented on `main`. Session model/reasoning/approval/
 step-limit configuration uses revision CAS and immutable per-run snapshots;
@@ -738,12 +823,12 @@ pnpm test:e2e
 and `polish.spec.ts` cover broad product behavior, fault/race injection,
 recovery, and visual states with browser-boundary mocks. The gated
 `real-api.spec.ts` used by `local-full` exercises the default `/` product shell
-against the live Rust API and retains one bounded `/dev/workbench` smoke. The C3
-run passed migration, exact A/B continuation with refresh and product
-interactions, and the bounded advanced case. The merged CDH live path also
-passes wait-for-input Steer, Follow-up enqueue/revoke, final control status, and
-completed-session Fork/child continuation (five real-API scenarios total). The
-provider runner now uses
+against the live Rust API and retains one bounded `/dev/workbench` smoke. The
+current five-case run passes migration; exact A/B continuation with refresh and
+product interactions; unified-message promotion/revocation; completed-session
+Fork/child continuation; and the bounded advanced case. Successor runs retain
+the stable product `job_id` while exact `(job_id, run_id)` checks prevent stale
+SSE attachment. The provider runner now uses
 the product shell and verifies exact browser-returned job/run IDs, but its
 external-provider Web gate was not run for C3.
 

@@ -9,7 +9,7 @@ use std::{
 };
 
 use anyhow::Context;
-use reqwest::header::{HeaderName, HeaderValue};
+use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
 
 use rove_models::ProviderOptions;
@@ -37,6 +37,9 @@ pub enum SecretSource {
     File {
         file: PathBuf,
     },
+    Keyring {
+        keyring: KeyringReference,
+    },
     /// In-memory only. Never loaded from durable config files; used for
     /// request-scoped API profiles that must embed a secret already resolved
     /// from the environment before the caller may clear that environment.
@@ -44,11 +47,19 @@ pub enum SecretSource {
     Literal(#[serde(skip_serializing)] String),
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct KeyringReference {
+    pub service: String,
+    pub account: String,
+}
+
 impl fmt::Debug for SecretSource {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Env { env } => formatter.debug_struct("Env").field("env", env).finish(),
             Self::File { file } => formatter.debug_struct("File").field("file", file).finish(),
+            Self::Keyring { keyring } => formatter.debug_tuple("Keyring").field(keyring).finish(),
             Self::Literal(_) => formatter.write_str("Literal([REDACTED])"),
         }
     }
@@ -76,6 +87,7 @@ pub enum ProviderHeaderValue {
     Literal(String),
     Env { env: String },
     File { file: PathBuf },
+    Keyring { keyring: KeyringReference },
 }
 
 impl fmt::Debug for ProviderHeaderValue {
@@ -84,6 +96,7 @@ impl fmt::Debug for ProviderHeaderValue {
             Self::Literal(_) => formatter.write_str("[REDACTED]"),
             Self::Env { env } => formatter.debug_struct("Env").field("env", env).finish(),
             Self::File { file } => formatter.debug_struct("File").field("file", file).finish(),
+            Self::Keyring { keyring } => formatter.debug_tuple("Keyring").field(keyring).finish(),
         }
     }
 }
@@ -93,6 +106,9 @@ impl ProviderHeaderValue {
         match self {
             Self::Env { env } => Some(SecretSource::Env { env: env.clone() }),
             Self::File { file } => Some(SecretSource::File { file: file.clone() }),
+            Self::Keyring { keyring } => Some(SecretSource::Keyring {
+                keyring: keyring.clone(),
+            }),
             Self::Literal(_) => None,
         }
     }
@@ -100,7 +116,7 @@ impl ProviderHeaderValue {
     fn literal_value(&self) -> Option<&str> {
         match self {
             Self::Literal(value) => Some(value),
-            Self::Env { .. } | Self::File { .. } => None,
+            Self::Env { .. } | Self::File { .. } | Self::Keyring { .. } => None,
         }
     }
 }
@@ -108,6 +124,8 @@ impl ProviderHeaderValue {
 /// Serializable, named endpoint profile.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProviderProfileConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
     /// Product type: openai | openai-responses | anthropic | ollama | fake.
     /// System maps this to an internal wire protocol id.
     pub provider_type: String,
@@ -136,11 +154,35 @@ pub struct ResolvedProviderProfile {
 }
 
 impl ProviderProfileConfig {
+    /// Rebase relative credential files against their owning configuration
+    /// directory. The durable document keeps its original relative paths;
+    /// only runtime copies should be rebased.
+    pub fn rebase_secret_paths(&mut self, credential_root: &Path) {
+        match &mut self.auth {
+            ProviderAuthConfig::Bearer { secret } | ProviderAuthConfig::Header { secret, .. } => {
+                rebase_secret_source(secret, credential_root);
+            }
+            ProviderAuthConfig::None => {}
+        }
+        for value in self.headers.values_mut() {
+            if let ProviderHeaderValue::File { file } = value
+                && !file.is_absolute()
+            {
+                *file = normalize_lexical_path(&credential_root.join(&*file));
+            }
+        }
+    }
+
     pub fn validate(
         &self,
         workspace_root: &Path,
         allow_external_paths: bool,
     ) -> anyhow::Result<()> {
+        if self.label.as_ref().is_some_and(|label| {
+            label.trim().is_empty() || label.len() > 512 || label.chars().any(char::is_control)
+        }) {
+            anyhow::bail!("profile.label is empty, too long, or invalid");
+        }
         let protocol_id = wire_protocol_for_provider_type(&self.provider_type)?;
         let protocol = protocol_id.as_str();
         if protocol == "fake" {
@@ -256,6 +298,61 @@ impl ProviderProfileConfig {
             options: self.options,
             protocol_options: self.protocol_options.clone(),
         })
+    }
+
+    /// Resolve the authentication and custom headers needed by an
+    /// inventory request without exposing credential values in a serializable
+    /// response type.
+    pub fn resolve_http_headers(
+        &self,
+        credential_root: &Path,
+        allow_external_paths: bool,
+        project_environment: &BTreeMap<String, String>,
+    ) -> anyhow::Result<HeaderMap> {
+        self.validate(credential_root, allow_external_paths)?;
+        let mut headers = HeaderMap::new();
+        match &self.auth {
+            ProviderAuthConfig::None => {}
+            ProviderAuthConfig::Bearer { secret } => {
+                let value = resolve_secret(
+                    secret,
+                    credential_root,
+                    allow_external_paths,
+                    project_environment,
+                )?;
+                insert_sensitive_header(&mut headers, AUTHORIZATION, format!("Bearer {value}"))?;
+            }
+            ProviderAuthConfig::Header { header, secret } => {
+                let name = HeaderName::from_bytes(header.trim().as_bytes())
+                    .map_err(|_| anyhow::anyhow!("profile auth header `{header}` is invalid"))?;
+                let value = resolve_secret(
+                    secret,
+                    credential_root,
+                    allow_external_paths,
+                    project_environment,
+                )?;
+                insert_sensitive_header(&mut headers, name, value)?;
+            }
+        }
+        for (name, value) in &self.headers {
+            let name = HeaderName::from_bytes(name.as_bytes())
+                .map_err(|_| anyhow::anyhow!("profile header name `{name}` is invalid"))?;
+            let value = value
+                .as_secret_source()
+                .map(|source| {
+                    resolve_secret(
+                        &source,
+                        credential_root,
+                        allow_external_paths,
+                        project_environment,
+                    )
+                })
+                .transpose()?
+                .or_else(|| value.literal_value().map(str::to_string))
+                .ok_or_else(|| anyhow::anyhow!("profile header `{name}` has no value"))?;
+            insert_sensitive_header(&mut headers, name, value)?;
+        }
+        Ok(headers)
     }
 }
 
@@ -431,6 +528,10 @@ fn validate_secret_source(
             }
             Ok(())
         }
+        SecretSource::Keyring { keyring } => {
+            validate_keyring_component("service", &keyring.service)?;
+            validate_keyring_component("account", &keyring.account)
+        }
         SecretSource::Literal(value) => {
             if value.trim().is_empty() {
                 anyhow::bail!("profile secret literal is empty");
@@ -473,6 +574,11 @@ fn resolve_secret(
             allow_external_paths,
             workspace_root,
         )?,
+        SecretSource::Keyring { keyring } => {
+            keyring::Entry::new(&keyring.service, &keyring.account)
+                .and_then(|entry| entry.get_password())
+                .with_context(|| "profile keyring credential is unavailable")?
+        }
         SecretSource::Literal(value) => value.clone(),
     };
     let value = value.trim().to_string();
@@ -483,6 +589,13 @@ fn resolve_secret(
         anyhow::bail!("profile secret exceeds {MAX_SECRET_BYTES} bytes");
     }
     Ok(value)
+}
+
+fn validate_keyring_component(field: &str, value: &str) -> anyhow::Result<()> {
+    if value.is_empty() || value.len() > 256 || value.chars().any(char::is_control) {
+        anyhow::bail!("profile keyring {field} is empty, too long, or invalid");
+    }
+    Ok(())
 }
 
 fn read_secret_file(
@@ -523,6 +636,28 @@ fn resolve_secret_path(path: &Path, workspace_root: &Path) -> PathBuf {
         workspace_root.join(path)
     };
     normalize_lexical_path(&resolved)
+}
+
+fn rebase_secret_source(source: &mut SecretSource, credential_root: &Path) {
+    if let SecretSource::File { file } = source
+        && !file.is_absolute()
+    {
+        *file = normalize_lexical_path(&credential_root.join(&*file));
+    }
+}
+
+fn insert_sensitive_header(
+    headers: &mut HeaderMap,
+    name: HeaderName,
+    value: String,
+) -> anyhow::Result<()> {
+    let mut value = HeaderValue::from_str(&value)
+        .map_err(|_| anyhow::anyhow!("profile header value is invalid"))?;
+    value.set_sensitive(true);
+    if headers.insert(name.clone(), value).is_some() {
+        anyhow::bail!("profile header `{name}` conflicts with the authentication header");
+    }
+    Ok(())
 }
 
 fn normalize_lexical_path(path: &Path) -> PathBuf {
@@ -581,6 +716,7 @@ mod tests {
 
     fn test_profile() -> ProviderProfileConfig {
         ProviderProfileConfig {
+            label: None,
             provider_type: "openai".to_string(),
             base_url: "https://gateway.example.test/v1".to_string(),
             model: "team/model".to_string(),
@@ -702,6 +838,38 @@ mod tests {
                 .to_string()
                 .contains("must be UTF-8")
         );
+    }
+
+    #[test]
+    fn inventory_headers_resolve_relative_files_from_the_supplied_credential_root() {
+        let credential_root = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            credential_root.path().join("provider.key"),
+            "provider-secret\n",
+        )
+        .unwrap();
+        std::fs::write(credential_root.path().join("tenant.txt"), "tenant-a\n").unwrap();
+        let mut profile = test_profile();
+        profile.auth = ProviderAuthConfig::Bearer {
+            secret: SecretSource::File {
+                file: PathBuf::from("provider.key"),
+            },
+        };
+        profile.headers.insert(
+            "x-tenant".to_string(),
+            ProviderHeaderValue::File {
+                file: PathBuf::from("tenant.txt"),
+            },
+        );
+
+        let headers = profile
+            .resolve_http_headers(credential_root.path(), true, &BTreeMap::new())
+            .unwrap();
+        assert_eq!(
+            headers.get(AUTHORIZATION).unwrap(),
+            "Bearer provider-secret"
+        );
+        assert_eq!(headers.get("x-tenant").unwrap(), "tenant-a");
     }
 
     #[test]

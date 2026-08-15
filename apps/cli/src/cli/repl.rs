@@ -117,12 +117,13 @@ impl ReplState {
 
 pub async fn run(runtime: CliRuntime, initial_prompt: Option<String>) -> anyhow::Result<()> {
     let mut state = ReplState::new(SessionId::new());
+    let initial_selection = runtime.default_selection()?;
     let session_label = repl_session_label(state.active_resume_state());
     eprintln!(
         "{}",
         format_repl_welcome(ReplWelcomeView {
             cwd: &runtime.workspace.root,
-            model_id: runtime.engine.model_id(),
+            model_id: &initial_selection.model,
             session_label: &session_label,
             width: repl_welcome_width(),
         })
@@ -203,18 +204,21 @@ async fn run_prompt(
     state: &mut ReplState,
 ) -> anyhow::Result<()> {
     let identity = state.next_run_identity();
+    let resume_state = state.active_resume_state().cloned();
+    let assembly = runtime
+        .assemble_run(&message, None, resume_state.as_ref(), false)
+        .await?;
     let run_handle =
         runtime
             .state_store
             .start_run(identity.session_id, identity.job_id, identity.run_id)?;
     tracing::info!(%run_handle.run_id, "Starting REPL run");
 
-    let resume_state = state.active_resume_state().cloned();
     let req = run_handle.request(message.clone(), resume_state.clone());
     let trace_writer = run_handle.trace_writer.clone();
     let run_cancel = CancellationToken::new();
     let signal_task = spawn_repl_run_signal_listener(run_cancel.clone());
-    let stream = runtime
+    let stream = assembly
         .engine
         .run_with_cancel(req, Some(trace_writer), run_cancel);
     let runtime_identity = Some(stream.runtime_identity().clone());
@@ -227,7 +231,7 @@ async fn run_prompt(
             resume_state,
             state_store: &runtime.state_store,
             workspace: &runtime.workspace,
-            model_id: runtime.engine.model_id(),
+            model_id: assembly.engine.model_id(),
             runtime_identity,
             agent_profile,
         },
@@ -259,12 +263,16 @@ async fn handle_slash_command(
             eprint!("{}", format_repl_help());
         }
         SlashCommand::Status => {
+            let model_id = runtime
+                .default_selection()
+                .map(|selection| selection.model)
+                .unwrap_or_else(|_| "unconfigured".to_string());
             eprintln!(
                 "{}",
                 format_repl_status(ReplStatusView {
                     workspace: &runtime.workspace,
                     config: &runtime.config,
-                    model_id: runtime.engine.model_id(),
+                    model_id: &model_id,
                     session_id: state.session_id(),
                     active_resume_state: state.active_resume_state(),
                 })

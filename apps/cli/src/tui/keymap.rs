@@ -55,6 +55,11 @@ pub const KEY_BINDINGS: &[KeyBinding] = &[
         context: "no interaction",
     },
     KeyBinding {
+        key: "Ctrl+M",
+        action: "Open message delivery",
+        context: "no interaction",
+    },
+    KeyBinding {
         key: "F1",
         action: "Open this help",
         context: "no interaction",
@@ -150,6 +155,8 @@ pub fn map_key_event_with_overlay_mode(
         (KeyCode::Char('t'), KeyModifiers::CONTROL)
         | (KeyCode::Char('T'), KeyModifiers::CONTROL) => Some(TuiAction::OpenToolDetail),
         (KeyCode::F(1), KeyModifiers::NONE) => Some(TuiAction::OpenHelp),
+        (KeyCode::Char('m'), KeyModifiers::CONTROL)
+        | (KeyCode::Char('M'), KeyModifiers::CONTROL) => Some(TuiAction::OpenMessageQueue),
         (KeyCode::Enter, _) => Some(TuiAction::SubmitComposer),
         (KeyCode::Backspace, _) => Some(TuiAction::Backspace),
         (KeyCode::Tab, _) => Some(TuiAction::FocusNext),
@@ -165,6 +172,18 @@ pub fn map_key_event_with_overlay_mode(
 }
 
 fn map_overlay_key_event(event: KeyEvent, overlay: &TuiOverlay) -> Option<TuiAction> {
+    if !matches!(event.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
+        return None;
+    }
+    if matches!(overlay, TuiOverlay::ModelPicker(_)) {
+        match (event.code, event.modifiers) {
+            (KeyCode::Backspace, KeyModifiers::NONE) => return Some(TuiAction::Backspace),
+            (KeyCode::Char(ch), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
+                return Some(TuiAction::InsertChar(ch));
+            }
+            _ => {}
+        }
+    }
     if event.kind != KeyEventKind::Press {
         return None;
     }
@@ -182,6 +201,22 @@ fn map_overlay_key_event(event: KeyEvent, overlay: &TuiOverlay) -> Option<TuiAct
             if matches!(overlay, TuiOverlay::SessionPicker(_)) =>
         {
             Some(TuiAction::OpenSessionPicker)
+        }
+        (KeyCode::Char('m'), KeyModifiers::CONTROL)
+        | (KeyCode::Char('M'), KeyModifiers::CONTROL)
+            if matches!(overlay, TuiOverlay::MessageQueue(_)) =>
+        {
+            Some(TuiAction::OpenMessageQueue)
+        }
+        (KeyCode::Char('p'), KeyModifiers::NONE)
+            if matches!(overlay, TuiOverlay::MessageQueue(_)) =>
+        {
+            Some(TuiAction::PromoteSelectedMessage)
+        }
+        (KeyCode::Char('x'), KeyModifiers::NONE)
+            if matches!(overlay, TuiOverlay::MessageQueue(_)) =>
+        {
+            Some(TuiAction::RevokeSelectedMessage)
         }
         (KeyCode::Up, KeyModifiers::NONE) => Some(TuiAction::OverlayPrevious),
         (KeyCode::Down, KeyModifiers::NONE) => Some(TuiAction::OverlayNext),

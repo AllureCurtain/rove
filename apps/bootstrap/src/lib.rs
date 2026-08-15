@@ -5,7 +5,11 @@ pub mod config;
 pub mod factory;
 pub mod project_trust;
 pub mod provider;
+pub mod provider_catalog;
+pub mod provider_migration;
 pub mod registry;
+pub mod session_selection;
+pub mod user_config;
 
 pub use assembly::{EngineOptions, build_engine, build_engine_with_registry};
 pub use config::{
@@ -28,11 +32,27 @@ pub use project_trust::{
     workspace_identity_digest,
 };
 pub use provider::{
-    ProviderAuthConfig, ProviderHeaderValue, ProviderProfileConfig, SecretSource,
+    KeyringReference, ProviderAuthConfig, ProviderHeaderValue, ProviderProfileConfig, SecretSource,
     default_wire_protocol_registry, wire_protocol_for_provider_type,
+};
+pub use provider_catalog::{
+    ModelDescriptor, ModelSelection, ProviderCatalog, ProviderCatalogError, ProviderCatalogService,
+    ProviderProfile, ProviderProfileId, ResolvedRunModel, RunModelSnapshot, SelectionRevision,
+};
+pub use provider_migration::{
+    PROVIDER_MIGRATION_RECEIPT_SCHEMA_VERSION, ProviderMigrationAction, ProviderMigrationError,
+    ProviderMigrationOptions, ProviderMigrationOutcome, ProviderMigrationReport,
+    ProviderMigrationSource, run_provider_migration,
 };
 pub use registry::{
     register_extra_tools, tool_registry, tool_registry_for_config,
     tool_registry_for_config_with_environment, tool_registry_with_mcp,
     tool_registry_with_mcp_and_environment, tool_registry_with_shell_policy,
+};
+pub use session_selection::{
+    PersistedSessionSelection, SessionSelectionError, SessionSelectionStore,
+};
+pub use user_config::{
+    USER_CONFIG_SCHEMA_VERSION, UserConfigDocument, UserConfigLoader, UserConfigPaths,
+    UserConfigWriter,
 };

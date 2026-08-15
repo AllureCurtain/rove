@@ -11,8 +11,8 @@ use crate::prompt_metadata::{PromptBuildMetadata, estimate_messages_tokens};
 use crate::runtime_identity::RuntimeIdentity;
 use crate::session::{CHECKPOINT_SESSION_TAIL_ENTRIES, Session, SessionEntry};
 use crate::types::{
-    JobId, PromptCheckpoint, PromptCompactionMode, PromptCompactionState, RunId, SessionId,
-    TaskPlan, TaskState, TerminationReason,
+    JobId, MessageDeliveryRecord, PromptCheckpoint, PromptCompactionMode, PromptCompactionState,
+    RunId, SessionId, TaskPlan, TaskState, TerminationReason,
 };
 use crate::workspace::Workspace;
 use rove_core::{CallId, ToolArtifactRef, ToolExecutionMetadata, ToolMutation};
@@ -54,6 +54,8 @@ pub struct RunArtifactRecorder {
     final_output: Option<String>,
     pending_tool_use_ids: HashMap<CallId, Option<String>>,
     pending_steers: HashMap<String, String>,
+    pending_messages: HashMap<String, String>,
+    message_deliveries: Vec<MessageDeliveryRecord>,
     last_event_seq: Option<u64>,
     compaction: PromptCompactionState,
     /// Canonical provider-neutral conversation. `history` is derived from it
@@ -124,6 +126,11 @@ impl RunArtifactRecorder {
             final_output: None,
             pending_tool_use_ids: HashMap::new(),
             pending_steers: HashMap::new(),
+            pending_messages: HashMap::new(),
+            message_deliveries: resume_state
+                .and_then(|state| state.checkpoint.as_ref())
+                .map(|checkpoint| checkpoint.message_deliveries.clone())
+                .unwrap_or_default(),
             last_event_seq: None,
             compaction: PromptCompactionState::default(),
             session,
@@ -251,6 +258,42 @@ impl RunArtifactRecorder {
             StreamEvent::SteerDropped { id, .. } => {
                 self.pending_steers.remove(id);
             }
+            StreamEvent::MessageQueued { id, content } => {
+                self.pending_messages.insert(id.clone(), content.clone());
+                self.record_message_delivery(id, "queued", None);
+                self.write_snapshot(state_store).await;
+            }
+            StreamEvent::MessageInterventionRequested { id } => {
+                self.record_message_delivery(id, "intervention_requested", None);
+                self.write_snapshot(state_store).await;
+            }
+            StreamEvent::MessageAppliedCurrentRun { id } => {
+                self.record_message_delivery(id, "applied_current_run", None);
+                if let Some(content) = self.pending_messages.remove(id) {
+                    if let Err(error) = self
+                        .session
+                        .append(SessionEntry::user(format!("message-{id}"), content))
+                    {
+                        tracing::warn!(%error, "failed to append unified message");
+                    }
+                    self.sync_history_from_session();
+                }
+                self.write_snapshot(state_store).await;
+            }
+            StreamEvent::MessageClaimedSuccessor { id } => {
+                self.record_message_delivery(id, "claimed_successor", None);
+                self.write_snapshot(state_store).await;
+            }
+            StreamEvent::MessageNeedsAttention { id, reason } => {
+                self.pending_messages.remove(id);
+                self.record_message_delivery(id, "needs_attention", Some(reason.clone()));
+                self.write_snapshot(state_store).await;
+            }
+            StreamEvent::MessageRevoked { id } => {
+                self.pending_messages.remove(id);
+                self.record_message_delivery(id, "revoked", None);
+                self.write_snapshot(state_store).await;
+            }
             StreamEvent::ToolCallStarted {
                 call_id,
                 tool_use_id,
@@ -314,10 +357,25 @@ impl RunArtifactRecorder {
                     call.name.clone(),
                     result.output.clone(),
                 );
-                let canonical = CanonicalToolResult {
+                let mut canonical = CanonicalToolResult {
                     status: canonical_status(&result.metadata.status),
                     ..canonical
                 };
+                if let Some(envelope) = &result.envelope {
+                    canonical
+                        .content
+                        .extend(envelope.artifacts.iter().map(|artifact| {
+                            ContentBlock::RichReference {
+                                kind: "tool_artifact".to_string(),
+                                reference: artifact.artifact_id.to_string(),
+                                mime_type: artifact.mime_type.clone(),
+                                title: Some(format!(
+                                    "{} bytes sha256:{}",
+                                    artifact.byte_length, artifact.sha256
+                                )),
+                            }
+                        }));
+                }
                 if let Err(error) = self.session.append(SessionEntry::tool_result(
                     format!("tool-result-{}", call_id),
                     canonical,
@@ -565,6 +623,25 @@ impl RunArtifactRecorder {
             .await;
     }
 
+    fn record_message_delivery(&mut self, id: &str, status: &str, reason: Option<String>) {
+        if let Some(record) = self
+            .message_deliveries
+            .iter_mut()
+            .find(|item| item.id == id)
+        {
+            record.status = status.to_string();
+            record.target_run_id = Some(self.run_id);
+            record.reason = reason;
+            return;
+        }
+        self.message_deliveries.push(MessageDeliveryRecord {
+            id: id.to_string(),
+            status: status.to_string(),
+            target_run_id: Some(self.run_id),
+            reason,
+        });
+    }
+
     async fn write_snapshot(&self, state_store: &StateStore) {
         let history = self
             .session
@@ -651,6 +728,7 @@ impl RunArtifactRecorder {
         }
         report.tool_artifacts = artifact_entries;
         report.rejected_tool_artifacts = self.rejected_tool_artifacts.clone();
+        report.message_deliveries = self.message_deliveries.clone();
         report.output = self.final_output.clone();
 
         match write_report(run_dir, &report) {
@@ -720,6 +798,7 @@ impl RunArtifactRecorder {
             agent_profile: self.agent_profile.clone(),
             step_ledger: self.step_ledger.checkpoint(),
             execution_lifecycle: self.execution_lifecycle.checkpoint(),
+            message_deliveries: self.message_deliveries.clone(),
             session: Some(self.session.clone()),
         }
     }
@@ -900,6 +979,7 @@ mod tests {
             execution_environment: None,
             execution_capabilities: None,
             agent: None,
+            run_model: None,
             mcp_servers: Vec::new(),
         }
     }

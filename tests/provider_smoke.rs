@@ -65,6 +65,7 @@ fn smoke_profile(provider_type: &str, model: &str) -> ProviderProfileConfig {
         other => panic!("unsupported smoke provider_type `{other}`"),
     };
     ProviderProfileConfig {
+        label: None,
         provider_type: provider_type.to_string(),
         base_url,
         model: model.to_string(),

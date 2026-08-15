@@ -24,6 +24,18 @@ Included:
 - CDH G1-G7 durable controls and Fork/lineage, session configuration snapshots,
   usage/context/cost, bounded files/artifacts/images/diff, redacted evidence
   export, and workspace-scoped Settings/MCP management.
+- Productization B-D native-first tool-call recovery, ignore-aware deterministic
+  repository retrieval, and Artifact-backed result-history projection.
+- Productization E user-owned Provider catalog, API/Web catalog convergence,
+  per-turn CLI assembly, migration, onboarding/probes, and TUI `/model`.
+- Productization F unified Send Message lifecycle across Runtime, API/SSE,
+  ProductStore, Web, and TUI: durable FIFO queue, safe-boundary intervention,
+  successor claims, revoke/attention recovery, and idempotent CAS races.
+  ProductStore v13 reconciles both parallel v12 layouts. Focused Runtime/API/TUI,
+  Web unit/type/build, mocked browser, and five live local fake-provider cases
+  pass. This is F.1-F.3 evidence; F.4 older-history pagination/windowing and
+  F.5 complete TUI restart recovery remain open. Windows ConPTY/PTY and
+  external-provider gates remain unverified.
 - Tauri Desktop D0 delivery shell with embedded authenticated API, shared static
   Web build, native workspace commands, and current-platform Windows MSI/process
   evidence. macOS/Linux packaging and manual installation remain unverified.
@@ -135,10 +147,11 @@ C3 release evidence additionally includes:
 - an updated provider runner that correlates browser-returned job/run IDs with
   the exact report and product transcript instead of guessing a latest run.
 
-The integrated C3 implementation on `main` passed the three `local-full`
-real-API browser cases after merge. The external-provider browser
-gate was not run and must not be claimed from deterministic fake-provider
-evidence.
+The integrated C3 implementation on `main` passed its original three
+`local-full` real-API browser cases after merge. Productization integration now
+passes five cases by adding unified-message promotion/revocation and
+Fork/independent-child continuation. The external-provider browser gate was not
+run and must not be claimed from deterministic fake-provider evidence.
 
 For release claims that include real-terminal TUI behavior, run the opt-in Unix
 PTY smoke separately:
@@ -170,12 +183,15 @@ powershell -ExecutionPolicy Bypass -File scripts/integration-smoke.ps1 `
 Acceptance:
 
 - both commands print `local-full integration smoke completed`;
-- Playwright reports all three real-API cases passed for each run: migration,
-  default product lifecycle, and bounded advanced smoke;
+- Playwright reports all five real-API cases passed for each run: migration,
+  default A/B product lifecycle, unified-message promotion/revocation,
+  completed-session Fork/independent-child continuation, and bounded advanced
+  smoke;
 - run ids from the output appear in each run's `/runs?limit=25` artifact;
 - API state, exact product transcripts/reports, and Web assertions cover
   migration, A/B continuation, refresh, approval, input, cancellation, Settings,
-  deep routes, and the bounded workbench run.
+  deep routes, unified-message delivery, Fork lineage, and the bounded workbench
+  run.
 
 ## Provider Smoke
 

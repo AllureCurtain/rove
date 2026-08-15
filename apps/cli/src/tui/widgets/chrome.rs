@@ -97,12 +97,24 @@ pub(crate) fn status_line(state: &TuiState, width: u16) -> Paragraph<'static> {
         TuiFocus::Transcript => "transcript",
         TuiFocus::Composer => "composer",
     };
-    let content = if width >= 72 {
-        format!(" workspace: - | run: {run_status} | focus: {focus} | Tab focus | Ctrl+Q quit")
+    let queued = state.eligible_message_count();
+    let model = state
+        .model_selection
+        .as_ref()
+        .map(|selection| format!("{}/{}", selection.profile_id, selection.model));
+    let content = if width >= 96 {
+        format!(
+            " workspace: - | run: {run_status} | model: {} | queued: {queued} | focus: {focus} | Ctrl+M messages",
+            model.as_deref().unwrap_or("unconfigured")
+        )
+    } else if width >= 72 {
+        format!(
+            " workspace: - | run: {run_status} | queued: {queued} | focus: {focus} | Ctrl+M messages"
+        )
     } else if width >= 36 {
-        format!(" ws:- | run:{run_status} | focus:{focus}")
+        format!(" ws:- | run:{run_status} | q:{queued} | focus:{focus}")
     } else {
-        format!("run:{run_status} | {focus}")
+        format!("run:{run_status} | q:{queued}")
     };
 
     Paragraph::new(Span::styled(content, status_style)).style(Style::default().bg(Color::Black))
@@ -158,6 +170,9 @@ fn activity_content(state: &TuiState) -> (&'static str, String, Style) {
             termination_label(&completed.reason).to_string(),
             style,
         );
+    }
+    if let Some(notice) = &state.model_notice {
+        return ("Model", notice.clone(), Style::default().fg(Color::Cyan));
     }
     if let Some(approval) = run.pending_approvals.last() {
         return (
