@@ -1359,7 +1359,7 @@ pub(crate) fn compile_workspace_glob(pattern: &str) -> Result<globset::GlobMatch
         });
     }
     let normalized = pattern.replace('\\', "/");
-    if Path::new(&normalized).is_absolute()
+    if is_absolute_workspace_glob(&normalized)
         || normalized.split('/').any(|component| component == "..")
     {
         return Err(ToolError::PermissionDenied {
@@ -1375,6 +1375,15 @@ pub(crate) fn compile_workspace_glob(pattern: &str) -> Result<globset::GlobMatch
         .map_err(|error| ToolError::InvalidInput {
             reason: format!("invalid glob: {error}"),
         })
+}
+
+fn is_absolute_workspace_glob(pattern: &str) -> bool {
+    if Path::new(pattern).is_absolute() || pattern.starts_with("//") {
+        return true;
+    }
+
+    let bytes = pattern.as_bytes();
+    bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
 }
 
 fn discovery_schema(include_pattern: bool) -> Value {
@@ -1557,6 +1566,10 @@ mod productization_tests {
         ));
         assert!(matches!(
             compile_workspace_glob("C:/secret/*"),
+            Err(ToolError::PermissionDenied { .. })
+        ));
+        assert!(matches!(
+            compile_workspace_glob("\\\\server\\share\\*.rs"),
             Err(ToolError::PermissionDenied { .. })
         ));
     }
