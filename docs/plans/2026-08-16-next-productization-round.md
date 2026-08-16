@@ -34,11 +34,16 @@ DeepSeek Harness 仍处于 developer preview（官方声明存在破坏性变更
 
 ### 默认进入 TUI，并提供真正的一命令体验
 
-- 用户在项目目录执行 `rove` 时，默认进入全屏 TUI，并能像 Claude Code、Codex 一样直接进行连续对话，不再默认进入行式 REPL。
-- 保留明确的非交互入口，例如 `rove exec "task"`。旧 REPL 应经过兼容性审查后放到显式命令下，或正式退役。
+基线更新：裸 `rove` 进入全屏 TUI、`rove repl` 显式保留行式界面已由
+`499ac36` 落地 main（含 README、ONBOARDING、runtime 文档与入口测试同步）。
+本节剩余工作以此为起点，不再重复实现默认入口切换。
+
+- 复核 `rove "任务"` 直接进入 REPL 的既有语义是否仍符合产品预期；若应改为
+  带初始提示的 TUI 会话，随 CLI 命令语法设计一并决策。
+- 旧 REPL 的兼容性审查与“保留为显式命令或正式退役”的决策。
 - Rust 不限制一命令启动体验。应围绕已安装二进制、portable binary 或受控 launcher 设计首跑路径，不需要模仿 npm 分发机制。
 - 为 Web 控制端定义一个简短、可记忆、能正确管理 API/Web 子进程生命周期的一命令入口；具体命令必须服从统一 CLI 语法设计。
-- 同步更新 clap 解析、帮助文本、shell completion、README、onboarding、runtime 文档和入口行为测试。
+- 补齐 shell completion 与最终的帮助文本口径，同步 README、onboarding 和 runtime 文档。
 
 ### 重新设计 CLI 命令语法
 
@@ -143,7 +148,7 @@ DeepSeek Harness 仍处于 developer preview（官方声明存在破坏性变更
 
 | Worktree | 分支 | 覆盖范围 |
 |---|---|---|
-| `.worktrees/product-entry` | `feature/product-entry` | 默认 TUI 与一命令体验、CLI 命令语法重设计、Project Trust 产品化入口，以及 F.5 的 TUI 进程重启恢复收尾 |
+| `.worktrees/product-entry` | `feature/product-entry` | 一命令体验与 CLI 命令语法重设计（默认 TUI 入口基础已由 `499ac36` 落地）、REPL 去留决策、Project Trust 产品化入口，以及 F.5 的 TUI 进程重启恢复收尾 |
 | `.worktrees/product-web` | `feature/product-web-observability` | Web 主控与观察界面、权威分层落地、统一诊断视图，以及 F.4 的服务端 transcript 分页收尾 |
 | `.worktrees/model-input-rebuild` | `feature/model-input-rebuild` | 模型输入可重建性硬门槛：model-visible 范围定义、快照测试与 hash 一致性 |
 
