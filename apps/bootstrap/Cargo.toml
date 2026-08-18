@@ -27,3 +27,5 @@ tempfile.workspace = true
 walkdir.workspace = true
 
 [dev-dependencies]
+tempfile.workspace = true
+rove-runtime.workspace = true

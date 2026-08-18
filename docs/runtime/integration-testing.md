@@ -214,10 +214,11 @@ The runner:
 
 1. Loads `.env.integration` when present and falls back to safe `local-full` defaults.
 2. Verifies required commands are available: `cargo` and `pnpm`.
-3. Creates `<integration-root>/workspace`, isolated runtime state and user config
-   under that workspace, and `<integration-root>/artifacts`; it sets
-   `ROVE_CONFIG_ROOT` so the gate cannot read or rewrite the operator's real
-   `~/.rove/config.toml`.
+3. Creates `<integration-root>/workspace`, explicit isolated runtime state and
+   user config under that workspace, `<integration-root>/data-root`, and
+   `<integration-root>/artifacts`; it sets both `ROVE_CONFIG_ROOT` and
+   `ROVE_DATA_ROOT` so neither ProductStore/default contract state nor user
+   configuration can read or rewrite the operator's real profile.
 4. Starts `cargo run -p rove-api -- --addr <addr> -C <workspace>` with integration env.
 5. Waits until `GET /runs` succeeds.
 6. Runs API smoke scenarios and saves JSON responses under `<integration-root>/artifacts/api`.

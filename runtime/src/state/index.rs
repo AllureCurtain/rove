@@ -9,7 +9,7 @@ use crate::events::StreamEvent;
 use crate::types::{JobId, RunId, SessionId, TaskState};
 use rove_core::CallId;
 
-const CURRENT_SCHEMA_VERSION: i64 = 3;
+pub const CURRENT_SCHEMA_VERSION: i64 = 3;
 const DEFAULT_BUSY_TIMEOUT_MS: u64 = 5_000;
 const MAX_SNAPSHOT_EVENTS: usize = 2_000;
 const MAX_SNAPSHOT_EVENT_JSON_BYTES: usize = 1_048_576;
@@ -356,6 +356,144 @@ impl StateIndex {
     pub fn initialize(&self) -> std::io::Result<()> {
         let _ = self.connect()?;
         Ok(())
+    }
+
+    /// Rebase artifact paths stored in the index after a state directory has
+    /// been copied to a new location. Runtime indexes historically stored
+    /// absolute paths, so copying the SQLite file alone would leave resume,
+    /// report, and run inspection pointed at the legacy directory.
+    ///
+    /// Only paths below `from_state_dir` are changed. External or malformed
+    /// paths are left untouched for the normal boundary validators to reject;
+    /// the operation never turns an untrusted database value into a new path.
+    pub fn rebase_artifact_paths(
+        &self,
+        from_state_dir: &Path,
+        to_state_dir: &Path,
+    ) -> std::io::Result<usize> {
+        if !from_state_dir.is_absolute() || !to_state_dir.is_absolute() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "state index rebase roots must be absolute",
+            ));
+        }
+
+        let mut connection = self.connect_existing_write_guard()?;
+        let runtime_tables: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('runs', 'task_states', 'reports')",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(io_other)?;
+        if runtime_tables != 3 {
+            return Ok(0);
+        }
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(io_other)?;
+        let mut changed = 0usize;
+
+        let run_rows = {
+            let mut statement = transaction
+                .prepare(
+                    "SELECT run_id, run_dir, trace_path, task_state_path, report_path FROM runs",
+                )
+                .map_err(io_other)?;
+            let rows = statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                    ))
+                })
+                .map_err(io_other)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(io_other)?
+        };
+        for (run_id, run_dir, trace_path, task_state_path, report_path) in run_rows {
+            let rebased_run_dir = rebase_index_path(&run_dir, from_state_dir, to_state_dir);
+            let rebased_trace_path = rebase_index_path(&trace_path, from_state_dir, to_state_dir);
+            let rebased_task_state_path = task_state_path
+                .as_deref()
+                .and_then(|path| rebase_index_path(path, from_state_dir, to_state_dir));
+            let rebased_report_path = report_path
+                .as_deref()
+                .and_then(|path| rebase_index_path(path, from_state_dir, to_state_dir));
+            if rebased_run_dir.is_none()
+                && rebased_trace_path.is_none()
+                && rebased_task_state_path.is_none()
+                && rebased_report_path.is_none()
+            {
+                continue;
+            }
+            transaction
+                .execute(
+                    "UPDATE runs SET run_dir = ?2, trace_path = ?3, task_state_path = ?4, report_path = ?5 WHERE run_id = ?1",
+                    params![
+                        run_id,
+                        rebased_run_dir.unwrap_or(run_dir),
+                        rebased_trace_path.unwrap_or(trace_path),
+                        rebased_task_state_path.or(task_state_path),
+                        rebased_report_path.or(report_path),
+                    ],
+                )
+                .map_err(io_other)?;
+            changed += 1;
+        }
+
+        let task_state_rows = {
+            let mut statement = transaction
+                .prepare("SELECT run_id, path FROM task_states")
+                .map_err(io_other)?;
+            let rows = statement
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(io_other)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(io_other)?
+        };
+        for (run_id, path) in task_state_rows {
+            let Some(rebased) = rebase_index_path(&path, from_state_dir, to_state_dir) else {
+                continue;
+            };
+            transaction
+                .execute(
+                    "UPDATE task_states SET path = ?2 WHERE run_id = ?1",
+                    params![run_id, rebased],
+                )
+                .map_err(io_other)?;
+            changed += 1;
+        }
+
+        let report_rows = {
+            let mut statement = transaction
+                .prepare("SELECT run_id, path FROM reports")
+                .map_err(io_other)?;
+            let rows = statement
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(io_other)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(io_other)?
+        };
+        for (run_id, path) in report_rows {
+            let Some(rebased) = rebase_index_path(&path, from_state_dir, to_state_dir) else {
+                continue;
+            };
+            transaction
+                .execute(
+                    "UPDATE reports SET path = ?2 WHERE run_id = ?1",
+                    params![run_id, rebased],
+                )
+                .map_err(io_other)?;
+            changed += 1;
+        }
+
+        transaction.commit().map_err(io_other)?;
+        Ok(changed)
     }
 
     pub fn record_run_started(
@@ -2394,6 +2532,87 @@ fn system_time_millis(value: SystemTime) -> i64 {
         .min(i64::MAX as u128) as i64
 }
 
+fn rebase_index_path(raw: &str, from_state_dir: &Path, to_state_dir: &Path) -> Option<String> {
+    if raw.is_empty() || !Path::new(raw).is_absolute() {
+        return None;
+    }
+
+    let path_text = normalized_index_path_text(&normalize_unresolved_index_path(Path::new(raw)));
+    let from_text = normalized_index_path_text(&normalize_unresolved_index_path(from_state_dir));
+    #[cfg(windows)]
+    let (path_cmp, from_cmp) = (
+        path_text.to_ascii_lowercase(),
+        from_text.to_ascii_lowercase(),
+    );
+    #[cfg(not(windows))]
+    let (path_cmp, from_cmp) = (path_text.clone(), from_text.clone());
+
+    let relative = if path_cmp == from_cmp {
+        String::new()
+    } else {
+        let prefix = format!("{}/", from_cmp);
+        let suffix = path_cmp.strip_prefix(&prefix)?;
+        // ASCII case folding preserves byte offsets. Use the original text
+        // for the returned suffix so non-ASCII path spelling is retained.
+        path_text
+            .get(from_text.len() + 1..)?
+            .get(..suffix.len())?
+            .to_string()
+    };
+    let rebased = if relative.is_empty() {
+        to_state_dir.to_path_buf()
+    } else {
+        to_state_dir.join(relative)
+    };
+    Some(rebased.to_string_lossy().into_owned())
+}
+
+fn normalize_unresolved_index_path(path: &Path) -> PathBuf {
+    if path.exists() {
+        return path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    }
+    let mut ancestor = path.to_path_buf();
+    let mut missing = Vec::new();
+    while !ancestor.exists() {
+        if let Some(name) = ancestor.file_name() {
+            missing.push(name.to_os_string());
+        }
+        let Some(parent) = ancestor.parent() else {
+            return path.to_path_buf();
+        };
+        ancestor = parent.to_path_buf();
+    }
+    let mut normalized = ancestor.canonicalize().unwrap_or(ancestor);
+    for name in missing.iter().rev() {
+        normalized.push(name);
+    }
+    normalized
+}
+
+fn normalized_index_path_text(path: &Path) -> String {
+    let mut text = path.to_string_lossy().replace('\\', "/");
+    #[cfg(windows)]
+    {
+        if text
+            .get(..8)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("//?/UNC/"))
+        {
+            text = format!("//{}", &text[8..]);
+        } else if let Some(stripped) = text.strip_prefix("//?/") {
+            // Keep verbatim volume/device paths absolute. Drive-letter paths
+            // can be safely compared in their ordinary spelling.
+            if stripped
+                .as_bytes()
+                .get(1)
+                .is_some_and(|value| *value == b':')
+            {
+                text = stripped.to_string();
+            }
+        }
+    }
+    text
+}
+
 fn io_other(err: rusqlite::Error) -> std::io::Error {
     let invalid_data = matches!(
         &err,
@@ -2894,6 +3113,19 @@ mod tests {
         );
 
         assert_eq!(io_other(error).kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn normalized_index_paths_preserve_unc_roots() {
+        assert_eq!(
+            normalized_index_path_text(Path::new(r"\\?\UNC\server\share\state.sqlite")),
+            "//server/share/state.sqlite"
+        );
+        assert_eq!(
+            normalized_index_path_text(Path::new(r"\\?\C:\workspace\state.sqlite")),
+            "C:/workspace/state.sqlite"
+        );
     }
 
     fn sqlite_schema_snapshot(path: &Path) -> Vec<(String, String, String)> {

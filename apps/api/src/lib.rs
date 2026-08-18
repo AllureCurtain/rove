@@ -362,6 +362,9 @@ pub async fn serve_with_shutdown(
         ..workspace
     };
     workspace.ensure_state_dir()?;
+    if config.state_dir_is_contract_managed() {
+        config.ensure_contract_layout()?;
+    }
     let addr: SocketAddr = config.api.bind_addr.parse()?;
     let state = ApiState::with_shutdown(workspace, config, shutdown.clone());
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -384,20 +387,20 @@ pub fn embedded_api_state(
         AppConfigOverrides {
             api_bind_addr: Some(bind_addr.to_string()),
             trust_project: false,
+            data_root: Some(state_dir.clone()),
             ..AppConfigOverrides::default()
         },
     )?;
     config.api.bind_addr = bind_addr.to_string();
     config.api.token_auth = Some(bearer_token);
     config.api.cors_origins = cors_origins;
-    config.state.state_dir = state_dir.clone();
-    config.state.sqlite_path = state_dir.join("state.sqlite");
     config.source_summary.workspace_root = cwd.to_path_buf();
     config.source_summary.project_config_path = cwd.join(".rove/config.toml");
 
     let mut workspace = Workspace::detect(cwd)?;
     workspace.state_dir = config.state_dir();
     workspace.ensure_state_dir()?;
+    config.ensure_contract_layout()?;
     Ok(ApiState::with_shutdown(workspace, config, shutdown))
 }
 
@@ -481,7 +484,7 @@ impl ApiState {
         if let Err(err) = state_store.index.mark_running_jobs_interrupted() {
             tracing::warn!("failed to mark stale API jobs interrupted: {err}");
         }
-        let product_store_path = config.state_dir().join("product.sqlite");
+        let product_store_path = config.product_sqlite_path();
         let provider_catalog = ProviderCatalogService::new(UserConfigPaths::for_config_file(
             &config.source_summary.user_config_path,
         ));
@@ -3359,7 +3362,7 @@ async fn assemble_job_engine(
 ) -> anyhow::Result<Engine> {
     let mut config = record.config.clone();
     if record.product_session_id.is_some() {
-        config.tool.mcp_config_path = config.workspace_bounded_mcp_config_path()?;
+        config.pinned_mcp_catalog = Some(config.workspace_bounded_mcp_config_path()?);
     }
     let model_id = record
         .product_model_config
@@ -3741,18 +3744,18 @@ fn rebased_workspace_config(
     workspace
         .ensure_state_dir()
         .map_err(|err| ApiError::internal(err.to_string()))?;
+    if config.state_dir_is_contract_managed() {
+        config
+            .ensure_contract_layout()
+            .map_err(|err| ApiError::internal(err.to_string()))?;
+    }
     Ok((workspace, config))
 }
 
 fn state_store_for_parts(workspace: &Workspace, config: &AppConfig) -> StateStore {
-    let sqlite_path = if config.state.sqlite_path.is_absolute() {
-        config.state.sqlite_path.clone()
-    } else {
-        workspace.root.join(&config.state.sqlite_path)
-    };
     StateStore::with_index_path(
         &workspace.state_dir,
-        sqlite_path,
+        config.sqlite_path(),
         config.state.sqlite_busy_timeout_ms,
     )
 }

@@ -298,18 +298,29 @@ Rove is local-first, not permission-free.
 - Secrets are excluded from browser requests, normal logs, traces, reports,
   evidence, screenshots, and committed fixtures.
 
-Default durable workspace data:
+Default durable runtime data lives under the user data root. Workspace state
+is isolated in `<data_root>/workspaces/<storage_key>/`; the ProductStore is
+API-global at `<data_root>/product.sqlite`. Windows
+`%LOCALAPPDATA%\rove`, macOS `~/Library/Application Support/rove`, Linux
+`$XDG_DATA_HOME/rove`; override with `ROVE_DATA_ROOT`. Run `rove state
+paths` to inspect the resolved locations and `rove state migrate` to import
+a legacy project-local `.rove/`. Project directories keep only trust-gated
+project configuration. See [STATE_LAYOUT_AND_MIGRATION.md](STATE_LAYOUT_AND_MIGRATION.md).
 
 ~~~text
-.rove/
-  state.sqlite
-  runs/<run_id>/trace.jsonl
-  runs/<run_id>/task_state.json
-  runs/<run_id>/report.json
-  runs/<run_id>/tool_artifacts/
-  memory/MEMORY.md
-  memory/topics/
-  memory/sessions/
+<data_root>/
+  product.sqlite                 # API-global ProductStore
+  workspaces/<storage_key>/
+    workspace.json
+    state.sqlite
+    mcp_servers.json
+    runs/<run_id>/trace.jsonl
+    runs/<run_id>/task_state.json
+    runs/<run_id>/report.json
+    runs/<run_id>/tool_artifacts/
+    memory/MEMORY.md
+    memory/topics/
+    memory/sessions/
 ~~~
 
 <code>trace.jsonl</code> records canonical event facts,

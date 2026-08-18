@@ -353,7 +353,7 @@ mod tests {
         assert!(output.contains(&session_id.to_string()));
         assert!(output.contains("active"));
         assert!(output.contains("memory"));
-        assert!(output.contains(".rove/memory/sessions"));
+        assert!(output.contains("memory/sessions"));
         assert!(output.contains("/status"));
         assert!(output.contains("/resume latest"));
     }

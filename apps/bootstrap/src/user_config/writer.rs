@@ -13,6 +13,18 @@ const LOCK_TIMEOUT: Duration = Duration::from_secs(5);
 const LOCK_RETRY: Duration = Duration::from_millis(10);
 static PROCESS_WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
+/// Best-effort 0700 hardening for user-scoped directories outside the
+/// provider catalog (contract state directories, migration receipts).
+pub(crate) fn harden_directory_permissions(path: &Path) {
+    let _ = restrict_directory_permissions(path);
+}
+
+/// Best-effort 0600 hardening for user-scoped files outside the provider
+/// catalog.
+pub(crate) fn harden_file_permissions(path: &Path) {
+    let _ = restrict_file_permissions(path);
+}
+
 #[derive(Debug, Clone)]
 pub struct UserConfigWriter {
     pub paths: UserConfigPaths,

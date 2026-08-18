@@ -2,7 +2,7 @@
 
 > Status: **Current Maintainer Guide**
 >
-> Last reviewed: 2026-08-14. This guide explains the repository as it exists
+> Last reviewed: 2026-08-17. This guide explains the repository as it exists
 > today. For exact subsystem contracts and implementation status, follow
 > [`docs/runtime/`](runtime/README.md). Documents marked
 > `Proposed / Not Implemented` describe future work.
@@ -317,19 +317,28 @@ Provider setup and opt-in verification live in
 
 ## 10. State and artifacts
 
-The default local state root is `.rove/`. The current implementation uses a
-layout centered on:
+Run state lives in the per-workspace user data directory
+(`<data_root>/workspaces/<storage_key>/`; run `rove state paths` to see the
+resolved locations and `rove state migrate` to import a legacy project-local
+`.rove/`). The layout inside is unchanged:
 
 ```text
-.rove/
+<user data>/workspaces/<storage_key>/
+  workspace.json
   state.sqlite
+  mcp_servers.json
   runs/
     <run_id>/
       trace.jsonl
       task_state.json
       report.json
       ...
+  memory/
 ```
+
+The API-global ProductStore lives at `<data_root>/product.sqlite`; it is not
+duplicated per workspace. Deleting or moving a workspace does not automatically
+collect its storage-key directory.
 
 Exact filenames can evolve; use `runtime/src/state/` and current runtime docs as truth.
 

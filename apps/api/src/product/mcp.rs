@@ -8,7 +8,8 @@ use axum::http::StatusCode;
 use chrono::Utc;
 use rove_runtime::tools::mcp_config::{
     create_product_mcp_server_sync, delete_product_mcp_server_sync, list_product_mcp_servers_sync,
-    update_product_mcp_server_sync,
+    promote_product_mcp_catalog_sync, update_product_mcp_server_sync, validate_product_mcp_server,
+    validate_product_mcp_server_name,
 };
 use rove_runtime::tools::mcp_proxy::{
     McpProbeFailure, McpProbeFailureKind, McpServerConfig, McpServerHealthStatus,
@@ -23,6 +24,11 @@ use crate::docs;
 use crate::{ApiError, ApiErrorResponse, ApiState};
 
 const PRODUCT_MCP_STDERR_CAPTURE_BYTES: usize = 16 * 1024;
+
+struct ProductMcpConfigPaths {
+    active: std::path::PathBuf,
+    write: std::path::PathBuf,
+}
 
 #[derive(Debug, Deserialize, IntoParams)]
 #[into_params(parameter_in = Query)]
@@ -138,14 +144,21 @@ pub(crate) async fn create_product_mcp_server(
 ) -> Result<(StatusCode, Json<ProductMcpServer>), ApiError> {
     let Query(query) = product_mcp_query(query)?;
     let request = super::routes::product_json(body)?;
-    let path = product_mcp_config_path(&state, &query.workspace_id).await?;
-    let health_path = path.clone();
     let server = mcp_config_from_create(request);
-    let server = tokio::task::spawn_blocking(move || create_product_mcp_server_sync(&path, server))
-        .await
-        .map_err(|_| product_mcp_internal())?
-        .map_err(map_mcp_io_error)?;
-    state.inner.mcp_health.write().await.remove(&health_path);
+    validate_product_mcp_server(&server).map_err(map_mcp_io_error)?;
+    let paths = product_mcp_write_paths(&state, &query.workspace_id).await?;
+    let active_health_path = paths.active.clone();
+    let health_path = paths.write.clone();
+    let server = tokio::task::spawn_blocking(move || {
+        promote_product_mcp_catalog_sync(&paths.active, &paths.write)?;
+        create_product_mcp_server_sync(&paths.write, server)
+    })
+    .await
+    .map_err(|_| product_mcp_internal())?
+    .map_err(map_mcp_io_error)?;
+    let mut health = state.inner.mcp_health.write().await;
+    health.remove(&active_health_path);
+    health.remove(&health_path);
     Ok((StatusCode::CREATED, Json(product_mcp_server(server))))
 }
 
@@ -176,15 +189,21 @@ pub(crate) async fn update_product_mcp_server(
 ) -> Result<Json<ProductMcpServer>, ApiError> {
     let Query(query) = product_mcp_query(query)?;
     let request = super::routes::product_json(body)?;
-    let path = product_mcp_config_path(&state, &query.workspace_id).await?;
-    let health_path = path.clone();
     let server = mcp_config_from_update(name.clone(), request);
-    let server =
-        tokio::task::spawn_blocking(move || update_product_mcp_server_sync(&path, &name, server))
-            .await
-            .map_err(|_| product_mcp_internal())?
-            .map_err(map_mcp_io_error)?;
-    state.inner.mcp_health.write().await.remove(&health_path);
+    validate_product_mcp_server(&server).map_err(map_mcp_io_error)?;
+    let paths = product_mcp_write_paths(&state, &query.workspace_id).await?;
+    let active_health_path = paths.active.clone();
+    let health_path = paths.write.clone();
+    let server = tokio::task::spawn_blocking(move || {
+        promote_product_mcp_catalog_sync(&paths.active, &paths.write)?;
+        update_product_mcp_server_sync(&paths.write, &name, server)
+    })
+    .await
+    .map_err(|_| product_mcp_internal())?
+    .map_err(map_mcp_io_error)?;
+    let mut health = state.inner.mcp_health.write().await;
+    health.remove(&active_health_path);
+    health.remove(&health_path);
     Ok(Json(product_mcp_server(server)))
 }
 
@@ -212,13 +231,20 @@ pub(crate) async fn delete_product_mcp_server(
     query: Result<Query<ProductMcpWorkspaceQuery>, QueryRejection>,
 ) -> Result<StatusCode, ApiError> {
     let Query(query) = product_mcp_query(query)?;
-    let path = product_mcp_config_path(&state, &query.workspace_id).await?;
-    let health_path = path.clone();
-    tokio::task::spawn_blocking(move || delete_product_mcp_server_sync(&path, &name))
-        .await
-        .map_err(|_| product_mcp_internal())?
-        .map_err(map_mcp_io_error)?;
-    state.inner.mcp_health.write().await.remove(&health_path);
+    validate_product_mcp_server_name(&name).map_err(map_mcp_io_error)?;
+    let paths = product_mcp_write_paths(&state, &query.workspace_id).await?;
+    let active_health_path = paths.active.clone();
+    let health_path = paths.write.clone();
+    tokio::task::spawn_blocking(move || {
+        promote_product_mcp_catalog_sync(&paths.active, &paths.write)?;
+        delete_product_mcp_server_sync(&paths.write, &name)
+    })
+    .await
+    .map_err(|_| product_mcp_internal())?
+    .map_err(map_mcp_io_error)?;
+    let mut health = state.inner.mcp_health.write().await;
+    health.remove(&active_health_path);
+    health.remove(&health_path);
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -291,7 +317,18 @@ async fn product_mcp_config_path(
     state: &ApiState,
     workspace_id: &ProductWorkspaceId,
 ) -> Result<std::path::PathBuf, ApiError> {
-    product_mcp_config_path_with_activation(state, workspace_id, false).await
+    Ok(
+        product_mcp_config_paths_with_activation(state, workspace_id, false, false)
+            .await?
+            .active,
+    )
+}
+
+async fn product_mcp_write_paths(
+    state: &ApiState,
+    workspace_id: &ProductWorkspaceId,
+) -> Result<ProductMcpConfigPaths, ApiError> {
+    product_mcp_config_paths_with_activation(state, workspace_id, false, true).await
 }
 
 async fn product_mcp_activation(
@@ -304,18 +341,21 @@ async fn product_mcp_activation(
     ),
     ApiError,
 > {
-    let path = product_mcp_config_path_with_activation(state, workspace_id, true).await?;
+    let path = product_mcp_config_paths_with_activation(state, workspace_id, true, false)
+        .await?
+        .active;
     let product_workspace = state.product_store()?.get_workspace(workspace_id).await?;
     let workspace = crate::open_product_workspace(&product_workspace)?;
     let environment = rove_runtime::environment::local_environment(&workspace);
     Ok((path, environment))
 }
 
-async fn product_mcp_config_path_with_activation(
+async fn product_mcp_config_paths_with_activation(
     state: &ApiState,
     workspace_id: &ProductWorkspaceId,
     require_activation: bool,
-) -> Result<std::path::PathBuf, ApiError> {
+    materialize_write: bool,
+) -> Result<ProductMcpConfigPaths, ApiError> {
     let store = state.product_store()?;
     let product_workspace = store.get_workspace(workspace_id).await?;
     let workspace = crate::open_product_workspace(&product_workspace)?;
@@ -345,16 +385,35 @@ async fn product_mcp_config_path_with_activation(
             "project trust is required before probing or starting workspace MCP servers",
         ));
     }
-    config.workspace_bounded_mcp_config_path().map_err(|error| {
-        tracing::warn!(
-            product_workspace_id = %workspace_id,
-            "rejected unbounded product MCP config path: {error}"
-        );
-        ApiError::conflict_with_code(
-            ProductErrorCode::ProductMcpConflict.as_str(),
-            "product MCP config is not bounded by the selected workspace",
-        )
-    })
+    let active = config
+        .workspace_bounded_mcp_config_path()
+        .map_err(|error| {
+            tracing::warn!(
+                product_workspace_id = %workspace_id,
+                "rejected unbounded product MCP config path: {error}"
+            );
+            ApiError::conflict_with_code(
+                ProductErrorCode::ProductMcpConflict.as_str(),
+                "product MCP config is not bounded by the selected workspace",
+            )
+        })?;
+    let write = if materialize_write {
+        config
+            .ensure_workspace_bounded_mcp_write_path()
+            .map_err(|error| {
+                tracing::warn!(
+                    product_workspace_id = %workspace_id,
+                    "rejected or unavailable product MCP write path: {error}"
+                );
+                ApiError::conflict_with_code(
+                    ProductErrorCode::ProductMcpConflict.as_str(),
+                    "product MCP config is not bounded by the selected workspace",
+                )
+            })?
+    } else {
+        active.clone()
+    };
+    Ok(ProductMcpConfigPaths { active, write })
 }
 
 fn mcp_config_from_create(request: CreateProductMcpServerRequest) -> McpServerConfig {

@@ -2783,6 +2783,7 @@ mod tests {
     #[tokio::test]
     async fn run_prompt_rejects_stale_interaction_before_polling_next_run() {
         let tmp = tempfile::TempDir::new().unwrap();
+        let data_root = tempfile::TempDir::new().unwrap();
         let workspace = Workspace::detect(tmp.path()).unwrap();
         workspace.ensure_state_dir().unwrap();
         let entered = Arc::new(Notify::new());
@@ -2801,6 +2802,7 @@ mod tests {
         let runtime =
             crate::cli::runtime::build_cli_runtime(crate::cli::runtime::CliRuntimeOptions {
                 cwd: Some(workspace.root.clone()),
+                data_root: Some(data_root.path().to_path_buf()),
                 model: Some("fake".to_string()),
                 max_steps: Some(1),
                 agent: None,
@@ -3006,7 +3008,9 @@ mod tests {
     #[tokio::test]
     async fn idle_loop_keeps_receiving_interrupts_after_the_first_one() {
         let tmp = tempfile::TempDir::new().unwrap();
+        let data_root = tempfile::TempDir::new().unwrap();
         let runtime = build_cli_runtime(CliRuntimeOptions {
+            data_root: Some(data_root.path().to_path_buf()),
             cwd: Some(tmp.path().to_path_buf()),
             model: Some("fake".to_string()),
             max_steps: None,
@@ -3079,7 +3083,9 @@ mod tests {
     #[tokio::test]
     async fn run_loop_propagates_terminal_interaction_mode() {
         let tmp = tempfile::TempDir::new().unwrap();
+        let data_root = tempfile::TempDir::new().unwrap();
         let runtime = build_cli_runtime(CliRuntimeOptions {
+            data_root: Some(data_root.path().to_path_buf()),
             cwd: Some(tmp.path().to_path_buf()),
             model: Some("fake".to_string()),
             max_steps: None,
@@ -3270,7 +3276,9 @@ mod tests {
     #[tokio::test]
     async fn idle_session_effects_list_newest_first_and_reject_stale_resume() {
         let tmp = tempfile::TempDir::new().unwrap();
+        let data_root = tempfile::TempDir::new().unwrap();
         let runtime = build_cli_runtime(CliRuntimeOptions {
+            data_root: Some(data_root.path().to_path_buf()),
             cwd: Some(tmp.path().to_path_buf()),
             model: Some("fake".to_string()),
             max_steps: Some(1),
@@ -3375,7 +3383,9 @@ mod tests {
     #[tokio::test]
     async fn completed_tui_turn_claims_queued_successors_in_fifo_order() {
         let tmp = tempfile::TempDir::new().unwrap();
+        let data_root = tempfile::TempDir::new().unwrap();
         let runtime = build_cli_runtime(CliRuntimeOptions {
+            data_root: Some(data_root.path().to_path_buf()),
             cwd: Some(tmp.path().to_path_buf()),
             model: Some("fake".to_string()),
             max_steps: Some(1),

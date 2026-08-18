@@ -1137,6 +1137,7 @@ if (-not $Model) {
 $IntegrationRoot = Resolve-RepoPath $IntegrationRoot
 $WorkspaceDir = Join-Path $IntegrationRoot "workspace-api"
 $WebWorkspaceDir = Join-Path $IntegrationRoot "workspace-web"
+$DataRoot = Join-Path $IntegrationRoot "data-root"
 $ArtifactsDir = Join-Path $IntegrationRoot "artifacts"
 $ApiBaseLocal = "http://$ApiAddr"
 $WebBase = "http://127.0.0.1:$WebPort"
@@ -1144,7 +1145,7 @@ $WebBase = "http://127.0.0.1:$WebPort"
 if (-not $KeepState -and (Test-Path -LiteralPath $IntegrationRoot)) {
     Remove-Item -LiteralPath $IntegrationRoot -Recurse -Force
 }
-New-Item -ItemType Directory -Force -Path $WorkspaceDir, $WebWorkspaceDir, $ArtifactsDir | Out-Null
+New-Item -ItemType Directory -Force -Path $WorkspaceDir, $WebWorkspaceDir, $DataRoot, $ArtifactsDir | Out-Null
 "rove provider tool fixture" | Set-Content -LiteralPath (Join-Path $WorkspaceDir "provider-tool-fixture.txt")
 "rove provider tool fixture" | Set-Content -LiteralPath (Join-Path $WebWorkspaceDir "provider-tool-fixture.txt")
 
@@ -1160,6 +1161,7 @@ try {
         api_base_local = $ApiBaseLocal
         web_base = $WebBase
         integration_root = $IntegrationRoot
+        data_root = $DataRoot
     } | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $ArtifactsDir "environment.redacted.json")
 
     Test-CommandAvailable "cargo"
@@ -1169,6 +1171,7 @@ try {
     $env:ROVE_STATE_SQLITE = ".rove-provider-integration-state/state.sqlite"
     $env:ROVE_MEMORY_SESSION_DIR = ".rove-provider-integration-state/memory/sessions"
     $env:ROVE_MEMORY_DURABLE_DIR = ".rove-provider-integration-state/memory"
+    $env:ROVE_DATA_ROOT = $DataRoot
 
     Invoke-Gate -Gates $gates -GateName "model_inventory" -Action { Invoke-ModelInventory } | Out-Null
     Invoke-Gate -Gates $gates -GateName "provider_smoke" -Action { Invoke-ProviderSmoke } | Out-Null

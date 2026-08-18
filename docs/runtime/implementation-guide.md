@@ -41,8 +41,8 @@ External embedding
         -> in-memory AgentEvent
 
 StateStore
-    -> .rove/runs/<run_id>/*
-    -> .rove/state.sqlite
+    -> <user data>/workspaces/<key>/runs/<run_id>/*
+    -> <user data>/workspaces/<key>/state.sqlite
 ```
 
 Product shells use `runtime::Engine` via `build_engine`. `core::Agent` is
@@ -76,23 +76,27 @@ Important entry points:
 - `WorkspaceKind::Repo` with the nearest git root as `workspace.root`;
 - `WorkspaceKind::Folder` with the starting directory as `workspace.root`.
 
-The default state directory is `workspace.root/.rove`. Config can override
-`state.state_dir`, `state.sqlite_path`, `memory.session_dir`, and
-`memory.durable_dir`. Core state and layered memory use the resolved config
-paths; there is no built-in vector-RAG artifact path.
+The default state directory is the per-workspace user data directory
+(`ROVE_DATA_ROOT` or the platform convention, isolated by workspace storage
+key; see [`STATE_LAYOUT_AND_MIGRATION.md`](../../STATE_LAYOUT_AND_MIGRATION.md)).
+Config can still override `state.state_dir`, `state.sqlite_path`,
+`memory.session_dir`, and `memory.durable_dir` — an unset (empty) value means
+the contract default, an explicit value keeps the historical resolution rules.
+Core state and layered memory use the resolved config paths; there is no
+built-in vector-RAG artifact path.
 
 `WorkspaceKind::Task` is an explicit standalone workspace. It is created under
 a task base directory and does not require the shell or API server to start
 inside an existing project. The task name must be a single path component; path
 traversal and absolute names are rejected. After creation, config is rebased to
-the task root so defaults resolve to:
+the task root so state resolves under the task root's contract directory
+(the default task base is `<resolved state_dir>/tasks`):
 
 ```text
-<task-base>/<task-name>/
-  .rove/
-    state.sqlite
-    runs/
-    memory/
+<user data>/workspaces/<key-of-task-root>/
+  state.sqlite
+  runs/
+  memory/
 ```
 
 CLI runs create or reuse a task workspace with:
@@ -169,8 +173,9 @@ Task workspace lifecycle:
 2. Put task inputs under the task root or let tools create files there.
 3. Resume, inspect, repair, or clean state from the same task workspace context.
 4. When the task is no longer needed, delete the task workspace directory. This
-   removes the task files, `.rove` state, run artifacts, and default memory for
-   that isolated task.
+   removes task files only. Contract-managed run state and memory remain under
+   that task root's user-state storage key for conservative retention; automatic
+   orphan collection is not implemented.
 
 Browser and Desktop automation workspaces are documented future designs only:
 `docs/runtime/browser-workspace-spec.md` and
@@ -290,15 +295,15 @@ Common paths and defaults:
 | `runtime.agent.workspace_instructions` | `false` |
 | `runtime.agent.allow_remediation_procedures` | `false` |
 | `runtime.agent.max_procedure_selections` | `3` |
-| `state.state_dir` | `.rove` |
-| `state.sqlite_path` | `.rove/state.sqlite` |
-| `tool.mcp_config_path` | `.rove/mcp_servers.json` |
+| `state.state_dir` | empty sentinel -> `<data_root>/workspaces/<storage_key>/` |
+| `state.sqlite_path` | empty sentinel -> `<data_root>/workspaces/<storage_key>/state.sqlite` |
+| `tool.mcp_config_path` | empty sentinel -> contract `mcp_servers.json` (legacy fallback before migration) |
 | `tool.shell.timeout_ms` | `30000` |
 | `tool.shell.max_output_bytes` | `65536` |
 | `tool.shell.inherit_environment` | `true` |
 | `tool.shell.denylist` | `[]` |
-| `memory.session_dir` | `.rove/memory/sessions` |
-| `memory.durable_dir` | `.rove/memory` |
+| `memory.session_dir` | empty sentinel -> `<data_root>/workspaces/<storage_key>/memory/sessions` |
+| `memory.durable_dir` | empty sentinel -> `<data_root>/workspaces/<storage_key>/memory` |
 | `routing.failure_threshold` | `3` |
 | `routing.open_cooldown_ms` | `30000` |
 | `routing.retry_max_attempts` | `1` |
@@ -601,7 +606,7 @@ The API binary is thin. `src/bin/rove-api.rs` parses an optional bind address an
 4. Creates `ApiState`.
 5. Initializes the SQLite index.
 6. Marks stale `init` or `running` jobs as `interrupted`.
-7. Opens the API-global `<state_dir>/product.sqlite`, applies its schema, and
+7. Opens the API-global `<data_root>/product.sqlite`, applies its schema, and
    conservatively recovers stale product-turn claims.
 8. Binds the TCP listener and serves the router.
 
@@ -629,7 +634,8 @@ Routes:
 API jobs have two state layers:
 
 - live handles in memory: task handle, cancellation token, broadcast sender, approval/input channels;
-- durable state in SQLite and `.rove/runs/<run_id>/`.
+- durable state in the resolved state SQLite and
+  `<resolved state_dir>/runs/<run_id>/`.
 
 `POST /jobs` accepts `message`, optional `model`, `max_steps`, `approval`,
 optional provider profile, optional `resume`, optional `workspace`, and optional
@@ -1358,11 +1364,14 @@ Relevant code:
 Each run writes readable files under:
 
 ```text
-.rove/runs/<run_id>/
+<data_root>/workspaces/<storage_key>/runs/<run_id>/
   trace.jsonl
   task_state.json
   report.json
 ```
+
+This is the first-party default. Explicit state paths and programmatic legacy
+embeddings can still place the same internal run layout elsewhere.
 
 `trace.jsonl` is append-only event history and the source used to rebuild event
 rows during repair. Every line is one serialized `StreamEvent`; terminal
@@ -1427,6 +1436,10 @@ Startup and maintenance behavior:
 - `StateIndex::initialize` creates/migrates the database.
 - API startup marks stale running jobs as `interrupted`.
 - task states can be lazily imported from artifacts.
+- `rove state migrate` creates consistent SQLite snapshots and transactionally
+  rebases legacy run/trace/task/report paths before a prepared journal record
+  and atomic publication; a restart between publication and the final outcome
+  line remains idempotent.
 - `rove state repair` imports task state artifacts, report artifacts, and trace
   events, including `step_result`; corrupted trace lines are counted and
   skipped. SQLite has no separate mutable ledger table in this phase.
@@ -1436,6 +1449,8 @@ Useful commands:
 
 ```powershell
 cargo run -p rove-cli -- sessions
+cargo run -p rove-cli -- state paths
+cargo run -p rove-cli -- state migrate
 cargo run -p rove-cli -- state repair
 cargo run -p rove-cli -- state cleanup
 ```
@@ -1449,7 +1464,7 @@ Relevant code:
 ### ProductStore
 
 Web Complete C0 adds a separate API-global SQLite database at
-`<configured state_dir>/product.sqlite`. It owns:
+`<data_root>/product.sqlite` (the user data root pinned during startup). It owns:
 
 - known Folder/Repo product workspaces;
 - server-owned product sessions and one active-turn claim per session;
@@ -1501,7 +1516,7 @@ Durable memory is managed by tools:
 
 Durable recall is bounded by `memory.recall_limit` and uses CJK-aware tokenization, smoothed IDF scoring, field weights, confidence scaling, and a small recency boost. The prompt path recalls all memory types; lower-level recall calls can provide a hard `type_filter`.
 
-CLI and API engine assembly pass `AppConfig::memory_paths()` into the runtime, so prompt memory loading, the session-memory post-run hook, and memory tools all use the same resolved `memory.session_dir`, `memory.durable_dir`, and `memory.recall_limit` values. Defaults still resolve to `.rove/memory/sessions` and `.rove/memory`.
+CLI and API engine assembly pass `AppConfig::memory_paths()` into the runtime, so prompt memory loading, the session-memory post-run hook, and memory tools all use the same resolved `memory.session_dir`, `memory.durable_dir`, and `memory.recall_limit` values. Product defaults resolve to the user-state workspace directory; explicitly configured legacy paths remain compatible.
 
 Relevant code:
 
@@ -1523,8 +1538,21 @@ catalogs may be listed and edited while restricted, but `probe` fails with
 Config path:
 
 ```text
-.rove/mcp_servers.json
+<data_root>/workspaces/<storage_key>/mcp_servers.json
 ```
+
+Before migration, an unconfigured catalog temporarily falls back to the
+workspace's legacy `.rove/mcp_servers.json`. A contract catalog wins once it is
+materialized. An explicitly configured project catalog keeps its existing
+workspace-bounded semantics.
+
+Listing an absent catalog is side-effect free. On the first Product Settings
+mutation, the API validates the request before creating/verifying the
+workspace marker, promotes the currently effective legacy catalog once under
+the destination lock, and applies the mutation to the contract catalog. An
+existing contract catalog always wins, so later legacy edits cannot overwrite
+or resurrect servers. Mutation invalidates health cached under both the legacy
+read path and the contract write path.
 
 Example config:
 
@@ -1798,7 +1826,7 @@ When changing run identity or resume:
 1. Check `RunRequest`, `RunHandle`, `StateStore::start_run`, and `RunArtifactRecorder`.
 2. Check CLI resume path.
 3. Check API job creation and persisted replay.
-4. Check `.rove/runs/<run_id>/task_state.json` compatibility.
+4. Check `<resolved state_dir>/runs/<run_id>/task_state.json` compatibility.
 
 When changing provider tool-use:
 
