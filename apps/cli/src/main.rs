@@ -73,11 +73,6 @@ fn run_sync_fast_path(args: Args) -> anyhow::Result<()> {
                 data_root: None,
             },
         ),
-        Some(Command::Provider { command }) => cli_provider::run(
-            args.cwd.clone().map(PathBuf::from),
-            args.trust_project,
-            command,
-        ),
         _ => Ok(()),
     }
 }
@@ -87,8 +82,13 @@ async fn async_main(args: Args) -> anyhow::Result<()> {
         Some(Command::Sessions) => return sessions::run(args.cwd.clone()).await,
         Some(Command::State { command }) => return cli_state::run(args.cwd.clone(), command).await,
         Some(Command::Trust { command }) => return cli_trust::run(args.cwd.clone(), command),
-        Some(Command::Provider { .. }) => {
-            unreachable!("provider commands are handled before runtime startup")
+        Some(Command::Provider { command }) => {
+            return cli_provider::run(
+                args.cwd.clone().map(PathBuf::from),
+                args.trust_project,
+                command,
+            )
+            .await;
         }
         Some(Command::Tui) => {
             return run_tui(&args).await;

@@ -2,9 +2,10 @@
 
 Provider smoke tests are opt-in checks for real model endpoints. They are not part of the default deterministic test suite because they require credentials, network access, local Ollama availability, or provider-specific quota.
 
-The user-owned Provider catalog and CLI/TUI model-selection behavior have
-deterministic coverage, but the external-provider gate has not been run for the
-2026-08-12 implementation slice. A skipped gate proves only the skip path.
+The user-owned Provider catalog, secure CLI onboarding, and CLI/TUI
+model-selection behavior have deterministic coverage, but the credentialed
+SiliconFlow final gate has not yet been recorded for the 2026-08-18 real-use
+implementation slice. A skipped gate proves only the skip path.
 
 ## User catalog setup
 
@@ -29,11 +30,34 @@ auth = { style = "bearer", secret = { env = "OPENAI_API_KEY" } }
 ```
 
 `auth.secret` may instead reference a bounded file or keyring entry. Never put
-the credential value in TOML. With no configured profile, normal startup
-returns `provider_onboarding_required`; use `--model fake` only when the local
+the credential value in TOML. The installed CLI manages the same catalog:
+
+```powershell
+rove provider add siliconflow-deepseek-v3-2 `
+  --provider openai `
+  --base-url https://api.siliconflow.cn/v1 `
+  --model deepseek-ai/DeepSeek-V3.2
+rove provider test siliconflow-deepseek-v3-2
+rove provider use siliconflow-deepseek-v3-2
+rove provider list
+```
+
+`add` uses a masked terminal prompt and OS keyring by default. Advanced users
+may pass `--secret-env NAME`, `--secret-file PATH`, or `--no-credential` for a
+local no-auth Provider. The shared onboarding service validates metadata,
+stages a unique keyring entry, performs a bounded credentialed model-inventory
+probe, publishes the profile/default with catalog revision CAS, verifies the
+published result, and compensates the staged keyring entry on pre-publication
+failure. `test` classifies authentication, rate-limit, upstream, timeout,
+transport, invalid-response, and missing-model failures without returning an
+upstream body. `list` emits only credential-source kind and safe profile
+metadata.
+
+With no configured profile, run assembly returns
+`provider_onboarding_required`; use `--model fake` only when the local
 deterministic path is intended. TUI `/model` lists the models configured in the
-catalog (`inventory_fresh=false`), while the API inventory route performs the
-live remote list operation.
+catalog (`inventory_fresh=false`), while `rove provider test` and the API
+inventory route perform live remote inventory operations.
 
 ## Default behavior
 

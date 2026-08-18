@@ -317,9 +317,23 @@ Useful commands:
 
 ```powershell
 cargo run -p rove-cli -- dump-config
+cargo run -p rove-cli -- provider add siliconflow --provider openai --base-url https://api.siliconflow.cn/v1 --model deepseek-ai/DeepSeek-V3.2 --secret-env SILICONFLOW_API_KEY
+cargo run -p rove-cli -- provider test siliconflow
+cargo run -p rove-cli -- provider use siliconflow
+cargo run -p rove-cli -- provider list
 cargo run -p rove-cli -- provider migrate
 cargo run -p rove-cli -- provider migrate --apply
 ```
+
+Provider `add`, `test`, `use`, and `list` are async maintenance commands and do
+not assemble a workspace run. `add` defaults to a no-echo OS-keyring prompt;
+environment and bounded file references are explicit alternatives. The shared
+`ProviderOnboardingService` probes model inventory before catalog publication,
+uses the current or caller-supplied catalog revision for CAS, and removes a
+newly staged keyring entry when validation, probing, or pre-publication CAS
+fails. Its receipts and errors omit credential values and upstream response
+bodies. `list` reports only the credential source kind, not environment names,
+file paths, keyring accounts, or resolved values.
 
 Migration is dry-run by default. It inventories legacy workspace, environment,
 and optional ProductStore profiles, reports safe identity digests and conflicts,
