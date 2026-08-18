@@ -69,6 +69,7 @@ fn run_sync_fast_path(args: Args) -> anyhow::Result<()> {
                 agent_selector: args.agent.clone(),
                 api_bind_addr: None,
                 trust_project: args.trust_project,
+                data_root: None,
             },
         ),
         Some(Command::Provider { command }) => cli_provider::run(
@@ -141,6 +142,7 @@ async fn build_runtime_with_interaction(
     interaction: CliRuntimeInteraction,
 ) -> anyhow::Result<rove_cli::cli::runtime::CliRuntime> {
     build_cli_runtime(CliRuntimeOptions {
+        data_root: None,
         cwd: args.cwd.clone().map(PathBuf::from),
         model: args.model.clone(),
         max_steps: args.max_steps,

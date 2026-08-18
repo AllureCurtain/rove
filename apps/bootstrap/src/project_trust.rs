@@ -22,6 +22,7 @@ use rove_runtime::workspace::boundary::{
 
 use crate::config::ProviderConfig;
 use crate::provider::{ProviderAuthConfig, ProviderHeaderValue, SecretSource};
+use crate::user_state::UserStateRoots;
 
 pub const TRUSTED_WORKSPACES_ENV: &str = "ROVE_TRUSTED_WORKSPACES";
 pub const PROJECT_TRUST_STORE_ENV: &str = "ROVE_PROJECT_TRUST_STORE";
@@ -661,6 +662,24 @@ pub fn capability_digest_map(
     mcp_config: Option<&Path>,
     provider_selector: Option<&str>,
 ) -> BTreeMap<String, String> {
+    let roots = UserStateRoots::discover().ok();
+    capability_digest_map_with_roots(
+        workspace_root,
+        mcp_config,
+        provider_selector,
+        roots.as_ref(),
+    )
+}
+
+/// Compute capability digests using a caller-pinned user-state root. Product
+/// configuration uses this form so later environment changes cannot redirect
+/// trust reads to a second state directory.
+pub fn capability_digest_map_with_roots(
+    workspace_root: &Path,
+    mcp_config: Option<&Path>,
+    provider_selector: Option<&str>,
+    roots: Option<&UserStateRoots>,
+) -> BTreeMap<String, String> {
     let project_config = workspace_config_value(workspace_root);
     let mut result = BTreeMap::new();
     result.insert(
@@ -669,7 +688,7 @@ pub fn capability_digest_map(
     );
     result.insert(
         CAP_MCP_PROCESSES.to_string(),
-        digest_mcp_configuration(workspace_root, mcp_config, project_config.as_ref()),
+        digest_mcp_configuration(workspace_root, mcp_config, project_config.as_ref(), roots),
     );
     result.insert(
         CAP_PROVIDER_CREDENTIALS.to_string(),
@@ -1027,20 +1046,77 @@ fn digest_mcp_configuration(
     workspace_root: &Path,
     explicit_path: Option<&Path>,
     project_config: Option<&serde_json::Value>,
+    roots: Option<&UserStateRoots>,
 ) -> String {
     let configured = project_config
         .and_then(|config| config.pointer("/tool/mcp_config_path"))
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or(".rove/mcp_servers.json");
+        .and_then(serde_json::Value::as_str);
+    // The digest label keeps the configured pointer string, so a catalog
+    // relocated into the user state contract with byte-identical content
+    // preserves existing `mcp_processes` grants instead of silently
+    // invalidating or granting them.
+    let label = configured.unwrap_or(".rove/mcp_servers.json");
+    let contract_path = roots.map(|roots| roots.workspace_layout(workspace_root).mcp_catalog);
     let path = explicit_path
         .map(Path::to_path_buf)
-        .unwrap_or_else(|| workspace_root.join(configured));
-    let content = digest_workspace_file(workspace_root, Some(&path))
+        .unwrap_or_else(|| match configured {
+            Some(configured) => workspace_root.join(configured),
+            None => contract_path
+                .clone()
+                .filter(|path| path.is_file())
+                .or_else(|| {
+                    let legacy = workspace_root.join(".rove/mcp_servers.json");
+                    legacy.is_file().then_some(legacy)
+                })
+                .unwrap_or_else(|| {
+                    contract_path
+                        .clone()
+                        .unwrap_or_else(|| workspace_root.join(".rove/mcp_servers.json"))
+                }),
+        });
+    // An absolute path outside the workspace is trusted only when it is the
+    // exact catalog derived from the pinned user-state root. Provider/MCP
+    // strings cannot smuggle an arbitrary external file into the digest.
+    let authorized = path.starts_with(workspace_root)
+        || contract_path
+            .as_ref()
+            .is_some_and(|contract| same_path(contract, &path));
+    let content = authorized
+        .then(|| digest_mcp_catalog_file(workspace_root, &path))
+        .flatten()
         .unwrap_or_else(|| stable_hash("missing-or-unreadable-mcp-config"));
-    stable_hash(&format!(
-        "path={};content={content}",
-        stable_hash(configured)
-    ))
+    stable_hash(&format!("path={};content={content}", stable_hash(label)))
+}
+
+fn same_path(left: &Path, right: &Path) -> bool {
+    match (left.canonicalize(), right.canonicalize()) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => left == right,
+    }
+}
+
+/// Digest an MCP catalog file that may live outside the workspace in the
+/// user state contract. Workspace-local files keep going through
+/// [`digest_workspace_file`]; contract files are read directly with the
+/// same size bound because the path is constructed by this crate rather
+/// than supplied by workspace content.
+fn digest_mcp_catalog_file(workspace_root: &Path, path: &Path) -> Option<String> {
+    if path.strip_prefix(workspace_root).is_ok() {
+        return digest_workspace_file(workspace_root, Some(path));
+    }
+    let mut bytes = Vec::with_capacity(8 * 1024);
+    std::fs::File::open(path)
+        .ok()?
+        .take((MAX_TRUST_INPUT_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() > MAX_TRUST_INPUT_BYTES {
+        return Some(stable_hash(&format!(
+            "oversized-mcp-catalog:{}",
+            path.to_string_lossy()
+        )));
+    }
+    Some(stable_hash(&String::from_utf8_lossy(&bytes)))
 }
 
 fn digest_external_paths(project_config: Option<&serde_json::Value>) -> String {

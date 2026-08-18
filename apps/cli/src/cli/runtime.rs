@@ -32,6 +32,9 @@ pub struct CliRuntimeOptions {
     pub task_base: Option<PathBuf>,
     pub initial_fake_response: Option<String>,
     pub interaction: CliRuntimeInteraction,
+    /// Explicit user data root override (tests, embedders). `None` uses
+    /// `ROVE_DATA_ROOT` or the platform convention.
+    pub data_root: Option<PathBuf>,
 }
 
 #[derive(Default)]
@@ -300,6 +303,7 @@ pub async fn build_cli_runtime(options: CliRuntimeOptions) -> anyhow::Result<Cli
             agent_selector: options.agent.clone(),
             api_bind_addr: None,
             trust_project: options.trust_project,
+            data_root: options.data_root.clone(),
         },
     )?;
     let workspace = if let Some(task_name) = options.task_workspace.as_deref() {
@@ -323,6 +327,11 @@ pub async fn build_cli_runtime(options: CliRuntimeOptions) -> anyhow::Result<Cli
         ..workspace
     };
     workspace.ensure_state_dir()?;
+    if config.state_dir_is_contract_managed() {
+        config.ensure_contract_layout().map_err(|error| {
+            anyhow::anyhow!("user state workspace directory is unavailable: {error}")
+        })?;
+    }
 
     if !config.project_activation_allowed() {
         tracing::warn!(
@@ -464,8 +473,6 @@ fn cli_approval_policy(policy: CliApprovalPolicy) -> ApprovalPolicy {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
     use crate::cli::args::CliApprovalPolicy;
     use rove_runtime::agents::AgentActivationError;
     use rove_runtime::types::ApprovalPolicy;
@@ -498,8 +505,10 @@ mod tests {
     #[tokio::test]
     async fn runtime_builder_rebases_configured_state_dir_into_workspace() {
         let tmp = tempfile::TempDir::new().unwrap();
+        let data_root = tempfile::TempDir::new().unwrap();
 
         let runtime = build_cli_runtime(CliRuntimeOptions {
+            data_root: Some(data_root.path().to_path_buf()),
             cwd: Some(tmp.path().to_path_buf()),
             model: Some("fake".to_string()),
             max_steps: Some(2),
@@ -514,17 +523,28 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(runtime.workspace.root, canonicalize(tmp.path()));
-        assert!(runtime.workspace.state_dir.ends_with(".rove"));
+        assert_eq!(
+            runtime.workspace.root,
+            runtime.config.source_summary.workspace_root
+        );
+        let layout = rove_app_bootstrap::WorkspaceStateLayout::resolve(
+            runtime.config.user_state_roots.as_ref().unwrap().root(),
+            &runtime.config.source_summary.workspace_root,
+        );
+        assert_eq!(runtime.workspace.state_dir, layout.workspace_dir);
+        assert!(data_root.path().join("workspaces").is_dir());
+        assert!(!tmp.path().join(".rove").exists());
         assert_eq!(runtime.config.provider.model, "fake");
     }
 
     #[tokio::test]
     async fn cli_agent_selector_activates_only_with_explicit_workspace_trust() {
         let tmp = tempfile::TempDir::new().unwrap();
+        let data_root = tempfile::TempDir::new().unwrap();
         write_agent_definition(tmp.path());
 
         let denied = build_cli_runtime(CliRuntimeOptions {
+            data_root: Some(data_root.path().to_path_buf()),
             cwd: Some(tmp.path().to_path_buf()),
             model: Some("fake".to_string()),
             max_steps: Some(2),
@@ -551,6 +571,7 @@ mod tests {
         ));
 
         let runtime = build_cli_runtime(CliRuntimeOptions {
+            data_root: Some(data_root.path().to_path_buf()),
             cwd: Some(tmp.path().to_path_buf()),
             model: Some("fake".to_string()),
             max_steps: Some(2),
@@ -597,10 +618,5 @@ default_instructions_path = "instructions.md"
             "Inspect before changing anything.",
         )
         .unwrap();
-    }
-
-    fn canonicalize(path: impl Into<PathBuf>) -> PathBuf {
-        let path = path.into();
-        path.canonicalize().unwrap_or(path)
     }
 }

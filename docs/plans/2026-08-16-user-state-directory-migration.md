@@ -1,13 +1,23 @@
 # 用户级运行数据目录与旧 `.rove/` 迁移计划
 
-> Status: **Proposed / Not Implemented**
+> Status: **Implemented**
 >
 > Date: 2026-08-16
 >
-> Base: `main` at `f6676d1` (PR #33, productization integration)
+> Worktree baseline: `5fe9d70` (based on main `f6676d1`, PR #33)
 >
 > Program: [下一轮产品化计划](2026-08-16-next-productization-round.md) 的地基任务，与
 > [硬只读 Review 工作流](2026-08-16-read-only-review-workflow.md) 从同一基线并行启动。
+
+截至 2026-08-18，本 worktree 已实现本计划的用户 data-root 解析、workspace
+identity/marker、默认 state/memory/MCP 接线、API-global ProductStore 路径、
+幂等 dry-run/apply/prune 迁移、SQLite 索引路径重定位、冲突备份、并发锁、
+prepared journal/receipt、MCP 首次写入的 legacy promotion、CLI 命令、关键
+入口测试和全部交付文档。F.4/F.5
+产品历史窗口、外部 Provider/真实第三方 MCP、Desktop 安装及 macOS/Linux
+发布证据不属于本次实现，仍保持未验证或未来工作。下面的目标和场景清单
+保留为验收合同；当前事实以 `docs/runtime/`、
+`STATE_LAYOUT_AND_MIGRATION.md` 和 `VERIFICATION.md` 为准。
 
 Rove 是一个用 Rust 实现的本地优先 Agent 产品，CLI、TUI、HTTP/SSE API、Web、Desktop 和 benchmark 共用 Runtime、Engine、ToolRegistry、canonical events、状态存储、memory、Artifact 和安全边界。
 

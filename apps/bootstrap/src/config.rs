@@ -16,9 +16,13 @@ use rove_runtime::workspace::WorkspaceKind;
 
 use crate::project_trust::{
     ProjectActivation, ProjectActivationSource, ProjectActivationState, ProjectTrustRepository,
-    TRUSTED_WORKSPACES_ENV, capability_digest_map,
+    TRUSTED_WORKSPACES_ENV,
 };
 use crate::provider::ProviderProfileConfig;
+use crate::user_state::{
+    LEGACY_STATE_DIR, McpCatalogAuthority, UserStateRoots, WorkspaceStateLayout,
+    effective_default_mcp_authority,
+};
 
 pub use rove_models::ProviderOptions;
 
@@ -35,6 +39,18 @@ pub struct AppConfig {
     pub routing: RoutingConfig,
     #[serde(skip)]
     pub source_summary: ConfigSourceSummary,
+    /// Explicit user data root injection for embedders and tests; when
+    /// unset, resolution uses `ROVE_DATA_ROOT` or the platform convention.
+    #[serde(skip)]
+    pub data_root_override: Option<PathBuf>,
+    /// Resolved once during configuration loading. All path consumers use
+    /// this pinned root; they never rediscover process environment state.
+    #[serde(skip)]
+    pub user_state_roots: Option<UserStateRoots>,
+    /// Run-pinned authoritative MCP catalog (product sessions pin the
+    /// managed catalog so environment overrides cannot displace it).
+    #[serde(skip)]
+    pub pinned_mcp_catalog: Option<PathBuf>,
     /// Workspace-owned environment values scoped to this configuration load.
     /// Values are never serialized or exposed through `Debug`.
     #[serde(skip)]
@@ -53,6 +69,9 @@ impl Default for AppConfig {
             web: WebConfig::default(),
             routing: RoutingConfig::default(),
             source_summary: ConfigSourceSummary::default(),
+            data_root_override: None,
+            user_state_roots: None,
+            pinned_mcp_catalog: None,
             project_environment: ProjectEnvironment::default(),
         };
         // In-memory defaults used by tests and ad-hoc construction include a
@@ -348,6 +367,13 @@ pub struct ConfigSourceSummary {
     pub project_trust_granted_capabilities: Vec<String>,
     pub env_keys: Vec<String>,
     pub cli_keys: Vec<String>,
+    /// Storage key of the contract workspace directory, when the user data
+    /// root was resolvable for this load.
+    #[serde(default)]
+    pub workspace_storage_key: Option<String>,
+    /// Resolved user data root backing the contract state layout.
+    #[serde(default)]
+    pub user_data_root: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -357,6 +383,9 @@ pub struct AppConfigOverrides {
     pub agent_selector: Option<String>,
     pub api_bind_addr: Option<String>,
     pub trust_project: bool,
+    /// Explicit user data root for the contract state layout. Must be
+    /// absolute; intended for embedders and hermetic tests.
+    pub data_root: Option<PathBuf>,
 }
 
 impl Default for RuntimeConfig {
@@ -407,6 +436,9 @@ fn ensure_default_provider_profile(provider: &mut ProviderConfig) {
 impl Default for ToolConfig {
     fn default() -> Self {
         Self {
+            // Programmatic construction retains the pre-migration contract.
+            // Product configuration uses `AppConfig::defaults()` and clears
+            // this field to select the user-state layout.
             mcp_config_path: PathBuf::from(".rove/mcp_servers.json"),
             shell: ShellConfig::default(),
         }
@@ -501,6 +533,8 @@ impl Default for ConfigSourceSummary {
                 .collect(),
             env_keys: Vec::new(),
             cli_keys: Vec::new(),
+            workspace_storage_key: None,
+            user_data_root: None,
         }
     }
 }
@@ -525,7 +559,7 @@ impl AppConfig {
     pub fn defaults() -> Self {
         // Empty provider profiles so layered TOML maps replace cleanly rather
         // than merging with a built-in fake profile entry.
-        Self {
+        let mut config = Self {
             runtime: RuntimeConfig::default(),
             provider: ProviderConfig::default(),
             tool: ToolConfig::default(),
@@ -535,8 +569,20 @@ impl AppConfig {
             web: WebConfig::default(),
             routing: RoutingConfig::default(),
             source_summary: ConfigSourceSummary::default(),
+            data_root_override: None,
+            user_state_roots: None,
+            pinned_mcp_catalog: None,
             project_environment: ProjectEnvironment::default(),
-        }
+        };
+        // Figment's product defaults use empty sentinels so an omitted field
+        // selects the new user-state contract. `AppConfig::default()` below
+        // intentionally retains legacy explicit paths for embedders.
+        config.tool.mcp_config_path.clear();
+        config.memory.session_dir.clear();
+        config.memory.durable_dir.clear();
+        config.state.state_dir.clear();
+        config.state.sqlite_path.clear();
+        config
     }
 
     pub fn load(
@@ -613,6 +659,10 @@ impl AppConfig {
             .as_ref()
             .canonicalize()
             .unwrap_or_else(|_| workspace_root.as_ref().to_path_buf());
+        let data_root_override = overrides.data_root.clone();
+        let user_state_roots =
+            UserStateRoots::discover_with_override(data_root_override.clone())
+                .map_err(|error| anyhow::anyhow!("user data root is unavailable: {error}"))?;
         // Resolve temporary grants and durable operator trust before reading a
         // workspace-owned .env file so the repository cannot grant trust to
         // itself. Temporary grants remain process-scoped and are never written
@@ -623,7 +673,12 @@ impl AppConfig {
             overrides.trust_project,
             trusted_workspaces,
         )?;
-        let capability_digests = capability_digest_map(&workspace_root, None, None);
+        let capability_digests = crate::project_trust::capability_digest_map_with_roots(
+            &workspace_root,
+            None,
+            None,
+            Some(&user_state_roots),
+        );
         let durable_resolution = repository
             .and_then(|repository| {
                 repository
@@ -737,7 +792,12 @@ impl AppConfig {
                 .collect(),
             env_keys,
             cli_keys,
+            workspace_storage_key: None,
+            user_data_root: None,
         };
+        config.data_root_override = data_root_override;
+        config.user_state_roots = Some(user_state_roots);
+        config.update_state_path_summary();
         config.project_environment = ProjectEnvironment {
             values: if provider_credentials_granted {
                 project_environment_values
@@ -785,27 +845,231 @@ impl AppConfig {
         }
     }
 
+    /// Contract layout for the recorded workspace root, when a user data
+    /// root is resolvable.
+    fn contract_layout(&self) -> Option<WorkspaceStateLayout> {
+        self.user_state_roots
+            .as_ref()
+            .map(|roots| roots.workspace_layout(&self.source_summary.workspace_root))
+    }
+
+    /// Record the contract workspace identity into the source summary.
+    fn update_state_path_summary(&mut self) {
+        match self.user_state_roots.as_ref() {
+            Some(roots) => {
+                let layout = roots.workspace_layout(&self.source_summary.workspace_root);
+                self.source_summary.workspace_storage_key = Some(layout.storage_key);
+                self.source_summary.user_data_root = Some(roots.root().to_path_buf());
+            }
+            None => {
+                self.source_summary.workspace_storage_key = None;
+                self.source_summary.user_data_root = None;
+            }
+        }
+    }
+
     pub fn state_dir(&self) -> PathBuf {
-        self.resolve_path(&self.state.state_dir)
+        if !self.state.state_dir.as_os_str().is_empty() {
+            return self.resolve_path(&self.state.state_dir);
+        }
+        if let Some(layout) = self.contract_layout() {
+            return layout.workspace_dir;
+        }
+        // No resolvable user data root: keep deterministic local execution
+        // available through the legacy project-local layout.
+        self.source_summary.workspace_root.join(LEGACY_STATE_DIR)
+    }
+
+    /// Resolve the state directory used when inspecting a server-owned
+    /// workspace during migration or resume discovery. A materialized user
+    /// contract directory is authoritative; an unmaterialized contract falls
+    /// back to the legacy project-local directory so old runs remain
+    /// discoverable until an explicit migration publishes them.
+    pub fn state_dir_for_workspace_discovery(&self, workspace_root: impl AsRef<Path>) -> PathBuf {
+        let root = workspace_root
+            .as_ref()
+            .canonicalize()
+            .unwrap_or_else(|_| workspace_root.as_ref().to_path_buf());
+        // Explicit state paths retain their historical rebase semantics for
+        // every server-owned workspace. Only the empty product default uses
+        // contract/legacy discovery.
+        if !self.state.state_dir.as_os_str().is_empty() {
+            return if self.state.state_dir.is_absolute() {
+                self.state.state_dir.clone()
+            } else {
+                root.join(&self.state.state_dir)
+            };
+        }
+        if let Some(roots) = self.user_state_roots.as_ref() {
+            let layout = roots.workspace_layout(&root);
+            let has_materialized_state = layout.workspace_dir.is_dir()
+                && (layout.state_sqlite.is_file() || layout.runs_dir.is_dir());
+            if has_materialized_state {
+                return layout.workspace_dir;
+            }
+        }
+        root.join(LEGACY_STATE_DIR)
+    }
+
+    /// True when the default (unconfigured) state directory resolves
+    /// through the user state contract rather than an explicit path.
+    pub fn state_dir_is_contract_managed(&self) -> bool {
+        self.state.state_dir.as_os_str().is_empty() && self.contract_layout().is_some()
     }
 
     pub fn sqlite_path(&self) -> PathBuf {
-        self.resolve_path(&self.state.sqlite_path)
+        if !self.state.sqlite_path.as_os_str().is_empty() {
+            return self.resolve_path(&self.state.sqlite_path);
+        }
+        // A legacy configuration that explicitly selected a custom state
+        // directory but omitted sqlite_path historically kept the database at
+        // `<workspace>/.rove/state.sqlite`; preserve that contract.
+        if !self.state.state_dir.as_os_str().is_empty() {
+            return self
+                .source_summary
+                .workspace_root
+                .join(LEGACY_STATE_DIR)
+                .join("state.sqlite");
+        }
+        self.state_dir().join("state.sqlite")
+    }
+
+    /// Effective MCP catalog path. See `workspace_bounded_mcp_config_path`
+    /// for the workspace-bounded variant used by product surfaces.
+    pub fn mcp_config_path(&self) -> PathBuf {
+        if !self.tool.mcp_config_path.as_os_str().is_empty() {
+            return self.resolve_path(&self.tool.mcp_config_path);
+        }
+        if let Some(layout) = self.contract_layout() {
+            return layout.mcp_catalog;
+        }
+        self.source_summary
+            .workspace_root
+            .join(LEGACY_STATE_DIR)
+            .join("mcp_servers.json")
+    }
+
+    /// Effective MCP catalog read path for MCP assembly.
+    ///
+    /// The contract catalog wins once it materializes (first Settings
+    /// write or migration); until then the legacy project-local catalog
+    /// keeps being read so existing setups do not lose their servers
+    /// before running `rove state migrate`.
+    pub fn effective_mcp_config_path(&self) -> PathBuf {
+        if let Some(pinned) = &self.pinned_mcp_catalog {
+            return pinned.clone();
+        }
+        if !self.tool.mcp_config_path.as_os_str().is_empty() {
+            return self
+                .workspace_bounded_mcp_config_path()
+                .unwrap_or_else(|_| self.mcp_config_path());
+        }
+        self.mcp_catalog_authority()
+            .map(|authority| authority.path().to_path_buf())
+            .unwrap_or_else(|_| self.mcp_config_path())
+    }
+
+    /// Return the typed authority for the effective MCP catalog.
+    pub fn mcp_catalog_authority(&self) -> anyhow::Result<McpCatalogAuthority> {
+        let authority = if let Some(pinned) = &self.pinned_mcp_catalog {
+            if let Some(roots) = self.user_state_roots.as_ref() {
+                let layout = roots.workspace_layout(&self.source_summary.workspace_root);
+                if *pinned == layout.mcp_catalog {
+                    McpCatalogAuthority::UserState {
+                        path: pinned.clone(),
+                        workspace_dir: layout.workspace_dir,
+                    }
+                } else {
+                    McpCatalogAuthority::Workspace {
+                        path: pinned.clone(),
+                    }
+                }
+            } else {
+                McpCatalogAuthority::Workspace {
+                    path: pinned.clone(),
+                }
+            }
+        } else if !self.tool.mcp_config_path.as_os_str().is_empty() {
+            McpCatalogAuthority::Workspace {
+                path: self.resolve_path(&self.tool.mcp_config_path),
+            }
+        } else if let Some(roots) = self.user_state_roots.as_ref() {
+            effective_default_mcp_authority(roots, &self.source_summary.workspace_root)
+        } else {
+            McpCatalogAuthority::Workspace {
+                path: self
+                    .source_summary
+                    .workspace_root
+                    .join(LEGACY_STATE_DIR)
+                    .join("mcp_servers.json"),
+            }
+        };
+        authority
+            .validate(&self.source_summary.workspace_root)
+            .map_err(|error| anyhow::anyhow!("MCP catalog authority is invalid: {error}"))?;
+        Ok(authority)
+    }
+
+    /// ProductStore database location for this configuration. ProductStore is
+    /// API-global; runtime state remains per workspace.
+    pub fn product_sqlite_path(&self) -> PathBuf {
+        self.user_state_roots
+            .as_ref()
+            .map(|roots| roots.root().join("product.sqlite"))
+            .unwrap_or_else(|| self.state_dir().join("product.sqlite"))
     }
 
     pub fn memory_paths(&self) -> MemoryPaths {
         MemoryPaths {
-            session_dir: self.resolve_path(&self.memory.session_dir),
-            durable_dir: self.resolve_path(&self.memory.durable_dir),
+            session_dir: self.memory_session_dir(),
+            durable_dir: self.memory_durable_dir(),
             recall_limit: self.memory.recall_limit,
         }
     }
 
-    /// Resolve durable memory only when it remains inside the current workspace.
+    pub fn memory_durable_dir(&self) -> PathBuf {
+        if !self.memory.durable_dir.as_os_str().is_empty() {
+            return self.resolve_path(&self.memory.durable_dir);
+        }
+        if let Some(layout) = self.contract_layout() {
+            return layout.memory_dir;
+        }
+        self.source_summary
+            .workspace_root
+            .join(LEGACY_STATE_DIR)
+            .join("memory")
+    }
+
+    pub fn memory_session_dir(&self) -> PathBuf {
+        if !self.memory.session_dir.as_os_str().is_empty() {
+            return self.resolve_path(&self.memory.session_dir);
+        }
+        if !self.memory.durable_dir.as_os_str().is_empty() {
+            return self
+                .source_summary
+                .workspace_root
+                .join(LEGACY_STATE_DIR)
+                .join("memory/sessions");
+        }
+        self.memory_durable_dir().join("sessions")
+    }
+
+    /// Resolve durable memory for product surfaces.
     ///
-    /// Product control surfaces use this stricter path even when the process is
-    /// configured to allow other explicitly external runtime paths.
+    /// Contract-default memory lives under the user workspace directory;
+    /// explicitly configured memory stays workspace-bounded as before.
     pub fn workspace_bounded_durable_memory_dir(&self) -> anyhow::Result<PathBuf> {
+        if self.memory.durable_dir.as_os_str().is_empty()
+            && let Some(layout) = self.contract_layout()
+        {
+            let resolved = self.memory_durable_dir();
+            if !resolved.starts_with(&layout.workspace_dir) {
+                anyhow::bail!(
+                    "memory.durable_dir resolves outside the contract workspace directory"
+                );
+            }
+            return Ok(resolved);
+        }
         let resolved = self.normalized_workspace_path(&self.memory.durable_dir);
         if !resolved.starts_with(&self.source_summary.workspace_root) {
             anyhow::bail!("memory.durable_dir resolves outside the selected workspace");
@@ -813,23 +1077,98 @@ impl AppConfig {
         Ok(resolved)
     }
 
-    /// Resolve the product-managed MCP catalog only inside the selected workspace.
+    /// Resolve the product-managed MCP catalog.
+    ///
+    /// The contract-default catalog is bounded by the user workspace
+    /// directory; an explicitly configured catalog remains bounded by the
+    /// selected project workspace.
     pub fn workspace_bounded_mcp_config_path(&self) -> anyhow::Result<PathBuf> {
-        let resolved = self.normalized_workspace_path(&self.tool.mcp_config_path);
-        let canonical_workspace_root = self.source_summary.workspace_root.canonicalize()?;
-        let mut ancestor = resolved.parent().ok_or_else(|| {
-            anyhow::anyhow!("tool.mcp_config_path has no workspace-bounded parent")
+        self.mcp_catalog_authority()
+            .map(|authority| authority.path().to_path_buf())
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "tool.mcp_config_path resolves outside the selected workspace: {error}"
+                )
+            })
+    }
+
+    /// Resolve the authoritative destination for a Product Settings MCP
+    /// mutation. Reads may temporarily fall back to an unmigrated legacy
+    /// catalog; writes always target the contract catalog unless the operator
+    /// explicitly configured a project path.
+    pub fn workspace_bounded_mcp_write_path(&self) -> anyhow::Result<PathBuf> {
+        self.mcp_catalog_write_authority()
+            .map(|authority| authority.path().to_path_buf())
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "tool.mcp_config_path resolves outside the selected workspace: {error}"
+                )
+            })
+    }
+
+    /// Materialize the identity marker before the first user-state MCP write.
+    /// Explicit project paths retain their existing behavior.
+    pub fn ensure_workspace_bounded_mcp_write_path(&self) -> anyhow::Result<PathBuf> {
+        let authority = self.mcp_catalog_write_authority().map_err(|error| {
+            anyhow::anyhow!("tool.mcp_config_path resolves outside the selected workspace: {error}")
         })?;
-        while !ancestor.exists() {
-            ancestor = ancestor
-                .parent()
-                .ok_or_else(|| anyhow::anyhow!("tool.mcp_config_path has no existing ancestor"))?;
+        if authority.is_user_state() {
+            self.ensure_contract_layout()?;
         }
-        let canonical_ancestor = ancestor.canonicalize()?;
-        if !canonical_ancestor.starts_with(canonical_workspace_root) {
-            anyhow::bail!("tool.mcp_config_path resolves outside the selected workspace");
-        }
-        Ok(resolved)
+        Ok(authority.path().to_path_buf())
+    }
+
+    fn mcp_catalog_write_authority(&self) -> anyhow::Result<McpCatalogAuthority> {
+        let authority = if !self.tool.mcp_config_path.as_os_str().is_empty() {
+            McpCatalogAuthority::Workspace {
+                path: self.resolve_path(&self.tool.mcp_config_path),
+            }
+        } else if let Some(layout) = self.contract_layout() {
+            McpCatalogAuthority::UserState {
+                path: layout.mcp_catalog,
+                workspace_dir: layout.workspace_dir,
+            }
+        } else {
+            McpCatalogAuthority::Workspace {
+                path: self
+                    .source_summary
+                    .workspace_root
+                    .join(LEGACY_STATE_DIR)
+                    .join("mcp_servers.json"),
+            }
+        };
+        authority
+            .validate(&self.source_summary.workspace_root)
+            .map_err(|error| anyhow::anyhow!("MCP catalog authority is invalid: {error}"))?;
+        Ok(authority)
+    }
+
+    /// Resolve a contract layout for an arbitrary, server-owned product
+    /// workspace. The root is pinned when this AppConfig was loaded.
+    pub fn contract_layout_for_workspace(
+        &self,
+        workspace_root: impl AsRef<Path>,
+    ) -> anyhow::Result<WorkspaceStateLayout> {
+        let root = workspace_root.as_ref();
+        let canonical = root
+            .canonicalize()
+            .map_err(|error| anyhow::anyhow!("workspace root is unavailable: {error}"))?;
+        self.user_state_roots
+            .as_ref()
+            .map(|roots| roots.workspace_layout(&canonical))
+            .ok_or_else(|| anyhow::anyhow!("user state roots are not pinned for this config"))
+    }
+
+    /// Materialize and verify the contract directory for this configuration's
+    /// current workspace.
+    pub fn ensure_contract_layout(&self) -> anyhow::Result<WorkspaceStateLayout> {
+        let layout = self
+            .contract_layout()
+            .ok_or_else(|| anyhow::anyhow!("user state roots are not pinned for this config"))?;
+        layout.ensure().map_err(|error| {
+            anyhow::anyhow!("user state workspace directory is unavailable: {error}")
+        })?;
+        Ok(layout)
     }
 
     pub fn rebase_to_workspace(&mut self, workspace_root: impl AsRef<Path>) {
@@ -856,7 +1195,12 @@ impl AppConfig {
                 repository.resolve(
                     &workspace_root,
                     workspace_kind_for_root(&workspace_root),
-                    &capability_digest_map(&workspace_root, None, None),
+                    &crate::project_trust::capability_digest_map_with_roots(
+                        &workspace_root,
+                        None,
+                        None,
+                        self.user_state_roots.as_ref(),
+                    ),
                 )
             })
             .ok();
@@ -879,6 +1223,7 @@ impl AppConfig {
             .unwrap_or_default();
         self.source_summary.project_trust_granted_capabilities =
             activation.granted_capabilities.into_iter().collect();
+        self.update_state_path_summary();
     }
 
     pub fn project_activation_state(&self) -> ProjectActivationState {
@@ -1136,6 +1481,9 @@ impl AppConfig {
         if self.state.allow_external_paths {
             return Ok(());
         }
+        // Empty sentinels resolve through the user state contract and are
+        // bounded by construction; only explicitly configured paths are
+        // checked against the workspace boundary here.
         for (name, path) in [
             (
                 "runtime.system_prompt_path",
@@ -1151,6 +1499,9 @@ impl AppConfig {
             ("memory.session_dir", &self.memory.session_dir),
             ("memory.durable_dir", &self.memory.durable_dir),
         ] {
+            if path.as_os_str().is_empty() {
+                continue;
+            }
             self.validate_workspace_path(name, path)?;
         }
         Ok(())
@@ -1905,16 +2256,13 @@ fn bounded_workspace_config_path(workspace_root: &Path, raw_path: &str) -> Optio
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Mutex, OnceLock};
 
     use super::*;
+    use crate::project_trust::capability_digest_map;
     use crate::provider::{ProviderAuthConfig, ProviderHeaderValue, SecretSource};
 
-    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-
     fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-        ENV_LOCK
-            .get_or_init(|| Mutex::new(()))
+        crate::user_state::TEST_ENV_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
@@ -1981,6 +2329,7 @@ mod tests {
             "ROVE_WEB_API_BASE",
             crate::user_config::USER_CONFIG_ROOT_ENV,
             crate::project_trust::PROJECT_TRUST_STORE_ENV,
+            crate::user_state::DATA_ROOT_ENV,
             TRUSTED_WORKSPACES_ENV,
         ] {
             unsafe {
@@ -2087,6 +2436,7 @@ retry_backoff_max_ms = 456
                 agent_selector: None,
                 api_bind_addr: None,
                 trust_project: true,
+                data_root: None,
             },
         )
         .unwrap();
@@ -2250,9 +2600,9 @@ allow_external_paths = true
             project_only.runtime.system_prompt_path,
             RuntimeConfig::default().system_prompt_path
         );
-        assert_eq!(
-            project_only.tool.mcp_config_path,
-            ToolConfig::default().mcp_config_path
+        assert!(
+            project_only.tool.mcp_config_path.as_os_str().is_empty(),
+            "an omitted MCP path selects the user-state contract"
         );
         assert!(!project_only.state.allow_external_paths);
         assert!(project_only.project_environment.values().is_empty());
@@ -2767,6 +3117,61 @@ system_prompt_path = "../outside/prompt.md"
 
         config.tool.mcp_config_path = inside.clone();
         assert_eq!(config.workspace_bounded_mcp_config_path().unwrap(), inside);
+    }
+
+    #[test]
+    fn state_discovery_falls_back_to_legacy_until_contract_state_materializes() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let workspace = temp.path().join("workspace");
+        let data_root = temp.path().join("data");
+        std::fs::create_dir_all(workspace.join(LEGACY_STATE_DIR)).unwrap();
+        let workspace = workspace.canonicalize().unwrap();
+
+        let mut config = AppConfig::defaults();
+        config.source_summary.workspace_root = workspace.clone();
+        config.user_state_roots = Some(UserStateRoots::from_root(&data_root));
+        let layout = config.contract_layout().unwrap();
+
+        assert_eq!(
+            config.state_dir_for_workspace_discovery(&workspace),
+            workspace.join(LEGACY_STATE_DIR)
+        );
+
+        layout.ensure().unwrap();
+        assert_eq!(
+            config.state_dir_for_workspace_discovery(&workspace),
+            workspace.join(LEGACY_STATE_DIR),
+            "an identity marker alone must not hide unmigrated legacy runs"
+        );
+
+        std::fs::create_dir_all(&layout.runs_dir).unwrap();
+        assert_eq!(
+            config.state_dir_for_workspace_discovery(&workspace),
+            layout.workspace_dir
+        );
+    }
+
+    #[test]
+    fn state_discovery_preserves_explicit_relative_and_absolute_paths() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let workspace = temp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let workspace = workspace.canonicalize().unwrap();
+        let mut config = AppConfig::defaults();
+        config.user_state_roots = Some(UserStateRoots::from_root(temp.path().join("data")));
+
+        config.state.state_dir = PathBuf::from("explicit-state");
+        assert_eq!(
+            config.state_dir_for_workspace_discovery(&workspace),
+            workspace.join("explicit-state")
+        );
+
+        let absolute = temp.path().join("shared-state");
+        config.state.state_dir = absolute.clone();
+        assert_eq!(
+            config.state_dir_for_workspace_discovery(&workspace),
+            absolute
+        );
     }
 
     #[cfg(unix)]

@@ -27,7 +27,7 @@ use rove_api::{
 };
 use rove_app_bootstrap::{
     AppConfig, AppConfigOverrides, ProjectActivationState, ProjectTrustDecision,
-    ProjectTrustRepository, UserConfigPaths, capability_digest_map,
+    ProjectTrustRepository, UserConfigPaths, UserStateRoots, capability_digest_map,
     provider_capability_selector_for_workspace,
 };
 use rove_runtime::events::StreamEvent;
@@ -4194,7 +4194,10 @@ async fn product_provider_selection_is_part_of_trust_and_non_fake_jobs_fail_clos
     let user_paths = UserConfigPaths::from_root(server.path().join("user-config"));
     let mut config = AppConfig::load_with_user_config_paths(
         server.path(),
-        AppConfigOverrides::default(),
+        AppConfigOverrides {
+            data_root: Some(server.path().join("data-root")),
+            ..AppConfigOverrides::default()
+        },
         user_paths,
     )
     .unwrap();
@@ -4310,6 +4313,7 @@ async fn operator_store_revocation_cancels_an_active_api_job() {
         server.path(),
         AppConfigOverrides {
             model: Some("fake".to_string()),
+            data_root: Some(server.path().join("data-root")),
             ..AppConfigOverrides::default()
         },
         UserConfigPaths::from_root(server.path().join("user-config")),
@@ -4397,7 +4401,10 @@ async fn api_and_bootstrap_share_one_canonical_project_trust_authority() {
     assert_eq!(granted.status(), StatusCode::OK);
     let bootstrap = AppConfig::load_with_authorities(
         target.path(),
-        AppConfigOverrides::default(),
+        AppConfigOverrides {
+            data_root: Some(server.path().join("data-root")),
+            ..AppConfigOverrides::default()
+        },
         authority.as_ref(),
         user_paths,
     )
@@ -8076,6 +8083,75 @@ async fn api_registers_configured_mcp_tools_for_jobs() {
 }
 
 #[tokio::test]
+async fn product_mcp_first_write_promotes_legacy_into_marker_bound_contract_state() {
+    let server = tempfile::TempDir::new().unwrap();
+    let folder = tempfile::TempDir::new().unwrap();
+    let data = tempfile::TempDir::new().unwrap();
+    let legacy_dir = folder.path().join(".rove");
+    std::fs::create_dir_all(&legacy_dir).unwrap();
+    let legacy_path = legacy_dir.join("mcp_servers.json");
+    std::fs::write(
+        &legacy_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "servers": [{
+                "name": "legacy_server",
+                "transport": "streamable_http",
+                "url": "http://127.0.0.1:9/mcp",
+                "policy": {
+                    "request_timeout_ms": 2_000,
+                    "stderr_capture_bytes": 16_384
+                }
+            }]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let roots = UserStateRoots::from_root(data.path());
+    let mut config = test_config();
+    config.state.state_dir = "api-state".into();
+    config.tool.mcp_config_path.clear();
+    config.data_root_override = Some(data.path().to_path_buf());
+    config.user_state_roots = Some(roots.clone());
+    let app = router(ApiState::new(
+        Workspace::detect(server.path()).unwrap(),
+        config,
+    ));
+    let workspace = create_product_workspace(&app, folder.path()).await;
+    let workspace_id = workspace["id"].as_str().unwrap();
+
+    let created = post_json(
+        &app,
+        &format!("/product/mcp/servers?workspace_id={workspace_id}"),
+        serde_json::json!({
+            "name": "contract_server",
+            "transport": "streamable_http",
+            "url": "http://127.0.0.1:10/mcp",
+            "request_timeout_ms": 2_000
+        }),
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::CREATED);
+
+    let layout = roots.workspace_layout(&folder.path().canonicalize().unwrap());
+    layout.verify_marker().unwrap();
+    let contract: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&layout.mcp_catalog).unwrap()).unwrap();
+    let names = contract["servers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|server| server["name"].as_str().unwrap())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(names, BTreeSet::from(["contract_server", "legacy_server"]));
+
+    let legacy: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&legacy_path).unwrap()).unwrap();
+    assert_eq!(legacy["servers"].as_array().unwrap().len(), 1);
+    assert_eq!(legacy["servers"][0]["name"], "legacy_server");
+}
+
+#[tokio::test]
 async fn product_mcp_crud_is_workspace_scoped_secret_free_and_used_by_product_jobs() {
     let server = tempfile::TempDir::new().unwrap();
     let folder_a = tempfile::TempDir::new().unwrap();
@@ -8458,6 +8534,7 @@ async fn restricted_product_workspace_cannot_probe_or_activate_mcp() {
         server.path(),
         AppConfigOverrides {
             model: Some("fake".to_string()),
+            data_root: Some(server.path().join("data-root")),
             ..AppConfigOverrides::default()
         },
         UserConfigPaths::from_root(server.path().join("user-config")),

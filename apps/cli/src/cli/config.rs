@@ -41,7 +41,7 @@ pub fn format_effective_config(config: &AppConfig) -> String {
             "fallback_models": config.provider.fallback_models,
         },
         "tool": {
-            "mcp_config_path": config.tool.mcp_config_path.to_string_lossy(),
+            "mcp_config_path": (!config.tool.mcp_config_path.as_os_str().is_empty()).then(|| config.tool.mcp_config_path.to_string_lossy()),
             "shell": {
                 "timeout_ms": config.tool.shell.timeout_ms,
                 "max_output_bytes": config.tool.shell.max_output_bytes,
@@ -50,13 +50,13 @@ pub fn format_effective_config(config: &AppConfig) -> String {
             },
         },
         "memory": {
-            "session_dir": config.memory.session_dir.to_string_lossy(),
-            "durable_dir": config.memory.durable_dir.to_string_lossy(),
+            "session_dir": (!config.memory.session_dir.as_os_str().is_empty()).then(|| config.memory.session_dir.to_string_lossy()),
+            "durable_dir": (!config.memory.durable_dir.as_os_str().is_empty()).then(|| config.memory.durable_dir.to_string_lossy()),
             "recall_limit": config.memory.recall_limit,
         },
         "state": {
-            "state_dir": config.state.state_dir.to_string_lossy(),
-            "sqlite_path": config.state.sqlite_path.to_string_lossy(),
+            "state_dir": (!config.state.state_dir.as_os_str().is_empty()).then(|| config.state.state_dir.to_string_lossy()),
+            "sqlite_path": (!config.state.sqlite_path.as_os_str().is_empty()).then(|| config.state.sqlite_path.to_string_lossy()),
             "lazy_migration": config.state.lazy_migration,
             "sqlite_busy_timeout_ms": config.state.sqlite_busy_timeout_ms,
             "allow_external_paths": config.state.allow_external_paths,
@@ -95,11 +95,17 @@ pub fn format_effective_config(config: &AppConfig) -> String {
         "resolved_paths": {
             "system_prompt_path": config.resolve_path(&config.runtime.system_prompt_path).to_string_lossy(),
             "planner_prompt_path": config.resolve_path(&config.runtime.planner_prompt_path).to_string_lossy(),
-            "mcp_config_path": config.resolve_path(&config.tool.mcp_config_path).to_string_lossy(),
+            "mcp_config_path": config.mcp_config_path().to_string_lossy(),
             "state_dir": config.state_dir().to_string_lossy(),
             "sqlite_path": config.sqlite_path().to_string_lossy(),
-            "memory_session_dir": config.resolve_path(&config.memory.session_dir).to_string_lossy(),
-            "memory_durable_dir": config.resolve_path(&config.memory.durable_dir).to_string_lossy(),
+            "memory_session_dir": config.memory_session_dir().to_string_lossy(),
+            "memory_durable_dir": config.memory_durable_dir().to_string_lossy(),
+            "product_sqlite_path": config.product_sqlite_path().to_string_lossy(),
+        },
+        "user_state": {
+            "data_root": config.source_summary.user_data_root.as_ref().map(|path| path.to_string_lossy()),
+            "workspace_storage_key": config.source_summary.workspace_storage_key,
+            "state_layout": if config.state_dir_is_contract_managed() { "user_contract_v1" } else { "explicit" },
         },
     });
     serde_json::to_string_pretty(&value).expect("effective config snapshot should serialize")

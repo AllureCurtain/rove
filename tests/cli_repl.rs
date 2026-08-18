@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
+use rove_app_bootstrap::{DATA_ROOT_ENV, WorkspaceStateLayout};
+
 fn workspace_root() -> PathBuf {
     let mut root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     root.pop();
@@ -36,7 +38,10 @@ fn rove_bin() -> PathBuf {
 #[test]
 fn repl_subcommand_accepts_exit_command_and_exits_zero() {
     let tmp = tempfile::TempDir::new().unwrap();
+    let data_root = tempfile::TempDir::new().unwrap();
+    let layout = WorkspaceStateLayout::resolve(data_root.path(), tmp.path());
     let output = Command::new(rove_bin())
+        .env(DATA_ROOT_ENV, data_root.path())
         .arg("repl")
         .arg("--cwd")
         .arg(tmp.path())
@@ -67,13 +72,15 @@ fn repl_subcommand_accepts_exit_command_and_exits_zero() {
     assert!(!stderr.contains("provider"));
     assert!(!stderr.contains("session id"));
     assert!(!stderr.contains("memory"));
-    assert!(tmp.path().join(".rove").join("repl_history").exists());
+    assert!(layout.workspace_dir.join("repl_history").exists());
 }
 
 #[test]
 fn repl_status_command_prints_runtime_context() {
     let tmp = tempfile::TempDir::new().unwrap();
+    let data_root = tempfile::TempDir::new().unwrap();
     let output = Command::new(rove_bin())
+        .env(DATA_ROOT_ENV, data_root.path())
         .arg("repl")
         .arg("--cwd")
         .arg(tmp.path())
@@ -107,7 +114,8 @@ fn repl_status_command_prints_runtime_context() {
     assert!(stderr.contains("session id"));
     assert!(stderr.contains("active"));
     assert!(stderr.contains("memory"));
-    assert!(stderr.contains(".rove/memory/sessions"));
+    assert!(stderr.contains("memory/sessions"));
+    assert!(!stderr.contains(".rove/memory/sessions"));
 }
 
 #[test]

@@ -9,7 +9,9 @@ pub mod provider_catalog;
 pub mod provider_migration;
 pub mod registry;
 pub mod session_selection;
+pub mod state_migration;
 pub mod user_config;
+pub mod user_state;
 
 pub use assembly::{EngineOptions, build_engine, build_engine_with_registry};
 pub use config::{
@@ -28,8 +30,8 @@ pub use project_trust::{
     ProjectActivationSource, ProjectActivationState, ProjectTrustCapability, ProjectTrustDecision,
     ProjectTrustRecord, ProjectTrustRepository, ProjectTrustResolution, TRUSTED_WORKSPACES_ENV,
     all_capability_names, canonical_root_key, capability_digest_map,
-    provider_capability_selector_for_workspace, resolve_project_trust_record,
-    workspace_identity_digest,
+    capability_digest_map_with_roots, provider_capability_selector_for_workspace,
+    resolve_project_trust_record, workspace_identity_digest,
 };
 pub use provider::{
     KeyringReference, ProviderAuthConfig, ProviderHeaderValue, ProviderProfileConfig, SecretSource,
@@ -47,7 +49,8 @@ pub use provider_migration::{
 pub use registry::{
     register_extra_tools, tool_registry, tool_registry_for_config,
     tool_registry_for_config_with_environment, tool_registry_with_mcp,
-    tool_registry_with_mcp_and_environment, tool_registry_with_shell_policy,
+    tool_registry_with_mcp_and_environment, tool_registry_with_mcp_authority_and_environment,
+    tool_registry_with_shell_policy,
 };
 pub use session_selection::{
     PersistedSessionSelection, SessionSelectionError, SessionSelectionStore,
@@ -55,4 +58,10 @@ pub use session_selection::{
 pub use user_config::{
     USER_CONFIG_SCHEMA_VERSION, UserConfigDocument, UserConfigLoader, UserConfigPaths,
     UserConfigWriter,
+};
+pub use user_state::{
+    DATA_ROOT_ENV, LEGACY_STATE_DIR, McpCatalogAuthority, UserStateError, UserStateRoots,
+    WORKSPACE_MARKER_SCHEMA_VERSION, WorkspaceMarker, WorkspaceStateLayout,
+    effective_default_mcp_authority, effective_default_mcp_catalog, ensure_workspace_layout,
+    state_dir_for_run_discovery, verify_workspace_marker, workspace_storage_key,
 };

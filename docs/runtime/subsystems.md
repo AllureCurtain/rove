@@ -114,8 +114,10 @@ same workspace root and durable `task_state`; a resume key that resolves to no
 state in that workspace store is rejected with 400 (no silent one-shot
 fallback).
 
-Task cleanup is directory-based: deleting the task workspace directory removes
-its local files, `.rove` state, run artifacts, and default memory. Browser and
+Deleting a task workspace directory removes its local task files. Its default
+run artifacts and memory resolve through a separate user-state storage key and
+are conservatively retained; automatic orphan collection is not implemented.
+See [`STATE_LAYOUT_AND_MIGRATION.md`](../../STATE_LAYOUT_AND_MIGRATION.md). Browser and
 Desktop **automation workspace kinds** remain future specs only in
 `docs/runtime/browser-workspace-spec.md` and
 `docs/runtime/desktop-workspace-spec.md`; the runtime has no partial enum or
@@ -129,6 +131,17 @@ workspace kind.
 repair, cleanup, and resume are implemented in `runtime/src/state/`.
 `TaskState`, `PromptCheckpoint`, IDs, lifecycle ledger data, and canonical
 `StreamEvent` are owned by the same crate.
+
+First-party production assembly resolves these stores through the pinned user
+state contract: `<data_root>/workspaces/<storage_key>/` contains
+`workspace.json`, `state.sqlite`, `runs/`, and `memory/`, while ProductStore is
+API-global at `<data_root>/product.sqlite`. Explicit legacy/embedding paths stay
+supported. `rove state migrate` imports a project-local `.rove/` by read-only
+dry-run or hash-idempotent apply; conflicts remain visible and Project Trust is
+never granted by migration. A state-index snapshot is published only after its
+old-root artifact paths are transactionally rebased, integrity-checked, synced,
+and covered by a prepared journal identity. This preserves exact resume after
+`--prune-legacy` without rewriting paths outside the legacy state root.
 
 Files:
 
@@ -448,6 +461,11 @@ workspace-bounded and store only environment variable *names*; values resolve by
 name at spawn time. Catalog reads and writes are lock-guarded, and a corrupt,
 locked, symlinked, or non-regular-file catalog fails closed as a typed conflict
 instead of degrading to an empty tool list.
+An absent catalog read remains side-effect free. The first Product Settings
+mutation validates before materialization, creates/verifies the contract
+workspace marker, promotes a legacy catalog once under the destination lock,
+and then writes only the contract catalog. A materialized contract always wins;
+both legacy and contract health-cache keys are invalidated across the switch.
 Catalog listing and editing remain available for safe inspection in a
 restricted workspace, but `probe` returns `project_trust_required` before
 environment resolution or process spawn. Job-start responses report the typed

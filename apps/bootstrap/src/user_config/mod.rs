@@ -15,3 +15,5 @@ pub use document::{
 pub use loader::UserConfigLoader;
 pub use paths::{USER_CONFIG_ROOT_ENV, UserConfigPaths};
 pub use writer::UserConfigWriter;
+
+pub(crate) use writer::{harden_directory_permissions, harden_file_permissions};

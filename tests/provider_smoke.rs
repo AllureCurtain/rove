@@ -90,6 +90,7 @@ async fn run_provider_smoke(
             api_bind_addr: None,
             trust_project: false,
             agent_selector: None,
+            data_root: None,
         },
     )
     .unwrap();

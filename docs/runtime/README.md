@@ -19,6 +19,15 @@ catalog CAS/atomic writes, API/Web catalog convergence, per-turn CLI assembly,
 secret-free run model snapshots, legacy migration, and TUI `/model`. Real
 external-provider interoperability for this slice has not been run.
 
+The current source also implements the user-state directory contract: run
+state, memory, and the default MCP catalog are isolated under
+`<data_root>/workspaces/<storage_key>/`, ProductStore is API-global at
+`<data_root>/product.sqlite`, and `rove state paths` / `rove state migrate`
+provide inspection plus conservative legacy `.rove/` import. Migrated
+`state.sqlite` snapshots transactionally rebase indexed artifact paths before
+atomic publication, so pruning the source does not break exact resume. See
+[`STATE_LAYOUT_AND_MIGRATION.md`](../../STATE_LAYOUT_AND_MIGRATION.md).
+
 The current source also integrates productization workstreams B-E and F.1-F.3:
 native-first tool-call recovery, ignore-aware deterministic repository
 retrieval, Artifact-backed result history, Provider onboarding, and one durable
@@ -70,6 +79,7 @@ Partially implemented evolution records are:
 - [`docs/design/2026-07-14-agent-execution-lifecycle-design.md`](../design/2026-07-14-agent-execution-lifecycle-design.md)
 - [`docs/design/2026-07-14-agent-definition-and-procedural-knowledge-design.md`](../design/2026-07-14-agent-definition-and-procedural-knowledge-design.md)
 - [`docs/design/2026-07-15-mcp-streamable-http-and-tool-artifacts-design.md`](../design/2026-07-15-mcp-streamable-http-and-tool-artifacts-design.md)
+- [`docs/design/2026-08-16-user-state-directory-migration-design.md`](../design/2026-08-16-user-state-directory-migration-design.md)
 
 The Web product line is tracked separately:
 

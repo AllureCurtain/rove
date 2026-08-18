@@ -138,6 +138,36 @@ pub enum StateCommand {
     Repair,
     /// Remove expired state rows and run artifacts.
     Cleanup,
+    /// Print resolved user state paths and workspace identity as JSON.
+    Paths,
+    /// Plan or apply migration of legacy project-local `.rove/` state into
+    /// the user data directory (dry-run by default).
+    Migrate {
+        /// Apply the migration. Without this flag nothing is written.
+        #[arg(long)]
+        apply: bool,
+        /// Move differing target files into the migration conflict
+        /// directory before copying the source. The default keeps targets.
+        #[arg(long, value_enum)]
+        on_conflict: Option<CliStateConflictPolicy>,
+        /// Delete legacy files after a fully successful apply (never
+        /// project configuration). Requires --apply.
+        #[arg(long, requires = "apply")]
+        prune_legacy: bool,
+        /// Override the migration size budget in bytes.
+        #[arg(long, value_name = "BYTES")]
+        max_bytes: Option<u64>,
+        /// Explicit user data root override (absolute). Defaults to
+        /// ROVE_DATA_ROOT or the platform convention.
+        #[arg(long, value_name = "PATH")]
+        data_root: Option<PathBuf>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub enum CliStateConflictPolicy {
+    KeepTarget,
+    BackupTarget,
 }
 
 #[derive(Clone, Debug, Subcommand)]

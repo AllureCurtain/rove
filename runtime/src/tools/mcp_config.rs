@@ -28,6 +28,12 @@ const READY_MARKER: &[u8] = b"rove-mcp-config-replacement-v1\n";
 static MCP_CONFIG_LOCK: Mutex<()> = Mutex::new(());
 
 pub fn list_product_mcp_servers_sync(path: &Path) -> std::io::Result<Vec<McpServerConfig>> {
+    // A read of an unmaterialized catalog must stay side-effect free. Once
+    // the parent exists we still take the lock so interrupted replacements
+    // can be recovered before reading.
+    if !config_parent_is_present(path)? {
+        return Ok(Vec::new());
+    }
     with_config_lock(path, read_config_unlocked)
 }
 
@@ -79,9 +85,7 @@ pub fn update_product_mcp_server_sync(
 }
 
 pub fn delete_product_mcp_server_sync(path: &Path, name: &str) -> std::io::Result<()> {
-    if !is_valid_server_name(name) {
-        return Err(invalid_input("invalid MCP server name"));
-    }
+    validate_product_mcp_server_name(name)?;
     with_config_lock(path, |path| {
         let mut servers = read_config_unlocked(path)?;
         let original_len = servers.len();
@@ -94,6 +98,30 @@ pub fn delete_product_mcp_server_sync(path: &Path, name: &str) -> std::io::Resul
         }
         write_config_unlocked(path, &servers)
     })
+}
+
+/// Seed a new authoritative Product Settings catalog from the currently
+/// effective legacy catalog. The target lock makes first-write promotion
+/// race-safe; an already-materialized target always wins and is validated.
+pub fn promote_product_mcp_catalog_sync(source: &Path, target: &Path) -> std::io::Result<()> {
+    if source == target {
+        return Ok(());
+    }
+    with_config_lock(target, |target| {
+        if target.exists() {
+            read_config_unlocked(target)?;
+            return Ok(());
+        }
+        let servers = read_config_unlocked(source)?;
+        write_config_unlocked(target, &servers)
+    })
+}
+
+pub fn validate_product_mcp_server_name(name: &str) -> std::io::Result<()> {
+    if !is_valid_server_name(name) {
+        return Err(invalid_input("invalid MCP server name"));
+    }
+    Ok(())
 }
 
 pub fn validate_product_mcp_server(server: &McpServerConfig) -> std::io::Result<()> {
@@ -167,6 +195,23 @@ fn with_config_lock<T>(
     let _file_guard = ConfigFileLock::acquire(&parent)?;
     recover_interrupted_replacement(path)?;
     operation(path)
+}
+
+fn config_parent_is_present(path: &Path) -> std::io::Result<bool> {
+    if path.file_name().and_then(|name| name.to_str()) != Some("mcp_servers.json") {
+        return Err(invalid_input("unexpected MCP config filename"));
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| invalid_input("MCP config has no parent directory"))?;
+    match fs::symlink_metadata(parent) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => Err(
+            permission_denied("MCP config parent must be a regular directory"),
+        ),
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
 }
 
 fn process_guard() -> std::io::Result<MutexGuard<'static, ()>> {
@@ -526,6 +571,15 @@ mod tests {
     }
 
     #[test]
+    fn missing_product_config_read_does_not_create_its_parent() {
+        let temp = TempDir::new().unwrap();
+        let path = config_path(&temp);
+
+        assert!(list_product_mcp_servers_sync(&path).unwrap().is_empty());
+        assert!(!path.parent().unwrap().exists());
+    }
+
+    #[test]
     fn product_config_rejects_raw_or_secret_shaped_values() {
         let mut server = stdio_server("unsafe");
         server
@@ -573,6 +627,30 @@ mod tests {
             "committed"
         );
         assert!(!backup.exists() && !ready.exists());
+    }
+
+    #[test]
+    fn product_config_promotes_legacy_once_without_overwriting_the_target() {
+        let temp = TempDir::new().unwrap();
+        let source = temp.path().join("legacy/mcp_servers.json");
+        let target = temp.path().join("contract/mcp_servers.json");
+        create_product_mcp_server_sync(&source, stdio_server("legacy")).unwrap();
+
+        promote_product_mcp_catalog_sync(&source, &target).unwrap();
+        assert_eq!(
+            list_product_mcp_servers_sync(&target).unwrap()[0].name,
+            "legacy"
+        );
+
+        create_product_mcp_server_sync(&target, stdio_server("contract")).unwrap();
+        create_product_mcp_server_sync(&source, stdio_server("late_legacy")).unwrap();
+        promote_product_mcp_catalog_sync(&source, &target).unwrap();
+        let names = list_product_mcp_servers_sync(&target)
+            .unwrap()
+            .into_iter()
+            .map(|server| server.name)
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["contract", "legacy"]);
     }
 
     #[test]

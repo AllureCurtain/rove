@@ -1,5 +1,15 @@
 # Copy to `.rove/config.toml` for local integration runs.
 # Keep real secrets in environment variables, not in this file.
+#
+# Path defaults (leave unset unless you need an explicit override):
+#   - Unset `state_dir`/`sqlite_path`/`memory.*`/`mcp_config_path` resolve
+#     through the user state contract: run data lives under the user data
+#     root (Windows %LOCALAPPDATA%\rove, macOS ~/Library/Application
+#     Support/rove, Linux $XDG_DATA_HOME/rove), isolated per workspace.
+#     See `rove state paths` for the resolved locations.
+#   - This `.rove/` directory only holds project-shared configuration
+#     (`config.toml`), gated by Project Trust. Migrate old project-local
+#     run data with `rove state migrate`.
 
 [runtime]
 max_steps = 20
@@ -32,7 +42,8 @@ model = "fake"
 # auth = { style = "bearer", secret = { env = "OPENAI_API_KEY" } }
 
 [tool]
-mcp_config_path = ".rove/mcp_servers.json"
+# Unset by default: the MCP catalog resolves to the user data directory.
+# mcp_config_path = ".rove/mcp_servers.json"
 
 [tool.shell]
 timeout_ms = 30000
@@ -40,17 +51,18 @@ max_output_bytes = 65536
 inherit_environment = true
 denylist = []
 
-[memory]
-session_dir = ".tmp/integration/state/memory/sessions"
-durable_dir = ".tmp/integration/state/memory"
-recall_limit = 8
+# Unset by default: memory resolves to <user data>/workspaces/<key>/memory.
+# [memory]
+# recall_limit = 8
 
+# Unset by default: state resolves to <user data>/workspaces/<key>.
+# The explicit values below are the historical integration-run overrides.
 [state]
-state_dir = ".tmp/integration/state"
-sqlite_path = ".tmp/integration/state/state.sqlite"
 lazy_migration = true
 sqlite_busy_timeout_ms = 5000
 allow_external_paths = false
+# state_dir = ".tmp/integration/state"
+# sqlite_path = ".tmp/integration/state/state.sqlite"
 
 [api]
 bind_addr = "127.0.0.1:8787"

@@ -11,6 +11,9 @@ use std::io::ErrorKind;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 
+use rove_app_bootstrap::verify_workspace_marker;
+#[cfg(test)]
+use rove_app_bootstrap::{WorkspaceStateLayout, state_dir_for_run_discovery};
 use rove_runtime::state::index::{ExternalJobRunCommitGuard, JobRunInspectionSnapshot, StateIndex};
 use rove_runtime::state::store::{StateStore, validate_task_state_schema};
 use rove_runtime::types::{JobId, RunId, TaskState};
@@ -50,18 +53,41 @@ impl Deref for GuardedM1BrowserMigration {
     }
 }
 
+#[cfg(test)]
 pub(crate) async fn prepare_m1_browser_migration<F>(
     request: M1BrowserMigrationRequest,
     preferences_baseline: M1PreferencesBaseline,
     allow_external_paths: bool,
-    mut state_store_for: F,
+    state_store_for: F,
 ) -> Result<GuardedM1BrowserMigration, ProductStoreError>
 where
     F: FnMut(&Workspace) -> StateStore,
 {
+    prepare_m1_browser_migration_with_state_resolver(
+        request,
+        preferences_baseline,
+        allow_external_paths,
+        state_dir_for_run_discovery,
+        state_store_for,
+    )
+    .await
+}
+
+pub(crate) async fn prepare_m1_browser_migration_with_state_resolver<F, G>(
+    request: M1BrowserMigrationRequest,
+    preferences_baseline: M1PreferencesBaseline,
+    allow_external_paths: bool,
+    state_dir_for: G,
+    mut state_store_for: F,
+) -> Result<GuardedM1BrowserMigration, ProductStoreError>
+where
+    F: FnMut(&Workspace) -> StateStore,
+    G: Fn(&Path) -> PathBuf + Clone,
+{
     let mut runtime_workspaces = HashMap::new();
     for workspace in &request.workspaces {
-        if let Some(runtime) = runtime_workspace_for_import(workspace).await {
+        if let Some(runtime) = runtime_workspace_for_import(workspace, state_dir_for.clone()).await
+        {
             runtime_workspaces.insert(workspace.source_id.trim().to_string(), runtime);
         }
     }
@@ -147,13 +173,15 @@ where
     }
 
     reject_contested_runtime_identities(&mut candidates, &mut issues);
-    let (verified_run_bindings, runtime_guards) = guard_and_verify_runtime_bindings(
-        candidates,
-        &mut issues,
-        allow_external_paths,
-        &mut state_store_for,
-    )
-    .await?;
+    let (verified_run_bindings, runtime_guards) =
+        guard_and_verify_runtime_bindings_with_state_resolver(
+            candidates,
+            &mut issues,
+            allow_external_paths,
+            state_dir_for,
+            &mut state_store_for,
+        )
+        .await?;
     Ok(GuardedM1BrowserMigration {
         migration: PreparedM1BrowserMigration {
             request,
@@ -271,7 +299,13 @@ fn contested_hint_candidate_indices(candidates: &[RuntimeHintCandidate]) -> BTre
     contested
 }
 
-async fn runtime_workspace_for_import(import: &M1WorkspaceImport) -> Option<Workspace> {
+async fn runtime_workspace_for_import<G>(
+    import: &M1WorkspaceImport,
+    state_dir_for: G,
+) -> Option<Workspace>
+where
+    G: Fn(&Path) -> PathBuf + Clone,
+{
     if !migration_import_root_is_local(&import.root) {
         return None;
     }
@@ -291,12 +325,13 @@ async fn runtime_workspace_for_import(import: &M1WorkspaceImport) -> Option<Work
         }
     };
     Some(Workspace {
-        state_dir: root.join(".rove"),
+        state_dir: state_dir_for(&root),
         root,
         kind,
     })
 }
 
+#[cfg(test)]
 async fn guard_and_verify_runtime_bindings<F>(
     candidates: Vec<VerifiedM1SessionRunBinding>,
     issues: &mut Vec<M1MigrationIssue>,
@@ -312,6 +347,33 @@ async fn guard_and_verify_runtime_bindings<F>(
 where
     F: FnMut(&Workspace) -> StateStore,
 {
+    guard_and_verify_runtime_bindings_with_state_resolver(
+        candidates,
+        issues,
+        allow_external_paths,
+        state_dir_for_run_discovery,
+        state_store_for,
+    )
+    .await
+}
+
+async fn guard_and_verify_runtime_bindings_with_state_resolver<F, G>(
+    candidates: Vec<VerifiedM1SessionRunBinding>,
+    issues: &mut Vec<M1MigrationIssue>,
+    allow_external_paths: bool,
+    state_dir_for: G,
+    state_store_for: &mut F,
+) -> Result<
+    (
+        Vec<VerifiedM1SessionRunBinding>,
+        Vec<ExternalJobRunCommitGuard>,
+    ),
+    ProductStoreError,
+>
+where
+    F: FnMut(&Workspace) -> StateStore,
+    G: Fn(&Path) -> PathBuf + Clone,
+{
     if candidates.is_empty() {
         return Ok((Vec::new(), Vec::new()));
     }
@@ -319,7 +381,7 @@ where
     let mut groups: BTreeMap<PathBuf, (StateIndex, Vec<usize>)> = BTreeMap::new();
     let mut guarded_indices = vec![None; candidates.len()];
     for (index, binding) in candidates.iter().enumerate() {
-        let workspace = workspace_for_verified_binding(binding);
+        let workspace = workspace_for_verified_binding(binding, state_dir_for.clone());
         let state_store = state_store_for(&workspace);
         let (index_path, guarded_index) =
             canonical_runtime_index(&workspace, &state_store.index, allow_external_paths).await?;
@@ -368,7 +430,7 @@ where
             continue;
         }
 
-        let workspace = workspace_for_verified_binding(&candidate);
+        let workspace = workspace_for_verified_binding(&candidate, state_dir_for.clone());
         let state_store = state_store_for(&workspace);
         let guarded_index = guarded_indices[index]
             .as_ref()
@@ -462,9 +524,23 @@ async fn canonical_runtime_index(
     let canonical_index_path = tokio::fs::canonicalize(index.path())
         .await
         .map_err(|_| runtime_storage_error())?;
+    let canonical_state_root =
+        canonicalize_nearest_existing(&workspace.state_dir).map_err(|_| runtime_storage_error())?;
+    let marker_path = workspace.state_dir.join("workspace.json");
+    let marker_present = tokio::fs::symlink_metadata(&marker_path)
+        .await
+        .map(|metadata| metadata.is_file() || metadata.file_type().is_symlink())
+        .unwrap_or(false);
+    let contract_bound = canonical_index_path.starts_with(&canonical_state_root) && marker_present;
+    if contract_bound {
+        verify_workspace_marker(&workspace.state_dir, &workspace.root)
+            .map_err(|_| runtime_storage_error())?;
+    }
     if !runtime_path_uses_local_disk_namespace(&canonical_workspace_root)
         || !runtime_path_uses_local_disk_namespace(&canonical_index_path)
-        || (!allow_external_paths && !canonical_index_path.starts_with(&canonical_workspace_root))
+        || (!allow_external_paths
+            && !canonical_index_path.starts_with(&canonical_workspace_root)
+            && !contract_bound)
     {
         return Err(runtime_storage_error());
     }
@@ -479,14 +555,31 @@ async fn canonical_runtime_index(
     Ok((canonical_index_path, guarded_index))
 }
 
-fn workspace_for_verified_binding(binding: &VerifiedM1SessionRunBinding) -> Workspace {
+fn canonicalize_nearest_existing(path: &Path) -> std::io::Result<PathBuf> {
+    let mut current = path.to_path_buf();
+    while !current.exists() {
+        current = current
+            .parent()
+            .ok_or_else(|| std::io::Error::new(ErrorKind::NotFound, "no existing ancestor"))?
+            .to_path_buf();
+    }
+    current.canonicalize()
+}
+
+fn workspace_for_verified_binding<G>(
+    binding: &VerifiedM1SessionRunBinding,
+    state_dir_for: G,
+) -> Workspace
+where
+    G: Fn(&Path) -> PathBuf + Clone,
+{
     let kind = match binding.verified_workspace_kind {
         ProductWorkspaceKind::Folder => WorkspaceKind::Folder,
         ProductWorkspaceKind::Repo => WorkspaceKind::Repo,
     };
     Workspace {
         root: binding.verified_workspace_root.clone(),
-        state_dir: binding.verified_workspace_root.join(".rove"),
+        state_dir: state_dir_for(&binding.verified_workspace_root),
         kind,
     }
 }
@@ -611,11 +704,20 @@ async fn verify_singleton_artifacts(
     let canonical_run_dir = canonical_runtime_artifact_path(&expected_run_dir).await?;
     let canonical_task_state_path =
         canonical_runtime_artifact_path(&expected_task_state_path).await?;
+    let contract_state_root = if allow_external_paths {
+        None
+    } else {
+        canonical_contract_state_root(workspace).await
+    };
     if !runtime_path_uses_local_disk_namespace(&canonical_state_dir)
         || !runtime_path_uses_local_disk_namespace(&canonical_runs_dir)
         || !runtime_path_uses_local_disk_namespace(&canonical_run_dir)
         || !runtime_path_uses_local_disk_namespace(&canonical_task_state_path)
-        || (!allow_external_paths && !canonical_state_dir.starts_with(&workspace.root))
+        || (!allow_external_paths
+            && !canonical_state_dir.starts_with(&workspace.root)
+            && !contract_state_root
+                .as_ref()
+                .is_some_and(|root| canonical_state_dir.starts_with(root)))
         || canonical_runs_dir.parent() != Some(canonical_state_dir.as_path())
         || canonical_run_dir.parent() != Some(canonical_runs_dir.as_path())
         || canonical_task_state_path.parent() != Some(canonical_run_dir.as_path())
@@ -631,6 +733,25 @@ async fn verify_singleton_artifacts(
         return Err(M1MigrationIssueCode::InvalidRuntimeHint.into());
     }
     Ok(())
+}
+
+/// Return the canonical user-state workspace root only after validating its
+/// marker. This is the one external state boundary accepted by product M1
+/// inspection; arbitrary paths remain rejected by `verify_singleton_artifacts`.
+async fn canonical_contract_state_root(workspace: &Workspace) -> Option<PathBuf> {
+    let metadata = tokio::fs::symlink_metadata(&workspace.state_dir)
+        .await
+        .ok()?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return None;
+    }
+    let marker = workspace.state_dir.join("workspace.json");
+    let marker_metadata = tokio::fs::symlink_metadata(&marker).await.ok()?;
+    if marker_metadata.file_type().is_symlink() || !marker_metadata.is_file() {
+        return None;
+    }
+    verify_workspace_marker(&workspace.state_dir, &workspace.root).ok()?;
+    tokio::fs::canonicalize(&workspace.state_dir).await.ok()
 }
 
 fn is_terminal_runtime_status(status: &str) -> bool {
@@ -881,6 +1002,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn marker_bound_contract_state_runtime_binding_is_verified() {
+        let fixture = RuntimeFixture::new_contract().await;
+        let request = fixture.request(vec![fixture.session_import("contract-session")]);
+        let state_dir = fixture.state_dir.clone();
+
+        let prepared = prepare_m1_browser_migration_with_state_resolver(
+            request,
+            M1PreferencesBaseline::Revision(0),
+            false,
+            move |_| state_dir.clone(),
+            |workspace| StateStore::new(&workspace.state_dir),
+        )
+        .await
+        .unwrap();
+
+        assert!(prepared.issues.is_empty());
+        assert_eq!(prepared.verified_run_bindings.len(), 1);
+        assert_eq!(
+            prepared.verified_run_bindings[0].runtime_run_id,
+            fixture.run_id
+        );
+    }
+
+    #[tokio::test]
     async fn contested_runtime_identity_rejects_every_candidate() {
         let fixture = RuntimeFixture::new().await;
         let request = fixture.request(vec![
@@ -1070,6 +1215,32 @@ mod tests {
         assert_eq!(external_index.busy_timeout_ms(), 37);
     }
 
+    #[tokio::test]
+    async fn canonical_runtime_index_rejects_an_invalid_contract_marker() {
+        let workspace_temp = TempDir::new().unwrap();
+        let data_temp = TempDir::new().unwrap();
+        let workspace_root = workspace_temp.path().canonicalize().unwrap();
+        let layout = WorkspaceStateLayout::resolve(data_temp.path(), &workspace_root);
+        layout.ensure().unwrap();
+        let index =
+            StateIndex::with_path(&layout.workspace_dir, layout.state_sqlite.clone(), 5_000);
+        index.initialize().unwrap();
+        let mut marker: rove_app_bootstrap::user_state::WorkspaceMarker =
+            serde_json::from_slice(&std::fs::read(layout.marker_path()).unwrap()).unwrap();
+        marker.storage_key.push('0');
+        std::fs::write(layout.marker_path(), serde_json::to_vec(&marker).unwrap()).unwrap();
+
+        let workspace = Workspace {
+            root: workspace_root,
+            state_dir: layout.workspace_dir.clone(),
+            kind: WorkspaceKind::Folder,
+        };
+        let error = canonical_runtime_index(&workspace, &index, false)
+            .await
+            .expect_err("a contract marker mismatch must block runtime inspection");
+        assert_eq!(error.code, ProductErrorCode::ProductStorageFailure);
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn canonical_run_directory_cannot_escape_its_runs_parent() {
@@ -1188,7 +1359,9 @@ mod tests {
 
     struct RuntimeFixture {
         _temp: TempDir,
+        _data_temp: Option<TempDir>,
         workspace_root: PathBuf,
+        state_dir: PathBuf,
         session_id: SessionId,
         job_id: JobId,
         run_id: RunId,
@@ -1198,6 +1371,28 @@ mod tests {
         async fn new() -> Self {
             let temp = TempDir::new().unwrap();
             let workspace = Workspace::open_folder(temp.path()).unwrap();
+            Self::initialize(temp, None, workspace).await
+        }
+
+        async fn new_contract() -> Self {
+            let temp = TempDir::new().unwrap();
+            let data_temp = TempDir::new().unwrap();
+            let root = temp.path().canonicalize().unwrap();
+            let layout = WorkspaceStateLayout::resolve(data_temp.path(), &root);
+            layout.ensure().unwrap();
+            let workspace = Workspace {
+                root,
+                state_dir: layout.workspace_dir,
+                kind: WorkspaceKind::Folder,
+            };
+            Self::initialize(temp, Some(data_temp), workspace).await
+        }
+
+        async fn initialize(
+            temp: TempDir,
+            data_temp: Option<TempDir>,
+            workspace: Workspace,
+        ) -> Self {
             let state_store = StateStore::new(&workspace.state_dir);
             let session_id = SessionId::new();
             let job_id = JobId::new();
@@ -1253,7 +1448,9 @@ mod tests {
             drop(handle);
             Self {
                 workspace_root: workspace.root,
+                state_dir: workspace.state_dir,
                 _temp: temp,
+                _data_temp: data_temp,
                 session_id,
                 job_id,
                 run_id,
@@ -1275,7 +1472,7 @@ mod tests {
         }
 
         fn state_store(&self) -> StateStore {
-            StateStore::new(&self.workspace_root.join(".rove"))
+            StateStore::new(&self.state_dir)
         }
 
         async fn rewrite_task_state(&self, update: impl FnOnce(&mut TaskState)) {

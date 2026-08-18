@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use rove_core::{Tool, ToolRegistry};
@@ -9,7 +9,10 @@ use rove_runtime::tools::coding::{
 };
 use rove_runtime::tools::fs::{FsReadTool, FsWriteTool};
 use rove_runtime::tools::history::ResolveToolArtifactTool;
-use rove_runtime::tools::mcp_proxy::register_mcp_tools_from_file_with_environment;
+use rove_runtime::tools::mcp_proxy::{
+    McpServerConfig, register_mcp_tools_from_file_with_environment,
+    register_mcp_tools_with_environment,
+};
 use rove_runtime::tools::memory::{ReadMemoryTopicTool, SaveMemoryTool, UpdateMemoryIndexTool};
 use rove_runtime::tools::repository::RepositoryMapTool;
 use rove_runtime::tools::request_input::RequestInputTool;
@@ -20,6 +23,11 @@ use rove_runtime::tools::shell::{
 use rove_runtime::workspace::Workspace;
 
 use crate::config::AppConfig;
+use crate::user_state::McpCatalogAuthority;
+
+/// Upper bound for a bootstrap-read MCP catalog, matching the runtime's
+/// `MAX_MCP_CONFIG_BYTES`.
+const MAX_BOOTSTRAP_MCP_CATALOG_BYTES: u64 = 256 * 1024;
 
 /// Build the default first-party tool registry exposed to models.
 ///
@@ -82,10 +90,89 @@ pub async fn tool_registry_with_mcp_and_environment(
     mcp_config_path: impl Into<PathBuf>,
     environment: Arc<dyn ExecutionEnvironment>,
 ) -> anyhow::Result<ToolRegistry> {
+    let mcp_config_path = mcp_config_path.into();
+    let mcp_config_path = if mcp_config_path.is_absolute() {
+        mcp_config_path
+    } else {
+        workspace.root.join(mcp_config_path)
+    };
+    let authority = McpCatalogAuthority::Workspace {
+        path: mcp_config_path,
+    };
+    tool_registry_with_mcp_authority_and_environment(
+        workspace,
+        shell_policy,
+        authority,
+        environment,
+    )
+    .await
+}
+
+/// Build a registry from a path whose authority was resolved by AppConfig.
+/// This is the only path that may read the user-state MCP catalog.
+pub async fn tool_registry_with_mcp_authority_and_environment(
+    workspace: &Workspace,
+    shell_policy: ShellPolicy,
+    authority: McpCatalogAuthority,
+    environment: Arc<dyn ExecutionEnvironment>,
+) -> anyhow::Result<ToolRegistry> {
+    authority
+        .validate(&workspace.root)
+        .map_err(|error| anyhow::anyhow!("invalid MCP catalog authority: {error}"))?;
     let mut registry = tool_registry_with_shell_policy(workspace, shell_policy);
-    register_mcp_tools_from_file_with_environment(&mut registry, mcp_config_path, environment)
+    if authority.is_user_state() {
+        register_contract_mcp_catalog(&mut registry, authority.path(), environment).await?;
+    } else {
+        register_mcp_tools_from_file_with_environment(
+            &mut registry,
+            authority.path().to_path_buf(),
+            environment,
+        )
         .await?;
+    }
     Ok(registry)
+}
+
+#[derive(serde::Deserialize)]
+struct McpCatalogFile {
+    #[serde(default)]
+    servers: Vec<McpServerConfig>,
+}
+
+async fn register_contract_mcp_catalog(
+    registry: &mut ToolRegistry,
+    path: &Path,
+    environment: Arc<dyn ExecutionEnvironment>,
+) -> anyhow::Result<()> {
+    if !environment.capabilities().filesystem_read {
+        anyhow::bail!("execution capability unavailable: filesystem_read");
+    }
+    let metadata = match std::fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            anyhow::bail!("could not inspect MCP catalog {}: {error}", path.display())
+        }
+    };
+    if !metadata.is_file() {
+        anyhow::bail!("MCP catalog is not a regular file: {}", path.display());
+    }
+    if metadata.len() > MAX_BOOTSTRAP_MCP_CATALOG_BYTES {
+        anyhow::bail!("MCP config exceeds the supported size");
+    }
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)
+        .and_then(|mut file| std::io::Read::read_to_end(&mut file, &mut bytes))
+        .map_err(|error| {
+            anyhow::anyhow!("could not read MCP catalog {}: {error}", path.display())
+        })?;
+    if bytes.len() as u64 > MAX_BOOTSTRAP_MCP_CATALOG_BYTES {
+        anyhow::bail!("MCP config exceeds the supported size");
+    }
+    let catalog: McpCatalogFile = serde_json::from_slice(&bytes)
+        .map_err(|error| anyhow::anyhow!("MCP catalog {} is invalid: {error}", path.display()))?;
+    register_mcp_tools_with_environment(registry, catalog.servers, environment).await?;
+    Ok(())
 }
 
 /// Build the registry allowed by the selected workspace's activation state.
@@ -110,10 +197,13 @@ pub async fn tool_registry_for_config_with_environment(
             config.shell_policy(),
         ));
     }
-    tool_registry_with_mcp_and_environment(
+    let authority = config
+        .mcp_catalog_authority()
+        .map_err(|error| anyhow::anyhow!("MCP catalog is not authorized: {error}"))?;
+    tool_registry_with_mcp_authority_and_environment(
         workspace,
         config.shell_policy(),
-        config.workspace_bounded_mcp_config_path()?,
+        authority,
         environment,
     )
     .await

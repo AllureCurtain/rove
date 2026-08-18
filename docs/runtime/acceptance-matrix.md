@@ -18,6 +18,13 @@ this file is the current proof map.
 | M5 | HTTP API can create jobs, stream/replay SSE events, cancel jobs, resolve approval/input requests, persist historical state, and enforce token/CORS/rate-limit controls. | Met | `cargo test -p rove-integration-tests --test api`; focused: `cargo test -p rove-integration-tests --test api api_creates_job_streams_events_and_reports_state -- --exact`; `cargo test -p rove-integration-tests --test api api_accepts_matching_bearer_token -- --exact` | Closed by phases 3, 5 |
 | M6 | Standalone Web surface consumes the API/SSE stream, supports approval/input/cancel/resume flows, token proxying, and browser E2E coverage. | Met by the default product shell and Web Complete C0-C3 on `main`. | `cd apps/web; pnpm test`; `cd apps/web; pnpm typecheck`; `cd apps/web; pnpm build`; browser checks: `cd apps/web; pnpm test:e2e`; deterministic live API: `powershell -ExecutionPolicy Bypass -File scripts/integration-smoke.ps1` | Web Complete is integrated and verified; external-provider evidence remains a separate opt-in gate |
 
+## User-State Directory Contract
+
+| Contract | Current status | Verification evidence |
+|---|---|---|
+| User-state layout | Implemented: run state, memory, and the default MCP catalog resolve through the per-workspace user data contract; ProductStore resolves once at `<data_root>/product.sqlite`. Root resolution is fail-closed, workspace identities are isolated/marked, explicit config remains compatible, and relocated catalog content preserves the trust digest. Missing MCP reads are side-effect free; first Settings mutation promotes legacy content once into a marker-bound contract catalog that thereafter remains authoritative. | `cargo test -p rove-app-bootstrap --lib`; `cargo test -p rove-app-bootstrap --test state_migration`; `cargo test -p rove-runtime --lib tools::mcp_config::tests`; `cargo test -p rove-integration-tests --test api product_mcp`; `cargo test -p rove-cli --lib runtime` |
+| Legacy `.rove/` migration | Implemented: dry-run is read-only; apply is hash-idempotent, copy-safe, conflict-visible (keep-target/backup-target), lock-serialized, and receipted. Prune revalidates targets, preserves project config and unknown source files, and migrated SQLite targets remain usable. | `cargo test -p rove-app-bootstrap --test state_migration`; `powershell -ExecutionPolicy Bypass -File scripts/state-migration-smoke.ps1` |
+
 ## Productization B/C/D
 
 | Contract | Current status | Verification evidence |

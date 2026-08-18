@@ -697,10 +697,12 @@ pub(crate) async fn migrate_m1_browser_state(
                 }
                 M1BrowserMigrationPreflight::Prepare(baseline) => baseline,
             };
-            let migration = super::migration::prepare_m1_browser_migration(
+            let config_for_state = preparation_state.inner.config.clone();
+            let migration = super::migration::prepare_m1_browser_migration_with_state_resolver(
                 request,
                 preferences_baseline,
                 allow_external_paths,
+                move |root| config_for_state.state_dir_for_workspace_discovery(root),
                 |workspace| preparation_state.product_state_store_for_workspace(workspace),
             )
             .await?;

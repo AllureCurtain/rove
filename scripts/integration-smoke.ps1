@@ -287,6 +287,7 @@ Test-CommandAvailable "pnpm"
 $IntegrationRoot = Resolve-RepoPath $IntegrationRoot
 $WorkspaceDir = Resolve-RepoPath $(if ($env:ROVE_INTEGRATION_WORKSPACE) { $env:ROVE_INTEGRATION_WORKSPACE } else { Join-Path $IntegrationRoot "workspace" })
 $UserConfigRoot = Join-Path $WorkspaceDir ".rove-integration-user-config"
+$DataRoot = Join-Path $IntegrationRoot "data-root"
 $StateDir = Resolve-RepoPath $(if ($env:ROVE_STATE_DIR) { $env:ROVE_STATE_DIR } else { Join-Path $WorkspaceDir ".rove-integration-state" })
 $ArtifactsDir = Resolve-RepoPath $(if ($env:ROVE_INTEGRATION_ARTIFACTS) { $env:ROVE_INTEGRATION_ARTIFACTS } else { Join-Path $IntegrationRoot "artifacts" })
 $ApiArtifacts = Join-Path $ArtifactsDir "api"
@@ -302,13 +303,13 @@ $webProcess = $null
 
 try {
     if (-not $KeepState) {
-        foreach ($path in @($WorkspaceDir)) {
+        foreach ($path in @($WorkspaceDir, $DataRoot)) {
             if (Test-Path -LiteralPath $path) {
                 Remove-Item -LiteralPath $path -Recurse -Force
             }
         }
     }
-    New-Item -ItemType Directory -Force -Path $WorkspaceDir, $StateDir, $ArtifactsDir, $ApiArtifacts | Out-Null
+    New-Item -ItemType Directory -Force -Path $WorkspaceDir, $DataRoot, $StateDir, $ArtifactsDir, $ApiArtifacts | Out-Null
 
     $env:ROVE_PROVIDER = "fake"
     $env:ROVE_MODEL = "fake"
@@ -316,6 +317,9 @@ try {
     $env:ROVE_STATE_SQLITE = ".rove-integration-state/state.sqlite"
     $env:ROVE_MEMORY_SESSION_DIR = ".rove-integration-state/memory/sessions"
     $env:ROVE_MEMORY_DURABLE_DIR = ".rove-integration-state/memory"
+    # ProductStore and any default contract paths must remain inside the
+    # disposable integration root, never the operator's real user profile.
+    $env:ROVE_DATA_ROOT = $DataRoot
     $env:ROVE_CONFIG_ROOT = $UserConfigRoot
     $env:ROVE_API_BIND_ADDR = $ApiAddr
     $env:ROVE_API_BASE = $ApiBase

@@ -1,6 +1,6 @@
 # Runtime Architecture
 
-`rove` is a local-first runtime with remote-ready seams. The default mode is local: CLI runs in the current workspace, API binds to `127.0.0.1:8787`, and state is written under `.rove/`.
+`rove` is a local-first runtime with remote-ready seams. The default mode is local: CLI runs in the current workspace, API binds to `127.0.0.1:8787`, and run state is written under the per-workspace user data directory (`<data_root>/workspaces/<storage_key>/`, see [`STATE_LAYOUT_AND_MIGRATION.md`](../../STATE_LAYOUT_AND_MIGRATION.md)); project directories keep only trust-gated project configuration.
 
 The repository manifest is a modular Cargo Workspace containing
 a virtual Cargo Workspace of `rove-models`, `rove-core`, `rove-runtime`,
@@ -40,11 +40,11 @@ External embedding
         -> in-memory AgentEvent
 
 StateStore
-    -> .rove/runs/<run_id>/*
-    -> .rove/state.sqlite
+    -> <user data>/workspaces/<key>/runs/<run_id>/*
+    -> <user data>/workspaces/<key>/state.sqlite
 
 API product control plane
-    -> <api state_dir>/product.sqlite
+    -> <data_root>/product.sqlite (API-global)
     -> product workspace/session/profile/preferences/control catalog
     -> exact product-session -> runtime session/job/run bindings
     -> bounded live steer delivery + durable follow-up drain
@@ -82,7 +82,9 @@ cannot supply trustworthy interaction events fail closed.
 
 ## Core Flow
 
-1. `Workspace::detect` chooses the workspace root and `.rove` state directory.
+1. `Workspace::detect` chooses the workspace root; the effective state
+   directory comes from the shared user state contract (explicit config
+   overrides still win; `.rove` remains the legacy/embedding fallback).
 2. `AppConfig::load` resolves operator-owned project activation before reading
    workspace files. Restricted workspaces defer `.env` and `.rove/config.toml`;
    trusted workspaces merge defaults, project config, environment variables,
@@ -107,7 +109,7 @@ cannot supply trustworthy interaction events fail closed.
    prompt checkpoint, and includes the lifecycle projections in the report.
 7. The API adds a live job registry for active handles and reads SQLite for persisted job state and SSE replay after restart.
 8. The API also opens one application-global ProductStore at
-   `<configured state_dir>/product.sqlite`. Product routes own catalog,
+   `<data_root>/product.sqlite` (the configured user data root). Product routes own catalog,
    preferences, migration receipts, active-turn claims, exact runtime
    bindings, and idempotent product-session messages/compatibility controls
    there. One durable Send Message identity is persisted before delivery; an
@@ -207,18 +209,25 @@ are committed.
 ## State Artifacts
 
 ```text
-<configured API state_dir>/
+<user data root>/
   product.sqlite                 # API-global product-control state
 
-<execution workspace>/.rove/
-  state.sqlite                   # canonical runtime query/replay index
-  runs/<run_id>/trace.jsonl
-  runs/<run_id>/task_state.json  # plan cursor + lifecycle projections
-  runs/<run_id>/report.json      # aggregate + records/decisions/revisions
-  memory/MEMORY.md
-  memory/topics/*.md
-  memory/sessions/<session_id>.md
+  workspaces/<storage_key>/                    # default workspace state layout
+    workspace.json                              # identity marker
+    state.sqlite                               # canonical runtime query/replay index
+    runs/<run_id>/trace.jsonl
+    runs/<run_id>/task_state.json              # plan cursor + lifecycle projections
+    runs/<run_id>/report.json                  # aggregate + records/decisions/revisions
+    memory/MEMORY.md
+    memory/topics/*.md
+    memory/sessions/<session_id>.md
 ```
+
+Legacy `.rove/state.sqlite` import snapshots the database with `VACUUM INTO`,
+transactionally rebases only artifact paths below the old state root, validates
+the temporary database, and records a durable prepared digest before atomic
+publication. Resume therefore follows the new artifact root after an explicit
+legacy prune; paths outside the old state root are never rewritten.
 
 
 ## Restart Semantics
