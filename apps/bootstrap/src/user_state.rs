@@ -735,7 +735,7 @@ mod tests {
         if cfg!(windows) {
             PathBuf::from(format!(r"C:\{}", path.replace('/', r"\")))
         } else {
-            PathBuf::from(path)
+            PathBuf::from(format!("/{}", path.trim_start_matches('/')))
         }
     }
 
