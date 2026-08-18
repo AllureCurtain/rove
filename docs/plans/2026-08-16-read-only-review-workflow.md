@@ -1,6 +1,6 @@
 # 硬只读 Review 工作流计划
 
-> Status: **Proposed / Not Implemented**
+> Status: **Implemented in `feature/read-only-review`; pending merge and optional external gates**
 >
 > Date: 2026-08-16
 >
@@ -13,6 +13,13 @@
 Rove 是一个用 Rust 实现的本地 Agent 产品，CLI、TUI、HTTP/SSE API、Web、Desktop 和 benchmark 共用 Runtime、Engine、ToolRegistry、canonical events、Project Trust、Execution Environment、diff、Artifact 和证据边界。当前代码已有 Planner、Evaluator、Finalizer、Coding Tool V2、工具属性和审批基础，但还没有一个独立、可验证、真正禁止副作用的 Review 产品合同。
 
 在一个为本任务单独创建的 worktree 中完成这项工作。开始前确认 worktree、分支、基线提交、工作目录和 `git status --short --branch`。基线必须来自已经审查并合入 main 的提交；不能读取、搬运、覆盖、清理或提交其他 worktree 的未提交内容。先以当前代码、测试、生成 OpenAPI 和 `docs/runtime/` 为事实来源，核对现有 diff、Artifact、Run Inspector、ToolRegistry、Execution Environment、Project Trust、审批和 Finalizer 行为。开始修改前在仓库根创建或追加 `IMPLEMENTATION_LOG.md`，记录基线、计划、失败和真实验证命令。
+
+> Current implementation note (2026-08-18): the Runtime, ProductStore v14,
+> API, CLI, Web, tests, and current-state documentation described below are
+> implemented in this worktree. Interrupted API Reviews are conservatively
+> classified as `needs_attention` rather than resumed automatically; the
+> deterministic evidence and unrun external gates are recorded in
+> `VERIFICATION.md`.
 
 ## 目标与边界
 

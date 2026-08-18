@@ -2,15 +2,18 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use rove_core::{CallId, Tool, ToolContext, ToolError, ToolOutput, ToolRegistry};
+use rove_runtime::environment::{ExecutionEnvironment, LocalExecutionEnvironment};
 use rove_runtime::executor::Executor;
 use rove_runtime::hooks::{
     HookRegistry, PostRunHookContext, PostToolHook, PostToolHookContext, PreToolHook, RunSummary,
     SessionMemoryHook,
 };
 use rove_runtime::memory::paths::MemoryPaths;
-use rove_runtime::tools::runtime_context::runtime_tool_context;
+use rove_runtime::tools::runtime_context::{
+    runtime_tool_context, runtime_tool_context_with_mode_and_artifacts,
+};
 use rove_runtime::types::{
-    ApprovalPolicy, JobId, RunId, SessionId, TerminationReason, ToolDescriptor,
+    ApprovalPolicy, JobId, RunId, RunMode, SessionId, TerminationReason, ToolDescriptor,
     ToolExecutionStatus, ToolMutation, ToolMutationOperation, ToolRiskLevel,
 };
 use rove_runtime::workspace::Workspace;
@@ -116,6 +119,43 @@ async fn executor_pipeline_records_metadata_and_runs_hooks() {
     assert_eq!(result.metadata.affected_paths, vec!["notes/today.md"]);
     assert_eq!(*pre.lock().unwrap(), vec!["write_note".to_string()]);
     assert_eq!(*post.lock().unwrap(), vec!["wrote note".to_string()]);
+}
+
+#[tokio::test]
+async fn review_mode_rejects_mutation_before_hooks_or_approval_can_expand_authority() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(MutatingTool));
+    let pre = Arc::new(Mutex::new(Vec::new()));
+    let hooks = HookRegistry::default().with_pre_tool(Box::new(RecordingPreHook {
+        seen: Arc::clone(&pre),
+    }));
+    let environment: Arc<dyn ExecutionEnvironment> =
+        Arc::new(LocalExecutionEnvironment::read_only(&workspace));
+    let ctx = runtime_tool_context_with_mode_and_artifacts(
+        CallId::new(),
+        &workspace,
+        MemoryPaths::from_workspace(&workspace, 8),
+        ApprovalPolicy::Auto,
+        None,
+        CancellationToken::new(),
+        environment,
+        None,
+        RunMode::Review,
+    );
+
+    let error = Executor::with_hooks(&registry, hooks)
+        .run(&ctx, "write_note", serde_json::json!({}), CallId::new())
+        .await
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        ToolError::PermissionDenied { reason }
+            if reason == "review mode forbids non-read-only tool"
+    ));
+    assert!(pre.lock().unwrap().is_empty());
 }
 
 #[tokio::test]

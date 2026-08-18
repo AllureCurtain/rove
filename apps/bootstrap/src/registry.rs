@@ -16,6 +16,10 @@ use rove_runtime::tools::mcp_proxy::{
 use rove_runtime::tools::memory::{ReadMemoryTopicTool, SaveMemoryTool, UpdateMemoryIndexTool};
 use rove_runtime::tools::repository::RepositoryMapTool;
 use rove_runtime::tools::request_input::RequestInputTool;
+use rove_runtime::tools::review::{
+    ReviewGlobPathsTool, ReviewListDirectoryTool, ReviewReadFileTool, ReviewRepositoryMapTool,
+    ReviewSearchCodeTool, ReviewSubmissionStore, ReviewSubmitFindingsTool, ReviewTargetDiffTool,
+};
 use rove_runtime::tools::search::SearchCodeTool;
 use rove_runtime::tools::shell::{
     ShellOutputTool, ShellPolicy, ShellPtyTool, ShellTerminateTool, ShellTool,
@@ -214,6 +218,30 @@ pub fn register_extra_tools(registry: &mut ToolRegistry, tools: Vec<Box<dyn Tool
     for tool in tools {
         registry.register(tool);
     }
+}
+
+/// Assemble the exact immutable tool catalog admitted by a Review run.
+pub fn review_tool_registry(
+    snapshot: Arc<rove_runtime::review::ReviewTargetSnapshot>,
+    review_id: impl Into<String>,
+) -> (ToolRegistry, ReviewSubmissionStore) {
+    let store = ReviewSubmissionStore::new(review_id, Arc::clone(&snapshot));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(ReviewReadFileTool::new(Arc::clone(&snapshot))));
+    registry.register(Box::new(ReviewListDirectoryTool::new(Arc::clone(
+        &snapshot,
+    ))));
+    registry.register(Box::new(ReviewGlobPathsTool::new(Arc::clone(&snapshot))));
+    registry.register(Box::new(ReviewSearchCodeTool::new(Arc::clone(&snapshot))));
+    registry.register(Box::new(ReviewRepositoryMapTool::new(Arc::clone(
+        &snapshot,
+    ))));
+    registry.register(Box::new(
+        rove_runtime::tools::history::ResolveToolArtifactTool,
+    ));
+    registry.register(Box::new(ReviewTargetDiffTool::new(snapshot)));
+    registry.register(Box::new(ReviewSubmitFindingsTool::new(store.clone())));
+    (registry, store)
 }
 
 #[cfg(test)]

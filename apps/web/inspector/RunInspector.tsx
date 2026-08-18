@@ -1,7 +1,7 @@
 "use client";
 
 import { ChevronLeftIcon, ChevronRightIcon, Cross2Icon } from "@radix-ui/react-icons";
-import { type KeyboardEvent, useEffect, useRef } from "react";
+import { type KeyboardEvent, useEffect, useRef, useState } from "react";
 
 import type { ToolCallView, WorkbenchState } from "../lib/rove-state";
 import type { TranscriptRestoreState } from "../state/transcript-projection";
@@ -10,6 +10,11 @@ import { ArtifactPanel } from "./ArtifactPanel";
 import { DiffPanel } from "./DiffPanel";
 import { ExportPanel } from "./ExportPanel";
 import { FilesPanel } from "./FilesPanel";
+import { ReviewPanel } from "./ReviewPanel";
+import type {
+  ProductReview,
+  ProductReviewFindingPageItem,
+} from "../product/product-api-types";
 
 export function RunInspector({
   productSessionId,
@@ -20,6 +25,21 @@ export function RunInspector({
   restoreState,
   sessionUsage,
   dialogOpen = false,
+  reviews = [],
+  selectedReviewId = null,
+  selectedReview = null,
+  reviewFindings = [],
+  reviewFindingsCursor = null,
+  reviewFindingsLoading = false,
+  reviewsLoading = false,
+  reviewError = null,
+  onSelectReview,
+  onRefreshReviews,
+  onCancelReview,
+  onLoadReviewFindings,
+  onOpenReviewFinding,
+  fileFocusPath,
+  fileFocusLine,
 }: {
   productSessionId: string;
   workspaceId?: string;
@@ -29,14 +49,39 @@ export function RunInspector({
   restoreState?: TranscriptRestoreState;
   sessionUsage?: SessionUsageState;
   dialogOpen?: boolean;
+  reviews?: ProductReview[];
+  selectedReviewId?: string | null;
+  selectedReview?: ProductReview | null;
+  reviewFindings?: ProductReviewFindingPageItem[];
+  reviewFindingsCursor?: number | null;
+  reviewFindingsLoading?: boolean;
+  reviewsLoading?: boolean;
+  reviewError?: string | null;
+  onSelectReview?: (reviewId: string) => void;
+  onRefreshReviews?: () => void;
+  onCancelReview?: (reviewId: string) => void;
+  onLoadReviewFindings?: (reviewId: string, cursor?: number) => void;
+  onOpenReviewFinding?: (path: string, line: number) => void;
+  fileFocusPath?: string | null;
+  fileFocusLine?: number | null;
 }) {
   const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const [tab, setTab] = useState<"run" | "review">("run");
 
   useEffect(() => {
     if (dialogOpen) {
       closeButtonRef.current?.focus();
     }
   }, [dialogOpen]);
+
+  const activeReviewId = reviews.find(
+    (review) => review.status === "queued" || review.status === "running",
+  )?.id;
+  useEffect(() => {
+    if (activeReviewId) {
+      setTab("review");
+    }
+  }, [activeReviewId]);
 
   if (collapsed) {
     return (
@@ -96,7 +141,48 @@ export function RunInspector({
           {dialogOpen ? <Cross2Icon /> : <ChevronRightIcon />}
         </button>
       </div>
+      <div className="inspector-tabs" role="tablist" aria-label="Inspector views">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === "run"}
+          className={tab === "run" ? "tab-button tab-button--active" : "tab-button"}
+          onClick={() => setTab("run")}
+        >
+          Run
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === "review"}
+          className={tab === "review" ? "tab-button tab-button--active" : "tab-button"}
+          onClick={() => setTab("review")}
+        >
+          Review{reviews.length > 0 ? ` (${reviews.length})` : ""}
+        </button>
+      </div>
       <div className="inspector-body">
+        {tab === "review" ? (
+          <ReviewPanel
+            reviews={reviews}
+            selectedReviewId={selectedReviewId}
+            selectedReview={selectedReview}
+            findings={reviewFindings}
+            findingsCursor={reviewFindingsCursor}
+            findingsLoading={reviewFindingsLoading}
+            loading={reviewsLoading}
+            error={reviewError}
+            onSelect={onSelectReview ?? (() => undefined)}
+            onRefresh={onRefreshReviews ?? (() => undefined)}
+            onCancel={onCancelReview ?? (() => undefined)}
+            onLoadFindings={onLoadReviewFindings ?? (() => undefined)}
+            onOpenFinding={(path, line) => {
+              setTab("run");
+              onOpenReviewFinding?.(path, line);
+            }}
+          />
+        ) : (
+          <>
         <ExportPanel sessionId={productSessionId} />
         {phase === "empty" ? (
           <div className="inspector-state" data-tone="empty" role="status">
@@ -248,7 +334,13 @@ export function RunInspector({
               </p>
             </section>
 
-            {workspaceId ? <FilesPanel workspaceId={workspaceId} /> : null}
+            {workspaceId ? (
+              <FilesPanel
+                workspaceId={workspaceId}
+                focusPath={fileFocusPath}
+                focusLine={fileFocusLine}
+              />
+            ) : null}
             <ArtifactPanel sessionId={productSessionId} />
             <DiffPanel sessionId={productSessionId} />
             <section className="inspector-section">
@@ -361,6 +453,8 @@ export function RunInspector({
             </section>
           </>
         ) : null}
+          </>
+        )}
       </div>
     </aside>
   );
@@ -519,4 +613,3 @@ function formatContextOccupancy(context: {
   );
   return `${used} / ${formatNumber(context.context_window)} (${percentage}%)`;
 }
-

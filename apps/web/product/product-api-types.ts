@@ -52,6 +52,7 @@ export const MAX_PRODUCT_CONTROL_IDEMPOTENCY_KEY_BYTES = 128;
 export type ProductWorkspaceId = string;
 export type ProductSessionId = string;
 export type ProductForkId = string;
+export type ProductReviewId = string;
 export type ProductProviderProfileId = string;
 export type ProductMigrationReceiptId = string;
 
@@ -124,6 +125,174 @@ export interface ProductSession {
   fork_point_seq?: number;
   created_at: string;
   updated_at: string;
+}
+
+export const PRODUCT_REVIEW_TARGET_KINDS = [
+  "uncommitted",
+  "base",
+  "commit",
+] as const;
+export type ProductReviewTargetKind =
+  (typeof PRODUCT_REVIEW_TARGET_KINDS)[number];
+
+export const PRODUCT_REVIEW_STATUSES = [
+  "queued",
+  "running",
+  "pass",
+  "findings",
+  "partial",
+  "stale",
+  "needs_attention",
+  "unavailable",
+  "cancelled",
+  "error",
+] as const;
+export type ProductReviewStatus = (typeof PRODUCT_REVIEW_STATUSES)[number];
+
+export const PRODUCT_REVIEW_CONCLUSIONS = [
+  "pass",
+  "findings",
+  "partial",
+  "stale",
+  "unavailable",
+  "cancelled",
+  "error",
+] as const;
+export type ProductReviewConclusion =
+  (typeof PRODUCT_REVIEW_CONCLUSIONS)[number];
+
+export const PRODUCT_REVIEW_SEVERITIES = [
+  "critical",
+  "high",
+  "medium",
+  "low",
+  "info",
+] as const;
+export type ProductReviewSeverity = (typeof PRODUCT_REVIEW_SEVERITIES)[number];
+
+export const PRODUCT_REVIEW_CONFIDENCES = ["high", "medium", "low"] as const;
+export type ProductReviewConfidence =
+  (typeof PRODUCT_REVIEW_CONFIDENCES)[number];
+
+export const PRODUCT_REVIEW_LOCATION_STATUSES = [
+  "validated",
+  "unvalidated",
+  "invalid",
+] as const;
+export type ProductReviewLocationStatus =
+  (typeof PRODUCT_REVIEW_LOCATION_STATUSES)[number];
+
+export interface ProductReviewTargetSpec {
+  kind: ProductReviewTargetKind;
+  revision?: string;
+}
+
+export interface ProductReviewTargetSummary {
+  schema_version: number;
+  spec: ProductReviewTargetSpec;
+  workspace_kind: ProductWorkspaceKind;
+  workspace_digest: string;
+  resolved_base?: string;
+  captured_at: string;
+  entries: number;
+  entries_truncated: number;
+  digest: string;
+}
+
+export interface ProductReviewLocation {
+  start_line: number;
+  start_col: number;
+  end_line: number;
+  end_col: number;
+}
+
+export interface ProductReviewEvidence {
+  snippet: string;
+  source: string;
+  reference?: string;
+}
+
+export interface ProductReviewFinding {
+  finding_id: string;
+  severity: ProductReviewSeverity;
+  confidence: ProductReviewConfidence;
+  category: string;
+  path: string;
+  location: ProductReviewLocation;
+  location_status: ProductReviewLocationStatus;
+  title: string;
+  explanation: string;
+  evidence: ProductReviewEvidence[];
+  rule: string;
+  suggestion: string;
+  status: string;
+}
+
+export interface ProductReviewStats {
+  files_scanned: number;
+  bytes_scanned: number;
+  duration_ms: number;
+  concurrency_limit: number;
+  findings_total: number;
+  truncated_findings: number;
+}
+
+export interface ProductReviewUnchecked {
+  reason: string;
+  paths: string[];
+}
+
+export interface ProductReviewResult {
+  schema_version: number;
+  review_id: string;
+  run_id: string;
+  session_id: string;
+  target: ProductReviewTargetSummary;
+  conclusion: ProductReviewConclusion;
+  findings: ProductReviewFinding[];
+  stats: ProductReviewStats;
+  unchecked: ProductReviewUnchecked[];
+  warnings: string[];
+}
+
+export interface ProductReview {
+  id: ProductReviewId;
+  product_session_id: ProductSessionId;
+  workspace_id: ProductWorkspaceId;
+  target: ProductReviewTargetSummary;
+  status: ProductReviewStatus;
+  conclusion?: ProductReviewConclusion;
+  runtime_session_id?: string;
+  job_id?: string;
+  run_id?: string;
+  result?: ProductReviewResult;
+  findings_count: number;
+  unchecked_count: number;
+  warnings_count: number;
+  created_at: string;
+  updated_at: string;
+  captured_at: string;
+  finalized_at?: string;
+}
+
+export interface ProductReviewsResponse {
+  reviews: ProductReview[];
+}
+
+export interface ProductReviewFindingPageItem {
+  finding: ProductReviewFinding;
+  sort_key: string;
+}
+
+export interface ProductReviewFindingsResponse {
+  findings: ProductReviewFindingPageItem[];
+  next_cursor?: number;
+}
+
+export interface CreateProductReviewRequest {
+  target: ProductReviewTargetSpec;
+  idempotency_key?: string;
+  max_steps?: number;
 }
 
 export interface ProductSessionRunBinding {
@@ -696,6 +865,9 @@ export const PRODUCT_ERROR_CODES = [
   "product_control_rejected",
   "product_fork_conflict",
   "product_fork_source_invalid",
+  "review_target_unavailable",
+  "review_conflict",
+  "review_unavailable",
   "product_storage_failure",
 ] as const;
 export type ProductErrorCode = (typeof PRODUCT_ERROR_CODES)[number];
@@ -1302,6 +1474,353 @@ export function parseProductSession(
     );
   }
   return session;
+}
+
+function parseProductReviewTargetSpec(
+  value: unknown,
+  path: string,
+): ProductReviewTargetSpec {
+  const record = expectRecord(value, path);
+  expectOnlyKeys(record, ["kind", "revision"], path);
+  const kind = expectEnum(
+    record.kind,
+    PRODUCT_REVIEW_TARGET_KINDS,
+    `${path}.kind`,
+  );
+  const revision = optionalString(record, "revision", path, {
+    nonEmpty: true,
+    maxBytes: MAX_PRODUCT_TEXT_BYTES,
+    noControlCharacters: true,
+  });
+  if (kind === "uncommitted" && revision !== undefined) {
+    schemaError(`${path}.revision`, "omitted for an uncommitted target");
+  }
+  if ((kind === "base" || kind === "commit") && revision === undefined) {
+    schemaError(`${path}.revision`, "present for a base or commit target");
+  }
+  return revision === undefined ? { kind } : { kind, revision };
+}
+
+function parseProductReviewTargetSummary(
+  value: unknown,
+  path: string,
+): ProductReviewTargetSummary {
+  const record = expectRecord(value, path);
+  const summary: ProductReviewTargetSummary = {
+    schema_version: expectInteger(record.schema_version, `${path}.schema_version`, {
+      min: 1,
+    }),
+    spec: parseProductReviewTargetSpec(record.spec, `${path}.spec`),
+    workspace_kind: expectEnum(
+      record.workspace_kind,
+      PRODUCT_WORKSPACE_KINDS,
+      `${path}.workspace_kind`,
+    ),
+    workspace_digest: expectString(record.workspace_digest, `${path}.workspace_digest`, {
+      nonEmpty: true,
+      maxBytes: MAX_PRODUCT_TEXT_BYTES,
+    }),
+    captured_at: expectRfc3339Timestamp(record.captured_at, `${path}.captured_at`),
+    entries: expectInteger(record.entries, `${path}.entries`, { min: 0 }),
+    entries_truncated: expectInteger(
+      record.entries_truncated ?? 0,
+      `${path}.entries_truncated`,
+      { min: 0 },
+    ),
+    digest: expectString(record.digest, `${path}.digest`, {
+      nonEmpty: true,
+      maxBytes: MAX_PRODUCT_TEXT_BYTES,
+    }),
+  };
+  assignOptional(
+    summary,
+    "resolved_base",
+    optionalString(record, "resolved_base", path, {
+      nonEmpty: true,
+      maxBytes: MAX_PRODUCT_TEXT_BYTES,
+      noControlCharacters: true,
+    }),
+  );
+  return summary;
+}
+
+function parseProductReviewFinding(
+  value: unknown,
+  path: string,
+): ProductReviewFinding {
+  const record = expectRecord(value, path);
+  const locationRecord = expectRecord(record.location, `${path}.location`);
+  const evidence = expectArray(
+    record.evidence ?? [],
+    `${path}.evidence`,
+    (item, itemPath) => {
+      const evidenceRecord = expectRecord(item, itemPath);
+      const parsed: ProductReviewEvidence = {
+        snippet: expectString(evidenceRecord.snippet, `${itemPath}.snippet`, {
+          maxBytes: 2 * 1024,
+        }),
+        source: expectString(evidenceRecord.source, `${itemPath}.source`, {
+          maxBytes: 64,
+        }),
+      };
+      assignOptional(
+        parsed,
+        "reference",
+        optionalString(evidenceRecord, "reference", itemPath, {
+          maxBytes: MAX_PRODUCT_TEXT_BYTES,
+        }),
+      );
+      return parsed;
+    },
+    3,
+  );
+  return {
+    finding_id: expectString(record.finding_id, `${path}.finding_id`, {
+      nonEmpty: true,
+      maxBytes: MAX_PRODUCT_TEXT_BYTES,
+    }),
+    severity: expectEnum(
+      record.severity,
+      PRODUCT_REVIEW_SEVERITIES,
+      `${path}.severity`,
+    ),
+    confidence: expectEnum(
+      record.confidence,
+      PRODUCT_REVIEW_CONFIDENCES,
+      `${path}.confidence`,
+    ),
+    category: expectString(record.category, `${path}.category`, {
+      maxBytes: 128,
+    }),
+    path: expectString(record.path, `${path}.path`, {
+      nonEmpty: true,
+      maxBytes: MAX_PRODUCT_PATH_BYTES,
+    }),
+    location: {
+      start_line: expectInteger(locationRecord.start_line, `${path}.location.start_line`, {
+        min: 0,
+      }),
+      start_col: expectInteger(locationRecord.start_col, `${path}.location.start_col`, {
+        min: 0,
+      }),
+      end_line: expectInteger(locationRecord.end_line, `${path}.location.end_line`, {
+        min: 0,
+      }),
+      end_col: expectInteger(locationRecord.end_col, `${path}.location.end_col`, {
+        min: 0,
+      }),
+    },
+    location_status: expectEnum(
+      record.location_status,
+      PRODUCT_REVIEW_LOCATION_STATUSES,
+      `${path}.location_status`,
+    ),
+    title: expectString(record.title, `${path}.title`, {
+      nonEmpty: true,
+      maxBytes: 256,
+    }),
+    explanation: expectString(record.explanation, `${path}.explanation`, {
+      maxBytes: 4 * 1024,
+    }),
+    evidence,
+    rule: expectString(record.rule, `${path}.rule`, { maxBytes: 256 }),
+    suggestion: expectString(record.suggestion, `${path}.suggestion`, {
+      maxBytes: 2 * 1024,
+    }),
+    status: expectString(record.status, `${path}.status`, { nonEmpty: true, maxBytes: 64 }),
+  };
+}
+
+function parseProductReviewResult(
+  value: unknown,
+  path = "product review result",
+): ProductReviewResult {
+  const record = expectRecord(value, path);
+  const stats = expectRecord(record.stats, `${path}.stats`);
+  const unchecked = expectArray(
+    record.unchecked ?? [],
+    `${path}.unchecked`,
+    (item, itemPath) => {
+      const itemRecord = expectRecord(item, itemPath);
+      return {
+        reason: expectString(itemRecord.reason, `${itemPath}.reason`, {
+          nonEmpty: true,
+          maxBytes: 128,
+        }),
+        paths: expectArray(
+          itemRecord.paths ?? [],
+          `${itemPath}.paths`,
+          (pathValue, pathPath) =>
+            expectString(pathValue, pathPath, {
+              maxBytes: MAX_PRODUCT_PATH_BYTES,
+            }),
+        ),
+      } satisfies ProductReviewUnchecked;
+    },
+    512,
+  );
+  return {
+    schema_version: expectInteger(record.schema_version, `${path}.schema_version`, {
+      min: 1,
+    }),
+    review_id: expectString(record.review_id, `${path}.review_id`, { nonEmpty: true }),
+    run_id: expectString(record.run_id, `${path}.run_id`, { nonEmpty: true }),
+    session_id: expectString(record.session_id, `${path}.session_id`, { nonEmpty: true }),
+    target: parseProductReviewTargetSummary(record.target, `${path}.target`),
+    conclusion: expectEnum(
+      record.conclusion,
+      PRODUCT_REVIEW_CONCLUSIONS,
+      `${path}.conclusion`,
+    ),
+    findings: expectArray(
+      record.findings ?? [],
+      `${path}.findings`,
+      parseProductReviewFinding,
+      512,
+    ),
+    stats: {
+      files_scanned: expectInteger(stats.files_scanned, `${path}.stats.files_scanned`, {
+        min: 0,
+      }),
+      bytes_scanned: expectInteger(stats.bytes_scanned, `${path}.stats.bytes_scanned`, {
+        min: 0,
+      }),
+      duration_ms: expectInteger(stats.duration_ms, `${path}.stats.duration_ms`, {
+        min: 0,
+      }),
+      concurrency_limit: expectInteger(
+        stats.concurrency_limit,
+        `${path}.stats.concurrency_limit`,
+        { min: 1 },
+      ),
+      findings_total: expectInteger(stats.findings_total, `${path}.stats.findings_total`, {
+        min: 0,
+      }),
+      truncated_findings: expectInteger(
+        stats.truncated_findings,
+        `${path}.stats.truncated_findings`,
+        { min: 0 },
+      ),
+    },
+    unchecked,
+    warnings: expectArray(
+      record.warnings ?? [],
+      `${path}.warnings`,
+      (item, itemPath) => expectString(item, itemPath, { maxBytes: 256 }),
+      256,
+    ),
+  };
+}
+
+export function parseProductReview(
+  value: unknown,
+  path = "product review",
+): ProductReview {
+  const record = expectRecord(value, path);
+  const review: ProductReview = {
+    id: expectId(record.id, `${path}.id`),
+    product_session_id: expectId(record.product_session_id, `${path}.product_session_id`),
+    workspace_id: expectId(record.workspace_id, `${path}.workspace_id`),
+    target: parseProductReviewTargetSummary(record.target, `${path}.target`),
+    status: expectEnum(record.status, PRODUCT_REVIEW_STATUSES, `${path}.status`),
+    findings_count: expectInteger(record.findings_count, `${path}.findings_count`, { min: 0 }),
+    unchecked_count: expectInteger(record.unchecked_count, `${path}.unchecked_count`, { min: 0 }),
+    warnings_count: expectInteger(record.warnings_count, `${path}.warnings_count`, { min: 0 }),
+    created_at: expectRfc3339Timestamp(record.created_at, `${path}.created_at`),
+    updated_at: expectRfc3339Timestamp(record.updated_at, `${path}.updated_at`),
+    captured_at: expectRfc3339Timestamp(record.captured_at, `${path}.captured_at`),
+  };
+  const conclusion = record.conclusion;
+  if (conclusion !== undefined && conclusion !== null) {
+    review.conclusion = expectEnum(
+      conclusion,
+      PRODUCT_REVIEW_CONCLUSIONS,
+      `${path}.conclusion`,
+    );
+  }
+  assignOptional(review, "runtime_session_id", optionalString(record, "runtime_session_id", path, { nonEmpty: true }));
+  assignOptional(review, "job_id", optionalString(record, "job_id", path, { nonEmpty: true }));
+  assignOptional(review, "run_id", optionalString(record, "run_id", path, { nonEmpty: true }));
+  if (record.result !== undefined && record.result !== null) {
+    review.result = parseProductReviewResult(record.result, `${path}.result`);
+  }
+  const finalizedAt = optionalString(record, "finalized_at", path, { nonEmpty: true });
+  if (finalizedAt !== undefined) {
+    review.finalized_at = expectRfc3339Timestamp(finalizedAt, `${path}.finalized_at`);
+  }
+  return review;
+}
+
+export function parseCreateProductReviewRequest(
+  value: CreateProductReviewRequest,
+): CreateProductReviewRequest {
+  const record = expectRecord(value, "create product review request");
+  expectOnlyKeys(record, ["target", "idempotency_key", "max_steps"], "create product review request");
+  const request: CreateProductReviewRequest = {
+    target: parseProductReviewTargetSpec(record.target, "create product review request.target"),
+  };
+  const key = optionalString(record, "idempotency_key", "create product review request", {
+    nonEmpty: true,
+    maxBytes: MAX_PRODUCT_CONTROL_IDEMPOTENCY_KEY_BYTES,
+    noControlCharacters: true,
+  });
+  if (key !== undefined) {
+    if (!/^[A-Za-z0-9_.:-]+$/u.test(key)) {
+      schemaError("create product review request.idempotency_key", "a valid idempotency key");
+    }
+    request.idempotency_key = key;
+  }
+  const maxSteps = record.max_steps;
+  if (maxSteps !== undefined && maxSteps !== null) {
+    request.max_steps = expectInteger(maxSteps, "create product review request.max_steps", {
+      min: 1,
+      max: MAX_PRODUCT_MAX_STEPS,
+    });
+  }
+  return request;
+}
+
+export function parseProductReviewsResponse(value: unknown): ProductReviewsResponse {
+  const record = expectRecord(value, "product reviews response");
+  return {
+    reviews: expectArray(
+      record.reviews,
+      "product reviews response.reviews",
+      parseProductReview,
+      MAX_PRODUCT_SESSIONS,
+    ),
+  };
+}
+
+export function parseProductReviewFindingsResponse(
+  value: unknown,
+): ProductReviewFindingsResponse {
+  const record = expectRecord(value, "product review findings response");
+  const response: ProductReviewFindingsResponse = {
+    findings: expectArray(
+      record.findings,
+      "product review findings response.findings",
+      (item, path) => {
+        const itemRecord = expectRecord(item, path);
+        return {
+          finding: parseProductReviewFinding(itemRecord.finding, `${path}.finding`),
+          sort_key: expectString(itemRecord.sort_key, `${path}.sort_key`, {
+            nonEmpty: true,
+            maxBytes: MAX_PRODUCT_TEXT_BYTES,
+          }),
+        };
+      },
+      512,
+    ),
+  };
+  assignOptional(
+    response,
+    "next_cursor",
+    optionalInteger(record, "next_cursor", "product review findings response", {
+      min: 0,
+    }),
+  );
+  return response;
 }
 
 export function parseProductFork(

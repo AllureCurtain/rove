@@ -1,22 +1,25 @@
 use std::{fs, path::PathBuf};
 
 use chrono::{Duration, TimeZone, Utc};
+use rove_runtime::review::{ReviewTargetSpec, ReviewTargetSummary};
 use rove_runtime::runtime_identity::RunModelSnapshot;
 use rove_runtime::types::{JobId, RunId, SessionId};
+use rove_runtime::workspace::WorkspaceKind;
 use rusqlite::{Connection, params};
 use tempfile::TempDir;
 
 use crate::product::{
     CommitProductRunBinding, CreateProductControlRequest, CreateProductForkRequest,
-    CreateProductMessageRequest, CreateProductProviderProfileRequest, CreateProductSessionRequest,
-    CreateProductWorkspaceRequest, M1BrowserMigrationPreflight, M1BrowserMigrationRequest,
-    M1BrowserMigrationSource, M1MigrationDisposition, M1MigrationIssueCode, M1PreferencesBaseline,
-    M1ProviderProfileImport, M1ProviderSelectionImport, M1SafePreferencesImport, M1SessionImport,
-    M1WorkspaceImport, PreparedM1BrowserMigration, ProductApprovalPreference, ProductControlKind,
+    CreateProductMessageRequest, CreateProductProviderProfileRequest, CreateProductReviewRecord,
+    CreateProductSessionRequest, CreateProductWorkspaceRequest, M1BrowserMigrationPreflight,
+    M1BrowserMigrationRequest, M1BrowserMigrationSource, M1MigrationDisposition,
+    M1MigrationIssueCode, M1PreferencesBaseline, M1ProviderProfileImport,
+    M1ProviderSelectionImport, M1SafePreferencesImport, M1SessionImport, M1WorkspaceImport,
+    PreparedM1BrowserMigration, ProductApprovalPreference, ProductControlKind,
     ProductControlStatus, ProductErrorCode, ProductMessagePageQuery, ProductMessageStatus,
-    ProductProviderSelection, ProductProviderType, ProductReasoningPreference,
-    ProductSessionStatus, ProductStore, ProductThemePreference, ProductWorkspaceKind,
-    UpdateProductPreferencesRequest, UpdateProductSessionModelConfigRequest,
+    ProductProviderSelection, ProductProviderType, ProductReasoningPreference, ProductReviewId,
+    ProductReviewStatus, ProductSessionStatus, ProductStore, ProductThemePreference,
+    ProductWorkspaceKind, UpdateProductPreferencesRequest, UpdateProductSessionModelConfigRequest,
     VerifiedM1SessionRunBinding, VerifiedProductForkBoundary,
 };
 
@@ -141,6 +144,61 @@ async fn create_workspace_and_session(
         .await
         .unwrap();
     (workspace, session)
+}
+
+fn review_target(digest: &str) -> ReviewTargetSummary {
+    ReviewTargetSummary {
+        schema_version: 1,
+        spec: ReviewTargetSpec::uncommitted(),
+        workspace_kind: WorkspaceKind::Folder,
+        workspace_digest: "sha256:test-workspace".to_string(),
+        resolved_base: None,
+        captured_at: now_rfc3339(),
+        entries: 1,
+        entries_truncated: 0,
+        digest: digest.to_string(),
+    }
+}
+
+#[tokio::test]
+async fn reopening_the_store_marks_interrupted_reviews_needs_attention() {
+    let temp = TempDir::new().unwrap();
+    let store = open_store(&temp);
+    let (workspace, session) = create_workspace_and_session(&store, &temp).await;
+    let queued_id = ProductReviewId::new();
+    let running_id = ProductReviewId::new();
+    for (review_id, digest) in [
+        (queued_id.clone(), "sha256:queued"),
+        (running_id.clone(), "sha256:running"),
+    ] {
+        let target = review_target(digest);
+        let (review, replayed) = store
+            .create_review(CreateProductReviewRecord {
+                review_id,
+                product_session_id: session.id.clone(),
+                workspace_id: workspace.id.clone(),
+                target_spec: target.spec.clone(),
+                target,
+                state_root: temp.path().join("review-state").join(digest),
+                idempotency_key: None,
+            })
+            .await
+            .unwrap();
+        assert!(!replayed);
+        assert_eq!(review.status, ProductReviewStatus::Queued);
+    }
+    store
+        .bind_review_runtime(&running_id, SessionId::new(), JobId::new(), RunId::new())
+        .await
+        .unwrap();
+    drop(store);
+
+    let reopened = open_store(&temp);
+    for review_id in [&queued_id, &running_id] {
+        let review = reopened.get_review(review_id).await.unwrap();
+        assert_eq!(review.status, ProductReviewStatus::NeedsAttention);
+        assert!(review.finalized_at.is_some());
+    }
 }
 
 async fn create_forkable_parent(

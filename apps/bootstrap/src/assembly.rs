@@ -5,9 +5,14 @@ use rove_models::ModelClient;
 use rove_runtime::agents::{AgentActivationConfig, AgentSelector};
 use rove_runtime::context::{ContextBudget, ContextManager};
 use rove_runtime::engine::{Engine, EngineConfig, EngineEnvironmentOptions};
-use rove_runtime::environment::{ExecutionEnvironment, local_environment};
+use rove_runtime::environment::{
+    ExecutionEnvironment, LocalExecutionEnvironment, local_environment,
+};
 use rove_runtime::execution::ExecutionPolicy;
+use rove_runtime::review::{ReviewTargetSnapshot, resolve_external_state_root};
 use rove_runtime::runtime_identity::RunModelSnapshot;
+use rove_runtime::tools::hooks::HookRegistry;
+use rove_runtime::tools::review::ReviewSubmissionStore;
 use rove_runtime::types::{
     ApprovalDecision, ApprovalPolicy, ToolApprovalProvider, UserInputProvider,
 };
@@ -15,6 +20,7 @@ use rove_runtime::workspace::Workspace;
 
 use crate::config::AppConfig;
 use crate::project_trust::CAP_WORKSPACE_INSTRUCTIONS;
+use crate::registry::review_tool_registry;
 use crate::registry::tool_registry_for_config_with_environment;
 
 /// Options shared by first-party CLI/API engine construction.
@@ -135,6 +141,64 @@ pub fn build_engine_with_registry(
     }
 
     Ok(engine)
+}
+
+/// Build the shared Engine under the hard read-only Review profile. The target
+/// snapshot is supplied by the caller and every registered read tool closes
+/// over it; the live workspace is never used as a model-read authority.
+pub fn build_review_engine(
+    model: Box<dyn ModelClient>,
+    workspace: &Workspace,
+    snapshot: Arc<ReviewTargetSnapshot>,
+    review_id: impl Into<String>,
+    state_root: Option<&std::path::Path>,
+    run_model_snapshot: Option<RunModelSnapshot>,
+    max_steps: u32,
+) -> anyhow::Result<(Engine, ReviewSubmissionStore)> {
+    let external_state =
+        resolve_external_state_root(workspace, state_root).map_err(anyhow::Error::new)?;
+    let mut review_workspace = workspace.clone();
+    review_workspace.state_dir = external_state;
+    let (registry, submission_store) = review_tool_registry(snapshot, review_id);
+    let context = ContextManager::with_token_budget(
+        "You are Rove's hard read-only code review agent. Analyze only the immutable target snapshot. Use the review tools, submit one complete bounded finding set, and never claim that unchecked files were inspected.".to_string(),
+        ContextBudget {
+            soft_limit_tokens: 12_000,
+            hard_limit_tokens: 16_000,
+            reserved_tokens: 2_000,
+        },
+    );
+    let environment: Arc<dyn ExecutionEnvironment> =
+        Arc::new(LocalExecutionEnvironment::read_only(&review_workspace));
+    let engine = Engine::with_workspace_and_approval_decision_and_environment(
+        model,
+        registry,
+        context,
+        EngineConfig {
+            max_steps: max_steps.clamp(1, 256),
+            plan_enabled: false,
+            execution_policy: Some(ExecutionPolicy::from_max_steps_and_plan_flag(
+                max_steps.clamp(1, 256),
+                false,
+            )),
+        },
+        review_workspace.clone(),
+        EngineEnvironmentOptions {
+            approval_policy: ApprovalPolicy::Never,
+            approval_decision: ApprovalDecision::Reject,
+            environment,
+        },
+    )
+    .with_hooks(HookRegistry::default())
+    .with_memory_paths(rove_runtime::memory::paths::MemoryPaths {
+        session_dir: review_workspace.state_dir.join("memory").join("sessions"),
+        durable_dir: review_workspace.state_dir.join("memory"),
+        recall_limit: 0,
+    })
+    .with_model_compaction(false, 1)
+    .with_run_model_snapshot(run_model_snapshot)
+    .with_run_mode(rove_runtime::types::RunMode::Review);
+    Ok((engine, submission_store))
 }
 
 #[cfg(test)]

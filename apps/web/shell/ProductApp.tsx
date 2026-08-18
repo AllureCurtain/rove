@@ -24,6 +24,7 @@ import {
   useServerProductState,
 } from "../state/use-server-product-state";
 import { useSessionContinuity } from "../state/use-session-continuity";
+import { useProductReviews } from "../state/use-product-reviews";
 import type { WorkspaceKind } from "../state/product-types";
 import { M1MigrationGate } from "./M1MigrationGate";
 import { TopBar } from "./TopBar";
@@ -53,6 +54,10 @@ function ServerProductApp({ uiVersion }: { uiVersion: ProductUiVersion }) {
   const [inspectorCollapsed, setInspectorCollapsed] = useState(true);
   const [mobileLayout, setMobileLayout] = useState(false);
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
+  const [reviewFileFocus, setReviewFileFocus] = useState<{
+    path: string;
+    line: number;
+  } | null>(null);
 
   useEffect(() => {
     const narrow = window.matchMedia("(max-width: 960px)");
@@ -85,6 +90,16 @@ function ServerProductApp({ uiVersion }: { uiVersion: ProductUiVersion }) {
     refreshSessionStatuses: server.refreshSessionStatuses,
     updateSessionTitle: server.updateSessionTitle,
     setConnection: server.setConnection,
+  });
+  const reviews = useProductReviews({
+    productClient: server.productClient,
+    sessionId: activeSession?.id ?? null,
+    workspaceKind:
+      activeWorkspace?.kind === "repo"
+        ? "repo"
+        : activeWorkspace
+          ? "folder"
+          : undefined,
   });
   const routing = useProductRouteSync({
     ready: server.bootState.status === "ready",
@@ -498,6 +513,16 @@ function ServerProductApp({ uiVersion }: { uiVersion: ProductUiVersion }) {
                   onLoadProviderModels={server.productClient.listProviderModels}
                   onModelConfigChange={server.changeSessionModelConfig}
                   controlError={continuity.controlError}
+                  reviewAvailable={activeWorkspace.kind === "repo"}
+                  reviewBusy={reviews.creating}
+                  reviewError={reviews.error}
+                  onCreateReview={async (target) => {
+                    const created = await reviews.create(target);
+                    if (created) {
+                      setInspectorCollapsed(false);
+                    }
+                    return created;
+                  }}
                 />
               </div>
             )}
@@ -522,6 +547,25 @@ function ServerProductApp({ uiVersion }: { uiVersion: ProductUiVersion }) {
               restoreState={transcriptRestoreState}
               sessionUsage={sessionUsage}
               dialogOpen={mobileLayout && !inspectorCollapsed}
+              reviews={reviews.reviews}
+              selectedReviewId={reviews.selectedReviewId}
+              selectedReview={reviews.selectedReview}
+              reviewFindings={reviews.findings}
+              reviewFindingsCursor={reviews.findingsCursor}
+              reviewFindingsLoading={reviews.findingsLoading}
+              reviewsLoading={reviews.loading}
+              reviewError={reviews.error}
+              onSelectReview={reviews.select}
+              onRefreshReviews={() => void reviews.refresh()}
+              onCancelReview={(reviewId) => void reviews.cancel(reviewId)}
+              onLoadReviewFindings={(reviewId, cursor) => {
+                void reviews.loadFindings(reviewId, cursor);
+              }}
+              onOpenReviewFinding={(path, line) => {
+                setReviewFileFocus({ path, line });
+              }}
+              fileFocusPath={reviewFileFocus?.path}
+              fileFocusLine={reviewFileFocus?.line}
             />
           ) : (
             <div />

@@ -14,6 +14,9 @@ use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize};
 use utoipa::ToSchema;
 
+use rove_runtime::review::{
+    ReviewConclusion, ReviewFinding, ReviewResult, ReviewTargetSpec, ReviewTargetSummary,
+};
 use rove_runtime::state::store::StateStore;
 use rove_runtime::types::{JobId, RunId, RunStatus, SessionId};
 
@@ -164,6 +167,10 @@ product_id!(
 product_id!(
     ProductForkId,
     "Server-owned identity for immutable product-session fork provenance."
+);
+product_id!(
+    ProductReviewId,
+    "Server-owned identity for one hard read-only Review run."
 );
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -500,6 +507,127 @@ pub struct ProductSession {
     pub fork_point_seq: Option<u64>,
     pub created_at: String,
     pub updated_at: String,
+}
+
+/// Durable lifecycle state for a hard read-only Review. It is deliberately
+/// separate from `ProductSessionStatus`: a Review never claims a chat turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductReviewStatus {
+    Queued,
+    Running,
+    Pass,
+    Findings,
+    Partial,
+    Stale,
+    NeedsAttention,
+    Unavailable,
+    Cancelled,
+    Error,
+}
+
+impl ProductReviewStatus {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::Running => "running",
+            Self::Pass => "pass",
+            Self::Findings => "findings",
+            Self::Partial => "partial",
+            Self::Stale => "stale",
+            Self::NeedsAttention => "needs_attention",
+            Self::Unavailable => "unavailable",
+            Self::Cancelled => "cancelled",
+            Self::Error => "error",
+        }
+    }
+
+    pub const fn is_terminal(self) -> bool {
+        !matches!(self, Self::Queued | Self::Running)
+    }
+}
+
+/// Request accepted by the HTTP surface. The server captures and validates
+/// the target before constructing the internal ProductStore record.
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CreateProductReviewRequest {
+    #[schema(value_type = Object)]
+    pub target: ReviewTargetSpec,
+    #[serde(default)]
+    pub idempotency_key: Option<String>,
+    #[serde(default)]
+    pub max_steps: Option<u32>,
+}
+
+/// Server-owned capture facts used to create an immutable review row.
+#[derive(Debug, Clone)]
+pub struct CreateProductReviewRecord {
+    pub review_id: ProductReviewId,
+    pub product_session_id: ProductSessionId,
+    pub workspace_id: ProductWorkspaceId,
+    pub target: ReviewTargetSummary,
+    pub target_spec: ReviewTargetSpec,
+    pub state_root: PathBuf,
+    pub idempotency_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductReview {
+    pub id: ProductReviewId,
+    pub product_session_id: ProductSessionId,
+    pub workspace_id: ProductWorkspaceId,
+    #[schema(value_type = Object)]
+    pub target: ReviewTargetSummary,
+    pub status: ProductReviewStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>)]
+    pub conclusion: Option<ReviewConclusion>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>, format = "ulid")]
+    pub runtime_session_id: Option<SessionId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>, format = "ulid")]
+    pub job_id: Option<JobId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>, format = "ulid")]
+    pub run_id: Option<RunId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Object)]
+    pub result: Option<ReviewResult>,
+    pub findings_count: usize,
+    pub unchecked_count: usize,
+    pub warnings_count: usize,
+    pub created_at: String,
+    pub updated_at: String,
+    pub captured_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finalized_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductReviewsResponse {
+    pub reviews: Vec<ProductReview>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductReviewFinding {
+    #[schema(value_type = Object)]
+    pub finding: ReviewFinding,
+    pub sort_key: String,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, ToSchema)]
+pub struct ProductReviewFindingsQuery {
+    pub limit: Option<usize>,
+    pub cursor: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProductReviewFindingsResponse {
+    pub findings: Vec<ProductReviewFinding>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -1630,6 +1758,9 @@ pub enum ProductErrorCode {
     ProductProviderProfileUnavailable,
     ProviderUnavailableForResume,
     ProviderChangedForResume,
+    ReviewTargetUnavailable,
+    ReviewConflict,
+    ReviewUnavailable,
     ProductStorageFailure,
 }
 
@@ -1664,6 +1795,9 @@ impl ProductErrorCode {
             Self::ProductProviderProfileUnavailable => "product_provider_profile_unavailable",
             Self::ProviderUnavailableForResume => "provider_unavailable_for_resume",
             Self::ProviderChangedForResume => "provider_changed_for_resume",
+            Self::ReviewTargetUnavailable => "review_target_unavailable",
+            Self::ReviewConflict => "review_conflict",
+            Self::ReviewUnavailable => "review_unavailable",
             Self::ProductStorageFailure => "product_storage_failure",
         }
     }
@@ -1752,6 +1886,62 @@ pub trait ProductStore: Send + Sync {
         &self,
         session_id: &ProductSessionId,
     ) -> Result<Vec<ProductSessionRunBinding>, ProductStoreError>;
+
+    /// Create or idempotently replay a Review row after the coordinator has
+    /// captured and validated the immutable target snapshot.
+    async fn create_review(
+        &self,
+        record: CreateProductReviewRecord,
+    ) -> Result<(ProductReview, bool /* already_exists */), ProductStoreError>;
+
+    async fn list_reviews(
+        &self,
+        session_id: &ProductSessionId,
+    ) -> Result<Vec<ProductReview>, ProductStoreError>;
+
+    async fn get_review(
+        &self,
+        review_id: &ProductReviewId,
+    ) -> Result<ProductReview, ProductStoreError>;
+
+    /// Bind Runtime identities once the external Review state/run has been
+    /// durably started. This operation is CAS/idempotent.
+    async fn bind_review_runtime(
+        &self,
+        review_id: &ProductReviewId,
+        runtime_session_id: SessionId,
+        job_id: JobId,
+        run_id: RunId,
+    ) -> Result<ProductReview, ProductStoreError>;
+
+    /// Persist the sanitized, secret-free Review result exactly once.
+    async fn finalize_review(
+        &self,
+        review_id: &ProductReviewId,
+        result: ReviewResult,
+    ) -> Result<ProductReview, ProductStoreError>;
+
+    /// Cancel a queued/running Review. Terminal rows are returned unchanged.
+    async fn cancel_review(
+        &self,
+        review_id: &ProductReviewId,
+    ) -> Result<ProductReview, ProductStoreError>;
+
+    async fn mark_review_needs_attention(
+        &self,
+        review_id: &ProductReviewId,
+    ) -> Result<ProductReview, ProductStoreError>;
+
+    async fn mark_review_unavailable(
+        &self,
+        review_id: &ProductReviewId,
+    ) -> Result<ProductReview, ProductStoreError>;
+
+    async fn list_review_findings(
+        &self,
+        review_id: &ProductReviewId,
+        query: ProductReviewFindingsQuery,
+    ) -> Result<ProductReviewFindingsResponse, ProductStoreError>;
 
     /// Atomically materialize an immutable child session from an already
     /// coordinator-verified terminal parent boundary. `already_exists` is true

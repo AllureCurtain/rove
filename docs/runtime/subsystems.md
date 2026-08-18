@@ -276,7 +276,7 @@ Fallback can be configured as:
 Web consumes the API projection rather than maintaining a separate backend.
 API/Web create, update, and delete operations mutate the user catalog with
 `expected_revision` CAS and expose `catalog_revision`; stale/busy writes are
-HTTP 409. ProductStore schema v13 persists stable legacy-to-catalog mappings,
+HTTP 409. ProductStore schema v14 persists stable legacy-to-catalog mappings,
 session selections, immutable secret-free run model facts, and the unified
 message compatibility projection, not duplicate endpoint or credential
 authority. Its reconciliation migration accepts either parallel v12 layout.
@@ -619,6 +619,42 @@ names are derived from the matched MIME type with a `bin` fallback and are never
 influenced by remote input. Active content is forced to download-only. Artifact
 resolution never builds a path from the requested ID: it enumerates the store,
 validates each entry, recomputes the public ID, and requires an exact match.
+
+## Hard read-only Review
+
+Review is a host-selected execution profile over the shared Engine, not a
+second agent loop or a second event authority. `runtime/src/review/` captures an
+immutable Git target snapshot at launch, including separate HEAD/index/worktree
+hashes, bounded diff/status facts, resolved base revisions, and a target digest.
+All Review read tools close over that snapshot; they do not rerun Git or read a
+mutable workspace during model dispatch. The snapshot is stored outside the
+target workspace, while ProductStore keeps only its bounded summary and result
+projection.
+
+`apps/bootstrap/src/registry.rs` registers only the Review read tools plus the
+bounded finding submitter and artifact resolver. `Executor` repeats an exact
+name/capability allowlist check before hooks and approval. The Review engine
+uses `LocalExecutionEnvironment::read_only`, an empty hook registry, no MCP,
+`ApprovalPolicy::Never`, and disabled process/filesystem mutation capabilities.
+Read/search output remains available to the in-process model but is not copied
+into the durable Tool Artifact store; trace, task state, report, SSE, API, and
+CLI projections use the shared redaction method. The only accepted write is the
+controlled Review result/ProductStore state outside the target workspace.
+
+Finding submission is untrusted input. Runtime validation bounds fields and
+counts, normalizes workspace-relative paths, checks locations against captured
+bytes, deduplicates stable identities, redacts secret-shaped text, and records
+unchecked/truncated ranges. A deterministic finalizer combines those facts with
+runtime durability, cancellation, and a fresh target digest; a model cannot
+claim completeness or turn a warning into `pass`.
+
+The API exposes Review creation/list/status/findings/cancel routes and stores
+rows/findings in ProductStore schema v14. Store startup marks stranded
+`queued`/`running` Review rows `needs_attention`; completed results are lazily
+rechecked for target drift after an API restart. CLI `rove review` and the Web
+composer/Inspector consume the same `ReviewResult` contract. Real external
+Provider, third-party MCP, ConPTY, packaging, and installed-Desktop gates are
+still optional and are not represented as passed evidence.
 
 ## Memory
 

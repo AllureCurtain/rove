@@ -28,13 +28,16 @@ provide inspection plus conservative legacy `.rove/` import. Migrated
 atomic publication, so pruning the source does not break exact resume. See
 [`STATE_LAYOUT_AND_MIGRATION.md`](../../STATE_LAYOUT_AND_MIGRATION.md).
 
-The current source also integrates productization workstreams B-E and F.1-F.3:
+The current source also integrates productization workstreams B-E and F.1-F.3,
+plus the hard read-only Review workflow:
 native-first tool-call recovery, ignore-aware deterministic repository
 retrieval, Artifact-backed result history, Provider onboarding, and one durable
 conversation-message lifecycle across Runtime, ProductStore/API/SSE, Web, and
-TUI. ProductStore schema v13 reconciles both parallel v12 productization
-layouts. Deterministic and live local fake-provider gates pass; external and
-platform-specific release gates remain separately classified below.
+TUI. ProductStore schema v14 adds durable Review rows/findings and preserves the
+parallel-v12 reconciliation. Review captures an immutable Git target snapshot,
+uses a read-only tool/environment profile, sanitizes findings, and projects the
+same result to API, CLI, and Web. Deterministic Review evidence passes; external
+and platform-specific release gates remain separately classified below.
 
 New maintainers should start with [`docs/ONBOARDING.md`](../ONBOARDING.md), then use this directory for current subsystem truth.
 
@@ -138,8 +141,8 @@ The Web product line is tracked separately:
   Runtime canonical events now carry the six durable
   message delivery states (`queued`, `intervention_requested`,
   `applied_current_run`, `claimed_successor`, `needs_attention`, `revoked`).
-  The API ProductStore schema is at v13 and the Runtime state schema is at v3;
-  v13 reconciles both parallel v12 layouts, and both stores retain compatibility
+  The API ProductStore schema is at v14 and the Runtime state schema is at v3;
+  v13 reconciles both parallel v12 layouts before v14 adds Review tables, and both stores retain compatibility
   projections and idempotent/CAS migration paths.
   API routes, SSE/replay reflection, Web reducers/transcript, and the TUI all
   consume the shared message-domain vocabulary. Web unit/type/build, mocked

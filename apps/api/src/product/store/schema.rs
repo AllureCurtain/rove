@@ -6,7 +6,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 use crate::product::{ProductErrorCode, ProductStoreError};
 
-const CURRENT_SCHEMA_VERSION: i64 = 13;
+const CURRENT_SCHEMA_VERSION: i64 = 14;
 const MAX_BUSY_TIMEOUT_MS: u64 = 120_000;
 
 const MIGRATION_001: &str = r#"
@@ -245,6 +245,67 @@ CREATE INDEX idx_product_session_runs_order
     ON product_session_runs(product_session_id, ordinal ASC);
 CREATE INDEX idx_product_provider_profiles_list
     ON product_provider_profiles(label COLLATE NOCASE, profile_id ASC);
+"#;
+
+const MIGRATION_014: &str = r#"
+CREATE TABLE IF NOT EXISTS product_reviews (
+    review_id TEXT PRIMARY KEY,
+    product_session_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    target_kind TEXT NOT NULL CHECK(target_kind IN ('uncommitted', 'base', 'commit')),
+    target_revision TEXT,
+    resolved_base TEXT,
+    target_digest TEXT NOT NULL,
+    target_summary_json TEXT NOT NULL,
+    target_spec_json TEXT NOT NULL,
+    state_root TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN (
+        'queued', 'running', 'pass', 'findings', 'partial', 'stale',
+        'needs_attention', 'unavailable', 'cancelled', 'error'
+    )),
+    conclusion TEXT,
+    runtime_session_id TEXT,
+    job_id TEXT,
+    run_id TEXT,
+    result_json TEXT,
+    idempotency_key TEXT,
+    findings_count INTEGER NOT NULL DEFAULT 0 CHECK(findings_count >= 0),
+    unchecked_count INTEGER NOT NULL DEFAULT 0 CHECK(unchecked_count >= 0),
+    warnings_count INTEGER NOT NULL DEFAULT 0 CHECK(warnings_count >= 0),
+    captured_at TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    finalized_at TEXT,
+    FOREIGN KEY(product_session_id) REFERENCES product_sessions(product_session_id)
+        ON DELETE CASCADE,
+    FOREIGN KEY(workspace_id) REFERENCES product_workspaces(workspace_id)
+        ON DELETE CASCADE
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_product_reviews_idempotency
+    ON product_reviews(product_session_id, idempotency_key)
+    WHERE idempotency_key IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_product_reviews_session_created
+    ON product_reviews(product_session_id, created_at DESC, review_id DESC);
+CREATE INDEX IF NOT EXISTS idx_product_reviews_active_digest
+    ON product_reviews(product_session_id, target_digest, status);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_product_reviews_one_active_target
+    ON product_reviews(product_session_id, target_digest)
+    WHERE status IN ('queued', 'running');
+
+CREATE TABLE IF NOT EXISTS product_review_findings (
+    review_id TEXT NOT NULL,
+    finding_id TEXT NOT NULL,
+    sort_key TEXT NOT NULL,
+    finding_json TEXT NOT NULL,
+    location_status TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(review_id, finding_id),
+    FOREIGN KEY(review_id) REFERENCES product_reviews(review_id)
+        ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_product_review_findings_order
+    ON product_review_findings(review_id, sort_key, finding_id);
 "#;
 
 const MIGRATION_002: &str = r#"
@@ -554,6 +615,7 @@ fn apply_migrations(connection: &mut Connection) -> Result<(), ProductStoreError
     apply_migration_011(connection)?;
     apply_migration_012(connection)?;
     apply_migration_013(connection)?;
+    apply_migration_014(connection)?;
     Ok(())
 }
 
@@ -979,6 +1041,31 @@ fn apply_migration_013(connection: &mut Connection) -> Result<(), ProductStoreEr
     Ok(())
 }
 
+fn apply_migration_014(connection: &mut Connection) -> Result<(), ProductStoreError> {
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|_| database_error(true))?;
+    if migration_is_applied(&transaction, 14)? {
+        transaction.commit().map_err(|_| database_error(true))?;
+        return Ok(());
+    }
+    transaction
+        .execute_batch(MIGRATION_014)
+        .map_err(|_| database_error(true))?;
+    transaction
+        .execute(
+            "INSERT INTO product_schema_migrations(version, name, applied_at) VALUES (?1, ?2, ?3)",
+            params![
+                14,
+                "read_only_review_workflow",
+                super::repository::now_rfc3339()
+            ],
+        )
+        .map_err(|_| database_error(true))?;
+    transaction.commit().map_err(|_| database_error(true))?;
+    Ok(())
+}
+
 fn reconcile_productization_schema(
     transaction: &rusqlite::Transaction<'_>,
 ) -> Result<(), ProductStoreError> {
@@ -1172,7 +1259,7 @@ mod tests {
     }
 
     #[test]
-    fn schema_newer_than_v13_is_rejected_without_rollback() {
+    fn schema_newer_than_v14_is_rejected_without_rollback() {
         let mut connection = Connection::open_in_memory().unwrap();
         connection
             .execute_batch(
@@ -1183,7 +1270,7 @@ mod tests {
                     applied_at TEXT NOT NULL
                 );
                 INSERT INTO product_schema_migrations(version, name, applied_at)
-                VALUES (14, 'future_schema', '2026-08-14T00:00:00Z');
+                VALUES (15, 'future_schema', '2026-08-14T00:00:00Z');
                 "#,
             )
             .unwrap();
@@ -1194,7 +1281,7 @@ mod tests {
         assert_eq!(
             connection
                 .query_row(
-                    "SELECT COUNT(*) FROM product_schema_migrations WHERE version = 14",
+                    "SELECT COUNT(*) FROM product_schema_migrations WHERE version = 15",
                     [],
                     |row| row.get::<_, i64>(0),
                 )
@@ -1204,16 +1291,56 @@ mod tests {
     }
 
     #[test]
-    fn fresh_database_reaches_v13_with_both_productization_contracts() {
+    fn fresh_database_reaches_v14_with_both_productization_contracts() {
         let mut connection = Connection::open_in_memory().unwrap();
 
         apply_migrations(&mut connection).unwrap();
 
-        assert_integrated_v13(&connection);
+        assert_integrated_v14(&connection);
     }
 
     #[test]
-    fn provider_only_v12_upgrades_to_integrated_v13() {
+    fn integrated_v13_upgrades_to_v14_without_rewriting_existing_state() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        initialize_v11(&mut connection);
+        apply_migration_012(&mut connection).unwrap();
+        apply_migration_013(&mut connection).unwrap();
+        connection
+            .execute(
+                "UPDATE product_preferences SET theme = 'dark', revision = 7 WHERE singleton = 1",
+                [],
+            )
+            .unwrap();
+
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT MAX(version) FROM product_schema_migrations",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            13
+        );
+        assert!(!table_exists(&connection, "product_reviews").unwrap());
+
+        apply_migrations(&mut connection).unwrap();
+
+        assert_integrated_v14(&connection);
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT theme, revision FROM product_preferences WHERE singleton = 1",
+                    [],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+                )
+                .unwrap(),
+            ("dark".to_string(), 7)
+        );
+    }
+
+    #[test]
+    fn provider_only_v12_upgrades_to_integrated_v14() {
         let mut connection = Connection::open_in_memory().unwrap();
         initialize_v11(&mut connection);
         connection
@@ -1247,11 +1374,11 @@ mod tests {
 
         apply_migrations(&mut connection).unwrap();
 
-        assert_integrated_v13(&connection);
+        assert_integrated_v14(&connection);
     }
 
     #[test]
-    fn conversation_only_v12_upgrades_to_integrated_v13() {
+    fn conversation_only_v12_upgrades_to_integrated_v14() {
         let mut connection = Connection::open_in_memory().unwrap();
         initialize_v11(&mut connection);
         connection
@@ -1276,7 +1403,7 @@ mod tests {
 
         apply_migrations(&mut connection).unwrap();
 
-        assert_integrated_v13(&connection);
+        assert_integrated_v14(&connection);
     }
 
     fn initialize_v11(connection: &mut Connection) {
@@ -1313,9 +1440,12 @@ mod tests {
             .unwrap();
     }
 
-    fn assert_integrated_v13(connection: &Connection) {
+    fn assert_integrated_v14(connection: &Connection) {
         assert!(migration_is_applied(connection, 13).unwrap());
+        assert!(migration_is_applied(connection, 14).unwrap());
         assert!(table_exists(connection, "product_provider_profile_catalog_mappings").unwrap());
+        assert!(table_exists(connection, "product_reviews").unwrap());
+        assert!(table_exists(connection, "product_review_findings").unwrap());
         for column in [
             "provider_type",
             "wire_protocol",

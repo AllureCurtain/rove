@@ -31,7 +31,8 @@ Included:
 - Productization F unified Send Message lifecycle across Runtime, API/SSE,
   ProductStore, Web, and TUI: durable FIFO queue, safe-boundary intervention,
   successor claims, revoke/attention recovery, and idempotent CAS races.
-  ProductStore v13 reconciles both parallel v12 layouts. Focused Runtime/API/TUI,
+  ProductStore v14 reconciles the v13 parallel-v12 layouts and adds durable
+  Review rows/findings. Focused Runtime/API/TUI,
   Web unit/type/build, mocked browser, and five live local fake-provider cases
   pass. This is F.1-F.3 evidence; F.4 older-history pagination/windowing and
   F.5 complete TUI restart recovery remain open. Windows ConPTY/PTY and
@@ -40,6 +41,9 @@ Included:
   Web build, native workspace commands, and current-platform Windows MSI/process
   evidence. macOS/Linux packaging and manual installation remain unverified.
 - Local state under `.rove/`.
+- Hard read-only Review for Git targets: immutable snapshot/digest, dedicated
+  read-only tools/environment, bounded sanitized findings, API/CLI/Web
+  projections, cancellation, stale detection, and conservative restart recovery.
 - Folder, Repo, and Task workspaces.
 - Built-in tools, MCP proxy, memory tools, fake provider, OpenAI /
   Responses, Anthropic, Ollama, named provider profiles, and the opt-in

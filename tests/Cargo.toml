@@ -47,6 +47,9 @@ path = "cli_config.rs"
 name = "cli_repl"
 path = "cli_repl.rs"
 [[test]]
+name = "cli_review"
+path = "cli_review.rs"
+[[test]]
 name = "cli_sessions"
 path = "cli_sessions.rs"
 [[test]]
@@ -83,6 +86,9 @@ path = "provider_smoke.rs"
 name = "request_input_tool"
 path = "request_input_tool.rs"
 [[test]]
+name = "review"
+path = "review.rs"
+[[test]]
 name = "tool_safety"
 path = "tool_safety.rs"
 [[test]]
@@ -91,4 +97,3 @@ path = "workspace_architecture.rs"
 [[test]]
 name = "workspace_product"
 path = "workspace_product.rs"
-

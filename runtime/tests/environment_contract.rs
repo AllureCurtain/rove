@@ -90,6 +90,97 @@ async fn local_and_in_memory_filesystems_share_the_workspace_contract() {
 }
 
 #[tokio::test]
+async fn local_read_only_environment_rejects_every_mutation_and_process_port() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let workspace = Workspace::detect(temp.path()).unwrap();
+    std::fs::write(workspace.root.join("kept.txt"), "kept").unwrap();
+    let environment = LocalExecutionEnvironment::read_only(&workspace);
+    let capabilities = environment.capabilities();
+    assert!(capabilities.filesystem_read);
+    assert!(!capabilities.filesystem_write);
+    assert!(!capabilities.process_run);
+    assert!(!capabilities.process_stdio);
+    assert!(!capabilities.process_background);
+    assert!(!capabilities.process_pty);
+    assert!(!capabilities.observations);
+    assert!(!capabilities.workspace_checkpoints);
+    assert!(capabilities.artifact_projection);
+
+    assert!(matches!(
+        environment
+            .filesystem()
+            .write_utf8("kept.txt", "changed")
+            .await,
+        Err(EnvironmentError::CapabilityUnavailable("filesystem_write"))
+    ));
+    assert!(matches!(
+        environment
+            .filesystem()
+            .create_utf8("created.txt", "created")
+            .await,
+        Err(EnvironmentError::CapabilityUnavailable("filesystem_write"))
+    ));
+    assert!(matches!(
+        environment
+            .filesystem()
+            .delete_path("kept.txt", false)
+            .await,
+        Err(EnvironmentError::CapabilityUnavailable("filesystem_write"))
+    ));
+    assert!(matches!(
+        environment
+            .filesystem()
+            .move_path("kept.txt", "moved.txt", false)
+            .await,
+        Err(EnvironmentError::CapabilityUnavailable("filesystem_write"))
+    ));
+    assert_eq!(
+        environment
+            .filesystem()
+            .read_utf8("kept.txt")
+            .await
+            .unwrap(),
+        "kept"
+    );
+    assert!(!workspace.root.join("created.txt").exists());
+    assert!(!workspace.root.join("moved.txt").exists());
+
+    let request = process_request(&workspace, "blocked", 1_000, 128);
+    assert!(matches!(
+        environment
+            .processes()
+            .run(request.clone(), CancellationToken::new())
+            .await,
+        Err(EnvironmentError::CapabilityUnavailable("process_run"))
+    ));
+    assert!(matches!(
+        environment
+            .processes()
+            .spawn_stdio("blocked", &[], &[])
+            .await,
+        Err(EnvironmentError::CapabilityUnavailable("process_stdio"))
+    ));
+    assert!(matches!(
+        environment
+            .processes()
+            .spawn_background(request, CancellationToken::new())
+            .await,
+        Err(EnvironmentError::CapabilityUnavailable(
+            "process_background"
+        ))
+    ));
+    assert!(matches!(
+        environment
+            .processes()
+            .terminate_background("unknown")
+            .await,
+        Err(EnvironmentError::CapabilityUnavailable(
+            "process_background"
+        ))
+    ));
+}
+
+#[tokio::test]
 async fn local_filesystem_rejects_symlink_escape_when_supported() {
     let temp = tempfile::TempDir::new().unwrap();
     let workspace_root = temp.path().join("workspace");

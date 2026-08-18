@@ -12,6 +12,7 @@ pub mod mcp_proxy;
 pub mod memory;
 pub mod repository;
 pub mod request_input;
+pub mod review;
 pub mod runtime_context;
 pub mod search;
 pub mod shell;

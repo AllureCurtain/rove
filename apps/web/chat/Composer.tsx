@@ -2,6 +2,7 @@
 
 import { FormEvent, type Ref, useState } from "react";
 import {
+  MagnifyingGlassIcon,
   PaperPlaneIcon,
   StopIcon,
 } from "@radix-ui/react-icons";
@@ -12,7 +13,10 @@ import type {
   SessionModelConfig,
   SessionModelConfigInput,
 } from "../state/product-types";
-import type { ProductProviderModelsResponse } from "../product/product-api-types";
+import type {
+  ProductProviderModelsResponse,
+  ProductReviewTargetSpec,
+} from "../product/product-api-types";
 
 export function Composer({
   disabled,
@@ -29,6 +33,10 @@ export function Composer({
   onLoadProviderModels,
   onModelConfigChange,
   controlError,
+  reviewAvailable = false,
+  reviewBusy = false,
+  reviewError = null,
+  onCreateReview,
 }: {
   disabled: boolean;
   busy: boolean;
@@ -44,9 +52,16 @@ export function Composer({
   onLoadProviderModels: (profileId: string) => Promise<ProductProviderModelsResponse>;
   onModelConfigChange: (config: SessionModelConfigInput) => Promise<boolean>;
   controlError: string | null;
+  reviewAvailable?: boolean;
+  reviewBusy?: boolean;
+  reviewError?: string | null;
+  onCreateReview?: (target: ProductReviewTargetSpec) => Promise<boolean>;
 }) {
   const [message, setMessage] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const [reviewKind, setReviewKind] = useState<ProductReviewTargetSpec["kind"]>("uncommitted");
+  const [reviewRevision, setReviewRevision] = useState("");
   const canSubmit =
     Boolean(message.trim()) &&
     !submitting &&
@@ -111,6 +126,71 @@ export function Composer({
         ) : (
           <span>Loading session model settings...</span>
         )}
+        <div className="chat-composer__review">
+          <button
+            type="button"
+            className="ghost"
+            disabled={!reviewAvailable || reviewBusy}
+            onClick={() => setReviewOpen((current) => !current)}
+            title={reviewAvailable ? "Start a hard read-only Review" : "Review requires a Git repository"}
+          >
+            <MagnifyingGlassIcon aria-hidden="true" />
+            Review
+          </button>
+          {reviewOpen ? (
+            <div className="chat-composer__review-form" data-review-launcher>
+              <label htmlFor="review-target-kind">Target</label>
+              <select
+                id="review-target-kind"
+                value={reviewKind}
+                onChange={(event) => {
+                  const next = event.target.value as ProductReviewTargetSpec["kind"];
+                  setReviewKind(next);
+                  if (next === "uncommitted") setReviewRevision("");
+                }}
+                disabled={reviewBusy}
+              >
+                <option value="uncommitted">Uncommitted changes</option>
+                <option value="base">Base revision</option>
+                <option value="commit">Commit</option>
+              </select>
+              {reviewKind !== "uncommitted" ? (
+                <input
+                  value={reviewRevision}
+                  onChange={(event) => setReviewRevision(event.target.value)}
+                  placeholder={reviewKind === "base" ? "Base ref, e.g. main" : "Commit SHA"}
+                  aria-label="Review revision"
+                  disabled={reviewBusy}
+                />
+              ) : null}
+              <button
+                type="button"
+                className="secondary"
+                disabled={
+                  !reviewAvailable ||
+                  reviewBusy ||
+                  (reviewKind !== "uncommitted" && !reviewRevision.trim())
+                }
+                onClick={() => {
+                  if (!onCreateReview) return;
+                  const target: ProductReviewTargetSpec =
+                    reviewKind === "uncommitted"
+                      ? { kind: "uncommitted" }
+                      : { kind: reviewKind, revision: reviewRevision.trim() };
+                  void onCreateReview(target).then((created) => {
+                    if (created) {
+                      setReviewOpen(false);
+                      setReviewRevision("");
+                    }
+                  });
+                }}
+              >
+                {reviewBusy ? "Starting…" : "Start Review"}
+              </button>
+              {reviewError ? <span className="chat-error" role="alert">{reviewError}</span> : null}
+            </div>
+          ) : null}
+        </div>
       </div>
     </form>
   );

@@ -1,5 +1,6 @@
 use crate::boundary::check_tool_allowed;
 use crate::hooks::{HookRegistry, PostToolHookContext};
+use crate::review::{descriptor_allowed, is_review_mode};
 use crate::tool_input::RegisteredUserInput;
 use crate::tools::runtime_context::runtime_tool_services;
 use crate::types::{
@@ -60,11 +61,20 @@ impl<'a> Executor<'a> {
         // Step 2: input validation
         validate_args(&schema.parameters, &args)?;
 
+        // Review authorization is checked before hooks and before any
+        // permission/approval path can observe or influence the call.
+        let services = runtime_tool_services(ctx)?;
+        if is_review_mode(services.run_mode) && !descriptor_allowed(&schema) {
+            return Err(ToolError::PermissionDenied {
+                reason: "review mode forbids non-read-only tool".to_string(),
+            });
+        }
+
         // Step 3: pre-tool hooks
         self.hooks.run_pre_tool(ctx, name, &args).await?;
 
         // Step 4: permission boundary
-        check_tool_allowed(&schema, runtime_tool_services(ctx)?.approval_policy)?;
+        check_tool_allowed(&schema, services.approval_policy)?;
 
         // Step 5: execute
         let mut output = crate::tool_input::scope(
@@ -114,6 +124,12 @@ async fn retain_eligible_output(
     let Ok(services) = runtime_tool_services(ctx) else {
         return;
     };
+    // Review source text is intentionally available to the in-process model,
+    // but the immutable snapshot is its only durable source authority. Do not
+    // duplicate read/search payloads into the run's Tool Artifact store.
+    if is_review_mode(services.run_mode) {
+        return;
+    }
     let Some(store) = services.tool_artifacts.as_ref() else {
         return;
     };
@@ -520,15 +536,21 @@ impl JsonPath {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use async_trait::async_trait;
     use tokio_util::sync::CancellationToken;
 
     use super::{Executor, local_tool_output_sensitivity};
+    use crate::environment::local_environment;
     use crate::memory::paths::MemoryPaths;
-    use crate::tools::runtime_context::runtime_tool_context;
+    use crate::state::tool_artifacts::ToolArtifactStore;
+    use crate::tools::runtime_context::{
+        runtime_tool_context, runtime_tool_context_with_mode_and_artifacts,
+    };
     use crate::types::{
-        ApprovalPolicy, CallId, ToolContext, ToolDescriptor, ToolExecutionStatus, ToolMutation,
-        ToolMutationOperation, ToolRiskLevel,
+        ApprovalPolicy, CallId, RunId, RunMode, ToolContext, ToolDescriptor, ToolExecutionStatus,
+        ToolMutation, ToolMutationOperation, ToolRiskLevel,
     };
     use crate::workspace::Workspace;
     use rove_core::{Sensitivity, Tool, ToolOutput, ToolRegistry};
@@ -536,6 +558,35 @@ mod tests {
     struct MutatingTool;
 
     struct BooleanTool;
+
+    struct ReadFileTool;
+
+    #[async_trait]
+    impl Tool for ReadFileTool {
+        fn schema(&self) -> ToolDescriptor {
+            ToolDescriptor {
+                name: "read_file".to_string(),
+                description: "Read a file".to_string(),
+                parameters: serde_json::json!({"type": "object"}),
+                destructive: false,
+                parallel_safe: true,
+                capability_id: Some("workspace.fs.read".to_string()),
+                capability: None,
+            }
+        }
+
+        async fn execute(
+            &self,
+            _args: serde_json::Value,
+            _ctx: &ToolContext<'_>,
+        ) -> Result<ToolOutput, rove_core::ToolError> {
+            Ok(ToolOutput {
+                content: "ordinary source text".to_string(),
+                mutations: Vec::new(),
+                envelope: None,
+            })
+        }
+    }
 
     #[async_trait]
     impl Tool for BooleanTool {
@@ -654,6 +705,42 @@ mod tests {
         assert!(message.contains(r#"Retry with {"regex":true}"#));
         assert!(!message.contains("Permission denied"));
         assert!(message.len() < 512);
+    }
+
+    #[tokio::test]
+    async fn review_read_output_is_not_retained_as_a_durable_tool_artifact() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let workspace = Workspace::detect(tmp.path()).unwrap();
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(ReadFileTool));
+        let store = Arc::new(ToolArtifactStore::new(
+            tmp.path().join("runs").join(RunId::new().to_string()),
+        ));
+        let ctx = runtime_tool_context_with_mode_and_artifacts(
+            CallId::new(),
+            &workspace,
+            MemoryPaths::from_workspace(&workspace, 8),
+            ApprovalPolicy::Never,
+            None,
+            CancellationToken::new(),
+            local_environment(&workspace),
+            Some(Arc::clone(&store)),
+            RunMode::Review,
+        );
+
+        let result = Executor::new(&registry)
+            .run(&ctx, "read_file", serde_json::json!({}), CallId::new())
+            .await
+            .unwrap();
+
+        assert_eq!(result.output, "ordinary source text");
+        assert!(
+            result
+                .envelope
+                .as_deref()
+                .is_none_or(|envelope| envelope.artifacts.is_empty())
+        );
+        assert!(store.ledger().await.unwrap().is_empty());
     }
 
     #[test]

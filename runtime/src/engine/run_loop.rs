@@ -38,8 +38,8 @@ use crate::tool_turn::{
     defer_tool_turn, run_tool_turn, workspace_target_paths,
 };
 use crate::types::{
-    ApprovalDecision, ApprovalPolicy, Message, SessionId, TerminationReason, ToolApprovalProvider,
-    ToolDescriptor, UserInputProvider,
+    ApprovalDecision, ApprovalPolicy, Message, RunMode, SessionId, TerminationReason,
+    ToolApprovalProvider, ToolDescriptor, UserInputProvider,
 };
 use crate::workspace::Workspace;
 use rove_core::{
@@ -88,6 +88,7 @@ pub(crate) struct LoopContext<'a> {
     pub agent_planner_summary: Option<String>,
     /// Run-local deduplication for content-free overlay application events.
     pub instruction_overlays_seen: Arc<Mutex<BTreeSet<String>>>,
+    pub run_mode: RunMode,
 }
 
 impl<'a> LoopContext<'a> {
@@ -105,6 +106,7 @@ impl<'a> LoopContext<'a> {
             cancel_token,
             tool_artifacts: self.tool_artifacts.clone(),
             agent_profile: self.agent_profile.clone(),
+            run_mode: self.run_mode,
         }
     }
 
@@ -686,6 +688,7 @@ impl AgentKernelHost for UnplannedKernelHost<'_> {
             cancel_token,
             accepted,
             self.ctx.steer_lifecycle.clone(),
+            self.ctx.run_mode,
         )
     }
 
@@ -783,6 +786,7 @@ pub(crate) fn run_kernel_model_turn<'a>(
     cancel_token: CancellationToken,
     accepted_steer_ids: Vec<AcceptedSteer>,
     steer_lifecycle: Option<SteerLifecycle>,
+    run_mode: RunMode,
 ) -> BoxStream<'a, KernelModelTurnItem<StreamEvent>> {
     Box::pin(stream! {
         let mut inner = run_model_turn(
@@ -790,6 +794,7 @@ pub(crate) fn run_kernel_model_turn<'a>(
             messages,
             tool_schemas,
             cancel_token,
+            run_mode,
         );
         let mut applied = false;
         while let Some(item) = inner.next().await {

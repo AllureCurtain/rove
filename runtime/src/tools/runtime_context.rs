@@ -5,7 +5,7 @@ use tokio_util::sync::CancellationToken;
 use crate::environment::{ExecutionEnvironment, local_environment};
 use crate::memory::paths::MemoryPaths;
 use crate::state::tool_artifacts::ToolArtifactStore;
-use crate::types::{ApprovalPolicy, UserInputProvider};
+use crate::types::{ApprovalPolicy, RunMode, UserInputProvider};
 use crate::workspace::Workspace;
 use rove_core::{CallId, ToolContext, ToolError};
 
@@ -27,6 +27,9 @@ pub struct RuntimeToolServices {
     /// distinct from `environment.artifacts()`, which is a process-local
     /// Coding Tool projection store.
     pub tool_artifacts: Option<Arc<ToolArtifactStore>>,
+    /// Immutable host-selected execution profile. Tools cannot change it.
+    #[allow(dead_code)]
+    pub run_mode: RunMode,
 }
 
 pub fn runtime_tool_context<'a>(
@@ -69,6 +72,31 @@ pub fn runtime_tool_context_with_environment<'a>(
     )
 }
 
+/// Builds a context with an explicit execution profile while preserving the
+/// historic helper signatures used by embedded callers.
+#[allow(clippy::too_many_arguments)]
+pub fn runtime_tool_context_with_mode_and_artifacts<'a>(
+    call_id: CallId,
+    workspace: &Workspace,
+    memory_paths: MemoryPaths,
+    approval_policy: ApprovalPolicy,
+    input_provider: Option<Arc<dyn UserInputProvider>>,
+    cancel_token: CancellationToken,
+    environment: Arc<dyn ExecutionEnvironment>,
+    tool_artifacts: Option<Arc<ToolArtifactStore>>,
+    run_mode: RunMode,
+) -> ToolContext<'a> {
+    ToolContext::new(call_id, cancel_token).with_extension(Arc::new(RuntimeToolServices {
+        workspace: workspace.clone(),
+        environment,
+        memory_paths,
+        approval_policy,
+        input_provider,
+        tool_artifacts,
+        run_mode,
+    }))
+}
+
 /// Builds an invocation context that can also retain durable Tool Artifacts.
 ///
 /// Separate from [`runtime_tool_context_with_environment`] so an embedding
@@ -86,14 +114,17 @@ pub fn runtime_tool_context_with_artifacts<'a>(
     environment: Arc<dyn ExecutionEnvironment>,
     tool_artifacts: Option<Arc<ToolArtifactStore>>,
 ) -> ToolContext<'a> {
-    ToolContext::new(call_id, cancel_token).with_extension(Arc::new(RuntimeToolServices {
-        workspace: workspace.clone(),
-        environment,
+    runtime_tool_context_with_mode_and_artifacts(
+        call_id,
+        workspace,
         memory_paths,
         approval_policy,
         input_provider,
+        cancel_token,
+        environment,
         tool_artifacts,
-    }))
+        RunMode::Normal,
+    )
 }
 
 pub fn runtime_tool_services<'a>(

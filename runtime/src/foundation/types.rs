@@ -299,6 +299,18 @@ pub enum ApprovalPolicy {
     Never,
 }
 
+/// Execution profile selected by the host before a run starts.
+///
+/// Review is deliberately a runtime-owned mode rather than a prompt hint. It
+/// is carried into every tool invocation and checked again at dispatch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RunMode {
+    #[default]
+    Normal,
+    Review,
+}
+
 /// A concrete approval decision supplied by an interface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

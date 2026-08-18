@@ -27,6 +27,7 @@ pub mod environment;
 pub mod foundation;
 pub mod memory;
 pub mod planning;
+pub mod review;
 pub mod state;
 pub mod tools;
 pub mod workspace;

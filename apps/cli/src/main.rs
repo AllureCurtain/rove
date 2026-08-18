@@ -9,6 +9,7 @@ use rove_cli::cli::config as cli_config;
 use rove_cli::cli::exec::run_exec_with_cancel;
 use rove_cli::cli::provider as cli_provider;
 use rove_cli::cli::repl;
+use rove_cli::cli::review as cli_review;
 use rove_cli::cli::runtime::{CliRuntimeInteraction, CliRuntimeOptions, build_cli_runtime};
 use rove_cli::cli::sessions;
 use rove_cli::cli::state as cli_state;
@@ -100,6 +101,25 @@ async fn async_main(args: Args) -> anyhow::Result<()> {
             let message = join_message(message);
             let runtime = build_runtime(&args, Some(&message)).await?;
             return run_exec(args, runtime, message).await;
+        }
+        Some(Command::Review {
+            base,
+            commit,
+            format,
+        }) => {
+            let code = cli_review::run(
+                args.cwd.clone().map(PathBuf::from),
+                args.model.clone(),
+                args.max_steps,
+                base,
+                commit,
+                format,
+            )
+            .await?;
+            if code != 0 {
+                std::process::exit(code);
+            }
+            return Ok(());
         }
         Some(Command::DumpConfig) => unreachable!("dump-config is handled before runtime startup"),
         None => {}
