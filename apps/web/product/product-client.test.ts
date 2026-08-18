@@ -4,6 +4,7 @@ import {
   ProductApiSchemaError,
   PRODUCT_ERROR_CODES,
   parseCreateProductControlRequest,
+  parseCreateProductReviewRequest,
   parseProductControl,
   parseProductPreferences,
   parseProductProviderProfileRequest,
@@ -102,6 +103,76 @@ const control = {
   status: "pending",
   seq: 1,
   created_at: "2026-07-26T00:00:00.000Z",
+};
+
+const reviewFinding = {
+  finding_id: "rfd_0123456789abcdef",
+  severity: "high",
+  confidence: "high",
+  category: "correctness",
+  path: "src/lib.rs",
+  location: {
+    start_line: 12,
+    start_col: 1,
+    end_line: 12,
+    end_col: 8,
+  },
+  location_status: "validated",
+  title: "Incorrect branch",
+  explanation: "The changed branch returns the wrong value.",
+  evidence: [{ snippet: "return false", source: "diff" }],
+  rule: "correctness",
+  suggestion: "Return the validated value.",
+  status: "open",
+};
+
+const reviewTarget = {
+  schema_version: 1,
+  spec: { kind: "uncommitted" },
+  workspace_kind: "repo",
+  workspace_digest: "sha256:workspace",
+  captured_at: "2026-08-17T00:00:00.000Z",
+  entries: 1,
+  entries_truncated: 0,
+  digest: "sha256:target",
+};
+
+const review = {
+  id: "01J00000000000000000000010",
+  product_session_id: session.id,
+  workspace_id: workspace.id,
+  target: reviewTarget,
+  status: "findings",
+  conclusion: "findings",
+  runtime_session_id: "01J00000000000000000000011",
+  job_id: "01J00000000000000000000012",
+  run_id: "01J00000000000000000000013",
+  result: {
+    schema_version: 1,
+    review_id: "01J00000000000000000000010",
+    run_id: "01J00000000000000000000013",
+    session_id: "01J00000000000000000000011",
+    target: reviewTarget,
+    conclusion: "findings",
+    findings: [reviewFinding],
+    stats: {
+      files_scanned: 1,
+      bytes_scanned: 128,
+      duration_ms: 10,
+      concurrency_limit: 1,
+      findings_total: 1,
+      truncated_findings: 0,
+    },
+    unchecked: [],
+    warnings: [],
+  },
+  findings_count: 1,
+  unchecked_count: 0,
+  warnings_count: 0,
+  created_at: "2026-08-17T00:00:00.000Z",
+  updated_at: "2026-08-17T00:00:01.000Z",
+  captured_at: "2026-08-17T00:00:00.000Z",
+  finalized_at: "2026-08-17T00:00:01.000Z",
 };
 
 function transcriptSegment(
@@ -272,6 +343,24 @@ describe("product API client", () => {
         if (url.endsWith(`/product/sessions/${session.id}/forks`) && method === "GET") {
           return jsonResponse({ forks: [fork] });
         }
+        if (url.endsWith(`/product/sessions/${session.id}/reviews`) && method === "POST") {
+          return jsonResponse(review, 201);
+        }
+        if (url.endsWith(`/product/sessions/${session.id}/reviews`) && method === "GET") {
+          return jsonResponse({ reviews: [review] });
+        }
+        if (url.endsWith(`/product/reviews/${review.id}/findings?limit=1&cursor=0`)) {
+          return jsonResponse({
+            findings: [{ finding: reviewFinding, sort_key: "001" }],
+            next_cursor: 1,
+          });
+        }
+        if (url.endsWith(`/product/reviews/${review.id}/cancel`)) {
+          return jsonResponse({ ...review, status: "cancelled", conclusion: "cancelled" });
+        }
+        if (url.endsWith(`/product/reviews/${review.id}`)) {
+          return jsonResponse(review);
+        }
         if (url.endsWith(`/product/sessions/${session.id}`)) {
           return jsonResponse({ ...session, title: "Renamed" });
         }
@@ -358,6 +447,15 @@ describe("product API client", () => {
       idempotency_key: fork.idempotency_key,
     });
     await client.listForks(session.id);
+    await client.createReview(session.id, {
+      target: { kind: "uncommitted" },
+      idempotency_key: "review-1",
+      max_steps: 8,
+    });
+    await client.listReviews(session.id);
+    await client.getReview(review.id);
+    await client.listReviewFindings(review.id, { limit: 1, cursor: 0 });
+    await client.cancelReview(review.id);
     await client.updateSession(session.id, { title: "Renamed" });
     await client.getTranscript(session.id);
     await client.getSessionModelConfig(session.id);
@@ -427,6 +525,11 @@ describe("product API client", () => {
       "POST /api/product/sessions",
       `POST /api/product/sessions/${session.id}/forks`,
       `GET /api/product/sessions/${session.id}/forks`,
+      `POST /api/product/sessions/${session.id}/reviews`,
+      `GET /api/product/sessions/${session.id}/reviews`,
+      `GET /api/product/reviews/${review.id}`,
+      `GET /api/product/reviews/${review.id}/findings?limit=1&cursor=0`,
+      `POST /api/product/reviews/${review.id}/cancel`,
       `PATCH /api/product/sessions/${session.id}`,
       `GET /api/product/sessions/${session.id}/transcript`,
       `GET /api/product/sessions/${session.id}/model-config`,
@@ -458,6 +561,28 @@ describe("product API client", () => {
     await expect(client.listWorkspaces()).rejects.toBeInstanceOf(
       ProductApiSchemaError,
     );
+  });
+
+  it("validates Review targets before dispatch", () => {
+    expect(
+      parseCreateProductReviewRequest({
+        target: { kind: "base", revision: "main" },
+        idempotency_key: "review-main-1",
+        max_steps: 12,
+      }),
+    ).toEqual({
+      target: { kind: "base", revision: "main" },
+      idempotency_key: "review-main-1",
+      max_steps: 12,
+    });
+    expect(() =>
+      parseCreateProductReviewRequest({
+        target: { kind: "uncommitted", revision: "HEAD" },
+      }),
+    ).toThrow(ProductApiSchemaError);
+    expect(() =>
+      parseCreateProductReviewRequest({ target: { kind: "commit" } }),
+    ).toThrow(ProductApiSchemaError);
   });
 
   it("strictly validates control requests and responses before accepting them", () => {

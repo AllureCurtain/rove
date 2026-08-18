@@ -14,7 +14,15 @@ import type {
   ProductFileEntry,
 } from "../product/product-api-types";
 
-export function FilesPanel({ workspaceId }: { workspaceId: string }) {
+export function FilesPanel({
+  workspaceId,
+  focusPath,
+  focusLine,
+}: {
+  workspaceId: string;
+  focusPath?: string | null;
+  focusLine?: number | null;
+}) {
   const client = useMemo(() => createProductApiClient(), []);
   const [prefix, setPrefix] = useState("");
   const [entries, setEntries] = useState<ProductFileEntry[]>([]);
@@ -63,6 +71,38 @@ export function FilesPanel({ workspaceId }: { workspaceId: string }) {
       cancelled = true;
     };
   }, [client, workspaceId, prefix]);
+
+  useEffect(() => {
+    if (!focusPath) {
+      return;
+    }
+    const path = focusPath;
+    let cancelled = false;
+    async function loadFocusedFile() {
+      setError(null);
+      try {
+        const nextContent = await client.getWorkspaceFileContent(workspaceId, path);
+        const nextPreviewUrl =
+          nextContent.image && nextContent.preview_allowed
+            ? URL.createObjectURL(
+                await client.fetchWorkspaceFilePreview(workspaceId, path),
+              )
+            : null;
+        if (!cancelled) {
+          setContent(nextContent);
+          setPreviewUrl(nextPreviewUrl);
+        }
+      } catch (caught) {
+        if (!cancelled) {
+          setError(caught instanceof Error ? caught.message : "Failed to open finding file");
+        }
+      }
+    }
+    void loadFocusedFile();
+    return () => {
+      cancelled = true;
+    };
+  }, [client, focusPath, workspaceId]);
 
   async function loadMore() {
     if (!nextCursor || loading) return;
@@ -199,7 +239,17 @@ export function FilesPanel({ workspaceId }: { workspaceId: string }) {
             <p className="inspector-empty-line" role="alert">{content.validation_error}</p>
           ) : null}
           {content.text !== undefined ? (
-            <pre className="evidence-preview__text">{content.text}</pre>
+            <pre className="evidence-preview__text" data-focus-line={focusLine ?? undefined}>
+              {content.text.split("\n").map((line, index) => (
+                <span
+                  key={`${content.path}-${index}`}
+                  data-line={index + 1}
+                  data-focused={focusLine === index + 1 ? "true" : undefined}
+                >
+                  {line || " "}{index < content.text!.split("\n").length - 1 ? "\n" : ""}
+                </span>
+              ))}
+            </pre>
           ) : null}
           {content.image && content.preview_allowed ? (
             <figure className="evidence-preview__image">

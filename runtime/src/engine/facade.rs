@@ -39,7 +39,7 @@ use crate::state::tool_artifacts::ToolArtifactStore;
 use crate::state::trace::TraceWriter;
 use crate::tools::mcp_proxy::{McpLifecycleFact, McpRuntimeState, McpServerRuntimeSnapshot};
 use crate::types::{
-    ApprovalDecision, ApprovalPolicy, JobId, Message, RunId, RunRequest, SessionId,
+    ApprovalDecision, ApprovalPolicy, JobId, Message, RunId, RunMode, RunRequest, SessionId,
     TerminationReason, ToolApprovalProvider, ToolDescriptor, UserInputProvider,
 };
 use crate::workspace::Workspace;
@@ -196,6 +196,7 @@ pub struct Engine {
     compaction_failure_threshold: u32,
     agent_runtime: AgentRuntime,
     run_model: Option<RunModelSnapshot>,
+    run_mode: RunMode,
 }
 
 impl Engine {
@@ -305,6 +306,7 @@ impl Engine {
             compaction_failure_threshold: 3,
             agent_runtime,
             run_model: None,
+            run_mode: RunMode::Normal,
         }
     }
 
@@ -373,6 +375,13 @@ impl Engine {
         self
     }
 
+    /// Select a host-owned execution profile for every invocation produced by
+    /// this Engine. Review mode is immutable once a run starts.
+    pub fn with_run_mode(mut self, run_mode: RunMode) -> Self {
+        self.run_mode = run_mode;
+        self
+    }
+
     /// Configure the Runtime-owned Agent source for this Engine.
     pub fn with_agent_activation(
         mut self,
@@ -386,6 +395,11 @@ impl Engine {
 
     pub fn model_id(&self) -> &str {
         self.model.model_id()
+    }
+
+    /// Return the host-selected execution profile for this Engine.
+    pub fn run_mode(&self) -> RunMode {
+        self.run_mode
     }
 
     pub fn workspace(&self) -> &Workspace {
@@ -490,6 +504,11 @@ impl Engine {
         let user_message = req.user_message;
         let resume_state = req.resume_state;
         let stream_cancel = cancel.clone();
+        // Review tools may return source text to the in-process model, but a
+        // caller-provided TraceWriter is a durable boundary. Keep the same
+        // redaction guarantee for direct Engine consumers (CLI/embedders) as
+        // the API supervisor applies to its SSE and artifact projections.
+        let review_mode = self.run_mode == RunMode::Review;
         // Dynamic catalogs publish only into the live registry. This private
         // copy freezes both schemas and implementations for the whole run.
         let run_registry = self.registry.snapshot();
@@ -626,14 +645,14 @@ impl Engine {
                                 "run completed before the steer reached a safe point".to_string(),
                             );
                             run_summary.record_event(&dropped);
-                            append_trace(&trace_writer, &dropped);
+                            append_trace(&trace_writer, &dropped, review_mode);
                             yield dropped;
                         }
                         drop(pending_steers);
                         message_event_rx.close();
                         while let Ok(message_event) = message_event_rx.try_recv() {
                             run_summary.record_event(&message_event);
-                            append_trace(&trace_writer, &message_event);
+                            append_trace(&trace_writer, &message_event, review_mode);
                             yield message_event;
                         }
                         for accepted in steer_lifecycle.take_unapplied().await {
@@ -643,14 +662,14 @@ impl Engine {
                                 "run completed before the accepted steer reached a model turn".to_string(),
                             );
                             run_summary.record_event(&dropped);
-                            append_trace(&trace_writer, &dropped);
+                            append_trace(&trace_writer, &dropped, review_mode);
                             yield dropped;
                         }
                         let event = StreamEvent::RunCompleted {
                             reason: reason.clone(),
                             output: output.clone(),
                         };
-                        append_trace(&trace_writer, &event);
+                        append_trace(&trace_writer, &event, review_mode);
                         yield event;
                         self.run_post_run_hooks(CompletedRunContext {
                             session_id,
@@ -668,7 +687,7 @@ impl Engine {
                 macro_rules! yield_traced {
                     ($event:expr) => {{
                         let event = $event;
-                        append_trace(&trace_writer, &event);
+                        append_trace(&trace_writer, &event, review_mode);
                         yield event;
                     }};
                 }
@@ -678,7 +697,7 @@ impl Engine {
                     job_id,
                     user_message: user_message.clone(),
                 };
-                append_trace(&trace_writer, &start_event);
+                append_trace(&trace_writer, &start_event, review_mode);
                 yield start_event;
 
                 for fact in mcp_lifecycle_facts {
@@ -896,6 +915,7 @@ impl Engine {
                     agent_profile: Some(Arc::new(resolved_agent.profile.clone())),
                     agent_planner_summary: Some(resolved_agent.prompt.planner_summary.clone()),
                     instruction_overlays_seen: Arc::new(Mutex::new(BTreeSet::new())),
+                    run_mode: self.run_mode,
                     approval_policy: self.approval_policy,
                     approval_decision: self.approval_decision,
                     approval_provider: self.approval_provider.clone(),
@@ -1084,9 +1104,14 @@ fn composed_prompt(base: &str, slot: Option<&str>, role: &str) -> String {
     )
 }
 
-fn append_trace(trace_writer: &Option<TraceWriter>, event: &StreamEvent) {
+fn append_trace(trace_writer: &Option<TraceWriter>, event: &StreamEvent, review_mode: bool) {
     if let Some(tw) = trace_writer {
-        let _ = tw.append(event);
+        let persisted = if review_mode {
+            event.redacted_for_review_persistence()
+        } else {
+            event.clone()
+        };
+        let _ = tw.append(&persisted);
     }
 }
 

@@ -15,7 +15,7 @@ use crate::hooks::HookRegistry;
 use crate::memory::paths::MemoryPaths;
 use crate::state::tool_artifacts::{ArtifactLedgerEntry, ToolArtifactStore};
 use crate::tool_input::RegisteredUserInput;
-use crate::tools::runtime_context::runtime_tool_context_with_artifacts;
+use crate::tools::runtime_context::runtime_tool_context_with_mode_and_artifacts;
 use crate::types::{
     ApprovalDecision, ApprovalPolicy, CallId, Message, PendingToolApproval, ToolApprovalProvider,
     ToolApprovalRequest, ToolCallAction, ToolCallRef, ToolExecutionMetadata, ToolExecutionStatus,
@@ -27,6 +27,14 @@ use rove_core::ToolRegistry;
 use rove_models::{InternalCallId, ToolResultStatus};
 
 const APPROVAL_REASON: &str = "destructive tool requires explicit approval";
+
+fn event_args(mode: crate::types::RunMode, args: &serde_json::Value) -> serde_json::Value {
+    if matches!(mode, crate::types::RunMode::Review) {
+        serde_json::json!({"redacted": true})
+    } else {
+        args.clone()
+    }
+}
 
 #[derive(Debug, Clone)]
 pub(crate) enum ToolAction {
@@ -156,6 +164,7 @@ pub(crate) struct ToolTurnContext<'a> {
     /// rich result can retain its payloads.
     pub tool_artifacts: Option<Arc<ToolArtifactStore>>,
     pub agent_profile: Option<Arc<AgentRuntimeProfile>>,
+    pub run_mode: crate::types::RunMode,
 }
 
 #[derive(Debug)]
@@ -278,7 +287,7 @@ impl<'a> ToolTurnContext<'a> {
             };
         }
         let executor = Executor::with_hooks(self.registry, self.hooks.clone());
-        let tool_context = runtime_tool_context_with_artifacts(
+        let tool_context = runtime_tool_context_with_mode_and_artifacts(
             call.call_id,
             self.workspace,
             self.memory_paths.clone(),
@@ -287,6 +296,7 @@ impl<'a> ToolTurnContext<'a> {
             self.cancel_token.clone(),
             self.environment.clone(),
             self.tool_artifacts.clone(),
+            self.run_mode,
         );
         let result = executor
             .run_with_input_events(
@@ -377,7 +387,7 @@ pub(crate) fn run_tool_turn<'a>(
                     call_id: call.call_id,
                     tool_use_id: call.tool_use_id.clone(),
                     name: call.name.clone(),
-                    args: call.args.clone(),
+                    args: event_args(ctx.run_mode, &call.args),
                 });
 
                 let approval_decision = if ctx.tool_requires_approval(&call.name) {
@@ -397,7 +407,7 @@ pub(crate) fn run_tool_turn<'a>(
                         yield ToolTurnItem::Event(StreamEvent::ToolCallApprovalNeeded {
                             call_id: call.call_id,
                             name: call.name.clone(),
-                            args: call.args.clone(),
+                            args: event_args(ctx.run_mode, &call.args),
                             reason: APPROVAL_REASON.to_string(),
                         });
                         tokio::select! {
@@ -443,7 +453,7 @@ pub(crate) fn run_tool_turn<'a>(
                             call_id: call.call_id,
                             tool_use_id: call.tool_use_id.clone(),
                             name: call.name.clone(),
-                            args: call.args.clone(),
+                            args: event_args(ctx.run_mode, &call.args),
                         });
                     }
                     executions = tokio::select! {
@@ -460,7 +470,7 @@ pub(crate) fn run_tool_turn<'a>(
                             call_id: call.call_id,
                             tool_use_id: call.tool_use_id.clone(),
                             name: call.name.clone(),
-                            args: call.args.clone(),
+                            args: event_args(ctx.run_mode, &call.args),
                         });
                         let approval_decision = if ctx.tool_requires_approval(&call.name) {
                             let pending_approval = tokio::select! {
@@ -479,7 +489,7 @@ pub(crate) fn run_tool_turn<'a>(
                                 yield ToolTurnItem::Event(StreamEvent::ToolCallApprovalNeeded {
                                     call_id: call.call_id,
                                     name: call.name.clone(),
-                                    args: call.args.clone(),
+                                    args: event_args(ctx.run_mode, &call.args),
                                     reason: APPROVAL_REASON.to_string(),
                                 });
                                 tokio::select! {
@@ -531,8 +541,10 @@ pub(crate) fn run_tool_turn<'a>(
         for execution in executions {
             match execution.result {
                 Ok(result) => {
+                    let mut persisted_call = execution.call.clone();
+                    persisted_call.args = event_args(ctx.run_mode, &persisted_call.args);
                     records.push(ToolExecutionRecord {
-                        call: execution.call.clone(),
+                        call: persisted_call,
                         history_output: result.output.clone(),
                         error_reason: None,
                         artifacts: result
@@ -580,8 +592,10 @@ pub(crate) fn run_tool_turn<'a>(
                 Err(error) => {
                     let metadata = failure_metadata(&error);
                     let reason = error.to_string();
+                    let mut persisted_call = execution.call.clone();
+                    persisted_call.args = event_args(ctx.run_mode, &persisted_call.args);
                     records.push(ToolExecutionRecord {
-                        call: execution.call.clone(),
+                        call: persisted_call,
                         history_output: format!("Error: {reason}"),
                         error_reason: Some(reason),
                         artifacts: Vec::new(),
@@ -835,6 +849,7 @@ mod tests {
             cancel_token: CancellationToken::new(),
             tool_artifacts: None,
             agent_profile: None,
+            run_mode: crate::types::RunMode::Normal,
         };
 
         assert!(base.can_run_parallel_batch(&calls));
@@ -866,6 +881,7 @@ mod tests {
             cancel_token: CancellationToken::new(),
             tool_artifacts: None,
             agent_profile: None,
+            run_mode: crate::types::RunMode::Normal,
         };
         let action = ToolAction::Call(ToolCallAction {
             call_id: CallId::new(),
@@ -914,6 +930,7 @@ mod tests {
             cancel_token: CancellationToken::new(),
             tool_artifacts: Some(Arc::clone(&store)),
             agent_profile: None,
+            run_mode: crate::types::RunMode::Normal,
         };
         let items = run_tool_turn(
             ctx,

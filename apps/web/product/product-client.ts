@@ -3,6 +3,7 @@ import {
   parseApiErrorResponse,
   parseCreateProductControlRequest,
   parseCreateProductForkRequest,
+  parseCreateProductReviewRequest,
   parseCreateProductSessionRequest,
   parseCreateProductWorkspaceRequest,
   parseM1BrowserMigrationRequest,
@@ -18,6 +19,9 @@ import {
   parseProductProviderModelsResponse,
   parseProductProviderProfileRequest,
   parseProductProviderProfilesResponse,
+  parseProductReview,
+  parseProductReviewFindingsResponse,
+  parseProductReviewsResponse,
   parseProductSession,
   parseProductSessionModelConfigResponse,
   parseProductSessionRunModelsResponse,
@@ -37,6 +41,7 @@ import {
   type CreateProductProviderProfileRequest,
   type CreateProductControlRequest,
   type CreateProductForkRequest,
+  type CreateProductReviewRequest,
   type CreateProductSessionRequest,
   type CreateProductWorkspaceRequest,
   type M1BrowserMigrationRequest,
@@ -53,6 +58,9 @@ import {
   type ProductProviderProfile,
   type ProductProviderModelsResponse,
   type ProductProviderProfilesResponse,
+  type ProductReview,
+  type ProductReviewFindingsResponse,
+  type ProductReviewsResponse,
   type ProductSession,
   type ProductSessionModelConfig,
   type ProductSessionRunModelsResponse,
@@ -159,6 +167,17 @@ export interface ProductApiClient {
     request: CreateProductForkRequest,
   ): Promise<ProductForkResponse>;
   listForks(sessionId: string): Promise<ProductForksResponse>;
+  createReview(
+    sessionId: string,
+    request: CreateProductReviewRequest,
+  ): Promise<ProductReview>;
+  listReviews(sessionId: string): Promise<ProductReviewsResponse>;
+  getReview(reviewId: string): Promise<ProductReview>;
+  listReviewFindings(
+    reviewId: string,
+    query?: { cursor?: number; limit?: number },
+  ): Promise<ProductReviewFindingsResponse>;
+  cancelReview(reviewId: string): Promise<ProductReview>;
   getTranscript(sessionId: string): Promise<ProductTranscriptResponse>;
   sendMessage(sessionId: string, request: CreateProductMessageRequest): Promise<ProductMessage>;
   listMessages(
@@ -698,6 +717,75 @@ export function createProductApiClient(
         ),
         undefined,
         parseProductForksResponse,
+      );
+    },
+
+    async createReview(sessionId, input) {
+      const request = parseCreateProductReviewRequest(input);
+      return requestJson(
+        fetchImpl,
+        productUrl(
+          apiPrefix,
+          `/product/sessions/${encodeURIComponent(sessionId)}/reviews`,
+        ),
+        jsonRequest("POST", JSON.stringify(request)),
+        parseProductReview,
+      );
+    },
+
+    listReviews(sessionId) {
+      return requestJson(
+        fetchImpl,
+        productUrl(
+          apiPrefix,
+          `/product/sessions/${encodeURIComponent(sessionId)}/reviews`,
+        ),
+        undefined,
+        parseProductReviewsResponse,
+      );
+    },
+
+    getReview(reviewId) {
+      return requestJson(
+        fetchImpl,
+        productUrl(
+          apiPrefix,
+          `/product/reviews/${encodeURIComponent(reviewId)}`,
+        ),
+        undefined,
+        parseProductReview,
+      );
+    },
+
+    listReviewFindings(reviewId, query) {
+      const params = new URLSearchParams();
+      if (query?.limit !== undefined) {
+        params.set("limit", String(query.limit));
+      }
+      if (query?.cursor !== undefined) {
+        params.set("cursor", String(query.cursor));
+      }
+      const suffix = params.size ? `?${params.toString()}` : "";
+      return requestJson(
+        fetchImpl,
+        productUrl(
+          apiPrefix,
+          `/product/reviews/${encodeURIComponent(reviewId)}/findings${suffix}`,
+        ),
+        undefined,
+        parseProductReviewFindingsResponse,
+      );
+    },
+
+    cancelReview(reviewId) {
+      return requestJson(
+        fetchImpl,
+        productUrl(
+          apiPrefix,
+          `/product/reviews/${encodeURIComponent(reviewId)}/cancel`,
+        ),
+        jsonRequest("POST", "{}"),
+        parseProductReview,
       );
     },
 

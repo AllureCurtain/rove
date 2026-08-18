@@ -15,16 +15,18 @@ use async_trait::async_trait;
 
 use crate::product::{
     CommitProductRunBinding, CreateProductControlRequest, CreateProductForkRequest,
-    CreateProductMessageRequest, CreateProductProviderProfileRequest, CreateProductSessionRequest,
-    CreateProductWorkspaceRequest, M1BrowserMigrationPreflight, M1BrowserMigrationRequest,
-    M1BrowserMigrationResponse, PreparedM1BrowserMigration, ProductControl, ProductControlId,
-    ProductControlKind, ProductControlStatus, ProductErrorCode, ProductFollowupTurnClaim,
-    ProductFork, ProductMessage, ProductMessagePage, ProductMessagePageQuery, ProductPreferences,
-    ProductProviderProfile, ProductProviderProfileId, ProductResumeHealth, ProductSession,
-    ProductSessionContext, ProductSessionId, ProductSessionModelConfig, ProductSessionRunBinding,
-    ProductSessionRunModelView, ProductSessionStatus, ProductStore, ProductStoreError,
-    ProductTurnClaim, ProductTurnClaimId, ProductTurnControlFinish, ProductWorkspace,
-    ProductWorkspaceId, UpdateProductPreferencesRequest, UpdateProductProviderProfileRequest,
+    CreateProductMessageRequest, CreateProductProviderProfileRequest, CreateProductReviewRecord,
+    CreateProductSessionRequest, CreateProductWorkspaceRequest, M1BrowserMigrationPreflight,
+    M1BrowserMigrationRequest, M1BrowserMigrationResponse, PreparedM1BrowserMigration,
+    ProductControl, ProductControlId, ProductControlKind, ProductControlStatus, ProductErrorCode,
+    ProductFollowupTurnClaim, ProductFork, ProductMessage, ProductMessagePage,
+    ProductMessagePageQuery, ProductPreferences, ProductProviderProfile, ProductProviderProfileId,
+    ProductResumeHealth, ProductReview, ProductReviewFindingsQuery, ProductReviewFindingsResponse,
+    ProductReviewId, ProductSession, ProductSessionContext, ProductSessionId,
+    ProductSessionModelConfig, ProductSessionRunBinding, ProductSessionRunModelView,
+    ProductSessionStatus, ProductStore, ProductStoreError, ProductTurnClaim, ProductTurnClaimId,
+    ProductTurnControlFinish, ProductWorkspace, ProductWorkspaceId,
+    UpdateProductPreferencesRequest, UpdateProductProviderProfileRequest,
     UpdateProductSessionModelConfigRequest, UpdateProductSessionRequest,
     VerifiedProductForkBoundary,
 };
@@ -191,6 +193,93 @@ impl ProductStore for SqliteProductStore {
     ) -> Result<Vec<ProductSessionRunBinding>, ProductStoreError> {
         let session_id = session_id.clone();
         self.blocking(move |repository| repository.list_run_bindings(&session_id))
+            .await
+    }
+
+    async fn create_review(
+        &self,
+        record: CreateProductReviewRecord,
+    ) -> Result<(ProductReview, bool), ProductStoreError> {
+        self.blocking(move |repository| repository.create_review(record))
+            .await
+    }
+
+    async fn list_reviews(
+        &self,
+        session_id: &ProductSessionId,
+    ) -> Result<Vec<ProductReview>, ProductStoreError> {
+        let session_id = session_id.clone();
+        self.blocking(move |repository| repository.list_reviews(&session_id))
+            .await
+    }
+
+    async fn get_review(
+        &self,
+        review_id: &ProductReviewId,
+    ) -> Result<ProductReview, ProductStoreError> {
+        let review_id = review_id.clone();
+        self.blocking(move |repository| repository.get_review(&review_id))
+            .await
+    }
+
+    async fn bind_review_runtime(
+        &self,
+        review_id: &ProductReviewId,
+        runtime_session_id: rove_runtime::types::SessionId,
+        job_id: rove_runtime::types::JobId,
+        run_id: rove_runtime::types::RunId,
+    ) -> Result<ProductReview, ProductStoreError> {
+        let review_id = review_id.clone();
+        self.blocking(move |repository| {
+            repository.bind_review_runtime(&review_id, runtime_session_id, job_id, run_id)
+        })
+        .await
+    }
+
+    async fn finalize_review(
+        &self,
+        review_id: &ProductReviewId,
+        result: rove_runtime::review::ReviewResult,
+    ) -> Result<ProductReview, ProductStoreError> {
+        let review_id = review_id.clone();
+        self.blocking(move |repository| repository.finalize_review(&review_id, result))
+            .await
+    }
+
+    async fn cancel_review(
+        &self,
+        review_id: &ProductReviewId,
+    ) -> Result<ProductReview, ProductStoreError> {
+        let review_id = review_id.clone();
+        self.blocking(move |repository| repository.cancel_review(&review_id))
+            .await
+    }
+
+    async fn mark_review_needs_attention(
+        &self,
+        review_id: &ProductReviewId,
+    ) -> Result<ProductReview, ProductStoreError> {
+        let review_id = review_id.clone();
+        self.blocking(move |repository| repository.mark_review_needs_attention(&review_id))
+            .await
+    }
+
+    async fn mark_review_unavailable(
+        &self,
+        review_id: &ProductReviewId,
+    ) -> Result<ProductReview, ProductStoreError> {
+        let review_id = review_id.clone();
+        self.blocking(move |repository| repository.mark_review_unavailable(&review_id))
+            .await
+    }
+
+    async fn list_review_findings(
+        &self,
+        review_id: &ProductReviewId,
+        query: ProductReviewFindingsQuery,
+    ) -> Result<ProductReviewFindingsResponse, ProductStoreError> {
+        let review_id = review_id.clone();
+        self.blocking(move |repository| repository.list_review_findings(&review_id, query))
             .await
     }
 

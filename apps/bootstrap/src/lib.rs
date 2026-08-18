@@ -11,7 +11,7 @@ pub mod registry;
 pub mod session_selection;
 pub mod user_config;
 
-pub use assembly::{EngineOptions, build_engine, build_engine_with_registry};
+pub use assembly::{EngineOptions, build_engine, build_engine_with_registry, build_review_engine};
 pub use config::{
     AgentConfig, ApiConfig, AppConfig, AppConfigOverrides, ConfigSourceSummary, MemoryConfig,
     ProviderConfig, ProviderOptions, RoutingConfig, RuntimeConfig, ShellConfig, StateConfig,
@@ -45,7 +45,7 @@ pub use provider_migration::{
     ProviderMigrationSource, run_provider_migration,
 };
 pub use registry::{
-    register_extra_tools, tool_registry, tool_registry_for_config,
+    register_extra_tools, review_tool_registry, tool_registry, tool_registry_for_config,
     tool_registry_for_config_with_environment, tool_registry_with_mcp,
     tool_registry_with_mcp_and_environment, tool_registry_with_shell_policy,
 };

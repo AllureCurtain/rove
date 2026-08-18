@@ -7,6 +7,7 @@ pub mod oneshot;
 pub mod provider;
 pub mod render;
 pub mod repl;
+pub mod review;
 pub mod runtime;
 pub mod sessions;
 pub mod state;

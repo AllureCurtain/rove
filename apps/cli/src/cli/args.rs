@@ -94,6 +94,18 @@ pub enum Command {
         #[arg(value_name = "MESSAGE", num_args = 1.., required = true)]
         message: Vec<String>,
     },
+    /// Review the current Git target without permitting workspace mutations.
+    Review {
+        /// Compare the working tree against a base revision.
+        #[arg(long, conflicts_with = "commit", value_name = "REV")]
+        base: Option<String>,
+        /// Review the changes introduced by one commit.
+        #[arg(long, conflicts_with = "base", value_name = "REV")]
+        commit: Option<String>,
+        /// Output format.
+        #[arg(long, value_enum, default_value_t = ReviewFormat::Text)]
+        format: ReviewFormat,
+    },
     /// List resumable local task states.
     Sessions,
     /// Maintain the local state index.
@@ -111,6 +123,13 @@ pub enum Command {
         #[command(subcommand)]
         command: ProviderCommand,
     },
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum, PartialEq, Eq)]
+pub enum ReviewFormat {
+    Text,
+    Json,
+    Jsonl,
 }
 
 #[derive(Clone, Debug, Subcommand)]

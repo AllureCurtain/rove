@@ -3,34 +3,38 @@ use std::path::PathBuf;
 use std::str::FromStr;
 
 use chrono::{SecondsFormat, Utc};
+use rove_runtime::review::{
+    ReviewConclusion, ReviewFinding, ReviewResult, ReviewTargetKind, ReviewTargetSummary,
+};
+use rove_runtime::types::{JobId, RunId, SessionId};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde::de::DeserializeOwned;
 
-use rove_runtime::types::{JobId, RunId, SessionId};
-
 use crate::product::{
     CommitProductRunBinding, CreateProductControlRequest, CreateProductForkRequest,
-    CreateProductMessageRequest, CreateProductProviderProfileRequest, CreateProductSessionRequest,
-    CreateProductWorkspaceRequest, DEFAULT_PRODUCT_MAX_STEPS, M1BrowserMigrationPreflight,
-    M1BrowserMigrationResponse, M1MigrationDisposition, M1MigrationIssue, M1MigrationIssueCode,
-    M1PreferencesBaseline, M1ProviderProfileIdMapping, M1SessionIdMapping, M1WorkspaceIdMapping,
-    MAX_PRODUCT_FORK_INHERITED_RUNS, MAX_PRODUCT_MAX_STEPS, MAX_PRODUCT_MESSAGE_PAGE_LIMIT,
-    MAX_PRODUCT_PROVIDER_PROFILES, MAX_PRODUCT_SESSIONS, MAX_PRODUCT_TEXT_BYTES,
-    MAX_PRODUCT_WORKSPACES, PreparedM1BrowserMigration, ProductApprovalPreference, ProductControl,
-    ProductControlId, ProductControlKind, ProductControlStatus, ProductErrorCode,
-    ProductFollowupTurnClaim, ProductFork, ProductForkContext, ProductForkId,
-    ProductForkInheritedRun, ProductMessage, ProductMessageDelivery, ProductMessagePage,
-    ProductMessagePageQuery, ProductMessageStatus, ProductMigrationReceiptId, ProductPreferences,
-    ProductPricingAvailability, ProductProviderCredentialSource, ProductProviderProfile,
-    ProductProviderProfileId, ProductProviderSelection, ProductProviderType,
-    ProductReasoningPreference, ProductResumeHealth, ProductResumeHealthStatus,
-    ProductRuntimeBinding, ProductSession, ProductSessionContext, ProductSessionId,
-    ProductSessionModelConfig, ProductSessionRunBinding, ProductSessionRunModelView,
-    ProductSessionStatus, ProductStoreError, ProductThemePreference, ProductTurnClaim,
-    ProductTurnClaimId, ProductTurnControlFinish, ProductWorkspace, ProductWorkspaceId,
-    ProductWorkspaceKind, UpdateProductPreferencesRequest, UpdateProductProviderProfileRequest,
-    UpdateProductSessionModelConfigRequest, UpdateProductSessionRequest,
-    VerifiedM1SessionRunBinding, VerifiedProductForkBoundary, m1_browser_migration_digest,
+    CreateProductMessageRequest, CreateProductProviderProfileRequest, CreateProductReviewRecord,
+    CreateProductSessionRequest, CreateProductWorkspaceRequest, DEFAULT_PRODUCT_MAX_STEPS,
+    M1BrowserMigrationPreflight, M1BrowserMigrationResponse, M1MigrationDisposition,
+    M1MigrationIssue, M1MigrationIssueCode, M1PreferencesBaseline, M1ProviderProfileIdMapping,
+    M1SessionIdMapping, M1WorkspaceIdMapping, MAX_PRODUCT_FORK_INHERITED_RUNS,
+    MAX_PRODUCT_MAX_STEPS, MAX_PRODUCT_MESSAGE_PAGE_LIMIT, MAX_PRODUCT_PROVIDER_PROFILES,
+    MAX_PRODUCT_SESSIONS, MAX_PRODUCT_TEXT_BYTES, MAX_PRODUCT_WORKSPACES,
+    PreparedM1BrowserMigration, ProductApprovalPreference, ProductControl, ProductControlId,
+    ProductControlKind, ProductControlStatus, ProductErrorCode, ProductFollowupTurnClaim,
+    ProductFork, ProductForkContext, ProductForkId, ProductForkInheritedRun, ProductMessage,
+    ProductMessageDelivery, ProductMessagePage, ProductMessagePageQuery, ProductMessageStatus,
+    ProductMigrationReceiptId, ProductPreferences, ProductPricingAvailability,
+    ProductProviderCredentialSource, ProductProviderProfile, ProductProviderProfileId,
+    ProductProviderSelection, ProductProviderType, ProductReasoningPreference, ProductResumeHealth,
+    ProductResumeHealthStatus, ProductReview, ProductReviewFinding, ProductReviewFindingsQuery,
+    ProductReviewFindingsResponse, ProductReviewId, ProductReviewStatus, ProductRuntimeBinding,
+    ProductSession, ProductSessionContext, ProductSessionId, ProductSessionModelConfig,
+    ProductSessionRunBinding, ProductSessionRunModelView, ProductSessionStatus, ProductStoreError,
+    ProductThemePreference, ProductTurnClaim, ProductTurnClaimId, ProductTurnControlFinish,
+    ProductWorkspace, ProductWorkspaceId, ProductWorkspaceKind, UpdateProductPreferencesRequest,
+    UpdateProductProviderProfileRequest, UpdateProductSessionModelConfigRequest,
+    UpdateProductSessionRequest, VerifiedM1SessionRunBinding, VerifiedProductForkBoundary,
+    m1_browser_migration_digest,
 };
 
 use super::schema::{ProductDatabase, storage_error};
@@ -90,7 +94,20 @@ impl ProductRepository {
     pub(super) fn initialize_and_recover(&self) -> Result<u64, ProductStoreError> {
         self.database.initialize()?;
         self.remove_expired_migration_preparations()?;
-        self.recover_stale_turn_claims()
+        let recovered = self.recover_stale_turn_claims()?;
+        self.recover_interrupted_reviews()?;
+        Ok(recovered)
+    }
+
+    fn recover_interrupted_reviews(&self) -> Result<u64, ProductStoreError> {
+        let connection = self.database.connect()?;
+        let updated = connection
+            .execute(
+                "UPDATE product_reviews SET status = 'needs_attention', updated_at = ?1, finalized_at = COALESCE(finalized_at, ?1) WHERE status IN ('queued', 'running')",
+                params![now_rfc3339()],
+            )
+            .map_err(storage_error)?;
+        u64::try_from(updated).map_err(storage_error)
     }
 
     fn remove_expired_migration_preparations(&self) -> Result<u64, ProductStoreError> {
@@ -693,6 +710,348 @@ impl ProductRepository {
             workspace,
             session,
             fork,
+        })
+    }
+
+    pub(super) fn create_review(
+        &self,
+        record: CreateProductReviewRecord,
+    ) -> Result<(ProductReview, bool), ProductStoreError> {
+        let mut connection = self.database.connect()?;
+        let transaction = immediate_transaction(&mut connection)?;
+        // Validate both foreign-key identities before any idempotency lookup so
+        // a stale client cannot create a review row detached from the catalog.
+        let session = get_session(&transaction, &record.product_session_id)?;
+        if session.workspace_id != record.workspace_id {
+            return Err(ProductStoreError::new(
+                ProductErrorCode::ProductSessionWorkspaceMismatch,
+                "review workspace does not match the product session",
+            ));
+        }
+        get_workspace(&transaction, &record.workspace_id)?;
+
+        let idempotency_key = record.idempotency_key.as_deref();
+        if let Some(key) = idempotency_key {
+            validate_review_idempotency_key(key)?;
+            if let Some(existing) = transaction
+                .query_row(
+                    "SELECT review_id, target_digest FROM product_reviews WHERE product_session_id = ?1 AND idempotency_key = ?2",
+                    params![record.product_session_id.to_string(), key],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                )
+                .optional()
+                .map_err(storage_error)?
+            {
+                if existing.1 != record.target.digest {
+                    return Err(ProductStoreError::new(
+                        ProductErrorCode::ReviewConflict,
+                        "review idempotency key is already bound to another target",
+                    ));
+                }
+                let existing_id = parse_product_id(&existing.0, "review id")?;
+                let review = get_review_in_transaction(&transaction, &existing_id)?;
+                transaction.commit().map_err(storage_error)?;
+                return Ok((review, true));
+            }
+        }
+
+        if let Some(existing_id) = transaction
+            .query_row(
+                "SELECT review_id FROM product_reviews WHERE product_session_id = ?1 AND target_digest = ?2 AND status IN ('queued', 'running') ORDER BY created_at DESC LIMIT 1",
+                params![record.product_session_id.to_string(), record.target.digest],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(storage_error)?
+        {
+            let existing_id = parse_product_id(&existing_id, "review id")?;
+            let review = get_review_in_transaction(&transaction, &existing_id)?;
+            transaction.commit().map_err(storage_error)?;
+            return Ok((review, true));
+        }
+
+        let target_summary_json = serde_json::to_string(&record.target).map_err(storage_error)?;
+        let target_spec_json = serde_json::to_string(&record.target_spec).map_err(storage_error)?;
+        let state_root = record
+            .state_root
+            .to_str()
+            .ok_or_else(|| invalid("review state root must be valid UTF-8"))?;
+        let now = now_rfc3339();
+        transaction
+            .execute(
+                r#"
+                INSERT INTO product_reviews(
+                    review_id, product_session_id, workspace_id,
+                    target_kind, target_revision, resolved_base, target_digest,
+                    target_summary_json, target_spec_json, state_root,
+                    status, idempotency_key, captured_at, created_at, updated_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
+                          'queued', ?11, ?12, ?12, ?12)
+                "#,
+                params![
+                    record.review_id.to_string(),
+                    record.product_session_id.to_string(),
+                    record.workspace_id.to_string(),
+                    review_target_kind_to_db(record.target_spec.kind),
+                    record.target_spec.revision,
+                    record.target.resolved_base,
+                    record.target.digest,
+                    target_summary_json,
+                    target_spec_json,
+                    state_root,
+                    idempotency_key,
+                    now,
+                ],
+            )
+            .map_err(|error| {
+                if matches!(error, rusqlite::Error::SqliteFailure(_, _)) {
+                    ProductStoreError::new(
+                        ProductErrorCode::ReviewConflict,
+                        "an active review already exists for this target",
+                    )
+                } else {
+                    storage_error(error)
+                }
+            })?;
+        let review = get_review_in_transaction(&transaction, &record.review_id)?;
+        transaction.commit().map_err(storage_error)?;
+        Ok((review, false))
+    }
+
+    pub(super) fn list_reviews(
+        &self,
+        session_id: &ProductSessionId,
+    ) -> Result<Vec<ProductReview>, ProductStoreError> {
+        let connection = self.database.connect()?;
+        get_session(&connection, session_id)?;
+        let mut statement = connection
+            .prepare(
+                "SELECT review_id FROM product_reviews WHERE product_session_id = ?1 ORDER BY created_at DESC, review_id DESC LIMIT 256",
+            )
+            .map_err(storage_error)?;
+        let ids = statement
+            .query_map(params![session_id.to_string()], |row| {
+                row.get::<_, String>(0)
+            })
+            .map_err(storage_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(storage_error)?;
+        ids.into_iter()
+            .map(|id| {
+                let id = parse_product_id(&id, "review id")?;
+                get_review_in_transaction(&connection, &id)
+            })
+            .collect()
+    }
+
+    pub(super) fn get_review(
+        &self,
+        review_id: &ProductReviewId,
+    ) -> Result<ProductReview, ProductStoreError> {
+        let connection = self.database.connect()?;
+        get_review_in_transaction(&connection, review_id)
+    }
+
+    pub(super) fn bind_review_runtime(
+        &self,
+        review_id: &ProductReviewId,
+        runtime_session_id: SessionId,
+        job_id: JobId,
+        run_id: RunId,
+    ) -> Result<ProductReview, ProductStoreError> {
+        let mut connection = self.database.connect()?;
+        let transaction = immediate_transaction(&mut connection)?;
+        let current = get_review_in_transaction(&transaction, review_id)?;
+        if let (Some(current_session), Some(current_job), Some(current_run)) =
+            (current.runtime_session_id, current.job_id, current.run_id)
+        {
+            if current_session == runtime_session_id
+                && current_job == job_id
+                && current_run == run_id
+            {
+                transaction.commit().map_err(storage_error)?;
+                return Ok(current);
+            }
+            return Err(ProductStoreError::new(
+                ProductErrorCode::ReviewConflict,
+                "review is already bound to a different runtime run",
+            ));
+        }
+        if current.status.is_terminal() {
+            return Err(ProductStoreError::new(
+                ProductErrorCode::ReviewConflict,
+                "review is already terminal",
+            ));
+        }
+        transaction
+            .execute(
+                "UPDATE product_reviews SET status = 'running', runtime_session_id = ?2, job_id = ?3, run_id = ?4, updated_at = ?5 WHERE review_id = ?1 AND status IN ('queued', 'running')",
+                params![
+                    review_id.to_string(),
+                    runtime_session_id.to_string(),
+                    job_id.to_string(),
+                    run_id.to_string(),
+                    now_rfc3339()
+                ],
+            )
+            .map_err(storage_error)?;
+        let updated = get_review_in_transaction(&transaction, review_id)?;
+        transaction.commit().map_err(storage_error)?;
+        Ok(updated)
+    }
+
+    pub(super) fn finalize_review(
+        &self,
+        review_id: &ProductReviewId,
+        result: ReviewResult,
+    ) -> Result<ProductReview, ProductStoreError> {
+        let mut connection = self.database.connect()?;
+        let transaction = immediate_transaction(&mut connection)?;
+        let current = get_review_in_transaction(&transaction, review_id)?;
+        if current.result.is_some() {
+            transaction.commit().map_err(storage_error)?;
+            return Ok(current);
+        }
+        let conclusion = result.conclusion.clone();
+        let status = review_status_from_conclusion(&conclusion);
+        let result_json = serde_json::to_string(&result).map_err(storage_error)?;
+        let now = now_rfc3339();
+        transaction
+            .execute(
+                "UPDATE product_reviews SET status = ?2, conclusion = ?3, result_json = ?4, findings_count = ?5, unchecked_count = ?6, warnings_count = ?7, updated_at = ?8, finalized_at = ?8 WHERE review_id = ?1 AND result_json IS NULL",
+                params![
+                    review_id.to_string(),
+                    status.as_str(),
+                    review_conclusion_to_db(&conclusion),
+                    result_json,
+                    limit_i64(result.findings.len())?,
+                    limit_i64(result.unchecked.len())?,
+                    limit_i64(result.warnings.len())?,
+                    now,
+                ],
+            )
+            .map_err(storage_error)?;
+        for finding in &result.findings {
+            let finding_json = serde_json::to_string(finding).map_err(storage_error)?;
+            let sort_key = review_finding_sort_key(finding);
+            transaction
+                .execute(
+                    "INSERT OR IGNORE INTO product_review_findings(review_id, finding_id, sort_key, finding_json, location_status, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![
+                        review_id.to_string(),
+                        finding.finding_id,
+                        sort_key,
+                        finding_json,
+                        format!("{:?}", finding.location_status).to_ascii_lowercase(),
+                        now,
+                    ],
+                )
+                .map_err(storage_error)?;
+        }
+        let updated = get_review_in_transaction(&transaction, review_id)?;
+        transaction.commit().map_err(storage_error)?;
+        Ok(updated)
+    }
+
+    pub(super) fn cancel_review(
+        &self,
+        review_id: &ProductReviewId,
+    ) -> Result<ProductReview, ProductStoreError> {
+        let mut connection = self.database.connect()?;
+        let transaction = immediate_transaction(&mut connection)?;
+        get_review_in_transaction(&transaction, review_id)?;
+        transaction
+            .execute(
+                "UPDATE product_reviews SET status = 'cancelled', conclusion = 'cancelled', updated_at = ?2, finalized_at = COALESCE(finalized_at, ?2) WHERE review_id = ?1 AND status IN ('queued', 'running') AND result_json IS NULL",
+                params![review_id.to_string(), now_rfc3339()],
+            )
+            .map_err(storage_error)?;
+        let review = get_review_in_transaction(&transaction, review_id)?;
+        transaction.commit().map_err(storage_error)?;
+        Ok(review)
+    }
+
+    pub(super) fn mark_review_needs_attention(
+        &self,
+        review_id: &ProductReviewId,
+    ) -> Result<ProductReview, ProductStoreError> {
+        let mut connection = self.database.connect()?;
+        let transaction = immediate_transaction(&mut connection)?;
+        get_review_in_transaction(&transaction, review_id)?;
+        transaction
+            .execute(
+                "UPDATE product_reviews SET status = 'needs_attention', updated_at = ?2 WHERE review_id = ?1 AND status IN ('pass', 'findings', 'partial', 'stale')",
+                params![review_id.to_string(), now_rfc3339()],
+            )
+            .map_err(storage_error)?;
+        let review = get_review_in_transaction(&transaction, review_id)?;
+        transaction.commit().map_err(storage_error)?;
+        Ok(review)
+    }
+
+    pub(super) fn mark_review_unavailable(
+        &self,
+        review_id: &ProductReviewId,
+    ) -> Result<ProductReview, ProductStoreError> {
+        let mut connection = self.database.connect()?;
+        let transaction = immediate_transaction(&mut connection)?;
+        get_review_in_transaction(&transaction, review_id)?;
+        transaction
+            .execute(
+                "UPDATE product_reviews SET status = 'unavailable', conclusion = 'unavailable', updated_at = ?2, finalized_at = COALESCE(finalized_at, ?2) WHERE review_id = ?1 AND status IN ('queued', 'running') AND result_json IS NULL",
+                params![review_id.to_string(), now_rfc3339()],
+            )
+            .map_err(storage_error)?;
+        let review = get_review_in_transaction(&transaction, review_id)?;
+        transaction.commit().map_err(storage_error)?;
+        Ok(review)
+    }
+
+    pub(super) fn list_review_findings(
+        &self,
+        review_id: &ProductReviewId,
+        query: ProductReviewFindingsQuery,
+    ) -> Result<ProductReviewFindingsResponse, ProductStoreError> {
+        let connection = self.database.connect()?;
+        get_review_in_transaction(&connection, review_id)?;
+        let limit = query.limit.unwrap_or(64).clamp(1, 128);
+        let cursor = query.cursor.unwrap_or(0);
+        let mut statement = connection
+            .prepare(
+                "SELECT finding_id, sort_key, finding_json FROM product_review_findings WHERE review_id = ?1 ORDER BY sort_key ASC, finding_id ASC LIMIT ?2 OFFSET ?3",
+            )
+            .map_err(storage_error)?;
+        let rows = statement
+            .query_map(
+                params![
+                    review_id.to_string(),
+                    limit_i64(limit.saturating_add(1))?,
+                    limit_i64(cursor)?
+                ],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .map_err(storage_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(storage_error)?;
+        let has_more = rows.len() > limit;
+        let findings = rows
+            .into_iter()
+            .take(limit)
+            .map(|(_id, sort_key, json)| {
+                let finding = serde_json::from_str(&json)
+                    .map_err(|_| storage_error("persisted review finding is invalid"))?;
+                Ok(ProductReviewFinding { finding, sort_key })
+            })
+            .collect::<Result<Vec<_>, ProductStoreError>>()?;
+        Ok(ProductReviewFindingsResponse {
+            findings,
+            next_cursor: has_more.then_some(cursor.saturating_add(limit)),
         })
     }
 
@@ -6219,6 +6578,204 @@ where
 {
     serde_json::from_value(serde_json::Value::String(value.to_string()))
         .map_err(|_| binding_corrupt(format!("persisted {field} is invalid")))
+}
+
+fn get_review_in_transaction(
+    connection: &Connection,
+    review_id: &ProductReviewId,
+) -> Result<ProductReview, ProductStoreError> {
+    let row = connection
+        .query_row(
+            r#"
+            SELECT review_id, product_session_id, workspace_id,
+                   target_summary_json, status, conclusion,
+                   runtime_session_id, job_id, run_id, result_json,
+                   findings_count, unchecked_count, warnings_count,
+                   created_at, updated_at, captured_at, finalized_at
+            FROM product_reviews WHERE review_id = ?1
+            "#,
+            params![review_id.to_string()],
+            |row| {
+                Ok(RawReview {
+                    id: row.get(0)?,
+                    product_session_id: row.get(1)?,
+                    workspace_id: row.get(2)?,
+                    target_summary_json: row.get(3)?,
+                    status: row.get(4)?,
+                    conclusion: row.get(5)?,
+                    runtime_session_id: row.get(6)?,
+                    job_id: row.get(7)?,
+                    run_id: row.get(8)?,
+                    result_json: row.get(9)?,
+                    findings_count: row.get(10)?,
+                    unchecked_count: row.get(11)?,
+                    warnings_count: row.get(12)?,
+                    created_at: row.get(13)?,
+                    updated_at: row.get(14)?,
+                    captured_at: row.get(15)?,
+                    finalized_at: row.get(16)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(storage_error)?
+        .ok_or_else(|| not_found("review was not found"))?;
+    row.into_product()
+}
+
+#[derive(Debug)]
+struct RawReview {
+    id: String,
+    product_session_id: String,
+    workspace_id: String,
+    target_summary_json: String,
+    status: String,
+    conclusion: Option<String>,
+    runtime_session_id: Option<String>,
+    job_id: Option<String>,
+    run_id: Option<String>,
+    result_json: Option<String>,
+    findings_count: i64,
+    unchecked_count: i64,
+    warnings_count: i64,
+    created_at: String,
+    updated_at: String,
+    captured_at: String,
+    finalized_at: Option<String>,
+}
+
+impl RawReview {
+    fn into_product(self) -> Result<ProductReview, ProductStoreError> {
+        let target: ReviewTargetSummary = serde_json::from_str(&self.target_summary_json)
+            .map_err(|_| binding_corrupt("persisted review target summary is invalid"))?;
+        let result = self
+            .result_json
+            .as_deref()
+            .map(serde_json::from_str::<ReviewResult>)
+            .transpose()
+            .map_err(|_| binding_corrupt("persisted review result is invalid"))?;
+        let parse_count = |value: i64, field: &'static str| {
+            usize::try_from(value)
+                .map_err(|_| binding_corrupt(format!("persisted {field} is invalid")))
+        };
+        Ok(ProductReview {
+            id: parse_product_id(&self.id, "review id")?,
+            product_session_id: parse_product_id(&self.product_session_id, "review session id")?,
+            workspace_id: parse_product_id(&self.workspace_id, "review workspace id")?,
+            target,
+            status: review_status_from_db(&self.status)?,
+            conclusion: self
+                .conclusion
+                .as_deref()
+                .map(review_conclusion_from_db)
+                .transpose()?,
+            runtime_session_id: self
+                .runtime_session_id
+                .as_deref()
+                .map(|value| parse_runtime_id(value, "review runtime session id"))
+                .transpose()?,
+            job_id: self
+                .job_id
+                .as_deref()
+                .map(|value| parse_runtime_id(value, "review job id"))
+                .transpose()?,
+            run_id: self
+                .run_id
+                .as_deref()
+                .map(|value| parse_runtime_id(value, "review run id"))
+                .transpose()?,
+            result,
+            findings_count: parse_count(self.findings_count, "review findings count")?,
+            unchecked_count: parse_count(self.unchecked_count, "review unchecked count")?,
+            warnings_count: parse_count(self.warnings_count, "review warnings count")?,
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+            captured_at: self.captured_at,
+            finalized_at: self.finalized_at,
+        })
+    }
+}
+
+fn validate_review_idempotency_key(value: &str) -> Result<(), ProductStoreError> {
+    if value.is_empty() || value.len() > 128 || value.chars().any(char::is_control) {
+        return Err(invalid("review idempotency_key must be 1..128 characters"));
+    }
+    Ok(())
+}
+
+fn review_target_kind_to_db(kind: ReviewTargetKind) -> &'static str {
+    match kind {
+        ReviewTargetKind::Uncommitted => "uncommitted",
+        ReviewTargetKind::Base => "base",
+        ReviewTargetKind::Commit => "commit",
+    }
+}
+
+fn review_status_from_db(value: &str) -> Result<ProductReviewStatus, ProductStoreError> {
+    match value {
+        "queued" => Ok(ProductReviewStatus::Queued),
+        "running" => Ok(ProductReviewStatus::Running),
+        "pass" => Ok(ProductReviewStatus::Pass),
+        "findings" => Ok(ProductReviewStatus::Findings),
+        "partial" => Ok(ProductReviewStatus::Partial),
+        "stale" => Ok(ProductReviewStatus::Stale),
+        "needs_attention" => Ok(ProductReviewStatus::NeedsAttention),
+        "unavailable" => Ok(ProductReviewStatus::Unavailable),
+        "cancelled" => Ok(ProductReviewStatus::Cancelled),
+        "error" => Ok(ProductReviewStatus::Error),
+        _ => Err(binding_corrupt("persisted review status is invalid")),
+    }
+}
+
+fn review_status_from_conclusion(conclusion: &ReviewConclusion) -> ProductReviewStatus {
+    match conclusion {
+        ReviewConclusion::Pass => ProductReviewStatus::Pass,
+        ReviewConclusion::Findings => ProductReviewStatus::Findings,
+        ReviewConclusion::Partial => ProductReviewStatus::Partial,
+        ReviewConclusion::Stale => ProductReviewStatus::Stale,
+        ReviewConclusion::Unavailable => ProductReviewStatus::Unavailable,
+        ReviewConclusion::Cancelled => ProductReviewStatus::Cancelled,
+        ReviewConclusion::Error => ProductReviewStatus::Error,
+    }
+}
+
+fn review_conclusion_to_db(conclusion: &ReviewConclusion) -> &'static str {
+    match conclusion {
+        ReviewConclusion::Pass => "pass",
+        ReviewConclusion::Findings => "findings",
+        ReviewConclusion::Partial => "partial",
+        ReviewConclusion::Stale => "stale",
+        ReviewConclusion::Unavailable => "unavailable",
+        ReviewConclusion::Cancelled => "cancelled",
+        ReviewConclusion::Error => "error",
+    }
+}
+
+fn review_conclusion_from_db(value: &str) -> Result<ReviewConclusion, ProductStoreError> {
+    match value {
+        "pass" => Ok(ReviewConclusion::Pass),
+        "findings" => Ok(ReviewConclusion::Findings),
+        "partial" => Ok(ReviewConclusion::Partial),
+        "stale" => Ok(ReviewConclusion::Stale),
+        "unavailable" => Ok(ReviewConclusion::Unavailable),
+        "cancelled" => Ok(ReviewConclusion::Cancelled),
+        "error" => Ok(ReviewConclusion::Error),
+        _ => Err(binding_corrupt("persisted review conclusion is invalid")),
+    }
+}
+
+fn review_finding_sort_key(finding: &ReviewFinding) -> String {
+    let severity = match finding.severity {
+        rove_runtime::review::ReviewSeverity::Critical => 0,
+        rove_runtime::review::ReviewSeverity::High => 1,
+        rove_runtime::review::ReviewSeverity::Medium => 2,
+        rove_runtime::review::ReviewSeverity::Low => 3,
+        rove_runtime::review::ReviewSeverity::Info => 4,
+    };
+    format!(
+        "{severity:02}:{:08}:{}:{}",
+        finding.location.start_line, finding.path, finding.finding_id
+    )
 }
 
 fn bool_to_i64(value: bool) -> i64 {

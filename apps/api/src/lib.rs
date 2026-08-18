@@ -25,14 +25,18 @@ use rove_app_bootstrap::{
     AppConfig, AppConfigOverrides, ProjectActivationState, ProjectTrustRepository, ProviderCatalog,
     ProviderCatalogService, UserConfigPaths,
 };
-use rove_app_bootstrap::{EngineOptions, build_engine};
+use rove_app_bootstrap::{EngineOptions, build_engine, build_review_engine};
 use rove_core::ToolError;
 use rove_models::ModelClient;
-use rove_models::fake::FakeModelClient;
+use rove_models::fake::{FakeModelClient, FakeTurn};
 use rove_models::health::{HealthConfig, ModelHealthStore};
 use rove_runtime::agents::{AgentActivationError, SelectorError};
 use rove_runtime::engine::{Engine, RunControlHandle};
 use rove_runtime::events::StreamEvent;
+use rove_runtime::review::{
+    ReviewRuntimeEvidence, ReviewTargetSnapshot, apply_runtime_outcome, capture_target,
+    finalize_result_with_evidence,
+};
 use rove_runtime::runtime_identity::RunModelSnapshot;
 use rove_runtime::state::artifacts::RunArtifactRecorder;
 use rove_runtime::state::index::{ResumeJobClaim, RunIndexRecord, StateIndex};
@@ -40,9 +44,10 @@ use rove_runtime::state::resume::resolve_resume_state;
 use rove_runtime::state::store::{RunHandle, StateStore};
 use rove_runtime::state::trace::TraceWriter;
 use rove_runtime::tools::mcp_proxy::McpServerRuntimeSnapshot;
+use rove_runtime::tools::review::ReviewSubmissionStore;
 use rove_runtime::types::{
     ApprovalDecision, ApprovalPolicy, CallId, JobId, Message, PendingToolApproval,
-    PendingUserInput, Role, RunId, RunStatus, SessionId, TaskState, TerminationReason,
+    PendingUserInput, Role, RunId, RunMode, RunStatus, SessionId, TaskState, TerminationReason,
     ToolApprovalProvider, ToolApprovalRequest, UserInputProvider, UserInputRequest,
 };
 use rove_runtime::workspace::Workspace;
@@ -84,6 +89,7 @@ struct ApiStateInner {
     job_starts: TaskTracker,
     supervisors: TaskTracker,
     jobs: RwLock<HashMap<JobId, Arc<JobRecord>>>,
+    review_jobs: RwLock<HashMap<JobId, Arc<ReviewExecution>>>,
     mcp_health: RwLock<HashMap<PathBuf, Vec<McpServerRuntimeSnapshot>>>,
     model_health: Arc<ModelHealthStore>,
     rate_limit: tokio::sync::Mutex<RateLimitState>,
@@ -186,6 +192,16 @@ struct JobLaunch {
 }
 
 #[derive(Clone)]
+struct ReviewExecution {
+    review_id: ProductReviewId,
+    snapshot: Arc<ReviewTargetSnapshot>,
+    submission_store: ReviewSubmissionStore,
+    product_store: Arc<dyn ProductStore>,
+    started_at: Instant,
+    state_root: PathBuf,
+}
+
+#[derive(Clone)]
 struct ProductTurnSupervisor {
     store: Arc<dyn ProductStore>,
     claim_id: ProductTurnClaimId,
@@ -245,6 +261,11 @@ pub fn router(state: ApiState) -> Router {
         .routes(routes!(product::routes::update_product_session))
         .routes(routes!(product::routes::delete_product_session))
         .routes(routes!(product::routes::get_product_session_transcript))
+        .routes(routes!(product::review::create_product_review))
+        .routes(routes!(product::review::list_product_reviews))
+        .routes(routes!(product::review::get_product_review))
+        .routes(routes!(product::review::list_product_review_findings))
+        .routes(routes!(product::review::cancel_product_review))
         .routes(routes!(product::routes::get_product_session_model_config))
         .routes(routes!(
             product::routes::update_product_session_model_config
@@ -533,6 +554,7 @@ impl ApiState {
                 job_starts: TaskTracker::new(),
                 supervisors: TaskTracker::new(),
                 jobs: RwLock::new(HashMap::new()),
+                review_jobs: RwLock::new(HashMap::new()),
                 mcp_health: RwLock::new(HashMap::new()),
                 model_health,
                 rate_limit: tokio::sync::Mutex::new(RateLimitState::default()),
@@ -1086,6 +1108,262 @@ async fn prepare_job_launch(
             prepare_generic_job_launch(state, req, approval_policy).await
         }
     }
+}
+
+/// Start one product Review as a normal Runtime job without claiming the
+/// conversation turn. The caller has already captured and persisted the
+/// immutable target and won ProductStore idempotency.
+pub(crate) async fn start_product_review_runtime(
+    state: ApiState,
+    review: ProductReview,
+    product_workspace: ProductWorkspace,
+    model_config: ProductSessionModelConfig,
+    snapshot: Arc<ReviewTargetSnapshot>,
+    state_root: PathBuf,
+    max_steps: u32,
+) -> Result<ProductReview, ApiError> {
+    let workspace = open_product_workspace(&product_workspace)?;
+    let (model, run_model_snapshot) =
+        assemble_review_model(&state, &workspace, &model_config).await?;
+    let session_id = SessionId::new();
+    let job_id = JobId::new();
+    let request = CreateJobRequest {
+        message: format!(
+            "Review target {}. Inspect the immutable diff and submit one complete finding set.",
+            snapshot.digest
+        ),
+        model: None,
+        max_steps: Some(max_steps),
+        agent: None,
+        approval: Some(ApprovalPolicy::Never),
+        resume: None,
+        workspace: None,
+        provider: None,
+        product_session_id: None,
+    };
+    let mut review_workspace = workspace.clone();
+    review_workspace.state_dir = state_root.clone();
+    let mut config = state.inner.config.clone();
+    config.source_summary.workspace_root = workspace.root.clone();
+    config.source_summary.project_config_path = workspace.root.join(".rove/config.toml");
+    config.source_summary.project_config_loaded = false;
+    config.state.state_dir = state_root.clone();
+    config.state.sqlite_path = state_root.join("state.sqlite");
+    config.state.allow_external_paths = true;
+    let record = new_job_record(NewJobRecord {
+        state: &state,
+        workspace: review_workspace,
+        config,
+        request: &request,
+        session_id,
+        job_id,
+        resume_state: None,
+        resumed_from_run_id: None,
+        product_session_id: None,
+        product_store: None,
+        product_model_config: None,
+        run_model_snapshot: Some(run_model_snapshot.clone()),
+    });
+    let (engine, submission_store) = build_review_engine(
+        model,
+        &workspace,
+        Arc::clone(&snapshot),
+        review.id.to_string(),
+        Some(&state_root),
+        Some(run_model_snapshot),
+        max_steps,
+    )
+    .map_err(|error| ApiError::internal(format!("review engine assembly failed: {error}")))?;
+    std::fs::create_dir_all(&state_root)
+        .map_err(|_| ApiError::internal("review state could not be created"))?;
+    std::fs::write(
+        state_root.join("target_snapshot.json"),
+        serde_json::to_vec(&*snapshot)
+            .map_err(|_| ApiError::internal("review target snapshot could not be encoded"))?,
+    )
+    .map_err(|_| ApiError::internal("review target snapshot could not be persisted"))?;
+    let state_store = state_store_for_record(&record);
+    state_store
+        .index
+        .initialize()
+        .map_err(|_| ApiError::internal("review state index could not be initialized"))?;
+    let run = state_store
+        .start_run(record.session_id, record.job_id, record.run_id)
+        .map_err(|_| ApiError::internal("review runtime run could not be started"))?;
+    let store = state.product_store()?;
+    let bound = store
+        .bind_review_runtime(&review.id, record.session_id, record.job_id, record.run_id)
+        .await?;
+    state.inner.review_jobs.write().await.insert(
+        record.job_id,
+        Arc::new(ReviewExecution {
+            review_id: review.id,
+            snapshot,
+            submission_store,
+            product_store: store,
+            started_at: Instant::now(),
+            state_root,
+        }),
+    );
+    start_job_supervisor(
+        state,
+        JobLaunch {
+            record,
+            engine,
+            run,
+            product_turn: None,
+            startup_events: Vec::new(),
+        },
+    )
+    .await;
+    Ok(bound)
+}
+
+async fn assemble_review_model(
+    state: &ApiState,
+    workspace: &Workspace,
+    model_config: &ProductSessionModelConfig,
+) -> Result<(Box<dyn ModelClient>, RunModelSnapshot), ApiError> {
+    if matches!(model_config.model.as_str(), "fake" | "fake-raw") {
+        let snapshot = RunModelSnapshot {
+            profile_id: "programmatic-fake".to_string(),
+            provider_type: "fake".to_string(),
+            wire_protocol: "fake".to_string(),
+            endpoint: String::new(),
+            model: model_config.model.clone(),
+            reasoning: model_config.reasoning.as_str().to_string(),
+            catalog_revision: "programmatic".to_string(),
+            safe_config_digest: rove_runtime::context::stable_hash("programmatic-fake"),
+        };
+        let model = FakeModelClient::with_turns(
+            "Review complete".to_string(),
+            vec![
+                FakeTurn::ToolUse {
+                    id: "review-diff".to_string(),
+                    name: "review_target_diff".to_string(),
+                    args: serde_json::json!({}),
+                },
+                FakeTurn::ToolUse {
+                    id: "review-submit".to_string(),
+                    name: "review_submit_findings".to_string(),
+                    args: serde_json::json!({"findings": []}),
+                },
+            ],
+        );
+        return Ok((Box::new(model), snapshot));
+    }
+    let profile_id = model_config.profile_id.as_ref().ok_or_else(|| {
+        ApiError::conflict_with_code(
+            ProductErrorCode::ProductProviderProfileUnavailable.as_str(),
+            "product session has no Provider profile selection for Review",
+        )
+    })?;
+    let catalog = state.provider_catalog().await?;
+    let catalog_profile_id = product::provider_catalog::catalog_id(profile_id)?;
+    let selection = rove_app_bootstrap::ModelSelection {
+        profile_id: catalog_profile_id.clone(),
+        model: model_config.model.clone(),
+        reasoning: model_config.reasoning.as_str().to_string(),
+        revision: catalog.revision().to_string(),
+    };
+    let snapshot = catalog
+        .snapshot(&selection, &workspace.root)
+        .map_err(product::provider_catalog::catalog_error)?;
+    let profile = catalog
+        .profile_config(&catalog_profile_id)
+        .map_err(product::provider_catalog::catalog_error)?
+        .clone();
+    profile
+        .resolve(&workspace.root, true, Some(&model_config.model))
+        .map_err(|_| {
+            ApiError::conflict_with_code(
+                ProductErrorCode::ProductProviderProfileUnavailable.as_str(),
+                "the selected Provider credential is unavailable for Review",
+            )
+        })?;
+    let mut config = state.inner.config.clone();
+    config.provider.active = Some(catalog_profile_id.to_string());
+    config.provider.profiles.clear();
+    config
+        .provider
+        .profiles
+        .insert(catalog_profile_id.to_string(), profile.clone());
+    config.provider.fallback_profiles.clear();
+    config.provider.fallback_models.clear();
+    config.provider.model = model_config.model.clone();
+    apply_product_reasoning(&mut config, &profile.provider_type, model_config.reasoning)?;
+    let model = build_model_client_with_health(
+        &config,
+        model_config.model.clone(),
+        state.inner.model_health.clone(),
+    );
+    Ok((model, snapshot))
+}
+
+pub(crate) async fn get_product_review_with_stale_check(
+    state: &ApiState,
+    review_id: &ProductReviewId,
+) -> Result<ProductReview, ApiError> {
+    let store = state.product_store()?;
+    let review = store.get_review(review_id).await?;
+    if !matches!(
+        review.status,
+        ProductReviewStatus::Pass
+            | ProductReviewStatus::Findings
+            | ProductReviewStatus::Partial
+            | ProductReviewStatus::Stale
+    ) {
+        return Ok(review);
+    }
+    let product_context = store
+        .get_session_context(&review.product_session_id)
+        .await?;
+    let workspace = open_product_workspace(&product_context.workspace)?;
+    // Recompute from the durable target spec rather than relying on the
+    // process-local ReviewExecution map. This keeps stale detection correct
+    // after an API restart and treats an unavailable repository conservatively.
+    let target_spec = review.target.spec.clone();
+    let expected_digest = review.target.digest.clone();
+    let current_digest = tokio::task::spawn_blocking(move || {
+        capture_target(&workspace, target_spec).map(|snapshot| snapshot.digest)
+    })
+    .await
+    .ok()
+    .and_then(Result::ok);
+    if current_digest.as_deref() != Some(expected_digest.as_str()) {
+        return Ok(store.mark_review_needs_attention(review_id).await?);
+    }
+    Ok(review)
+}
+
+pub(crate) async fn cancel_product_review_runtime(
+    state: &ApiState,
+    review_id: &ProductReviewId,
+) -> Result<ProductReview, ApiError> {
+    let store = state.product_store()?;
+    let current = store.get_review(review_id).await?;
+    if current.status.is_terminal() {
+        return Ok(current);
+    }
+    let has_live_execution = state
+        .inner
+        .review_jobs
+        .read()
+        .await
+        .values()
+        .any(|execution| &execution.review_id == review_id);
+    if !has_live_execution {
+        return Ok(store.cancel_review(review_id).await?);
+    }
+    let Some(job_id) = current.job_id else {
+        return Ok(store.cancel_review(review_id).await?);
+    };
+    let Some(record) = live_job(state, job_id).await else {
+        return Ok(store.cancel_review(review_id).await?);
+    };
+    record.cancel_token.cancel();
+    wait_for_job_completion(&record).await;
+    Ok(store.get_review(review_id).await?)
 }
 
 async fn resolve_product_job_approval_policy(state: &ApiState) -> Result<ApprovalPolicy, ApiError> {
@@ -2193,7 +2471,18 @@ async fn run_job_supervisor(
     product_turn: Option<ProductTurnSupervisor>,
     startup_events: Vec<StreamEvent>,
 ) {
-    let trust_monitor = start_project_trust_monitor(&state, &record).await;
+    let review_execution = state
+        .inner
+        .review_jobs
+        .read()
+        .await
+        .get(&record.job_id)
+        .cloned();
+    let trust_monitor = if review_execution.is_some() {
+        None
+    } else {
+        start_project_trust_monitor(&state, &record).await
+    };
     let state_store = state_store_for_record(&record);
     let mut recorder = RunArtifactRecorder::new(
         record.session_id,
@@ -2283,10 +2572,15 @@ async fn run_job_supervisor(
         .await;
     }
 
+    let public_terminal = if engine.run_mode() == RunMode::Review {
+        terminal.redacted_for_review_persistence()
+    } else {
+        terminal.clone()
+    };
     let trace_persisted = persist_terminal_and_finalize(
         &run.trace_writer,
         &record,
-        terminal.clone(),
+        public_terminal.clone(),
         &mut recorder,
         &state_store,
         &engine,
@@ -2295,7 +2589,7 @@ async fn run_job_supervisor(
     .await;
     let runtime_durable = stream_trace_complete
         && trace_persisted
-        && runtime_terminal_is_durable(&state_store, &record, &terminal).await;
+        && runtime_terminal_is_durable(&state_store, &record, &public_terminal).await;
     if !runtime_durable {
         tracing::warn!(
             job_id = %record.job_id,
@@ -2325,10 +2619,87 @@ async fn run_job_supervisor(
         schedule_claimed_followup_start(&state, psid, claim);
     }
 
+    if let Some(review_execution) = review_execution {
+        finalize_review_execution(
+            &record,
+            &engine,
+            &terminal,
+            runtime_durable,
+            review_execution,
+        )
+        .await;
+        // Completed Review executions no longer need an in-memory snapshot or
+        // submission store. Stale checks are rebuilt from the durable target
+        // spec, so retaining this entry would only create unbounded growth.
+        state.inner.review_jobs.write().await.remove(&record.job_id);
+    }
+
     // The terminal event is the public lifecycle barrier. A client that sees
     // it must never observe the old product turn still claimed, so publish
     // only after ProductStore has released or atomically replaced that claim.
-    publish_terminal_event(&record, terminal).await;
+    publish_terminal_event(&record, public_terminal).await;
+}
+
+async fn finalize_review_execution(
+    record: &JobRecord,
+    engine: &Engine,
+    terminal: &StreamEvent,
+    runtime_durable: bool,
+    execution: Arc<ReviewExecution>,
+) {
+    let cancelled = matches!(
+        terminal,
+        StreamEvent::RunCompleted {
+            reason: TerminationReason::Cancelled,
+            ..
+        }
+    );
+    let stale = execution
+        .snapshot
+        .is_stale(&record.workspace)
+        .unwrap_or(true);
+    let mut result = finalize_result_with_evidence(
+        execution.review_id.to_string(),
+        record.run_id.to_string(),
+        record.session_id.to_string(),
+        (*execution.snapshot).clone(),
+        execution.submission_store.get(),
+        stale,
+        cancelled,
+        execution.started_at.elapsed().as_millis() as u64,
+        ReviewRuntimeEvidence::from(&engine.runtime_identity()),
+    );
+    let termination = match terminal {
+        StreamEvent::RunCompleted { reason, .. } => reason.clone(),
+        _ => TerminationReason::Error,
+    };
+    apply_runtime_outcome(&mut result, &termination, runtime_durable);
+    match serde_json::to_vec_pretty(&result) {
+        Ok(bytes) => {
+            if let Err(error) =
+                tokio::fs::write(execution.state_root.join("review.json"), bytes).await
+            {
+                tracing::warn!(
+                    review_id = %execution.review_id,
+                    "failed to persist Review result: {error}"
+                );
+            }
+        }
+        Err(error) => tracing::warn!(
+            review_id = %execution.review_id,
+            "failed to encode Review result: {error}"
+        ),
+    }
+    if let Err(error) = execution
+        .product_store
+        .finalize_review(&execution.review_id, result)
+        .await
+    {
+        tracing::warn!(
+            review_id = %execution.review_id,
+            "failed to finalize ProductStore Review projection: {error}"
+        );
+    }
 }
 
 struct ProjectTrustMonitor {
@@ -2451,7 +2822,11 @@ async fn consume_job_stream(
     let mut stream =
         std::pin::pin!(engine.run_with_cancel(request, None, record.cancel_token.clone(),));
     recorder.set_runtime_identity(stream.runtime_identity().clone());
-    recorder.set_agent_profile(stream.agent_profile().cloned());
+    if engine.run_mode() != RunMode::Review {
+        // Review task state must not retain a workspace-owned Agent package
+        // or instruction material, even if an embedding supplies one.
+        recorder.set_agent_profile(stream.agent_profile().cloned());
+    }
     // Capture the control handle so HTTP steer handlers can inject mid-run.
     {
         let _control_lifecycle = record.control_lifecycle_lock.lock().await;
@@ -2469,6 +2844,7 @@ async fn consume_job_stream(
     let mut trace_complete = true;
     let mut saw_run_started = false;
     let mut startup_events = Some(startup_events);
+    let review_mode = engine.run_mode() == RunMode::Review;
     while let Some(event) = stream.next().await {
         if matches!(&event, StreamEvent::RunCompleted { .. }) {
             if terminal.replace(event).is_some() {
@@ -2488,6 +2864,11 @@ async fn consume_job_stream(
             saw_run_started = true;
         }
         let is_run_started = matches!(&event, StreamEvent::RunStarted { .. });
+        let event = if review_mode {
+            event.redacted_for_review_persistence()
+        } else {
+            event
+        };
         // Reflect control lifecycle events back into ProductStore before the
         // canonical event is persisted and published.
         reflect_control_event(record, &event).await;
@@ -2507,6 +2888,11 @@ async fn consume_job_stream(
             let queued_product_events =
                 std::mem::take(&mut *record.pending_product_events.lock().await);
             for queued_event in queued_product_events {
+                let queued_event = if review_mode {
+                    queued_event.redacted_for_review_persistence()
+                } else {
+                    queued_event
+                };
                 trace_complete &= persist_record_and_publish_runtime_event(
                     &run.trace_writer,
                     record,
@@ -2517,6 +2903,11 @@ async fn consume_job_stream(
                 .await;
             }
             for startup_event in startup_events.take().unwrap_or_default() {
+                let startup_event = if review_mode {
+                    startup_event.redacted_for_review_persistence()
+                } else {
+                    startup_event
+                };
                 // A claimed follow-up becomes applied only after its successor
                 // has actually reached the durable run-start boundary. Keep the
                 // ProductStore transition coupled to the same canonical event
@@ -4293,7 +4684,8 @@ impl From<ProductStoreError> for ApiError {
             | ProductErrorCode::ProductMcpInvalidInput
             | ProductErrorCode::ProjectTrustInvalidInput => StatusCode::BAD_REQUEST,
             ProductErrorCode::ProductStoreUnavailable
-            | ProductErrorCode::ProjectTrustUnavailable => StatusCode::SERVICE_UNAVAILABLE,
+            | ProductErrorCode::ProjectTrustUnavailable
+            | ProductErrorCode::ReviewUnavailable => StatusCode::SERVICE_UNAVAILABLE,
             ProductErrorCode::ProductStorageFailure => StatusCode::INTERNAL_SERVER_ERROR,
             ProductErrorCode::ProductSessionActive
             | ProductErrorCode::ProductSessionWorkspaceMismatch
@@ -4312,7 +4704,9 @@ impl From<ProductStoreError> for ApiError {
             | ProductErrorCode::ProductForkSourceInvalid
             | ProductErrorCode::ProductSessionModelConfigConflict
             | ProductErrorCode::ProviderUnavailableForResume
-            | ProductErrorCode::ProviderChangedForResume => StatusCode::CONFLICT,
+            | ProductErrorCode::ProviderChangedForResume
+            | ProductErrorCode::ReviewTargetUnavailable
+            | ProductErrorCode::ReviewConflict => StatusCode::CONFLICT,
             ProductErrorCode::ProductProviderProfileUnavailable => StatusCode::NOT_FOUND,
         };
         let message = if error.code == ProductErrorCode::ProductStorageFailure {

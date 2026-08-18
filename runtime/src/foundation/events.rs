@@ -311,6 +311,267 @@ pub enum StreamEvent {
 }
 
 impl StreamEvent {
+    /// Return the durable/public projection for a hard read-only Review run.
+    ///
+    /// Review tools intentionally return source text to the in-process model,
+    /// but that text must not be copied into trace, resumable history, reports,
+    /// or SSE/API event replay.  Keep identity, status, and bounded artifact
+    /// references while replacing untrusted payloads with typed placeholders.
+    pub fn redacted_for_review_persistence(&self) -> Self {
+        match self {
+            Self::RunStarted { run_id, job_id, .. } => Self::RunStarted {
+                run_id: *run_id,
+                job_id: *job_id,
+                user_message: "[review request omitted]".to_string(),
+            },
+            Self::AgentProfileActivated {
+                identity,
+                resumed_from_snapshot,
+                diagnostics,
+            } => Self::AgentProfileActivated {
+                identity: identity.clone(),
+                resumed_from_snapshot: *resumed_from_snapshot,
+                diagnostics: diagnostics
+                    .iter()
+                    .map(|diagnostic| AgentDiagnostic {
+                        code: diagnostic.code.clone(),
+                        subject: "[review diagnostic omitted]".to_string(),
+                        message: "[review diagnostic omitted]".to_string(),
+                    })
+                    .collect(),
+            },
+            Self::InstructionOverlayApplied {
+                scope,
+                content_hash,
+                boundary,
+                call_id,
+                ..
+            } => Self::InstructionOverlayApplied {
+                target_path: "[review path omitted]".to_string(),
+                scope: scope.clone(),
+                source_path: "[review path omitted]".to_string(),
+                content_hash: content_hash.clone(),
+                boundary: boundary.clone(),
+                call_id: *call_id,
+            },
+            Self::ProceduresSelected {
+                profile_hash,
+                selected,
+                considered_count,
+                excluded_count,
+            } => Self::ProceduresSelected {
+                profile_hash: profile_hash.clone(),
+                selected: selected
+                    .iter()
+                    .cloned()
+                    .map(redact_procedure_reference)
+                    .collect(),
+                considered_count: *considered_count,
+                excluded_count: *excluded_count,
+            },
+            Self::ProcedureHydrated {
+                reference,
+                truncated,
+                dropped_bytes,
+                step_id,
+                hydration_hash,
+            } => Self::ProcedureHydrated {
+                reference: redact_procedure_reference(reference.clone()),
+                truncated: *truncated,
+                dropped_bytes: *dropped_bytes,
+                step_id: step_id.clone(),
+                hydration_hash: hydration_hash.clone(),
+            },
+            Self::ProcedureApplied { application } => Self::ProcedureApplied {
+                application: Box::new(redact_procedure_application(application)),
+            },
+            Self::ProcedureDeviation {
+                record_id,
+                deviation,
+            } => Self::ProcedureDeviation {
+                record_id: record_id.clone(),
+                deviation: Box::new(redact_procedure_deviation(deviation)),
+            },
+            Self::ModelStatus { status, .. } => Self::ModelStatus {
+                status: status.clone(),
+                message: "[review model status omitted]".to_string(),
+            },
+            Self::ExecutionDegraded { record } => {
+                let mut record = record.clone();
+                record.safe_summary = "[review degradation details omitted]".to_string();
+                Self::ExecutionDegraded { record }
+            }
+            Self::LlmChunk { .. } => Self::LlmChunk {
+                delta: "[review model output omitted]".to_string(),
+            },
+            Self::LlmMessage {
+                usage,
+                tool_calls,
+                assistant_turn,
+                ..
+            } => {
+                let mut assistant_turn = assistant_turn.as_deref().cloned().unwrap_or_default();
+                assistant_turn.content = vec![rove_models::ContentBlock::text(
+                    "[review model output omitted]",
+                )];
+                for call in &mut assistant_turn.tool_calls {
+                    call.arguments = serde_json::json!({"redacted": true});
+                }
+                Self::LlmMessage {
+                    full: "[review model output omitted]".to_string(),
+                    usage: usage.clone(),
+                    tool_calls: tool_calls
+                        .iter()
+                        .cloned()
+                        .map(|mut call| {
+                            call.args = serde_json::json!({"redacted": true});
+                            call
+                        })
+                        .collect(),
+                    assistant_turn: Some(Box::new(assistant_turn)),
+                }
+            }
+            Self::ToolCallStarted {
+                call_id,
+                tool_use_id,
+                name,
+                ..
+            } => Self::ToolCallStarted {
+                call_id: *call_id,
+                tool_use_id: tool_use_id.clone(),
+                name: name.clone(),
+                args: serde_json::json!({"redacted": true}),
+            },
+            Self::ToolCallApprovalNeeded {
+                call_id,
+                name,
+                reason,
+                ..
+            } => Self::ToolCallApprovalNeeded {
+                call_id: *call_id,
+                name: name.clone(),
+                args: serde_json::json!({"redacted": true}),
+                reason: reason.clone(),
+            },
+            Self::ToolCallCompleted { call_id, result } => {
+                let mut result = result.clone();
+                result.output = "[review tool output omitted]".to_string();
+                result.mutations.clear();
+                if let Some(envelope) = result.envelope.as_mut() {
+                    envelope.summary_text = "[review tool output omitted]".to_string();
+                    envelope.content_blocks.clear();
+                    envelope.structured_content = None;
+                    envelope.mutations.clear();
+                    envelope.external_effects.clear();
+                    envelope.diagnostics.clear();
+                }
+                Self::ToolCallCompleted {
+                    call_id: *call_id,
+                    result,
+                }
+            }
+            Self::ToolCallFailed {
+                call_id, metadata, ..
+            } => Self::ToolCallFailed {
+                call_id: *call_id,
+                error: ToolError::ExecutionFailed {
+                    reason: "review tool failure details omitted".to_string(),
+                },
+                metadata: ToolExecutionMetadata {
+                    affected_paths: Vec::new(),
+                    diff_summary: Vec::new(),
+                    ..metadata.clone()
+                },
+            },
+            Self::InputNeeded { input_id, .. } => Self::InputNeeded {
+                input_id: *input_id,
+                prompt: "[review input request omitted]".to_string(),
+            },
+            Self::PlanCreated {
+                plan,
+                identity,
+                plan_revision,
+            } => Self::PlanCreated {
+                plan: redact_task_plan(plan),
+                identity: identity.clone(),
+                plan_revision: plan_revision
+                    .as_deref()
+                    .map(redact_plan_revision)
+                    .map(Box::new),
+            },
+            Self::PlanStepStarted {
+                step,
+                index,
+                attempt,
+                budget,
+            } => Self::PlanStepStarted {
+                step: redact_plan_step(step),
+                index: *index,
+                attempt: attempt.clone(),
+                budget: budget.clone(),
+            },
+            Self::StepResult { record } => Self::StepResult {
+                record: Box::new(redact_step_record(record)),
+            },
+            Self::PlanDecision { record } => Self::PlanDecision {
+                record: Box::new(redact_plan_decision_record(record)),
+            },
+            Self::PlanRevised { plan, revision } => Self::PlanRevised {
+                plan: redact_task_plan(plan),
+                revision: Box::new(redact_plan_revision(revision)),
+            },
+            Self::FinalizationCompleted { record } => Self::FinalizationCompleted {
+                record: Box::new(redact_finalization_record(record)),
+            },
+            Self::PromptCompacted { summary, state } => {
+                let mut state = state.clone();
+                state.last_error = state
+                    .last_error
+                    .as_ref()
+                    .map(|_| "[review compaction details omitted]".to_string());
+                Self::PromptCompacted {
+                    summary: summary
+                        .as_ref()
+                        .map(|_| "[review compaction summary omitted]".to_string()),
+                    state,
+                }
+            }
+            Self::MemoryFlushed { notes } => Self::MemoryFlushed {
+                notes: notes
+                    .iter()
+                    .map(|_| "[review memory note omitted]".to_string())
+                    .collect(),
+            },
+            Self::RunCompleted { reason, output } => Self::RunCompleted {
+                reason: reason.clone(),
+                output: output
+                    .as_ref()
+                    .map(|_| "[review run output omitted]".to_string()),
+            },
+            Self::SteerAccepted { id, .. } => Self::SteerAccepted {
+                id: id.clone(),
+                content: "[review control content omitted]".to_string(),
+            },
+            Self::FollowupQueued { id, .. } => Self::FollowupQueued {
+                id: id.clone(),
+                content: "[review control content omitted]".to_string(),
+            },
+            Self::FollowupAbandoned { id, .. } => Self::FollowupAbandoned {
+                id: id.clone(),
+                reason: "[review control details omitted]".to_string(),
+            },
+            Self::MessageQueued { id, .. } => Self::MessageQueued {
+                id: id.clone(),
+                content: "[review control content omitted]".to_string(),
+            },
+            Self::MessageNeedsAttention { id, .. } => Self::MessageNeedsAttention {
+                id: id.clone(),
+                reason: "[review control details omitted]".to_string(),
+            },
+            _ => self.clone(),
+        }
+    }
+
     /// Returns the event name string (for SSE `event:` field).
     pub fn event_name(&self) -> &'static str {
         match self {
@@ -364,9 +625,109 @@ impl StreamEvent {
     }
 }
 
+fn redact_procedure_reference(mut reference: ProcedureReference) -> ProcedureReference {
+    reference.source_path = "[review procedure source omitted]".to_string();
+    reference
+}
+
+fn redact_procedure_application(application: &ProcedureApplication) -> ProcedureApplication {
+    let mut application = application.clone();
+    application.reference = redact_procedure_reference(application.reference);
+    application.boundary = "[review procedure boundary omitted]".to_string();
+    application
+}
+
+fn redact_procedure_deviation(deviation: &ProcedureDeviation) -> ProcedureDeviation {
+    let mut deviation = deviation.clone();
+    deviation.reference = redact_procedure_reference(deviation.reference);
+    deviation.safe_summary = "[review procedure deviation omitted]".to_string();
+    deviation.evidence_refs.clear();
+    deviation
+}
+
+fn redact_plan_step(step: &PlanStep) -> PlanStep {
+    PlanStep {
+        id: step.id.clone(),
+        title: "[review plan step omitted]".to_string(),
+        done: step.done,
+    }
+}
+
+fn redact_task_plan(plan: &TaskPlan) -> TaskPlan {
+    TaskPlan {
+        goal: "[review plan omitted]".to_string(),
+        steps: plan.steps.iter().map(redact_plan_step).collect(),
+        current_step: plan.current_step,
+    }
+}
+
+fn redact_plan_revision(revision: &PlanRevision) -> PlanRevision {
+    let mut revision = revision.clone();
+    revision.remaining_steps = revision
+        .remaining_steps
+        .iter()
+        .map(redact_plan_step)
+        .collect();
+    revision
+}
+
+fn redact_step_record(record: &StepRecord) -> StepRecord {
+    let mut record = record.clone();
+    record.summary = "[review step summary omitted]".to_string();
+    record.safe_error_summary = record
+        .safe_error_summary
+        .as_ref()
+        .map(|_| "[review step error omitted]".to_string());
+    record.evidence_refs.clear();
+    record.mutations.clear();
+    record.procedure_applications = record
+        .procedure_applications
+        .iter()
+        .map(redact_procedure_application)
+        .collect();
+    record.procedure_deviations = record
+        .procedure_deviations
+        .iter()
+        .map(redact_procedure_deviation)
+        .collect();
+    if let Some(ambiguity) = record.ambiguity.as_mut() {
+        ambiguity.safe_summary = "[review ambiguity omitted]".to_string();
+        ambiguity.evidence_refs.clear();
+    }
+    record
+}
+
+fn redact_plan_decision_record(record: &PlanDecisionRecord) -> PlanDecisionRecord {
+    let mut record = record.clone();
+    record.decision.safe_summary = "[review plan decision omitted]".to_string();
+    record.decision.remaining_work_requirements = record
+        .decision
+        .remaining_work_requirements
+        .iter()
+        .map(|_| "[review remaining work omitted]".to_string())
+        .collect();
+    record
+}
+
+fn redact_finalization_record(record: &FinalizationRecord) -> FinalizationRecord {
+    let mut record = record.clone();
+    record.output = record
+        .output
+        .as_ref()
+        .map(|_| "[review finalization output omitted]".to_string());
+    record.evidence_refs.clear();
+    record
+}
+
 #[cfg(test)]
 mod tests {
     use super::StreamEvent;
+    use crate::execution::{
+        ExecutionBudgetUsage, FinalOutcomeStatus, FinalizationMode, FinalizationPhase,
+        FinalizationRecord,
+    };
+    use crate::types::{PlanStep, PromptCompactionState, TaskPlan};
+    use rove_core::{CallId, ToolOutputEnvelope, ToolResult};
 
     #[test]
     fn legacy_plan_events_without_lifecycle_identity_still_deserialize() {
@@ -394,5 +755,104 @@ mod tests {
             started,
             StreamEvent::PlanStepStarted { attempt, .. } if !attempt.is_complete()
         ));
+    }
+
+    #[test]
+    fn review_persistence_projection_omits_tool_arguments_and_output() {
+        let call_id = CallId::new();
+        let secret = "token=do-not-persist";
+        let started = StreamEvent::ToolCallStarted {
+            call_id,
+            tool_use_id: Some("wire-review".to_string()),
+            name: "review_submit_findings".to_string(),
+            args: serde_json::json!({"findings": [{"explanation": secret}]}),
+        }
+        .redacted_for_review_persistence();
+        let completed = StreamEvent::ToolCallCompleted {
+            call_id,
+            result: ToolResult {
+                call_id,
+                output: secret.to_string(),
+                mutations: Vec::new(),
+                metadata: Default::default(),
+                envelope: Some(Box::new(ToolOutputEnvelope::text(secret))),
+            },
+        }
+        .redacted_for_review_persistence();
+
+        let persisted = format!(
+            "{}\n{}",
+            serde_json::to_string(&started).unwrap(),
+            serde_json::to_string(&completed).unwrap()
+        );
+        assert!(!persisted.contains(secret));
+        assert!(persisted.contains("review tool output omitted"));
+        assert!(persisted.contains("redacted"));
+    }
+
+    #[test]
+    fn review_persistence_projection_omits_terminal_model_output() {
+        let secret = "REVIEW_TERMINAL_SOURCE_SECRET";
+        let event = StreamEvent::RunCompleted {
+            reason: crate::types::TerminationReason::Final,
+            output: Some(secret.to_string()),
+        }
+        .redacted_for_review_persistence();
+        let persisted = serde_json::to_string(&event).unwrap();
+        assert!(!persisted.contains(secret));
+        assert!(persisted.contains("review run output omitted"));
+    }
+
+    #[test]
+    fn review_persistence_projection_omits_lifecycle_text_payloads() {
+        let secret = "REVIEW_LIFECYCLE_SOURCE_SECRET";
+        let events = [
+            StreamEvent::PlanCreated {
+                plan: TaskPlan {
+                    goal: secret.to_string(),
+                    steps: vec![PlanStep {
+                        id: "step-1".to_string(),
+                        title: secret.to_string(),
+                        done: false,
+                    }],
+                    current_step: 0,
+                },
+                identity: Default::default(),
+                plan_revision: None,
+            },
+            StreamEvent::PromptCompacted {
+                summary: Some(secret.to_string()),
+                state: PromptCompactionState {
+                    last_error: Some(secret.to_string()),
+                    ..Default::default()
+                },
+            },
+            StreamEvent::MemoryFlushed {
+                notes: vec![secret.to_string()],
+            },
+            StreamEvent::FinalizationCompleted {
+                record: Box::new(FinalizationRecord {
+                    finalization_id: "finalization".to_string(),
+                    phase: FinalizationPhase::Completed,
+                    finish_reason: crate::execution::PlanFinishReason::Completed,
+                    outcome: Some(FinalOutcomeStatus::Success),
+                    mode: FinalizationMode::Direct,
+                    started_at: "now".to_string(),
+                    completed_at: Some("now".to_string()),
+                    output: Some(secret.to_string()),
+                    evidence_refs: vec![secret.to_string()],
+                    incomplete_step_ids: Vec::new(),
+                    budget_before: ExecutionBudgetUsage::default(),
+                    budget_after: ExecutionBudgetUsage::default(),
+                }),
+            },
+        ];
+        let persisted = events
+            .iter()
+            .map(|event| serde_json::to_string(&event.redacted_for_review_persistence()).unwrap())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(!persisted.contains(secret));
+        assert!(persisted.contains("review finalization output omitted"));
     }
 }

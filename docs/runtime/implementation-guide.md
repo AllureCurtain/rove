@@ -1464,13 +1464,14 @@ Web Complete C0 adds a separate API-global SQLite database at
 - schema versions, durable M1 migration preparations, and migration
   receipts/mappings/issues.
 
-The current ProductStore schema is v13. It reconciles two parallel v12
-productization layouts: user-catalog mapping plus secret-free model identity
-fields, and unified-message lifecycle columns/indexes. Fresh databases and
-either legacy v12 shape converge on the same v13 schema while retaining legacy
-Provider/control rows only for compatibility/migration. Startup rolls back a
-failed migration attempt, refuses a database with a future schema version, and
-does not implement automatic downgrade.
+The current ProductStore schema is v14. Migration v13 reconciles two parallel
+v12 productization layouts: user-catalog mapping plus secret-free model identity
+fields, and unified-message lifecycle columns/indexes. Additive migration v14
+adds the bounded hard read-only Review rows/findings and their indexes. Fresh
+databases and either legacy v12 shape converge on the same v14 schema while
+retaining legacy Provider/control rows only for compatibility/migration.
+Startup rolls back a failed migration attempt, refuses a database with a
+future schema version, and does not implement automatic downgrade.
 
 API Provider CRUD reads and writes the shared user catalog, returns
 `catalog_revision`, and uses request `expected_revision` plus HTTP 409 for stale

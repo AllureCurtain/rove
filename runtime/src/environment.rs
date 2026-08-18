@@ -388,6 +388,17 @@ pub struct LocalExecutionEnvironment {
 
 impl LocalExecutionEnvironment {
     pub fn new(workspace: &Workspace) -> Self {
+        Self::with_mode(workspace, false)
+    }
+
+    /// Build a local adapter whose host-facing mutation and process ports are
+    /// fail-closed. Read-only is an invariant of the adapter, not merely a
+    /// capability hint consumed by built-in tools.
+    pub fn read_only(workspace: &Workspace) -> Self {
+        Self::with_mode(workspace, true)
+    }
+
+    fn with_mode(workspace: &Workspace, read_only: bool) -> Self {
         Self {
             identity: ExecutionEnvironmentIdentity {
                 adapter: "local".to_string(),
@@ -396,23 +407,25 @@ impl LocalExecutionEnvironment {
             },
             filesystem: LocalFileSystem {
                 root: workspace.root.clone(),
+                read_only,
             },
             processes: LocalProcessHost {
                 root: workspace.root.clone(),
                 background: Arc::new(RwLock::new(BTreeMap::new())),
+                read_only,
             },
             artifacts: TransientArtifactStore::default(),
             observations: ObservationStore::default(),
             checkpoints: WorkspaceCheckpointStore::default(),
             capabilities: ExecutionCapabilities {
                 filesystem_read: true,
-                filesystem_write: true,
-                process_run: true,
-                process_stdio: true,
-                observations: true,
-                process_background: true,
+                filesystem_write: !read_only,
+                process_run: !read_only,
+                process_stdio: !read_only,
+                observations: !read_only,
+                process_background: !read_only,
                 process_pty: false,
-                workspace_checkpoints: true,
+                workspace_checkpoints: !read_only,
                 artifact_projection: true,
             },
         }
@@ -538,6 +551,7 @@ impl ExecutionEnvironment for InMemoryExecutionEnvironment {
 
 pub struct LocalFileSystem {
     root: PathBuf,
+    read_only: bool,
 }
 
 #[async_trait]
@@ -558,6 +572,9 @@ impl WorkspaceFileSystem for LocalFileSystem {
         raw_path: &str,
         content: &str,
     ) -> Result<FileMutation, EnvironmentError> {
+        if self.read_only {
+            return Err(EnvironmentError::CapabilityUnavailable("filesystem_write"));
+        }
         let path = resolve_workspace_write_path(&self.root, raw_path)
             .map_err(|error| EnvironmentError::InvalidPath(error.to_string()))?;
         let before = match tokio::fs::metadata(&path).await {
@@ -599,6 +616,9 @@ impl WorkspaceFileSystem for LocalFileSystem {
         raw_path: &str,
         content: &str,
     ) -> Result<FileMutation, EnvironmentError> {
+        if self.read_only {
+            return Err(EnvironmentError::CapabilityUnavailable("filesystem_write"));
+        }
         let path = resolve_workspace_write_path(&self.root, raw_path)
             .map_err(|error| EnvironmentError::InvalidPath(error.to_string()))?;
         if let Some(parent) = path.parent() {
@@ -926,6 +946,9 @@ impl WorkspaceFileSystem for LocalFileSystem {
     }
 
     async fn delete_path(&self, raw_path: &str, recursive: bool) -> Result<(), EnvironmentError> {
+        if self.read_only {
+            return Err(EnvironmentError::CapabilityUnavailable("filesystem_write"));
+        }
         let path = resolve_workspace_write_path(&self.root, raw_path)
             .map_err(|error| EnvironmentError::InvalidPath(error.to_string()))?;
         let metadata = tokio::fs::metadata(&path)
@@ -970,6 +993,9 @@ impl WorkspaceFileSystem for LocalFileSystem {
         to: &str,
         overwrite: bool,
     ) -> Result<(), EnvironmentError> {
+        if self.read_only {
+            return Err(EnvironmentError::CapabilityUnavailable("filesystem_write"));
+        }
         if overwrite {
             return Err(EnvironmentError::Conflict(
                 "move overwrite requires a separately observed destination and is unsupported"
@@ -1379,6 +1405,7 @@ impl WorkspaceFileSystem for InMemoryFileSystem {
 pub struct LocalProcessHost {
     root: PathBuf,
     background: Arc<RwLock<BTreeMap<String, Arc<BackgroundProcess>>>>,
+    read_only: bool,
 }
 
 #[derive(Debug, Default)]
@@ -1402,6 +1429,9 @@ impl ProcessHost for LocalProcessHost {
         request: ProcessRequest,
         cancel: CancellationToken,
     ) -> Result<ProcessOutput, EnvironmentError> {
+        if self.read_only {
+            return Err(EnvironmentError::CapabilityUnavailable("process_run"));
+        }
         if request.program.trim().is_empty() {
             return Err(EnvironmentError::Host(
                 "process program must not be empty".to_string(),
@@ -1484,6 +1514,9 @@ impl ProcessHost for LocalProcessHost {
         args: &[String],
         environment: &[(String, String)],
     ) -> Result<StdioChild, EnvironmentError> {
+        if self.read_only {
+            return Err(EnvironmentError::CapabilityUnavailable("process_stdio"));
+        }
         let mut command = Command::new(program);
         command
             .args(args)
@@ -1521,6 +1554,11 @@ impl ProcessHost for LocalProcessHost {
         request: ProcessRequest,
         cancel: CancellationToken,
     ) -> Result<BackgroundProcessStarted, EnvironmentError> {
+        if self.read_only {
+            return Err(EnvironmentError::CapabilityUnavailable(
+                "process_background",
+            ));
+        }
         if request.program.trim().is_empty() {
             return Err(EnvironmentError::Host(
                 "process program must not be empty".to_string(),
@@ -1686,6 +1724,11 @@ impl ProcessHost for LocalProcessHost {
     }
 
     async fn terminate_background(&self, process_id: &str) -> Result<(), EnvironmentError> {
+        if self.read_only {
+            return Err(EnvironmentError::CapabilityUnavailable(
+                "process_background",
+            ));
+        }
         let process = self
             .background
             .read()
@@ -2441,6 +2484,7 @@ mod productization_traversal_tests {
         std::fs::write(temp.path().join(".env"), "SECRET=value").unwrap();
         let filesystem = LocalFileSystem {
             root: temp.path().to_path_buf(),
+            read_only: false,
         };
 
         let default = filesystem
@@ -2530,6 +2574,7 @@ mod productization_traversal_tests {
         }
         let filesystem = LocalFileSystem {
             root: temp.path().to_path_buf(),
+            read_only: false,
         };
 
         let traversal = filesystem
@@ -2555,6 +2600,7 @@ mod productization_traversal_tests {
         }
         let filesystem = LocalFileSystem {
             root: temp.path().to_path_buf(),
+            read_only: false,
         };
 
         let traversal = filesystem

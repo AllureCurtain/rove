@@ -406,6 +406,7 @@ impl AgentKernelHost for StepKernelHost<'_> {
             cancel_token,
             std::mem::take(&mut self.pending_steer_ids),
             self.ctx.steer_lifecycle.clone(),
+            self.ctx.run_mode,
         )
     }
 
