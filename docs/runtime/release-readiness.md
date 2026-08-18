@@ -374,6 +374,14 @@ produced Windows MSI and NSIS packages and passed a bounded release-process
 smoke. It does not yet provide signed public installers, verified manual
 installation, macOS/Linux packages, or a generally available distribution.
 
+The 2026-08-18 Desktop real-use slice additionally builds explicit per-machine
+MSI/NSIS packages and configures the NSIS Start menu folder. Per-machine scope
+is required because `%LOCALAPPDATA%\rove` is a user-state root and must never be
+used as an install/uninstall target. The native credential prompt and typed
+WebView receipt boundary are implemented, but the installed credentialed
+journey remains blocked on the shared Provider onboarding service and must not
+be claimed from package-build evidence. See `desktop-real-use.md`.
+
 ## Security Posture
 
 Current local-first posture:

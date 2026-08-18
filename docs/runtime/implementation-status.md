@@ -67,6 +67,17 @@ This matrix compares the runtime hardening target with the current implementatio
 > F.5 TUI restart draining/reconciliation remain partial; Windows ConPTY and
 > external-provider delivery also remain unverified.
 
+> Desktop real-use note (2026-08-18): the Desktop-owned independent D1-D5 slice
+> now includes a Windows native provider credential prompt that returns only a
+> keyring receipt, secret-memory zeroization, a typed WebView wrapper, payload-
+> free actionable startup failure handling, authenticated SSE reconnect
+> regression coverage, and explicit per-machine MSI/NSIS packaging with a Rove
+> Start menu folder. Both packages build on Windows. The shared
+> `ProviderOnboardingService` is not yet present on `origin/main`, so Settings
+> cannot publish/probe a new receipt without violating the shared Catalog CAS
+> contract. Installation, SiliconFlow real-provider tasks, restart restoration,
+> and D6 remain unverified. See `desktop-real-use.md`.
+
 ## MVP Status
 
 MVP reached for the local-first single-user runtime. The exact boundary, included capabilities, exclusions, golden paths, and verification baseline are documented in [mvp-definition.md](mvp-definition.md).

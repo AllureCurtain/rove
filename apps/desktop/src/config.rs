@@ -186,6 +186,27 @@ pub fn install_crash_handler() -> Result<()> {
     Ok(())
 }
 
+/// Record a payload-free startup marker and return its path for the native
+/// failure dialog. Startup errors can contain paths or provider configuration,
+/// so the detailed error is intentionally not copied into the log.
+pub fn record_startup_failure() -> Result<PathBuf> {
+    let log_path = get_logs_dir()?.join("desktop-startup.log");
+    if let Some(parent) = log_path.parent() {
+        std::fs::create_dir_all(parent).context("failed to create startup log directory")?;
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .context("failed to open startup log")?;
+    std::io::Write::write_all(
+        &mut file,
+        b"Rove Desktop startup failed; sensitive error details were omitted.\n",
+    )
+    .context("failed to write startup log")?;
+    Ok(log_path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
