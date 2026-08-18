@@ -2590,9 +2590,10 @@ fn normalize_unresolved_index_path(path: &Path) -> PathBuf {
 }
 
 fn normalized_index_path_text(path: &Path) -> String {
-    let mut text = path.to_string_lossy().replace('\\', "/");
+    let text = path.to_string_lossy().replace('\\', "/");
     #[cfg(windows)]
     {
+        let mut text = text;
         if text
             .get(..8)
             .is_some_and(|prefix| prefix.eq_ignore_ascii_case("//?/UNC/"))
@@ -2609,8 +2610,12 @@ fn normalized_index_path_text(path: &Path) -> String {
                 text = stripped.to_string();
             }
         }
+        text
     }
-    text
+    #[cfg(not(windows))]
+    {
+        text
+    }
 }
 
 fn io_other(err: rusqlite::Error) -> std::io::Error {
