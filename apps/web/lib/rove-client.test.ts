@@ -85,6 +85,53 @@ describe("rove client", () => {
     expect(headers.get("accept")).toBe("text/event-stream");
   });
 
+  it("reconnects Desktop SSE from the last canonical event without resubmitting", async () => {
+    const encoder = new TextEncoder();
+    const stream = (frame: string) =>
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode(frame));
+          controller.close();
+        },
+      });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        body: stream('id: 7\nevent: model_delta\ndata: {"type":"model_delta","delta":"a"}\n\n'),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        body: stream('id: 8\nevent: run_completed\ndata: {"type":"run_completed"}\n\n'),
+      });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("window", {
+      __ROVE_API_URL__: "http://127.0.0.1:49152",
+      __ROVE_TOKEN__: "desktop-secret",
+    });
+
+    const source = openJobStream("job-1");
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error("Desktop SSE reconnect timed out")), 3_000);
+      source.addEventListener("run_completed", (() => {
+        clearTimeout(timeout);
+        source.close();
+        resolve();
+      }) as EventListener);
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[1]?.[0]?.toString()).toBe(
+      "http://127.0.0.1:49152/jobs/job-1/events?after=7",
+    );
+    for (const call of fetchMock.mock.calls) {
+      const headers = new Headers(call[1]?.headers);
+      expect(headers.get("authorization")).toBe("Bearer desktop-secret");
+    }
+  });
+
   it("posts approval decisions to the job approval endpoint", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,

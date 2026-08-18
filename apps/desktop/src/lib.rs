@@ -85,6 +85,7 @@ pub fn run() -> Result<()> {
         .invoke_handler(tauri::generate_handler![
             commands::get_app_paths,
             commands::workspace_select,
+            commands::provider_credential_prompt,
             commands::open_external,
             commands::show_in_folder,
         ])
@@ -155,6 +156,13 @@ pub struct ApiServerState {
     pub(crate) closing: Arc<AtomicBool>,
 }
 
+pub fn startup_failure_message(log_path: &std::path::Path) -> String {
+    format!(
+        "Rove could not start its local API. Close any other Rove instances and try again. A redacted startup marker was written to {}.",
+        log_path.display()
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -175,5 +183,14 @@ mod tests {
         assert!(script.contains("value: \"token-value\""));
         assert!(script.contains("value: \"http://127.0.0.1:49152\""));
         assert!(script.contains("writable: false"));
+    }
+
+    #[test]
+    fn startup_failure_message_is_actionable_without_error_payloads() {
+        let message =
+            startup_failure_message(std::path::Path::new("C:/Rove/logs/desktop-startup.log"));
+        assert!(message.contains("local API"));
+        assert!(message.contains("desktop-startup.log"));
+        assert!(!message.contains("provider credential"));
     }
 }
