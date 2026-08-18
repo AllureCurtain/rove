@@ -2,6 +2,15 @@
 
 > Status: **A-E and F.1-F.3 implemented on `productization/integration`; F.4/F.5 and G partially complete**
 >
+> Current priority (2026-08-18): this file remains the implementation record
+> for the completed productization work and its deferred boundaries. The next
+> scoped implementation authority for credentialed real use and demonstration
+> readiness is
+> [`2026-08-18-tui-desktop-real-use-final-implementation.md`](2026-08-18-tui-desktop-real-use-final-implementation.md).
+> That final implementation contract permits independent Desktop host work in
+> parallel, but gates Desktop completion on a passing TUI real-provider golden
+> path and does not reopen every deferred item in this program.
+>
 > Verified baseline: Checkpoints 0-9 were delivered at `45143a5` and merged
 > through PR #30 as `4b740d3`. The machine-generated acceptance report was
 > produced from clean code commit `32ba252`: all 11 required checks passed,
@@ -17,10 +26,13 @@
 > Provider, real third-party/official filesystem MCP, Windows ConPTY,
 > macOS/Linux package, signing, and installed-Desktop gates remain unverified.
 >
-> This is the single active productization brief after full-delivery. The dated
-> 2026-08-09 documents are current-state corrections, audit evidence,
-> historical comparisons, or explicitly deferred-capability records. They are
-> not implementation plans and cannot add work to this program.
+> This remains the implementation record for the post-full-delivery
+> productization program. It is no longer the active future-work authority for
+> credentialed TUI/Desktop readiness; the 2026-08-18 final implementation
+> contract above owns that scope. The dated 2026-08-09 documents remain
+> current-state corrections, audit evidence, historical comparisons, or
+> explicitly deferred-capability records. They are not implementation plans
+> and cannot add work to either scope.
 >
 > Product interaction decision (2026-08-10): the user-facing composer has one
 > message action. A message submitted while a run is active is durably queued
