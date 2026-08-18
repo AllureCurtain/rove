@@ -693,12 +693,6 @@ fn validate_migration_target(
     } else {
         &layout.workspace_dir
     };
-    if !path_starts_with_platform(target, bound) {
-        return Err(StateMigrationError::Io(format!(
-            "migration target escapes its contract boundary: {}",
-            target.display()
-        )));
-    }
     let canonical_bound = canonicalize_nearest_existing(bound).map_err(|error| {
         StateMigrationError::Io(format!(
             "could not resolve migration target boundary {}: {error}",
@@ -712,12 +706,6 @@ fn validate_migration_target(
         ))
     })?;
     loop {
-        if !path_starts_with_platform(current, bound) {
-            return Err(StateMigrationError::Io(format!(
-                "migration target parent escapes its contract boundary: {}",
-                current.display()
-            )));
-        }
         match fs::symlink_metadata(current) {
             Ok(metadata) if metadata.file_type().is_symlink() => {
                 return Err(StateMigrationError::Io(format!(
@@ -747,6 +735,12 @@ fn validate_migration_target(
                 )));
             }
         }
+        if !path_starts_with_platform(current, bound) {
+            return Err(StateMigrationError::Io(format!(
+                "migration target parent escapes its contract boundary: {}",
+                current.display()
+            )));
+        }
         if current == bound {
             break;
         }
@@ -759,8 +753,24 @@ fn validate_migration_target(
             "migration target must not be a symlink: {}",
             target.display()
         ))),
-        Ok(_) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Ok(_) => {
+            if !path_starts_with_platform(target, bound) {
+                return Err(StateMigrationError::Io(format!(
+                    "migration target escapes its contract boundary: {}",
+                    target.display()
+                )));
+            }
+            Ok(())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if !path_starts_with_platform(target, bound) {
+                return Err(StateMigrationError::Io(format!(
+                    "migration target escapes its contract boundary: {}",
+                    target.display()
+                )));
+            }
+            Ok(())
+        }
         Err(error) => Err(StateMigrationError::Io(format!(
             "could not inspect migration target {}: {error}",
             target.display()
