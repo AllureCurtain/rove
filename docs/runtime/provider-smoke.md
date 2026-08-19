@@ -195,6 +195,13 @@ screenshot/result, the exact Web run report/transcript, and
 expose `/models`, and use `-SkipWebSmoke` or `-SkipApiSmoke` only for focused
 diagnostics.
 
+The shared HTTP transport bounds each request to 120 seconds and treats 60
+seconds without response bytes as an interrupted stream. The longer idle
+window is required by verified reasoning-capable OpenAI-compatible models that
+can pause between a native tool name and its argument deltas. OpenAI-compatible
+stream usage is normalized to one final cumulative snapshot per request, even
+when a gateway repeats the snapshot on intermediate chunks.
+
 Add `-RunStress` to run small sequential and concurrent provider job batches
 after the API/Web checks. The examples below skip repeating the browser gate and
 assume it was already collected once for the same provider configuration. Add
