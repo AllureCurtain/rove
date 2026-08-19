@@ -364,7 +364,7 @@ function Invoke-ProviderSmoke {
     $previousErrorActionPreference = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     try {
-        $output = & cargo test --test provider_smoke $testName -- --exact --nocapture 2>&1
+        $output = & cargo test -p rove-integration-tests --test provider_smoke $testName -- --exact --nocapture 2>&1
         $exit = $LASTEXITCODE
     } finally {
         $ErrorActionPreference = $previousErrorActionPreference
@@ -456,7 +456,7 @@ function Invoke-ApiSmoke {
         Wait-HttpOk -Uri "$ApiBaseLocal/runs?limit=1" -TimeoutSeconds 90 -Name "rove-api"
 
         $plain = Invoke-Json -Method Post -Uri "$ApiBaseLocal/jobs" -Body @{
-            message = "Reply with exactly: rove provider api plain ok"
+            message = "Use the read_file tool exactly once to read provider-tool-fixture.txt, then reply with exactly: rove provider api plain ok"
             model = $Model
             approval = "auto"
             max_steps = 4
