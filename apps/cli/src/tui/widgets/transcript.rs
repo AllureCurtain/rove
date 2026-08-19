@@ -9,7 +9,7 @@ use crate::terminal::view::{
 };
 use crate::tui::sanitize::{sanitize_display_text, sanitize_tool_text, truncate_display_text};
 use crate::tui::state::{TuiFocus, TuiState};
-use rove_runtime::types::TerminationReason;
+use rove_runtime::types::{TerminationReason, Usage};
 
 use super::termination_label;
 
@@ -89,6 +89,7 @@ fn push_timeline_run_lines(lines: &mut Vec<Line<'static>>, run: &RunViewState) {
     let mut pending_assistant = String::new();
     let mut streamed_turn = String::new();
     let mut last_assistant = String::new();
+    let mut usage_rendered = false;
 
     for entry in run.timeline_entries() {
         match &entry.kind {
@@ -114,6 +115,10 @@ fn push_timeline_run_lines(lines: &mut Vec<Line<'static>>, run: &RunViewState) {
             }
             kind => {
                 flush_assistant(lines, &mut pending_assistant);
+                if matches!(kind, RunTimelineEntryKind::Completion { .. }) {
+                    push_usage(lines, run.last_usage.as_ref());
+                    usage_rendered = true;
+                }
                 push_timeline_kind(lines, kind, &streamed_turn, &last_assistant);
                 if matches!(kind, RunTimelineEntryKind::Completion { .. }) {
                     streamed_turn.clear();
@@ -124,6 +129,24 @@ fn push_timeline_run_lines(lines: &mut Vec<Line<'static>>, run: &RunViewState) {
         }
     }
     flush_assistant(lines, &mut pending_assistant);
+    if !usage_rendered {
+        push_usage(lines, run.last_usage.as_ref());
+    }
+}
+
+fn push_usage(lines: &mut Vec<Line<'static>>, usage: Option<&Usage>) {
+    let Some(usage) = usage else {
+        return;
+    };
+    push_labeled_text(
+        lines,
+        "Usage",
+        &format!(
+            "tokens prompt {} / completion {} / total {} / cached {} | cost unavailable",
+            usage.prompt_tokens, usage.completion_tokens, usage.total_tokens, usage.cached_tokens
+        ),
+        Style::default().fg(Color::DarkGray),
+    );
 }
 
 fn timeline_turn_boundary(kind: &RunTimelineEntryKind) -> bool {
@@ -501,6 +524,7 @@ fn push_legacy_run_lines(lines: &mut Vec<Line<'static>>, run: &RunViewState) {
                 .add_modifier(Modifier::BOLD),
         );
     }
+    push_usage(lines, run.last_usage.as_ref());
     if let Some(completed) = &run.completed {
         let completion_style = match completed.reason {
             TerminationReason::Error => Style::default().fg(Color::Red),

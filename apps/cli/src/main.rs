@@ -145,7 +145,16 @@ async fn run_tui(args: &Args) -> anyhow::Result<()> {
         },
     )
     .await?;
-    let resume_state = resolve_resume_state(&runtime.state_store, args.resume.as_deref()).await?;
+    let resume_state = if args.resume.is_some() {
+        resolve_resume_state(&runtime.state_store, args.resume.as_deref()).await?
+    } else {
+        runtime
+            .state_store
+            .list_resumable_task_states_limited(1)
+            .await?
+            .into_iter()
+            .next()
+    };
     tui_app::run(runtime, resume_state, interaction_rx).await
 }
 

@@ -7,7 +7,8 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use crate::terminal::view::ToolCallStatus;
 use crate::tui::keymap::key_bindings;
 use crate::tui::state::{
-    ModelPickerState, SessionPickerState, ToolDetailEntry, ToolDetailState, TuiOverlay,
+    ModelPickerState, ProviderOnboardingState, SILICONFLOW_BASE_URL, SILICONFLOW_MODEL,
+    SILICONFLOW_PROFILE_ID, SessionPickerState, ToolDetailEntry, ToolDetailState, TuiOverlay,
 };
 use rove_runtime::conversation::MessageStatus;
 
@@ -27,6 +28,7 @@ pub(crate) fn render_overlay(frame: &mut Frame<'_>, overlay: &TuiOverlay, viewpo
         TuiOverlay::ToolDetail(_) => Color::Blue,
         TuiOverlay::Help(_) => Color::Magenta,
         TuiOverlay::MessageQueue(_) => Color::Yellow,
+        TuiOverlay::ProviderOnboarding(_) => Color::Cyan,
     };
     let block = Block::default()
         .borders(Borders::ALL)
@@ -106,7 +108,82 @@ pub(crate) fn render_overlay(frame: &mut Frame<'_>, overlay: &TuiOverlay, viewpo
                 footer,
             );
         }
+        TuiOverlay::ProviderOnboarding(onboarding) => {
+            render_provider_onboarding(frame, onboarding, inner);
+        }
     }
+}
+
+fn render_provider_onboarding(
+    frame: &mut Frame<'_>,
+    onboarding: &ProviderOnboardingState,
+    area: Rect,
+) {
+    let (body, footer) = split_footer(area);
+    let masked_len = onboarding.secret.len().min(64);
+    let masked = if masked_len == 0 {
+        "<enter API key>".to_string()
+    } else {
+        format!(
+            "{} ({} chars)",
+            "*".repeat(masked_len),
+            onboarding.secret.len()
+        )
+    };
+    let mut lines = vec![
+        Line::styled(
+            "A real Provider is required. This setup writes the key directly to the OS keyring.",
+            Style::default().fg(Color::White),
+        ),
+        Line::from(vec![
+            Span::styled("Profile   ", Style::default().fg(Color::DarkGray)),
+            Span::raw(SILICONFLOW_PROFILE_ID),
+        ]),
+        Line::from(vec![
+            Span::styled("Provider  ", Style::default().fg(Color::DarkGray)),
+            Span::raw("openai"),
+        ]),
+        Line::from(vec![
+            Span::styled("Endpoint  ", Style::default().fg(Color::DarkGray)),
+            Span::raw(SILICONFLOW_BASE_URL),
+        ]),
+        Line::from(vec![
+            Span::styled("Model     ", Style::default().fg(Color::DarkGray)),
+            Span::raw(SILICONFLOW_MODEL),
+        ]),
+        Line::from(vec![
+            Span::styled("API key   ", Style::default().fg(Color::DarkGray)),
+            Span::styled(masked, Style::default().fg(Color::Cyan)),
+        ]),
+        Line::from(vec![
+            Span::styled("Catalog   ", Style::default().fg(Color::DarkGray)),
+            Span::raw(crate::tui::sanitize::sanitize_display_text(
+                &onboarding.config_path,
+                240,
+            )),
+        ]),
+    ];
+    if onboarding.submitting {
+        lines.push(Line::styled(
+            "Writing keyring entry, probing inventory, and publishing catalog...",
+            Style::default().fg(Color::Yellow),
+        ));
+    }
+    if let Some(error) = onboarding.error {
+        lines.push(Line::styled(
+            error.label(),
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        ));
+    }
+    frame.render_widget(
+        Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }),
+        body,
+    );
+    frame.render_widget(
+        Paragraph::new("Type/paste key  Enter configure + test  Esc close")
+            .style(Style::default().fg(Color::Cyan)),
+        footer,
+    );
 }
 
 fn render_model_picker(frame: &mut Frame<'_>, picker: &ModelPickerState, area: Rect) {

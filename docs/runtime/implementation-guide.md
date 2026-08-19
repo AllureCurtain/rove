@@ -325,6 +325,27 @@ cargo run -p rove-cli -- provider migrate
 cargo run -p rove-cli -- provider migrate --apply
 ```
 
+The verified external TUI target uses the SiliconFlow OpenAI-compatible
+endpoint and model below. The credential remains in `SILICONFLOW_API_KEY` (or
+an equivalent keyring reference), never in TOML:
+
+```powershell
+$env:SILICONFLOW_API_KEY = "<secret>"
+cargo run -p rove-cli -- provider add siliconflow-deepseek-v3-2 `
+  --provider openai `
+  --base-url https://api.siliconflow.cn/v1 `
+  --model deepseek-ai/DeepSeek-V3.2 `
+  --secret-env SILICONFLOW_API_KEY
+cargo run -p rove-cli -- provider test siliconflow-deepseek-v3-2
+cargo run -p rove-cli -- provider use siliconflow-deepseek-v3-2
+```
+
+The 2026-08-19 credentialed TUI gate passed three consecutive turns,
+including native repository discovery/read tools and one approval-backed
+`edit_file` mutation. Evidence is outside the repository at
+`<evidence-root>/tui-gate-10`; this does not claim the unverified Desktop or
+Windows ConPTY gates.
+
 Provider `add`, `test`, `use`, and `list` are async maintenance commands and do
 not assemble a workspace run. `add` defaults to a no-echo OS-keyring prompt;
 environment and bounded file references are explicit alternatives. The shared

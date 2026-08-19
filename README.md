@@ -250,6 +250,33 @@ Official services and compatible gateways use the same profile types; only
 endpoint, model, and credential reference differ. Settings mutates the same
 user catalog with revision/CAS protection; the browser never receives the key.
 
+The verified real-use target for the installed TUI is SiliconFlow's
+OpenAI-compatible endpoint and `deepseek-ai/DeepSeek-V3.2`:
+
+~~~powershell
+$env:SILICONFLOW_API_KEY = "<secret>"
+rove provider add siliconflow-deepseek-v3-2 `
+  --provider openai `
+  --base-url https://api.siliconflow.cn/v1 `
+  --model deepseek-ai/DeepSeek-V3.2 `
+  --secret-env SILICONFLOW_API_KEY
+rove provider test siliconflow-deepseek-v3-2
+rove provider use siliconflow-deepseek-v3-2
+~~~
+
+The key is referenced, not written to the catalog. After onboarding, launch
+from any repository with no message or model flag:
+
+~~~powershell
+cd D:\path\to\workspace
+rove
+~~~
+
+The credentialed TUI gate uses isolated fixture and data/config roots. Its
+secret-free evidence is kept outside the repository under
+`<evidence-root>/tui-gate-10`; the Windows ConPTY/manual terminal gate remains
+an explicitly unverified platform check.
+
 For the installed terminal product, configure a named provider profile once,
 then launch the full-screen interface from the directory to work in:
 

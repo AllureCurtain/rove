@@ -3,9 +3,32 @@
 Provider smoke tests are opt-in checks for real model endpoints. They are not part of the default deterministic test suite because they require credentials, network access, local Ollama availability, or provider-specific quota.
 
 The user-owned Provider catalog, secure CLI onboarding, and CLI/TUI
-model-selection behavior have deterministic coverage, but the credentialed
-SiliconFlow final gate has not yet been recorded for the 2026-08-18 real-use
-implementation slice. A skipped gate proves only the skip path.
+model-selection behavior have deterministic coverage. The credentialed
+SiliconFlow TUI final gate for the 2026-08-18 real-use implementation slice is
+recorded below; a skipped gate still proves only the skip path.
+
+## Recorded credentialed TUI gate
+
+On 2026-08-19, the opt-in TUI gate ran against an isolated fixture with this
+safe identity:
+
+| Field | Value |
+|---|---|
+| Provider | `openai` |
+| Endpoint | `https://api.siliconflow.cn/v1` |
+| Model | `deepseek-ai/DeepSeek-V3.2` |
+| Catalog profile | `siliconflow-deepseek-v3-2` |
+| Gate result | PASS, three `success/final` turns, process exit code `0` |
+| Tool evidence | `list_directory`, `glob_paths`, `search_code`, `read_file`, `edit_file` |
+| Approval evidence | one approved `edit_file` mutation |
+| Usage evidence | 5842, 7479, and 8544 total tokens per turn |
+| Evidence root | `<evidence-root>/tui-gate-10` (outside the repository) |
+
+The fixture ended with the expected `README.md` change from `Demo status:
+pending` to `Demo status: ready`; no raw key, Authorization header, or provider
+request body was recorded. The source-side Provider fixes are split into
+`50e5274` (slow native streams and cumulative usage normalization) and
+`b86aeaa` (observed mutation guidance and schema regression).
 
 ## User catalog setup
 

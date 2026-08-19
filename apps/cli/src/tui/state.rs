@@ -17,6 +17,105 @@ pub const MAX_TOOL_DETAIL_TEXT_BYTES: usize = 8 * 1024;
 pub const MAX_HELP_LINES: usize = 64;
 pub const MAX_MODEL_CANDIDATES: usize = 512;
 pub const MAX_MODEL_QUERY_BYTES: usize = 1024;
+pub const MAX_PROVIDER_SECRET_BYTES: usize = 16 * 1024;
+pub const SILICONFLOW_PROFILE_ID: &str = "siliconflow-deepseek-v3-2";
+pub const SILICONFLOW_BASE_URL: &str = "https://api.siliconflow.cn/v1";
+pub const SILICONFLOW_MODEL: &str = "deepseek-ai/DeepSeek-V3.2";
+
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct SensitiveInput(String);
+
+impl std::fmt::Debug for SensitiveInput {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("SensitiveInput([REDACTED])")
+    }
+}
+
+impl SensitiveInput {
+    pub fn push(&mut self, ch: char) {
+        if self.0.len().saturating_add(ch.len_utf8()) <= MAX_PROVIDER_SECRET_BYTES {
+            self.0.push(ch);
+        }
+    }
+
+    pub fn pop(&mut self) {
+        self.0.pop();
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.chars().count()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn into_inner(self) -> String {
+        self.0
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderStatus {
+    Ready,
+    OnboardingRequired,
+    Testing,
+    RecoverableError,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderOnboardingFailure {
+    Invalid,
+    CredentialStore,
+    Unauthorized,
+    RateLimited,
+    Upstream,
+    Timeout,
+    Transport,
+    InvalidResponse,
+    ModelUnavailable,
+    CatalogChanged,
+    ReconciliationRequired,
+    Unavailable,
+}
+
+impl ProviderOnboardingFailure {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Invalid => "Provider metadata is invalid",
+            Self::CredentialStore => "OS keyring is unavailable",
+            Self::Unauthorized => "Provider credential was rejected",
+            Self::RateLimited => "Provider rate limit reached; retry later",
+            Self::Upstream => "Provider service is temporarily unavailable",
+            Self::Timeout => "Provider connection timed out",
+            Self::Transport => "Provider connection failed",
+            Self::InvalidResponse => "Provider returned an invalid model inventory",
+            Self::ModelUnavailable => "Required model is not available to this account",
+            Self::CatalogChanged => "Provider catalog changed; reload and retry",
+            Self::ReconciliationRequired => "Provider setup needs catalog reconciliation",
+            Self::Unavailable => "Provider is unavailable",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderOnboardingState {
+    pub secret: SensitiveInput,
+    pub config_path: String,
+    pub submitting: bool,
+    pub error: Option<ProviderOnboardingFailure>,
+}
+
+impl ProviderOnboardingState {
+    pub fn new(config_path: String) -> Self {
+        Self {
+            secret: SensitiveInput::default(),
+            config_path,
+            submitting: false,
+            error: None,
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelCandidate {
@@ -533,6 +632,7 @@ pub enum TuiOverlay {
     ToolDetail(ToolDetailState),
     Help(HelpState),
     MessageQueue(MessageQueueState),
+    ProviderOnboarding(ProviderOnboardingState),
 }
 
 impl TuiOverlay {
@@ -543,6 +643,7 @@ impl TuiOverlay {
             Self::ToolDetail(_) => " Tool detail ",
             Self::Help(_) => " Help ",
             Self::MessageQueue(_) => " Message delivery ",
+            Self::ProviderOnboarding(_) => " Configure SiliconFlow ",
         }
     }
 }
@@ -590,6 +691,12 @@ pub struct TuiState {
     pub model_selection_changed: bool,
     pub messages: Vec<ConversationMessage>,
     pub message_error: Option<String>,
+    pub workspace_root: String,
+    pub workspace_kind: String,
+    pub session_id: String,
+    pub provider_status: ProviderStatus,
+    pub provider_health: Option<String>,
+    pub provider_config_path: String,
 }
 
 impl TuiState {
@@ -763,6 +870,12 @@ impl Default for TuiState {
             model_selection_changed: false,
             messages: Vec::new(),
             message_error: None,
+            workspace_root: "-".to_string(),
+            workspace_kind: "unknown".to_string(),
+            session_id: "-".to_string(),
+            provider_status: ProviderStatus::Ready,
+            provider_health: None,
+            provider_config_path: "~/.rove/config.toml".to_string(),
         }
     }
 }
