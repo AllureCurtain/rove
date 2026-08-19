@@ -21,7 +21,7 @@ safe identity:
 | Gate result | PASS, three `success/final` turns, process exit code `0` |
 | Tool evidence | `list_directory`, `glob_paths`, `search_code`, `read_file`, `edit_file` |
 | Approval evidence | one approved `edit_file` mutation |
-| Usage evidence | 5842, 7479, and 8544 total tokens per turn |
+| Usage evidence | TUI last-response snapshots: 5842, 7479, and 8544 total tokens; canonical whole-run prompt/completion/total: 32553/1429/33982, 33334/1048/34382, and 43862/1792/45654 |
 | Evidence root | `<evidence-root>/tui-gate-10` (outside the repository) |
 
 The fixture ended with the expected `README.md` change from `Demo status:
