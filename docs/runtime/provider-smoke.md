@@ -195,7 +195,7 @@ screenshot/result, the exact Web run report/transcript, and
 expose `/models`, and use `-SkipWebSmoke` or `-SkipApiSmoke` only for focused
 diagnostics.
 
-The shared HTTP transport bounds each request to 120 seconds and treats 60
+The shared HTTP transport bounds each request to 120 seconds and treats 90
 seconds without response bytes as an interrupted stream. The longer idle
 window is required by verified reasoning-capable OpenAI-compatible models that
 can pause between a native tool name and its argument deltas. OpenAI-compatible

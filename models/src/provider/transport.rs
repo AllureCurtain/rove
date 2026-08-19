@@ -49,7 +49,7 @@ impl Default for TransportConfig {
             // Reasoning-capable compatible providers can pause between the
             // tool name and its argument deltas while still completing within
             // the bounded request deadline.
-            stream_idle_timeout: Duration::from_secs(60),
+            stream_idle_timeout: Duration::from_secs(90),
             max_error_body_bytes: 64 * 1024,
             framing_limits: FramingLimits::default(),
             redirect_policy: RedirectPolicy::None,
@@ -805,7 +805,7 @@ mod tests {
     fn default_idle_window_allows_slow_tool_deltas_within_request_deadline() {
         let config = TransportConfig::default();
 
-        assert_eq!(config.stream_idle_timeout, Duration::from_secs(60));
+        assert_eq!(config.stream_idle_timeout, Duration::from_secs(90));
         assert!(config.stream_idle_timeout < config.request_timeout);
     }
 
