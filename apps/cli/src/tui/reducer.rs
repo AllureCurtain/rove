@@ -5,7 +5,8 @@ use crate::tui::slash::TuiSlashCommand;
 use crate::tui::state::{
     HelpState, InteractionKeyMode, InteractionModalView, MAX_COMPOSER_BYTES,
     MAX_INTERACTION_INPUT_BYTES, MessageQueueState, ModelPickerError, ModelPickerState,
-    RunLifecycle, SessionPickerError, SessionPickerState, TuiFocus, TuiOverlay, TuiState,
+    ProviderOnboardingState, ProviderStatus, RunLifecycle, SessionPickerError, SessionPickerState,
+    TuiFocus, TuiOverlay, TuiState,
 };
 use rove_runtime::conversation::{MessageStatus, SessionDeliveryState};
 use rove_runtime::types::CallId;
@@ -22,6 +23,12 @@ pub fn reduce(state: &mut TuiState, action: TuiAction) -> Vec<TuiEffect> {
             | TuiAction::ModelsLoadFailed { .. }
             | TuiAction::ModelSelectionPersisted { .. }
             | TuiAction::ModelSelectionFailed { .. }
+            | TuiAction::ProviderOnboardingSucceeded { .. }
+            | TuiAction::ProviderOnboardingFailed { .. }
+            | TuiAction::ProviderReloaded { .. }
+            | TuiAction::ProviderReloadFailed { .. }
+            | TuiAction::ProviderProbeSucceeded { .. }
+            | TuiAction::ProviderProbeFailed { .. }
             | TuiAction::MessagesLoaded { .. }
             | TuiAction::MessageUpdated { .. }
             | TuiAction::MessageOperationFailed { .. }
@@ -58,6 +65,7 @@ pub fn reduce(state: &mut TuiState, action: TuiAction) -> Vec<TuiEffect> {
         TuiAction::OpenToolDetail => open_tool_detail(state),
         TuiAction::OpenHelp => open_help(state),
         TuiAction::OpenMessageQueue => open_message_queue(state),
+        TuiAction::OpenProviderOnboarding => open_provider_onboarding(state),
         TuiAction::CloseOverlay => {
             if state.modal.is_none() {
                 state.overlay = None;
@@ -119,6 +127,55 @@ pub fn reduce(state: &mut TuiState, action: TuiAction) -> Vec<TuiEffect> {
             } else {
                 state.model_notice = Some(error.label().to_string());
             }
+            Vec::new()
+        }
+        TuiAction::ProviderOnboardingSucceeded { selection, health } => {
+            state.model_selection = Some(selection);
+            state.model_selection_changed = true;
+            state.provider_status = ProviderStatus::Ready;
+            state.provider_health = Some(health.clone());
+            state.model_notice = Some(format!("Provider configured: {health}"));
+            state.overlay = None;
+            Vec::new()
+        }
+        TuiAction::ProviderOnboardingFailed { error } => {
+            state.provider_status = ProviderStatus::OnboardingRequired;
+            state.provider_health = None;
+            state.model_notice = Some(error.label().to_string());
+            state.overlay = Some(TuiOverlay::ProviderOnboarding(ProviderOnboardingState {
+                secret: Default::default(),
+                config_path: state.provider_config_path.clone(),
+                submitting: false,
+                error: Some(error),
+            }));
+            Vec::new()
+        }
+        TuiAction::ProviderReloaded { selection } => {
+            state.model_selection = Some(selection);
+            state.model_selection_changed = true;
+            state.provider_status = ProviderStatus::Ready;
+            state.model_notice = Some("Provider catalog reloaded".to_string());
+            state.overlay = None;
+            Vec::new()
+        }
+        TuiAction::ProviderReloadFailed { error } => {
+            state.provider_status = ProviderStatus::OnboardingRequired;
+            state.model_notice = Some(error.label().to_string());
+            state.overlay = Some(TuiOverlay::ProviderOnboarding(
+                ProviderOnboardingState::new(state.provider_config_path.clone()),
+            ));
+            Vec::new()
+        }
+        TuiAction::ProviderProbeSucceeded { health } => {
+            state.provider_status = ProviderStatus::Ready;
+            state.provider_health = Some(health.clone());
+            state.model_notice = Some(format!("Provider healthy: {health}"));
+            Vec::new()
+        }
+        TuiAction::ProviderProbeFailed { error } => {
+            state.provider_status = ProviderStatus::RecoverableError;
+            state.provider_health = None;
+            state.model_notice = Some(error.label().to_string());
             Vec::new()
         }
         TuiAction::PromoteSelectedMessage => message_action(state, true),
@@ -253,6 +310,12 @@ pub fn reduce(state: &mut TuiState, action: TuiAction) -> Vec<TuiEffect> {
                     query,
                     auto_select: false,
                 }];
+            } else if let Some(TuiOverlay::ProviderOnboarding(onboarding)) = state.overlay.as_mut()
+            {
+                if !onboarding.submitting {
+                    onboarding.secret.push(ch);
+                    onboarding.error = None;
+                }
             } else if state.modal.is_none()
                 && state.overlay.is_none()
                 && state.focus == TuiFocus::Composer
@@ -276,6 +339,12 @@ pub fn reduce(state: &mut TuiState, action: TuiAction) -> Vec<TuiEffect> {
                     query,
                     auto_select: false,
                 }];
+            } else if let Some(TuiOverlay::ProviderOnboarding(onboarding)) = state.overlay.as_mut()
+            {
+                if !onboarding.submitting {
+                    onboarding.secret.pop();
+                    onboarding.error = None;
+                }
             } else if state.modal.is_none()
                 && state.overlay.is_none()
                 && state.focus == TuiFocus::Composer
@@ -298,6 +367,14 @@ pub fn reduce(state: &mut TuiState, action: TuiAction) -> Vec<TuiEffect> {
             } else if let Some(command) = TuiSlashCommand::parse(&message) {
                 state.composer.clear();
                 dispatch_slash_command(state, command)
+            } else if state.provider_status != ProviderStatus::Ready {
+                state.model_notice = Some(
+                    "Configure a Provider before sending; your draft is preserved".to_string(),
+                );
+                state.overlay = Some(TuiOverlay::ProviderOnboarding(
+                    ProviderOnboardingState::new(state.provider_config_path.clone()),
+                ));
+                Vec::new()
             } else {
                 state.composer.clear();
                 let session_state = if state.run_lifecycle == RunLifecycle::Running {
@@ -462,6 +539,20 @@ fn open_help(state: &mut TuiState) -> Vec<TuiEffect> {
     Vec::new()
 }
 
+fn open_provider_onboarding(state: &mut TuiState) -> Vec<TuiEffect> {
+    if state.modal.is_some() || state.run_lifecycle.is_active() {
+        return Vec::new();
+    }
+    if matches!(state.overlay, Some(TuiOverlay::ProviderOnboarding(_))) {
+        state.overlay = None;
+    } else {
+        state.overlay = Some(TuiOverlay::ProviderOnboarding(
+            ProviderOnboardingState::new(state.provider_config_path.clone()),
+        ));
+    }
+    Vec::new()
+}
+
 fn move_overlay(state: &mut TuiState, delta: isize) -> Vec<TuiEffect> {
     let Some(overlay) = state.overlay.as_mut() else {
         return Vec::new();
@@ -480,6 +571,7 @@ fn move_overlay(state: &mut TuiState, delta: isize) -> Vec<TuiEffect> {
             };
         }
         TuiOverlay::MessageQueue(queue) => queue.move_selection(delta),
+        TuiOverlay::ProviderOnboarding(_) => {}
     }
     Vec::new()
 }
@@ -513,6 +605,7 @@ fn page_overlay(state: &mut TuiState, down: bool) -> Vec<TuiEffect> {
         TuiOverlay::MessageQueue(queue) => {
             queue.move_selection(if down { 8 } else { -8 });
         }
+        TuiOverlay::ProviderOnboarding(_) => {}
     }
     Vec::new()
 }
@@ -553,6 +646,16 @@ fn confirm_overlay(state: &mut TuiState) -> Vec<TuiEffect> {
             selection,
             expected_revision: state.model_selection_revision,
         }];
+    }
+    if let Some(TuiOverlay::ProviderOnboarding(onboarding)) = state.overlay.as_mut() {
+        if onboarding.submitting || onboarding.secret.is_empty() {
+            return Vec::new();
+        }
+        onboarding.submitting = true;
+        onboarding.error = None;
+        let secret = std::mem::take(&mut onboarding.secret);
+        state.provider_status = ProviderStatus::Testing;
+        return vec![TuiEffect::OnboardSiliconFlow { secret }];
     }
     let Some(TuiOverlay::SessionPicker(picker)) = state.overlay.as_mut() else {
         return Vec::new();
@@ -632,8 +735,35 @@ fn dispatch_slash_command(state: &mut TuiState, command: TuiSlashCommand) -> Vec
                 }]
             }
         }
+        TuiSlashCommand::ProviderSetup => open_provider_onboarding(state),
+        TuiSlashCommand::ProviderReload => {
+            if state.run_lifecycle.is_active() {
+                state.model_notice =
+                    Some("Cannot reload Provider during an active run".to_string());
+                Vec::new()
+            } else {
+                state.provider_status = ProviderStatus::Testing;
+                vec![TuiEffect::ReloadProvider]
+            }
+        }
+        TuiSlashCommand::ProviderTest => {
+            if state.run_lifecycle.is_active() {
+                state.model_notice = Some("Cannot test Provider during an active run".to_string());
+                Vec::new()
+            } else if state.model_selection.is_none() {
+                state.overlay = Some(TuiOverlay::ProviderOnboarding(
+                    ProviderOnboardingState::new(state.provider_config_path.clone()),
+                ));
+                Vec::new()
+            } else {
+                state.provider_status = ProviderStatus::Testing;
+                vec![TuiEffect::ProbeCurrentProvider]
+            }
+        }
         TuiSlashCommand::Unknown(command) => {
-            state.model_notice = Some(format!("Unknown command `{command}`; use /model or F1"));
+            state.model_notice = Some(format!(
+                "Unknown command `{command}`; use /model, /provider, or F1"
+            ));
             Vec::new()
         }
     }
@@ -751,7 +881,8 @@ mod tests {
     use crate::tui::state::{
         InteractionKeyMode, InteractionModalKind, InteractionModalView,
         MAX_INTERACTION_INPUT_BYTES, ModelCandidate, ModelPickerError, ModelPickerState,
-        ResumeCandidate, RunLifecycle, SessionPickerError, TuiFocus, TuiOverlay, TuiState,
+        ProviderOnboardingFailure, ProviderStatus, ResumeCandidate, RunLifecycle,
+        SessionPickerError, TuiFocus, TuiOverlay, TuiState,
     };
     use rove_app_bootstrap::{ModelSelection, ProviderProfileId};
     use rove_runtime::types::{CallId, JobId, RunId, SessionId};
@@ -847,6 +978,72 @@ mod tests {
             }]
         );
         assert!(state.composer.is_empty());
+    }
+
+    #[test]
+    fn provider_onboarding_preserves_draft_clears_secret_and_recovers_after_failure() {
+        let mut state = TuiState {
+            composer: "inspect this repository".to_string(),
+            provider_status: ProviderStatus::OnboardingRequired,
+            provider_config_path: "C:/isolated/config.toml".to_string(),
+            ..TuiState::default()
+        };
+
+        assert!(reduce(&mut state, TuiAction::SubmitComposer).is_empty());
+        assert_eq!(state.composer, "inspect this repository");
+        assert!(matches!(
+            state.overlay,
+            Some(TuiOverlay::ProviderOnboarding(_))
+        ));
+
+        for ch in "secret-canary".chars() {
+            reduce(&mut state, TuiAction::InsertChar(ch));
+        }
+        assert!(!format!("{state:?}").contains("secret-canary"));
+        let effects = reduce(&mut state, TuiAction::ConfirmOverlay);
+        let [TuiEffect::OnboardSiliconFlow { secret }] = effects.as_slice() else {
+            panic!("expected secure onboarding effect");
+        };
+        assert_eq!(secret.clone().into_inner(), "secret-canary");
+        let Some(TuiOverlay::ProviderOnboarding(onboarding)) = state.overlay.as_ref() else {
+            panic!("expected onboarding overlay");
+        };
+        assert!(onboarding.secret.is_empty());
+        assert!(onboarding.submitting);
+
+        reduce(
+            &mut state,
+            TuiAction::ProviderOnboardingFailed {
+                error: ProviderOnboardingFailure::Unauthorized,
+            },
+        );
+        assert_eq!(state.composer, "inspect this repository");
+        let Some(TuiOverlay::ProviderOnboarding(onboarding)) = state.overlay.as_ref() else {
+            panic!("failed onboarding must stay recoverable");
+        };
+        assert!(onboarding.secret.is_empty());
+        assert_eq!(
+            onboarding.error,
+            Some(ProviderOnboardingFailure::Unauthorized)
+        );
+
+        let selection = ModelSelection {
+            profile_id: ProviderProfileId::new("siliconflow").unwrap(),
+            model: "deepseek-ai/DeepSeek-V3.2".to_string(),
+            reasoning: "default".to_string(),
+            revision: "sha256:catalog".to_string(),
+        };
+        reduce(
+            &mut state,
+            TuiAction::ProviderOnboardingSucceeded {
+                selection: selection.clone(),
+                health: "verified".to_string(),
+            },
+        );
+        assert_eq!(state.provider_status, ProviderStatus::Ready);
+        assert_eq!(state.model_selection, Some(selection));
+        assert!(state.overlay.is_none());
+        assert_eq!(state.composer, "inspect this repository");
     }
 
     #[test]

@@ -38,8 +38,12 @@ pub use provider::{
     default_wire_protocol_registry, wire_protocol_for_provider_type,
 };
 pub use provider_catalog::{
-    ModelDescriptor, ModelSelection, ProviderCatalog, ProviderCatalogError, ProviderCatalogService,
-    ProviderProfile, ProviderProfileId, ResolvedRunModel, RunModelSnapshot, SelectionRevision,
+    CredentialReference, ModelDescriptor, ModelSelection, OnboardingCredential,
+    OsProviderCredentialStore, ProviderCatalog, ProviderCatalogError, ProviderCatalogService,
+    ProviderCredentialStore, ProviderOnboardingError, ProviderOnboardingReceipt,
+    ProviderOnboardingRequest, ProviderOnboardingService, ProviderProbeFailureKind,
+    ProviderProbeReceipt, ProviderProfile, ProviderProfileId, ResolvedRunModel, RunModelSnapshot,
+    SelectionRevision,
 };
 pub use provider_migration::{
     PROVIDER_MIGRATION_RECEIPT_SCHEMA_VERSION, ProviderMigrationAction, ProviderMigrationError,

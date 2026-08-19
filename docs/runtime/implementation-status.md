@@ -43,12 +43,15 @@ This matrix compares the runtime hardening target with the current implementatio
 > a release-process smoke stayed alive through API/WebView startup. macOS/Linux
 > packaging and manual installation evidence remain unverified.
 >
-> Provider configuration / TUI note (2026-08-13): the user-owned Provider
+> Provider configuration / TUI note (2026-08-19): the user-owned Provider
 > catalog and the 2026-08-12 design Phase 0-5 are implemented. This includes
 > authority-aware loading, API/Web catalog convergence, ProductStore v14
 > mappings, CLI per-turn assembly, secret-free run model snapshots, migration,
-> and TUI `/model`. Deterministic gates cover the contracts; the real external
-> Provider smoke remains unrun.
+> and TUI `/model`. The credentialed SiliconFlow TUI gate now passes three
+> consecutive turns with native list/glob/search/read tools, an approval-backed
+> mutation, grounded finals, usage, and isolated secret-free evidence. Desktop,
+> Windows ConPTY/manual terminal, and external-provider Web/Desktop gates remain
+> unverified.
 
 > Productization B/C/D note (2026-08-14): current source implements native-first
 > structured tool calls with explicit compatibility parsing, typed malformed
@@ -66,6 +69,13 @@ This matrix compares the runtime hardening target with the current implementatio
 > pass. This implements F.1-F.3. F.4 older-history pagination/windowing and
 > F.5 TUI restart draining/reconciliation remain partial; Windows ConPTY and
 > external-provider delivery also remain unverified.
+
+> Final TUI real-use slice note (2026-08-19): F4 shared Provider completion and
+> T7 TUI completion are implemented on `feature/tui-real-use-final`. Shared
+> Provider/runtime fixes are in `50e5274` and `b86aeaa`; credentialed evidence is
+> `<evidence-root>/tui-gate-10`. This does not close the separate Productization
+> F.4/F.5 long-history and successor-drain gaps, and it does not claim Desktop D6
+> or the final A Gate.
 
 ## MVP Status
 

@@ -81,7 +81,13 @@ async fn run_provider_smoke(
     model: String,
     message: &str,
 ) -> ProviderSmokeResult {
-    let workspace = Workspace::detect(std::env::current_dir().unwrap().as_path()).unwrap();
+    let fixture = tempfile::TempDir::new().unwrap();
+    std::fs::write(
+        fixture.path().join("provider-tool-fixture.txt"),
+        TOOL_SMOKE_PHRASE,
+    )
+    .unwrap();
+    let workspace = Workspace::detect(fixture.path()).unwrap();
     let mut config = AppConfig::load(
         &workspace.root,
         AppConfigOverrides {
@@ -117,7 +123,7 @@ async fn run_provider_smoke(
     while let Some(event) = stream.next().await {
         result.event_names.push(event.event_name());
         match event {
-            StreamEvent::ToolCallStarted { name, .. } if name == "echo" => {
+            StreamEvent::ToolCallStarted { name, .. } if name == "read_file" => {
                 result.saw_tool_call = true;
             }
             StreamEvent::ToolCallCompleted { result: output, .. }
@@ -155,12 +161,13 @@ async fn assert_provider_smoke(provider_type: &str, model: String) {
     let tool_use = run_provider_smoke(
         provider_type,
         model,
-        "Use the echo tool exactly once with message \"rove provider tool smoke ok\", then reply with exactly: rove provider smoke ok",
+        "Use the read_file tool exactly once to read provider-tool-fixture.txt, then reply with exactly: rove provider smoke ok",
     )
     .await;
     assert!(
         tool_use.saw_tool_call,
-        "provider smoke did not emit an echo tool call"
+        "provider smoke did not emit a read_file tool call: output={:?}, reason={}, events={:?}",
+        tool_use.final_output, tool_use.terminal_reason, tool_use.event_names,
     );
     assert!(
         tool_use.saw_tool_output,

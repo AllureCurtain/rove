@@ -127,13 +127,14 @@ mod tests {
     };
     use crate::tui::state::{
         InteractionKeyMode, InteractionModalView, ModelCandidate, ModelPickerState,
-        ResumeCandidate, RunLifecycle, SessionPickerState, TuiFocus, TuiOverlay, TuiState,
+        ProviderOnboardingState, ResumeCandidate, RunLifecycle, SessionPickerState, TuiFocus,
+        TuiOverlay, TuiState,
     };
     use crate::tui::widgets::modal_area;
     use rove_app_bootstrap::{ModelSelection, ProviderProfileId};
     use rove_core::ToolError;
     use rove_runtime::types::{
-        CallId, JobId, PlanStep, RunId, SessionId, TaskPlan, TerminationReason,
+        CallId, JobId, PlanStep, RunId, SessionId, TaskPlan, TerminationReason, Usage,
     };
 
     fn populated_state() -> TuiState {
@@ -215,6 +216,12 @@ mod tests {
             reason: TerminationReason::Final,
             output: Some("Renderer ready".to_string()),
         });
+        state.run.last_usage = Some(Usage {
+            prompt_tokens: 120,
+            completion_tokens: 30,
+            total_tokens: 150,
+            cached_tokens: 20,
+        });
         state.run_lifecycle = RunLifecycle::Completed;
         state
     }
@@ -289,8 +296,43 @@ mod tests {
         assert!(rendered.contains("Input required"));
         assert!(rendered.contains("Completed  final"));
         assert!(rendered.contains("Renderer ready"));
+        assert!(rendered.contains("tokens prompt 120 / completion 30 / total 150 / cached 20"));
+        assert!(rendered.contains("cost unavailable"));
         assert!(rendered.contains("Composer [focused]"));
-        assert!(row_text(&buffer, 120, 39).contains("workspace: - | run: done"));
+        let status = row_text(&buffer, 120, 39);
+        assert!(status.contains("ws:- (unknown)"));
+        assert!(status.contains("| done |"));
+    }
+
+    #[test]
+    fn wide_status_preserves_real_workspace_model_session_and_run_identity() {
+        let session_id = SessionId::new();
+        let run_id = RunId::new();
+        let mut state = TuiState {
+            workspace_root: "D:\\fixtures\\a-very-long-demo-repository-name".to_string(),
+            workspace_kind: "repository".to_string(),
+            session_id: session_id.to_string(),
+            model_selection: Some(ModelSelection {
+                profile_id: ProviderProfileId::new("siliconflow-deepseek-v3-2").unwrap(),
+                model: "deepseek-ai/DeepSeek-V3.2".to_string(),
+                reasoning: "default".to_string(),
+                revision: "sha256:catalog".to_string(),
+            }),
+            run_lifecycle: RunLifecycle::Running,
+            ..TuiState::default()
+        };
+        state.run.run_id = Some(run_id);
+
+        let buffer = draw(120, 20, &state);
+        let status = row_text(&buffer, 120, 19);
+
+        assert!(status.contains("repository-name"));
+        assert!(status.contains("DeepSeek-V3.2"));
+        let session_id = session_id.to_string();
+        let run_id = run_id.to_string();
+        assert!(status.contains(&session_id[session_id.len() - 5..]));
+        assert!(status.contains(&run_id[run_id.len() - 5..]));
+        assert!(status.contains("| running |"));
     }
 
     #[test]
@@ -737,6 +779,28 @@ mod tests {
         assert!(compact_input.contains("TAIL"));
         assert!(!compact_input.contains("HEAD"));
         assert!(compact_input.contains("Enter submit"));
+    }
+
+    #[test]
+    fn provider_onboarding_masks_secret_in_the_render_buffer() {
+        let raw_secret = "synthetic-provider-secret-must-not-render";
+        let mut onboarding =
+            ProviderOnboardingState::new("D:\\isolated-config\\config.toml".to_string());
+        for character in raw_secret.chars() {
+            onboarding.secret.push(character);
+        }
+        let state = TuiState {
+            overlay: Some(TuiOverlay::ProviderOnboarding(onboarding)),
+            ..TuiState::default()
+        };
+
+        let rendered = buffer_text(&draw(100, 30, &state));
+
+        assert!(rendered.contains("Configure SiliconFlow"));
+        assert!(rendered.contains("deepseek-ai/DeepSeek-V3.2"));
+        assert!(rendered.contains("chars)"));
+        assert!(!rendered.contains(raw_secret));
+        assert!(!rendered.contains("live-secret"));
     }
 
     #[test]

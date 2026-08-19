@@ -52,10 +52,7 @@ pub struct Args {
 
 impl Args {
     pub fn is_sync_fast_path(&self) -> bool {
-        matches!(
-            self.command,
-            Some(Command::DumpConfig | Command::Provider { .. })
-        )
+        matches!(self.command, Some(Command::DumpConfig))
     }
 
     pub fn is_tui(&self) -> bool {
@@ -134,6 +131,57 @@ pub enum ReviewFormat {
 
 #[derive(Clone, Debug, Subcommand)]
 pub enum ProviderCommand {
+    /// Add and verify a Provider profile, using a masked keyring prompt by default.
+    Add {
+        /// Stable profile identifier.
+        #[arg(value_name = "PROFILE")]
+        profile: String,
+        /// Human-readable profile label.
+        #[arg(long)]
+        label: Option<String>,
+        /// Provider protocol type.
+        #[arg(long, value_name = "TYPE")]
+        provider: String,
+        /// Provider API base URL.
+        #[arg(long, value_name = "URL")]
+        base_url: String,
+        /// Default model identifier.
+        #[arg(long)]
+        model: String,
+        /// Store an environment-variable reference instead of prompting for a key.
+        #[arg(long, conflicts_with_all = ["secret_file", "no_credential"])]
+        secret_env: Option<String>,
+        /// Store a file reference instead of prompting for a key.
+        #[arg(long, value_name = "PATH", conflicts_with_all = ["secret_env", "no_credential"])]
+        secret_file: Option<PathBuf>,
+        /// Configure a Provider that does not require a credential (for example Ollama).
+        #[arg(long, conflicts_with_all = ["secret_env", "secret_file"])]
+        no_credential: bool,
+        /// Do not make this profile the catalog default.
+        #[arg(long)]
+        no_use: bool,
+        /// Expected catalog revision for compare-and-swap publication.
+        #[arg(long)]
+        expected_revision: Option<String>,
+    },
+    /// Test credential resolution and model inventory for a configured profile.
+    Test {
+        #[arg(value_name = "PROFILE")]
+        profile: String,
+        #[arg(long)]
+        model: Option<String>,
+    },
+    /// Select a configured profile and model as the catalog default.
+    Use {
+        #[arg(value_name = "PROFILE")]
+        profile: String,
+        #[arg(long)]
+        model: Option<String>,
+        #[arg(long)]
+        expected_revision: Option<String>,
+    },
+    /// List configured profiles using secret-free metadata.
+    List,
     /// Import legacy Provider profiles into the user catalog (dry-run by default).
     Migrate {
         /// Apply the migration. Without this flag no files or databases are changed.
@@ -306,7 +354,7 @@ mod tests {
                 command: ProviderCommand::Migrate { apply: false, .. }
             })
         ));
-        assert!(dry_run.is_sync_fast_path());
+        assert!(!dry_run.is_sync_fast_path());
 
         let apply = Args::parse_from([
             "rove",
@@ -324,6 +372,45 @@ mod tests {
                     rewrite_workspace_config: true,
                     ..
                 }
+            })
+        ));
+    }
+
+    #[test]
+    fn provider_real_use_commands_parse_secret_references_without_values() {
+        let add = Args::parse_from([
+            "rove",
+            "provider",
+            "add",
+            "siliconflow",
+            "--provider",
+            "openai",
+            "--base-url",
+            "https://api.siliconflow.cn/v1",
+            "--model",
+            "deepseek-ai/DeepSeek-V3.2",
+            "--secret-env",
+            "SILICONFLOW_API_KEY",
+        ]);
+        assert!(matches!(
+            add.command,
+            Some(Command::Provider {
+                command: ProviderCommand::Add {
+                    secret_env: Some(ref name),
+                    ..
+                }
+            }) if name == "SILICONFLOW_API_KEY"
+        ));
+
+        for command in ["test", "use"] {
+            let parsed = Args::parse_from(["rove", "provider", command, "siliconflow"]);
+            assert!(matches!(parsed.command, Some(Command::Provider { .. })));
+        }
+        let list = Args::parse_from(["rove", "provider", "list"]);
+        assert!(matches!(
+            list.command,
+            Some(Command::Provider {
+                command: ProviderCommand::List
             })
         ));
     }

@@ -3651,6 +3651,85 @@ async fn a_new_turn_continuing_a_session_starts_with_a_fresh_execution_budget() 
     );
 }
 
+#[tokio::test]
+async fn a_new_turn_plans_only_the_current_goal_but_executes_with_session_history() {
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let model = Box::new(CapturingFakeModelClient::new(
+        vec![
+            r#"{"goal":"mark ready","steps":[{"id":"1","title":"update the marker"}]}"#.to_string(),
+            "updated the marker".to_string(),
+        ],
+        captured.clone(),
+    ));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(EchoTool));
+    let engine = Engine::new(
+        model,
+        registry,
+        ContextManager::new("You are a test agent.".to_string()),
+        EngineConfig::new(5, true),
+    );
+    let session_id = SessionId::new();
+    let req = RunRequest {
+        session_id,
+        job_id: JobId::new(),
+        run_id: RunId::new(),
+        user_message: "mark the README ready".to_string(),
+        resume_state: Some(TaskState {
+            schema_version: 1,
+            session_id,
+            job_id: JobId::new(),
+            run_id: RunId::new(),
+            goal: "find the entry point".to_string(),
+            step: 0,
+            history: vec![
+                Message::user("where is the entry point?"),
+                Message::assistant("the entry point is src/main.rs"),
+            ],
+            summary: None,
+            checkpoint: None,
+            plan: None,
+            runtime_identity: None,
+            agent_profile: None,
+            step_ledger: Default::default(),
+            execution_lifecycle: Default::default(),
+        }),
+    };
+
+    let events = collect_events_with_request(&engine, req).await;
+
+    assert!(matches!(
+        events.last(),
+        Some(StreamEvent::RunCompleted {
+            reason: TerminationReason::Final,
+            ..
+        })
+    ));
+    let prompts = captured.lock().unwrap();
+    assert!(
+        prompts.len() >= 2,
+        "planner and step prompts must be captured"
+    );
+    assert!(
+        prompts[0]
+            .iter()
+            .any(|message| message.content == "Goal: mark the README ready")
+    );
+    assert!(
+        !prompts[0].iter().any(|message| {
+            message.content == "where is the entry point?"
+                || message.content == "the entry point is src/main.rs"
+        }),
+        "the initial planner must not reproduce a prior turn"
+    );
+    assert!(
+        prompts[1]
+            .iter()
+            .any(|message| message.content == "where is the entry point?"),
+        "the step runner must retain the prior conversation"
+    );
+}
+
 /// The complement of the rule above: restarting the *same* run must restore
 /// consumed usage so a crash-restart loop cannot hand out a new allowance on
 /// every attempt.

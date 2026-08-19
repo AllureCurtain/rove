@@ -37,6 +37,12 @@ Included:
   pass. This is F.1-F.3 evidence; F.4 older-history pagination/windowing and
   F.5 complete TUI restart recovery remain open. Windows ConPTY/PTY and
   external-provider gates remain unverified.
+- Final TUI real-use slice F4/T7 is met on the Windows release CLI path with the
+  locked SiliconFlow `openai` profile and `deepseek-ai/DeepSeek-V3.2`: three
+  credentialed `success/final` turns, native list/glob/search/read tools,
+  approval-backed `edit_file`, grounded finals, and secret-free evidence under
+  `<evidence-root>/tui-gate-10`. This does not claim Desktop D6, Windows
+  ConPTY/manual terminal, or the final A Gate.
 - Tauri Desktop D0 delivery shell with embedded authenticated API, shared static
   Web build, native workspace commands, and current-platform Windows MSI/process
   evidence. macOS/Linux packaging and manual installation remain unverified.
@@ -307,11 +313,14 @@ Acceptance:
   quota/rate limit, model tool-call capability, or rove runtime defect.
 - `scripts/provider-integration.ps1` writes `evidence-summary.json` for the
   provider/API gate;
+- the credentialed TUI gate is recorded separately under
+  `<evidence-root>/tui-gate-10` with three `success/final` runs and no raw
+  secret material;
 - when Web smoke is included, its result contains exact browser-returned
   `job_id`/`run_id`, and the saved report and product transcript contain that
   exact binding;
-- until such a credentialed run is performed, record the external-provider Web
-  gate as `not_run`. C3 did not execute it.
+- the external-provider Web gate remains `not_run`; the credentialed TUI gate
+  does not substitute for Desktop or Web interoperability evidence.
 
 ## External Tools
 

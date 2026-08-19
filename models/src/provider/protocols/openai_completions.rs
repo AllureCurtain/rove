@@ -187,6 +187,7 @@ fn insert_float_option(
 #[derive(Debug, Default)]
 struct OpenAiChatDecoder {
     calls: BTreeMap<u64, OpenAiPartialToolCall>,
+    usage: Option<Usage>,
 }
 
 #[derive(Debug, Default)]
@@ -200,12 +201,33 @@ struct OpenAiPartialToolCall {
 impl StreamDecoder for OpenAiChatDecoder {
     fn push(&mut self, frame: &str) -> Result<Vec<ModelEvent>, ModelError> {
         if frame.trim() == "[DONE]" {
-            return Ok(vec![ModelEvent::Done]);
+            let mut events = self.take_usage();
+            events.push(ModelEvent::Done);
+            return Ok(events);
         }
         let json = serde_json::from_str::<serde_json::Value>(frame).map_err(|_| {
             ModelError::StreamInterrupted("OpenAI Chat stream frame is invalid JSON".to_string())
         })?;
+        if let Some(usage) = parse_chat_usage(&json) {
+            // OpenAI-compatible gateways may repeat a cumulative usage
+            // snapshot on every chunk. Publish only the final snapshot for a
+            // model call so Runtime accounting cannot multiply token totals.
+            self.usage = Some(usage);
+        }
         Ok(normalize_chat_chunk(&mut self.calls, &json))
+    }
+
+    fn finish(&mut self) -> Result<Vec<ModelEvent>, ModelError> {
+        Ok(self.take_usage())
+    }
+}
+
+impl OpenAiChatDecoder {
+    fn take_usage(&mut self) -> Vec<ModelEvent> {
+        self.usage
+            .take()
+            .map(|usage| vec![ModelEvent::Usage { usage }])
+            .unwrap_or_default()
     }
 }
 
@@ -288,26 +310,26 @@ fn normalize_chat_chunk(
         }
     }
 
-    if let Some(usage) = json.get("usage") {
-        events.push(ModelEvent::Usage {
-            usage: Usage {
-                prompt_tokens: usage
-                    .get("prompt_tokens")
-                    .and_then(|value| value.as_u64())
-                    .unwrap_or(0) as u32,
-                completion_tokens: usage
-                    .get("completion_tokens")
-                    .and_then(|value| value.as_u64())
-                    .unwrap_or(0) as u32,
-                total_tokens: usage
-                    .get("total_tokens")
-                    .and_then(|value| value.as_u64())
-                    .unwrap_or(0) as u32,
-                cached_tokens: 0,
-            },
-        });
-    }
     events
+}
+
+fn parse_chat_usage(json: &serde_json::Value) -> Option<Usage> {
+    let usage = json.get("usage")?;
+    Some(Usage {
+        prompt_tokens: usage
+            .get("prompt_tokens")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0) as u32,
+        completion_tokens: usage
+            .get("completion_tokens")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0) as u32,
+        total_tokens: usage
+            .get("total_tokens")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0) as u32,
+        cached_tokens: 0,
+    })
 }
 
 fn openai_stop_reason(value: &str) -> StopReason {
@@ -576,6 +598,39 @@ mod tests {
             )
         );
         assert!(events.iter().any(|event| matches!(event, ModelEvent::Done)));
+    }
+
+    #[test]
+    fn decoder_publishes_only_the_final_cumulative_usage_snapshot() {
+        let mut decoder = OpenAiCompletionsProtocol::new().decoder();
+        let frames = [
+            serde_json::json!({
+                "choices": [{"delta":{"content":"one"}}],
+                "usage": {"prompt_tokens":10,"completion_tokens":1,"total_tokens":11}
+            })
+            .to_string(),
+            serde_json::json!({
+                "choices": [{"delta":{"content":"two"},"finish_reason":"stop"}],
+                "usage": {"prompt_tokens":10,"completion_tokens":2,"total_tokens":12}
+            })
+            .to_string(),
+            "[DONE]".to_string(),
+        ];
+        let mut events = Vec::new();
+        for frame in frames {
+            events.extend(decoder.push(&frame).unwrap());
+        }
+
+        let usage = events
+            .iter()
+            .filter_map(|event| match event {
+                ModelEvent::Usage { usage } => Some(usage),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(usage.len(), 1);
+        assert_eq!(usage[0].total_tokens, 12);
+        assert!(matches!(events.last(), Some(ModelEvent::Done)));
     }
 
     #[test]

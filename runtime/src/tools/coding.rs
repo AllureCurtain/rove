@@ -40,7 +40,7 @@ impl Tool for EditFileTool {
     fn schema(&self) -> ToolDescriptor {
         ToolDescriptor {
             name: "edit_file".to_string(),
-            description: "Replace one exact, uniquely observed text occurrence in a workspace file. The observation and version must still match.".to_string(),
+            description: "Replace one exact, uniquely observed text occurrence in a workspace file. observation_id and version must come from an explicit offset/limit read_file result for this same path; artifact hashes and search/list observations are invalid. The observation and version must still match.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -1545,6 +1545,15 @@ pub(crate) fn map_environment_error(error: EnvironmentError) -> ToolError {
 #[cfg(test)]
 mod productization_tests {
     use super::*;
+
+    #[test]
+    fn edit_schema_requires_a_same_file_structured_read_observation() {
+        let description = EditFileTool::new().schema().description;
+
+        assert!(description.contains("explicit offset/limit read_file"));
+        assert!(description.contains("same path"));
+        assert!(description.contains("search/list observations are invalid"));
+    }
 
     #[test]
     fn maintained_globs_cover_recursive_braces_and_character_classes() {

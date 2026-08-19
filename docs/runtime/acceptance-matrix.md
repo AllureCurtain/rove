@@ -55,6 +55,14 @@ this file is the current proof map.
 | Conversation-first Web transcript with streaming follow, exact `(job_id, run_id)` attachment, and delivery-state actions | Core lifecycle implemented and verified by unit/type/build, mocked browser, and live local fake-provider gates; F.4 older-history pagination/windowing, bounded lazy rendering, and stable prepend anchoring remain open | `apps/web/chat/*`, `apps/web/state/*`, `apps/web/api/run-controller.test.ts`, `pnpm test`, `pnpm typecheck`, `pnpm build`, `pnpm test:e2e`, `scripts/integration-smoke.ps1` |
 | TUI shared in-process adapter, durable queue projection, modal precedence, bounded rendering/resume | Core lifecycle implemented and unit-tested; F.5 restart draining/reconciliation and long-session prepend remain open, and Windows ConPTY/PTY smoke remains unverified | `cargo test -p rove-cli --lib` |
 
+## Final TUI Real-Use Slice (2026-08-19)
+
+| Contract | Current status | Verification evidence |
+|---|---|---|
+| F4 shared SiliconFlow Provider completion | Met on `feature/tui-real-use-final`: `openai` at `https://api.siliconflow.cn/v1` with `deepseek-ai/DeepSeek-V3.2`, secure catalog reference, native tool/history round trip, cumulative usage normalization, bounded stream timeout, and redacted failures | `cargo test -p rove-models --lib` (143 passed); `50e5274`, `b86aeaa`; credentialed evidence `<evidence-root>/tui-gate-10` |
+| T7 installed TUI golden path | Met for the verified Windows release CLI path: installed binary runs outside the repository, no-argument TUI assembly binds the current workspace, onboarding is recoverable, three real turns complete, tools and approval are visible, mutation stays bounded, and evidence is secret-free | `cargo build --release -p rove-cli`; installed `rove.exe --help` and `provider list` exit `0`; `cargo test -p rove-cli --lib tui_real_use_gate_when_enabled -- --nocapture`; three `success/final` reports in `<evidence-root>/tui-gate-10` |
+| Windows ConPTY/manual terminal and Desktop equivalence | Unverified / not part of this branch's completion claim | `scripts/tui-pty-smoke.py` documents the Windows typed skip; Desktop D6 and final A Gate remain pending |
+
 ## Hard read-only Review
 
 | Contract | Current status | Verification evidence |

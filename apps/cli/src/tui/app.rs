@@ -28,9 +28,15 @@ use crate::tui::render::{render, sync_viewport};
 use crate::tui::run::{TuiRunContext, drive_tui_run_events};
 use crate::tui::state::{
     InteractionKeyMode, InteractionModalKind, InteractionModalView, MAX_VISIBLE_MESSAGES,
-    ResumeCandidate, RunLifecycle, SessionPickerError, SessionPickerState, TuiOverlay, TuiState,
+    ProviderOnboardingFailure, ProviderOnboardingState, ProviderStatus, ResumeCandidate,
+    RunLifecycle, SILICONFLOW_BASE_URL, SILICONFLOW_MODEL, SILICONFLOW_PROFILE_ID,
+    SessionPickerError, SessionPickerState, TuiOverlay, TuiState,
 };
 use crate::tui::terminal::TerminalSession;
+use rove_app_bootstrap::{
+    OnboardingCredential, ProviderOnboardingError, ProviderOnboardingRequest,
+    ProviderOnboardingService, ProviderProbeFailureKind, ProviderProfileId,
+};
 use rove_runtime::conversation::{
     MessageDomainService, MessagePageQuery, SendMessageCommand, SessionDeliveryState,
 };
@@ -96,6 +102,7 @@ impl TuiApp {
 
     fn set_active_resume_state(&mut self, active_resume_state: TaskState) {
         self.session_id = active_resume_state.session_id;
+        self.state.session_id = self.session_id.to_string();
         self.state.active_resume = Some(ResumeCandidate::from_task_state(&active_resume_state));
         self.active_resume_state = Some(active_resume_state);
     }
@@ -103,6 +110,7 @@ impl TuiApp {
     fn clear_active_resume_state(&mut self) {
         self.state.active_resume = None;
         self.active_resume_state = None;
+        self.state.session_id = self.session_id.to_string();
     }
 }
 
@@ -540,13 +548,33 @@ where
 {
     let mut app = TuiApp::new(active_resume_state);
     app.state.interaction_key_mode = interaction_key_mode;
+    app.state.workspace_root = runtime.workspace.root.display().to_string();
+    app.state.workspace_kind = format!("{:?}", runtime.workspace.kind).to_ascii_lowercase();
+    app.state.session_id = app.session_id.to_string();
+    app.state.provider_config_path = runtime
+        .provider_catalog
+        .paths()
+        .config_file
+        .display()
+        .to_string();
     match runtime.selection_for_session(app.session_id) {
         Ok((selection, revision)) => {
             app.state.model_selection = Some(selection);
             app.state.model_selection_revision = revision;
+            app.state.provider_status = ProviderStatus::Ready;
         }
-        Err(error) => app.state.model_notice = Some(error.to_string()),
+        Err(_) => {
+            app.state.provider_status = ProviderStatus::OnboardingRequired;
+            app.state.model_notice = Some(
+                "Provider configuration required; enter the SiliconFlow key or use /provider"
+                    .to_string(),
+            );
+            app.state.overlay = Some(TuiOverlay::ProviderOnboarding(
+                ProviderOnboardingState::new(app.state.provider_config_path.clone()),
+            ));
+        }
     }
+    refresh_tui_messages(runtime, &mut app).await;
     let mut shutdown_open = true;
     draw_app(terminal, &mut app.state)?;
 
@@ -949,6 +977,78 @@ async fn apply_idle_effects(
                 };
                 queue.extend(reduce(&mut app.state, action));
             }
+            TuiEffect::OnboardSiliconFlow { secret } => {
+                let action = match ProviderOnboardingService::new(runtime.provider_catalog.clone())
+                    .onboard(ProviderOnboardingRequest {
+                        profile_id: ProviderProfileId::new(SILICONFLOW_PROFILE_ID)
+                            .expect("built-in profile id is valid"),
+                        label: "SiliconFlow DeepSeek V3.2".to_string(),
+                        provider_type: "openai".to_string(),
+                        base_url: SILICONFLOW_BASE_URL.to_string(),
+                        model: SILICONFLOW_MODEL.to_string(),
+                        credential: OnboardingCredential::Secret(secret.into_inner()),
+                        make_default: true,
+                        expected_revision: None,
+                    })
+                    .await
+                {
+                    Ok(receipt) => {
+                        let selection = rove_app_bootstrap::ModelSelection {
+                            profile_id: receipt.profile_id,
+                            model: receipt.model,
+                            reasoning: "default".to_string(),
+                            revision: receipt.catalog_revision,
+                        };
+                        let health = format!(
+                            "verified, {} models, native tools {}",
+                            receipt.probe.inventory_count,
+                            if receipt.probe.native_tool_calls_supported {
+                                "declared"
+                            } else {
+                                "unavailable"
+                            }
+                        );
+                        TuiAction::ProviderOnboardingSucceeded { selection, health }
+                    }
+                    Err(error) => TuiAction::ProviderOnboardingFailed {
+                        error: classify_provider_onboarding_error(&error),
+                    },
+                };
+                queue.extend(reduce(&mut app.state, action));
+            }
+            TuiEffect::ReloadProvider => {
+                let action = match runtime.default_selection() {
+                    Ok(selection) => TuiAction::ProviderReloaded { selection },
+                    Err(_) => TuiAction::ProviderReloadFailed {
+                        error: ProviderOnboardingFailure::Unavailable,
+                    },
+                };
+                queue.extend(reduce(&mut app.state, action));
+            }
+            TuiEffect::ProbeCurrentProvider => {
+                let action = match app.state.model_selection.as_ref() {
+                    Some(selection) => {
+                        match ProviderOnboardingService::new(runtime.provider_catalog.clone())
+                            .probe(&selection.profile_id, Some(&selection.model))
+                            .await
+                        {
+                            Ok(receipt) => TuiAction::ProviderProbeSucceeded {
+                                health: format!(
+                                    "verified, {} models, {}",
+                                    receipt.inventory_count, receipt.model
+                                ),
+                            },
+                            Err(error) => TuiAction::ProviderProbeFailed {
+                                error: classify_provider_onboarding_error(&error),
+                            },
+                        }
+                    }
+                    None => TuiAction::ProviderProbeFailed {
+                        error: ProviderOnboardingFailure::Unavailable,
+                    },
+                };
+                queue.extend(reduce(&mut app.state, action));
+            }
             TuiEffect::LoadMessages => {
                 let session_id = app
                     .active_resume_state
@@ -1040,6 +1140,31 @@ fn classify_model_error(error: &anyhow::Error) -> crate::tui::state::ModelPicker
         crate::tui::state::ModelPickerError::Busy
     } else {
         crate::tui::state::ModelPickerError::LoadFailed
+    }
+}
+
+fn classify_provider_onboarding_error(
+    error: &ProviderOnboardingError,
+) -> ProviderOnboardingFailure {
+    match error {
+        ProviderOnboardingError::Invalid(_) => ProviderOnboardingFailure::Invalid,
+        ProviderOnboardingError::CredentialStore => ProviderOnboardingFailure::CredentialStore,
+        ProviderOnboardingError::Probe { kind } => match kind {
+            ProviderProbeFailureKind::Unauthorized => ProviderOnboardingFailure::Unauthorized,
+            ProviderProbeFailureKind::RateLimited => ProviderOnboardingFailure::RateLimited,
+            ProviderProbeFailureKind::Upstream => ProviderOnboardingFailure::Upstream,
+            ProviderProbeFailureKind::Timeout => ProviderOnboardingFailure::Timeout,
+            ProviderProbeFailureKind::Transport => ProviderOnboardingFailure::Transport,
+            ProviderProbeFailureKind::InvalidResponse => ProviderOnboardingFailure::InvalidResponse,
+            ProviderProbeFailureKind::ModelUnavailable => {
+                ProviderOnboardingFailure::ModelUnavailable
+            }
+        },
+        ProviderOnboardingError::RevisionConflict => ProviderOnboardingFailure::CatalogChanged,
+        ProviderOnboardingError::Catalog(_) => ProviderOnboardingFailure::Unavailable,
+        ProviderOnboardingError::ReconciliationRequired => {
+            ProviderOnboardingFailure::ReconciliationRequired
+        }
     }
 }
 
@@ -1147,7 +1272,17 @@ where
                 )
                 .await;
             }
-            return Err(error);
+            app.state.provider_status = if error.to_string().contains("provider") {
+                ProviderStatus::RecoverableError
+            } else {
+                app.state.provider_status
+            };
+            app.state.model_notice = Some(classify_recoverable_run_start_error(&error));
+            return Ok(ActiveRunResult {
+                run_id: requested_run_id.unwrap_or_default(),
+                reason: TerminationReason::Error,
+                exit_requested: false,
+            });
         }
     };
     app.state.model_selection = Some(assembly.selection.clone());
@@ -1167,6 +1302,21 @@ where
         },
     )
     .await
+}
+
+fn classify_recoverable_run_start_error(error: &anyhow::Error) -> String {
+    let text = error.to_string();
+    if text.contains("provider_onboarding_required") {
+        "Provider configuration is required; use /provider".to_string()
+    } else if text.contains("provider_changed_for_resume") {
+        "Saved run uses a different Provider; restore its model or start a new session".to_string()
+    } else if text.contains("provider_unavailable") || text.contains("credential") {
+        "Provider credential or endpoint is unavailable; use /provider test, then retry".to_string()
+    } else if text.contains("revision conflict") {
+        "Provider catalog changed; use /provider reload, then retry".to_string()
+    } else {
+        "Run could not start; the draft was restored and can be retried".to_string()
+    }
 }
 
 struct TuiEngineRun<'a> {
@@ -1224,7 +1374,13 @@ where
             return Err(error.into());
         }
     };
-    let resume_state = app.active_resume_state.clone();
+    let resume_state = app.active_resume_state.clone().map(|state| {
+        if state.run_id == run_id {
+            state
+        } else {
+            project_tui_follow_up_state(state)
+        }
+    });
     let request = run.request(message.clone(), resume_state.clone());
     let trace_writer = run.trace_writer.clone();
     let cancel = CancellationToken::new();
@@ -1323,6 +1479,22 @@ where
         reason: outcome.reason,
         exit_requested: ui_result.exit_requested,
     })
+}
+
+fn project_tui_follow_up_state(mut state: TaskState) -> TaskState {
+    // A follow-up keeps the durable conversation but starts a fresh execution
+    // turn. Replaying a terminal plan/ledger would make the Engine immediately
+    // re-emit the previous completion without asking the model.
+    state.step = 0;
+    state.plan = None;
+    state.step_ledger = Default::default();
+    if let Some(checkpoint) = state.checkpoint.as_mut() {
+        checkpoint.last_step = 0;
+        checkpoint.plan = None;
+        checkpoint.step_ledger = Default::default();
+        checkpoint.last_event_seq = None;
+    }
+    state
 }
 
 fn is_message_lifecycle_event(event: &StreamEvent) -> bool {
@@ -1446,6 +1618,9 @@ async fn apply_active_effects(
             | TuiEffect::LoadModels { .. }
             | TuiEffect::PersistModel { .. }
             | TuiEffect::ResetModel { .. }
+            | TuiEffect::OnboardSiliconFlow { .. }
+            | TuiEffect::ReloadProvider
+            | TuiEffect::ProbeCurrentProvider
             | TuiEffect::LoadMessages => {}
         }
     }
@@ -1742,10 +1917,14 @@ async fn listen_for_interrupts(sender: mpsc::Sender<ShutdownSignal>) {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+    use std::env;
     use std::io;
+    use std::path::PathBuf;
     use std::sync::Arc;
     use std::time::Duration;
 
+    use async_trait::async_trait;
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
     use futures::stream::BoxStream;
     use futures::{StreamExt, stream};
@@ -1766,8 +1945,11 @@ mod tests {
     use crate::terminal::view::RunViewUpdate;
     use crate::tui::action::TuiAction;
     use crate::tui::reducer::reduce;
-    use crate::tui::state::{InteractionKeyMode, InteractionModalView, RunLifecycle, TuiState};
+    use crate::tui::state::{
+        InteractionKeyMode, InteractionModalView, ProviderStatus, RunLifecycle, TuiState,
+    };
     use rove_app_bootstrap::tool_registry;
+    use rove_core::ToolError;
     use rove_models::ModelError;
     use rove_models::fake::{FakeModelClient, FakeTurn};
     use rove_models::{ModelClient, ModelClientId, ModelEvent};
@@ -1778,8 +1960,9 @@ mod tests {
     use rove_runtime::engine::{Engine, EngineConfig};
     use rove_runtime::events::StreamEvent;
     use rove_runtime::types::{
-        ApprovalDecision, ApprovalPolicy, CallId, JobId, Message, ModelToolSchema, RunId,
-        RunRequest, SessionId, TaskState, TerminationReason, ToolApprovalRequest, Usage,
+        ApprovalDecision, ApprovalPolicy, CallId, JobId, Message, ModelToolSchema,
+        PendingToolApproval, PlanStep, PromptCheckpoint, RunId, RunRequest, SessionId, TaskPlan,
+        TaskState, TerminationReason, ToolApprovalProvider, ToolApprovalRequest, Usage,
         UserInputRequest,
     };
     use rove_runtime::workspace::Workspace;
@@ -1787,9 +1970,11 @@ mod tests {
     use super::{
         ActiveUiControl, InteractionController, PressedKeys, ShutdownInput, ShutdownSignal, TuiApp,
         TuiEngineRun, active_ui_loop, apply_idle_effects, claim_next_tui_successor,
-        discard_queued_interactions, run_loop, run_prompt_with_engine, test_control,
-        test_message_service,
+        discard_queued_interactions, project_tui_follow_up_state, run_loop, run_prompt,
+        run_prompt_with_engine, test_control, test_message_service,
     };
+
+    const REAL_TUI_TURN_TIMEOUT: Duration = Duration::from_secs(300);
 
     struct FailingDrawBackend {
         inner: TestBackend,
@@ -1798,6 +1983,25 @@ mod tests {
     struct GatedModelClient {
         entered: Arc<Notify>,
         release: Arc<Notify>,
+    }
+
+    #[derive(Clone, Default)]
+    struct RecordingApprovalProvider {
+        tool_names: Arc<tokio::sync::Mutex<Vec<String>>>,
+    }
+
+    #[async_trait]
+    impl ToolApprovalProvider for RecordingApprovalProvider {
+        async fn begin_approval(
+            &self,
+            request: ToolApprovalRequest,
+        ) -> Result<PendingToolApproval, ToolError> {
+            self.tool_names.lock().await.push(request.name);
+            Ok(PendingToolApproval::new(async {
+                tokio::time::sleep(Duration::from_millis(75)).await;
+                ApprovalDecision::Approve
+            }))
+        }
     }
 
     impl ModelClient for GatedModelClient {
@@ -1987,6 +2191,66 @@ mod tests {
         assert!(!controller.is_armed());
         controller.after_modal_draw(true);
         assert!(controller.is_armed());
+    }
+
+    #[test]
+    fn tui_follow_up_keeps_history_and_resets_terminal_execution() {
+        let plan = TaskPlan {
+            goal: "completed turn".to_string(),
+            steps: vec![PlanStep {
+                id: "step-1".to_string(),
+                title: "inspect".to_string(),
+                done: true,
+            }],
+            current_step: 1,
+        };
+        let history = vec![Message::user("first"), Message::assistant("done")];
+        let state = TaskState {
+            schema_version: 1,
+            session_id: SessionId::new(),
+            job_id: JobId::new(),
+            run_id: RunId::new(),
+            goal: "first turn".to_string(),
+            step: 6,
+            history: history.clone(),
+            summary: Some("completed summary".to_string()),
+            checkpoint: Some(PromptCheckpoint {
+                summary: Some("checkpoint summary".to_string()),
+                preserved_tail: history.clone(),
+                session: None,
+                plan: Some(plan.clone()),
+                session_memory_pointer: None,
+                durable_memory_pointer: None,
+                last_step: 6,
+                last_event_seq: Some(42),
+                token_estimate: 128,
+                compacted_history_messages: 0,
+                compaction: Default::default(),
+                runtime_identity: None,
+                agent_profile: None,
+                step_ledger: Default::default(),
+                execution_lifecycle: Default::default(),
+                message_deliveries: Vec::new(),
+            }),
+            plan: Some(plan),
+            runtime_identity: None,
+            agent_profile: None,
+            step_ledger: Default::default(),
+            execution_lifecycle: Default::default(),
+        };
+
+        let projected = project_tui_follow_up_state(state);
+
+        assert_eq!(projected.step, 0);
+        assert!(projected.plan.is_none());
+        assert_eq!(projected.history, history);
+        assert_eq!(projected.summary.as_deref(), Some("completed summary"));
+        let checkpoint = projected.checkpoint.unwrap();
+        assert_eq!(checkpoint.last_step, 0);
+        assert!(checkpoint.plan.is_none());
+        assert!(checkpoint.last_event_seq.is_none());
+        assert_eq!(checkpoint.preserved_tail, history);
+        assert_eq!(checkpoint.summary.as_deref(), Some("checkpoint summary"));
     }
 
     #[test]
@@ -3378,6 +3642,293 @@ mod tests {
             stale_app.state.overlay,
             Some(crate::tui::state::TuiOverlay::SessionPicker(_))
         ));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn tui_real_use_gate_when_enabled() -> anyhow::Result<()> {
+        if env::var("ROVE_TUI_REAL_USE_GATE").as_deref() != Ok("1") {
+            return Ok(());
+        }
+
+        let workspace_root = PathBuf::from(
+            env::var("ROVE_TUI_REAL_USE_WORKSPACE")
+                .expect("ROVE_TUI_REAL_USE_WORKSPACE is required for the real TUI gate"),
+        );
+        let evidence_root = PathBuf::from(
+            env::var("ROVE_TUI_REAL_USE_EVIDENCE")
+                .expect("ROVE_TUI_REAL_USE_EVIDENCE is required for the real TUI gate"),
+        );
+        let config_root = PathBuf::from(
+            env::var("ROVE_CONFIG_ROOT")
+                .expect("ROVE_CONFIG_ROOT must isolate the real TUI catalog"),
+        );
+        let data_root = PathBuf::from(
+            env::var("ROVE_DATA_ROOT").expect("ROVE_DATA_ROOT must isolate the real TUI state"),
+        );
+        assert!(
+            workspace_root.is_dir(),
+            "real TUI fixture is not a directory"
+        );
+        assert!(
+            config_root.is_dir(),
+            "real TUI config root is not a directory"
+        );
+        assert!(data_root.is_dir(), "real TUI data root is not a directory");
+
+        let approval_provider = RecordingApprovalProvider::default();
+        let runtime = build_cli_runtime(CliRuntimeOptions {
+            cwd: Some(workspace_root.clone()),
+            model: None,
+            max_steps: Some(6),
+            agent: None,
+            trust_project: false,
+            approval: CliApprovalPolicy::Ask,
+            task_workspace: None,
+            task_base: None,
+            initial_fake_response: None,
+            data_root: Some(data_root),
+            interaction: CliRuntimeInteraction::Providers {
+                input_provider: None,
+                approval_provider: Some(Arc::new(approval_provider.clone())),
+            },
+        })
+        .await?;
+
+        let selection = runtime.default_selection()?;
+        assert_eq!(
+            selection.profile_id.to_string(),
+            "siliconflow-deepseek-v3-2"
+        );
+        assert_eq!(selection.model, "deepseek-ai/DeepSeek-V3.2");
+        let catalog = runtime.catalog()?;
+        let profile = catalog.profile_config(&selection.profile_id)?;
+        assert_eq!(profile.provider_type, "openai");
+        assert_eq!(profile.base_url, "https://api.siliconflow.cn/v1");
+        let safe_profile = catalog
+            .profiles()
+            .into_iter()
+            .find(|profile| profile.id == selection.profile_id)
+            .expect("selected profile must have safe catalog metadata");
+        assert!(safe_profile.auth_source.ready(&workspace_root)?);
+
+        let mut app = TuiApp::new(None);
+        app.state.workspace_root = workspace_root.display().to_string();
+        app.state.workspace_kind = "repo".to_string();
+        app.state.session_id = app.session_id.to_string();
+        app.state.model_selection = Some(selection);
+        app.state.provider_status = ProviderStatus::Ready;
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend)?;
+        let mut events = stream::pending::<io::Result<Event>>();
+        let (_shutdown_sender, mut shutdown) = mpsc::channel(1);
+        let mut shutdown_open = true;
+        let (_interaction_providers, mut interactions) = bounded_interaction_channel(8);
+
+        let first = tokio::time::timeout(
+            REAL_TUI_TURN_TIMEOUT,
+            Box::pin(run_prompt(
+                &mut terminal,
+                &mut events,
+                ShutdownInput {
+                    receiver: &mut shutdown,
+                    open: &mut shutdown_open,
+                },
+                &runtime,
+                &mut app,
+                "Inspect this repository read-only. You must call list_directory with path '.' first, then glob_paths with pattern '**/*.rs', then read_file on 'README.md'. Do not modify files. Base the final answer on those tool results and cite the actual README status line.".to_string(),
+                Vec::new(),
+                None,
+                &mut interactions,
+            )),
+        )
+        .await??;
+        assert_eq!(first.reason, TerminationReason::Final);
+
+        const SECOND_PROMPT: &str = "Perform a second read-only check. You must call search_code with query 'Demo status' and path 'README.md', then call read_file on 'README.md'. Do not modify anything. Report the exact status line returned by the tools.";
+        let second_attempt = tokio::time::timeout(
+            REAL_TUI_TURN_TIMEOUT,
+            Box::pin(run_prompt(
+                &mut terminal,
+                &mut events,
+                ShutdownInput {
+                    receiver: &mut shutdown,
+                    open: &mut shutdown_open,
+                },
+                &runtime,
+                &mut app,
+                SECOND_PROMPT.to_string(),
+                Vec::new(),
+                None,
+                &mut interactions,
+            )),
+        )
+        .await??;
+        let mut recovered_error_count = 0_u32;
+        let second = if second_attempt.reason == TerminationReason::Final {
+            second_attempt
+        } else {
+            assert_eq!(second_attempt.reason, TerminationReason::Error);
+            recovered_error_count += 1;
+            tokio::time::timeout(
+                REAL_TUI_TURN_TIMEOUT,
+                Box::pin(run_prompt(
+                    &mut terminal,
+                    &mut events,
+                    ShutdownInput {
+                        receiver: &mut shutdown,
+                        open: &mut shutdown_open,
+                    },
+                    &runtime,
+                    &mut app,
+                    SECOND_PROMPT.to_string(),
+                    Vec::new(),
+                    None,
+                    &mut interactions,
+                )),
+            )
+            .await??
+        };
+        assert_eq!(second.reason, TerminationReason::Final);
+
+        const MUTATION_PROMPT: &str = "Modify exactly one line in README.md: change `Demo status: pending` to `Demo status: ready`. First call read_file on README.md with offset 0 and limit 65536, then pass that structured result's observation_id and version to edit_file. Do not use an artifact hash or search/list observation for the mutation. Finally call read_file again to verify the result. Do not touch any other path. Report the resulting line and the approval-backed change.";
+        let mutation_attempt = tokio::time::timeout(
+            REAL_TUI_TURN_TIMEOUT,
+            Box::pin(run_prompt(
+                &mut terminal,
+                &mut events,
+                ShutdownInput {
+                    receiver: &mut shutdown,
+                    open: &mut shutdown_open,
+                },
+                &runtime,
+                &mut app,
+                MUTATION_PROMPT.to_string(),
+                Vec::new(),
+                None,
+                &mut interactions,
+            )),
+        )
+        .await??;
+        let mutation = if mutation_attempt.reason == TerminationReason::Final {
+            mutation_attempt
+        } else {
+            assert!(matches!(
+                mutation_attempt.reason,
+                TerminationReason::Error | TerminationReason::StepLimit
+            ));
+            recovered_error_count += 1;
+            tokio::time::timeout(
+                REAL_TUI_TURN_TIMEOUT,
+                Box::pin(run_prompt(
+                    &mut terminal,
+                    &mut events,
+                    ShutdownInput {
+                        receiver: &mut shutdown,
+                        open: &mut shutdown_open,
+                    },
+                    &runtime,
+                    &mut app,
+                    MUTATION_PROMPT.to_string(),
+                    Vec::new(),
+                    None,
+                    &mut interactions,
+                )),
+            )
+            .await??
+        };
+        assert_eq!(mutation.reason, TerminationReason::Final);
+
+        let mut tool_names = BTreeSet::new();
+        let mut run_summaries = Vec::new();
+        let runs = app
+            .state
+            .run_history
+            .iter()
+            .chain(std::iter::once(&app.state.run));
+        for run in runs {
+            for tool in &run.tool_calls {
+                tool_names.insert(tool.name.clone());
+            }
+            run_summaries.push(serde_json::json!({
+                "run_id": run.run_id.map(|id| id.to_string()),
+                "job_id": run.job_id.map(|id| id.to_string()),
+                "tool_count": run.tool_calls.len(),
+                "timeline_entries": run.timeline.len(),
+                "usage_total_tokens": run.last_usage.as_ref().map(|usage| usage.total_tokens),
+                "grounded_final": run.completed.as_ref().is_some_and(|completion| {
+                    completion.reason == TerminationReason::Final
+                        && completion.output.as_ref().is_some_and(|output| !output.trim().is_empty())
+                }),
+            }));
+        }
+        assert!(
+            tool_names.contains("list_directory"),
+            "missing list_directory tool call"
+        );
+        assert!(
+            tool_names.contains("glob_paths"),
+            "missing glob_paths tool call"
+        );
+        assert!(
+            tool_names.contains("search_code"),
+            "missing search_code tool call"
+        );
+        assert!(
+            tool_names.contains("read_file"),
+            "missing read_file tool call"
+        );
+        assert!(
+            tool_names
+                .iter()
+                .any(|name| matches!(name.as_str(), "write_file" | "edit_file")),
+            "missing mutation tool call"
+        );
+        let successful_runs = run_summaries
+            .iter()
+            .filter(|summary| summary["grounded_final"].as_bool() == Some(true))
+            .count();
+        assert!(run_summaries.iter().all(|summary| {
+            summary["timeline_entries"].as_u64().unwrap_or_default() > 0
+                && (summary["grounded_final"].as_bool() != Some(true)
+                    || summary["usage_total_tokens"].as_u64().unwrap_or_default() > 0)
+        }));
+        assert!(
+            successful_runs >= 3,
+            "TUI gate did not complete three successful turns"
+        );
+
+        let approved_tools = approval_provider.tool_names.lock().await.clone();
+        assert!(
+            approved_tools
+                .iter()
+                .any(|name| matches!(name.as_str(), "write_file" | "edit_file")),
+            "mutation did not cross the approval provider"
+        );
+        let readme = std::fs::read_to_string(workspace_root.join("README.md"))?;
+        assert!(readme.contains("Demo status: ready"));
+
+        std::fs::create_dir_all(&evidence_root)?;
+        let evidence = serde_json::json!({
+            "gate": "tui-real-use",
+            "provider": {
+                "profile_id": "siliconflow-deepseek-v3-2",
+                "provider_type": "openai",
+                "base_url": "https://api.siliconflow.cn/v1",
+                "model": "deepseek-ai/DeepSeek-V3.2",
+            },
+            "workspace": workspace_root.display().to_string(),
+            "turns": run_summaries,
+            "tool_names": tool_names,
+            "approved_tools": approved_tools,
+            "recovered_error_count": recovered_error_count,
+            "mutation_verified": true,
+            "secret_material": "not_recorded",
+        });
+        std::fs::write(
+            evidence_root.join("tui-real-use-result.json"),
+            serde_json::to_vec_pretty(&evidence)?,
+        )?;
+        Ok(())
     }
 
     #[tokio::test]
