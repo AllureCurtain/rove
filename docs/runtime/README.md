@@ -16,13 +16,13 @@ for packaging and process launch; macOS/Linux packaging remains unverified.
 The current source also implements the 2026-08-12 user-owned Provider catalog
 and TUI model-selection slice: `~/.rove/config.toml`, authority-aware loading,
 catalog CAS/atomic writes, API/Web catalog convergence, per-turn CLI assembly,
-secret-free run model snapshots, legacy migration, and TUI `/model`. Real
-external-provider interoperability for this slice has not been run.
-The 2026-08-18 real-use work adds shared `provider add/test/use/list`
-onboarding with a masked keyring default, bounded model-inventory probe, typed
-redacted failures, CAS publication verification, and staged-keyring
-compensation. The credentialed SiliconFlow and installed-TUI gates remain
-unverified until their evidence is recorded.
+secret-free run model snapshots, legacy migration, and TUI `/model`. The
+2026-08-18 real-use work adds shared `provider add/test/use/list` onboarding
+with a masked keyring default, bounded model-inventory probe, typed redacted
+failures, CAS publication verification, and staged-keyring compensation. The
+credentialed SiliconFlow and installed-TUI F4/T7 gates passed on 2026-08-19;
+external-provider Web/Desktop gates, Windows ConPTY/manual terminal evidence,
+and the final A Gate remain unverified.
 
 The current source also implements the user-state directory contract: run
 state, memory, and the default MCP catalog are isolated under

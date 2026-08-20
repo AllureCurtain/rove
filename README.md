@@ -415,7 +415,7 @@ skipped evidence is never counted as interoperability.
 |---|---|
 | Distribution | Windows MSI/NSIS packages have been built and the release process launched; public signing, installation, and general release are not complete |
 | Platforms | Linux CI compiles/tests Desktop; macOS/Linux package and interactive evidence remain unverified |
-| Providers | Deterministic and protocol tests pass; the final external-provider interoperability gate was not run |
+| Providers | SiliconFlow `DeepSeek-V3.2` passes the installed TUI credentialed native-tool gate; external-provider Web/Desktop gates remain unrun |
 | MCP | Mock transports and negotiated behavior are covered; the optional official filesystem smoke and broader third-party interoperability remain unrun |
 | Shell isolation | Local shell is policy-bounded and approval-gated, not container/seccomp/user-namespace sandboxed |
 | Retrieval | Workspace tools plus layered Markdown memory; no built-in vector database, embedding index, or semantic RAG |

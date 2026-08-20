@@ -1,6 +1,6 @@
 # Rove TUI 与 Desktop 真实可用最终实现规范
 
-> Status: **Partially Implemented / F4 and T7 complete on `feature/tui-real-use-final`; Desktop D6 and final A Gate pending**
+> Status: **Partially Implemented / F4 and T7 integrated on `main`; Desktop D6 and final A Gate pending**
 >
 > Date: 2026-08-18
 >
