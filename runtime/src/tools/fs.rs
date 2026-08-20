@@ -46,7 +46,7 @@ impl Tool for FsReadTool {
     fn schema(&self) -> ToolDescriptor {
         ToolDescriptor {
             name: "read_file".to_string(),
-            description: "Read a bounded UTF-8 range from a workspace file. Use offset/limit or continuation for structured observation metadata required by exact mutations; a complete small legacy path-only read remains plain text.".to_string(),
+            description: "Read a bounded UTF-8 range from a workspace file. Before edit_file, read the same path with explicit offset and limit, then use that structured result's observation_id and version. Artifact hashes and search/list observations are invalid for file mutation. A complete small legacy path-only read remains plain text.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {

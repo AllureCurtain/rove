@@ -5,7 +5,7 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
 use crate::terminal::view::ToolCallStatus;
 use crate::tui::sanitize::{sanitize_display_text, sanitize_tool_text, truncate_display_text};
-use crate::tui::state::{RunLifecycle, TuiFocus, TuiState};
+use crate::tui::state::{ProviderStatus, RunLifecycle, TuiFocus, TuiState};
 use rove_runtime::types::TerminationReason;
 
 use super::termination_label;
@@ -101,23 +101,54 @@ pub(crate) fn status_line(state: &TuiState, width: u16) -> Paragraph<'static> {
     let model = state
         .model_selection
         .as_ref()
-        .map(|selection| format!("{}/{}", selection.profile_id, selection.model));
-    let content = if width >= 96 {
+        .map(|selection| selection.model.as_str())
+        .unwrap_or("unconfigured");
+    let provider = match state.provider_status {
+        ProviderStatus::Ready => "ready",
+        ProviderStatus::OnboardingRequired => "setup required",
+        ProviderStatus::Testing => "testing",
+        ProviderStatus::RecoverableError => "needs attention",
+    };
+    let content = if width >= 112 {
+        let workspace = compact_tail(&state.workspace_root, 18);
+        let workspace_kind = compact_tail(&state.workspace_kind, 10);
+        let model = compact_tail(model, 22);
+        let provider = compact_tail(provider, 8);
+        let session = compact_tail(&state.session_id, 8);
+        let run = state
+            .run
+            .run_id
+            .map(|run_id| compact_tail(&run_id.to_string(), 8))
+            .unwrap_or_else(|| "-".to_string());
         format!(
-            " workspace: - | run: {run_status} | model: {} | queued: {queued} | focus: {focus} | Ctrl+M messages",
-            model.as_deref().unwrap_or("unconfigured")
+            " ws:{workspace} ({workspace_kind}) | model:{model} | p:{provider} | s:{session} | id:{run} | {run_status} | q:{queued}"
         )
     } else if width >= 72 {
-        format!(
-            " workspace: - | run: {run_status} | queued: {queued} | focus: {focus} | Ctrl+M messages"
-        )
+        let workspace = compact_tail(&state.workspace_root, 20);
+        let session = compact_tail(&state.session_id, 8);
+        format!(" ws:{workspace} | p:{provider} | s:{session} | run:{run_status} | q:{queued}")
     } else if width >= 36 {
-        format!(" ws:- | run:{run_status} | q:{queued} | focus:{focus}")
+        let workspace = compact_tail(&state.workspace_root, usize::from(width / 3).max(12));
+        format!(" ws:{workspace} | run:{run_status} | q:{queued} | focus:{focus}")
     } else {
         format!("run:{run_status} | q:{queued}")
     };
 
     Paragraph::new(Span::styled(content, status_style)).style(Style::default().bg(Color::Black))
+}
+
+fn compact_tail(value: &str, max_chars: usize) -> String {
+    let sanitized = sanitize_display_text(value, 2048);
+    let count = sanitized.chars().count();
+    if count <= max_chars {
+        return sanitized;
+    }
+    let keep = max_chars.saturating_sub(3);
+    let tail = sanitized
+        .chars()
+        .skip(count.saturating_sub(keep))
+        .collect::<String>();
+    format!("...{tail}")
 }
 
 pub(crate) fn minimal_line(state: &TuiState) -> Paragraph<'static> {
@@ -173,6 +204,13 @@ fn activity_content(state: &TuiState) -> (&'static str, String, Style) {
     }
     if let Some(notice) = &state.model_notice {
         return ("Model", notice.clone(), Style::default().fg(Color::Cyan));
+    }
+    if state.provider_status == ProviderStatus::OnboardingRequired {
+        return (
+            "Provider",
+            "configuration required; use /provider".to_string(),
+            Style::default().fg(Color::Yellow),
+        );
     }
     if let Some(approval) = run.pending_approvals.last() {
         return (

@@ -30,6 +30,11 @@ pub const KEY_BINDINGS: &[KeyBinding] = &[
         context: "composer",
     },
     KeyBinding {
+        key: "Shift+Enter",
+        action: "Insert newline",
+        context: "composer",
+    },
+    KeyBinding {
         key: "Tab",
         action: "Focus transcript/composer",
         context: "idle",
@@ -157,7 +162,8 @@ pub fn map_key_event_with_overlay_mode(
         (KeyCode::F(1), KeyModifiers::NONE) => Some(TuiAction::OpenHelp),
         (KeyCode::Char('m'), KeyModifiers::CONTROL)
         | (KeyCode::Char('M'), KeyModifiers::CONTROL) => Some(TuiAction::OpenMessageQueue),
-        (KeyCode::Enter, _) => Some(TuiAction::SubmitComposer),
+        (KeyCode::Enter, KeyModifiers::SHIFT) => Some(TuiAction::InsertChar('\n')),
+        (KeyCode::Enter, KeyModifiers::NONE) => Some(TuiAction::SubmitComposer),
         (KeyCode::Backspace, _) => Some(TuiAction::Backspace),
         (KeyCode::Tab, _) => Some(TuiAction::FocusNext),
         (KeyCode::PageUp, _) => Some(TuiAction::ScrollPageUp),
@@ -175,7 +181,10 @@ fn map_overlay_key_event(event: KeyEvent, overlay: &TuiOverlay) -> Option<TuiAct
     if !matches!(event.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
         return None;
     }
-    if matches!(overlay, TuiOverlay::ModelPicker(_)) {
+    if matches!(
+        overlay,
+        TuiOverlay::ModelPicker(_) | TuiOverlay::ProviderOnboarding(_)
+    ) {
         match (event.code, event.modifiers) {
             (KeyCode::Backspace, KeyModifiers::NONE) => return Some(TuiAction::Backspace),
             (KeyCode::Char(ch), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
@@ -349,6 +358,10 @@ mod tests {
             (
                 KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
                 TuiAction::SubmitComposer,
+            ),
+            (
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT),
+                TuiAction::InsertChar('\n'),
             ),
             (
                 KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),

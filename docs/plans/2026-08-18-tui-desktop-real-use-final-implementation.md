@@ -1,6 +1,6 @@
 # Rove TUI 与 Desktop 真实可用最终实现规范
 
-> Status: **Final Implementation Contract / Not Implemented**
+> Status: **Partially Implemented / F4 and T7 integrated on `main`; Desktop D6 and final A Gate pending**
 >
 > Date: 2026-08-18
 >
@@ -387,15 +387,18 @@ demo-repo/
 
 ### F4. 完成定义
 
-- [ ] `provider add/test/use/list` 使用统一 Catalog 且不泄漏 secret；
-- [ ] keyring、environment 和 file reference 保持既有安全语义；
-- [ ] inventory/probe 通过锁定的真实 endpoint/model；
-- [ ] streaming 文本、stop reason 和 usage 正确或明确 unavailable；
-- [ ] 真实模型产生 native tool call，而不是 JSON 文本兼容调用；
-- [ ] tool call id、工具结果和下一轮 provider history 正确关联；
-- [ ] 模型根据工具结果产生 grounded final answer；
-- [ ] 401/403、429、5xx、超时和无效参数返回类型化且脱敏的错误；
-- [ ] Fake、mock 和 credentialed evidence 明确分开。
+- [x] `provider add/test/use/list` 使用统一 Catalog 且不泄漏 secret；
+- [x] keyring、environment 和 file reference 保持既有安全语义；
+- [x] inventory/probe 通过锁定的真实 endpoint/model；
+- [x] streaming 文本、stop reason 和 usage 正确或明确 unavailable；
+- [x] 真实模型产生 native tool call，而不是 JSON 文本兼容调用；
+- [x] tool call id、工具结果和下一轮 provider history 正确关联；
+- [x] 模型根据工具结果产生 grounded final answer；
+- [x] 401/403、429、5xx、超时和无效参数返回类型化且脱敏的错误；
+- [x] Fake、mock 和 credentialed evidence 明确分开。
+
+F4 evidence: credentialed SiliconFlow `tui-gate-10` completed with exit code
+`0`; source fixes are split into `50e5274` and `b86aeaa`.
 
 任何只返回流式文字、没有真实工具事件的结果都不能算 F 完成。
 
@@ -523,18 +526,23 @@ TUI 至少展示：
 
 所有条件必须同时满足：
 
-- [ ] 已安装 `rove` 可从仓库外启动；
-- [ ] 无参数进入 TUI 并绑定当前 Workspace；
-- [ ] 未配置 Provider 时留在可恢复 onboarding 状态；
-- [ ] 指定硅基流动 `deepseek-ai/DeepSeek-V3.2` 通过 inventory/probe；
-- [ ] 真实模型产生原生 list/search/read Tool Call；
-- [ ] 工具结果返回模型并支撑最终回答；
-- [ ] 连续两轮对话保持正确 Session 和上下文；
-- [ ] 用户能看到计划、工具、结果、终态和依据；
-- [ ] 一次写入任务保持审批、Workspace 边界、diff 和测试证据；
-- [ ] Provider、取消和工具失败不会让 TUI 无解释退出；
-- [ ] secret-free 证据包可复查；
-- [ ] Fake 测试证据与硅基流动真实 Provider 证据明确分开。
+- [x] 已安装 `rove` 可从仓库外启动；
+- [x] 无参数进入 TUI 并绑定当前 Workspace；
+- [x] 未配置 Provider 时留在可恢复 onboarding 状态；
+- [x] 指定硅基流动 `deepseek-ai/DeepSeek-V3.2` 通过 inventory/probe；
+- [x] 真实模型产生原生 list/search/read Tool Call；
+- [x] 工具结果返回模型并支撑最终回答；
+- [x] 连续两轮对话保持正确 Session 和上下文；
+- [x] 用户能看到计划、工具、结果、终态和依据；
+- [x] 一次写入任务保持审批、Workspace 边界、diff 和测试证据；
+- [x] Provider、取消和工具失败不会让 TUI 无解释退出；
+- [x] secret-free 证据包可复查；
+- [x] Fake 测试证据与硅基流动真实 Provider 证据明确分开。
+
+T7 evidence: installed release CLI SHA256
+`401fdb59756a3fef16328d2aa9c7e205bd927b5f471a55183cd0c95e6c449a11`;
+credentialed evidence `<evidence-root>/tui-gate-10`; Windows ConPTY/manual
+terminal and Desktop evidence remain explicitly unverified.
 
 ## 7. D：Windows Desktop 最终实现
 

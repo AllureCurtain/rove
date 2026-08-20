@@ -115,7 +115,13 @@ pub(crate) fn run_planned_loop<'a>(
                 result = planner.draft_accounted(
                     ctx.model,
                     &state.user_message,
-                    &state.history,
+                    // The executor receives the complete conversation below.
+                    // A new plan is scoped to this turn's goal; replaying prior
+                    // user/tool rounds here causes compatible providers to
+                    // reproduce an older plan instead of planning the current
+                    // follow-up. Replanning still receives its explicit failure
+                    // context through `replan_and_build_revision`.
+                    &[],
                     planner_context,
                 ) => result,
             };

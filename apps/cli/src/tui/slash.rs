@@ -4,6 +4,9 @@ pub enum TuiSlashCommand {
     ModelCurrent,
     ModelQuery(String),
     ModelReset,
+    ProviderSetup,
+    ProviderReload,
+    ProviderTest,
     Unknown(String),
 }
 
@@ -15,6 +18,15 @@ impl TuiSlashCommand {
         }
         let mut parts = trimmed.split_whitespace();
         let command = parts.next().unwrap_or_default();
+        if command == "/provider" {
+            let tail = parts.collect::<Vec<_>>().join(" ");
+            return Some(match tail.as_str() {
+                "" | "setup" => Self::ProviderSetup,
+                "reload" => Self::ProviderReload,
+                "test" => Self::ProviderTest,
+                _ => Self::Unknown(format!("/provider {tail}")),
+            });
+        }
         if command != "/model" {
             return Some(Self::Unknown(command.to_string()));
         }
@@ -50,6 +62,18 @@ mod tests {
         assert_eq!(
             TuiSlashCommand::parse("/modle"),
             Some(TuiSlashCommand::Unknown("/modle".to_string()))
+        );
+        assert_eq!(
+            TuiSlashCommand::parse("/provider"),
+            Some(TuiSlashCommand::ProviderSetup)
+        );
+        assert_eq!(
+            TuiSlashCommand::parse("/provider reload"),
+            Some(TuiSlashCommand::ProviderReload)
+        );
+        assert_eq!(
+            TuiSlashCommand::parse("/provider test"),
+            Some(TuiSlashCommand::ProviderTest)
         );
     }
 }

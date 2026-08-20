@@ -3,6 +3,8 @@ use rove_app_bootstrap::ModelSelection;
 use rove_runtime::conversation::SessionDeliveryState;
 use rove_runtime::types::RunId;
 
+use super::state::SensitiveInput;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TuiEffect {
     Dispatch(TerminalAction),
@@ -21,6 +23,11 @@ pub enum TuiEffect {
     ResetModel {
         expected_revision: u64,
     },
+    OnboardSiliconFlow {
+        secret: SensitiveInput,
+    },
+    ReloadProvider,
+    ProbeCurrentProvider,
     SendMessage {
         content: String,
         session_state: SessionDeliveryState,

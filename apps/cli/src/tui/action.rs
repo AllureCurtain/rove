@@ -1,4 +1,5 @@
 use crate::terminal::action::TerminalAction;
+use crate::tui::state::ProviderOnboardingFailure;
 use crate::tui::state::{
     InteractionModalKind, InteractionModalView, ResumeCandidate, SessionPickerError,
 };
@@ -31,6 +32,7 @@ pub enum TuiAction {
     OpenToolDetail,
     OpenHelp,
     OpenMessageQueue,
+    OpenProviderOnboarding,
     CloseOverlay,
     OverlayNext,
     OverlayPrevious,
@@ -51,6 +53,25 @@ pub enum TuiAction {
     },
     ModelSelectionFailed {
         error: ModelPickerError,
+    },
+    ProviderOnboardingSucceeded {
+        selection: ModelSelection,
+        health: String,
+    },
+    ProviderOnboardingFailed {
+        error: ProviderOnboardingFailure,
+    },
+    ProviderReloaded {
+        selection: ModelSelection,
+    },
+    ProviderReloadFailed {
+        error: ProviderOnboardingFailure,
+    },
+    ProviderProbeSucceeded {
+        health: String,
+    },
+    ProviderProbeFailed {
+        error: ProviderOnboardingFailure,
     },
     PromoteSelectedMessage,
     RevokeSelectedMessage,

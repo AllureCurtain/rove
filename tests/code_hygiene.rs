@@ -231,6 +231,8 @@ fn provider_integration_runner_is_generic_and_documented() {
     assert!(script.contains("[string]$ExternalMcpToolName"));
     assert!(script.contains("openai"));
     assert!(script.contains("Invoke-ProviderSmoke"));
+    assert!(script.contains("cargo test -p rove-integration-tests --test provider_smoke"));
+    assert!(script.contains("provider api plain ok"));
     assert!(script.contains("Invoke-ApiSmoke"));
     assert!(script.contains("Invoke-WebSmoke"));
     assert!(script.contains("Invoke-StressGate"));
