@@ -206,10 +206,18 @@ async fn run_case(
     let report: Value = serde_json::from_str(&report_text).map_err(std::io::Error::other)?;
     let oracle_report = report_with_agent_output(&report);
     let trace_text = tokio::fs::read_to_string(&runtime_trace_path).await?;
+    // Trace lines may carry the Codex-style {ts, seq, event} envelope; the
+    // ledger logic only needs the inner StreamEvent object.
     let trace = trace_text
         .lines()
         .filter(|line| !line.trim().is_empty())
-        .map(|line| serde_json::from_str::<Value>(line).map_err(std::io::Error::other))
+        .map(|line| -> std::io::Result<Value> {
+            let value: Value = serde_json::from_str(line).map_err(std::io::Error::other)?;
+            Ok(match value.get("event") {
+                Some(inner) if value.get("seq").is_some() => inner.clone(),
+                _ => value,
+            })
+        })
         .collect::<Result<Vec<_>, _>>()?;
 
     let fixture_dir = case_dir.join("fixture");

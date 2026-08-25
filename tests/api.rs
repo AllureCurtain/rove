@@ -7070,12 +7070,14 @@ async fn api_replays_input_needed_event_after_restart() {
         .run_dir(&created.run_id)
         .join("trace.jsonl");
     let trace = std::fs::read_to_string(trace_path).unwrap();
-    let trace_input_count = trace
-        .lines()
-        .map(|line| serde_json::from_str::<StreamEvent>(line).unwrap())
-        .filter(|event| matches!(event, StreamEvent::InputNeeded { .. }))
+    let outcome = rove_runtime::state::trace_reader::read_trace_content(&trace);
+    let trace_input_count = outcome
+        .entries
+        .iter()
+        .filter(|entry| matches!(entry.event, StreamEvent::InputNeeded { .. }))
         .count();
     assert_eq!(trace_input_count, 1);
+    assert!(!outcome.truncated_tail);
 
     let restarted = router(ApiState::new(workspace, test_config()));
     let events = restarted

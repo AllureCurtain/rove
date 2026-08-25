@@ -51,14 +51,11 @@ pub async fn reconcile_task_state_with_trace(
     state: &mut TaskState,
 ) -> std::io::Result<TraceReconciliation> {
     let path = run_dir.join("trace.jsonl");
-    let content = match tokio::fs::read_to_string(&path).await {
-        Ok(content) => content,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(TraceReconciliation {
-                last_event_seq: snapshot_seq(state),
-                ..TraceReconciliation::default()
-            });
-        }
+    // The version-tolerant reader handles both enveloped lines ({ts, seq,
+    // event}) and legacy bare-event lines in one pass, and reports a
+    // truncated tail instead of failing the resume.
+    let read = match super::trace_reader::read_trace_file(&path).await {
+        Ok(read) => read,
         Err(error) => return Err(error),
     };
 
@@ -68,36 +65,30 @@ pub async fn reconcile_task_state_with_trace(
         ..TraceReconciliation::default()
     };
 
-    // Trace sequence numbers are assigned 1-based in append order, matching
-    // `import_trace_events` during index repair.
-    let mut seq: u64 = 0;
-    for line in content.lines() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        seq += 1;
-        if applied_through.is_some_and(|applied| seq <= applied) {
-            continue;
-        }
-        match serde_json::from_str::<StreamEvent>(line) {
-            Ok(event) => {
-                if apply_event(state, &event) {
-                    outcome.changed = true;
-                }
-                outcome.applied_event_count += 1;
-                outcome.observed(seq);
-            }
+    if read.truncated_tail {
+        tracing::warn!(
+            path = %path.display(),
+            "Trace tail is truncated (crash mid-write); skipping the partial line"
+        );
+    }
+    for line_number in &read.corrupt_line_numbers {
+        tracing::warn!(
+            path = %path.display(),
+            line = line_number,
+            "Skipping corrupted trace line during resume reconciliation"
+        );
+    }
+    outcome.corrupt_line_count = read.corrupt_line_count;
 
-            Err(error) => {
-                outcome.corrupt_line_count += 1;
-                tracing::warn!(
-                    path = %path.display(),
-                    line = seq,
-                    error = %error,
-                    "Skipping corrupted trace line during resume reconciliation"
-                );
-            }
+    for entry in read.entries {
+        if applied_through.is_some_and(|applied| entry.seq <= applied) {
+            continue;
         }
+        if apply_event(state, &entry.event) {
+            outcome.changed = true;
+        }
+        outcome.applied_event_count += 1;
+        outcome.observed(entry.seq);
     }
 
     if outcome.changed || outcome.last_event_seq != applied_through {

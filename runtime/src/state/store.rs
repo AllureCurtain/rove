@@ -1,7 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use crate::events::StreamEvent;
 use crate::types::{JobId, RunId, RunRequest, SessionId, TaskState, TerminationReason};
 
 use super::index::{CleanupResult, StateIndex, TaskStateIndexRecord};
@@ -347,29 +346,27 @@ impl StateStore {
             let Some(run_id) = run_id_from_artifact_path(&entry) else {
                 continue;
             };
-            let content = tokio::fs::read_to_string(&entry).await?;
-            let mut seq = 0;
-            for (line_index, line) in content.lines().enumerate() {
-                if line.trim().is_empty() {
-                    continue;
-                }
-                let line_number = line_index + 1;
-                match serde_json::from_str::<StreamEvent>(line) {
-                    Ok(event) => {
-                        seq += 1;
-                        self.index.append_event(run_id, seq, &event, line)?;
-                        event_count += 1;
-                    }
-                    Err(err) => {
-                        corrupt_line_count += 1;
-                        tracing::warn!(
-                            path = %entry.display(),
-                            line = line_number,
-                            error = %err,
-                            "Skipping corrupted trace line during state repair"
-                        );
-                    }
-                }
+            let read = super::trace_reader::read_trace_file(&entry).await?;
+            if read.truncated_tail {
+                tracing::warn!(
+                    path = %entry.display(),
+                    "Trace tail is truncated (crash mid-write); skipping the partial line"
+                );
+            }
+            for line_number in &read.corrupt_line_numbers {
+                tracing::warn!(
+                    path = %entry.display(),
+                    line = line_number,
+                    error = "unparsable trace line",
+                    "Skipping corrupted trace line during state repair"
+                );
+            }
+            corrupt_line_count += read.corrupt_line_count;
+            for record in &read.entries {
+                let bare = serde_json::to_string(&record.event).map_err(std::io::Error::other)?;
+                self.index
+                    .append_event(run_id, record.seq, &record.event, &bare)?;
+                event_count += 1;
             }
         }
         Ok(TraceImportResult {

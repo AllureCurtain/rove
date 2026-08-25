@@ -1,0 +1,21 @@
+---
+source: runtime/src/state/trace_reader.rs
+assertion_line: 159
+expression: "outcome.entries.iter().map(|entry|\n(entry.seq, entry.ts.clone(), entry.event.event_name())).collect::<Vec<_>>()"
+---
+[
+    (
+        1,
+        Some(
+            "2026-08-25T00:00:00+00:00",
+        ),
+        "llm_chunk",
+    ),
+    (
+        2,
+        Some(
+            "2026-08-25T00:00:01+00:00",
+        ),
+        "llm_chunk",
+    ),
+]

@@ -8,3 +8,4 @@ pub mod resume;
 pub mod store;
 pub mod tool_artifacts;
 pub mod trace;
+pub mod trace_reader;

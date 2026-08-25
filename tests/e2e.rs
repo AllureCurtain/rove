@@ -4312,28 +4312,28 @@ async fn oneshot_persists_replanned_task_state() {
     assert_eq!(report.plan_revisions, persisted_revisions);
     let trace = std::fs::read_to_string(state_store.run_store.run_dir(&run_id).join("trace.jsonl"))
         .unwrap();
-    let traced_records: Vec<_> = trace
-        .lines()
-        .map(|line| serde_json::from_str::<StreamEvent>(line).unwrap())
-        .filter_map(|event| match event {
+    let traced_records: Vec<_> = rove_runtime::state::trace_reader::read_trace_content(&trace)
+        .entries
+        .into_iter()
+        .filter_map(|entry| match entry.event {
             StreamEvent::StepResult { record } => Some(*record),
             _ => None,
         })
         .collect();
     assert_eq!(traced_records, persisted_records);
-    let traced_decisions: Vec<_> = trace
-        .lines()
-        .map(|line| serde_json::from_str::<StreamEvent>(line).unwrap())
-        .filter_map(|event| match event {
+    let traced_decisions: Vec<_> = rove_runtime::state::trace_reader::read_trace_content(&trace)
+        .entries
+        .into_iter()
+        .filter_map(|entry| match entry.event {
             StreamEvent::PlanDecision { record } => Some(*record),
             _ => None,
         })
         .collect();
     assert_eq!(traced_decisions, persisted_decisions);
-    let traced_revisions: Vec<_> = trace
-        .lines()
-        .map(|line| serde_json::from_str::<StreamEvent>(line).unwrap())
-        .filter_map(|event| match event {
+    let traced_revisions: Vec<_> = rove_runtime::state::trace_reader::read_trace_content(&trace)
+        .entries
+        .into_iter()
+        .filter_map(|entry| match entry.event {
             StreamEvent::PlanCreated {
                 plan_revision: Some(revision),
                 ..
