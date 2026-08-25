@@ -4481,6 +4481,7 @@ dependencies = [
  "reqwest",
  "rove-core",
  "rove-models",
+ "rove-tools-text",
  "rusqlite",
  "serde",
  "serde_json",
@@ -4493,6 +4494,15 @@ dependencies = [
  "tracing",
  "ulid",
  "walkdir",
+]
+
+[[package]]
+name = "rove-tools-text"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

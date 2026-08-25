@@ -69,8 +69,20 @@ fn local_package_dependencies_follow_the_modular_workspace_direction() {
             .get("rove-runtime")
             .cloned()
             .unwrap_or_default(),
-        BTreeSet::from(["rove-core".to_string(), "rove-models".to_string()]),
-        "rove-runtime must depend only on rove-models and rove-core among local packages"
+        BTreeSet::from([
+            "rove-core".to_string(),
+            "rove-models".to_string(),
+            "rove-tools-text".to_string(),
+        ]),
+        "rove-runtime must depend only on rove-models, rove-core and rove-tools-text among local packages"
+    );
+    assert_eq!(
+        local_dependencies
+            .get("rove-tools-text")
+            .cloned()
+            .unwrap_or_default(),
+        BTreeSet::new(),
+        "rove-tools-text must stay a leaf: pure text kernels with no local dependencies"
     );
 
     let tree = Command::new(env!("CARGO"))
@@ -100,7 +112,9 @@ fn local_dependency_is_allowed(package: &str, dependency: &str) -> bool {
         "rove" => true,
         "rove-models" => false,
         "rove-core" => dependency == "rove-models",
-        "rove-runtime" => matches!(dependency, "rove-models" | "rove-core"),
+        // Pure text kernels: no IO, no async, no local dependencies.
+        "rove-tools-text" => false,
+        "rove-runtime" => matches!(dependency, "rove-models" | "rove-core" | "rove-tools-text"),
         "rove-app-bootstrap" => {
             matches!(dependency, "rove-models" | "rove-core" | "rove-runtime")
         }

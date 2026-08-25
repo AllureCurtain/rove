@@ -376,8 +376,23 @@ rove 双入口（desktop 常驻 + cli 临时进程）可能同时触发 schema �
 - runtime/tools 中的其余工具（shell/glob/grep 类）本期不动，仅建立"工具实现必须可脱离 agent 循环单测"的先例。
 
 ### 验收
-- [ ] 新 crate `cargo test` 通过率覆盖上述矩阵；
-- [ ] runtime 对其仅有类型级依赖。
+- [x] 新 crate `cargo test` 通过率覆盖上述矩阵；
+- [x] runtime 对其仅有类型级依赖。
+
+### 落地证据（commit `PLACEHOLDER_P10`）
+
+| 验收项 | 证据 |
+|---|---|
+| 纯函数内核 | `tools-text/src/apply.rs`：`apply_patch(&BTreeMap<String,String>, &Patch) -> Result<ApplyOutcome, ApplyError>`，无 IO/无 tokio。`grep -rE "tokio\|std::fs\|async fn" tools-text/src/` 为空 |
+| 测试矩阵 | `cargo test -p rove-tools-text` = **48 passed**，覆盖正例 / fuzzy 三级匹配 / 冲突（歧义 + 重叠 hunk）/ CRLF 保持 / unicode 边界 |
+| 错误分级 | `ApplyError::is_retryable()` 仅对 `ContextNotFound`、`AmbiguousContext` 为真；其余（`MissingInput`/`AlreadyExists`/`OverlappingHunks`/`NotText`/`DuplicatePath`）为硬失败 |
+| 类型级依赖 | `cargo tree -p rove-tools-text` 只有 `serde` / `serde_json` / `thiserror`；runtime 侧仅两处调用（`coding.rs:97` `replace_once`、`coding.rs:1269` `localized_diff`） |
+| 依赖方向固化 | `tests/workspace_architecture.rs` 断言 `rove-tools-text` 为叶子（无任何本地依赖），且 runtime 的本地依赖集合精确等于 `{rove-core, rove-models, rove-tools-text}` |
+| 等价性 | 全工作区 `cargo test --workspace --no-fail-fast` 无回归；`localized_diff` 保持原 `--- a/{path}` / `+++ b/{path}` 输出格式 |
+
+> 分歧记录（§0.3 规则）D4：计划称新 crate "收编 patch 应用 / 文件编辑类工具实现"。本期只把**纯文本内核**（patch 解析、上下文匹配、apply、diff 渲染）搬出去，`EditFileTool` / `WriteFileTool` 这些 `Tool` impl 仍留在 runtime。理由是 rove 的 `Tool` trait 携带 `async` + 审批 + 工作区边界校验（产品语义），把它搬进纯 crate 会把 tokio 和审批策略一起拖进来，反而破坏本 Phase 自己要求的"无 tokio"。按"rove 产品语义 > codex 机制"，取内核纯度、留 Tool 外壳。
+
+> 附带修复（非本 Phase 范围，但阻塞本分支绿灯）：`project_trust.rs` 的 `retargeted_windows_junction_does_not_reuse_the_original_grant` 在本机 `main` 上即为红（已在干净 checkout 上复验）。根因是 Windows 拒绝把 junction 作为"不受信任的装入点"遍历（os error 448），`canonicalize()` 失败 → capability digest 不可用 → 测试前置的 grant 无法建立。信任层的拒绝本身是安全行为，故按该测试已有的 skip-guard 风格，在环境无法承载该场景时跳过，而非放宽断言。
 
 ---
 
