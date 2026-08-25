@@ -592,7 +592,7 @@ where
                 if let Some(message) = prompt {
                     let mut next = Some((
                         message,
-                        app.pending_startup_events.drain(..).collect(),
+                        std::mem::take(&mut app.pending_startup_events),
                         app.pending_run_id.take(),
                     ));
                     while let Some((message, startup_events, requested_run_id)) = next.take() {
