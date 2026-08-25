@@ -168,9 +168,32 @@ pub enum TraceEntry {
 - SSE 输出 diff 为空（回归）。
 
 ### 验收
-- [ ] resume 不再需要 transcript/reader 的启发式分类即可重建模型上下文；
-- [ ] UiEvent 语义与现网一致；
-- [ ] apps/api 无协议变更。
+- [x] resume 不再需要 transcript/reader 的启发式分类即可重建模型上下文；
+- [x] UiEvent 语义与现网一致；
+- [x] apps/api 无协议变更。
+
+实际 commit：`01e69fb`（Phase 2 主体）。附带修掉一个 Phase 3 遗留回归：`1d5f7c0`（一次性 legacy 迁移会在无 `.rove` 的干净工作区物化状态目录，导致 `rove-cli` 状态目录 rebase 测试在 clean HEAD 上也失败）。
+
+验收证据：
+
+| 验收项 | 证据 |
+|---|---|
+| resume 无启发式重建上下文 | `tests/history_resume.rs::resume_rebuilds_model_context_from_the_trace_history_stream_alone` —— 快照清空（`history: []` + `checkpoint: None`），仅靠 trace 的 History 流重建，resume 后 fake provider 确实收到首轮对话。已做变异验证：把 `rebuild_history_from_trace` 短路后该测试立即失败，证明断言不空转。 |
+| UiEvent 语义与现网一致 | `StreamEvent` 变体与 serde 表示零改动（见下方分歧记录 D1），`tests/event_contract.rs` 继续守住 Rust↔Web 事件名一致性。 |
+| apps/api 无协议变更 | `apps/api` 不引用 `TraceEntry`/`trace_reader`；SSE DTO `JobStreamEvent` 包的是内存态 `StreamEvent` 流，不读 trace 文件，故协议面结构性不变。 |
+| 单元层 | `runtime/src/state/reconcile.rs` 新增 5 个测试覆盖重建路径：显式流重建、legacy 无流不动快照、崩溃部分重叠按后缀延长不重复、投影分歧保留快照、后缀合并纯函数边界。 |
+
+> 分歧记录（§0.3 规则）：
+>
+> **D1 —— `StreamEvent` 未拆成独立 `UiEvent` 枚举，而是原样包进 `TraceEntry::Ui`。**
+> 计划步骤 2 要求把 `StreamEvent` 拆为 `UiEvent`。实际实现保留 `StreamEvent` 不动，只在 trace 载荷层新增 `TraceEntry{History, Ui}`（untagged serde，靠 `kind` 与 `type` 标签天然区分）。裁决依据「rove 产品语义 > codex 机制」：拆枚举会波及 CLI/API/Web 三个消费者与跨语言事件名契约，而本 Phase 的真实目标——resume 不靠启发式重建上下文——由「显式 History 流」独立达成，不依赖拆枚举。
+> **连带结论：步骤 6 的 `message_adapter.rs` 合成层不需要了。** 该步骤存在的前提是 `StreamEvent` 被拆掉、SSE 需要合成回旧 DTO；既然 wire 表示没动、且 `apps/api` 根本不读 trace，合成层就是纯增复杂度。「apps/api 无协议变更」因此是结构性成立，而非靠兼容垫片维持。
+>
+> **D2 —— `HistoryItem` 复用 `Message`，未拆 `Message`/`ToolCall`/`ToolResult` 三变体。**
+> rove 的规范化协议里，assistant 消息本就自带 `tool_calls`，`Role::Tool` 消息本就自带 call_id 与结果。再拆一层等于把已规范化的信息二次拆解，投影回 `Vec<Message>` 时还要重新拼装。保留 `Compacted`（Phase 8 占位）与 `TurnContext`（provenance）两个非消息变体。
+>
+> **D3 —— trace reader 原有结构体 `TraceEntry` 改名 `TraceRecord`。**
+> 计划要求新枚举占用 `TraceEntry` 这个名字，与 reader 里既有的解码结构体撞名，故让位改名。纯内部重命名，无对外影响。
 
 ---
 
