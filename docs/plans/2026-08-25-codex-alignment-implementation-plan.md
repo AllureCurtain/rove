@@ -379,7 +379,7 @@ rove 双入口（desktop 常驻 + cli 临时进程）可能同时触发 schema �
 - [x] 新 crate `cargo test` 通过率覆盖上述矩阵；
 - [x] runtime 对其仅有类型级依赖。
 
-### 落地证据（commit `PLACEHOLDER_P10`）
+### 落地证据（commit `6c05187`）
 
 | 验收项 | 证据 |
 |---|---|
