@@ -383,13 +383,18 @@ produced Windows MSI and NSIS packages and passed a bounded release-process
 smoke. It does not yet provide signed public installers, verified manual
 installation, macOS/Linux packages, or a generally available distribution.
 
-The 2026-08-18 Desktop real-use slice additionally builds explicit per-machine
-MSI/NSIS packages and configures the NSIS Start menu folder. Per-machine scope
-is required because `%LOCALAPPDATA%\rove` is a user-state root and must never be
-used as an install/uninstall target. The native credential prompt and typed
-WebView receipt boundary are implemented, but the installed credentialed
-journey remains blocked on the shared Provider onboarding service and must not
-be claimed from package-build evidence. See `desktop-real-use.md`.
+The Desktop real-use slice additionally builds explicit per-machine MSI/NSIS
+packages and configures the NSIS Start menu folder. Per-machine scope is
+required because `%LOCALAPPDATA%\rove` is a user-state root and must never be
+used as an install/uninstall target.
+
+As of 2026-08-25 the native credential prompt is wired to the shared
+`ProviderOnboardingService`, so the Desktop create/test/use Provider flow is no
+longer blocked on that contract. The installed credentialed journey is still
+unverified: per-machine NSIS installation requires UAC/administrator approval,
+which the implementation session did not have. Installation, the credentialed
+SiliconFlow run, restart restoration, and D6 must not be claimed from
+package-build or deterministic-test evidence. See `desktop-real-use.md`.
 
 ## Security Posture
 

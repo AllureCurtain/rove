@@ -1,8 +1,9 @@
 # Rove TUI 与 Desktop 真实可用最终实现规范
 
-> Status: **Partially Implemented / F4 and T7 integrated on `main`; Desktop D6 and final A Gate pending**
+> Status: **Partially Implemented / F4 and T7 integrated on `main`; Desktop D1-D5
+> code complete with shared onboarding integrated; Desktop D6 and final A Gate pending**
 >
-> Date: 2026-08-18
+> Date: 2026-08-18 (updated 2026-08-25)
 >
 > Scope: 完整交付一条使用真实 Provider、真实仓库工具和共享 Harness 的
 > TUI 与 Windows Desktop 产品路径。本文是该范围的最终实施合同，不是分析报告、
@@ -632,17 +633,29 @@ Desktop 必须展示与 TUI 同源的事实：
 
 ### D6. Desktop 完成定义
 
-- [ ] 干净构建产生可安装的 Windows 包；
+代码实现状态（2026-08-25，确定性证据）：
+
+- [x] 干净构建产生可安装的 Windows 包（MSI + NSIS 构建通过）；
+- [x] 原生目录选择创建正确 Workspace（现有 picker + Product Workspace 路径）；
+- [x] 共享 onboarding 集成：开始菜单启动的 Desktop 通过共享
+      `ProviderOnboardingService` 创建/探测/启用 Provider，无需终端或 TOML；
+- [x] 日志、截图、trace、report 和 ProductStore 不含 raw secret（负向测试覆盖：
+      `secure_onboarding_projects_catalog_identity_without_serializing_the_secret`、
+      `probe_and_use_metadata_are_bounded_and_secret_free`）；
+- [x] 证据明确标注 Windows-only，未验证平台不做发布声明。
+
+仍需真实安装态验收（未通过，不得声称完成）：
+
 - [ ] 安装和卸载成功，启动不要求开发工具；
-- [ ] 开始菜单启动后 Provider 凭据可解析；
-- [ ] 原生目录选择创建正确 Workspace；
+- [ ] 开始菜单启动后 Provider 凭据可解析（安装态实测）；
 - [ ] 真实模型完成与 TUI 相同的两轮只读任务；
 - [ ] Chat/Inspector 展示真实 Tool Call 和结果依据；
 - [ ] 一次修改任务展示审批、变更、测试和 diff；
-- [ ] SSE 断连/重连不重复提交任务；
-- [ ] 重启 Desktop 后恢复 Workspace、Session 和终态；
-- [ ] 日志、截图、trace、report 和 ProductStore 不含 raw secret；
-- [ ] 证据明确标注 Windows-only，未验证平台不做发布声明。
+- [ ] SSE 断连/重连不重复提交任务（安装态实测）；
+- [ ] 重启 Desktop 后恢复 Workspace、Session 和终态。
+
+阻塞原因：NSIS 为 `perMachine`，安装需要 UAC/管理员交互会话；实施会话不具备该
+权限。确定性测试和包构建不能替代安装态证据。
 
 ## 8. 测试与验证合同
 

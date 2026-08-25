@@ -70,17 +70,20 @@ This matrix compares the runtime hardening target with the current implementatio
 > F.5 TUI restart draining/reconciliation remain partial; Windows ConPTY and
 > external-provider delivery also remain unverified.
 
-> Desktop real-use note (2026-08-18): the Desktop-owned independent D1-D5 slice
-> now includes a Windows native provider credential prompt that returns only a
-> keyring receipt, secret-memory zeroization, a typed WebView wrapper, payload-
-> free actionable startup failure handling, authenticated SSE reconnect
-> regression coverage, and explicit per-machine MSI/NSIS packaging with a Rove
-> Start menu folder. Both packages build on Windows. The shared
-> `ProviderOnboardingService` is now present on `main`; Desktop Settings still
-> needs to publish/probe receipts through that shared service rather than
-> maintaining a private Catalog path. Installation, SiliconFlow real-provider
-> tasks, restart restoration, and D6 remain unverified. See
-> `desktop-real-use.md`.
+> Desktop real-use note (2026-08-25): the Desktop D1-D5 slice is now integrated
+> with the shared onboarding contract. The Windows native credential prompt
+> passes the raw secret directly to `ProviderOnboardingService` through an
+> in-process `ApiState` facade (`onboard_product_provider`,
+> `probe_product_provider`, `use_product_provider`), so keyring storage, real
+> inventory probing, Catalog CAS publication, and failure compensation stay
+> shared with the CLI/TUI. The Desktop-private `com.rove.agent.provider`
+> keyring path was removed. Settings now splits Desktop native onboarding from
+> browser env/file/reference CRUD, and no HTTP route accepts a provider secret.
+> Secret-memory zeroization, the typed WebView wrapper, payload-free startup
+> failure handling, authenticated SSE reconnect coverage, and per-machine
+> MSI/NSIS packaging with a Rove Start menu folder remain in place.
+> Installation, SiliconFlow real-provider tasks, restart restoration, and D6
+> remain unverified. See `desktop-real-use.md`.
 
 > Final TUI real-use slice note (2026-08-19): F4 shared Provider completion and
 > T7 TUI completion are integrated on `main`. Shared

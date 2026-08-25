@@ -2,10 +2,10 @@
 
 > Status: **Current / Partially Implemented**
 >
-> Updated: 2026-08-18
+> Updated: 2026-08-25
 >
-> Scope: Desktop-owned D1-D5 work that can be completed before the shared
-> Provider onboarding contract lands. D6 and the final A gate are not complete.
+> Scope: Desktop-owned D1-D5 work, now integrated with the shared Provider
+> onboarding contract. D6 and the final A gate are not complete.
 
 ## Current Contract
 
@@ -16,9 +16,13 @@ run state. It does not own an Agent loop or a private event protocol.
 The current Desktop slice provides:
 
 - Windows `provider_credential_prompt`, which accepts only non-secret profile
-  metadata, opens the native credential UI, writes a unique Rove-owned OS
-  keyring entry, zeroizes the in-memory secret, and returns only a keyring
-  receipt;
+  metadata, opens the native credential UI with `CREDUI_FLAGS_DO_NOT_PERSIST`,
+  passes the raw credential directly to the shared
+  `ProviderOnboardingService` through an in-process `ApiState` facade, and
+  zeroizes the in-memory secret on every path;
+- `provider_profile_probe` and `provider_profile_use`, which re-probe real
+  Provider inventory and persist the shared Catalog default selection through
+  the same CAS path used by the CLI/TUI, without serializing a credential;
 - a typed WebView wrapper that rejects browser use, malformed metadata, and
   malformed receipts without accepting an API key argument;
 - the existing native folder picker and exact Product Workspace/Session path;
@@ -34,7 +38,14 @@ The current Desktop slice provides:
 
 Raw provider keys are not fields in React state, localStorage, ProductStore,
 ordinary Product API requests, Desktop JSON config, trace, report, or the
-credential command receipt.
+credential command receipt. There is no HTTP route that accepts a provider
+secret; onboarding is in-process only and the credential is a separate
+non-serializable argument.
+
+Settings splits by host: the Desktop host renders native credential
+onboarding, probe, Catalog publication, refresh, and selection with a built-in
+SiliconFlow preset, while the browser keeps the existing env/file/reference
+CRUD and never receives a secret path.
 
 ## Verified On This Branch
 
@@ -42,13 +53,21 @@ The following checks passed on Windows from a worktree with no pre-existing
 release executable or bundle:
 
 ```powershell
-cargo test -p rove-desktop --all-targets
+cargo fmt --all --check                     # exit 0
+cargo clippy --workspace --all-targets -- -D warnings   # exit 0
+cargo test --workspace                      # exit 0, 1567 passed / 0 failed
+cargo test -p rove-api                      # 137 passed
+cargo test -p rove-desktop --all-targets    # 13 lib + 3 integration passed
 cd apps/web
-pnpm exec vitest run platform/desktop-commands.test.ts lib/rove-client.test.ts
-pnpm typecheck
+pnpm test                                   # 37 files / 255 tests passed
+pnpm typecheck                              # exit 0
+pnpm build:desktop                          # exit 0
 cd ../desktop
 pnpm dlx @tauri-apps/cli@2 build --bundles "msi,nsis" --ci
 ```
+
+The deterministic A1 code gate passes on this branch. `pnpm test:e2e`
+(Playwright) was not run here and remains part of the final A1 gate on `main`.
 
 The bundler produced both generated, untracked packages under
 `target/release/bundle/`. The build verified that Tauri runs its Web hook from
@@ -61,22 +80,26 @@ not installation evidence.
 
 ## Shared Dependency
 
-At the time of this record, `origin/main` and
-`origin/feature/tui-real-use-final` both point to `9611926`. They do not yet
-contain the required shared `ProviderOnboardingService`, Catalog CAS/probe
-transaction, or the Product API request needed to publish a newly created
-keyring receipt.
+Resolved. The shared secure onboarding contract landed in `cc9799f` and is
+contained in `origin/main` at `8a4e141`, which this branch has merged.
 
-The host prompt and Web wrapper therefore stop at the safe receipt boundary.
-Desktop must not write the Provider Catalog directly or invent a Desktop-only
-profile field. After the shared Provider commit lands, Desktop must merge it,
-call that service through the Product API, compensate the unique keyring entry
-on probe/CAS failure, and expose the complete create/test/use flow in Settings.
+Desktop now consumes that contract instead of stopping at a receipt boundary:
+
+- `ApiState::onboard_product_provider`, `probe_product_provider`, and
+  `use_product_provider` wrap the shared `ProviderOnboardingService`, so
+  keyring storage, real inventory probing, Catalog CAS publication, and
+  failure compensation stay owned by the shared service;
+- the Desktop-private `com.rove.agent.provider` keyring receipt was removed;
+  Desktop no longer writes the Provider Catalog or invents a profile field;
+- a projection failure after a successful publication returns the typed
+  `provider_product_projection` code and asks for reconciliation rather than
+  silently diverging from the shared Catalog.
 
 ## Installed Journey
 
-Run this only after shared Provider gate F4 and TUI gate T7 pass and Desktop has
-merged their shared contract:
+The shared contract is merged, so this journey is now unblocked on code. It
+still requires an administrator/UAC-capable interactive Windows session, which
+the implementation session did not have:
 
 1. Build MSI and NSIS packages with the command above and record their SHA-256
    hashes outside the repository.
@@ -106,13 +129,19 @@ step in this installed journey.
 
 ## Open Gates
 
-- Shared keyring onboarding service and Product API publication: waiting for
-  the TUI-owned shared contract.
-- Native prompt plus create/test/use Settings flow: not integrated until that
-  contract lands.
-- SiliconFlow inventory, streaming, native tool-call history, and two-turn
-  Desktop run: not run.
+Closed on this branch:
+
+- Shared keyring onboarding service and in-process publication: integrated.
+- Native prompt plus create/test/use Settings flow: integrated and covered by
+  deterministic host and Web tests.
+
+Still open, and blocking any "real-use complete" claim:
+
+- SiliconFlow inventory, streaming, native tool-call history, and the two-turn
+  Desktop run against `deepseek-ai/DeepSeek-V3.2`: not run. Requires the
+  credentialed A2 gate.
 - Installed Start menu journey, restart restoration, and uninstall retention:
-  not run in the current non-administrator session.
-- D6 and final A gate: not met; the final implementation plan must remain
-  `Not Implemented`.
+  not run. The NSIS package is `perMachine`, so installation needs UAC and the
+  implementation session was not administrator.
+- D6 and final A gate: not met. The final implementation plan must remain
+  `Not Implemented`, and no document may claim Desktop real-use completion.
