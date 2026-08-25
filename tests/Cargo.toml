@@ -61,6 +61,10 @@ path = "e2e.rs"
 [[test]]
 name = "embedding_contract"
 path = "embedding_contract.rs"
+
+[[test]]
+name = "history_resume"
+path = "history_resume.rs"
 [[test]]
 name = "event_contract"
 path = "event_contract.rs"

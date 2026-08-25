@@ -1882,6 +1882,37 @@ impl StateIndex {
         Ok(())
     }
 
+    /// Advance the durable sequence high-water mark without inserting an
+    /// event row. Trace history lines (Phase 2) consume the run's monotonic
+    /// sequence space but never project into SSE/transcript replays, so only
+    /// `event_offsets`/`runs.last_event_seq` must move forward to keep a
+    /// restarted writer from reusing a written sequence number.
+    pub fn advance_event_seq(&self, run_id: RunId, seq: u64) -> std::io::Result<()> {
+        let mut conn = self.connect()?;
+        let transaction = conn.transaction().map_err(io_other)?;
+        let now = now_rfc3339();
+        transaction
+            .execute(
+                r#"
+            INSERT INTO event_offsets(run_id, last_seq, updated_at)
+            VALUES (?1, ?2, ?3)
+            ON CONFLICT(run_id) DO UPDATE SET
+                last_seq = MAX(last_seq, excluded.last_seq),
+                updated_at = excluded.updated_at
+            "#,
+                params![run_id.to_string(), seq as i64, now],
+            )
+            .map_err(io_other)?;
+        transaction
+            .execute(
+                "UPDATE runs SET last_event_seq = MAX(last_event_seq, ?2), updated_at = ?3 WHERE run_id = ?1",
+                params![run_id.to_string(), seq as i64, now],
+            )
+            .map_err(io_other)?;
+        transaction.commit().map_err(io_other)?;
+        Ok(())
+    }
+
     pub async fn record_report_async(
         &self,
         run_id: RunId,

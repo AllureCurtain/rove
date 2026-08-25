@@ -310,6 +310,24 @@ pub enum StreamEvent {
     MessageRevoked { id: String },
 }
 
+/// One durable trace line's payload, split the way Codex splits
+/// `ResponseItem` from `EventMsg`: model-visible history items are stored
+/// explicitly so resume can rebuild model context without heuristics, while
+/// every presentation/audit event stays in the existing [`StreamEvent`] shape.
+///
+/// Serde is untagged by design: [`HistoryItem`] serializes with a `kind` tag
+/// and [`StreamEvent`] with a `type` tag, so both generations are
+/// self-describing on disk and old envelope lines (Phase 1: bare events)
+/// remain readable.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum TraceEntry {
+    /// A model-visible, replayable conversation item (Codex ResponseItem).
+    History(rove_core::history::HistoryItem),
+    /// A UI/audit event (Codex EventMsg). Wire format is unchanged.
+    Ui(StreamEvent),
+}
+
 impl StreamEvent {
     /// Return the durable/public projection for a hard read-only Review run.
     ///

@@ -6,10 +6,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 
-use crate::events::StreamEvent;
-use crate::types::RunId;
-
 use super::index::StateIndex;
+use crate::events::{StreamEvent, TraceEntry};
+use crate::types::RunId;
 
 /// Self-describing envelope for one `trace.jsonl` line.
 ///
@@ -21,7 +20,7 @@ pub struct TraceLine {
     pub ts: String,
     /// Monotonic per-run sequence assigned by the writer's in-memory counter.
     pub seq: u64,
-    pub event: StreamEvent,
+    pub event: TraceEntry,
 }
 
 fn now_rfc3339() -> String {
@@ -83,7 +82,7 @@ impl TraceWriter {
         let line = TraceLine {
             ts: now_rfc3339(),
             seq,
-            event: event.clone(),
+            event: TraceEntry::Ui(event.clone()),
         };
         self.append_line(&line)?;
         if let (Some(index), Some(run_id)) = (&self.index, self.run_id) {
@@ -91,6 +90,26 @@ impl TraceWriter {
             // projections keep their wire format unchanged.
             let bare = serde_json::to_string(event).map_err(std::io::Error::other)?;
             index.append_event(run_id, seq, event, &bare)?;
+        }
+        Ok(())
+    }
+
+    /// Append an explicit model-visible history item (Phase 2 Codex
+    /// alignment). History lines share the run's monotonic sequence space so
+    /// file ordering stays provable, but they are not projected into the
+    /// event index: they never travel on SSE/transcript replays. The index
+    /// high-water mark is still advanced so a writer restart cannot reuse a
+    /// sequence number already written to the trace file.
+    pub fn append_history(&self, item: &rove_core::history::HistoryItem) -> std::io::Result<()> {
+        let seq = self.next_seq.fetch_add(1, Ordering::SeqCst);
+        let line = TraceLine {
+            ts: now_rfc3339(),
+            seq,
+            event: TraceEntry::History(item.clone()),
+        };
+        self.append_line(&line)?;
+        if let (Some(index), Some(run_id)) = (&self.index, self.run_id) {
+            index.advance_event_seq(run_id, seq)?;
         }
         Ok(())
     }

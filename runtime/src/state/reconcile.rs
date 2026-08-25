@@ -19,8 +19,11 @@
 
 use std::path::Path;
 
+use rove_core::history::HistoryItem;
+
 use crate::events::StreamEvent;
 use crate::execution::{ExecutionLifecycleState, StepLedgerState, StepRecordStatus};
+use crate::foundation::session::Session;
 use crate::types::TaskState;
 
 /// Bounded outcome of reconciling one run's trace tail into its snapshot.
@@ -80,16 +83,25 @@ pub async fn reconcile_task_state_with_trace(
     }
     outcome.corrupt_line_count = read.corrupt_line_count;
 
-    for entry in read.entries {
+    for entry in &read.entries {
         if applied_through.is_some_and(|applied| entry.seq <= applied) {
             continue;
         }
-        if apply_event(state, &entry.event) {
-            outcome.changed = true;
+        match &entry.entry {
+            crate::events::TraceEntry::Ui(event) => {
+                if apply_event(state, event) {
+                    outcome.changed = true;
+                }
+                outcome.applied_event_count += 1;
+            }
+            // Explicit history lines are merged below; they still advance the
+            // sequence high-water mark because they share the run's seq space.
+            crate::events::TraceEntry::History(_) => {}
         }
-        outcome.applied_event_count += 1;
         outcome.observed(entry.seq);
     }
+
+    rebuild_history_from_trace(&read, state, &mut outcome, &path);
 
     if outcome.changed || outcome.last_event_seq != applied_through {
         // Recomputed from the reconciled state so the bounded checkpoint
@@ -116,6 +128,94 @@ fn snapshot_seq(state: &TaskState) -> Option<u64> {
         .checkpoint
         .as_ref()
         .and_then(|checkpoint| checkpoint.last_event_seq)
+}
+
+/// Transitional Phase 2 resume upgrade: rebuild model context from the run's
+/// explicit trace history stream when one exists.
+///
+/// New traces persist every model-visible item as a `TraceEntry::History`
+/// line, so resume no longer needs heuristic classification to reconstruct
+/// what the model saw. Legacy traces carry no history stream and are left on
+/// the snapshot-derived path unchanged.
+///
+/// The projected messages must align with the durable snapshot by suffix:
+/// both derive from the same recorded facts, so a full or partial overlap is
+/// expected (a partial overlap is exactly the crash-between-writes gap this
+/// reconciliation exists to close). A misalignment means the derivation rules
+/// diverged; the snapshot is kept and the mismatch surfaced instead of
+/// guessing. This is a projection, never an executor: nothing here replays
+/// completed work.
+fn rebuild_history_from_trace(
+    read: &super::trace_reader::TraceReadOutcome,
+    state: &mut TaskState,
+    outcome: &mut TraceReconciliation,
+    path: &Path,
+) {
+    if !read.has_explicit_history() {
+        return;
+    }
+    let items: Vec<HistoryItem> = read
+        .history_items
+        .iter()
+        .map(|record| record.item.clone())
+        .collect();
+    let projected = rove_core::history::history_to_messages(&items);
+    let Some(merged) = merge_history_by_suffix(&state.history, &projected) else {
+        tracing::warn!(
+            path = %path.display(),
+            run_id = %state.run_id,
+            snapshot_len = state.history.len(),
+            projected_len = projected.len(),
+            "Trace history stream does not align with snapshot history; keeping durable snapshot"
+        );
+        return;
+    };
+    if merged == state.history {
+        return;
+    }
+    outcome.changed = true;
+    if let Some(checkpoint) = state.checkpoint.as_mut() {
+        // Keep the canonical session — the facade's preferred resume source —
+        // aligned with the trace-derived truth, and its derived compatibility
+        // tail with it.
+        checkpoint.session = Some(Session::from_legacy_history(state.session_id, &merged));
+        checkpoint.preserved_tail = merged.clone();
+    }
+    tracing::info!(
+        path = %path.display(),
+        run_id = %state.run_id,
+        before = state.history.len(),
+        after = merged.len(),
+        "Resume history rebuilt from explicit trace history stream"
+    );
+    state.history = merged;
+}
+
+/// Merge projected trace-history messages into the snapshot history by suffix
+/// alignment. Returns `None` when the streams cannot be reconciled without
+/// guessing: a non-empty projection that shares no suffix element with a
+/// non-empty base is treated as divergence rather than appended blindly, so
+/// resume can never double-count conversation content.
+fn merge_history_by_suffix(
+    base: &[rove_models::Message],
+    projected: &[rove_models::Message],
+) -> Option<Vec<rove_models::Message>> {
+    if projected.is_empty() {
+        // Nothing new in the trace stream; the snapshot stands as-is.
+        return Some(base.to_vec());
+    }
+    if base.is_empty() {
+        return Some(projected.to_vec());
+    }
+    let max_overlap = projected.len().min(base.len());
+    for k in (1..=max_overlap).rev() {
+        if base[base.len() - k..] == projected[..k] {
+            let mut merged = base[..base.len() - k].to_vec();
+            merged.extend_from_slice(projected);
+            return Some(merged);
+        }
+    }
+    None
 }
 
 /// Apply one trace fact to the snapshot. Returns true when state changed.
@@ -337,6 +437,7 @@ fn replace_if_changed<T: PartialEq>(slot: &mut T, next: T) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::events::TraceEntry;
     use crate::execution::{
         ExecutionBudgetDimension, ExecutionBudgetExhaustion, ExecutionBudgetSnapshot,
         ExecutionBudgetUsage, ExecutionDegradation, ExecutionPhase, ExecutionPolicy,
@@ -347,6 +448,7 @@ mod tests {
         JobId, PlanStep, PromptCheckpoint, PromptCompactionState, RunId, SessionId, TaskPlan,
         TaskState, TerminationReason,
     };
+    use rove_models::Message;
 
     fn checkpoint(last_event_seq: Option<u64>) -> PromptCheckpoint {
         PromptCheckpoint {
@@ -425,6 +527,40 @@ mod tests {
         tokio::fs::write(dir.join("trace.jsonl"), body)
             .await
             .unwrap();
+    }
+
+    /// Write a current-format trace: one [`TraceLine`] envelope per line,
+    /// carrying either a UI event or an explicit history item.
+    async fn write_enveloped_trace(dir: &Path, entries: &[TraceEntry]) {
+        let mut body = String::new();
+        for (index, entry) in entries.iter().enumerate() {
+            let line = crate::state::trace::TraceLine {
+                ts: "2026-08-25T00:00:00Z".to_string(),
+                seq: index as u64 + 1,
+                event: entry.clone(),
+            };
+            body.push_str(&serde_json::to_string(&line).unwrap());
+            body.push('\n');
+        }
+        tokio::fs::write(dir.join("trace.jsonl"), body)
+            .await
+            .unwrap();
+    }
+
+    fn history_line(message: Message) -> TraceEntry {
+        TraceEntry::History(HistoryItem::Message(message))
+    }
+
+    fn session_messages(state: &TaskState) -> Vec<Message> {
+        state
+            .checkpoint
+            .as_ref()
+            .unwrap()
+            .session
+            .as_ref()
+            .unwrap()
+            .messages_for_provider("openai")
+            .unwrap()
     }
 
     #[tokio::test]
@@ -848,5 +984,171 @@ mod tests {
             checkpoint.step_ledger.step_record_count, 1,
             "the bounded checkpoint projection tracks the reconciled ledger"
         );
+    }
+
+    /// Phase 2 soul property at the reconciliation layer: an explicit history
+    /// stream rebuilds model context directly, with no heuristic
+    /// classification of UI events, and every resume source agrees.
+    #[tokio::test]
+    async fn an_explicit_history_stream_rebuilds_model_context_without_heuristics() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_enveloped_trace(
+            tmp.path(),
+            &[
+                TraceEntry::Ui(StreamEvent::LlmChunk {
+                    delta: "ignored by history".to_string(),
+                }),
+                history_line(Message::user("fix the bug")),
+                history_line(Message::assistant("fixed it")),
+            ],
+        )
+        .await;
+
+        let mut snapshot = state(None);
+        let outcome = reconcile_task_state_with_trace(tmp.path(), &mut snapshot)
+            .await
+            .unwrap();
+
+        assert!(outcome.changed);
+        assert_eq!(
+            snapshot
+                .history
+                .iter()
+                .map(|message| message.content.clone())
+                .collect::<Vec<_>>(),
+            vec!["fix the bug", "fixed it"],
+        );
+        // History lines share the run's seq space, so the high-water mark
+        // still advances past them; only UI events are *applied*.
+        assert_eq!(outcome.last_event_seq, Some(3));
+
+        let checkpoint = snapshot.checkpoint.as_ref().unwrap();
+        assert_eq!(
+            checkpoint.preserved_tail, snapshot.history,
+            "the compatibility tail tracks the rebuilt history"
+        );
+        // The session projection normalizes text into content blocks, so
+        // agreement is asserted on the conversation itself (role + content)
+        // rather than on the projected representation.
+        let conversation = |messages: &[Message]| {
+            messages
+                .iter()
+                .map(|message| (message.role.clone(), message.content.clone()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            conversation(&session_messages(&snapshot)),
+            conversation(&snapshot.history),
+            "the canonical session — the facade's preferred resume source — agrees"
+        );
+    }
+
+    /// A legacy trace carries no history stream, so the snapshot-derived
+    /// resume path must be left exactly as it was.
+    #[tokio::test]
+    async fn a_trace_without_a_history_stream_leaves_snapshot_history_untouched() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_trace(
+            tmp.path(),
+            &[StreamEvent::StepResult {
+                record: Box::new(step_record("rec-1", "s1", StepRecordStatus::Succeeded)),
+            }],
+        )
+        .await;
+
+        let mut snapshot = state(None);
+        snapshot.history = vec![Message::user("from snapshot")];
+        let before = snapshot.history.clone();
+
+        reconcile_task_state_with_trace(tmp.path(), &mut snapshot)
+            .await
+            .unwrap();
+
+        assert_eq!(snapshot.history, before);
+        assert!(
+            snapshot.checkpoint.as_ref().unwrap().session.is_none(),
+            "a legacy trace must not synthesize a canonical session"
+        );
+    }
+
+    /// The crash-between-writes gap this reconciliation exists to close: the
+    /// snapshot persisted a prefix, the trace holds the full turn. Suffix
+    /// alignment must extend the snapshot without duplicating the overlap.
+    #[tokio::test]
+    async fn a_partial_overlap_extends_snapshot_history_without_duplicating_it() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_enveloped_trace(
+            tmp.path(),
+            &[
+                history_line(Message::user("first")),
+                history_line(Message::assistant("second")),
+                history_line(Message::user("third")),
+            ],
+        )
+        .await;
+
+        let mut snapshot = state(None);
+        // Snapshot only captured through the assistant reply before the crash.
+        snapshot.history = vec![Message::user("first"), Message::assistant("second")];
+
+        reconcile_task_state_with_trace(tmp.path(), &mut snapshot)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            snapshot
+                .history
+                .iter()
+                .map(|message| message.content.clone())
+                .collect::<Vec<_>>(),
+            vec!["first", "second", "third"],
+        );
+    }
+
+    /// A projection that shares no suffix with the durable snapshot means the
+    /// derivation rules diverged. Resume keeps the snapshot rather than
+    /// guessing, so conversation content can never be double-counted.
+    #[tokio::test]
+    async fn a_diverged_history_projection_keeps_the_durable_snapshot() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_enveloped_trace(
+            tmp.path(),
+            &[
+                history_line(Message::user("unrelated run")),
+                history_line(Message::assistant("unrelated reply")),
+            ],
+        )
+        .await;
+
+        let mut snapshot = state(None);
+        snapshot.history = vec![Message::user("snapshot truth")];
+        let before = snapshot.history.clone();
+
+        reconcile_task_state_with_trace(tmp.path(), &mut snapshot)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            snapshot.history, before,
+            "a misaligned trace stream must not overwrite or extend the snapshot"
+        );
+    }
+
+    #[test]
+    fn suffix_merge_rejects_divergence_and_accepts_containment() {
+        let base = vec![Message::user("a"), Message::assistant("b")];
+
+        // Full containment: the trace repeats the snapshot exactly.
+        assert_eq!(
+            merge_history_by_suffix(&base, &base).unwrap(),
+            base,
+            "an identical stream is a no-op"
+        );
+        // Empty projection leaves the base alone.
+        assert_eq!(merge_history_by_suffix(&base, &[]).unwrap(), base);
+        // Empty base adopts the projection wholesale.
+        assert_eq!(merge_history_by_suffix(&[], &base).unwrap(), base);
+        // No shared suffix element is divergence, not an append.
+        assert!(merge_history_by_suffix(&base, &[Message::user("z")]).is_none());
     }
 }

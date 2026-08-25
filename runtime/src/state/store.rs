@@ -363,10 +363,20 @@ impl StateStore {
             }
             corrupt_line_count += read.corrupt_line_count;
             for record in &read.entries {
-                let bare = serde_json::to_string(&record.event).map_err(std::io::Error::other)?;
-                self.index
-                    .append_event(run_id, record.seq, &record.event, &bare)?;
-                event_count += 1;
+                match &record.entry {
+                    crate::events::TraceEntry::Ui(event) => {
+                        // The index stores bare event JSON so SSE/transcript
+                        // projections keep their wire format unchanged.
+                        let bare = serde_json::to_string(event).map_err(std::io::Error::other)?;
+                        self.index.append_event(run_id, record.seq, event, &bare)?;
+                        event_count += 1;
+                    }
+                    // History lines never travel on SSE/transcript replays;
+                    // they only advance the sequence high-water mark.
+                    crate::events::TraceEntry::History(_) => {
+                        self.index.advance_event_seq(run_id, record.seq)?;
+                    }
+                }
             }
         }
         Ok(TraceImportResult {

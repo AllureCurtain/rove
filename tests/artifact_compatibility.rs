@@ -42,7 +42,10 @@ fn pre_lifecycle_trace_fixture_remains_readable() {
     let events: Vec<StreamEvent> = outcome
         .entries
         .into_iter()
-        .map(|entry| entry.event)
+        .map(|entry| match entry.entry {
+            rove_runtime::foundation::TraceEntry::Ui(event) => event,
+            other => panic!("unexpected non-event trace line: {other:?}"),
+        })
         .collect();
 
     assert!(matches!(

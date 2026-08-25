@@ -625,6 +625,13 @@ impl Engine {
             inner: Box::pin(stream! {
                 let mut run_summary = RunSummary::new(user_message.clone());
 
+                // Codex alignment Phase 2: derive model-visible history items
+                // once, at the durable write choke point. Every event that
+                // reaches the trace also yields its explicit history items so
+                // resume no longer reclassifies audit events heuristically.
+                let mut history_projector =
+                    crate::engine::history_projection::HistoryProjector::new();
+
                 macro_rules! complete_run {
                     ($reason:expr, $output:expr) => {{
                         let reason = $reason;
@@ -645,14 +652,14 @@ impl Engine {
                                 "run completed before the steer reached a safe point".to_string(),
                             );
                             run_summary.record_event(&dropped);
-                            append_trace(&trace_writer, &dropped, review_mode);
+                            append_trace(&mut history_projector, &trace_writer, &dropped, review_mode);
                             yield dropped;
                         }
                         drop(pending_steers);
                         message_event_rx.close();
                         while let Ok(message_event) = message_event_rx.try_recv() {
                             run_summary.record_event(&message_event);
-                            append_trace(&trace_writer, &message_event, review_mode);
+                            append_trace(&mut history_projector, &trace_writer, &message_event, review_mode);
                             yield message_event;
                         }
                         for accepted in steer_lifecycle.take_unapplied().await {
@@ -662,14 +669,14 @@ impl Engine {
                                 "run completed before the accepted steer reached a model turn".to_string(),
                             );
                             run_summary.record_event(&dropped);
-                            append_trace(&trace_writer, &dropped, review_mode);
+                            append_trace(&mut history_projector, &trace_writer, &dropped, review_mode);
                             yield dropped;
                         }
                         let event = StreamEvent::RunCompleted {
                             reason: reason.clone(),
                             output: output.clone(),
                         };
-                        append_trace(&trace_writer, &event, review_mode);
+                        append_trace(&mut history_projector, &trace_writer, &event, review_mode);
                         yield event;
                         self.run_post_run_hooks(CompletedRunContext {
                             session_id,
@@ -687,7 +694,7 @@ impl Engine {
                 macro_rules! yield_traced {
                     ($event:expr) => {{
                         let event = $event;
-                        append_trace(&trace_writer, &event, review_mode);
+                        append_trace(&mut history_projector, &trace_writer, &event, review_mode);
                         yield event;
                     }};
                 }
@@ -697,7 +704,7 @@ impl Engine {
                     job_id,
                     user_message: user_message.clone(),
                 };
-                append_trace(&trace_writer, &start_event, review_mode);
+                append_trace(&mut history_projector, &trace_writer, &start_event, review_mode);
                 yield start_event;
 
                 for fact in mcp_lifecycle_facts {
@@ -1104,14 +1111,34 @@ fn composed_prompt(base: &str, slot: Option<&str>, role: &str) -> String {
     )
 }
 
-fn append_trace(trace_writer: &Option<TraceWriter>, event: &StreamEvent, review_mode: bool) {
-    if let Some(tw) = trace_writer {
-        let persisted = if review_mode {
-            event.redacted_for_review_persistence()
-        } else {
-            event.clone()
-        };
-        let _ = tw.append(&persisted);
+/// Persist one canonical event plus its derived model-visible history items.
+///
+/// Codex alignment Phase 2: the trace file records two kinds of facts — the
+/// lifecycle event itself (`TraceEntry::Ui`, unchanged wire format for
+/// SSE/transcript consumers) and, when the event carries model-visible
+/// content, explicit `TraceEntry::History` items so resume can rebuild the
+/// kernel conversation without heuristically reclassifying events. Review
+/// mode persists redacted events only; redaction is not history-safe, so no
+/// history items are derived from them.
+fn append_trace(
+    history_projector: &mut crate::engine::history_projection::HistoryProjector,
+    trace_writer: &Option<TraceWriter>,
+    event: &StreamEvent,
+    review_mode: bool,
+) {
+    let Some(tw) = trace_writer else {
+        return;
+    };
+    let persisted = if review_mode {
+        event.redacted_for_review_persistence()
+    } else {
+        event.clone()
+    };
+    let _ = tw.append(&persisted);
+    if !review_mode {
+        for item in history_projector.project(event) {
+            let _ = tw.append_history(&item);
+        }
     }
 }
 

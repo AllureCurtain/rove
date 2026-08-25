@@ -2,6 +2,7 @@
 
 pub mod control;
 pub mod facade;
+pub(crate) mod history_projection;
 pub(crate) mod model_turn;
 pub(crate) mod plan_loop;
 pub(crate) mod run_loop;

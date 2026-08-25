@@ -4315,8 +4315,10 @@ async fn oneshot_persists_replanned_task_state() {
     let traced_records: Vec<_> = rove_runtime::state::trace_reader::read_trace_content(&trace)
         .entries
         .into_iter()
-        .filter_map(|entry| match entry.event {
-            StreamEvent::StepResult { record } => Some(*record),
+        .filter_map(|entry| match entry.entry {
+            rove_runtime::foundation::TraceEntry::Ui(StreamEvent::StepResult { record }) => {
+                Some(*record)
+            }
             _ => None,
         })
         .collect();
@@ -4324,8 +4326,10 @@ async fn oneshot_persists_replanned_task_state() {
     let traced_decisions: Vec<_> = rove_runtime::state::trace_reader::read_trace_content(&trace)
         .entries
         .into_iter()
-        .filter_map(|entry| match entry.event {
-            StreamEvent::PlanDecision { record } => Some(*record),
+        .filter_map(|entry| match entry.entry {
+            rove_runtime::foundation::TraceEntry::Ui(StreamEvent::PlanDecision { record }) => {
+                Some(*record)
+            }
             _ => None,
         })
         .collect();
@@ -4333,12 +4337,14 @@ async fn oneshot_persists_replanned_task_state() {
     let traced_revisions: Vec<_> = rove_runtime::state::trace_reader::read_trace_content(&trace)
         .entries
         .into_iter()
-        .filter_map(|entry| match entry.event {
-            StreamEvent::PlanCreated {
+        .filter_map(|entry| match entry.entry {
+            rove_runtime::foundation::TraceEntry::Ui(StreamEvent::PlanCreated {
                 plan_revision: Some(revision),
                 ..
-            }
-            | StreamEvent::PlanRevised { revision, .. } => Some(*revision),
+            })
+            | rove_runtime::foundation::TraceEntry::Ui(StreamEvent::PlanRevised {
+                revision, ..
+            }) => Some(*revision),
             _ => None,
         })
         .collect();
@@ -5907,11 +5913,36 @@ async fn trace_writer_records_events() {
     let content = std::fs::read_to_string(&trace_path).unwrap();
     assert!(!content.is_empty());
 
-    // Each line should be valid JSON
+    // Phase 1+ contract: every line is a self-describing TraceLine envelope
+    // whose entry is either a UI event (`type` tag) or an explicit history
+    // item (`kind` tag, Codex alignment Phase 2).
     for line in content.lines() {
-        let parsed: serde_json::Value = serde_json::from_str(line).unwrap();
-        assert!(parsed.get("type").is_some());
+        let parsed: rove_runtime::state::trace::TraceLine = serde_json::from_str(line).unwrap();
+        match &parsed.event {
+            rove_runtime::foundation::TraceEntry::Ui(event) => {
+                let json = serde_json::to_value(event).unwrap();
+                assert!(json.get("type").is_some());
+            }
+            rove_runtime::foundation::TraceEntry::History(item) => {
+                let json = serde_json::to_value(item).unwrap();
+                assert!(json.get("kind").is_some());
+            }
+        }
     }
+
+    // Codex alignment Phase 2: model-visible items are persisted explicitly.
+    let has_history_stream = content.lines().any(|line| {
+        serde_json::from_str::<rove_runtime::state::trace::TraceLine>(line).is_ok_and(|parsed| {
+            matches!(
+                parsed.event,
+                rove_runtime::foundation::TraceEntry::History(_)
+            )
+        })
+    });
+    assert!(
+        has_history_stream,
+        "trace must carry explicit history items"
+    );
 }
 
 /// Model client that emits a native tool call on the first invocation, then

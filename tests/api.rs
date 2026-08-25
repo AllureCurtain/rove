@@ -7074,7 +7074,12 @@ async fn api_replays_input_needed_event_after_restart() {
     let trace_input_count = outcome
         .entries
         .iter()
-        .filter(|entry| matches!(entry.event, StreamEvent::InputNeeded { .. }))
+        .filter(|entry| {
+            matches!(
+                entry.entry,
+                rove_runtime::events::TraceEntry::Ui(StreamEvent::InputNeeded { .. })
+            )
+        })
         .count();
     assert_eq!(trace_input_count, 1);
     assert!(!outcome.truncated_tail);
