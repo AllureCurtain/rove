@@ -342,6 +342,8 @@ pub async fn build_cli_runtime(options: CliRuntimeOptions) -> anyhow::Result<Cli
         );
     }
 
+    rove_app_bootstrap::ensure_home_legacy_run_migration(&workspace.root);
+
     tracing::info!(
         workspace_root = %workspace.root.display(),
         workspace_kind = ?workspace.kind,

@@ -386,6 +386,7 @@ pub async fn serve_with_shutdown(
     if config.state_dir_is_contract_managed() {
         config.ensure_contract_layout()?;
     }
+    rove_app_bootstrap::ensure_home_legacy_run_migration(workspace.root.as_path());
     let addr: SocketAddr = config.api.bind_addr.parse()?;
     let state = ApiState::with_shutdown(workspace, config, shutdown.clone());
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -422,6 +423,7 @@ pub fn embedded_api_state(
     workspace.state_dir = config.state_dir();
     workspace.ensure_state_dir()?;
     config.ensure_contract_layout()?;
+    rove_app_bootstrap::ensure_home_legacy_run_migration(cwd);
     Ok(ApiState::with_shutdown(workspace, config, shutdown))
 }
 

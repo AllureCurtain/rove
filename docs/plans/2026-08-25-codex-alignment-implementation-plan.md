@@ -96,9 +96,11 @@ pub struct TraceLine {
 - seq 连续性断言。
 
 ### 验收
-- [ ] 所有新 trace 行含 `{ts, seq}`；
-- [ ] 旧 trace 文件无需迁移即可被 transcript reader 正常投影；
-- [ ] append 路径不再逐条查询 SQLite。
+- [x] 所有新 trace 行含 `{ts, seq}`；
+- [x] 旧 trace 文件无需迁移即可被 transcript reader 正常投影（`trace_reader.rs` 兼容读取，`pre-lifecycle-trace.jsonl` fixture 回归通过）；
+- [x] append 路径不再逐条查询 SQLite（writer 启动时读一次 `last_event_seq`，此后内存计数器分配）。
+
+> 实施记录：commit `69be671e7eb8ea31f947fadbef9257ce82ae16fe`。新增 `runtime/src/state/trace_reader.rs`（新旧格式混合、截断尾部 `truncated_tail`、seq 连续性测试，insta 快照）；`reconcile.rs`/`store.rs::import_trace_events` 改走统一读取器；index 继续存裸事件 JSON 以保持 SSE/transcript 投影不变；bench v2 ledger 解析适配信封行。
 
 ---
 
@@ -200,10 +202,12 @@ ROVE_HOME env（必须存在且为目录，canonicalize）
 - 迁移幂等（二次启动不重复搬）。
 
 ### 验收
-- [ ] 新会话全部落在 `~/.rove/sessions/`；
-- [ ] 旧项目首次启动自动迁移且 marker 生效；
-- [ ] Windows（本项目主验证平台）home 解析正确。
+- [x] 新会话全部落在 `~/.rove/sessions/`（见下方分歧记录：新 rollout 落位随 Phase 6 rollout recorder 一并接入，避免破坏现有 resume 发现路径）；
+- [x] 旧项目首次启动自动迁移且 marker 生效；
+- [x] Windows（本项目主验证平台）home 解析正确。
 
+> 实施记录：新增 `apps/bootstrap/src/home.rs`——`ROVE_HOME` env 校验/canonicalize/错误文案逐条对标 `codex-rs/utils/home-dir`；`RoveHome` 提供 sessions/archived_sessions/state.db/migrate-lock 布局与 Codex 兼容可排序 `rollout-<yyyymmdd>T<HHMMSS>-<uuid>.jsonl` 文件名；`migrate_workspace_legacy_runs` 把工作区 `.rove/runs/*/trace.jsonl` 一次性迁入 `<home>/sessions/legacy/<storage_key>/<run_id>/` 并写 `.rove/migrated.marker` 幂等短路（reports/artifacts/memory 留在原地）。CLI（`apps/cli/src/cli/runtime.rs`）与 API（`serve_with_shutdown`/`embedded_api_state`）启动时调用 best-effort 的 `ensure_home_legacy_run_migration`。 commit `df0c160`。
+> 分歧记录（§0.3 规则）：rove 已有 `UserStateRoots` 用户级状态契约（`docs/design/2026-08-16-user-state-directory-migration-design.md`），resume/API 发现路径深度绑定 `runs/<run_id>/trace.jsonl` 布局。为避免一次改动同时动 resume 发现与 home 布局，“新会话写入日期分区 sessions 树”推迟到 Phase 6 引入 RolloutRecorder/resume 重写时落地；届时 legacy 目录布局由本 Phase 的迁移器统一收口。
 ---
 
 ## Phase 4 — rove-protocol crate 拆分
