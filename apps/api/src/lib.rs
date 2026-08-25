@@ -571,6 +571,52 @@ impl ApiState {
         &self.inner.product_store_path
     }
 
+    /// Secure in-process Provider onboarding used by native delivery hosts.
+    /// The credential is never accepted by an HTTP route or serialized Product
+    /// request; the shared onboarding service owns keyring storage, probing,
+    /// Catalog CAS publication, and failure compensation.
+    pub async fn onboard_product_provider(
+        &self,
+        request: ProductProviderOnboardingRequest,
+        secret: &str,
+    ) -> Result<ProductProviderOnboardingReceipt, ProductProviderOnboardingFailure> {
+        let service =
+            rove_app_bootstrap::ProviderOnboardingService::new(self.provider_catalog_service());
+        product::provider_onboarding::onboard(self, service, request, secret).await
+    }
+
+    /// Re-run the shared Provider inventory probe without serializing a
+    /// credential. Native Settings uses this for an already-published profile.
+    pub async fn probe_product_provider(
+        &self,
+        profile_id: ProductProviderProfileId,
+        model_override: Option<String>,
+    ) -> Result<ProductProviderOnboardingProbe, ProductProviderOnboardingFailure> {
+        let service =
+            rove_app_bootstrap::ProviderOnboardingService::new(self.provider_catalog_service());
+        product::provider_onboarding::probe(service, profile_id, model_override).await
+    }
+
+    /// Persist the shared Catalog's default selection and ensure the Product
+    /// identity stub is present before the caller writes Product preferences.
+    pub async fn use_product_provider(
+        &self,
+        profile_id: ProductProviderProfileId,
+        model_override: Option<String>,
+        expected_revision: Option<String>,
+    ) -> Result<ProductProviderCatalogSelectionReceipt, ProductProviderOnboardingFailure> {
+        let service =
+            rove_app_bootstrap::ProviderOnboardingService::new(self.provider_catalog_service());
+        product::provider_onboarding::use_profile(
+            self,
+            service,
+            profile_id,
+            model_override,
+            expected_revision,
+        )
+        .await
+    }
+
     pub(crate) fn product_store(&self) -> Result<Arc<dyn ProductStore>, ApiError> {
         self.inner
             .product_store

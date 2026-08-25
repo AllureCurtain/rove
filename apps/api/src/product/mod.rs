@@ -13,6 +13,7 @@ pub(crate) mod message_adapter;
 pub(crate) mod migration;
 pub(crate) mod platform;
 pub(crate) mod provider_catalog;
+pub(crate) mod provider_onboarding;
 pub(crate) mod review;
 pub(crate) mod routes;
 pub(crate) mod store;
@@ -34,4 +35,9 @@ pub use export::{
 pub use files::{
     ProductFileContentEnvelope, ProductFileEntry, ProductFileKind, ProductFilesResponse,
     ProductImageMetadata,
+};
+pub use provider_onboarding::{
+    ProductProviderCatalogSelectionReceipt, ProductProviderOnboardingFailure,
+    ProductProviderOnboardingFailureCode, ProductProviderOnboardingProbe,
+    ProductProviderOnboardingReceipt, ProductProviderOnboardingRequest,
 };

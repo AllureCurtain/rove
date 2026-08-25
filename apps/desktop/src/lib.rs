@@ -86,6 +86,8 @@ pub fn run() -> Result<()> {
             commands::get_app_paths,
             commands::workspace_select,
             commands::provider_credential_prompt,
+            commands::provider_profile_probe,
+            commands::provider_profile_use,
             commands::open_external,
             commands::show_in_folder,
         ])
@@ -141,9 +143,11 @@ async fn setup_async(bearer_token: String) -> Result<ApiServerState> {
     info!("API server started at {}", api_handle.base_url);
 
     let base_url = api_handle.base_url.clone();
+    let api_state = api_handle.api_state.clone();
     Ok(ApiServerState {
         base_url: Some(base_url),
         inner: Arc::new(tokio::sync::Mutex::new(Some(api_handle))),
+        api_state,
         closing: Arc::new(AtomicBool::new(false)),
     })
 }
@@ -153,6 +157,7 @@ async fn setup_async(bearer_token: String) -> Result<ApiServerState> {
 pub struct ApiServerState {
     pub(crate) base_url: Option<String>,
     pub(crate) inner: Arc<tokio::sync::Mutex<Option<api_server::ApiServerHandle>>>,
+    pub(crate) api_state: rove_api::ApiState,
     pub(crate) closing: Arc<AtomicBool>,
 }
 

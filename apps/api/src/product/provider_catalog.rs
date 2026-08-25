@@ -267,7 +267,7 @@ pub(crate) fn catalog_id(id: &ProductProviderProfileId) -> Result<ProviderProfil
     ProviderProfileId::new(id.to_string()).map_err(catalog_error)
 }
 
-fn product_provider_type(value: &str) -> Result<ProductProviderType, ApiError> {
+pub(crate) fn product_provider_type(value: &str) -> Result<ProductProviderType, ApiError> {
     match value {
         "openai" => Ok(ProductProviderType::Openai),
         "openai-responses" => Ok(ProductProviderType::OpenaiResponses),
@@ -278,7 +278,7 @@ fn product_provider_type(value: &str) -> Result<ProductProviderType, ApiError> {
     }
 }
 
-fn provider_type_name(value: ProductProviderType) -> &'static str {
+pub(crate) fn provider_type_name(value: ProductProviderType) -> &'static str {
     match value {
         ProductProviderType::Openai => "openai",
         ProductProviderType::OpenaiResponses => "openai-responses",
