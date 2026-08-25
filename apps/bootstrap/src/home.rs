@@ -264,6 +264,12 @@ pub fn migrate_workspace_legacy_runs(
     home: &RoveHome,
 ) -> io::Result<LegacyRunMigration> {
     let legacy_state = workspace_root.join(".rove");
+    // A pristine workspace has no legacy state at all: leave it untouched
+    // rather than materializing a `.rove` directory just to record that the
+    // scan found nothing.
+    if !legacy_state.is_dir() {
+        return Ok(LegacyRunMigration::default());
+    }
     let marker = legacy_state.join(MIGRATED_MARKER_FILE);
     if marker.is_file() {
         return Ok(LegacyRunMigration {
@@ -465,5 +471,20 @@ mod tests {
         let second = migrate_workspace_legacy_runs(ws.path(), &home).unwrap();
         assert!(second.skipped_marker_present);
         assert_eq!(second.migrated_runs, 0);
+    }
+
+    #[test]
+    fn pristine_workspace_is_never_materialized_by_legacy_migration() {
+        let ws = tempfile::TempDir::new().unwrap();
+        let home_dir = tempfile::TempDir::new().unwrap();
+        let home = RoveHome::new(home_dir.path());
+
+        let outcome = migrate_workspace_legacy_runs(ws.path(), &home).unwrap();
+        assert_eq!(outcome.migrated_runs, 0);
+        assert!(!outcome.skipped_marker_present);
+        assert!(
+            !ws.path().join(".rove").exists(),
+            "migration must not create a state directory in a pristine workspace"
+        );
     }
 }
