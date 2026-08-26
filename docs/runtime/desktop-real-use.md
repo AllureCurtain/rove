@@ -1,11 +1,14 @@
 # Windows Desktop Real-Use Status
 
-> Status: **Current / Partially Implemented**
+> Status: **Current / D1-D6 Complete on Windows**
 >
-> Updated: 2026-08-25
+> Updated: 2026-08-26
 >
-> Scope: Desktop-owned D1-D5 work, now integrated with the shared Provider
-> onboarding contract. D6 and the final A gate are not complete.
+> Scope: Desktop-owned D1-D5 work integrated with the shared Provider onboarding
+> contract, plus the D6 installed-state gate passed against the real SiliconFlow
+> provider. The final section 10.1 A gate is still outstanding: it must run on
+> the final `main` after both branches merge, and this Windows-only evidence
+> does not substitute for it.
 
 ## Current Contract
 
@@ -69,14 +72,66 @@ pnpm dlx @tauri-apps/cli@2 build --bundles "msi,nsis" --ci
 The deterministic A1 code gate passes on this branch. `pnpm test:e2e`
 (Playwright) was not run here and remains part of the final A1 gate on `main`.
 
-The bundler produced both generated, untracked packages under
-`target/release/bundle/`. The build verified that Tauri runs its Web hook from
-`apps/`, so `pnpm --dir web build:desktop` is the correct checked-in command.
+The bundler produced both generated, untracked packages. `CARGO_TARGET_DIR` was
+redirected to `C:\rove-build\desktop-real-use-final` because the D: volume was
+short on space, so the artifacts landed under
+`C:\rove-build\desktop-real-use-final\release\bundle\{msi,nsis}\` rather than the
+in-repo `target/release/bundle/`. With the default target dir the in-repo path
+applies. The build verified that Tauri runs its Web hook from `apps/`, so
+`pnpm --dir web build:desktop` is the correct checked-in command.
 
-The generated WiX and NSIS sources confirm per-machine installation, a
-`Program Files\Rove` default, and a Start menu shortcut. Actual installation
-was not run in the non-administrator implementation session; build success is
-not installation evidence.
+The generated WiX and NSIS sources declare per-machine installation, a
+`Program Files\Rove` default, and a Start menu shortcut, and the installed-state
+gate below confirms all three in practice.
+
+## Installed-State Gate (D6)
+
+D6 passed on 2026-08-26 against the real SiliconFlow provider (`openai`,
+`https://api.siliconflow.cn/v1`, `deepseek-ai/DeepSeek-V3.2`), with the key read
+only from the Windows keyring and the Desktop launched from the Start menu
+shortcut. No Fake provider was involved, and no temporary environment variable
+was set. The evidence package is at `C:\rove-evidence\d6-desktop\`
+(`manifest.json` indexes every artifact with a sha256 digest); it is generated
+and deliberately not committed.
+
+All nine items pass: install, uninstall/reinstall round trip, credential
+resolution after Start-menu launch, two read-only turns on the real model,
+Chat/Inspector showing real tool calls, a modification turn with approval plus
+change plus test plus diff, SSE disconnect/reconnect without duplicate
+submission, restart restoring workspace/session/terminal state, and reinstall
+plus relaunch restoring state.
+
+Notes worth carrying forward:
+
+- Both NSIS packages are `perMachine`. Install and uninstall must run as an
+  elevated child; driving `uninstall.exe` from an unelevated session fails with
+  `WinError 740`.
+- Uninstall preserves user data: `%APPDATA%\Rove` stayed at 146 files /
+  11204219 bytes across installed, uninstalled, and reinstalled states.
+- There is no `/health` route. `/product/workspaces` serves as the readiness
+  probe and simultaneously proves the persisted bearer token is accepted.
+- The embedded API binds a fresh random loopback port per launch and does not
+  persist it; `%APPDATA%\Rove\config\desktop.json` holds only `bearer_token`.
+  Resolve the port from the process's own listeners.
+- `/jobs/{id}/state` returns 404 after a restart. The job registry is ephemeral
+  by design; terminal state is recovered from the durable run report instead.
+- Screenshots were not captured. Recorded as a gap rather than filled with a
+  synthetic image.
+
+Four product defects were confirmed while running the gate and are listed in the
+manifest under `known_product_defects_found`. None were fixed here, because
+section 6 forbids this branch from unilaterally changing Core Agent loop,
+Provider wire protocol, or Tool Registry permission behaviour:
+
+1. `needs_attention` is a terminal deadlock. A run that ends without a final
+   answer strands the session with no recovery endpoint.
+2. Project config is never loaded on the API/Desktop path
+   (`project_config_loaded` is hardcoded false) even when the
+   `project_configuration` trust capability is granted.
+3. `max_model_turns_per_step = 4` is unreachable from Desktop.
+4. The product UI cannot select an agent profile:
+   `CreateProductMessageRequest` sets `deny_unknown_fields`, so no `agent` field
+   can be sent even though `POST /jobs` honours one.
 
 ## Shared Dependency
 
@@ -135,13 +190,21 @@ Closed on this branch:
 - Native prompt plus create/test/use Settings flow: integrated and covered by
   deterministic host and Web tests.
 
+- SiliconFlow inventory, streaming, native tool-call history, and the two-turn
+  Desktop run against `deepseek-ai/DeepSeek-V3.2`: run and passing against the
+  installed Desktop. Live inventory returned 95 models with the locked model
+  present; 41 native tool calls all carried a provider `tool_use_id`.
+- Installed Start menu journey, restart restoration, and uninstall retention:
+  run and passing. Install and uninstall need an elevated child because the NSIS
+  package is `perMachine`.
+- D6: met on Windows. See the installed-state gate section above.
+
 Still open, and blocking any "real-use complete" claim:
 
-- SiliconFlow inventory, streaming, native tool-call history, and the two-turn
-  Desktop run against `deepseek-ai/DeepSeek-V3.2`: not run. Requires the
-  credentialed A2 gate.
-- Installed Start menu journey, restart restoration, and uninstall retention:
-  not run. The NSIS package is `perMachine`, so installation needs UAC and the
-  implementation session was not administrator.
-- D6 and final A gate: not met. The final implementation plan must remain
-  `Not Implemented`, and no document may claim Desktop real-use completion.
+- Section 10.1 A gate: not met. It must run on the final `main` after both
+  branches merge. The D6 evidence here is Windows-only and single-machine, so it
+  does not substitute for that gate, for the A3 installed-state TUI gate, or for
+  any claim about unverified platforms.
+- `pnpm test:e2e` (Playwright) was not run on this branch and remains part of
+  the final A1 gate on `main`.
+- Desktop screenshots for the D6 journey: not captured.
