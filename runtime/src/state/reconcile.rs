@@ -98,8 +98,9 @@ pub async fn reconcile_task_state_with_trace(
             // sequence high-water mark because they share the run's seq space.
             crate::events::TraceEntry::History(_) => {}
             // A resume link is provenance about where this run's history came
-            // from. It carries no lifecycle fact to project onto the snapshot.
-            crate::events::TraceEntry::Link(_) => {}
+            // from, and the identity header restates what the snapshot already
+            // knows. Neither carries a lifecycle fact to project onto it.
+            crate::events::TraceEntry::Link(_) | crate::events::TraceEntry::Meta(_) => {}
         }
         outcome.observed(entry.seq);
     }

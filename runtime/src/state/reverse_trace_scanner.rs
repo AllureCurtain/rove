@@ -200,7 +200,8 @@ mod tests {
     }
 
     fn scan_all(content: &str) -> Vec<ScanOutcome<Record>> {
-        let mut scanner = ReverseJsonlScanner::new(Cursor::new(content.as_bytes().to_vec())).unwrap();
+        let mut scanner =
+            ReverseJsonlScanner::new(Cursor::new(content.as_bytes().to_vec())).unwrap();
         let mut seen = Vec::new();
         while let Some(outcome) = scanner.scan_next().unwrap() {
             seen.push(outcome);
@@ -282,11 +283,9 @@ mod tests {
     fn scanning_from_a_pinned_offset_ignores_later_appends() {
         let prefix = "{\"n\":1}\n{\"n\":2}\n";
         let content = format!("{prefix}{{\"n\":3}}\n");
-        let mut scanner = ReverseJsonlScanner::new_at(
-            Cursor::new(content.into_bytes()),
-            prefix.len() as u64,
-        )
-        .unwrap();
+        let mut scanner =
+            ReverseJsonlScanner::new_at(Cursor::new(content.into_bytes()), prefix.len() as u64)
+                .unwrap();
         let mut seen = Vec::new();
         while let Some(outcome) = scanner.scan_next::<Record>().unwrap() {
             seen.push(outcome);

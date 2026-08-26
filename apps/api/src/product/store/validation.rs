@@ -507,7 +507,11 @@ fn validate_path_input(path: &Path) -> Result<(), ProductStoreError> {
     Ok(())
 }
 
-fn canonical_workspace_key(value: &str) -> String {
+/// The uniqueness key a canonical workspace root maps to.
+///
+/// Exposed to the product module so ownership recovery derives the same key the
+/// create path derives, rather than storing a second copy that could drift.
+pub(crate) fn canonical_workspace_key(value: &str) -> String {
     if cfg!(windows) {
         value.replace('\\', "/").to_lowercase()
     } else {

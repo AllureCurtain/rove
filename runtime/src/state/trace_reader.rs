@@ -207,6 +207,7 @@ mod tests {
                         TraceEntry::Ui(event) => event.event_name().to_string(),
                         TraceEntry::History(_) => "history".to_string(),
                         TraceEntry::Link(_) => "link".to_string(),
+                        TraceEntry::Meta(_) => "meta".to_string(),
                     }
                 ))
                 .collect::<Vec<_>>()

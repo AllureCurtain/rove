@@ -238,7 +238,9 @@ pub fn read_history_tail_from<R: std::io::Read + std::io::Seek>(
             // the chain further back; not followed here, because how much of an
             // ancestor to inherit is the caller's policy, not this reader's.
             TraceEntry::Link(link) => history.source_link = Some(link),
-            TraceEntry::Ui(_) => {}
+            // Neither carries model-visible history: one is presentation, the
+            // other is the file's own identity header.
+            TraceEntry::Ui(_) | TraceEntry::Meta(_) => {}
         }
     }
 
@@ -391,10 +393,7 @@ pub fn read_history_chain(
         // A compaction marker ends a segment's read as complete, and it also
         // makes the ancestors redundant: the summary already stands in for
         // them. Walking further back would double-count that history.
-        let stops_at_compaction = matches!(
-            history.items.first(),
-            Some(HistoryItem::Compacted(_))
-        );
+        let stops_at_compaction = matches!(history.items.first(), Some(HistoryItem::Compacted(_)));
 
         chain.segments.push(ChainSegment {
             run_id: current,
@@ -529,7 +528,9 @@ mod tests {
         let run_id = RunId::new();
         let writer = fixture.writer(run_id);
         for n in 0..20 {
-            writer.append_history(&message(&format!("item-{n}"))).unwrap();
+            writer
+                .append_history(&message(&format!("item-{n}")))
+                .unwrap();
         }
 
         let history = fixture.resolve(HistorySource::Resume(run_id), 3);
@@ -600,7 +601,10 @@ mod tests {
             .collect();
         assert_eq!(
             texts,
-            vec!["[conversation compacted] earlier turns summarised", "recent"]
+            vec![
+                "[conversation compacted] earlier turns summarised",
+                "recent"
+            ]
         );
     }
 
@@ -672,7 +676,11 @@ mod tests {
         assert_eq!(texts, vec!["turn-1", "turn-2", "turn-3", "turn-4"]);
         assert!(chain.is_complete());
         // Oldest run first, so the segment order matches the replay order.
-        let runs: Vec<RunId> = chain.segments.iter().map(|segment| segment.run_id).collect();
+        let runs: Vec<RunId> = chain
+            .segments
+            .iter()
+            .map(|segment| segment.run_id)
+            .collect();
         assert_eq!(runs, vec![first, second, third]);
     }
 
@@ -686,7 +694,9 @@ mod tests {
 
         let writer = fixture.writer(older);
         for n in 0..10 {
-            writer.append_history(&message(&format!("old-{n}"))).unwrap();
+            writer
+                .append_history(&message(&format!("old-{n}")))
+                .unwrap();
         }
         let writer = fixture.writer(newer);
         writer.append_resume_link(older, 10).unwrap();
@@ -761,7 +771,9 @@ mod tests {
             ))
             .unwrap();
 
-        let messages = fixture.resolve(HistorySource::Resume(run_id), 100).to_messages();
+        let messages = fixture
+            .resolve(HistorySource::Resume(run_id), 100)
+            .to_messages();
 
         assert_eq!(messages.len(), 3);
         assert_eq!(messages[2].role, rove_models::Role::Tool);
@@ -796,7 +808,9 @@ mod tests {
             )))
             .unwrap();
 
-        let messages = fixture.resolve(HistorySource::Resume(run_id), 100).to_messages();
+        let messages = fixture
+            .resolve(HistorySource::Resume(run_id), 100)
+            .to_messages();
 
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[1].content, "file body");

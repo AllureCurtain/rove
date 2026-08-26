@@ -11,6 +11,7 @@ pub(crate) mod files;
 pub(crate) mod mcp;
 pub(crate) mod message_adapter;
 pub(crate) mod migration;
+pub(crate) mod ownership;
 pub(crate) mod platform;
 pub(crate) mod provider_catalog;
 pub(crate) mod review;

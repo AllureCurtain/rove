@@ -9,7 +9,7 @@ use crate::events::StreamEvent;
 use crate::types::{JobId, RunId, SessionId, TaskState};
 use rove_core::CallId;
 
-pub const CURRENT_SCHEMA_VERSION: i64 = 3;
+pub const CURRENT_SCHEMA_VERSION: i64 = 4;
 const DEFAULT_BUSY_TIMEOUT_MS: u64 = 5_000;
 const MAX_SNAPSHOT_EVENTS: usize = 2_000;
 const MAX_SNAPSHOT_EVENT_JSON_BYTES: usize = 1_048_576;
@@ -97,13 +97,6 @@ CREATE TABLE IF NOT EXISTS events (
     FOREIGN KEY(run_id) REFERENCES runs(run_id)
 );
 
-CREATE TABLE IF NOT EXISTS event_offsets (
-    run_id TEXT PRIMARY KEY,
-    last_seq INTEGER NOT NULL,
-    updated_at TEXT NOT NULL,
-    FOREIGN KEY(run_id) REFERENCES runs(run_id)
-);
-
 CREATE TABLE IF NOT EXISTS pending_approvals (
     call_id TEXT PRIMARY KEY,
     job_id TEXT NOT NULL,
@@ -169,10 +162,23 @@ CREATE INDEX IF NOT EXISTS idx_conversation_messages_delivery
     ON conversation_messages(session_id, status, sequence);
 "#;
 
+/// Codex alignment Phase 5: `event_offsets` held exactly what
+/// `runs.last_event_seq` holds.
+///
+/// Both were written in the same transaction, from the same `seq`, under the
+/// same `MAX(...)` rule, and both carry a foreign key to `runs(run_id)` with
+/// `PRAGMA foreign_keys = ON` — so neither could ever record a sequence the
+/// other missed. One high-water mark per run is enough; keeping two invited a
+/// silent divergence that no reader could arbitrate.
+const MIGRATION_004: &str = r#"
+DROP TABLE IF EXISTS event_offsets;
+"#;
+
 const MIGRATIONS: &[(i64, &str, &str)] = &[
     (1, "runtime_state_index", MIGRATION_001),
     (2, "runs_by_job_index", MIGRATION_002),
     (3, "conversation_messages", MIGRATION_003),
+    (4, "drop_event_offsets", MIGRATION_004),
 ];
 
 #[derive(Debug, Clone)]
@@ -545,6 +551,61 @@ impl StateIndex {
                 job_id.to_string(),
                 run_dir.to_string_lossy().as_ref(),
                 trace_path.to_string_lossy().as_ref(),
+                now,
+            ],
+        )
+        .map_err(io_other)?;
+        Ok(())
+    }
+
+    /// Recreate the identity rows a run needs, without asserting it is live.
+    ///
+    /// Codex alignment Phase 5: index repair learns a run's identity from its
+    /// trace header, which says who owns the run but nothing about how it
+    /// ended. [`Self::record_run_started`] would stamp `'running'` over a
+    /// status that report import already recovered, so recovery inserts only
+    /// what is missing and leaves every existing row alone.
+    pub fn recover_run_identity(
+        &self,
+        session_id: SessionId,
+        job_id: JobId,
+        run_id: RunId,
+        run_dir: &Path,
+        trace_path: &Path,
+        started_at: &str,
+    ) -> std::io::Result<()> {
+        let conn = self.connect()?;
+        let now = now_rfc3339();
+        upsert_session(&conn, session_id, &now)?;
+        conn.execute(
+            r#"
+            INSERT INTO jobs(job_id, session_id, status, run_id, created_at, updated_at)
+            VALUES (?1, ?2, 'interrupted', ?3, ?4, ?4)
+            ON CONFLICT(job_id) DO NOTHING
+            "#,
+            params![
+                job_id.to_string(),
+                session_id.to_string(),
+                run_id.to_string(),
+                started_at,
+            ],
+        )
+        .map_err(io_other)?;
+        conn.execute(
+            r#"
+            INSERT INTO runs(
+                run_id, session_id, job_id, status, run_dir, trace_path, started_at, updated_at
+            )
+            VALUES (?1, ?2, ?3, 'interrupted', ?4, ?5, ?6, ?7)
+            ON CONFLICT(run_id) DO NOTHING
+            "#,
+            params![
+                run_id.to_string(),
+                session_id.to_string(),
+                job_id.to_string(),
+                run_dir.to_string_lossy().as_ref(),
+                trace_path.to_string_lossy().as_ref(),
+                started_at,
                 now,
             ],
         )
@@ -1619,6 +1680,36 @@ impl StateIndex {
         Ok(jobs)
     }
 
+    /// Every run the index currently knows.
+    ///
+    /// Codex alignment Phase 5: startup backfill compares this against the run
+    /// directories on disk so it only repairs what is actually missing. Reading
+    /// identifiers alone keeps the comparison cheap regardless of how much
+    /// history each run holds.
+    pub fn indexed_run_ids(&self) -> std::io::Result<std::collections::HashSet<RunId>> {
+        let conn = self.connect()?;
+        let mut statement = conn.prepare("SELECT run_id FROM runs").map_err(io_other)?;
+        let rows = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(io_other)?;
+        let mut ids = std::collections::HashSet::new();
+        for row in rows {
+            let raw = row.map_err(io_other)?;
+            match raw.parse::<RunId>() {
+                Ok(run_id) => {
+                    ids.insert(run_id);
+                }
+                // A row the index cannot parse is treated as absent: backfill
+                // will re-derive it from disk rather than silently skip it.
+                Err(_) => tracing::warn!(
+                    run_id = %raw,
+                    "Skipping unparsable run identifier while listing indexed runs"
+                ),
+            }
+        }
+        Ok(ids)
+    }
+
     pub fn run_record(&self, run_id: RunId) -> std::io::Result<Option<RunIndexRecord>> {
         let conn = self.connect()?;
         conn.query_row(
@@ -1826,7 +1917,7 @@ impl StateIndex {
         let conn = self.connect()?;
         let seq: Option<i64> = conn
             .query_row(
-                "SELECT last_seq FROM event_offsets WHERE run_id = ?1",
+                "SELECT last_event_seq FROM runs WHERE run_id = ?1",
                 params![run_id.to_string()],
                 |row| row.get(0),
             )
@@ -1862,18 +1953,6 @@ impl StateIndex {
             .map_err(io_other)?;
         transaction
             .execute(
-                r#"
-            INSERT INTO event_offsets(run_id, last_seq, updated_at)
-            VALUES (?1, ?2, ?3)
-            ON CONFLICT(run_id) DO UPDATE SET
-                last_seq = MAX(last_seq, excluded.last_seq),
-                updated_at = excluded.updated_at
-            "#,
-                params![run_id.to_string(), seq as i64, now],
-            )
-            .map_err(io_other)?;
-        transaction
-            .execute(
                 "UPDATE runs SET last_event_seq = MAX(last_event_seq, ?2), updated_at = ?3 WHERE run_id = ?1",
                 params![run_id.to_string(), seq as i64, now],
             )
@@ -1885,31 +1964,15 @@ impl StateIndex {
     /// Advance the durable sequence high-water mark without inserting an
     /// event row. Trace history lines (Phase 2) consume the run's monotonic
     /// sequence space but never project into SSE/transcript replays, so only
-    /// `event_offsets`/`runs.last_event_seq` must move forward to keep a
-    /// restarted writer from reusing a written sequence number.
+    /// `runs.last_event_seq` must move forward to keep a restarted writer from
+    /// reusing a written sequence number.
     pub fn advance_event_seq(&self, run_id: RunId, seq: u64) -> std::io::Result<()> {
-        let mut conn = self.connect()?;
-        let transaction = conn.transaction().map_err(io_other)?;
-        let now = now_rfc3339();
-        transaction
-            .execute(
-                r#"
-            INSERT INTO event_offsets(run_id, last_seq, updated_at)
-            VALUES (?1, ?2, ?3)
-            ON CONFLICT(run_id) DO UPDATE SET
-                last_seq = MAX(last_seq, excluded.last_seq),
-                updated_at = excluded.updated_at
-            "#,
-                params![run_id.to_string(), seq as i64, now],
-            )
-            .map_err(io_other)?;
-        transaction
-            .execute(
-                "UPDATE runs SET last_event_seq = MAX(last_event_seq, ?2), updated_at = ?3 WHERE run_id = ?1",
-                params![run_id.to_string(), seq as i64, now],
-            )
-            .map_err(io_other)?;
-        transaction.commit().map_err(io_other)?;
+        let conn = self.connect()?;
+        conn.execute(
+            "UPDATE runs SET last_event_seq = MAX(last_event_seq, ?2), updated_at = ?3 WHERE run_id = ?1",
+            params![run_id.to_string(), seq as i64, now_rfc3339()],
+        )
+        .map_err(io_other)?;
         Ok(())
     }
 
@@ -2406,11 +2469,6 @@ fn delete_expired_jobs(conn: &Connection, records: &[ExpiredJobRecord]) -> std::
             .map_err(io_other)?;
             conn.execute(
                 "DELETE FROM events WHERE run_id = ?1",
-                params![run_id.to_string()],
-            )
-            .map_err(io_other)?;
-            conn.execute(
-                "DELETE FROM event_offsets WHERE run_id = ?1",
                 params![run_id.to_string()],
             )
             .map_err(io_other)?;
@@ -3243,6 +3301,168 @@ mod tests {
         index
             .initialize()
             .expect("a clean index must still migrate after an unrelated failure");
+    }
+
+    /// Codex alignment Phase 5: upgrading a real v3 database must drop the
+    /// redundant high-water table while leaving the surviving one untouched.
+    ///
+    /// Built by replaying migrations 1..=3 — the same SQL a v3 install ran — so
+    /// the fixture is the shape actually on disk, not a hand-written stand-in.
+    #[test]
+    fn upgrading_a_populated_v3_index_drops_event_offsets_and_keeps_the_run_high_water() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let index = StateIndex::new(temp.path());
+        let mut connection = Connection::open(index.path()).unwrap();
+        connection
+            .execute_batch(
+                r#"
+                CREATE TABLE IF NOT EXISTS schema_migrations (
+                    version INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    applied_at TEXT NOT NULL
+                );
+                "#,
+            )
+            .unwrap();
+        for (version, name, sql) in MIGRATIONS.iter().take_while(|(version, ..)| *version <= 3) {
+            apply_one_migration(&mut connection, *version, name, sql).unwrap();
+        }
+        // v3 had no `event_offsets` in migration 1 anymore, so recreate exactly
+        // the DDL that shipped with it to prove the DROP handles a live table.
+        connection
+            .execute_batch(
+                r#"
+                CREATE TABLE IF NOT EXISTS event_offsets (
+                    run_id TEXT PRIMARY KEY,
+                    last_seq INTEGER NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(run_id) REFERENCES runs(run_id)
+                );
+                "#,
+            )
+            .unwrap();
+
+        let session_id = SessionId::new();
+        let job_id = JobId::new();
+        let run_id = RunId::new();
+        let now = now_rfc3339();
+        connection
+            .execute(
+                "INSERT INTO sessions(session_id, created_at, updated_at) VALUES (?1, ?2, ?2)",
+                params![session_id.to_string(), now],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO jobs(job_id, session_id, status, created_at, updated_at)
+                 VALUES (?1, ?2, 'running', ?3, ?3)",
+                params![job_id.to_string(), session_id.to_string(), now],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO runs(run_id, session_id, job_id, status, run_dir, trace_path,
+                                  started_at, updated_at, last_event_seq)
+                 VALUES (?1, ?2, ?3, 'running', ?4, ?5, ?6, ?6, 41)",
+                params![
+                    run_id.to_string(),
+                    session_id.to_string(),
+                    job_id.to_string(),
+                    temp.path().join("run").to_string_lossy(),
+                    temp.path().join("run/trace.jsonl").to_string_lossy(),
+                    now,
+                ],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO event_offsets(run_id, last_seq, updated_at) VALUES (?1, 41, ?2)",
+                params![run_id.to_string(), now],
+            )
+            .unwrap();
+        drop(connection);
+
+        index
+            .initialize()
+            .expect("a populated v3 index must upgrade in place");
+
+        let connection = Connection::open(index.path()).unwrap();
+        let newest: i64 = connection
+            .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(newest, CURRENT_SCHEMA_VERSION);
+        let surviving: Option<String> = connection
+            .query_row(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'event_offsets'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .unwrap();
+        assert_eq!(
+            surviving, None,
+            "the redundant high-water table must be gone after the upgrade"
+        );
+
+        // The fact the dropped table carried has to survive on the row that
+        // stays, and it has to be readable through the public accessor.
+        assert_eq!(
+            index.last_event_seq(run_id).unwrap(),
+            41,
+            "the run's high-water mark must survive the migration"
+        );
+    }
+
+    /// Removing the second high-water table must not weaken the guarantee that
+    /// a restarted writer never reuses a sequence number.
+    #[test]
+    fn the_high_water_mark_only_moves_forward_after_the_double_write_is_gone() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let index = StateIndex::new(temp.path());
+        index.initialize().unwrap();
+        let session_id = SessionId::new();
+        let job_id = JobId::new();
+        let run_id = RunId::new();
+        index
+            .record_run_started(
+                session_id,
+                job_id,
+                run_id,
+                &temp.path().join("run"),
+                &temp.path().join("run/trace.jsonl"),
+            )
+            .unwrap();
+
+        index.advance_event_seq(run_id, 7).unwrap();
+        assert_eq!(index.last_event_seq(run_id).unwrap(), 7);
+
+        // A stale writer replaying an older sequence must not roll it back.
+        index.advance_event_seq(run_id, 3).unwrap();
+        assert_eq!(
+            index.last_event_seq(run_id).unwrap(),
+            7,
+            "an older sequence must never lower the high-water mark"
+        );
+
+        index
+            .append_event(
+                run_id,
+                9,
+                &StreamEvent::RunStarted {
+                    run_id,
+                    job_id,
+                    user_message: "probe".to_string(),
+                },
+                "{}",
+            )
+            .unwrap();
+        assert_eq!(
+            index.last_event_seq(run_id).unwrap(),
+            9,
+            "appending an event must still advance the surviving high-water mark"
+        );
     }
 
     /// The barrier must not be taken when there is nothing to do: this runs on

@@ -36,6 +36,18 @@ pub struct RepairResult {
     pub corrupt_trace_line_count: usize,
 }
 
+/// What a startup backfill found and whether it had to do anything.
+///
+/// `repair` is `None` on the healthy path: it distinguishes "nothing was
+/// missing" from "a rebuild ran and imported nothing", which otherwise look
+/// identical in the logs.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BackfillResult {
+    pub runs_on_disk: usize,
+    pub runs_missing: usize,
+    pub repair: Option<RepairResult>,
+}
+
 struct TaskStateEntry {
     path: PathBuf,
     modified: SystemTime,
@@ -76,6 +88,16 @@ impl StateStore {
         let trace_writer = self.run_store.create_trace(&run_id)?;
         self.index
             .record_run_started(session_id, job_id, run_id, &run_dir, trace_writer.path())?;
+        // Codex alignment Phase 5: open the file with the run's identity so the
+        // directory describes itself. Guarded on emptiness rather than written
+        // unconditionally — a re-entered run directory must not gain a second
+        // opening line.
+        let trace_is_empty = std::fs::metadata(trace_writer.path())
+            .map(|metadata| metadata.len() == 0)
+            .unwrap_or(true);
+        if trace_is_empty {
+            trace_writer.append_run_meta(session_id, job_id, run_id)?;
+        }
         Ok(RunHandle {
             session_id,
             job_id,
@@ -250,6 +272,72 @@ impl StateStore {
         })
     }
 
+    /// Re-derive index rows for run directories the index does not know.
+    ///
+    /// Codex alignment Phase 5: the filesystem is the record and the index is a
+    /// cache, so a deleted or stale index has to heal itself rather than wait
+    /// for someone to run a repair command. This is the cheap counterpart to
+    /// [`Self::repair_index`]: it lists the run directories, asks the index
+    /// which runs it already has, and imports only the difference — so the
+    /// common case (nothing missing) costs one directory listing and one
+    /// identifier query, and a full rebuild happens only when the index really
+    /// is empty.
+    pub async fn backfill_missing_runs(&self) -> std::io::Result<BackfillResult> {
+        let runs_dir = self.state_dir.join("runs");
+        let mut entries = match tokio::fs::read_dir(&runs_dir).await {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(BackfillResult::default());
+            }
+            Err(error) => return Err(error),
+        };
+        let mut on_disk = Vec::new();
+        while let Some(entry) = entries.next_entry().await? {
+            let path = entry.path();
+            let Some(run_id) = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .and_then(|name| name.parse::<RunId>().ok())
+            else {
+                continue;
+            };
+            // A directory with neither artifact records nothing recoverable.
+            if tokio::fs::try_exists(path.join("trace.jsonl")).await?
+                || tokio::fs::try_exists(path.join("task_state.json")).await?
+            {
+                on_disk.push(run_id);
+            }
+        }
+
+        let indexed = {
+            let index = self.index.clone();
+            tokio::task::spawn_blocking(move || index.indexed_run_ids())
+                .await
+                .map_err(std::io::Error::other)??
+        };
+        let missing = on_disk
+            .iter()
+            .filter(|run_id| !indexed.contains(run_id))
+            .count();
+        if missing == 0 {
+            return Ok(BackfillResult {
+                runs_on_disk: on_disk.len(),
+                runs_missing: 0,
+                repair: None,
+            });
+        }
+
+        // Import is per-artifact rather than per-run, and it is idempotent, so
+        // healing the difference means running the same repair the CLI runs.
+        // The diff above is what keeps that off the healthy startup path.
+        let repair = self.repair_index().await?;
+        Ok(BackfillResult {
+            runs_on_disk: on_disk.len(),
+            runs_missing: missing,
+            repair: Some(repair),
+        })
+    }
+
     pub async fn cleanup_expired(&self) -> std::io::Result<CleanupResult> {
         self.index.cleanup_expired_async().await
     }
@@ -362,6 +450,52 @@ impl StateStore {
                 );
             }
             corrupt_line_count += read.corrupt_line_count;
+
+            // Codex alignment Phase 5: every row below hangs off `runs`, and a
+            // run whose process died before its first checkpoint has no
+            // `task_state.json` to create that row. Take the identity from the
+            // trace's own opening line first, so one crashed run can no longer
+            // fail the entire repair on a foreign key.
+            let identity = read.entries.iter().find_map(|record| match &record.entry {
+                crate::events::TraceEntry::Meta(crate::events::RunMeta::RunIdentity {
+                    session_id,
+                    job_id,
+                    run_id: meta_run_id,
+                    started_at,
+                }) if *meta_run_id == run_id => Some((*session_id, *job_id, started_at.clone())),
+                _ => None,
+            });
+            match identity {
+                Some((session_id, job_id, started_at)) => {
+                    let run_dir = entry
+                        .parent()
+                        .map(Path::to_path_buf)
+                        .unwrap_or_else(|| self.run_store.run_dir(&run_id));
+                    self.index.recover_run_identity(
+                        session_id,
+                        job_id,
+                        run_id,
+                        &run_dir,
+                        &entry,
+                        &started_at,
+                    )?;
+                }
+                None if self.index.run_record(run_id)?.is_none() => {
+                    // Pre-Phase-5 traces have no identity line. Without a
+                    // `runs` row every append below would violate the foreign
+                    // key, so skip the file rather than fail the whole repair;
+                    // its events are recovered once a snapshot supplies the
+                    // owning session.
+                    tracing::warn!(
+                        path = %entry.display(),
+                        %run_id,
+                        "Trace has no run identity line and no indexed run; skipping its events"
+                    );
+                    continue;
+                }
+                None => {}
+            }
+
             for record in &read.entries {
                 match &record.entry {
                     crate::events::TraceEntry::Ui(event) => {
@@ -381,6 +515,10 @@ impl StateStore {
                     crate::events::TraceEntry::Link(_) => {
                         self.index.advance_event_seq(run_id, record.seq)?;
                     }
+                    // The identity header sits at `RUN_META_SEQ`, below every
+                    // event, so it has no high-water mark to contribute. Its
+                    // content was already consumed above to create the run row.
+                    crate::events::TraceEntry::Meta(_) => {}
                 }
             }
         }

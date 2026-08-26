@@ -440,6 +440,145 @@ async fn product_default_approval_is_honored_for_product_turns() {
     assert!(!folder.path().join("explicit-auto.txt").exists());
 }
 
+/// Codex alignment Phase 5 acceptance, end to end: the catalog is a cache.
+///
+/// The store-level tests cover the recovery transaction; this covers the wiring
+/// around it — that a real product turn leaves its ownership record behind, and
+/// that constructing a fresh `ApiState` over a deleted catalog puts the session
+/// list back without anyone running a repair command.
+#[tokio::test]
+async fn deleting_the_product_catalog_recovers_the_session_list_on_the_next_start() {
+    let server = tempfile::TempDir::new().unwrap();
+    let folder = tempfile::TempDir::new().unwrap();
+    let data = tempfile::TempDir::new().unwrap();
+    // The contract layout, which is what an unconfigured install uses: one data
+    // root holding the global catalog beside a per-workspace runtime directory.
+    // Recovery sweeps that layout; see `candidate_runs_dirs` for why a config
+    // that scatters run directories under each workspace root cannot be swept.
+    let mut config = test_config();
+    // Cleared, not set: the contract layout is what an *unconfigured* state path
+    // resolves to, and the defaults name the legacy project-local `.rove`.
+    config.state.state_dir.clear();
+    config.state.sqlite_path.clear();
+    config.data_root_override = Some(data.path().to_path_buf());
+    config.user_state_roots = Some(UserStateRoots::from_root(data.path()));
+    let product_sqlite = config.product_sqlite_path();
+    let app = router(ApiState::new(
+        Workspace::detect(server.path()).unwrap(),
+        config.clone(),
+    ));
+    let workspace = create_product_workspace(&app, folder.path()).await;
+    let workspace_id = workspace["id"].as_str().unwrap().to_string();
+    let session = create_product_session(&app, &workspace_id, "Recovered by ownership").await;
+    let session_id = session["id"].as_str().unwrap().to_string();
+    configure_product_session_model(&app, &session_id, "fake-raw", 1).await;
+
+    let job = post_json(
+        &app,
+        "/jobs",
+        serde_json::json!({
+            "message": "hello",
+            "product_session_id": session_id
+        }),
+    )
+    .await;
+    assert_eq!(job.status(), StatusCode::OK);
+    let job: CreateJobResponse = decode_json(job).await;
+    let state = wait_for_done(app.clone(), job.job_id.to_string()).await;
+
+    // The record has to be in the run directory, beside the trace it describes.
+    let run_dir = find_run_dir(data.path(), &state.run_id.to_string())
+        .expect("a product run must materialize under the data root");
+    let record: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(run_dir.join("product_owner.json"))
+            .expect("a bound product run must record who owns it"),
+    )
+    .unwrap();
+    assert_eq!(record["product_session_id"], session_id);
+    assert_eq!(record["workspace_id"], workspace_id);
+    assert_eq!(record["session_title"], "Recovered by ownership");
+    assert_eq!(record["runtime_run_id"], state.run_id.to_string());
+    assert_eq!(record["ordinal"], 1);
+    assert_eq!(
+        record["workspace_root"], workspace["canonical_root"],
+        "the recorded root must be the canonical one the catalog stores, since \
+         recovery derives the workspace key from it"
+    );
+
+    // Lose the catalog, keep the run directories.
+    drop(app);
+    std::fs::remove_file(&product_sqlite).expect("the catalog must exist to be deleted");
+
+    let recovered = router(ApiState::new(
+        Workspace::detect(server.path()).unwrap(),
+        config.clone(),
+    ));
+    // Recovery runs off the boot path, so the list is polled rather than assumed
+    // ready the instant the state is constructed.
+    let mut sessions = serde_json::Value::Null;
+    for _ in 0..100 {
+        let listed = recovered
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/product/sessions?workspace_id={workspace_id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        if listed.status() == StatusCode::OK {
+            let body: serde_json::Value = decode_json(listed).await;
+            if body["sessions"]
+                .as_array()
+                .is_some_and(|list| !list.is_empty())
+            {
+                sessions = body;
+                break;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+
+    let listed = sessions["sessions"]
+        .as_array()
+        .expect("the recovered catalog must list the workspace's sessions");
+    assert_eq!(listed.len(), 1, "the session comes back exactly once");
+    assert_eq!(
+        listed[0]["id"], session_id,
+        "a recovered session keeps the id its transcript was written under"
+    );
+    assert_eq!(listed[0]["title"], "Recovered by ownership");
+    assert_eq!(
+        listed[0]["status"], "idle",
+        "a recovered session must not claim to be running a process that is gone"
+    );
+    assert_eq!(
+        listed[0]["runtime_binding"]["latest_run_id"],
+        state.run_id.to_string(),
+        "the run the transcript belongs to is the session's latest again"
+    );
+
+    // Usable, not just listed: the recovered session must accept the next turn,
+    // which is the write that fails if any owner row went missing.
+    let next = post_json(
+        &recovered,
+        "/jobs",
+        serde_json::json!({
+            "message": "again",
+            "product_session_id": session_id
+        }),
+    )
+    .await;
+    assert_eq!(
+        next.status(),
+        StatusCode::OK,
+        "a recovered session must accept a new turn"
+    );
+    let next: CreateJobResponse = decode_json(next).await;
+    wait_for_done(recovered.clone(), next.job_id.to_string()).await;
+}
+
 #[tokio::test]
 async fn product_session_model_changes_apply_from_the_next_run_and_keep_snapshot_history() {
     let server = tempfile::TempDir::new().unwrap();
@@ -10257,6 +10396,27 @@ fn write_product_memory_topic(memory_dir: &Path, slug: &str, title: &str, body: 
         ),
     )
     .unwrap();
+}
+
+/// Locate a run directory by id under a root, whatever state layout produced it.
+///
+/// Which layout a product run lands in depends on config resolution, and the
+/// point of the test using this is the sidecar's presence, not the path.
+fn find_run_dir(root: &Path, run_id: &str) -> Option<PathBuf> {
+    let entries = std::fs::read_dir(root).ok()?;
+    for entry in entries.filter_map(Result::ok) {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        if path.file_name().is_some_and(|name| name == run_id) {
+            return Some(path);
+        }
+        if let Some(found) = find_run_dir(&path, run_id) {
+            return Some(found);
+        }
+    }
+    None
 }
 
 async fn create_product_workspace(app: &axum::Router, root: &Path) -> serde_json::Value {

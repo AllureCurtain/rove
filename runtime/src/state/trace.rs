@@ -23,6 +23,13 @@ pub struct TraceLine {
     pub event: TraceEntry,
 }
 
+/// Sequence reserved for a trace's identity header.
+///
+/// Event sequences start at 1 because `after=0` means "everything", so 0 is the
+/// one slot no event can occupy — which makes it the right home for a line that
+/// describes the file instead of belonging to its stream.
+pub const RUN_META_SEQ: u64 = 0;
+
 fn now_rfc3339() -> String {
     chrono::Utc::now().to_rfc3339()
 }
@@ -120,11 +127,7 @@ impl TraceWriter {
     /// rather than appending to its predecessor's. This marker is what keeps
     /// the chain replayable from the files alone. It takes a sequence number
     /// like any other line, so the hand-off is itself ordered.
-    pub fn append_resume_link(
-        &self,
-        from_run: RunId,
-        through_seq: u64,
-    ) -> std::io::Result<()> {
+    pub fn append_resume_link(&self, from_run: RunId, through_seq: u64) -> std::io::Result<()> {
         let seq = self.next_seq.fetch_add(1, Ordering::SeqCst);
         let line = TraceLine {
             ts: now_rfc3339(),
@@ -138,6 +141,39 @@ impl TraceWriter {
         if let (Some(index), Some(run_id)) = (&self.index, self.run_id) {
             index.advance_event_seq(run_id, seq)?;
         }
+        Ok(())
+    }
+
+    /// Write the run's identity as the trace's opening line.
+    ///
+    /// Codex alignment Phase 5: without this, a run that died before its first
+    /// `task_state.json` left a trace whose owning session was unknowable, so
+    /// rebuilding a deleted index could not insert its `runs` row and the whole
+    /// repair failed on a foreign key. Callers invoke this once, at run start.
+    ///
+    /// The line takes [`RUN_META_SEQ`] rather than drawing from the counter:
+    /// the header is not an event, and `after=`/`Last-Event-ID` resumption is a
+    /// wire contract keyed on the first event being seq 1. Spending a sequence
+    /// number here would shift every event by one and silently replay
+    /// `run_started` to a client that had already seen it.
+    pub fn append_run_meta(
+        &self,
+        session_id: crate::types::SessionId,
+        job_id: crate::types::JobId,
+        run_id: RunId,
+    ) -> std::io::Result<()> {
+        let started_at = now_rfc3339();
+        let line = TraceLine {
+            ts: started_at.clone(),
+            seq: RUN_META_SEQ,
+            event: TraceEntry::Meta(crate::events::RunMeta::RunIdentity {
+                session_id,
+                job_id,
+                run_id,
+                started_at,
+            }),
+        };
+        self.append_line(&line)?;
         Ok(())
     }
 

@@ -284,9 +284,78 @@ rove-protocol/            # 新 crate：纯 DTO + serde，零 tokio/axum 依赖
 4. 删除 `event_offsets` 双写（SSE 续读改走 Phase 6 扫描器后）。
 
 ### 验收
-- [ ] 删掉 state.db 后冷启动，全部会话列表/详情自动恢复；
-- [ ] 消息内容在 DB 中零冗余存储；
-- [ ] 迁移 v14→v15 在真实数据副本上演练通过。
+- [x] 删掉 state.db 后冷启动，全部会话列表/详情自动恢复；
+- [x] 消息内容在 DB 中零冗余存储；
+- [x] 迁移 v14→v15 在真实数据副本上演练通过。
+
+### 落地证据（commit PLACEHOLDER_P5_HASH）
+
+两个库各自独立恢复，所以证据分两组。
+
+**运行时索引（`state.sqlite`，v3 → v4）**
+
+| 验收项 | 证据 | 结果 |
+| --- | --- | --- |
+| 删库后自愈 | `e2e::repair_index_recovers_a_run_that_never_wrote_a_task_state`：删掉整个索引文件后重建，一个只剩 trace（无 `task_state.json`）的崩溃 run 也被索引，`session_id`/`job_id` 从 trace 首行身份头恢复，状态记为 `interrupted` 而非 `running` | 通过 |
+| 崩溃 run 不再毒化整次修复 | 同一测试里健康 run 与崩溃 run 并存，`repaired.event_count == 2`：改造前崩溃 run 没有 `runs` 行，后续 `events` 插入会撞外键，**整次 repair 失败** | 通过 |
+| 启动自动 backfill | `StateStore::backfill_missing_runs`：列目录 + 一次 `indexed_run_ids()` 比对，缺口为 0 时直接返回（healthy 路径不跑全量 repair）；`spawn_state_index_backfill` 异步 spawn + `STATE_INDEX_BACKFILL_TIMEOUT` 超时降级为 warning，不阻塞启动 | 通过 |
+| 双高水位收敛 | `index::upgrading_a_populated_v3_index_drops_event_offsets_and_keeps_the_run_high_water`：fixture 由**真实重放 migration 1..=3** 构造（不是手写近似），升级后 `event_offsets` 消失、`runs.last_event_seq` 原值不变 | 通过 |
+| 身份头不挪动事件流 | `e2e::the_run_identity_header_takes_no_event_sequence`：直接读 trace 文件断言首行 `seq == 0` 且 `meta == "run_identity"`、次行（首个事件）`seq == 1`，并断言身份头没有推高 `last_event_seq` | 通过 |
+| 变异验证（防空测试） | 把身份头改回 `next_seq.fetch_add(1)`：上述测试立刻变红（`left: Number(1), right: 0`），且 `api` 套件 4 个 wire-contract 测试同时变红（`api_reads_completed_job_state_and_events_after_restart` 等）——证明该断言锁住的是真实对外语义 | 已验证有判别力 |
+
+**产品目录（`product.sqlite`）**
+
+| 验收项 | 证据 | 结果 |
+| --- | --- | --- |
+| 删库后会话列表自动恢复 | `api::deleting_the_product_catalog_recovers_the_session_list_on_the_next_start`：真实跑完一轮产品会话 → 删掉 `product.sqlite` → 新建 router → 轮询 `GET /product/sessions` 拿回会话（id / title / `status == "idle"` / `runtime_binding.latest_run_id` 全部对上）→ 再发一轮 `POST /jobs` 成功 | 通过 |
+| sidecar 真的被写 | 同一测试中断言 `product_owner.json` 存在于真实 run 目录，且 `product_session_id` / `workspace_id` / `session_title` / `runtime_run_id` / `ordinal == 1` / `workspace_root == workspace.canonical_root` 逐项对上 | 通过 |
+| 链式重编号 | `store::tests::a_missing_ownership_record_renumbers_the_chain_instead_of_leaving_a_hole`：丢掉中间那条记录后 ordinal 重排为 `[1,2]`、`resumed_from_run_id` 重新挂到实际前驱、下一轮落在 ordinal 3 | 通过 |
+| 活数据优先 | `recovery_leaves_a_catalog_that_still_knows_the_session_untouched`：返回 `AlreadyPresent`，改名后的 title 与 `NeedsAttention` 状态都不被磁盘快照覆盖 | 通过 |
+| 不偷别人的 run | `a_run_already_bound_to_another_session_is_not_stolen_by_a_stale_record`：既覆盖 `AlreadyPresent`，也覆盖 `delete_session` 后返回 `Skipped` 且**不留半成品行** | 通过 |
+| 顺序无关 | `recovering_several_runs_points_the_session_at_its_highest_ordinal`：乱序输入 `[2,0,1]` 仍重建出 `[1,2,3]` 与完整 `resumed_from_run_id` 链 | 通过 |
+| 测试不与实现互为镜像 | `store_input` 测试辅助直接调用生产的 `ownership::to_store_input`（而非测试内复制一份），`grouping_records_takes_session_fields_from_the_newest_run` 单独覆盖分组语义（最新 run 给 title、最老 run 给 created_at、空组返回 `None`） | 通过 |
+| 变异验证（防空测试） | ① 注释掉 `spawn_product_ownership_recovery` 调用 → e2e 变红；② 把 sidecar 写到 `run_dir.join("mutant")` → e2e 在读 `product_owner.json` 处变红；③ 重编号循环改回写 `run.recorded_ordinal` → 链校验报 `ProductBindingCorrupt` | 三处均已验证有判别力 |
+
+| 回归 | 结果 |
+| --- | --- |
+| `rove-runtime` lib 603、`rove-api` lib 143、`rove-models` 143、`rove-cli` 171、`rove-app-bootstrap` 92 + `state_migration` 23、`rove-core` 39、`rove-tools-text` 48、`rove-desktop` 9 + 3 | 全绿 |
+| 集成套件 23 个 target 全部单独跑过：`api` 118、`e2e` 110、其余 21 个全绿 | 全绿 |
+| `cargo clippy --workspace --all-targets` | 无警告 |
+
+> 环境备注：`cli_repl` 5 个测试在本机会失败，与本期改动无关——全局 `~/.rove/config.toml`（D6 真实 SiliconFlow 验收时写入）把 `default_profile` 指向 siliconflow，而这些测试只用 `--model fake` 覆盖模型名、不覆盖 profile，于是真去打了 API（HTTP 400 `Model does not exist`）。设 `ROVE_CONFIG_ROOT` 隔离后 7/7 通过。这是测试隔离的既有缺口（测试用了临时 cwd 但没隔离用户级配置根），已记录，不在本期修。
+
+> 分歧记录（§0.3 规则：rove 产品语义 > codex 机制）
+>
+> **文档说「两套 SQLite 收拢为一个 `~/.rove/state.db`」，实际两库保持分离，各自独立做到可重建。**
+> 读过后确认合并会破坏 rove 的产品语义：运行时索引是**按工作区**的（`<workspace>/.rove/state.sqlite`），产品目录是**全局**的（`~/.rove/product.sqlite`）——产品会话列表要跨工作区一次列出，运行时事件要随工作区一起归档/删除。合进一个文件后，删一个工作区就得从全局库里做选择性删除，而列产品会话又得跨库聚合，两个方向都变难。
+> 真正的验收目标是「文件系统是记录，SQLite 是可重建的缓存」，这与"几个文件"无关。因此本期让两库**各自**具备重建能力：运行时索引从 trace 首行身份头 + 事件重建；产品目录从每个 run 目录的 `product_owner.json` sidecar 重建。
+
+> 分歧记录（§0.3 规则）
+>
+> **文档说「新增 `rollouts` 表（对标 codex session_index）」，实际改为每个 run 目录写 `product_owner.json` sidecar。**
+> `rollouts` 表是 codex 的形状：一个 session 一个 rollout 文件，表是文件的索引。rove 是**一个 run 一个目录**，产品会话与运行时 run 是一对多，"哪个产品会话拥有这个 run"这条事实在 codex 里根本不存在。把它放进表里，表本身又成了唯一副本——删库即丢失，正是要解决的问题。
+> 所以这条事实写进它所描述的那个目录里：run 目录带上自己的归属。表可以随时删，目录还在，归属就还在。
+
+> 分歧记录（§0.3 规则）
+>
+> **文档说「schema v15」「迁移 v14→v15 演练」，实际是运行时索引 v3→v4；产品目录 schema 未动，仍为 v14。**
+> 文档假设两库合并，才有"统一 v15"的说法。两库保持分离后，本期真正需要的 schema 变更只有一处：删掉 `event_offsets`。它与 `runs.last_event_seq` 同事务、同 `seq`、同 `MAX(...)` 规则写入，且都对 `runs(run_id)` 带外键——两者永不可能记录不同的值，留两份只是给未来留一个没有裁判的分歧点。
+> 产品目录这一侧不需要迁移：恢复能力来自新增的 sidecar 文件与 `recover_session_ownership` 读路径，既有表结构一列未改。所以"真实数据副本演练"落在 v3→v4：测试 fixture 由真实重放 migration 1..=3 构造，而不是手写一个近似的 v3 库。
+
+> 分歧记录（§0.3 规则）
+>
+> **文档说「消息内容在 DB 中零冗余存储」需要把读路径切到 JSONL，实际这一条在 Phase 2 之后已经成立，不需要改读路径。**
+> 复核后确认前提不成立：Phase 2 把**模型可见历史**（`TraceEntry::History`）与 **UI 事件**（`TraceEntry::Ui`）分开之后，历史只落 trace 文件——`append_history` 只推进高水位，从不插 `events` 表。产品库这一侧也没有任何 transcript 内容（`product_session_controls.content` 存的是**待投递**的 steer/followup 请求，在 applied 之前它就是权威记录，不是副本）。
+> 表里剩下的 `events.event_json` 是 UI 事件投影——一个派生缓存，而本期正是让它重新变得**可派生**（身份头 + backfill）。把 SSE 读路径改成扫 JSONL 只会用文件 I/O 换掉一次索引查询，并不减少任何冗余，故不做。
+
+> 设计取舍：身份头占 `RUN_META_SEQ = 0` 而不从事件计数器取号。
+> 起初它像普通行一样 `fetch_add(1)`，结果 `api` 套件 4 个测试变红——`?after=N` 与 SSE `Last-Event-ID` 是**对外 wire contract**，锚在"首个事件是 seq 1"上。头行吃掉 seq 1 会把 `run_started` 顶到 2，向已经确认过事件 1 的客户端重放它。事件序号从 1 起（`after=0` 意为"全部"），所以 0 是唯一任何事件都不会占的槽位，正适合放一条描述文件本身、不属于事件流的行。
+
+> 设计取舍：`recover_run_identity` 与 `record_run_started` 分开，且只插不覆盖。
+> 身份头说得清"这个 run 属于谁"，说不清"它怎么结束的"。若复用 `record_run_started`，它会把 `'running'` 盖到 report 导入刚恢复出的真实状态上——一个早已结束的 run 会在列表里显示为仍在运行。所以恢复路径全部 `ON CONFLICT DO NOTHING`，只补缺失的行，已有行一律不动；无 report 可依据时状态记 `interrupted`（诚实的"没跑完"）而不是 `running`。
+
+> 附带修复：无身份头的 pre-Phase-5 旧 trace 会被跳过并 warn，而不是让整次 repair 失败。
+> 这类文件没有 `runs` 行可依，后续每次 `events` 插入都会撞外键。跳过它、留下 warn，等某个快照补出归属会话后再恢复其事件——一个历史遗留文件不该让今天所有会话都恢复不了。
 
 ---
 

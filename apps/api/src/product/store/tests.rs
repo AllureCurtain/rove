@@ -18,9 +18,10 @@ use crate::product::{
     PreparedM1BrowserMigration, ProductApprovalPreference, ProductControlKind,
     ProductControlStatus, ProductErrorCode, ProductMessagePageQuery, ProductMessageStatus,
     ProductProviderSelection, ProductProviderType, ProductReasoningPreference, ProductReviewId,
-    ProductReviewStatus, ProductSessionStatus, ProductStore, ProductThemePreference,
-    ProductWorkspaceKind, UpdateProductPreferencesRequest, UpdateProductSessionModelConfigRequest,
-    VerifiedM1SessionRunBinding, VerifiedProductForkBoundary,
+    ProductReviewStatus, ProductSessionRecovery, ProductSessionStatus, ProductStore,
+    ProductThemePreference, ProductWorkspaceKind, UpdateProductPreferencesRequest,
+    UpdateProductSessionModelConfigRequest, VerifiedM1SessionRunBinding,
+    VerifiedProductForkBoundary,
 };
 
 use super::SqliteProductStore;
@@ -2788,4 +2789,702 @@ async fn forks_reject_a_parent_with_an_active_turn() {
         .finish_session_turn(&active_claim.claim_id, ProductSessionStatus::Idle)
         .await
         .unwrap();
+}
+
+/// Build the on-disk ownership record a real bound run would leave behind.
+fn ownership_for(
+    workspace: &crate::product::ProductWorkspace,
+    session: &crate::product::ProductSession,
+    ordinal: u64,
+    runtime_session_id: SessionId,
+    runtime_job_id: JobId,
+    runtime_run_id: RunId,
+) -> crate::product::ownership::ProductRunOwnership {
+    crate::product::ownership::ProductRunOwnership {
+        product_session_id: session.id.clone(),
+        workspace_id: workspace.id.clone(),
+        workspace_root: workspace.canonical_root.clone(),
+        workspace_kind: workspace.kind,
+        workspace_display_name: workspace.display_name.clone(),
+        session_title: session.title.clone(),
+        ordinal,
+        runtime_session_id,
+        runtime_job_id,
+        runtime_run_id,
+        resumed_from_run_id: None,
+        parent_session_id: None,
+        fork_point_run_id: None,
+        fork_point_seq: None,
+        session_created_at: session.created_at.clone(),
+        bound_at: now_rfc3339(),
+    }
+}
+
+/// The store input for a session's records, built by the production grouping
+/// path rather than a test-local copy of it, so these tests cover the real
+/// on-disk-to-store translation.
+fn store_input(
+    records: &[crate::product::ownership::ProductRunOwnership],
+) -> crate::product::RecoverProductSessionOwnership {
+    crate::product::ownership::to_store_input(records.to_vec())
+        .expect("a non-empty record group always yields a store input")
+}
+
+#[tokio::test]
+async fn a_deleted_catalog_recovers_its_sessions_from_run_ownership_records() {
+    let temp = TempDir::new().unwrap();
+    let store = open_store(&temp);
+    let (workspace, session) = create_workspace_and_session(&store, &temp).await;
+    let claim = store.claim_session_turn(&session.id).await.unwrap();
+    let runtime_session_id = SessionId::new();
+    let runtime_job_id = JobId::new();
+    let runtime_run_id = RunId::new();
+    let binding = store
+        .commit_run_binding(CommitProductRunBinding {
+            claim_id: claim.claim_id.clone(),
+            product_session_id: session.id.clone(),
+            runtime_session_id,
+            runtime_job_id,
+            runtime_run_id,
+            resumed_from_run_id: None,
+            followup_control_id: None,
+            model_config: claim.model_config.clone(),
+            run_model_snapshot: None,
+        })
+        .await
+        .unwrap();
+    store
+        .finish_session_turn(&claim.claim_id, ProductSessionStatus::Idle)
+        .await
+        .unwrap();
+    let ownership = ownership_for(
+        &workspace,
+        &session,
+        binding.ordinal,
+        runtime_session_id,
+        runtime_job_id,
+        runtime_run_id,
+    );
+    drop(store);
+
+    // The catalog is gone; only the run directories remain.
+    fs::remove_file(temp.path().join("product.sqlite")).unwrap();
+    let recovered_store = open_store(&temp);
+    assert!(
+        recovered_store.list_workspaces().await.unwrap().is_empty(),
+        "a fresh catalog must not already know the workspace"
+    );
+
+    assert_eq!(
+        recovered_store
+            .recover_session_ownership(store_input(&[ownership]))
+            .await
+            .unwrap(),
+        ProductSessionRecovery::Recovered { runs: 1 },
+        "recovering into an empty catalog must report the run it put back"
+    );
+
+    let sessions = recovered_store
+        .list_sessions(&workspace.id)
+        .await
+        .expect("the workspace must come back with the session it owned");
+    assert_eq!(sessions.len(), 1);
+    let restored = &sessions[0];
+    assert_eq!(restored.id, session.id, "the session keeps its identity");
+    assert_eq!(restored.title, session.title);
+    assert_eq!(
+        restored.created_at, session.created_at,
+        "a recovered session sorts where it always did"
+    );
+    assert_eq!(
+        restored.status,
+        ProductSessionStatus::Idle,
+        "a recovered session must not claim to be running a process that is gone"
+    );
+    let runtime_binding = restored
+        .runtime_binding
+        .as_ref()
+        .expect("the latest run binding must come back too");
+    assert_eq!(runtime_binding.ordinal, binding.ordinal);
+    assert_eq!(runtime_binding.latest_run_id, runtime_run_id);
+    assert_eq!(runtime_binding.runtime_session_id, runtime_session_id);
+    assert_eq!(runtime_binding.latest_job_id, runtime_job_id);
+
+    // The recovered session must be usable, not just visible: this is the write
+    // that fails if any owner row or the model config went missing. Continuing
+    // the chain reuses the recovered runtime session and job, so it also proves
+    // the recovered ownership rows are the ones the resume check reads.
+    let next_claim = recovered_store
+        .claim_session_turn(&session.id)
+        .await
+        .expect("a recovered session must accept a new turn");
+    let next_binding = recovered_store
+        .commit_run_binding(CommitProductRunBinding {
+            claim_id: next_claim.claim_id.clone(),
+            product_session_id: session.id.clone(),
+            runtime_session_id,
+            runtime_job_id,
+            runtime_run_id: RunId::new(),
+            resumed_from_run_id: Some(runtime_run_id),
+            followup_control_id: None,
+            model_config: next_claim.model_config.clone(),
+            run_model_snapshot: None,
+        })
+        .await
+        .expect("the recovered binding chain must extend");
+    assert_eq!(
+        next_binding.ordinal,
+        binding.ordinal + 1,
+        "the next run continues the recovered ordinal rather than restarting at 1"
+    );
+}
+
+#[tokio::test]
+async fn recovery_leaves_a_catalog_that_still_knows_the_session_untouched() {
+    let temp = TempDir::new().unwrap();
+    let store = open_store(&temp);
+    let (workspace, session) = create_workspace_and_session(&store, &temp).await;
+    let claim = store.claim_session_turn(&session.id).await.unwrap();
+    let runtime_session_id = SessionId::new();
+    let runtime_job_id = JobId::new();
+    let runtime_run_id = RunId::new();
+    let binding = store
+        .commit_run_binding(CommitProductRunBinding {
+            claim_id: claim.claim_id.clone(),
+            product_session_id: session.id.clone(),
+            runtime_session_id,
+            runtime_job_id,
+            runtime_run_id,
+            resumed_from_run_id: None,
+            followup_control_id: None,
+            model_config: claim.model_config.clone(),
+            run_model_snapshot: None,
+        })
+        .await
+        .unwrap();
+    store
+        .finish_session_turn(&claim.claim_id, ProductSessionStatus::NeedsAttention)
+        .await
+        .unwrap();
+    store
+        .update_session(
+            &session.id,
+            crate::product::UpdateProductSessionRequest {
+                title: Some("Renamed after the run".to_string()),
+                archived: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let mut ownership = ownership_for(
+        &workspace,
+        &session,
+        binding.ordinal,
+        runtime_session_id,
+        runtime_job_id,
+        runtime_run_id,
+    );
+    // The record carries the title as it was at bind time — stale on purpose.
+    ownership.session_title = "Test session".to_string();
+    assert_eq!(
+        store
+            .recover_session_ownership(store_input(&[ownership]))
+            .await
+            .unwrap(),
+        ProductSessionRecovery::AlreadyPresent,
+        "a session the catalog still knows must be reported as already present"
+    );
+
+    let sessions = store.list_sessions(&workspace.id).await.unwrap();
+    assert_eq!(sessions.len(), 1, "recovery must not duplicate the session");
+    assert_eq!(
+        sessions[0].title, "Renamed after the run",
+        "the live title wins over the one the record froze"
+    );
+    assert_eq!(
+        sessions[0].status,
+        ProductSessionStatus::NeedsAttention,
+        "recovery must not reset a status the catalog already knows"
+    );
+    let workspaces = store.list_workspaces().await.unwrap();
+    assert_eq!(
+        workspaces.len(),
+        1,
+        "the workspace must be matched by canonical key, not re-registered"
+    );
+}
+
+#[tokio::test]
+async fn recovering_several_runs_points_the_session_at_its_highest_ordinal() {
+    let temp = TempDir::new().unwrap();
+    let store = open_store(&temp);
+    let (workspace, session) = create_workspace_and_session(&store, &temp).await;
+    let mut records: Vec<crate::product::ownership::ProductRunOwnership> = Vec::new();
+    // A continued session keeps its runtime session and job across runs and
+    // advances only the run id, which is what the store's chain check enforces.
+    let runtime_session_id = SessionId::new();
+    let runtime_job_id = JobId::new();
+    for ordinal in 1..=3u64 {
+        let claim = store.claim_session_turn(&session.id).await.unwrap();
+        let runtime_run_id = RunId::new();
+        let previous_run_id = records.last().map(|previous| previous.runtime_run_id);
+        let binding = store
+            .commit_run_binding(CommitProductRunBinding {
+                claim_id: claim.claim_id.clone(),
+                product_session_id: session.id.clone(),
+                runtime_session_id,
+                runtime_job_id,
+                runtime_run_id,
+                resumed_from_run_id: previous_run_id,
+                followup_control_id: None,
+                model_config: claim.model_config.clone(),
+                run_model_snapshot: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(binding.ordinal, ordinal);
+        store
+            .finish_session_turn(&claim.claim_id, ProductSessionStatus::Idle)
+            .await
+            .unwrap();
+        records.push(ownership_for(
+            &workspace,
+            &session,
+            binding.ordinal,
+            runtime_session_id,
+            runtime_job_id,
+            runtime_run_id,
+        ));
+    }
+    let last_run_id = records[2].runtime_run_id;
+    drop(store);
+
+    fs::remove_file(temp.path().join("product.sqlite")).unwrap();
+    let recovered_store = open_store(&temp);
+    // Deliberately shuffled: a directory listing has no ordering guarantee, so
+    // the order records are read in must not decide which run is newest.
+    let shuffled = vec![records[2].clone(), records[0].clone(), records[1].clone()];
+    assert_eq!(
+        recovered_store
+            .recover_session_ownership(store_input(&shuffled))
+            .await
+            .unwrap(),
+        ProductSessionRecovery::Recovered { runs: 3 }
+    );
+
+    let bindings = recovered_store
+        .list_run_bindings(&session.id)
+        .await
+        .unwrap();
+    assert_eq!(bindings.len(), 3, "every run must come back");
+    assert_eq!(
+        bindings
+            .iter()
+            .map(|binding| binding.ordinal)
+            .collect::<Vec<_>>(),
+        vec![1, 2, 3],
+        "ordinals must be contiguous and in order"
+    );
+    let restored = recovered_store
+        .list_sessions(&workspace.id)
+        .await
+        .unwrap()
+        .into_iter()
+        .next()
+        .unwrap();
+    let runtime_binding = restored.runtime_binding.expect("a latest binding");
+    assert_eq!(runtime_binding.ordinal, 3);
+    assert_eq!(
+        runtime_binding.latest_run_id, last_run_id,
+        "the newest run by ordinal is the session's latest, regardless of read order"
+    );
+    // Chain-shaped, not just row-shaped: each recovered run must resume the one
+    // before it, which is what makes the session readable at all.
+    assert_eq!(bindings[0].resumed_from_run_id, None);
+    assert_eq!(
+        bindings[1].resumed_from_run_id,
+        Some(bindings[0].runtime_run_id)
+    );
+    assert_eq!(
+        bindings[2].resumed_from_run_id,
+        Some(bindings[1].runtime_run_id)
+    );
+}
+
+/// A lost record must cost only its own run, not the whole session.
+///
+/// Every read of a session's bindings requires ordinals contiguous from 1, so
+/// recovery renumbers what it has rather than preserving the recorded ordinals.
+/// The alternative — honouring the gap — produces a session whose rows exist but
+/// whose every read fails.
+#[tokio::test]
+async fn a_missing_ownership_record_renumbers_the_chain_instead_of_leaving_a_hole() {
+    let temp = TempDir::new().unwrap();
+    let store = open_store(&temp);
+    let (workspace, session) = create_workspace_and_session(&store, &temp).await;
+    let runtime_session_id = SessionId::new();
+    let runtime_job_id = JobId::new();
+    let mut records: Vec<crate::product::ownership::ProductRunOwnership> = Vec::new();
+    for _ in 1..=3u64 {
+        let claim = store.claim_session_turn(&session.id).await.unwrap();
+        let runtime_run_id = RunId::new();
+        let binding = store
+            .commit_run_binding(CommitProductRunBinding {
+                claim_id: claim.claim_id.clone(),
+                product_session_id: session.id.clone(),
+                runtime_session_id,
+                runtime_job_id,
+                runtime_run_id,
+                resumed_from_run_id: records.last().map(|previous| previous.runtime_run_id),
+                followup_control_id: None,
+                model_config: claim.model_config.clone(),
+                run_model_snapshot: None,
+            })
+            .await
+            .unwrap();
+        store
+            .finish_session_turn(&claim.claim_id, ProductSessionStatus::Idle)
+            .await
+            .unwrap();
+        records.push(ownership_for(
+            &workspace,
+            &session,
+            binding.ordinal,
+            runtime_session_id,
+            runtime_job_id,
+            runtime_run_id,
+        ));
+    }
+    let first_run_id = records[0].runtime_run_id;
+    let last_run_id = records[2].runtime_run_id;
+    drop(store);
+
+    // The middle run directory was deleted, so only ordinals 1 and 3 survive.
+    fs::remove_file(temp.path().join("product.sqlite")).unwrap();
+    let recovered_store = open_store(&temp);
+    let surviving = vec![records[0].clone(), records[2].clone()];
+    assert_eq!(
+        recovered_store
+            .recover_session_ownership(store_input(&surviving))
+            .await
+            .unwrap(),
+        ProductSessionRecovery::Recovered { runs: 2 }
+    );
+
+    let bindings = recovered_store
+        .list_run_bindings(&session.id)
+        .await
+        .expect("a session recovered around a gap must still be readable");
+    assert_eq!(
+        bindings
+            .iter()
+            .map(|binding| binding.ordinal)
+            .collect::<Vec<_>>(),
+        vec![1, 2],
+        "the surviving runs are renumbered from 1 rather than keeping 1 and 3"
+    );
+    assert_eq!(bindings[0].runtime_run_id, first_run_id);
+    assert_eq!(
+        bindings[1].runtime_run_id, last_run_id,
+        "renumbering must not reorder the runs it kept"
+    );
+    assert_eq!(bindings[1].resumed_from_run_id, Some(first_run_id));
+
+    // Usable, not merely readable: the chain the resume check reads must accept
+    // the next turn.
+    let claim = recovered_store
+        .claim_session_turn(&session.id)
+        .await
+        .unwrap();
+    let next = recovered_store
+        .commit_run_binding(CommitProductRunBinding {
+            claim_id: claim.claim_id.clone(),
+            product_session_id: session.id.clone(),
+            runtime_session_id,
+            runtime_job_id,
+            runtime_run_id: RunId::new(),
+            resumed_from_run_id: Some(last_run_id),
+            followup_control_id: None,
+            model_config: claim.model_config.clone(),
+            run_model_snapshot: None,
+        })
+        .await
+        .expect("a renumbered chain must extend");
+    assert_eq!(next.ordinal, 3, "the next run follows the renumbered chain");
+}
+
+#[tokio::test]
+async fn a_run_already_bound_to_another_session_is_not_stolen_by_a_stale_record() {
+    let temp = TempDir::new().unwrap();
+    let store = open_store(&temp);
+    let (workspace, session) = create_workspace_and_session(&store, &temp).await;
+    let claim = store.claim_session_turn(&session.id).await.unwrap();
+    let runtime_session_id = SessionId::new();
+    let runtime_job_id = JobId::new();
+    let runtime_run_id = RunId::new();
+    let binding = store
+        .commit_run_binding(CommitProductRunBinding {
+            claim_id: claim.claim_id.clone(),
+            product_session_id: session.id.clone(),
+            runtime_session_id,
+            runtime_job_id,
+            runtime_run_id,
+            resumed_from_run_id: None,
+            followup_control_id: None,
+            model_config: claim.model_config.clone(),
+            run_model_snapshot: None,
+        })
+        .await
+        .unwrap();
+    store
+        .finish_session_turn(&claim.claim_id, ProductSessionStatus::Idle)
+        .await
+        .unwrap();
+
+    // A second session claims the same run — the shape a stale ownership file
+    // takes after the run was rebound.
+    let other = store
+        .create_session(CreateProductSessionRequest {
+            workspace_id: workspace.id.clone(),
+            title: Some("Other session".to_string()),
+        })
+        .await
+        .unwrap();
+    let stale = ownership_for(
+        &workspace,
+        &other,
+        binding.ordinal,
+        runtime_session_id,
+        runtime_job_id,
+        runtime_run_id,
+    );
+
+    // The other session exists in the catalog, so recovery leaves it alone.
+    assert_eq!(
+        store
+            .recover_session_ownership(store_input(std::slice::from_ref(&stale)))
+            .await
+            .expect("a stale record must be skipped, not fail the sweep"),
+        ProductSessionRecovery::AlreadyPresent
+    );
+
+    // The harder case: the other session is gone from the catalog too, so
+    // recovery would create it — and the run it claims is the live one.
+    store.delete_session(&other.id).await.unwrap();
+    assert_eq!(
+        store
+            .recover_session_ownership(store_input(&[stale]))
+            .await
+            .expect("a stale record must be skipped, not fail the sweep"),
+        ProductSessionRecovery::Skipped,
+        "a session whose only run belongs to someone else cannot be recovered"
+    );
+
+    let owner_bindings = store.list_run_bindings(&session.id).await.unwrap();
+    assert_eq!(owner_bindings.len(), 1);
+    assert_eq!(
+        owner_bindings[0].runtime_run_id, runtime_run_id,
+        "the original owner keeps the run"
+    );
+    assert_eq!(
+        store.list_sessions(&workspace.id).await.unwrap().len(),
+        1,
+        "a skipped session must leave no half-built row behind"
+    );
+}
+
+#[test]
+fn an_ownership_record_survives_a_write_and_read_round_trip() {
+    let temp = TempDir::new().unwrap();
+    let run_dir = temp.path().join("runs").join(RunId::new().to_string());
+    fs::create_dir_all(&run_dir).unwrap();
+    assert!(
+        crate::product::ownership::read_ownership(&run_dir).is_none(),
+        "a run directory with no record reads as absent, not as an error"
+    );
+
+    let ownership = crate::product::ownership::ProductRunOwnership {
+        product_session_id: crate::product::ProductSessionId::new(),
+        workspace_id: crate::product::ProductWorkspaceId::new(),
+        workspace_root: temp.path().join("workspace"),
+        workspace_kind: ProductWorkspaceKind::Repo,
+        workspace_display_name: "Some workspace".to_string(),
+        session_title: "Some session".to_string(),
+        ordinal: 7,
+        runtime_session_id: SessionId::new(),
+        runtime_job_id: JobId::new(),
+        runtime_run_id: RunId::new(),
+        resumed_from_run_id: Some(RunId::new()),
+        parent_session_id: None,
+        fork_point_run_id: None,
+        fork_point_seq: None,
+        session_created_at: now_rfc3339(),
+        bound_at: now_rfc3339(),
+    };
+    crate::product::ownership::write_ownership(&run_dir, &ownership).unwrap();
+    assert_eq!(
+        crate::product::ownership::read_ownership(&run_dir).as_ref(),
+        Some(&ownership)
+    );
+    assert!(
+        !run_dir
+            .join(format!(
+                "{}.tmp",
+                crate::product::ownership::OWNERSHIP_FILE_NAME
+            ))
+            .exists(),
+        "the atomic write must not leave its temp file behind"
+    );
+
+    // A rebind rewrites the record rather than keeping the first one.
+    let mut rebound = ownership.clone();
+    rebound.ordinal = 8;
+    rebound.session_title = "Renamed session".to_string();
+    crate::product::ownership::write_ownership(&run_dir, &rebound).unwrap();
+    let read_back = crate::product::ownership::read_ownership(&run_dir).unwrap();
+    assert_eq!(read_back.ordinal, 8);
+    assert_eq!(read_back.session_title, "Renamed session");
+
+    // A corrupt record is skipped with a warning, never a panic: one unreadable
+    // run must not cost the sweep every other session.
+    fs::write(
+        crate::product::ownership::ownership_path(&run_dir),
+        b"{ not json",
+    )
+    .unwrap();
+    assert!(crate::product::ownership::read_ownership(&run_dir).is_none());
+}
+
+#[test]
+fn collected_records_are_ordered_by_session_then_ordinal() {
+    let temp = TempDir::new().unwrap();
+    let runs_dir = temp.path().join("runs");
+    let session_a = crate::product::ProductSessionId::new();
+    let session_b = crate::product::ProductSessionId::new();
+    let (first, second) = if session_a.to_string() < session_b.to_string() {
+        (session_a, session_b)
+    } else {
+        (session_b, session_a)
+    };
+    let workspace_id = crate::product::ProductWorkspaceId::new();
+    // Written in an order that does not match the expected one, so the sort is
+    // what produces the result rather than the filesystem happening to agree.
+    for (session_id, ordinal) in [
+        (second.clone(), 2u64),
+        (first.clone(), 3),
+        (second.clone(), 1),
+        (first.clone(), 1),
+    ] {
+        let run_dir = runs_dir.join(RunId::new().to_string());
+        fs::create_dir_all(&run_dir).unwrap();
+        crate::product::ownership::write_ownership(
+            &run_dir,
+            &crate::product::ownership::ProductRunOwnership {
+                product_session_id: session_id,
+                workspace_id: workspace_id.clone(),
+                workspace_root: temp.path().join("workspace"),
+                workspace_kind: ProductWorkspaceKind::Folder,
+                workspace_display_name: "Workspace".to_string(),
+                session_title: "Session".to_string(),
+                ordinal,
+                runtime_session_id: SessionId::new(),
+                runtime_job_id: JobId::new(),
+                runtime_run_id: RunId::new(),
+                resumed_from_run_id: None,
+                parent_session_id: None,
+                fork_point_run_id: None,
+                fork_point_seq: None,
+                session_created_at: now_rfc3339(),
+                bound_at: now_rfc3339(),
+            },
+        )
+        .unwrap();
+    }
+    // A directory with no record at all must not appear in the result.
+    fs::create_dir_all(runs_dir.join(RunId::new().to_string())).unwrap();
+
+    let collected = crate::product::ownership::collect_ownership(&runs_dir);
+    assert_eq!(
+        collected
+            .iter()
+            .map(|record| (record.product_session_id.to_string(), record.ordinal))
+            .collect::<Vec<_>>(),
+        vec![
+            (first.to_string(), 1),
+            (first.to_string(), 3),
+            (second.to_string(), 1),
+            (second.to_string(), 2),
+        ]
+    );
+    assert!(
+        crate::product::ownership::collect_ownership(&temp.path().join("absent")).is_empty(),
+        "a missing runs directory yields nothing rather than failing"
+    );
+}
+
+/// A session can be renamed between runs, so its records disagree. The newest
+/// one is the closest thing on disk to current truth.
+#[test]
+fn grouping_records_takes_session_fields_from_the_newest_run() {
+    let temp = TempDir::new().unwrap();
+    let session_id = crate::product::ProductSessionId::new();
+    let workspace_id = crate::product::ProductWorkspaceId::new();
+    let runtime_session_id = SessionId::new();
+    let runtime_job_id = JobId::new();
+    let record = |ordinal: u64, title: &str, created_at: &str| {
+        crate::product::ownership::ProductRunOwnership {
+            product_session_id: session_id.clone(),
+            workspace_id: workspace_id.clone(),
+            workspace_root: temp.path().join("workspace"),
+            workspace_kind: ProductWorkspaceKind::Repo,
+            workspace_display_name: "Workspace".to_string(),
+            session_title: title.to_string(),
+            ordinal,
+            runtime_session_id,
+            runtime_job_id,
+            runtime_run_id: RunId::new(),
+            resumed_from_run_id: None,
+            parent_session_id: None,
+            fork_point_run_id: None,
+            fork_point_seq: None,
+            session_created_at: created_at.to_string(),
+            bound_at: now_rfc3339(),
+        }
+    };
+    // Newest first, so ordering is what decides rather than position.
+    let input = crate::product::ownership::to_store_input(vec![
+        record(2, "Renamed later", "2026-01-02T00:00:00Z"),
+        record(1, "Original name", "2026-01-01T00:00:00Z"),
+    ])
+    .expect("a non-empty group yields an input");
+
+    assert_eq!(input.session_title, "Renamed later");
+    assert_eq!(
+        input.session_created_at, "2026-01-01T00:00:00Z",
+        "creation time comes from the first binding, which is the one that saw it"
+    );
+    assert_eq!(
+        input
+            .runs
+            .iter()
+            .map(|run| run.recorded_ordinal)
+            .collect::<Vec<_>>(),
+        vec![1, 2],
+        "runs are handed to the store oldest first"
+    );
+    assert_eq!(
+        input.status,
+        ProductSessionStatus::Idle,
+        "a recovered session never claims to be running"
+    );
+    assert_eq!(
+        input.canonical_key,
+        super::canonical_workspace_key(&temp.path().join("workspace").to_string_lossy()),
+        "the canonical key is derived the way the create path derives it"
+    );
+    assert!(
+        crate::product::ownership::to_store_input(Vec::new()).is_none(),
+        "an empty group has nothing to recover"
+    );
 }

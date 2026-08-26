@@ -2368,6 +2368,11 @@ async fn repair_index_rebuilds_events_and_report_from_artifacts() {
     assert_eq!(indexed_events[0].event_name, "run_started");
     assert_eq!(indexed_events[1].event_name, "step_result");
     assert_eq!(indexed_events[2].event_name, "run_completed");
+    // The identity header (Codex alignment Phase 5) sits below every event at
+    // `RUN_META_SEQ`, so a rebuild still lands the three events on 1..=3 and the
+    // high-water mark still stops at their count.
+    assert_eq!(indexed_events[0].seq, 1);
+    assert_eq!(indexed_events[2].seq, 3);
     assert_eq!(store.index.last_event_seq(run_id).unwrap(), 3);
     let indexed_run = store.index.run_record(run_id).unwrap().unwrap();
     assert_eq!(indexed_run.status, "done");
@@ -2426,6 +2431,123 @@ async fn repair_index_reports_corrupted_trace_lines_without_aborting() {
     let indexed_events = store.index.event_records(run_id).unwrap();
     assert_eq!(indexed_events.len(), 1);
     assert_eq!(indexed_events[0].event_name, "run_started");
+}
+
+/// Codex alignment Phase 5: a run that died before its first checkpoint has a
+/// trace and nothing else. Rebuilding the index must still take it, and must
+/// not let it abort the whole repair — otherwise one crashed run makes every
+/// other session unrecoverable after the index is deleted.
+#[tokio::test]
+async fn repair_index_recovers_a_run_that_never_wrote_a_task_state() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let store = StateStore::new(tmp.path());
+
+    // A healthy run, so the assertion can tell "took everything" apart from
+    // "aborted at the broken one and happened to have nothing left to do".
+    let healthy_session = SessionId::new();
+    let healthy_job = JobId::new();
+    let healthy_run = RunId::new();
+    let healthy = store
+        .start_run(healthy_session, healthy_job, healthy_run)
+        .unwrap();
+    healthy
+        .trace_writer
+        .append(&StreamEvent::RunStarted {
+            run_id: healthy_run,
+            job_id: healthy_job,
+            user_message: "healthy".to_string(),
+        })
+        .unwrap();
+    let healthy_state = TaskState {
+        schema_version: 1,
+        session_id: healthy_session,
+        job_id: healthy_job,
+        run_id: healthy_run,
+        goal: "healthy".to_string(),
+        step: 1,
+        history: vec![user_message("healthy")],
+        summary: None,
+        checkpoint: None,
+        plan: None,
+        runtime_identity: None,
+        agent_profile: None,
+        step_ledger: Default::default(),
+        execution_lifecycle: Default::default(),
+    };
+    store.write_task_state(&healthy_state).await.unwrap();
+
+    // The crashed run: a trace on disk, no task_state.json beside it.
+    let orphan_session = SessionId::new();
+    let orphan_job = JobId::new();
+    let orphan_run = RunId::new();
+    // Written through the real writer, so the fixture is the file a genuine
+    // run leaves behind rather than a hand-rolled approximation.
+    let orphan = store
+        .start_run(orphan_session, orphan_job, orphan_run)
+        .unwrap();
+    orphan
+        .trace_writer
+        .append(&StreamEvent::RunStarted {
+            run_id: orphan_run,
+            job_id: orphan_job,
+            user_message: "crashed before checkpoint".to_string(),
+        })
+        .unwrap();
+    let orphan_dir = tmp.path().join("runs").join(orphan_run.to_string());
+    assert!(
+        !orphan_dir.join("task_state.json").exists(),
+        "the fixture must model a run with no snapshot at all"
+    );
+
+    std::fs::remove_file(store.index.path()).unwrap();
+
+    let repaired = store
+        .repair_index()
+        .await
+        .expect("one snapshot-less run must not abort the whole repair");
+
+    assert_eq!(
+        repaired.task_state_count, 1,
+        "only the healthy run has a snapshot to import"
+    );
+    assert!(
+        store.index.run_record(healthy_run).unwrap().is_some(),
+        "the healthy run must be recovered"
+    );
+    assert_eq!(
+        store.index.event_records(healthy_run).unwrap().len(),
+        1,
+        "the healthy run's events must be recovered"
+    );
+
+    // The crashed run is the point of the test: its trace is the only record
+    // that it ever existed, so the rebuilt index has to carry it.
+    let orphan_record = store
+        .index
+        .run_record(orphan_run)
+        .unwrap()
+        .expect("a run known only by its trace must still be indexed");
+    assert_eq!(
+        orphan_record.session_id, orphan_session,
+        "the owning session must come back from the trace's identity header"
+    );
+    assert_eq!(orphan_record.job_id, orphan_job);
+    assert_eq!(
+        orphan_record.status, "interrupted",
+        "a run recovered from its trace alone did not finish, and must not be \
+         reported as still running"
+    );
+    let orphan_events = store.index.event_records(orphan_run).unwrap();
+    assert_eq!(
+        orphan_events.len(),
+        1,
+        "the crashed run's trace events must be recovered"
+    );
+    assert_eq!(orphan_events[0].event_name, "run_started");
+    assert_eq!(
+        repaired.event_count, 2,
+        "both runs' events must be counted by the repair"
+    );
 }
 
 #[tokio::test]
@@ -2549,6 +2671,57 @@ fn trace_writer_indexes_appended_events() {
     assert_eq!(store.index.last_event_seq(run_id).unwrap(), 2);
     let run = store.index.run_record(run_id).unwrap().unwrap();
     assert_eq!(run.last_event_seq, 2);
+}
+
+/// Codex alignment Phase 5: the identity header must not shift the event stream.
+///
+/// `GET /jobs/:id/events?after=N` and SSE `Last-Event-ID` are keyed on the first
+/// event of a run being seq 1, so a header that drew from the event counter
+/// would push `run_started` to 2 and replay it to every client that had already
+/// acknowledged event 1. This pins the header below the stream instead.
+#[test]
+fn the_run_identity_header_takes_no_event_sequence() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let store = StateStore::new(tmp.path());
+    let session_id = SessionId::new();
+    let job_id = JobId::new();
+    let run_id = RunId::new();
+    let handle = store.start_run(session_id, job_id, run_id).unwrap();
+    handle
+        .trace_writer
+        .append(&StreamEvent::RunStarted {
+            run_id,
+            job_id,
+            user_message: "first".to_string(),
+        })
+        .unwrap();
+
+    // Read the file, not the index: the index never holds the header, so only
+    // the trace can show where it sits relative to the first event.
+    let lines: Vec<serde_json::Value> = std::fs::read_to_string(
+        tmp.path()
+            .join("runs")
+            .join(run_id.to_string())
+            .join("trace.jsonl"),
+    )
+    .unwrap()
+    .lines()
+    .map(|line| serde_json::from_str(line).unwrap())
+    .collect();
+    assert_eq!(lines.len(), 2, "one header line, then one event line");
+    assert_eq!(
+        lines[0]["seq"], 0,
+        "the header must sit at the sequence no event can occupy"
+    );
+    assert_eq!(lines[0]["event"]["meta"], "run_identity");
+    assert_eq!(
+        lines[1]["seq"], 1,
+        "the first event must still be seq 1, whatever precedes it in the file"
+    );
+
+    // And the header must not have advanced the durable high-water mark either,
+    // or a writer restart would skip a sequence the stream still needs.
+    assert_eq!(store.index.last_event_seq(run_id).unwrap(), 1);
 }
 
 #[tokio::test]
@@ -5933,6 +6106,12 @@ async fn trace_writer_records_events() {
                 let json = serde_json::to_value(link).unwrap();
                 assert!(json.get("link").is_some());
             }
+            // Codex alignment Phase 5: the run's identity header, tagged by
+            // `meta` — disjoint from `type`/`kind`/`link`.
+            rove_runtime::foundation::TraceEntry::Meta(meta) => {
+                let json = serde_json::to_value(meta).unwrap();
+                assert!(json.get("meta").is_some());
+            }
         }
     }
 
@@ -6062,13 +6241,10 @@ async fn a_resumed_run_recovers_its_history_from_the_trace_when_the_snapshot_is_
 
     // The successor's own trace must name what it continues, so the chain can
     // be walked later without consulting SQLite.
-    let successor_trace =
-        std::fs::read_to_string(successor.run_dir.join("trace.jsonl")).unwrap();
+    let successor_trace = std::fs::read_to_string(successor.run_dir.join("trace.jsonl")).unwrap();
     let link = successor_trace
         .lines()
-        .filter_map(|line| {
-            serde_json::from_str::<rove_runtime::state::trace::TraceLine>(line).ok()
-        })
+        .filter_map(|line| serde_json::from_str::<rove_runtime::state::trace::TraceLine>(line).ok())
         .find_map(|parsed| match parsed.event {
             rove_runtime::foundation::TraceEntry::Link(link) => Some(link),
             _ => None,
@@ -6109,7 +6285,10 @@ async fn a_resumed_run_recovers_its_history_from_the_trace_when_the_snapshot_is_
         .iter()
         .position(|content| content == "SUCCESSOR_QUESTION_GAMMA")
         .expect("the chain lost the successor question");
-    assert!(alpha < gamma, "the chain replayed out of order: {replayed:?}");
+    assert!(
+        alpha < gamma,
+        "the chain replayed out of order: {replayed:?}"
+    );
 }
 
 /// Model client that emits a native tool call on the first invocation, then

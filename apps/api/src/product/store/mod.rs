@@ -8,6 +8,8 @@ mod repository;
 mod schema;
 mod validation;
 
+pub(crate) use validation::canonical_workspace_key;
+
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -23,12 +25,12 @@ use crate::product::{
     ProductMessagePageQuery, ProductPreferences, ProductProviderProfile, ProductProviderProfileId,
     ProductResumeHealth, ProductReview, ProductReviewFindingsQuery, ProductReviewFindingsResponse,
     ProductReviewId, ProductSession, ProductSessionContext, ProductSessionId,
-    ProductSessionModelConfig, ProductSessionRunBinding, ProductSessionRunModelView,
-    ProductSessionStatus, ProductStore, ProductStoreError, ProductTurnClaim, ProductTurnClaimId,
-    ProductTurnControlFinish, ProductWorkspace, ProductWorkspaceId,
-    UpdateProductPreferencesRequest, UpdateProductProviderProfileRequest,
-    UpdateProductSessionModelConfigRequest, UpdateProductSessionRequest,
-    VerifiedProductForkBoundary,
+    ProductSessionModelConfig, ProductSessionRecovery, ProductSessionRunBinding,
+    ProductSessionRunModelView, ProductSessionStatus, ProductStore, ProductStoreError,
+    ProductTurnClaim, ProductTurnClaimId, ProductTurnControlFinish, ProductWorkspace,
+    ProductWorkspaceId, RecoverProductSessionOwnership, UpdateProductPreferencesRequest,
+    UpdateProductProviderProfileRequest, UpdateProductSessionModelConfigRequest,
+    UpdateProductSessionRequest, VerifiedProductForkBoundary,
 };
 use rove_runtime::types::RunId;
 
@@ -326,6 +328,14 @@ impl ProductStore for SqliteProductStore {
         binding: CommitProductRunBinding,
     ) -> Result<ProductSessionRunBinding, ProductStoreError> {
         self.blocking(move |repository| repository.commit_run_binding(binding))
+            .await
+    }
+
+    async fn recover_session_ownership(
+        &self,
+        ownership: RecoverProductSessionOwnership,
+    ) -> Result<ProductSessionRecovery, ProductStoreError> {
+        self.blocking(move |repository| repository.recover_session_ownership(&ownership))
             .await
     }
 

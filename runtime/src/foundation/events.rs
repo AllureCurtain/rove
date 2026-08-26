@@ -8,7 +8,9 @@ use crate::execution::{
     ProcedureDeviation, StepAttempt, StepRecord,
 };
 use crate::prompt_metadata::PromptBuildMetadata;
-use crate::types::{JobId, PlanStep, PromptCompactionState, RunId, TaskPlan, TerminationReason};
+use crate::types::{
+    JobId, PlanStep, PromptCompactionState, RunId, SessionId, TaskPlan, TerminationReason,
+};
 use rove_core::{CallId, ToolArtifactRef, ToolError, ToolExecutionMetadata, ToolResult};
 use rove_models::{AssistantTurn, ToolCallRef, Usage};
 
@@ -331,6 +333,32 @@ pub enum TraceEntry {
     /// Last in the untagged order because its `link` tag is the narrowest of
     /// the three, so the two established generations are always tried first.
     Link(TraceLink),
+    /// Run identity, written once as the trace's first line.
+    ///
+    /// Ordered after the three established generations so no existing line can
+    /// be captured by it; its `meta` tag is disjoint from `kind`/`type`/`link`.
+    Meta(RunMeta),
+}
+
+/// The identity a run directory needs to describe itself (Codex `SessionMeta`).
+///
+/// `StreamEvent::RunStarted` carries only `run_id` and `job_id`, and nothing
+/// else on disk records the owning session — so a run whose process died
+/// before its first `task_state.json` was unrecoverable from the filesystem
+/// alone: rebuilding the index could not satisfy the `runs.session_id` foreign
+/// key. Writing identity as the trace's first line closes that gap and makes
+/// the file, not SQLite, the place a run's identity lives.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "meta", rename_all = "snake_case")]
+pub enum RunMeta {
+    /// Opening line: which run this file belongs to, and who owns it.
+    RunIdentity {
+        session_id: SessionId,
+        job_id: JobId,
+        run_id: RunId,
+        /// RFC3339 UTC time the run directory was opened.
+        started_at: String,
+    },
 }
 
 /// Records that a run's history begins where another run's history ended.
