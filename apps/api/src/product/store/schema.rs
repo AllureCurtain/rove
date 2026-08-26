@@ -535,7 +535,7 @@ impl ProductDatabase {
 
     pub(super) fn initialize(&self) -> Result<(), ProductStoreError> {
         let mut connection = self.open_connection(true)?;
-        apply_migrations(&mut connection)
+        apply_migrations(&mut connection, self.path.as_ref())
     }
 
     pub(super) fn connect(&self) -> Result<Connection, ProductStoreError> {
@@ -572,7 +572,18 @@ impl ProductDatabase {
     }
 }
 
-fn apply_migrations(connection: &mut Connection) -> Result<(), ProductStoreError> {
+/// Bring the product store up to [`CURRENT_SCHEMA_VERSION`].
+///
+/// Each migration already commits inside an `IMMEDIATE` transaction, which
+/// makes any single step atomic. What that does not cover is the *sequence*:
+/// two processes starting together could interleave steps, so a peer could
+/// observe a schema that is half-way between two versions. The cross-process
+/// barrier closes that window, and is taken only when work is actually pending
+/// so the already-current startup path does no locking.
+fn apply_migrations(
+    connection: &mut Connection,
+    database_path: &Path,
+) -> Result<(), ProductStoreError> {
     connection
         .execute_batch(
             r#"
@@ -585,20 +596,26 @@ fn apply_migrations(connection: &mut Connection) -> Result<(), ProductStoreError
         )
         .map_err(|_| database_error(true))?;
 
-    let newest: Option<i64> = connection
-        .query_row(
-            "SELECT MAX(version) FROM product_schema_migrations",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(|_| database_error(true))?;
-    if newest.is_some_and(|version| version > CURRENT_SCHEMA_VERSION) {
-        return Err(ProductStoreError::new(
-            ProductErrorCode::ProductStoreUnavailable,
-            "product store schema is newer than this API",
-        ));
+    if product_schema_is_current(connection)? {
+        return Ok(());
     }
-    if newest == Some(CURRENT_SCHEMA_VERSION) {
+
+    let _barrier = rove_runtime::state::migration_lock::acquire_migration_lock(database_path)
+        .map_err(|error| {
+            ProductStoreError::new(
+                ProductErrorCode::ProductStoreUnavailable,
+                match error {
+                    rove_runtime::state::migration_lock::MigrationLockError::Timeout { .. } => {
+                        "another process is migrating the product store"
+                    }
+                    rove_runtime::state::migration_lock::MigrationLockError::Io { .. } => {
+                        "product store migration lock is unavailable"
+                    }
+                },
+            )
+        })?;
+    // Double-checked locking: a peer may have finished while this process waited.
+    if product_schema_is_current(connection)? {
         return Ok(());
     }
 
@@ -617,6 +634,25 @@ fn apply_migrations(connection: &mut Connection) -> Result<(), ProductStoreError
     apply_migration_013(connection)?;
     apply_migration_014(connection)?;
     Ok(())
+}
+
+/// True when the recorded version is already current. A version newer than this
+/// build is refused rather than ignored.
+fn product_schema_is_current(connection: &Connection) -> Result<bool, ProductStoreError> {
+    let newest: Option<i64> = connection
+        .query_row(
+            "SELECT MAX(version) FROM product_schema_migrations",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|_| database_error(true))?;
+    if newest.is_some_and(|version| version > CURRENT_SCHEMA_VERSION) {
+        return Err(ProductStoreError::new(
+            ProductErrorCode::ProductStoreUnavailable,
+            "product store schema is newer than this API",
+        ));
+    }
+    Ok(newest == Some(CURRENT_SCHEMA_VERSION))
 }
 
 fn migration_is_applied(connection: &Connection, version: i64) -> Result<bool, ProductStoreError> {
@@ -1159,6 +1195,17 @@ mod tests {
 
     use super::*;
 
+    /// Run the migration sequence against a connection whose barrier lives in a
+    /// throwaway directory.
+    ///
+    /// The barrier is derived from the database path, and an in-memory database
+    /// has none. Giving each call its own directory keeps these tests mutually
+    /// independent, which is what an in-memory database was chosen for.
+    fn apply_migrations_isolated(connection: &mut Connection) -> Result<(), ProductStoreError> {
+        let temp = TempDir::new().unwrap();
+        apply_migrations(connection, &temp.path().join("product.sqlite"))
+    }
+
     #[test]
     fn schema_v1_preferences_upgrade_preserves_values_and_starts_revision_at_zero() {
         let temp = TempDir::new().unwrap();
@@ -1275,7 +1322,7 @@ mod tests {
             )
             .unwrap();
 
-        let error = apply_migrations(&mut connection).unwrap_err();
+        let error = apply_migrations_isolated(&mut connection).unwrap_err();
         assert_eq!(error.code, ProductErrorCode::ProductStoreUnavailable);
         assert!(error.message.contains("newer than this API"));
         assert_eq!(
@@ -1294,7 +1341,7 @@ mod tests {
     fn fresh_database_reaches_v14_with_both_productization_contracts() {
         let mut connection = Connection::open_in_memory().unwrap();
 
-        apply_migrations(&mut connection).unwrap();
+        apply_migrations_isolated(&mut connection).unwrap();
 
         assert_integrated_v14(&connection);
     }
@@ -1324,7 +1371,7 @@ mod tests {
         );
         assert!(!table_exists(&connection, "product_reviews").unwrap());
 
-        apply_migrations(&mut connection).unwrap();
+        apply_migrations_isolated(&mut connection).unwrap();
 
         assert_integrated_v14(&connection);
         assert_eq!(
@@ -1372,7 +1419,7 @@ mod tests {
             .unwrap()
         );
 
-        apply_migrations(&mut connection).unwrap();
+        apply_migrations_isolated(&mut connection).unwrap();
 
         assert_integrated_v14(&connection);
     }
@@ -1401,7 +1448,7 @@ mod tests {
         record_parallel_v12(&connection, "unified_product_message_lifecycle");
         assert!(!table_exists(&connection, "product_provider_profile_catalog_mappings").unwrap());
 
-        apply_migrations(&mut connection).unwrap();
+        apply_migrations_isolated(&mut connection).unwrap();
 
         assert_integrated_v14(&connection);
     }

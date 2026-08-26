@@ -122,12 +122,7 @@ fn search(
         }
     }
     // Fall back to positions before the hint so out-of-order hunks still apply.
-    for offset in 0..start_at {
-        if window_matches(haystack, needle, offset, confidence) {
-            return Some(offset);
-        }
-    }
-    None
+    (0..start_at).find(|offset| window_matches(haystack, needle, *offset, confidence))
 }
 
 fn window_matches(

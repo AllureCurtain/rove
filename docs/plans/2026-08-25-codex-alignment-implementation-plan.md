@@ -360,8 +360,35 @@ rove 双入口（desktop 常驻 + cli 临时进程）可能同时触发 schema �
 - 迁移执行期间 backfill 任务必须等待（同一把锁或序贯 barrier）。
 
 ### 验收
-- [ ] 双进程并发首启集成测试（tokio 多任务模拟）无一失败；
-- [ ] 迁移中途 kill，下次启动要么续升要么安全回退到迁移前版本。
+- [x] 双进程并发首启集成测试（tokio 多任务模拟）无一失败；
+- [x] 迁移中途 kill，下次启动要么续升要么安全回退到迁移前版本。
+
+### 落地证据（commit PENDING_P9）
+
+| 要求 | 证据 |
+| --- | --- |
+| `fs2` 排他锁包裹整个迁移序列 | 新增 `runtime/src/state/migration_lock.rs`：`acquire_migration_lock` + `Drop` 释放；`state/index.rs::apply_migrations` 与 `apps/api/.../schema.rs::apply_migrations` 均在首次写入前取锁 |
+| 锁内二次检查 | 两处均为 `schema_is_current` → 取锁 → 再次 `schema_is_current`；命中即放行 |
+| 超时报结构化错误 | `MigrationLockError::{Timeout,Io}`，30s；runtime 侧映射 `ErrorKind::TimedOut`，api 侧映射 `ProductStoreUnavailable`；无 panic 路径 |
+| backfill 等待迁移 | `pub fn wait_for_migrations`：取同一把锁后立即释放，供 Phase 5 启动期 backfill 调用 |
+| 并发首启无一失败 | `concurrent_first_start_migrates_once_and_no_starter_fails`：8 线程 + `Barrier` 同刻释放，断言每个 starter 都成功且 `COUNT(*) FROM schema_migrations == MIGRATIONS.len()`（无重复行） |
+| 中途 kill 可续升 | `a_migration_interrupted_after_a_prefix_resumes_on_the_next_start`、`a_failed_migration_records_no_version_row`：单步 `TransactionBehavior::Immediate` 保证要么记账要么整步回滚 |
+| 快路径不取锁 | `an_already_current_index_does_not_take_the_migration_barrier`：外部持锁时 `initialize()` 仍成功 |
+| 测试非空转 | 变异实验：还原为原始无事务循环后，并发测试 3 次运行得到 FAILED / FAILED / ok —— 竞态特有的 flaky 签名 |
+
+测试计数：`state::index` 23/23、`state::migration_lock` 5/5、全量 1643 passed。
+
+> 分歧记录（§0.3 规则）：**用 `schema_migrations` 表而非 `PRAGMA user_version`**。计划写的 `user_version` 在 rove 全库不存在；rove 用 `schema_migrations` / `product_schema_migrations` 两张表记账，且能区分"哪几步已应用"，比单个整数更适合中途 kill 后的续升判定。二次检查因此改为查 `MAX(version)`。
+
+> 分歧记录（§0.3 规则）：**锁文件是每库兄弟文件而非单一 `~/.rove/state.db.migrate.lock`**。rove 有两个独立数据库（runtime `state.sqlite` + product `product.sqlite`），且每 workspace、每测试各有自己的库。单一全局锁会让不相关的库互相阻塞，也会让并行测试串行化。故 `migration_lock_path` 派生为 `<db>.migrate.lock`。
+
+> 附带修复：`state/index.rs::apply_migrations` 原先**完全没有事务**却在每次 `connect()` 都执行 —— 纯 TOCTOU 竞态。这正是 Phase 5 要升到 v15 的那个库，故 P9 必须先落地。
+
+> 附带修复：并发测试照出 `connect()` 里另一个既有竞态 —— `PRAGMA journal_mode=WAL` 需独占锁，而 SQLite 对此冲突直接返回 `SQLITE_BUSY` **不走 busy handler**，那 5s `busy_timeout` 对它无效，并发首启会有 opener 直接开不开库。新增 `enable_wal`：在同一预算内重试，并在被拒后检查是否已有同伴完成切换（WAL 是幂等的文件属性）。
+
+> 附带修复：`state_migration` 的 prune 把新的 `.migrate.lock` 判为 `Unknown` 而留下残留，导致 `legacy_disposition` 退化为 `partially_pruned`。已在 `classify_relative_path` 中与 `-wal`/`-shm` 影子文件同列跳过（`migration_barrier_is_transient`）。
+
+> 遗留（非本阶段引入）：`rove-integration-tests --test cli_repl` 有 5 个失败，已在干净的 main checkout 上复现同样 5 个，与本阶段无关。
 
 ---
 

@@ -622,6 +622,12 @@ fn classify_relative_path(relative: &str) -> Classify {
         "state.sqlite-wal" | "state.sqlite-shm" | "product.sqlite-wal" | "product.sqlite-shm" => {
             Classify::Skip("sqlite_wal_shadow_snapshot_instead")
         }
+        // The schema-migration barrier is pure inter-process coordination: it
+        // carries no state, and the next opener recreates it beside whichever
+        // database it guards. Migrating or preserving it would be meaningless.
+        "state.sqlite.migrate.lock" | "product.sqlite.migrate.lock" => {
+            Classify::Skip("migration_barrier_is_transient")
+        }
         "mcp_servers.json" => Classify::Copy(MigrationFileClass::McpCatalog),
         "circuit_breakers.json" => Classify::Copy(MigrationFileClass::HealthStore),
         "repl_history" => Classify::Copy(MigrationFileClass::ReplHistory),

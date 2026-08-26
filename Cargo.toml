@@ -14,6 +14,17 @@ members = [
 default-members = ["apps/cli"]
 resolver = "3"
 
+# Full debuginfo on this workspace produces tens of gigabytes of Windows PDBs
+# and has hit the linker's PDB size ceiling (LNK1318) on test targets. Line
+# tables keep what development actually uses — backtraces with file and line —
+# while dropping the type and variable records that account for the bulk of the
+# size. Raise this locally if you need a stepping debugger.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
 [workspace.package]
 version = "0.1.0"
 edition = "2024"

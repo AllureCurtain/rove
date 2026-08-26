@@ -1993,16 +1993,15 @@ impl StateIndex {
         if let Some(parent) = self.db_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let conn = Connection::open(self.db_path.as_ref()).map_err(io_other)?;
+        let mut conn = Connection::open(self.db_path.as_ref()).map_err(io_other)?;
         conn.busy_timeout(Duration::from_millis(self.busy_timeout_ms))
             .map_err(io_other)?;
         conn.pragma_update(None, "foreign_keys", "ON")
             .map_err(io_other)?;
-        conn.pragma_update(None, "journal_mode", "WAL")
-            .map_err(io_other)?;
+        enable_wal(&conn, Duration::from_millis(self.busy_timeout_ms))?;
         conn.pragma_update(None, "synchronous", "NORMAL")
             .map_err(io_other)?;
-        apply_migrations(&conn)?;
+        apply_migrations(&mut conn, self.db_path.as_ref())?;
         Ok(conn)
     }
 
@@ -2110,7 +2109,21 @@ impl StateIndex {
     }
 }
 
-fn apply_migrations(conn: &Connection) -> std::io::Result<()> {
+/// Bring the state index up to [`CURRENT_SCHEMA_VERSION`].
+///
+/// rove's two entry points (resident desktop API, transient CLI/TUI) can reach
+/// this at the same instant, so the sequence is guarded on two levels:
+///
+/// - a cross-process file barrier around the whole sequence, because a
+///   migration is several statements and "is it applied?" is a read followed by
+///   a write — SQLite's own locking cannot make that atomic;
+/// - an `IMMEDIATE` transaction per migration, so a process killed mid-migration
+///   leaves either nothing or the migration *and* its bookkeeping row, never DDL
+///   without the row that records it.
+///
+/// The already-current case is checked before the barrier is taken, so the
+/// common path (this runs on every connection) stays lock-free.
+fn apply_migrations(conn: &mut Connection, db_path: &Path) -> std::io::Result<()> {
     conn.execute_batch(
         r#"
         CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -2121,6 +2134,80 @@ fn apply_migrations(conn: &Connection) -> std::io::Result<()> {
         "#,
     )
     .map_err(io_other)?;
+    if schema_is_current(conn)? {
+        return Ok(());
+    }
+
+    let _barrier = crate::state::migration_lock::acquire_migration_lock(db_path)?;
+    // Double-checked locking: a peer may have completed the whole sequence
+    // while this process waited on the barrier.
+    if schema_is_current(conn)? {
+        return Ok(());
+    }
+
+    for (version, name, sql) in MIGRATIONS {
+        apply_one_migration(conn, *version, name, sql)?;
+    }
+    Ok(())
+}
+
+/// Put the database into WAL mode, tolerating a peer doing the same thing.
+///
+/// Switching the journal mode needs an exclusive lock, and SQLite reports that
+/// conflict as a bare `SQLITE_BUSY` *without* consulting the busy handler — so
+/// the connection's `busy_timeout` does not cover this one statement. Several
+/// processes reaching a fresh state index at the same moment would therefore
+/// have one of them fail to open at all. The switch is a one-time, idempotent
+/// property of the file, so retrying within the same budget the rest of the
+/// connection uses is enough: whoever wins, everyone ends up in WAL.
+fn enable_wal(conn: &Connection, budget: Duration) -> std::io::Result<()> {
+    let deadline = std::time::Instant::now() + budget;
+    loop {
+        match conn.pragma_update(None, "journal_mode", "WAL") {
+            Ok(()) => return Ok(()),
+            Err(error) if is_busy(&error) => {
+                // A peer may have already completed the switch we were denied.
+                if journal_mode_is_wal(conn)? {
+                    return Ok(());
+                }
+                if std::time::Instant::now() >= deadline {
+                    return Err(io_other(error));
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => return Err(io_other(error)),
+        }
+    }
+}
+
+fn is_busy(error: &rusqlite::Error) -> bool {
+    matches!(
+        error.sqlite_error_code(),
+        Some(ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked)
+    )
+}
+
+fn journal_mode_is_wal(conn: &Connection) -> std::io::Result<bool> {
+    let mode: String = conn
+        .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+        .map_err(io_other)?;
+    Ok(mode.eq_ignore_ascii_case("wal"))
+}
+
+/// Wait on the migration barrier without applying anything.
+///
+/// A derived-index backfill must not read a half-migrated schema, so it takes
+/// the same barrier a migrator would and releases it before doing its own work.
+/// Phase 5's startup backfill is the intended caller.
+pub fn wait_for_migrations(db_path: &Path) -> std::io::Result<()> {
+    let _barrier = crate::state::migration_lock::acquire_migration_lock(db_path)?;
+    Ok(())
+}
+
+/// True when the recorded version is already current. A version *newer* than
+/// this build is an error rather than a no-op: running old code against a new
+/// schema would silently misread it.
+fn schema_is_current(conn: &Connection) -> std::io::Result<bool> {
     let newest: Option<i64> = conn
         .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
             row.get(0)
@@ -2132,25 +2219,40 @@ fn apply_migrations(conn: &Connection) -> std::io::Result<()> {
             "state index schema is newer than this runtime",
         ));
     }
-    for (version, name, sql) in MIGRATIONS {
-        let applied: Option<i64> = conn
-            .query_row(
-                "SELECT version FROM schema_migrations WHERE version = ?1",
-                params![version],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(io_other)?;
-        if applied.is_some() {
-            continue;
-        }
-        conn.execute_batch(sql).map_err(io_other)?;
-        conn.execute(
+    Ok(newest == Some(CURRENT_SCHEMA_VERSION))
+}
+
+/// Apply one migration and record it in the same transaction, so DDL and its
+/// bookkeeping row commit together or not at all.
+fn apply_one_migration(
+    conn: &mut Connection,
+    version: i64,
+    name: &str,
+    sql: &str,
+) -> std::io::Result<()> {
+    let transaction = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(io_other)?;
+    let applied: Option<i64> = transaction
+        .query_row(
+            "SELECT version FROM schema_migrations WHERE version = ?1",
+            params![version],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(io_other)?;
+    if applied.is_some() {
+        transaction.commit().map_err(io_other)?;
+        return Ok(());
+    }
+    transaction.execute_batch(sql).map_err(io_other)?;
+    transaction
+        .execute(
             "INSERT INTO schema_migrations(version, name, applied_at) VALUES (?1, ?2, ?3)",
             params![version, name, now_rfc3339()],
         )
         .map_err(io_other)?;
-    }
+    transaction.commit().map_err(io_other)?;
     Ok(())
 }
 
@@ -2999,6 +3101,165 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    /// rove's desktop API and a transient CLI invocation can reach a fresh
+    /// state index at the same moment. Every one of them must succeed, and the
+    /// schema bookkeeping must record each migration exactly once — a duplicate
+    /// row would mean two racers both believed they were the first to apply it.
+    #[test]
+    fn concurrent_first_start_migrates_once_and_no_starter_fails() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let state_dir = temp.path().to_path_buf();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+
+        let starters: Vec<_> = (0..8)
+            .map(|_| {
+                let state_dir = state_dir.clone();
+                let barrier = std::sync::Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    let index = StateIndex::new(&state_dir);
+                    // Release all starters at the same instant so they contend
+                    // on the very first migration rather than arriving serially.
+                    barrier.wait();
+                    index.initialize()
+                })
+            })
+            .collect();
+
+        for starter in starters {
+            starter
+                .join()
+                .expect("no starter should panic")
+                .expect("every concurrent starter should reach a usable schema");
+        }
+
+        let index = StateIndex::new(&state_dir);
+        let connection = Connection::open(index.path()).unwrap();
+        let rows: i64 = connection
+            .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            rows,
+            MIGRATIONS.len() as i64,
+            "each migration must be recorded exactly once across concurrent starts"
+        );
+        let newest: i64 = connection
+            .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(newest, CURRENT_SCHEMA_VERSION);
+        ensure_runs_by_job_index(&connection).unwrap();
+    }
+
+    /// A process killed part-way through the sequence must not leave DDL that
+    /// no bookkeeping row describes, because the next start would then try to
+    /// create an object that already exists. Applying only a prefix stands in
+    /// for the kill; the next start must finish the rest and succeed.
+    #[test]
+    fn a_migration_interrupted_after_a_prefix_resumes_on_the_next_start() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let index = StateIndex::new(temp.path());
+        let mut connection = Connection::open(index.path()).unwrap();
+        connection
+            .execute_batch(
+                r#"
+                CREATE TABLE IF NOT EXISTS schema_migrations (
+                    version INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    applied_at TEXT NOT NULL
+                );
+                "#,
+            )
+            .unwrap();
+        let (version, name, sql) = MIGRATIONS[0];
+        apply_one_migration(&mut connection, version, name, sql).unwrap();
+        drop(connection);
+
+        index
+            .initialize()
+            .expect("an interrupted migration must be resumable");
+
+        let connection = Connection::open(index.path()).unwrap();
+        let newest: i64 = connection
+            .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(newest, CURRENT_SCHEMA_VERSION);
+        let rows: i64 = connection
+            .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(rows, MIGRATIONS.len() as i64);
+    }
+
+    /// A single migration is all-or-nothing: a failure inside it must leave no
+    /// bookkeeping row, so the next start retries it rather than skipping DDL
+    /// that never landed.
+    #[test]
+    fn a_failed_migration_records_no_version_row() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let index = StateIndex::new(temp.path());
+        let mut connection = Connection::open(index.path()).unwrap();
+        connection
+            .execute_batch(
+                r#"
+                CREATE TABLE IF NOT EXISTS schema_migrations (
+                    version INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    applied_at TEXT NOT NULL
+                );
+                "#,
+            )
+            .unwrap();
+
+        apply_one_migration(
+            &mut connection,
+            99,
+            "deliberately_broken",
+            "SELECT abort_me();",
+        )
+        .expect_err("invalid migration SQL must fail");
+
+        let recorded: Option<i64> = connection
+            .query_row(
+                "SELECT version FROM schema_migrations WHERE version = 99",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .unwrap();
+        assert_eq!(
+            recorded, None,
+            "a failed migration must not leave a version row behind"
+        );
+        drop(connection);
+
+        index
+            .initialize()
+            .expect("a clean index must still migrate after an unrelated failure");
+    }
+
+    /// The barrier must not be taken when there is nothing to do: this runs on
+    /// every connection, so an already-current index has to stay lock-free.
+    #[test]
+    fn an_already_current_index_does_not_take_the_migration_barrier() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let index = StateIndex::new(temp.path());
+        index.initialize().unwrap();
+
+        // Hold the barrier. If the current-schema fast path did not come first,
+        // this connect would block until the timeout and then fail.
+        let held = crate::state::migration_lock::acquire_migration_lock(index.path()).unwrap();
+        index
+            .initialize()
+            .expect("an already-migrated index must not need the barrier");
+        drop(held);
     }
 
     #[test]

@@ -4473,6 +4473,7 @@ dependencies = [
  "async-stream",
  "async-trait",
  "chrono",
+ "fs2",
  "futures",
  "globset",
  "ignore",

@@ -2,6 +2,7 @@
 
 pub mod artifacts;
 pub mod index;
+pub mod migration_lock;
 pub mod reconcile;
 pub mod report;
 pub mod resume;
