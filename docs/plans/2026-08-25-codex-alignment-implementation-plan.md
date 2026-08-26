@@ -435,7 +435,7 @@ pub enum InitialHistory {
 - [x] 10k 假想会话（生成 fixture）下列表 p95 < 50ms；
 - [x] 游标翻页无重复无遗漏（属性测试）。
 
-### 落地证据（commit PENDING_HASH）
+### 落地证据（commit 21eb08e）
 
 | 验收项 | 证据 | 结果 |
 | --- | --- | --- |
