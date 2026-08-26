@@ -854,6 +854,79 @@ impl Engine {
                         .map(|state| state.history.clone())
                         .unwrap_or_default()
                 };
+                // Codex alignment Phase 6: the trace is the durable record of
+                // model-visible history, the snapshot is a cache. A run killed
+                // before its checkpoint landed has an empty snapshot but a
+                // complete trace, so fall back to the trace rather than
+                // resuming with no context at all. The snapshot still wins when
+                // it has content: it is already protocol-projected, and
+                // preferring it keeps every existing resume path byte-identical.
+                let history = if history.is_empty() {
+                    match resume_state.as_ref().map(|state| state.run_id) {
+                        Some(source_run) => {
+                            let runs_dir = self.workspace.state_dir.join("runs");
+                            match crate::state::initial_history::read_history_chain(
+                                source_run,
+                                |run| runs_dir.join(run.to_string()),
+                                crate::state::initial_history::DEFAULT_HISTORY_TAIL_ITEMS,
+                            ) {
+                                Ok(chain) => {
+                                    let messages = chain.to_messages();
+                                    if !messages.is_empty() {
+                                        tracing::info!(
+                                            %source_run,
+                                            segments = chain.segments.len(),
+                                            items = chain.items.len(),
+                                            complete = chain.is_complete(),
+                                            "recovered resume history from trace",
+                                        );
+                                    }
+                                    messages
+                                }
+                                Err(error) => {
+                                    // Losing the fallback is not fatal: the run
+                                    // proceeds with the (empty) snapshot, which
+                                    // is exactly the pre-Phase-6 behavior.
+                                    tracing::warn!(
+                                        %source_run,
+                                        "could not read resume history from trace: {error}",
+                                    );
+                                    Vec::new()
+                                }
+                            }
+                        }
+                        None => history,
+                    }
+                } else {
+                    history
+                };
+                // Record the hand-off explicitly. rove owns a directory per run,
+                // so a resumed run writes its own trace instead of appending to
+                // its predecessor's; without this marker the two files would
+                // look like unrelated runs and the chain could not be walked.
+                if let (Some(tw), Some(source_run)) = (
+                    trace_writer.as_ref(),
+                    resume_state
+                        .as_ref()
+                        .map(|state| state.run_id)
+                        .filter(|source_run| *source_run != run_id),
+                ) {
+                    let source_trace = self
+                        .workspace
+                        .state_dir
+                        .join("runs")
+                        .join(source_run.to_string())
+                        .join("trace.jsonl");
+                    let through_seq =
+                        crate::state::initial_history::read_trace_high_water_seq(&source_trace)
+                            .unwrap_or(0);
+                    if let Err(error) = tw.append_resume_link(source_run, through_seq) {
+                        tracing::warn!(
+                            %source_run,
+                            "could not record the resume link: {error}",
+                        );
+                    }
+                }
                 let compact_summary = resume_checkpoint
                     .and_then(|checkpoint| checkpoint.summary.clone());
                 let resume_summary = resume_state

@@ -206,6 +206,7 @@ mod tests {
                     match &record.entry {
                         TraceEntry::Ui(event) => event.event_name().to_string(),
                         TraceEntry::History(_) => "history".to_string(),
+                        TraceEntry::Link(_) => "link".to_string(),
                     }
                 ))
                 .collect::<Vec<_>>()

@@ -114,6 +114,33 @@ impl TraceWriter {
         Ok(())
     }
 
+    /// Open a resumed run's trace with the run it continues.
+    ///
+    /// rove owns a directory per run, so a resumed run gets its own trace file
+    /// rather than appending to its predecessor's. This marker is what keeps
+    /// the chain replayable from the files alone. It takes a sequence number
+    /// like any other line, so the hand-off is itself ordered.
+    pub fn append_resume_link(
+        &self,
+        from_run: RunId,
+        through_seq: u64,
+    ) -> std::io::Result<()> {
+        let seq = self.next_seq.fetch_add(1, Ordering::SeqCst);
+        let line = TraceLine {
+            ts: now_rfc3339(),
+            seq,
+            event: TraceEntry::Link(crate::events::TraceLink::ResumedFrom {
+                from_run,
+                through_seq,
+            }),
+        };
+        self.append_line(&line)?;
+        if let (Some(index), Some(run_id)) = (&self.index, self.run_id) {
+            index.advance_event_seq(run_id, seq)?;
+        }
+        Ok(())
+    }
+
     fn append_line(&self, line: &TraceLine) -> std::io::Result<String> {
         let mut file = OpenOptions::new()
             .create(true)

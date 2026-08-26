@@ -376,6 +376,11 @@ impl StateStore {
                     crate::events::TraceEntry::History(_) => {
                         self.index.advance_event_seq(run_id, record.seq)?;
                     }
+                    // Same for a resume link: provenance, not a replayable
+                    // event, but it owns a sequence number all the same.
+                    crate::events::TraceEntry::Link(_) => {
+                        self.index.advance_event_seq(run_id, record.seq)?;
+                    }
                 }
             }
         }

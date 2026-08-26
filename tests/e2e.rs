@@ -5927,6 +5927,12 @@ async fn trace_writer_records_events() {
                 let json = serde_json::to_value(item).unwrap();
                 assert!(json.get("kind").is_some());
             }
+            // Codex alignment Phase 6: provenance for a resumed run, tagged by
+            // `link` so the three generations stay unambiguous on the wire.
+            rove_runtime::foundation::TraceEntry::Link(link) => {
+                let json = serde_json::to_value(link).unwrap();
+                assert!(json.get("link").is_some());
+            }
         }
     }
 
@@ -5943,6 +5949,167 @@ async fn trace_writer_records_events() {
         has_history_stream,
         "trace must carry explicit history items"
     );
+}
+
+/// Codex alignment Phase 6 acceptance: a run whose snapshot never landed is
+/// still resumable with its context intact, because the trace is the durable
+/// record and the snapshot is only a cache.
+///
+/// This is the failure the phase exists to close. Before it, an empty snapshot
+/// meant an empty prompt: the resumed run silently forgot the conversation it
+/// was supposed to continue.
+#[tokio::test]
+async fn a_resumed_run_recovers_its_history_from_the_trace_when_the_snapshot_is_empty() {
+    let tmp = tempfile::tempdir().unwrap();
+    let workspace = Workspace::detect(tmp.path()).unwrap();
+    let state_store = StateStore::new(&workspace.state_dir);
+    let session_id = SessionId::new();
+    let job_id = JobId::new();
+
+    let original = state_store
+        .start_run(session_id, job_id, RunId::new())
+        .unwrap();
+    // Distinctive tokens, so a passing assertion can only mean the text came
+    // from the original run's trace. Nothing else in the fixture -- not the
+    // goal, not the resumed user message, not the resumed model's own output --
+    // may contain them, or the test would pass without the recovery working.
+    let original_engine = build_test_engine_with_workspace(
+        vec!["ORIGINAL_ANSWER_BETA".to_string()],
+        workspace.clone(),
+    );
+    let stream = original_engine.run(
+        RunRequest {
+            session_id,
+            job_id,
+            run_id: original.run_id,
+            user_message: "ORIGINAL_QUESTION_ALPHA".to_string(),
+            resume_state: None,
+        },
+        Some(original.trace_writer.clone()),
+    );
+    futures::pin_mut!(stream);
+    while stream.next().await.is_some() {}
+
+    // The snapshot is deliberately empty: this models a process killed after
+    // the trace was appended but before the checkpoint was written.
+    let empty_snapshot = TaskState {
+        schema_version: 1,
+        session_id,
+        job_id,
+        run_id: original.run_id,
+        goal: "unrelated goal text".to_string(),
+        step: 1,
+        history: Vec::new(),
+        summary: None,
+        checkpoint: None,
+        plan: None,
+        runtime_identity: None,
+        agent_profile: None,
+        step_ledger: Default::default(),
+        execution_lifecycle: Default::default(),
+    };
+
+    let successor = state_store
+        .start_run(session_id, job_id, RunId::new())
+        .unwrap();
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let resumed_engine = Engine::with_workspace(
+        Box::new(CapturingFakeModelClient::new(
+            vec!["successor reply".to_string()],
+            captured.clone(),
+        )),
+        ToolRegistry::new(),
+        ContextManager::new("You are a test agent.".to_string()),
+        EngineConfig::new(5, false),
+        workspace.clone(),
+        ApprovalPolicy::Auto,
+    );
+    let stream = resumed_engine.run(
+        RunRequest {
+            session_id,
+            job_id,
+            run_id: successor.run_id,
+            user_message: "SUCCESSOR_QUESTION_GAMMA".to_string(),
+            resume_state: Some(empty_snapshot),
+        },
+        Some(successor.trace_writer.clone()),
+    );
+    futures::pin_mut!(stream);
+    while stream.next().await.is_some() {}
+
+    let prompts = captured.lock().unwrap();
+    let first_prompt = prompts
+        .first()
+        .expect("the resumed run should reach the model");
+    // Exact message contents, not substrings. rove already writes a lossy
+    // session summary that mentions the goal and the final output, so a
+    // substring match would pass without any history being recovered. Only the
+    // replayed history yields messages whose whole content is one original turn.
+    let has_original_turn = |role: Role, content: &str| {
+        first_prompt
+            .iter()
+            .any(|message| message.role == role && message.content == content)
+    };
+    assert!(
+        has_original_turn(Role::User, "ORIGINAL_QUESTION_ALPHA"),
+        "the resumed prompt lost the original question as a distinct turn: {first_prompt:?}"
+    );
+    assert!(
+        has_original_turn(Role::Assistant, "ORIGINAL_ANSWER_BETA"),
+        "the resumed prompt lost the original answer as a distinct turn: {first_prompt:?}"
+    );
+    drop(prompts);
+
+    // The successor's own trace must name what it continues, so the chain can
+    // be walked later without consulting SQLite.
+    let successor_trace =
+        std::fs::read_to_string(successor.run_dir.join("trace.jsonl")).unwrap();
+    let link = successor_trace
+        .lines()
+        .filter_map(|line| {
+            serde_json::from_str::<rove_runtime::state::trace::TraceLine>(line).ok()
+        })
+        .find_map(|parsed| match parsed.event {
+            rove_runtime::foundation::TraceEntry::Link(link) => Some(link),
+            _ => None,
+        })
+        .expect("the resumed run must record a resume link");
+    let rove_runtime::foundation::TraceLink::ResumedFrom {
+        from_run,
+        through_seq,
+    } = link;
+    assert_eq!(from_run, original.run_id);
+    assert!(
+        through_seq > 0,
+        "the hand-off point must name a real sequence number"
+    );
+
+    // And the chain reader must reassemble both traces into one history.
+    let runs_dir = workspace.state_dir.join("runs");
+    let chain = rove_runtime::state::initial_history::read_history_chain(
+        successor.run_id,
+        |run| runs_dir.join(run.to_string()),
+        rove_runtime::state::initial_history::DEFAULT_HISTORY_TAIL_ITEMS,
+    )
+    .unwrap();
+    assert_eq!(chain.segments.len(), 2, "both runs belong to the chain");
+    assert!(chain.is_complete());
+    let replayed: Vec<String> = chain
+        .to_messages()
+        .iter()
+        .map(|message| message.content.clone())
+        .collect();
+    // Both runs' turns are present, and the older run's come first: one
+    // conversation, in the order it happened.
+    let alpha = replayed
+        .iter()
+        .position(|content| content == "ORIGINAL_QUESTION_ALPHA")
+        .expect("the chain lost the original question");
+    let gamma = replayed
+        .iter()
+        .position(|content| content == "SUCCESSOR_QUESTION_GAMMA")
+        .expect("the chain lost the successor question");
+    assert!(alpha < gamma, "the chain replayed out of order: {replayed:?}");
 }
 
 /// Model client that emits a native tool call on the first invocation, then

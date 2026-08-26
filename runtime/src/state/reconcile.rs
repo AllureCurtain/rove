@@ -97,6 +97,9 @@ pub async fn reconcile_task_state_with_trace(
             // Explicit history lines are merged below; they still advance the
             // sequence high-water mark because they share the run's seq space.
             crate::events::TraceEntry::History(_) => {}
+            // A resume link is provenance about where this run's history came
+            // from. It carries no lifecycle fact to project onto the snapshot.
+            crate::events::TraceEntry::Link(_) => {}
         }
         outcome.observed(entry.seq);
     }

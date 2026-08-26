@@ -326,6 +326,31 @@ pub enum TraceEntry {
     History(rove_core::history::HistoryItem),
     /// A UI/audit event (Codex EventMsg). Wire format is unchanged.
     Ui(StreamEvent),
+    /// Provenance: this run continues an earlier one.
+    ///
+    /// Last in the untagged order because its `link` tag is the narrowest of
+    /// the three, so the two established generations are always tried first.
+    Link(TraceLink),
+}
+
+/// Records that a run's history begins where another run's history ended.
+///
+/// rove keeps one trace file per run (a run also owns its report, artifacts and
+/// event index), so a resumed run cannot simply append to its predecessor's
+/// file the way a single-file rollout would. This marker is what makes the
+/// chain walkable from the files alone: the resumed run's trace opens with the
+/// run it continues, and following the links backwards reconstructs the whole
+/// conversation without consulting SQLite.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "link", rename_all = "snake_case")]
+pub enum TraceLink {
+    /// History continues from `from_run`, which keeps running its own lifecycle.
+    ResumedFrom {
+        from_run: RunId,
+        /// Sequence reached in `from_run` when this run took over. Lets a
+        /// replay stop at the exact hand-off point.
+        through_seq: u64,
+    },
 }
 
 impl StreamEvent {
