@@ -288,7 +288,7 @@ rove-protocol/            # 新 crate：纯 DTO + serde，零 tokio/axum 依赖
 - [x] 消息内容在 DB 中零冗余存储；
 - [x] 迁移 v14→v15 在真实数据副本上演练通过。
 
-### 落地证据（commit PLACEHOLDER_P5_HASH）
+### 落地证据（commit 46f15b5）
 
 两个库各自独立恢复，所以证据分两组。
 
