@@ -432,8 +432,79 @@ pub enum InitialHistory {
 - 归档：`POST /sessions/:id/archive` 移动文件至 `archived_sessions/`（保持相对布局），列表默认排除。
 
 ### 验收
-- [ ] 10k 假想会话（生成 fixture）下列表 p95 < 50ms；
-- [ ] 游标翻页无重复无遗漏（属性测试）。
+- [x] 10k 假想会话（生成 fixture）下列表 p95 < 50ms；
+- [x] 游标翻页无重复无遗漏（属性测试）。
+
+### 落地证据（commit PENDING_HASH）
+
+| 验收项 | 证据 | 结果 |
+| --- | --- | --- |
+| 10k fixture 下 p95 < 50ms | `product::store::pagination_tests::paging_deep_into_a_ten_thousand_session_workspace_stays_flat`：10 000 条会话、连翻 60 页（每页 50 条），实测 **p95 9.27ms**，前十页合计 80.9ms、后十页合计 76.5ms（越翻越深不变贵） | 通过 |
+| 翻页无重复无遗漏 | `a_paged_walk_sees_every_session_exactly_once_and_in_order`：25 条会话，在 `limit ∈ {1,2,5,7,24,25,26,100}` 八种页长下逐页走完，每次都要求 id 序列与未分页读取**逐个相等**；fixture 故意让每两条共用一个 `updated_at`，迫使正确性依赖 id tiebreak 而非时间戳恰好唯一 | 通过 |
+| 满页 ≠ 末页 | `a_full_page_is_distinguished_from_the_last_page_without_a_count`：4 条会话每页 2 条，两页都恰好满，靠 `limit + 1` 探测行区分，无需第二次 COUNT | 通过 |
+| 归档分组跨页保持 | `archived_sessions_stay_grouped_after_the_live_ones_across_page_boundaries`：16 条会话隔一条归档（时间戳交错），页长 3 使分组边界落在页中间，断言前 8 条全为存活、后 8 条全为归档 | 通过 |
+| 归档可整体排除 | `archived_sessions_can_be_excluded_entirely` | 通过 |
+| 搜索大小写折叠 + 通配符转义 | `a_search_matches_case_insensitively_and_treats_wildcards_literally`：`DEPLOY` 命中 2 条；`100%`、`a_b`、裸 `%` 各只命中 1 条（未转义时 `%` 会命中全部） | 通过 |
+| 深翻是 seek 不是 sort | `a_deep_page_seeks_the_index_instead_of_sorting_the_workspace`：对真实下发的 SQL 跑 `EXPLAIN QUERY PLAN`，断言走 `idx_product_sessions_workspace_page`、`updated_at<?` 参与限界、且**不含** `TEMP B-TREE` | 通过 |
+| HTTP 层分页闭环 | `api::product_session_listing_pages_over_http_and_rejects_broken_page_requests`：只凭响应里的 `next_cursor` 翻完 7 条会话（每页 3），无重复；不带 `limit` 的旧式请求仍一次返回全部 7 条且 `next_cursor` 为 null（线上兼容）；`limit=0` / `limit=201` / `cursor=not-base64!` / `cursor=e30` / 129 字节 `q` 全部 400 `product_invalid_input` | 通过 |
+| 迁移 015 在四条升级路径上都建出索引 | `assert_integrated_v14` 新增索引存在断言，覆盖 fresh / v13→ / conversation-only v12→ / provider-only v12→ | 通过 |
+| 游标编解码 | `product::cursor` 7 个单测：round-trip、URL 安全无需转义、不明文暴露排序键、畸形输入一律拒绝而非回落首页、未知字段拒绝、越界 rank 拒绝、时间戳缺失或超长拒绝 | 通过 |
+| 回归 | `rove-api` lib 157/157、`api` 119/119、`e2e` 110/110、`rove-integration-tests` 全 23 个 target 全绿、`cargo clippy --workspace --all-targets` 无警告、`cargo fmt --all --check` 干净 | 通过 |
+
+变异验证（每条机制都做了一次反向改动，确认测试有判别力）：
+
+| 变异 | 预期失效点 | 实测 |
+| --- | --- | --- |
+| rank 组迭代砍成只走存活组 | 归档会话永远取不到 | 1 红（分组测试） |
+| keyset tiebreak `id >` 改成 `id <` | 游标反复交付同一位置 | 2 红（走查 + 满页测试） |
+| 探测行 `limit + 1` 改回 `limit` | 末页判断失据 | 5 红 |
+| `like_pattern` 去掉反斜杠转义 | `%` 变通配符 | 1 红（搜索测试） |
+| `ORDER BY` 加回 rank 项（"更自然"的写法） | 计划退化出 TEMP B-TREE，**结果仍全对** | 1 红，且只有查询计划测试红 |
+| 迁移 015 索引创建短路（`if false &&`） | 索引缺失 | 5 红（四条升级路径 + 计划测试） |
+| 路由忽略客户端 `limit` | 服务端超发 | 1 红（HTTP 测试） |
+
+> 分歧记录（§0.3 规则：rove 产品语义 > codex 机制）
+>
+> **文档说「归档做成 `POST /sessions/:id/archive`，把文件移进 `archived_sessions/`」，实际不新增该端点。**
+> rove 已经有归档，而且比文档提的更强：`PATCH /product/sessions/{id}` 带 `archived` 字段，可逆（能取消归档），并且在会话有活跃 claim 时拒绝。文档方案是单向的、且要动文件布局——而 rove 的归档是目录（`state_dir/runs/<run_id>/`）之外的**目录信息**，移动文件会同时打断 SSE 续传的 run 寻址和按 run 下载产物。本期只让列表接受 `include_archived` 参数，归档语义一个字没改。
+
+> 分歧记录（§0.3 规则）
+>
+> **文档的游标是 `Cursor { ts, id }`，实际是三段式 `{ r, u, i }`（rank + updated_at + id）。**
+> 因为 rove 的列表排序键**首项不是时间**：存活会话整体排在归档会话之前（`CASE WHEN status = 'archived' THEN 1 ELSE 0 END`）。两段式游标无法表达"我停在归档组的第几条"，跨组翻页必然重复或遗漏。索引 `idx_product_sessions_workspace_page` 把这个 `CASE` 表达式本身建进索引，三段键才能被一个索引端到端覆盖。
+> 更省事的做法是**去掉归档分组**换一个纯时间的 keyset 序——但那会静默把所有现存客户端的列表重排一遍，属于拿产品语义换实现便利，§0.3 不允许。
+
+> 分歧记录（§0.3 规则）
+>
+> **文档的 10k fixture 走不通公开 API，改用直接 SQL 插入。**
+> `MAX_PRODUCT_SESSIONS = 2048` 是 `enforce_table_limit` 施加在 `product_sessions` **整表**（不是每 workspace）上的写入上限，`create_session` 到 2048 就拒绝，10k 生不出来。读路径不关心行是怎么来的，所以 fixture 直接 INSERT——这同时证明了读路径在当前写入上限之上仍有余量，等写入上限放开时不必回头改。
+
+> 分歧记录（§0.3 规则）
+>
+> **路由是 `GET /product/sessions`，不是文档写的 `GET /sessions`；排序参数 `sort` 本期不做。**
+> `/sessions` 在 rove 不存在，产品目录的会话列表一直挂在 `/product/` 前缀下。`sort=updated_at|created_at|title` 三选一需要三个索引才能都是 seek，而当前**没有任何调用方按 `created_at` 或 `title` 排序**（四处 web 读取点全部依赖服务端默认序）。为一个没有需求的开关建两个索引、并把游标扩成"还得记住当时用的哪个排序"，是在为假想中的客户端付真实的写入成本。留到真有调用方时再加。
+
+> 分歧记录（§0.3 规则）
+>
+> **游标用不透明 token，而不是 rove 既有的 `next_after_seq` 明码习惯。**
+> `/messages?after_seq=` 那套适合单列键：一个整数就说清了位置。这里的键是三段的，摊成三个查询参数等于把"存活排在归档前面"和"按 updated_at 倒序"写进公开契约——以后想调整列表顺序就会破坏客户端。所以跟随 `listWorkspaceFiles` 已有的 `cursor` / `next_cursor` 先例（同样是复合键）。不透明不等于可信：`ProductSessionCursor::decode` 对长度、base64、字段完整性、rank 取值、时间戳长度逐项校验，畸形游标一律 400。
+
+> 分歧记录（§0.3 规则）
+>
+> **`include_archived` 默认 `true`，把"不要归档"的成本留给真正想要窄结果的调用方。**
+> 分页前的响应包含归档会话。若借这次改动把服务端默认改成排除，所有现存客户端的列表会**静默变短**——这是行为回归，不是分页。所以服务端默认保持原样，web 侧四个读取点本来就在客户端过滤归档，现在改成显式 `includeArchived: false`，省掉了传输后丢弃的那部分。
+
+> 设计取舍：查询按 rank 分组下发，一页最多两次 seek。
+> 让 rank 参与 keyset 比较，谓词必须写成三路 OR（`rank > ?` OR `rank = ? AND ts < ?` OR `rank = ? AND ts = ? AND id > ?`）。实测（`EXPLAIN QUERY PLAN`）SQLite 在这种形状下无法确认索引扫描已经有序，会物化后排序——代价随 workspace 增长，正是分页要消掉的那笔。把 rank 钉成等值后，`ORDER BY` 里**不再出现 rank**（组内它是常量），索引扫描顺序即结果顺序。rank 只有两个取值，所以一页最多两次子查询。
+> 反直觉之处已写进 `rank_page_sql` 的注释：这里若按"更自然"的写法把 rank 加回 `ORDER BY`，结果依然全对，只有查询计划会退化——上面的变异表第 5 行就是这一条。
+
+> 附带发现：分页之前，`MAX_PRODUCT_SESSIONS = 2048` 同时充当列表 `LIMIT`。也就是说 workspace 超过 2048 个会话后，尾部会被**静默截断且无法请求**。文档没有点出这一条，它才是本期最硬的理由。
+
+> 附带修复：迁移 015 加 `table_exists("product_sessions")` 守卫，与迁移 007 同一处理。历史兼容 fixture 会声称某个版本却不含该版本应有的全部表（v1 fixture 只有 `product_preferences`），对不存在的表建索引会让整次升级失败。索引是纯派生状态，走到这里还没有该表的库本来就没东西可索引。
+
+> 附带修复：`schema_newer_than_v14_is_rejected_without_rollback` 里的"未来版本"从字面量 15 改成 `CURRENT_SCHEMA_VERSION + 1`，并改名为 `a_schema_newer_than_this_build_is_rejected_without_rollback`。本期把当前版本推到 15，这个测试原本会变成"断言当前版本被拒绝"——加迁移的人会先看到它失败，改完之后它就再也测不到东西了。
+
+> 诚实性说明：p95 那条验收项是预算检查，不是分页设计的证明。实测确认它**抓不到**两件事：把排序改回去只让单页贵约五成（远在任何能在共享机器上稳定通过的阈值之内）；而且排序形态下页延迟**同样**与深度无关（排的是单个 rank 组，组大小不随翻到多深而变），所以"深页不比浅页贵"的比值断言也分不开两种形态。真正的保证是查询计划测试。这一点已写进测试的文档注释，比值只打印不断言。
 
 ---
 

@@ -17,6 +17,7 @@ path = "src/lib.rs"
 anyhow.workspace = true
 async-trait.workspace = true
 axum.workspace = true
+base64 = "0.22"
 chrono.workspace = true
 clap.workspace = true
 futures.workspace = true

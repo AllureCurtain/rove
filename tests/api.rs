@@ -3200,6 +3200,98 @@ async fn product_session_resume_fails_closed_when_exact_task_state_is_missing() 
     );
 }
 
+/// Codex alignment Phase 7: the listing pages over HTTP, and the cursor a client
+/// receives is the only thing it needs to continue.
+#[tokio::test]
+async fn product_session_listing_pages_over_http_and_rejects_broken_page_requests() {
+    let server = tempfile::TempDir::new().unwrap();
+    let folder = tempfile::TempDir::new().unwrap();
+    let app = router(ApiState::new(
+        Workspace::detect(server.path()).unwrap(),
+        test_config(),
+    ));
+    let workspace = create_product_workspace(&app, folder.path()).await;
+    let workspace_id = workspace["id"].as_str().unwrap();
+    for index in 0..7 {
+        create_product_session(&app, workspace_id, &format!("Session {index}")).await;
+    }
+
+    // Walk the whole listing three at a time, following only what the responses
+    // hand back — the same thing a client can see.
+    let mut seen: Vec<String> = Vec::new();
+    let mut uri = format!("/product/sessions?workspace_id={workspace_id}&limit=3");
+    for _ in 0..8 {
+        let response = get_response(&app, &uri).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value = decode_json(response).await;
+        let page = body["sessions"].as_array().unwrap();
+        assert!(page.len() <= 3, "the server exceeded the requested limit");
+        seen.extend(
+            page.iter()
+                .map(|session| session["id"].as_str().unwrap().to_string()),
+        );
+        match body["next_cursor"].as_str() {
+            Some(cursor) => {
+                uri = format!(
+                    "/product/sessions?workspace_id={workspace_id}&limit=3&cursor={cursor}"
+                );
+            }
+            None => break,
+        }
+    }
+    assert_eq!(seen.len(), 7, "the paged walk did not cover the listing");
+    let unique: std::collections::BTreeSet<_> = seen.iter().collect();
+    assert_eq!(unique.len(), 7, "a session was delivered twice: {seen:?}");
+
+    // The unpaged default still returns everything, so existing clients that
+    // never send a limit are unaffected.
+    let response = get_response(
+        &app,
+        &format!("/product/sessions?workspace_id={workspace_id}"),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = decode_json(response).await;
+    assert_eq!(body["sessions"].as_array().unwrap().len(), 7);
+    assert!(
+        body["next_cursor"].is_null(),
+        "a listing that fits in one page must not offer a cursor"
+    );
+
+    // A search narrows the listing, and the term is matched literally.
+    let response = get_response(
+        &app,
+        &format!("/product/sessions?workspace_id={workspace_id}&q=Session%204"),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = decode_json(response).await;
+    assert_eq!(body["sessions"].as_array().unwrap().len(), 1);
+
+    // Every malformed page request is refused. Returning page one instead would
+    // make a client silently re-read the listing from the start.
+    for bad in [
+        "limit=0",
+        "limit=201",
+        "cursor=not-base64!",
+        "cursor=e30",
+        &format!("q={}", "x".repeat(129)),
+    ] {
+        let response = get_response(
+            &app,
+            &format!("/product/sessions?workspace_id={workspace_id}&{bad}"),
+        )
+        .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "`{bad}` should have been rejected"
+        );
+        let error: serde_json::Value = decode_json(response).await;
+        assert_eq!(error["code"], "product_invalid_input", "for `{bad}`");
+    }
+}
+
 #[tokio::test]
 async fn product_resume_reports_unavailable_when_the_catalog_profile_is_deleted() {
     let server = tempfile::TempDir::new().unwrap();

@@ -20,6 +20,7 @@ use rove_runtime::review::{
 use rove_runtime::state::store::StateStore;
 use rove_runtime::types::{JobId, RunId, RunStatus, SessionId};
 
+use super::cursor::ProductSessionCursor;
 use crate::types::JobStreamEvent;
 
 pub const M1_BROWSER_SOURCE_SCHEMA_VERSION: u32 = 1;
@@ -1060,9 +1061,48 @@ pub struct ProductWorkspacesResponse {
     pub workspaces: Vec<ProductWorkspace>,
 }
 
+pub const DEFAULT_PRODUCT_SESSION_PAGE_LIMIT: usize = 50;
+pub const MAX_PRODUCT_SESSION_PAGE_LIMIT: usize = 200;
+
+/// Longest search term accepted by the session listing.
+///
+/// Substring search cannot use the listing index, so it scans the workspace's
+/// rows. The cap bounds how much work one query can ask for.
+pub const MAX_PRODUCT_SESSION_QUERY_BYTES: usize = 128;
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ProductSessionsResponse {
     pub sessions: Vec<ProductSession>,
+    /// Token that returns the next page, absent on the last page.
+    ///
+    /// Absent means "no more rows", which is what lets a client stop without
+    /// issuing one extra request to discover an empty page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+}
+
+/// A resolved request for one page of sessions.
+///
+/// Codex alignment Phase 7. Before this, the listing took a `LIMIT` of
+/// [`MAX_PRODUCT_SESSIONS`] and returned whatever fit: a workspace past that
+/// many sessions lost the tail with no way to ask for it, and every request
+/// paid to chain-validate every session in the workspace.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProductSessionPageQuery {
+    pub workspace_id: ProductWorkspaceId,
+    /// Resume position, or `None` for the first page.
+    pub cursor: Option<ProductSessionCursor>,
+    pub limit: usize,
+    /// Case-insensitive substring match on the title, or `None` for no filter.
+    pub search: Option<String>,
+    /// Whether archived sessions appear at all. They sort after live ones.
+    pub include_archived: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProductSessionPage {
+    pub sessions: Vec<ProductSession>,
+    pub next_cursor: Option<ProductSessionCursor>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -1917,10 +1957,53 @@ pub trait ProductStore: Send + Sync {
         &self,
         workspace_id: &ProductWorkspaceId,
     ) -> Result<(), ProductStoreError>;
+    /// Read one page of a workspace's sessions.
+    ///
+    /// Codex alignment Phase 7 replaced the unpaginated read: a workspace with
+    /// more than [`MAX_PRODUCT_SESSIONS`] sessions used to lose its tail with no
+    /// way to request it.
     async fn list_sessions(
         &self,
+        query: ProductSessionPageQuery,
+    ) -> Result<ProductSessionPage, ProductStoreError>;
+
+    /// Walk every page and collect a workspace's sessions.
+    ///
+    /// This exists for the few internal callers that are only correct over the
+    /// complete set — a digest of every session's provider configuration, for
+    /// instance, is wrong if it omits one. It is not a convenience for handlers:
+    /// anything serving a client should page, so that response size stays a
+    /// function of the request rather than of the workspace's history.
+    ///
+    /// The walk terminates on an absent cursor, and separately on a page budget,
+    /// so a cursor that somehow failed to advance would surface as a truncated
+    /// read rather than as a request that never returns.
+    async fn list_all_sessions(
+        &self,
         workspace_id: &ProductWorkspaceId,
-    ) -> Result<Vec<ProductSession>, ProductStoreError>;
+    ) -> Result<Vec<ProductSession>, ProductStoreError> {
+        let mut collected = Vec::new();
+        let mut cursor = None;
+        // Enough pages to cover the table limit, plus one to observe the end.
+        let budget = MAX_PRODUCT_SESSIONS / MAX_PRODUCT_SESSION_PAGE_LIMIT + 2;
+        for _ in 0..budget {
+            let page = self
+                .list_sessions(ProductSessionPageQuery {
+                    workspace_id: workspace_id.clone(),
+                    cursor,
+                    limit: MAX_PRODUCT_SESSION_PAGE_LIMIT,
+                    search: None,
+                    include_archived: true,
+                })
+                .await?;
+            collected.extend(page.sessions);
+            match page.next_cursor {
+                Some(next) => cursor = Some(next),
+                None => break,
+            }
+        }
+        Ok(collected)
+    }
     async fn create_session(
         &self,
         request: CreateProductSessionRequest,

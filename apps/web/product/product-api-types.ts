@@ -664,7 +664,12 @@ export interface ProductWorkspacesResponse {
 
 export interface ProductSessionsResponse {
   sessions: ProductSession[];
+  /** Opaque token for the next page. Absent on the last page. */
+  next_cursor?: string;
 }
+
+/** Longest session-list page the API will serve. */
+export const MAX_PRODUCT_SESSION_PAGE_LIMIT = 200;
 
 export interface ProductProviderProfilesResponse {
   catalog_revision: string;
@@ -2805,7 +2810,7 @@ export function parseProductSessionsResponse(
   value: unknown,
 ): ProductSessionsResponse {
   const record = expectRecord(value, "product sessions response");
-  return {
+  const response: ProductSessionsResponse = {
     sessions: expectArray(
       record.sessions,
       "product sessions response.sessions",
@@ -2813,6 +2818,14 @@ export function parseProductSessionsResponse(
       MAX_PRODUCT_SESSIONS,
     ),
   };
+  assignOptional(
+    response,
+    "next_cursor",
+    optionalString(record, "next_cursor", "product sessions response", {
+      nonEmpty: true,
+    }),
+  );
+  return response;
 }
 
 export function parseProductForkResponse(

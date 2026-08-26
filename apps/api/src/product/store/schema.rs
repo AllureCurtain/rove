@@ -6,7 +6,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 use crate::product::{ProductErrorCode, ProductStoreError};
 
-const CURRENT_SCHEMA_VERSION: i64 = 14;
+const CURRENT_SCHEMA_VERSION: i64 = 15;
 const MAX_BUSY_TIMEOUT_MS: u64 = 120_000;
 
 const MIGRATION_001: &str = r#"
@@ -306,6 +306,29 @@ CREATE TABLE IF NOT EXISTS product_review_findings (
 );
 CREATE INDEX IF NOT EXISTS idx_product_review_findings_order
     ON product_review_findings(review_id, sort_key, finding_id);
+"#;
+
+/// Codex alignment Phase 7: make the session listing order seekable.
+///
+/// The listing has always sorted live sessions before archived ones, and
+/// `idx_product_sessions_workspace_list` could not serve that leading term, so
+/// SQLite sorted the whole workspace on every request. That was tolerable only
+/// because the listing also stopped at `MAX_PRODUCT_SESSIONS` and silently
+/// dropped the tail.
+///
+/// Indexing the `CASE` expression itself lets one index cover the full sort
+/// key, which turns "the page after this row" into a range scan and keeps the
+/// archived-last grouping the UI already relies on. Dropping the grouping would
+/// have been the easier way to get a keyset order; it would also have silently
+/// reshuffled every client's list.
+const MIGRATION_015: &str = r#"
+CREATE INDEX IF NOT EXISTS idx_product_sessions_workspace_page
+    ON product_sessions(
+        workspace_id,
+        CASE WHEN status = 'archived' THEN 1 ELSE 0 END ASC,
+        updated_at DESC,
+        product_session_id ASC
+    );
 "#;
 
 const MIGRATION_002: &str = r#"
@@ -633,6 +656,7 @@ fn apply_migrations(
     apply_migration_012(connection)?;
     apply_migration_013(connection)?;
     apply_migration_014(connection)?;
+    apply_migration_015(connection)?;
     Ok(())
 }
 
@@ -1102,6 +1126,38 @@ fn apply_migration_014(connection: &mut Connection) -> Result<(), ProductStoreEr
     Ok(())
 }
 
+fn apply_migration_015(connection: &mut Connection) -> Result<(), ProductStoreError> {
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|_| database_error(true))?;
+    if migration_is_applied(&transaction, 15)? {
+        transaction.commit().map_err(|_| database_error(true))?;
+        return Ok(());
+    }
+    // Guarded for the same reason as migration 007: the historical compatibility
+    // fixtures can claim a version without containing every table that version
+    // implies. Indexing a table that is not there would fail the whole upgrade,
+    // and an index is pure derived state — a store that reaches this point
+    // without the table has nothing to index yet.
+    if table_exists(&transaction, "product_sessions")? {
+        transaction
+            .execute_batch(MIGRATION_015)
+            .map_err(|_| database_error(true))?;
+    }
+    transaction
+        .execute(
+            "INSERT INTO product_schema_migrations(version, name, applied_at) VALUES (?1, ?2, ?3)",
+            params![
+                15,
+                "session_listing_pagination",
+                super::repository::now_rfc3339()
+            ],
+        )
+        .map_err(|_| database_error(true))?;
+    transaction.commit().map_err(|_| database_error(true))?;
+    Ok(())
+}
+
 fn reconcile_productization_schema(
     transaction: &rusqlite::Transaction<'_>,
 ) -> Result<(), ProductStoreError> {
@@ -1306,8 +1362,12 @@ mod tests {
     }
 
     #[test]
-    fn schema_newer_than_v14_is_rejected_without_rollback() {
+    fn a_schema_newer_than_this_build_is_rejected_without_rollback() {
         let mut connection = Connection::open_in_memory().unwrap();
+        // Derived from the constant rather than written out, so adding a migration
+        // does not turn this test into an assertion that the *current* version is
+        // rejected — which is how it would fail, silently testing nothing.
+        let future = CURRENT_SCHEMA_VERSION + 1;
         connection
             .execute_batch(
                 r#"
@@ -1316,9 +1376,14 @@ mod tests {
                     name TEXT NOT NULL,
                     applied_at TEXT NOT NULL
                 );
-                INSERT INTO product_schema_migrations(version, name, applied_at)
-                VALUES (15, 'future_schema', '2026-08-14T00:00:00Z');
                 "#,
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO product_schema_migrations(version, name, applied_at)
+                 VALUES (?1, 'future_schema', '2026-08-14T00:00:00Z')",
+                params![future],
             )
             .unwrap();
 
@@ -1328,8 +1393,8 @@ mod tests {
         assert_eq!(
             connection
                 .query_row(
-                    "SELECT COUNT(*) FROM product_schema_migrations WHERE version = 15",
-                    [],
+                    "SELECT COUNT(*) FROM product_schema_migrations WHERE version = ?1",
+                    params![future],
                     |row| row.get::<_, i64>(0),
                 )
                 .unwrap(),
@@ -1512,6 +1577,22 @@ mod tests {
         );
         assert!(
             table_has_column(connection, "product_session_controls", "requested_delivery").unwrap()
+        );
+        // Migration 015 exists only for its index, so a fresh database that
+        // records the version without creating it would be a silent regression
+        // that only the query-plan test would notice.
+        assert!(migration_is_applied(connection, 15).unwrap());
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_schema
+                     WHERE type = 'index' AND name = 'idx_product_sessions_workspace_page'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1,
+            "the session paging index is missing"
         );
     }
 

@@ -25,12 +25,13 @@ use crate::product::{
     ProductMessagePageQuery, ProductPreferences, ProductProviderProfile, ProductProviderProfileId,
     ProductResumeHealth, ProductReview, ProductReviewFindingsQuery, ProductReviewFindingsResponse,
     ProductReviewId, ProductSession, ProductSessionContext, ProductSessionId,
-    ProductSessionModelConfig, ProductSessionRecovery, ProductSessionRunBinding,
-    ProductSessionRunModelView, ProductSessionStatus, ProductStore, ProductStoreError,
-    ProductTurnClaim, ProductTurnClaimId, ProductTurnControlFinish, ProductWorkspace,
-    ProductWorkspaceId, RecoverProductSessionOwnership, UpdateProductPreferencesRequest,
-    UpdateProductProviderProfileRequest, UpdateProductSessionModelConfigRequest,
-    UpdateProductSessionRequest, VerifiedProductForkBoundary,
+    ProductSessionModelConfig, ProductSessionPage, ProductSessionPageQuery, ProductSessionRecovery,
+    ProductSessionRunBinding, ProductSessionRunModelView, ProductSessionStatus, ProductStore,
+    ProductStoreError, ProductTurnClaim, ProductTurnClaimId, ProductTurnControlFinish,
+    ProductWorkspace, ProductWorkspaceId, RecoverProductSessionOwnership,
+    UpdateProductPreferencesRequest, UpdateProductProviderProfileRequest,
+    UpdateProductSessionModelConfigRequest, UpdateProductSessionRequest,
+    VerifiedProductForkBoundary,
 };
 use rove_runtime::types::RunId;
 
@@ -119,10 +120,9 @@ impl ProductStore for SqliteProductStore {
 
     async fn list_sessions(
         &self,
-        workspace_id: &ProductWorkspaceId,
-    ) -> Result<Vec<ProductSession>, ProductStoreError> {
-        let workspace_id = workspace_id.clone();
-        self.blocking(move |repository| repository.list_sessions(&workspace_id))
+        query: ProductSessionPageQuery,
+    ) -> Result<ProductSessionPage, ProductStoreError> {
+        self.blocking(move |repository| repository.list_sessions(&query))
             .await
     }
 
@@ -719,5 +719,7 @@ impl ProductStore for SqliteProductStore {
     }
 }
 
+#[cfg(test)]
+mod pagination_tests;
 #[cfg(test)]
 mod tests;

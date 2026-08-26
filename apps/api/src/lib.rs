@@ -5502,7 +5502,10 @@ mod tests {
             .await
             .expect("tracked job start and supervisor should drain after the database unlock");
 
-        let sessions = store.list_sessions(&product_workspace.id).await.unwrap();
+        let sessions = store
+            .list_all_sessions(&product_workspace.id)
+            .await
+            .unwrap();
         let session = sessions
             .into_iter()
             .find(|session| session.id == product_session.id)

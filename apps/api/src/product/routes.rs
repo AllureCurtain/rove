@@ -22,6 +22,22 @@ use crate::{ApiError, ApiErrorResponse, ApiState};
 #[into_params(parameter_in = Query)]
 pub(crate) struct ListProductSessionsQuery {
     pub workspace_id: ProductWorkspaceId,
+    /// Opaque token from a previous response's `next_cursor`. Omit for page one.
+    #[serde(default)]
+    pub cursor: Option<String>,
+    #[serde(default)]
+    pub limit: Option<usize>,
+    /// Case-insensitive substring match on the session title.
+    #[serde(default)]
+    pub q: Option<String>,
+    /// Archived sessions are included by default, sorted after live ones.
+    ///
+    /// The default preserves the pre-pagination response, which returned them:
+    /// hiding them server-side would have made every existing client's list
+    /// quietly shorter. Clients that never show archived sessions can now say so
+    /// and stop paying to transfer them.
+    #[serde(default)]
+    pub include_archived: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, IntoParams)]
@@ -149,7 +165,8 @@ pub(crate) async fn delete_product_workspace(
     security(("BearerAuth" = [])),
     params(ListProductSessionsQuery),
     responses(
-        (status = 200, description = "Product sessions in one workspace", body = ProductSessionsResponse),
+        (status = 200, description = "One page of a workspace's product sessions", body = ProductSessionsResponse),
+        (status = 400, description = "Page limit, cursor, or search term is invalid", body = ApiErrorResponse),
         (status = 404, description = "Workspace not found", body = ApiErrorResponse),
         (status = 500, description = "Product store operation failed", body = ApiErrorResponse),
         (status = 503, description = "ProductStore is unavailable", body = ApiErrorResponse)
@@ -159,11 +176,53 @@ pub(crate) async fn list_product_sessions(
     State(state): State<ApiState>,
     Query(query): Query<ListProductSessionsQuery>,
 ) -> Result<Json<ProductSessionsResponse>, ApiError> {
-    let sessions = state
+    let page = state
         .product_store()?
-        .list_sessions(&query.workspace_id)
+        .list_sessions(session_page_query(query)?)
         .await?;
-    Ok(Json(ProductSessionsResponse { sessions }))
+    Ok(Json(ProductSessionsResponse {
+        sessions: page.sessions,
+        next_cursor: page.next_cursor.map(|cursor| cursor.encode()),
+    }))
+}
+
+/// Validate and resolve a listing request.
+///
+/// Every rejection is deliberate. A limit of zero or a broken cursor would
+/// otherwise return an empty page, which a client cannot distinguish from
+/// having reached the end — it would stop paging and silently lose rows.
+fn session_page_query(
+    query: ListProductSessionsQuery,
+) -> Result<ProductSessionPageQuery, ApiError> {
+    let invalid = || {
+        ApiError::bad_request_with_code(
+            ProductErrorCode::ProductInvalidInput.as_str(),
+            "session page query is invalid",
+        )
+    };
+    let limit = query.limit.unwrap_or(DEFAULT_PRODUCT_SESSION_PAGE_LIMIT);
+    if limit == 0 || limit > MAX_PRODUCT_SESSION_PAGE_LIMIT {
+        return Err(invalid());
+    }
+    let cursor = match query.cursor.as_deref() {
+        Some(encoded) => Some(ProductSessionCursor::decode(encoded).map_err(|_| invalid())?),
+        None => None,
+    };
+    // A term of only whitespace is treated as no filter rather than as a search
+    // for a space, which would match nearly every title.
+    let search = match query.q.as_deref().map(str::trim) {
+        Some("") => None,
+        Some(term) if term.len() > MAX_PRODUCT_SESSION_QUERY_BYTES => return Err(invalid()),
+        Some(term) => Some(term.to_string()),
+        None => None,
+    };
+    Ok(ProductSessionPageQuery {
+        workspace_id: query.workspace_id,
+        cursor,
+        limit,
+        search,
+        include_archived: query.include_archived.unwrap_or(true),
+    })
 }
 
 #[utoipa::path(

@@ -468,7 +468,11 @@ export function useServerProductState() {
           kind,
           pinned: false,
         });
-        let sessionResponse = await productClient.listSessions(workspace.id);
+        // A workspace that was just created holds at most a handful of adopted
+        // sessions, and we only need one to open, so a single page suffices.
+        let sessionResponse = await productClient.listSessions(workspace.id, {
+          includeArchived: false,
+        });
         let session = sessionResponse.sessions.find((item) => item.status !== "archived");
         if (!session) {
           session = await productClient.createSession({ workspace_id: workspace.id });

@@ -28,11 +28,12 @@ use crate::product::{
     ProductProviderSelection, ProductProviderType, ProductReasoningPreference, ProductResumeHealth,
     ProductResumeHealthStatus, ProductReview, ProductReviewFinding, ProductReviewFindingsQuery,
     ProductReviewFindingsResponse, ProductReviewId, ProductReviewStatus, ProductRuntimeBinding,
-    ProductSession, ProductSessionContext, ProductSessionId, ProductSessionModelConfig,
-    ProductSessionRecovery, ProductSessionRunBinding, ProductSessionRunModelView,
-    ProductSessionStatus, ProductStoreError, ProductThemePreference, ProductTurnClaim,
-    ProductTurnClaimId, ProductTurnControlFinish, ProductWorkspace, ProductWorkspaceId,
-    ProductWorkspaceKind, RecoverProductSessionOwnership, UpdateProductPreferencesRequest,
+    ProductSession, ProductSessionContext, ProductSessionCursor, ProductSessionId,
+    ProductSessionModelConfig, ProductSessionPage, ProductSessionPageQuery, ProductSessionRecovery,
+    ProductSessionRunBinding, ProductSessionRunModelView, ProductSessionStatus, ProductStoreError,
+    ProductThemePreference, ProductTurnClaim, ProductTurnClaimId, ProductTurnControlFinish,
+    ProductWorkspace, ProductWorkspaceId, ProductWorkspaceKind, RecoverProductSessionOwnership,
+    SESSION_RANK_ARCHIVED, SESSION_RANK_LIVE, UpdateProductPreferencesRequest,
     UpdateProductProviderProfileRequest, UpdateProductSessionModelConfigRequest,
     UpdateProductSessionRequest, VerifiedM1SessionRunBinding, VerifiedProductForkBoundary,
     m1_browser_migration_digest,
@@ -389,46 +390,81 @@ impl ProductRepository {
         Ok(())
     }
 
+    /// Read one page of a workspace's sessions.
+    ///
+    /// Codex alignment Phase 7. The sort key is
+    /// `(archived_rank, updated_at DESC, product_session_id ASC)`, which
+    /// `idx_product_sessions_workspace_page` covers end to end. A cursor names
+    /// the last row already delivered, so resuming is a range scan rather than
+    /// an offset that has to count past everything skipped.
+    ///
+    /// The chain validation that runs per session is why paging matters beyond
+    /// response size: it used to run once per session in the workspace on every
+    /// request, and now runs at most `limit` times.
+    ///
+    /// The page is assembled one rank group at a time rather than by one query
+    /// spanning both. A keyset predicate that let the rank vary has to be a
+    /// three-way disjunction, and SQLite cannot prove such a scan is already
+    /// ordered — it materialises the matches and sorts them, at a cost that grows
+    /// with the workspace, which is the cost paging exists to remove. Pinning the
+    /// rank as an equality keeps the index scan itself ordered. Rank has two
+    /// values, so a page costs at most two seeks.
     pub(super) fn list_sessions(
         &self,
-        workspace_id: &ProductWorkspaceId,
-    ) -> Result<Vec<ProductSession>, ProductStoreError> {
+        query: &ProductSessionPageQuery,
+    ) -> Result<ProductSessionPage, ProductStoreError> {
         let mut connection = self.database.connect()?;
         let transaction = connection.transaction().map_err(storage_error)?;
-        require_workspace(&transaction, workspace_id)?;
-        let sessions = {
+        require_workspace(&transaction, &query.workspace_id)?;
+        // One row past the page: its existence is what distinguishes "the page
+        // is full" from "there is more", without a second COUNT query that
+        // could disagree with the page under concurrent writes.
+        let probe_limit = limit_i64(query.limit.saturating_add(1))?;
+        let ranks: &[i64] = if query.include_archived {
+            &[SESSION_RANK_LIVE, SESSION_RANK_ARCHIVED]
+        } else {
+            &[SESSION_RANK_LIVE]
+        };
+        let mut sessions: Vec<ProductSession> = Vec::new();
+        for &rank in ranks {
+            // A cursor from a later group means this one is already fully
+            // delivered; a cursor from an earlier group leaves this one untouched.
+            let resume = match &query.cursor {
+                Some(cursor) if cursor.archived_rank > rank => continue,
+                Some(cursor) if cursor.archived_rank == rank => Some(cursor),
+                _ => None,
+            };
+            let remaining = probe_limit - sessions.len() as i64;
+            if remaining <= 0 {
+                break;
+            }
             let mut statement = transaction
-                .prepare(
-                    r#"
-                    SELECT product_session_id, workspace_id, title, status, latest_ordinal,
-                           runtime_session_id, latest_job_id, latest_run_id,
-                           parent_session_id, fork_point_run_id, fork_point_seq,
-                           created_at, updated_at
-                    FROM product_sessions
-                    WHERE workspace_id = ?1
-                    ORDER BY CASE WHEN status = 'archived' THEN 1 ELSE 0 END ASC,
-                             updated_at DESC, created_at DESC, product_session_id ASC
-                    LIMIT ?2
-                    "#,
-                )
+                .prepare(&rank_page_sql(query, resume.is_some()))
                 .map_err(storage_error)?;
+            let owned = rank_page_params(query, rank, resume, remaining);
+            let bound: Vec<&dyn rusqlite::ToSql> =
+                owned.iter().map(|value| value.as_ref()).collect();
             let rows = statement
-                .query_map(
-                    params![workspace_id.to_string(), limit_i64(MAX_PRODUCT_SESSIONS)?],
-                    raw_session_from_row,
-                )
+                .query_map(bound.as_slice(), raw_session_from_row)
                 .map_err(storage_error)?;
-            let mut sessions = Vec::new();
             for row in rows {
                 sessions.push(row.map_err(storage_error)?.into_product()?);
             }
-            sessions
+        }
+        let next_cursor = if sessions.len() > query.limit {
+            sessions.truncate(query.limit);
+            sessions.last().map(cursor_for_session)
+        } else {
+            None
         };
         for session in &sessions {
             validate_binding_integrity(&transaction, session)?;
         }
         transaction.commit().map_err(storage_error)?;
-        Ok(sessions)
+        Ok(ProductSessionPage {
+            sessions,
+            next_cursor,
+        })
     }
 
     pub(super) fn create_session(
@@ -4626,6 +4662,114 @@ fn get_fork_context(
         fork,
         inherited_runs,
     }))
+}
+
+/// The listing's rank for a session: live sessions sort before archived ones.
+///
+/// This mirrors the `CASE` expression in the SQL and in
+/// `idx_product_sessions_workspace_page`. All three must agree, or a cursor
+/// minted from a row would not find that row again.
+fn archived_rank(status: ProductSessionStatus) -> i64 {
+    match status {
+        ProductSessionStatus::Archived => SESSION_RANK_ARCHIVED,
+        _ => SESSION_RANK_LIVE,
+    }
+}
+
+/// Mint the cursor that resumes immediately after `session`.
+fn cursor_for_session(session: &ProductSession) -> ProductSessionCursor {
+    ProductSessionCursor::after(
+        archived_rank(session.status),
+        &session.updated_at,
+        session.id.clone(),
+    )
+}
+
+/// Escape a user-supplied search term for use inside a `LIKE` pattern.
+///
+/// Without this, a title search for `100%` would match every title, and `_`
+/// would match any character — the user would get results they did not ask for
+/// and could not explain. The escape character is declared by `ESCAPE` in the
+/// SQL, and the backslash itself must be escaped first or escaping the other
+/// two would be reversible by the input.
+fn like_pattern(term: &str) -> String {
+    let mut pattern = String::with_capacity(term.len() + 2);
+    pattern.push('%');
+    for character in term.chars() {
+        if matches!(character, '\\' | '%' | '_') {
+            pattern.push('\\');
+        }
+        pattern.push(character);
+    }
+    pattern.push('%');
+    pattern
+}
+
+/// Build the query for one rank group of the page.
+///
+/// The rank is bound as an equality and is therefore *absent* from `ORDER BY`:
+/// it is constant across every row the query can return. That is what lets
+/// `idx_product_sessions_workspace_page` satisfy the ordering by scan position
+/// alone, with no sorting step. Writing `ORDER BY rank, updated_at DESC, id`
+/// here instead — the more obvious form — reintroduces the temp B-tree, because
+/// SQLite matches `ORDER BY` against the index prefix textually and the leading
+/// `CASE` expression is not something it will simplify away.
+///
+/// Within a group the keyset predicate is a plain two-term disjunction: an
+/// *earlier* timestamp, or the same timestamp and a *greater* id. The middle
+/// sort term is `DESC`, so "after" is `<`.
+pub(super) fn rank_page_sql(query: &ProductSessionPageQuery, resuming: bool) -> String {
+    const RANK: &str = "CASE WHEN status = 'archived' THEN 1 ELSE 0 END";
+    let mut sql = format!(
+        r#"
+        SELECT product_session_id, workspace_id, title, status, latest_ordinal,
+               runtime_session_id, latest_job_id, latest_run_id,
+               parent_session_id, fork_point_run_id, fork_point_seq,
+               created_at, updated_at
+        FROM product_sessions
+        WHERE workspace_id = ?1 AND {RANK} = ?2
+        "#
+    );
+    let mut next_index = 3;
+    if resuming {
+        let updated_at = next_index;
+        let session_id = next_index + 1;
+        sql.push_str(&format!(
+            " AND (updated_at < ?{updated_at}
+                   OR (updated_at = ?{updated_at}
+                       AND product_session_id > ?{session_id}))\n"
+        ));
+        next_index += 2;
+    }
+    if query.search.is_some() {
+        sql.push_str(&format!(" AND title LIKE ?{next_index} ESCAPE '\\'\n"));
+        next_index += 1;
+    }
+    sql.push_str(&format!(
+        " ORDER BY updated_at DESC, product_session_id ASC
+          LIMIT ?{next_index}"
+    ));
+    sql
+}
+
+/// Bind the parameters in the same order [`rank_page_sql`] numbered them.
+fn rank_page_params(
+    query: &ProductSessionPageQuery,
+    rank: i64,
+    resume: Option<&ProductSessionCursor>,
+    limit: i64,
+) -> Vec<Box<dyn rusqlite::ToSql>> {
+    let mut params: Vec<Box<dyn rusqlite::ToSql>> =
+        vec![Box::new(query.workspace_id.to_string()), Box::new(rank)];
+    if let Some(cursor) = resume {
+        params.push(Box::new(cursor.updated_at.clone()));
+        params.push(Box::new(cursor.session_id.to_string()));
+    }
+    if let Some(term) = &query.search {
+        params.push(Box::new(like_pattern(term)));
+    }
+    params.push(Box::new(limit));
+    params
 }
 
 fn list_and_validate_bindings(

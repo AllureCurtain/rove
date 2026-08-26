@@ -2759,7 +2759,7 @@ async fn forks_are_idempotent_independent_and_survive_parent_deletion() {
     assert_eq!(after_delete_fork.id, fork.id);
     assert!(
         store
-            .list_sessions(&workspace.id)
+            .list_all_sessions(&workspace.id)
             .await
             .unwrap()
             .iter()
@@ -2885,7 +2885,7 @@ async fn a_deleted_catalog_recovers_its_sessions_from_run_ownership_records() {
     );
 
     let sessions = recovered_store
-        .list_sessions(&workspace.id)
+        .list_all_sessions(&workspace.id)
         .await
         .expect("the workspace must come back with the session it owned");
     assert_eq!(sessions.len(), 1);
@@ -2996,7 +2996,7 @@ async fn recovery_leaves_a_catalog_that_still_knows_the_session_untouched() {
         "a session the catalog still knows must be reported as already present"
     );
 
-    let sessions = store.list_sessions(&workspace.id).await.unwrap();
+    let sessions = store.list_all_sessions(&workspace.id).await.unwrap();
     assert_eq!(sessions.len(), 1, "recovery must not duplicate the session");
     assert_eq!(
         sessions[0].title, "Renamed after the run",
@@ -3087,7 +3087,7 @@ async fn recovering_several_runs_points_the_session_at_its_highest_ordinal() {
         "ordinals must be contiguous and in order"
     );
     let restored = recovered_store
-        .list_sessions(&workspace.id)
+        .list_all_sessions(&workspace.id)
         .await
         .unwrap()
         .into_iter()
@@ -3288,7 +3288,7 @@ async fn a_run_already_bound_to_another_session_is_not_stolen_by_a_stale_record(
         "the original owner keeps the run"
     );
     assert_eq!(
-        store.list_sessions(&workspace.id).await.unwrap().len(),
+        store.list_all_sessions(&workspace.id).await.unwrap().len(),
         1,
         "a skipped session must leave no half-built row behind"
     );
