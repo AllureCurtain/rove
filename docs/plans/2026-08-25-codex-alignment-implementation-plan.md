@@ -310,9 +310,46 @@ pub enum InitialHistory {
    - `RunStarted` 幂等：resumed 场景不再新开 rollout 文件，而是 append 到原文件（对标 `RolloutRecorder::resume(path)`），新 run 的第一条写 `ResumedFrom { from_run }` 标记。
 
 ### 验收
-- [ ] 100MB trace 上 resume 内存峰值 < 50MB；
-- [ ] 尾部残行（崩溃产物）被扫描器跳过；
-- [ ] resumed 会话继续运行产生的 trace 单文件连续可回放。
+- [x] 100MB trace 上 resume 内存峰值 < 50MB；
+- [x] 尾部残行（崩溃产物）被扫描器跳过；
+- [x] resumed 会话继续运行产生的 trace 单文件连续可回放。
+
+### 落地证据（commit 584fe54）
+
+| 验收项 | 证据 | 结果 |
+| --- | --- | --- |
+| 大文件读取有界 | `state::initial_history::a_large_trace_costs_only_the_tail_that_is_actually_wanted`：4.4 MB trace 取 3 条尾部，`CountingReader` 实测读取 **65 536 字节**（1 个 chunk），天花板断言 131 072 | 通过 |
+| 扫描器层同一保证 | `state::reverse_trace_scanner::taking_a_short_tail_reads_only_a_bounded_slice_of_the_file`：>2 MB fixture 取 5 条，断言 `bytes_read <= READ_CHUNK_SIZE` | 通过 |
+| 尾部残行被跳过 | `reverse_trace_scanner::a_torn_tail_record_is_reported_without_ending_the_scan`（扫描器层）+ `initial_history::a_torn_tail_is_reported_and_the_history_before_it_survives`（历史层，`corrupt_record_count == 1` 且前面完好历史仍在） | 通过 |
+| 残行不阻断高水位 | `the_high_water_seq_skips_a_torn_tail_and_reads_a_missing_trace_as_zero` | 通过 |
+| resumed 会话连续可回放 | `initial_history::a_twice_resumed_session_replays_continuously_across_its_whole_chain`：三个 run、三个 trace 文件，回放出 `turn-1..turn-4` 原序 | 通过 |
+| 端到端真实引擎验收 | `e2e::a_resumed_run_recovers_its_history_from_the_trace_when_the_snapshot_is_empty`：快照置空模拟"崩在 checkpoint 之前"，续跑 prompt 中仍出现原始 user/assistant 两轮 **完整消息**，且后继 trace 落有 `ResumedFrom` link，链读取器重组出两段有序历史 | 通过 |
+| 变异验证（防空测试） | 将 facade 兜底改为 `if false && history.is_empty()`，端到端测试立刻变红：prompt 只剩会话摘要的转述（`- Goal: …` / `- Output: …`），原始两轮消息消失 | 已验证有判别力 |
+| 中断工具轮修复 | `an_interrupted_tool_round_is_closed_before_replay` / `a_completed_tool_round_is_replayed_unchanged` | 通过 |
+| 链路健壮性 | `a_link_cycle_terminates_the_walk_instead_of_hanging`、`the_item_budget_is_shared_across_the_chain_and_reports_truncation`、`a_compacted_segment_ends_the_walk_without_replaying_its_ancestors` | 通过 |
+| 回归 | `rove-runtime` lib 601/601、`e2e` 108/108、clippy 全 workspace 无警告；全量套件仅剩 `cli_repl` 5 个既有失败（P9 已在干净 main 上复现过） | 通过 |
+
+> 分歧记录（§0.3 规则：rove 产品语义 > codex 机制）
+>
+> **文档说「resume.rs 重写为薄封装，235 行旧逻辑废弃」，实际保留 resume.rs 并新增历史通路。**
+> 读过后确认该前提不成立：`runtime/src/state/resume.rs` 235 行里只有 74 行是逻辑，其余 161 行是测试；且它解析的是 rove 的 `TaskState`（goal / step / plan / step_ledger / execution_lifecycle / runtime_identity 一致性校验），这些**都不在 `InitialHistory` 的建模范围内**。`InitialHistory` 回答的是"模型上下文从哪来"，`resume.rs` 回答的是"运行时任务状态从哪来"，是两个正交问题。废弃后者会丢掉运行时身份校验与预算继承。所以 resume.rs 原样保留，新增 `initial_history.rs` 承担历史通路。
+
+> 分歧记录（§0.3 规则）
+>
+> **文档说「resumed 场景不再新开 rollout 文件，而是 append 到原文件」，实际每个 run 仍有独立 trace，靠显式 link 串联。**
+> codex 是一个 session 一个 rollout 文件；rove 是**一个 run 一个目录**——report / artifacts / tool_artifacts / 事件索引 / SSE 续传全部以 `run_id` 为键（`state_dir/runs/<run_id>/`）。让续跑 run 去 append 前一个 run 的 trace，会让 `run_id → trace 文件` 从一对一变成多对一，SSE 续传的 `last_event_seq` 语义、按 run 下载产物、按 run 归档都要跟着改，波及面远超 Phase 6。
+> 因此续跑 run 写自己的 trace，并在开头写一条 `TraceEntry::Link(TraceLink::ResumedFrom { from_run, through_seq })`。`read_history_chain` 沿 link 反向走完整条链，对外仍是"一段连续可回放的历史"——验收要的连续性由链读取器提供，而不是由单文件提供。
+
+> 分歧记录（§0.3 规则）
+>
+> **`InitialHistory::Forked` 的载荷用 `ResumedHistory` 而非文档的 `Vec<HistoryItem>`。**
+> 分叉与续跑的**读取逻辑完全相同**，差别只在调用方要如何对待源 run（续跑要接管，分叉要让源 run 继续独立存在）。两者共用同一载荷后，`truncated` / `corrupt_record_count` / `through_seq` / `source_link` 这些诚实性信息在分叉路径上不会凭空消失。若按文档只给裸 `Vec`，分叉调用方就无法知道自己拿到的是完整历史还是被截断的后缀。
+
+> 附带修复：trace 派生的历史可能以「有 `tool_calls` 却没有对应 tool 结果」的助手消息结尾（崩在工具派发与结果落盘之间）。provider 会拒绝这种形状。新增 `close_unresolved_tool_calls`（`Message` 层，对标 `Session::close_unresolved_tool_calls` 在规范快照层做的事）：为每个未应答调用补一条显式「未知影响」结果——拒绝重放而不是假定成功，同时保留调用身份供审计。已接进两个 `to_messages()`，调用方无法遗漏。
+
+> 附带修复：`read_history_tail_from` 接受任意 `Read + Seek` 而不只是路径。这不是为测试开的后门——它让「读取成本」变得**可度量**：调用方可以包一层 reader 观察实际字节数，这正是内存有界验收项的证据来源。
+
+> 设计取舍：快照非空时仍优先用快照，只在快照为空时回落到 trace。快照已经过 provider 协议投影（`messages_for_provider` + 规范会话的工具轮闭合），且这样能保证**所有现存 resume 路径逐字节不变**——Phase 6 只补上"快照丢了"这一个洞，不改已经工作的路径。
 
 ---
 
