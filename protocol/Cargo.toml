@@ -1,0 +1,17 @@
+[package]
+name = "rove-protocol"
+version.workspace = true
+edition.workspace = true
+description = "Wire protocol vocabulary for Rove: identifiers, lifecycle enums, and the protocol version"
+
+# This crate is the workspace leaf. It deliberately depends on nothing but
+# serialization primitives — no tokio, no axum, no utoipa, and no other rove
+# crate. `cargo tree -i tokio -p rove-protocol` and `cargo tree -i axum -p
+# rove-protocol` are both expected to stay empty; a test in `version.rs`
+# documents why that matters.
+[dependencies]
+serde.workspace = true
+ulid.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

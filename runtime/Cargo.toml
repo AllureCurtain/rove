@@ -17,6 +17,7 @@ regex.workspace = true
 reqwest.workspace = true
 rove-core.workspace = true
 rove-models.workspace = true
+rove-protocol.workspace = true
 rove-tools-text.workspace = true
 rusqlite.workspace = true
 serde.workspace = true

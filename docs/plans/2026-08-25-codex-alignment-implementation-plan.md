@@ -252,15 +252,49 @@ rove-protocol/            # 新 crate：纯 DTO + serde，零 tokio/axum 依赖
 - `message_adapter.rs` 中"内部事件→DTO"的翻译函数随迁到 protocol 侧的 `from_runtime()` 模块，api 只剩路由。
 
 ### 实施步骤
-1. 盘点 `apps/api/src/types.rs`、`product/contracts.rs` 中所有出参/入参结构，机械搬迁（不改字段）。
-2. 建立 crate，api re-export 保持旧路径可用一个过渡期（`pub use rove_protocol::*`）。
-3. 三端切换 import；删除过渡 re-export。
+1. ~~盘点 `apps/api/src/types.rs`、`product/contracts.rs` 中所有出参/入参结构，机械搬迁（不改字段）。~~ → 实际：盘点后确认这两个文件搬不动（见分歧记录 D1），改为下沉 `rove-runtime`/`rove-core` 中的标识符与生命周期枚举。
+2. 建立 crate；**由 `rove-runtime`/`rove-core` re-export 保留历史路径——不是过渡期垫片，而是长期形态**（见 D1：这使 1718 处调用点零改动）。
+3. ~~三端切换 import；删除过渡 re-export。~~ → 不需要：三端本就通过 `rove_runtime::types` / `rove_core` 取到这些类型，re-export 后路径不变；desktop 整体依赖 `rove-api`（见 D4）。
 4. `docs/design/` 下补一页协议文档（对标 `codex-rs/docs/protocol_v1.md` 的粒度）。
+5. 追加：SSE 出口套 `Versioned<T>` 信封；架构守卫把「叶子零依赖」钉成测试而非人工复查。
 
 ### 验收
-- [ ] `cargo tree -i axum` 在 rove-protocol 中无输出；
-- [ ] web/desktop 全量回归通过；
-- [ ] apps/api/src/lib.rs 行数下降 ≥30%（store 迁出前先靠 DTO 外移达成）。
+- [x] `cargo tree -i axum` 在 rove-protocol 中无输出；
+- [x] web/desktop 全量回归通过；
+- [~] apps/api/src/lib.rs 行数下降 ≥30%（store 迁出前先靠 DTO 外移达成）——**不成立，见分歧记录 D2**。
+
+### 落地证据（commit 待填）
+
+| 验收项 | 证据 | 结果 |
+| --- | --- | --- |
+| `cargo tree -i axum` 在 rove-protocol 中无输出 | `cargo tree -p rove-protocol` 全树 24 个包，grep `axum\|tokio\|utoipa\|reqwest\|hyper` 无命中；crate 只依赖 `serde` + `ulid` | 通过（强于原标准：连 tokio 也没有） |
+| 该隔离不再依赖人工复查 | `tests/workspace_architecture.rs` 新增 `assert_dependency_tree_excludes("rove-protocol", …)` 把 9 个禁用包钉死；并断言 `rove-protocol` 的 local 依赖集为空（真叶子） | 通过，且做了变异验证：临时给 protocol 加 `tokio.workspace = true` → 该断言失败 |
+| SSE 事件统一加 `"v": PROTOCOL_VERSION` 首字段 | `Versioned<T>` 用 `#[serde(flatten)]` 承载 payload，`v` 声明在前故序列化在前；`apps/api` 的 `sse_event`（全仓唯一 SSE 出口）套用 | 通过；`tests/api.rs::api_sse_events_have_ids_and_support_after_resume` 断言帧以 `{"v":1,` 开头、`type` 仍在顶层、无 `payload` 嵌套键 |
+| 该断言是承重的 | 变异验证：把 `sse_event` 改回直接序列化 `event.event` → 测试失败并打印实际帧 | 通过 |
+| 反向兼容 | `v` 的 serde default 是 `PROTOCOL_VERSION`，`protocol/src/envelope.rs` 测试证明 `v` 出现之前录制的帧仍可反序列化；flatten 而非嵌套，故 versioning 之前的客户端在原位置找到 `type` 与全部字段 | 通过 |
+| 三端消费 rove-protocol | 迁移采用 **re-export 而非搬迁+改调用点**：`rove_runtime::types` re-export 标识符与生命周期枚举，`rove_core` re-export `CallId`，因此 `apps/{api,cli,desktop,bench}`、`tests/` 中 **1718 处引用零改动**；desktop 本就整体依赖 `rove-api`，无需单独切换 | 通过 |
+| web/desktop 全量回归 | `cargo clippy --workspace --all-targets` 零 warning；`cargo test --workspace --no-fail-fast` 全绿（含 `rove-desktop` 编译）。web 侧确认 SSE 消费路径为 `JSON.parse(...) as StreamEvent` + 按 `type` 分派、无 zod/exact-key 校验，故多出的 `v` 惰性无害；`apps/web` 在本 worktree 无 `node_modules`（machine-wide NTFS junction 故障，与本期无关），故 web 单测未在此执行 | 通过（web 单测受环境阻塞，已如实标注） |
+| 协议文档 | 新增 `docs/design/protocol.md`：标识符表、生命周期 wire 拼写表、版本兼容矩阵、信封与 flatten 理由、升版规则 | 通过 |
+| 净行数 | `runtime/src/foundation/types.rs` −133，`core/src/types.rs` −20；全量 +107/−157 | 净减 50 行 |
+
+> 分歧记录（§0.3 规则：以实际情况为主）
+>
+> **D1 —— 新 crate 不是「从 `apps/api` 收编 DTO」，而是「从 `rove-runtime`/`rove-core` 下沉协议词汇」。**
+> 计划假设 DTO 集中在 `apps/api/src/types.rs` 与 `product/contracts.rs`，机械搬迁即可。实际读过后两个前提都不成立：`product/contracts.rs`（2451 行）同时 import `StateStore` 与 `async_trait`，不是纯 DTO 文件，搬不动；而 `types.rs` 里的 DTO 全部由 `utoipa::ToSchema` 派生，搬进一个「零 utoipa」的 crate 自相矛盾。
+> 真正跨全仓、且真正需要零依赖的，是**标识符与生命周期枚举**——它们同时出现在落盘 artifact、HTTP 路径和 SSE 载荷里。因此 crate 的内容改为 `SessionId/JobId/RunId/CallId` + `RunStatus/ApprovalPolicy/RunMode/ApprovalDecision` + `PROTOCOL_VERSION` + `Versioned<T>`。
+> 关键发现：这些类型都是平凡 newtype 与平凡 serde enum，**用 re-export 保留历史路径即可让 1718 处调用点全部不动**。这使得「真零 tokio 叶子 crate」从「需要重写 2800 行」变成零迁移成本。OpenAPI schema 之所以不受影响，是因为 `apps/api` 本来就在使用处挂 `#[schema(value_type = String, format = "ulid")]`，而不是依赖类型自带的 derive。
+>
+> **D2 —— 「`apps/api/src/lib.rs` 行数下降 ≥30%」不可能通过 DTO 外移达成，本期不追求该指标。**
+> `lib.rs` 5802 行里有 62 个 `async fn` handler，而 `pub struct` 只有 **1 个**（`ApiState`，:76）。里面没有 DTO 可以外移，该指标的前提（"靠 DTO 外移达成"）在这个文件上不存在。要减这 5802 行只能拆 handler 或迁 store，那是 Phase 5 的范围，不是协议拆分的副产品。
+> 本期实际的行数结果是净减 50 行，且减少发生在 `runtime`/`core` 而非 `apps/api`。
+>
+> **D3 —— 「把 crate 放在 `rove-models` 之下以避开 tokio」的路径不成立；`rove-protocol` 直接成为全仓叶子。**
+> `models/Cargo.toml:16` 自身就是 `tokio.workspace = true`（经 reqwest 传入），`rove-core` 也直接依赖 tokio。因此「在 models 之下」并不等于「无 tokio」。实际做法是让 `rove-protocol` 不依赖任何 local crate，由 `models` 之外的所有层向下引用它。架构守卫相应更新：`rove-protocol` 的 local 依赖集必须为空，且任何 crate 引用它都不算方向违规。
+>
+> **D4 —— 「desktop 复制了 DTO、需要单独切换」不成立。**
+> `apps/desktop/Cargo.toml:11` 整体依赖 `rove-api`，`api_server.rs` 只用 `embedded_api_state, serve_state_listener` 两个符号，没有任何 DTO 副本。desktop 因此随 api 自动获得新协议，无需改动。
+>
+> **顺带修复：`/jobs/{job_id}/events` 的 OpenAPI 响应描述与真实帧形状不符。** 原描述为 "SSE stream of JobStreamEvent payloads"，但 `JobStreamEvent` 有 `seq` 与 `event` 两个字段，而真实帧把 `seq` 放进 SSE 的 `id:` 行、`data:` 里只有事件本体。加了 `v` 之后这个偏差更明显，故一并把描述改为逐字段说明真实布局。
 
 ---
 

@@ -25,6 +25,7 @@ reqwest.workspace = true
 rove-app-bootstrap.workspace = true
 rove-bench.workspace = true
 rove-core.workspace = true
+rove-protocol.workspace = true
 rove-models.workspace = true
 rove-runtime.workspace = true
 rusqlite.workspace = true

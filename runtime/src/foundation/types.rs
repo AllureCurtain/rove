@@ -9,21 +9,17 @@ pub use rove_core::{
 };
 pub use rove_models::{Message, ModelToolSchema, Role, ToolCallRef, Usage};
 use serde::{Deserialize, Serialize};
-use ulid::Ulid;
 
 use crate::session::{Session, SessionError};
 
-/// Unique identifier for a session (user-level, spans multiple jobs).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct SessionId(pub Ulid);
-
-/// Unique identifier for a job (one task submission).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct JobId(pub Ulid);
-
-/// Unique identifier for a single engine run (one main-loop execution).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct RunId(pub Ulid);
+/// Identifiers and lifecycle vocabulary that cross the wire.
+///
+/// These are defined in `rove-protocol` — the workspace leaf crate, which
+/// depends on nothing but serde and ulid — and re-exported here so that every
+/// `rove_runtime::types::SessionId` import keeps resolving unchanged.
+pub use rove_protocol::{
+    ApprovalDecision, ApprovalPolicy, JobId, RunId, RunMode, RunStatus, SessionId,
+};
 
 /// Request to run a single engine loop.
 #[derive(Debug, Clone)]
@@ -291,78 +287,6 @@ impl TaskPlan {
     }
 }
 
-impl SessionId {
-    pub fn new() -> Self {
-        Self(Ulid::new())
-    }
-}
-
-impl Default for SessionId {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl JobId {
-    pub fn new() -> Self {
-        Self(Ulid::new())
-    }
-}
-
-impl Default for JobId {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl RunId {
-    pub fn new() -> Self {
-        Self(Ulid::new())
-    }
-}
-
-impl Default for RunId {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-macro_rules! impl_runtime_id_from_str {
-    ($id:ident) => {
-        impl std::str::FromStr for $id {
-            type Err = String;
-
-            fn from_str(value: &str) -> Result<Self, Self::Err> {
-                Ulid::from_string(value)
-                    .map(Self)
-                    .map_err(|error| error.to_string())
-            }
-        }
-    };
-}
-
-impl_runtime_id_from_str!(SessionId);
-impl_runtime_id_from_str!(JobId);
-impl_runtime_id_from_str!(RunId);
-
-impl std::fmt::Display for SessionId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl std::fmt::Display for JobId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl std::fmt::Display for RunId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
 /// Why a run terminated.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -379,47 +303,6 @@ pub enum TerminationReason {
     Error,
     /// Cancelled by user or system.
     Cancelled,
-}
-
-/// Current status of a run.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RunStatus {
-    Init,
-    Running,
-    Done,
-    Error,
-    Cancelled,
-    Interrupted,
-}
-
-/// Tool approval policy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ApprovalPolicy {
-    Ask,
-    Auto,
-    Never,
-}
-
-/// Execution profile selected by the host before a run starts.
-///
-/// Review is deliberately a runtime-owned mode rather than a prompt hint. It
-/// is carried into every tool invocation and checked again at dispatch.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum RunMode {
-    #[default]
-    Normal,
-    Review,
-}
-
-/// A concrete approval decision supplied by an interface.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ApprovalDecision {
-    Approve,
-    Reject,
 }
 
 /// Approval request sent from core to an interface before a destructive tool runs.

@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "protocol",
     "models",
     "core",
     "runtime",
@@ -52,6 +53,7 @@ regex = "1"
 reqwest = { version = "0.13.3", features = ["json", "stream"] }
 rove-core = { path = "core" }
 rove-models = { path = "models" }
+rove-protocol = { path = "protocol" }
 rove-runtime = { path = "runtime" }
 rove-tools-text = { path = "tools-text" }
 rove-app-bootstrap = { path = "apps/bootstrap" }

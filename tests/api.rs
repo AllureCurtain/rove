@@ -6281,6 +6281,25 @@ async fn api_sse_events_have_ids_and_support_after_resume() {
     assert!(text.lines().any(|line| line == "id: 1"));
     assert!(text.contains("event: run_started"));
 
+    // Every frame is version-stamped, and the payload stays flattened so a
+    // client written before versioning still reads `type` and the event fields
+    // off the top level.
+    let first_data = text
+        .lines()
+        .find_map(|line| line.strip_prefix("data: "))
+        .expect("expected at least one data frame");
+    assert!(
+        first_data.starts_with(&format!("{{\"v\":{},", rove_protocol::PROTOCOL_VERSION)),
+        "expected the protocol version to lead the frame, got {first_data}"
+    );
+    let decoded: serde_json::Value = serde_json::from_str(first_data).unwrap();
+    assert_eq!(decoded["v"], rove_protocol::PROTOCOL_VERSION);
+    assert_eq!(decoded["type"], "run_started");
+    assert!(
+        decoded.get("payload").is_none(),
+        "the event body must be flattened, not nested under a key"
+    );
+
     let after_first = app
         .clone()
         .oneshot(

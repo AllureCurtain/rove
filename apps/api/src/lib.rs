@@ -792,7 +792,7 @@ async fn test_provider(
         ("after" = Option<u64>, Query, description = "Replay only events with seq greater than this value")
     ),
     responses(
-        (status = 200, description = "Server-Sent Events stream of JobStreamEvent payloads", body = JobStreamEvent, content_type = "text/event-stream"),
+        (status = 200, description = "Server-Sent Events stream. Each frame carries `seq` in the SSE `id:` field, the variant name in `event:`, and a `data:` body of `{\"v\": PROTOCOL_VERSION, ...StreamEvent}` — the protocol version first, then the event's own fields flattened alongside `type`.", body = JobStreamEvent, content_type = "text/event-stream"),
         (status = 400, description = "Invalid Last-Event-ID header", body = serde_json::Value, content_type = "application/json"),
         (status = 500, description = "Failed to load persisted events", body = serde_json::Value, content_type = "application/json")
     )
@@ -4654,10 +4654,14 @@ fn approval_status(decision: ApprovalDecision) -> &'static str {
 
 fn sse_event(event: JobStreamEvent) -> Result<Event, serde_json::Error> {
     let name = event.event.event_name();
+    // Every frame carries the protocol version as its first field. The payload
+    // is flattened, so a client written before versioning still finds `type`
+    // and the event fields exactly where they were.
+    let versioned = rove_protocol::Versioned::now(&event.event);
     Ok(Event::default()
         .id(event.seq.to_string())
         .event(name)
-        .data(serde_json::to_string(&event.event)?))
+        .data(serde_json::to_string(&versioned)?))
 }
 
 fn parse_last_event_id(headers: &HeaderMap) -> Result<Option<u64>, ApiError> {

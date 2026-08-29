@@ -4287,6 +4287,7 @@ dependencies = [
  "rove-bench",
  "rove-core",
  "rove-models",
+ "rove-protocol",
  "rove-runtime",
  "rusqlite",
  "serde",
@@ -4386,12 +4387,12 @@ dependencies = [
  "async-trait",
  "futures",
  "rove-models",
+ "rove-protocol",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",
- "ulid",
 ]
 
 [[package]]
@@ -4435,6 +4436,7 @@ dependencies = [
  "rove-cli",
  "rove-core",
  "rove-models",
+ "rove-protocol",
  "rove-runtime",
  "rusqlite",
  "serde",
@@ -4467,6 +4469,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rove-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "ulid",
+]
+
+[[package]]
 name = "rove-runtime"
 version = "0.1.0"
 dependencies = [
@@ -4483,6 +4494,7 @@ dependencies = [
  "reqwest",
  "rove-core",
  "rove-models",
+ "rove-protocol",
  "rove-tools-text",
  "rusqlite",
  "serde",
