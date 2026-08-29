@@ -518,10 +518,30 @@ pub enum InitialHistory {
 - 压缩点写入 trace：`TraceEntry::Compaction { covered_ordinals, summary_item_ref }`。
 
 ### 验收
-- [ ] 长对话压缩后 resume，模型上下文 ≤ 阈值且含摘要；
-- [ ] 压缩前的完整历史仍可从 trace 导出（审计不丢）。
+- [x] 长对话压缩后 resume，模型上下文 ≤ 阈值且含摘要；
+- [x] 压缩前的完整历史仍可从 trace 导出（审计不丢）。
 
 > Remote/服务端压缩（compact_remote_v2 + 图片预算）明确列为 out of scope，待自托管压缩验证后再评估。
+
+### 落地证据（commit 2ff2266）
+
+| 验收项 | 证据 | 结果 |
+| --- | --- | --- |
+| 压缩后 resume 上下文含摘要且不含被替换历史 | `e2e::a_compacted_session_resumes_with_the_summary_instead_of_its_history`：跑完一轮真实 run → 用 `/compact` 走的同一个 `Engine::compact_resume_state()` 压缩快照 → 从压缩后快照 resume，`CapturingFakeModelClient` 抓到的**实际 prompt** 含 `COMPACTED_SUMMARY_ZETA`，且**不含** `ORIGINAL_QUESTION_EPSILON` / `ORIGINAL_REPLY_DELTA`。两个方向都断言：只断言「摘要在」的话，「摘要追加但历史照留」（prompt 变更大，与压缩目的相反）也会绿 | 通过 |
+| 压缩前完整历史仍可从 trace 导出 | `e2e::a_compaction_leaves_the_full_history_exportable_from_the_trace`：压缩前后 `trace.jsonl` **字节完全相等**（手动压缩不写 trace），且 `read_history_tail` 仍导出 `AUDITED_QUESTION_THETA` + `AUDITED_REPLY_ETA` | 通过 |
+| 手动压缩绕过 enabled 开关但仍受熔断约束 | `compaction::manual_compaction_runs_while_the_automatic_switch_is_off`：`CompactionRuntime::new(false, 3)` 下 `Automatic` 返回 `None`、`Manual` 正常产出且 `auto_triggered == false`。为此把 `breaker_tripped()` 从 `circuit_open()` 拆出——后者在开关关闭时恒为 `false`（UI 语义正确），直接用作手动路径的门会让失败模型被无限重试 | 通过 |
+| 压缩当轮就把摘要发给模型 | `e2e::a_compacting_turn_sends_the_summary_it_just_generated`：React 原本 build context → 发 `PromptBuilt` → 压缩 → 却把压缩前就建好的 context 发出去，于是压缩那一轮「历史没了、摘要也还没到」，摘要要下一轮才生效。现改为压缩后重建 context 并复查 `over_hard_limit`（PlanReact 本来就是对的，此处对齐两个 loop） | 通过 |
+| 摘要落在 resume 真正读的字段 | `types::compacting_a_checkpointless_session_still_carries_the_summary`：`continue_from_summary` 原先只写 `TaskState::summary`，而该字段每个跑完的 run 都会被填成截断的 final output（`artifacts.rs` 的 `RunCompleted` / `finalize`），因此无法用来承载压缩而不让普通 resume 看起来像被压缩过。现摘要写入 `checkpoint.summary`（facade 实际读取的字段），原本无 checkpoint 的会话由 `PromptCheckpoint::carrying_summary()` 补一个最小 checkpoint | 通过 |
+| Phase 6 回填不再撤销压缩 | `types::only_a_compacted_state_reports_its_history_as_compacted_away` + 变异验证：Phase 6 把「历史为空」当作「快照丢了，从 trace 回填」，正好把压缩刚丢掉的历史又装回来，prompt 比压缩前更大。`history_was_compacted_away()` 区分「故意空」（有 checkpoint 且带摘要、session 与 preserved_tail 皆空）与「崩在 checkpoint 之前」（根本没有 checkpoint），仅前者豁免回填 | 通过 |
+| 变异验证（防空测试） | 把 facade 的豁免条件改成 `!false` 后，`a_compacted_session_resumes_with_the_summary_instead_of_its_history` **失败**；把 `selection_from_config` 的 fake 分支改成 `if false &&` 后，`an_explicit_fake_model_outranks_a_configured_real_profile` **失败**。两个断言都确实承重 | 通过 |
+| `/compact` 命令接入 | `SlashCommand::Compact` / `TerminalAction::Compact` / `format_repl_help` / `command_hint_line` 均已接入并有单测（`slash_command_parser_recognizes_first_pass_commands`、`to_action` 映射）。只改内存中的 resume snapshot，落盘交给下一条 prompt 自己那个 run 的正常 checkpoint 路径，因此 `/compact` 后直接退出不会改动已存会话 | 通过 |
+| 回归 | `cargo fmt --all --check` 干净；`cargo clippy --workspace --all-targets` 零警告；`cargo test --workspace --no-fail-fast` 除下方 P7 计时项外全绿（含 compaction 10/10、resume 14/14、`cli_repl` 7/7） | 通过 |
+
+> 分歧记录（§0.3 规则）：设计里的 `TraceEntry::Compaction { covered_ordinals, summary_item_ref }` **未落地**。手动压缩不启动 run，也就没有可归属的 trace 文件与 seq 序列，硬写会凭空造出一个不存在的 run 的 trace 行；而审计不丢这条要求由「原 trace 一字节不改」直接满足（见上表第二行），比新增条目更强。自动压缩沿用既有 `StreamEvent::PromptCompacted` 落 UI 事件。待 Phase 6 的 rollout recorder 接管写入端后，再评估是否需要独立的 Compaction 条目。
+>
+> 分歧记录（§0.3 规则）：`CompactedItem` 已存在于 `rove_core::history::HistoryItem`（Phase 2 落位），但本期压缩走的是 checkpoint 摘要通道而非在 history 序列里插入 `Compacted` 条目——后者要求写入端同时改 trace 与 session 投影，属于 Phase 6 recorder 的职责范围。
+
+> 顺带修掉（非本 Phase 范围，独立 commit `77f1787`）：`--model fake` 在配置了 active profile 的机器上会解析到那个真实 profile，把字面模型名 `"fake"` 发给它——一次真实计费请求，且必然失败（SiliconFlow 回 HTTP 400 "Model does not exist"）。这也是 `cli_repl` 5 个用例在任何有真实 `~/.rove/config.toml` 的机器上（本分支与 main 同样）失败的原因。现 fake 优先于 active profile，并给这批用例钉上 `ROVE_CONFIG_ROOT` 隔离。
 
 ---
 
