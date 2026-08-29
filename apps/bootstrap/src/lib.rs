@@ -65,8 +65,8 @@ pub use session_selection::{
     PersistedSessionSelection, SessionSelectionError, SessionSelectionStore,
 };
 pub use user_config::{
-    USER_CONFIG_SCHEMA_VERSION, UserConfigDocument, UserConfigLoader, UserConfigPaths,
-    UserConfigWriter,
+    USER_CONFIG_ROOT_ENV, USER_CONFIG_SCHEMA_VERSION, UserConfigDocument, UserConfigLoader,
+    UserConfigPaths, UserConfigWriter,
 };
 pub use user_state::{
     DATA_ROOT_ENV, LEGACY_STATE_DIR, McpCatalogAuthority, UserStateError, UserStateRoots,

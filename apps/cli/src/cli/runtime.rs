@@ -396,23 +396,38 @@ fn selection_from_config(
     config: &AppConfig,
     catalog: &ProviderCatalog,
 ) -> anyhow::Result<ModelSelection> {
+    // `fake` is resolved before the configured active profile, because it is
+    // never a model any real provider serves: it only ever arrives as an
+    // explicit request for the offline client (`--model fake`, or a config that
+    // says so). Letting the active profile win here pairs a real endpoint with
+    // the literal model name "fake", which the provider rejects — so an explicit
+    // request for the offline model turned into a billed network call that
+    // failed. Consulting the profile's own type is what makes the intent
+    // survive: a fake-typed profile short-circuits to FakeModelClient later in
+    // `assemble_run`.
+    if config.provider.model == "fake" {
+        let fake_profile = catalog
+            .profiles()
+            .into_iter()
+            .find(|profile| profile.provider_type == "fake")
+            .map(|profile| profile.id)
+            .map(Ok)
+            .unwrap_or_else(|| ProviderProfileId::new("default"))?;
+        if catalog.profile_config(&fake_profile).is_ok() {
+            return Ok(ModelSelection {
+                profile_id: fake_profile,
+                model: "fake".to_string(),
+                reasoning: "default".to_string(),
+                revision: catalog.revision().to_string(),
+            });
+        }
+    }
     if let Some(active) = config.provider.active.as_deref() {
         let profile_id = ProviderProfileId::new(active.to_string())?;
         if catalog.profile_config(&profile_id).is_ok() {
             return Ok(ModelSelection {
                 profile_id,
                 model: config.provider.model.clone(),
-                reasoning: "default".to_string(),
-                revision: catalog.revision().to_string(),
-            });
-        }
-    }
-    if config.provider.model == "fake" {
-        let profile_id = ProviderProfileId::new("default")?;
-        if catalog.profile_config(&profile_id).is_ok() {
-            return Ok(ModelSelection {
-                profile_id,
-                model: "fake".to_string(),
                 reasoning: "default".to_string(),
                 revision: catalog.revision().to_string(),
             });
@@ -479,7 +494,108 @@ mod tests {
     use rove_runtime::agents::AgentActivationError;
     use rove_runtime::types::ApprovalPolicy;
 
-    use super::{CliRuntimeInteraction, CliRuntimeOptions, build_cli_runtime};
+    use super::{
+        CliRuntimeInteraction, CliRuntimeOptions, build_cli_runtime, selection_from_config,
+    };
+
+    /// `--model fake` must not be routed to a real provider.
+    ///
+    /// A configured machine has an active real profile, and the fake model is a
+    /// name no real endpoint serves. Pairing the two sent a live, billable
+    /// request that could only fail — so the offline model has to win over the
+    /// configured active profile, not the other way round.
+    #[test]
+    fn an_explicit_fake_model_outranks_a_configured_real_profile() {
+        use rove_app_bootstrap::provider::ProviderProfileConfig;
+        use rove_app_bootstrap::provider_catalog::ProviderCatalog;
+        use rove_app_bootstrap::{AppConfig, UserConfigDocument};
+
+        fn profile(provider_type: &str, base_url: &str, model: &str) -> ProviderProfileConfig {
+            ProviderProfileConfig {
+                label: None,
+                provider_type: provider_type.to_string(),
+                base_url: base_url.to_string(),
+                model: model.to_string(),
+                auth: Default::default(),
+                headers: Default::default(),
+                options: Default::default(),
+                protocol_options: serde_json::json!({}),
+            }
+        }
+
+        let mut document = UserConfigDocument::default();
+        document.provider.profiles.insert(
+            "real-provider".to_string(),
+            profile("openai", "https://api.example.invalid/v1", "real-model"),
+        );
+        document
+            .provider
+            .profiles
+            .insert("offline".to_string(), profile("fake", "", "fake-raw"));
+        document.model.default_profile = Some("real-provider".to_string());
+        let catalog = ProviderCatalog::from_document(document).unwrap();
+
+        let mut config = AppConfig::default();
+        config.provider.active = Some("real-provider".to_string());
+        config.provider.model = "fake".to_string();
+
+        let selection = selection_from_config(&config, &catalog).unwrap();
+
+        assert_eq!(
+            selection.profile_id.to_string(),
+            "offline",
+            "an explicit fake model selected the real profile, so the run would \
+             have made a live request for a model that provider does not serve"
+        );
+        assert_eq!(selection.model, "fake");
+    }
+
+    /// The carve-out above is narrow: any other model still follows the
+    /// configured active profile.
+    #[test]
+    fn a_real_model_still_follows_the_configured_active_profile() {
+        use rove_app_bootstrap::provider::ProviderProfileConfig;
+        use rove_app_bootstrap::provider_catalog::ProviderCatalog;
+        use rove_app_bootstrap::{AppConfig, UserConfigDocument};
+
+        let mut document = UserConfigDocument::default();
+        document.provider.profiles.insert(
+            "real-provider".to_string(),
+            ProviderProfileConfig {
+                label: None,
+                provider_type: "openai".to_string(),
+                base_url: "https://api.example.invalid/v1".to_string(),
+                model: "real-model".to_string(),
+                auth: Default::default(),
+                headers: Default::default(),
+                options: Default::default(),
+                protocol_options: serde_json::json!({}),
+            },
+        );
+        document.provider.profiles.insert(
+            "offline".to_string(),
+            ProviderProfileConfig {
+                label: None,
+                provider_type: "fake".to_string(),
+                base_url: String::new(),
+                model: "fake-raw".to_string(),
+                auth: Default::default(),
+                headers: Default::default(),
+                options: Default::default(),
+                protocol_options: serde_json::json!({}),
+            },
+        );
+        let catalog = ProviderCatalog::from_document(document).unwrap();
+
+        let mut config = AppConfig::default();
+        config.provider.active = Some("real-provider".to_string());
+        config.provider.model = "real-model".to_string();
+
+        let selection = selection_from_config(&config, &catalog).unwrap();
+
+        assert_eq!(selection.profile_id.to_string(), "real-provider");
+        assert_eq!(selection.model, "real-model");
+    }
 
     #[test]
     fn custom_interaction_does_not_fall_back_to_stdin() {
