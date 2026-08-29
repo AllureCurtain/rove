@@ -419,22 +419,35 @@ async fn a_deep_page_seeks_the_index_instead_of_sorting_the_workspace() {
     );
 }
 
-/// Time a walk deep into a 10k-session workspace.
+/// A page of a 10k-session workspace stays inside the interactive latency budget.
 ///
-/// This is a budget check, not a proof of the paging design. Two things it was
-/// measured *not* to catch, so nobody reads more into a green run than is there:
+/// This is a budget check, not a proof of the paging design, and it is worth
+/// being precise about how little it can prove. Measured on this fixture:
 ///
-/// - Reintroducing the sort raises per-page cost by roughly half on this
-///   fixture, which stays well inside any threshold loose enough to survive a
-///   shared machine.
-/// - Page latency under the sort is *also* flat with depth, because the sort is
-///   over one rank group whose size does not depend on how far in the page is.
-///   So a "deep pages cost no more than early ones" ratio does not separate the
-///   two shapes either.
+/// - A page that seeks the index costs ~0.7ms of SQLite time. A page that scans
+///   the whole 11k-row table costs ~1.8ms. Meanwhile a single `list_sessions`
+///   call measures ~7ms end to end, nearly all of it fixed per-query overhead.
+///   **The noise floor is larger than the entire signal**, so no timing
+///   assertion here — absolute or ratio-based — can tell a seek from a scan.
+///   Dropping both indexes was tried: median page cost moved from 1.03x to
+///   1.19x of a ten-times-smaller workspace, which no honest threshold catches.
+/// - Reintroducing the `ORDER BY` sort raises per-page cost by roughly half, and
+///   stays flat with depth while doing it, because the sort is over one rank
+///   group whose size does not depend on how deep the page is.
 ///
-/// The query-plan test above is the actual guarantee. This test's job is to
-/// notice an order-of-magnitude regression — a listing that went back to
-/// scanning without an index, or a per-page cost that grows with the workspace.
+/// So `a_deep_page_seeks_the_index_instead_of_sorting_the_workspace` above is the
+/// real guarantee — it reads the query plan, which states the access shape
+/// instead of inferring it from a clock. What this test defends is narrower and
+/// still worth having: that a page of a 10k-session workspace is not
+/// *catastrophically* slow, the order-of-magnitude regression a plan assertion
+/// would not notice (an N+1 introduced per row, say, or a full rebuild per page).
+///
+/// The budget is asserted on the **median** page, not p95. An earlier version
+/// used p95 and was flaky: the suite runs in parallel on one machine, so the same
+/// commit passed and failed across runs on scheduler noise in the tail. Failing
+/// the median means more than half of the pages blew the budget, which is a
+/// regression and not a hiccup. p95 is still printed, because it is what you want
+/// to see when reading a failure.
 #[tokio::test]
 async fn paging_deep_into_a_ten_thousand_session_workspace_stays_flat() {
     let temp = TempDir::new().unwrap();
@@ -463,17 +476,19 @@ async fn paging_deep_into_a_ten_thousand_session_workspace_stays_flat() {
     let early: std::time::Duration = timings[..10].iter().sum();
     let deep: std::time::Duration = timings[timings.len() - 10..].iter().sum();
     timings.sort_unstable();
+    let median = timings[timings.len() / 2];
     let p95 = timings[timings.len() * 95 / 100];
     // Printed rather than asserted: the depth comparison is useful when reading a
     // failure and misleading as a gate, for the reason in the doc comment.
     println!(
-        "pages: {}, p95: {p95:?}, first ten: {early:?}, last ten: {deep:?}",
+        "pages: {}, median: {median:?}, p95: {p95:?}, first ten: {early:?}, last ten: {deep:?}",
         timings.len()
     );
 
     assert!(
-        p95 < std::time::Duration::from_millis(50),
-        "p95 page latency was {p95:?} across {} pages of a 10k-session workspace",
+        median < std::time::Duration::from_millis(50),
+        "median page latency was {median:?} (p95 {p95:?}) across {} pages of a \
+         10k-session workspace",
         timings.len()
     );
 }
