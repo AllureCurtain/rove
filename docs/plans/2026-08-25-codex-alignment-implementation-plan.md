@@ -263,7 +263,7 @@ rove-protocol/            # 新 crate：纯 DTO + serde，零 tokio/axum 依赖
 - [x] web/desktop 全量回归通过；
 - [~] apps/api/src/lib.rs 行数下降 ≥30%（store 迁出前先靠 DTO 外移达成）——**不成立，见分歧记录 D2**。
 
-### 落地证据（commit 待填）
+### 落地证据（commit aefa1e3）
 
 | 验收项 | 证据 | 结果 |
 | --- | --- | --- |
