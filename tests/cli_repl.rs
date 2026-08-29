@@ -1,7 +1,20 @@
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
-use rove_app_bootstrap::{DATA_ROOT_ENV, WorkspaceStateLayout};
+use rove_app_bootstrap::{DATA_ROOT_ENV, USER_CONFIG_ROOT_ENV, WorkspaceStateLayout};
+
+/// A CLI invocation that cannot see the developer's own provider config.
+///
+/// These tests spawn the real binary, so without this they read
+/// `~/.rove/config.toml` and inherit whatever profile the machine has active —
+/// which on a configured machine means `--model fake` resolves against a real
+/// endpoint and the assertions fail for reasons that have nothing to do with the
+/// code under test. `config_root` must outlive the returned command.
+fn isolated_rove(config_root: &tempfile::TempDir) -> Command {
+    let mut command = Command::new(rove_bin());
+    command.env(USER_CONFIG_ROOT_ENV, config_root.path());
+    command
+}
 
 fn workspace_root() -> PathBuf {
     let mut root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -40,7 +53,8 @@ fn repl_subcommand_accepts_exit_command_and_exits_zero() {
     let tmp = tempfile::TempDir::new().unwrap();
     let data_root = tempfile::TempDir::new().unwrap();
     let layout = WorkspaceStateLayout::resolve(data_root.path(), tmp.path());
-    let output = Command::new(rove_bin())
+    let config_root = tempfile::TempDir::new().unwrap();
+    let output = isolated_rove(&config_root)
         .env(DATA_ROOT_ENV, data_root.path())
         .arg("repl")
         .arg("--cwd")
@@ -79,7 +93,8 @@ fn repl_subcommand_accepts_exit_command_and_exits_zero() {
 fn repl_status_command_prints_runtime_context() {
     let tmp = tempfile::TempDir::new().unwrap();
     let data_root = tempfile::TempDir::new().unwrap();
-    let output = Command::new(rove_bin())
+    let config_root = tempfile::TempDir::new().unwrap();
+    let output = isolated_rove(&config_root)
         .env(DATA_ROOT_ENV, data_root.path())
         .arg("repl")
         .arg("--cwd")
@@ -121,7 +136,8 @@ fn repl_status_command_prints_runtime_context() {
 #[test]
 fn repl_fake_run_uses_compact_sections() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let output = Command::new(rove_bin())
+    let config_root = tempfile::TempDir::new().unwrap();
+    let output = isolated_rove(&config_root)
         .arg("repl")
         .arg("--cwd")
         .arg(tmp.path())
@@ -162,7 +178,8 @@ fn repl_fake_run_uses_compact_sections() {
 #[test]
 fn message_enters_repl_runs_first_prompt_and_accepts_exit() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let output = Command::new(rove_bin())
+    let config_root = tempfile::TempDir::new().unwrap();
+    let output = isolated_rove(&config_root)
         .arg("--cwd")
         .arg(tmp.path())
         .arg("--model")
@@ -196,7 +213,8 @@ fn message_enters_repl_runs_first_prompt_and_accepts_exit() {
 #[test]
 fn unquoted_multi_word_message_enters_repl_as_initial_prompt() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let output = Command::new(rove_bin())
+    let config_root = tempfile::TempDir::new().unwrap();
+    let output = isolated_rove(&config_root)
         .arg("--cwd")
         .arg(tmp.path())
         .arg("--model")
@@ -227,7 +245,8 @@ fn unquoted_multi_word_message_enters_repl_as_initial_prompt() {
 #[test]
 fn exec_message_does_not_wait_for_repl_input() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let output = Command::new(rove_bin())
+    let config_root = tempfile::TempDir::new().unwrap();
+    let output = isolated_rove(&config_root)
         .arg("exec")
         .arg("--cwd")
         .arg(tmp.path())
@@ -252,7 +271,8 @@ fn exec_message_does_not_wait_for_repl_input() {
 #[test]
 fn exec_unquoted_multi_word_message_joins_message() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let output = Command::new(rove_bin())
+    let config_root = tempfile::TempDir::new().unwrap();
+    let output = isolated_rove(&config_root)
         .arg("exec")
         .arg("--cwd")
         .arg(tmp.path())

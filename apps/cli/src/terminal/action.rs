@@ -11,6 +11,7 @@ pub enum TerminalAction {
     ResumeRun(String),
     ShowStatus,
     ShowSessions,
+    Compact,
     Clear,
     Help,
     Exit,

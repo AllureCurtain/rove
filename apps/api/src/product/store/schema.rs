@@ -6,7 +6,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 use crate::product::{ProductErrorCode, ProductStoreError};
 
-const CURRENT_SCHEMA_VERSION: i64 = 14;
+const CURRENT_SCHEMA_VERSION: i64 = 15;
 const MAX_BUSY_TIMEOUT_MS: u64 = 120_000;
 
 const MIGRATION_001: &str = r#"
@@ -308,6 +308,29 @@ CREATE INDEX IF NOT EXISTS idx_product_review_findings_order
     ON product_review_findings(review_id, sort_key, finding_id);
 "#;
 
+/// Codex alignment Phase 7: make the session listing order seekable.
+///
+/// The listing has always sorted live sessions before archived ones, and
+/// `idx_product_sessions_workspace_list` could not serve that leading term, so
+/// SQLite sorted the whole workspace on every request. That was tolerable only
+/// because the listing also stopped at `MAX_PRODUCT_SESSIONS` and silently
+/// dropped the tail.
+///
+/// Indexing the `CASE` expression itself lets one index cover the full sort
+/// key, which turns "the page after this row" into a range scan and keeps the
+/// archived-last grouping the UI already relies on. Dropping the grouping would
+/// have been the easier way to get a keyset order; it would also have silently
+/// reshuffled every client's list.
+const MIGRATION_015: &str = r#"
+CREATE INDEX IF NOT EXISTS idx_product_sessions_workspace_page
+    ON product_sessions(
+        workspace_id,
+        CASE WHEN status = 'archived' THEN 1 ELSE 0 END ASC,
+        updated_at DESC,
+        product_session_id ASC
+    );
+"#;
+
 const MIGRATION_002: &str = r#"
 ALTER TABLE product_preferences
 ADD COLUMN revision INTEGER NOT NULL DEFAULT 0
@@ -535,7 +558,7 @@ impl ProductDatabase {
 
     pub(super) fn initialize(&self) -> Result<(), ProductStoreError> {
         let mut connection = self.open_connection(true)?;
-        apply_migrations(&mut connection)
+        apply_migrations(&mut connection, self.path.as_ref())
     }
 
     pub(super) fn connect(&self) -> Result<Connection, ProductStoreError> {
@@ -572,7 +595,18 @@ impl ProductDatabase {
     }
 }
 
-fn apply_migrations(connection: &mut Connection) -> Result<(), ProductStoreError> {
+/// Bring the product store up to [`CURRENT_SCHEMA_VERSION`].
+///
+/// Each migration already commits inside an `IMMEDIATE` transaction, which
+/// makes any single step atomic. What that does not cover is the *sequence*:
+/// two processes starting together could interleave steps, so a peer could
+/// observe a schema that is half-way between two versions. The cross-process
+/// barrier closes that window, and is taken only when work is actually pending
+/// so the already-current startup path does no locking.
+fn apply_migrations(
+    connection: &mut Connection,
+    database_path: &Path,
+) -> Result<(), ProductStoreError> {
     connection
         .execute_batch(
             r#"
@@ -585,20 +619,26 @@ fn apply_migrations(connection: &mut Connection) -> Result<(), ProductStoreError
         )
         .map_err(|_| database_error(true))?;
 
-    let newest: Option<i64> = connection
-        .query_row(
-            "SELECT MAX(version) FROM product_schema_migrations",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(|_| database_error(true))?;
-    if newest.is_some_and(|version| version > CURRENT_SCHEMA_VERSION) {
-        return Err(ProductStoreError::new(
-            ProductErrorCode::ProductStoreUnavailable,
-            "product store schema is newer than this API",
-        ));
+    if product_schema_is_current(connection)? {
+        return Ok(());
     }
-    if newest == Some(CURRENT_SCHEMA_VERSION) {
+
+    let _barrier = rove_runtime::state::migration_lock::acquire_migration_lock(database_path)
+        .map_err(|error| {
+            ProductStoreError::new(
+                ProductErrorCode::ProductStoreUnavailable,
+                match error {
+                    rove_runtime::state::migration_lock::MigrationLockError::Timeout { .. } => {
+                        "another process is migrating the product store"
+                    }
+                    rove_runtime::state::migration_lock::MigrationLockError::Io { .. } => {
+                        "product store migration lock is unavailable"
+                    }
+                },
+            )
+        })?;
+    // Double-checked locking: a peer may have finished while this process waited.
+    if product_schema_is_current(connection)? {
         return Ok(());
     }
 
@@ -616,7 +656,27 @@ fn apply_migrations(connection: &mut Connection) -> Result<(), ProductStoreError
     apply_migration_012(connection)?;
     apply_migration_013(connection)?;
     apply_migration_014(connection)?;
+    apply_migration_015(connection)?;
     Ok(())
+}
+
+/// True when the recorded version is already current. A version newer than this
+/// build is refused rather than ignored.
+fn product_schema_is_current(connection: &Connection) -> Result<bool, ProductStoreError> {
+    let newest: Option<i64> = connection
+        .query_row(
+            "SELECT MAX(version) FROM product_schema_migrations",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|_| database_error(true))?;
+    if newest.is_some_and(|version| version > CURRENT_SCHEMA_VERSION) {
+        return Err(ProductStoreError::new(
+            ProductErrorCode::ProductStoreUnavailable,
+            "product store schema is newer than this API",
+        ));
+    }
+    Ok(newest == Some(CURRENT_SCHEMA_VERSION))
 }
 
 fn migration_is_applied(connection: &Connection, version: i64) -> Result<bool, ProductStoreError> {
@@ -1066,6 +1126,38 @@ fn apply_migration_014(connection: &mut Connection) -> Result<(), ProductStoreEr
     Ok(())
 }
 
+fn apply_migration_015(connection: &mut Connection) -> Result<(), ProductStoreError> {
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|_| database_error(true))?;
+    if migration_is_applied(&transaction, 15)? {
+        transaction.commit().map_err(|_| database_error(true))?;
+        return Ok(());
+    }
+    // Guarded for the same reason as migration 007: the historical compatibility
+    // fixtures can claim a version without containing every table that version
+    // implies. Indexing a table that is not there would fail the whole upgrade,
+    // and an index is pure derived state — a store that reaches this point
+    // without the table has nothing to index yet.
+    if table_exists(&transaction, "product_sessions")? {
+        transaction
+            .execute_batch(MIGRATION_015)
+            .map_err(|_| database_error(true))?;
+    }
+    transaction
+        .execute(
+            "INSERT INTO product_schema_migrations(version, name, applied_at) VALUES (?1, ?2, ?3)",
+            params![
+                15,
+                "session_listing_pagination",
+                super::repository::now_rfc3339()
+            ],
+        )
+        .map_err(|_| database_error(true))?;
+    transaction.commit().map_err(|_| database_error(true))?;
+    Ok(())
+}
+
 fn reconcile_productization_schema(
     transaction: &rusqlite::Transaction<'_>,
 ) -> Result<(), ProductStoreError> {
@@ -1158,6 +1250,17 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+
+    /// Run the migration sequence against a connection whose barrier lives in a
+    /// throwaway directory.
+    ///
+    /// The barrier is derived from the database path, and an in-memory database
+    /// has none. Giving each call its own directory keeps these tests mutually
+    /// independent, which is what an in-memory database was chosen for.
+    fn apply_migrations_isolated(connection: &mut Connection) -> Result<(), ProductStoreError> {
+        let temp = TempDir::new().unwrap();
+        apply_migrations(connection, &temp.path().join("product.sqlite"))
+    }
 
     #[test]
     fn schema_v1_preferences_upgrade_preserves_values_and_starts_revision_at_zero() {
@@ -1259,8 +1362,12 @@ mod tests {
     }
 
     #[test]
-    fn schema_newer_than_v14_is_rejected_without_rollback() {
+    fn a_schema_newer_than_this_build_is_rejected_without_rollback() {
         let mut connection = Connection::open_in_memory().unwrap();
+        // Derived from the constant rather than written out, so adding a migration
+        // does not turn this test into an assertion that the *current* version is
+        // rejected — which is how it would fail, silently testing nothing.
+        let future = CURRENT_SCHEMA_VERSION + 1;
         connection
             .execute_batch(
                 r#"
@@ -1269,20 +1376,25 @@ mod tests {
                     name TEXT NOT NULL,
                     applied_at TEXT NOT NULL
                 );
-                INSERT INTO product_schema_migrations(version, name, applied_at)
-                VALUES (15, 'future_schema', '2026-08-14T00:00:00Z');
                 "#,
             )
             .unwrap();
+        connection
+            .execute(
+                "INSERT INTO product_schema_migrations(version, name, applied_at)
+                 VALUES (?1, 'future_schema', '2026-08-14T00:00:00Z')",
+                params![future],
+            )
+            .unwrap();
 
-        let error = apply_migrations(&mut connection).unwrap_err();
+        let error = apply_migrations_isolated(&mut connection).unwrap_err();
         assert_eq!(error.code, ProductErrorCode::ProductStoreUnavailable);
         assert!(error.message.contains("newer than this API"));
         assert_eq!(
             connection
                 .query_row(
-                    "SELECT COUNT(*) FROM product_schema_migrations WHERE version = 15",
-                    [],
+                    "SELECT COUNT(*) FROM product_schema_migrations WHERE version = ?1",
+                    params![future],
                     |row| row.get::<_, i64>(0),
                 )
                 .unwrap(),
@@ -1294,7 +1406,7 @@ mod tests {
     fn fresh_database_reaches_v14_with_both_productization_contracts() {
         let mut connection = Connection::open_in_memory().unwrap();
 
-        apply_migrations(&mut connection).unwrap();
+        apply_migrations_isolated(&mut connection).unwrap();
 
         assert_integrated_v14(&connection);
     }
@@ -1324,7 +1436,7 @@ mod tests {
         );
         assert!(!table_exists(&connection, "product_reviews").unwrap());
 
-        apply_migrations(&mut connection).unwrap();
+        apply_migrations_isolated(&mut connection).unwrap();
 
         assert_integrated_v14(&connection);
         assert_eq!(
@@ -1372,7 +1484,7 @@ mod tests {
             .unwrap()
         );
 
-        apply_migrations(&mut connection).unwrap();
+        apply_migrations_isolated(&mut connection).unwrap();
 
         assert_integrated_v14(&connection);
     }
@@ -1401,7 +1513,7 @@ mod tests {
         record_parallel_v12(&connection, "unified_product_message_lifecycle");
         assert!(!table_exists(&connection, "product_provider_profile_catalog_mappings").unwrap());
 
-        apply_migrations(&mut connection).unwrap();
+        apply_migrations_isolated(&mut connection).unwrap();
 
         assert_integrated_v14(&connection);
     }
@@ -1465,6 +1577,22 @@ mod tests {
         );
         assert!(
             table_has_column(connection, "product_session_controls", "requested_delivery").unwrap()
+        );
+        // Migration 015 exists only for its index, so a fresh database that
+        // records the version without creating it would be a silent regression
+        // that only the query-plan test would notice.
+        assert!(migration_is_applied(connection, 15).unwrap());
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_schema
+                     WHERE type = 'index' AND name = 'idx_product_sessions_workspace_page'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1,
+            "the session paging index is missing"
         );
     }
 

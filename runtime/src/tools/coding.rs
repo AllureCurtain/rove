@@ -23,8 +23,9 @@ const MAX_DISCOVERY_OUTPUT_BYTES: usize = 64 * 1024;
 const MAX_CHECKPOINT_FILES: usize = 512;
 const MAX_CHECKPOINT_CONTENT_BYTES: usize = 8 * 1024 * 1024;
 const MAX_REWIND_FILES: usize = 64;
+/// Budget for aggregate diff output in this module. Single-file diff rendering
+/// and its own context/truncation budgets live in `rove-tools-text`.
 const MAX_DIFF_BYTES: usize = 64 * 1024;
-const DIFF_CONTEXT_LINES: usize = 3;
 
 #[derive(Default)]
 pub struct EditFileTool;
@@ -91,15 +92,17 @@ impl Tool for EditFileTool {
         let before = String::from_utf8(current.bytes).map_err(|_| ToolError::InvalidInput {
             reason: "edit_file requires a UTF-8 file".to_string(),
         })?;
-        let occurrences = before.match_indices(old_text).count();
-        if occurrences != 1 {
-            return Err(ToolError::InvalidInput {
-                reason: format!(
-                    "old_text must occur exactly once in the current file; found {occurrences}"
-                ),
-            });
-        }
-        let after = before.replacen(old_text, new_text, 1);
+        // The uniqueness requirement is what makes an exact edit safe; the
+        // decision itself is a pure function, unit-tested in `rove-tools-text`.
+        let after =
+            rove_tools_text::replace_once(&before, old_text, new_text).ok_or_else(|| {
+                let occurrences = before.match_indices(old_text).count();
+                ToolError::InvalidInput {
+                    reason: format!(
+                        "old_text must occur exactly once in the current file; found {occurrences}"
+                    ),
+                }
+            })?;
         if after.len() > MAX_VERSIONED_FILE_BYTES {
             return Err(ToolError::InvalidInput {
                 reason: "edited file exceeds the versioned file limit".to_string(),
@@ -1258,60 +1261,13 @@ fn path_comparison_key(path: &str) -> String {
     }
 }
 
+/// Render a localized diff for tool output.
+///
+/// Delegates to `rove-tools-text` (Codex alignment Phase 10): the rendering is
+/// a pure function of the two contents, so it is unit-tested there without a
+/// workspace. Output format is unchanged.
 pub(crate) fn localized_diff(path: &str, before: &str, after: &str) -> String {
-    let before_lines = before.lines().collect::<Vec<_>>();
-    let after_lines = after.lines().collect::<Vec<_>>();
-    let prefix = before_lines
-        .iter()
-        .zip(after_lines.iter())
-        .take_while(|(left, right)| left == right)
-        .count();
-    let suffix = before_lines[prefix..]
-        .iter()
-        .rev()
-        .zip(after_lines[prefix..].iter().rev())
-        .take_while(|(left, right)| left == right)
-        .count();
-    let before_start = prefix.saturating_sub(DIFF_CONTEXT_LINES);
-    let after_start = before_start;
-    let before_end = before_lines
-        .len()
-        .saturating_sub(suffix)
-        .saturating_add(DIFF_CONTEXT_LINES)
-        .min(before_lines.len());
-    let after_end = after_lines
-        .len()
-        .saturating_sub(suffix)
-        .saturating_add(DIFF_CONTEXT_LINES)
-        .min(after_lines.len());
-    let mut diff = format!(
-        "--- a/{path}\n+++ b/{path}\n@@ -{},{} +{},{} @@\n",
-        before_start + 1,
-        before_end.saturating_sub(before_start),
-        after_start + 1,
-        after_end.saturating_sub(after_start)
-    );
-    let context_prefix_end = prefix.min(before_end);
-    for line in &before_lines[before_start..context_prefix_end] {
-        push_diff_line(&mut diff, ' ', line);
-    }
-    for line in &before_lines[prefix..before_lines.len().saturating_sub(suffix)] {
-        push_diff_line(&mut diff, '-', line);
-        if diff.len() >= MAX_DIFF_BYTES {
-            return truncate_utf8(diff, MAX_DIFF_BYTES, "\n... diff truncated\n");
-        }
-    }
-    for line in &after_lines[prefix..after_lines.len().saturating_sub(suffix)] {
-        push_diff_line(&mut diff, '+', line);
-        if diff.len() >= MAX_DIFF_BYTES {
-            return truncate_utf8(diff, MAX_DIFF_BYTES, "\n... diff truncated\n");
-        }
-    }
-    let suffix_start = before_lines.len().saturating_sub(suffix);
-    for line in &before_lines[suffix_start..before_end] {
-        push_diff_line(&mut diff, ' ', line);
-    }
-    truncate_utf8(diff, MAX_DIFF_BYTES, "\n... diff truncated\n")
+    rove_tools_text::localized_diff(path, before, after)
 }
 
 fn localized_bytes_diff(path: &str, before: Option<&[u8]>, after: Option<&[u8]>) -> String {
@@ -1326,25 +1282,8 @@ fn localized_bytes_diff(path: &str, before: Option<&[u8]>, after: Option<&[u8]>)
     }
 }
 
-fn push_diff_line(diff: &mut String, prefix: char, line: &str) {
-    diff.push(prefix);
-    diff.push_str(line);
-    diff.push('\n');
-}
-
-fn truncate_utf8(mut value: String, max_bytes: usize, suffix: &str) -> String {
-    if value.len() <= max_bytes {
-        return value;
-    }
-    let target = max_bytes.saturating_sub(suffix.len());
-    let mut end = target.min(value.len());
-    while end > 0 && !value.is_char_boundary(end) {
-        end -= 1;
-    }
-    value.truncate(end);
-    value.push_str(suffix);
-    value
-}
+// Diff line rendering and UTF-8-safe truncation now live in `rove-tools-text`
+// (Codex alignment Phase 10), where they are testable without a workspace.
 
 fn version_bytes(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};

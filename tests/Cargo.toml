@@ -18,6 +18,7 @@ rove-app-bootstrap.workspace = true
 rove-bench.workspace = true
 rove-cli.workspace = true
 rove-core.workspace = true
+rove-protocol.workspace = true
 rove-models.workspace = true
 rove-runtime.workspace = true
 rusqlite.workspace = true
@@ -61,6 +62,10 @@ path = "e2e.rs"
 [[test]]
 name = "embedding_contract"
 path = "embedding_contract.rs"
+
+[[test]]
+name = "history_resume"
+path = "history_resume.rs"
 [[test]]
 name = "event_contract"
 path = "event_contract.rs"

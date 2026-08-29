@@ -3,6 +3,7 @@
 pub mod assembly;
 pub mod config;
 pub mod factory;
+pub mod home;
 pub mod project_trust;
 pub mod provider;
 pub mod provider_catalog;
@@ -22,6 +23,10 @@ pub use config::{
 pub use factory::{
     ModelClientFactory, build_model_client, build_model_client_with_health, try_build_model_client,
     try_build_model_client_with_health, try_build_model_client_with_registry,
+};
+pub use home::{
+    HomeError, LegacyRunMigration, RoveHome, ensure_home_legacy_run_migration, find_rove_home,
+    migrate_workspace_legacy_runs,
 };
 pub use project_trust::{
     CAP_EXTERNAL_PATHS, CAP_HOOKS_EXTENSIONS, CAP_MCP_PROCESSES, CAP_PROJECT_CONFIGURATION,
@@ -60,8 +65,8 @@ pub use session_selection::{
     PersistedSessionSelection, SessionSelectionError, SessionSelectionStore,
 };
 pub use user_config::{
-    USER_CONFIG_SCHEMA_VERSION, UserConfigDocument, UserConfigLoader, UserConfigPaths,
-    UserConfigWriter,
+    USER_CONFIG_ROOT_ENV, USER_CONFIG_SCHEMA_VERSION, UserConfigDocument, UserConfigLoader,
+    UserConfigPaths, UserConfigWriter,
 };
 pub use user_state::{
     DATA_ROOT_ENV, LEGACY_STATE_DIR, McpCatalogAuthority, UserStateError, UserStateRoots,

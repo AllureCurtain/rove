@@ -883,6 +883,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "console"
+version = "0.16.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4fe5f465a4f6fee88fad41b85d990f84c835335e85b5d9e6e63e0d06d28cba7c"
+dependencies = [
+ "encode_unicode",
+ "libc",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "convert_case"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1398,6 +1409,12 @@ name = "embed_plist"
 version = "1.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4ef6b89e5b37196644d8796de5268852ff179b44e96276cf4290264843743bb7"
+
+[[package]]
+name = "encode_unicode"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "34aa73646ffb006b8f5147f3dc182bd4bcb190227ce861fc4a4844bf8e3cb2c0"
 
 [[package]]
 name = "encoding_rs"
@@ -2522,6 +2539,18 @@ checksum = "879f10e63c20629ecabbb64a8010319738c66a5cd0c29b02d63d272b03751d01"
 dependencies = [
  "block-padding",
  "generic-array",
+]
+
+[[package]]
+name = "insta"
+version = "1.48.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "86f0f8fee8c926415c58d6ae43a08523a26faccb2323f5e6b644fe7dd4ef6b82"
+dependencies = [
+ "console",
+ "once_cell",
+ "similar",
+ "tempfile",
 ]
 
 [[package]]
@@ -4249,6 +4278,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "axum",
+ "base64 0.22.1",
  "chrono",
  "clap",
  "futures",
@@ -4257,6 +4287,7 @@ dependencies = [
  "rove-bench",
  "rove-core",
  "rove-models",
+ "rove-protocol",
  "rove-runtime",
  "rusqlite",
  "serde",
@@ -4297,6 +4328,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "toml 0.8.23",
+ "tracing",
  "walkdir",
 ]
 
@@ -4355,12 +4387,12 @@ dependencies = [
  "async-trait",
  "futures",
  "rove-models",
+ "rove-protocol",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",
- "ulid",
 ]
 
 [[package]]
@@ -4404,6 +4436,7 @@ dependencies = [
  "rove-cli",
  "rove-core",
  "rove-models",
+ "rove-protocol",
  "rove-runtime",
  "rusqlite",
  "serde",
@@ -4436,6 +4469,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rove-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "ulid",
+]
+
+[[package]]
 name = "rove-runtime"
 version = "0.1.0"
 dependencies = [
@@ -4443,13 +4485,17 @@ dependencies = [
  "async-stream",
  "async-trait",
  "chrono",
+ "fs2",
  "futures",
  "globset",
  "ignore",
+ "insta",
  "regex",
  "reqwest",
  "rove-core",
  "rove-models",
+ "rove-protocol",
+ "rove-tools-text",
  "rusqlite",
  "serde",
  "serde_json",
@@ -4462,6 +4508,15 @@ dependencies = [
  "tracing",
  "ulid",
  "walkdir",
+]
+
+[[package]]
+name = "rove-tools-text"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -5060,6 +5115,12 @@ name = "simdutf8"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
+
+[[package]]
+name = "similar"
+version = "2.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbbb5d9659141646ae647b42fe094daf6c6192d1620870b449d9557f748b2daa"
 
 [[package]]
 name = "siphasher"

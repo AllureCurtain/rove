@@ -8,7 +8,9 @@ use crate::execution::{
     ProcedureDeviation, StepAttempt, StepRecord,
 };
 use crate::prompt_metadata::PromptBuildMetadata;
-use crate::types::{JobId, PlanStep, PromptCompactionState, RunId, TaskPlan, TerminationReason};
+use crate::types::{
+    JobId, PlanStep, PromptCompactionState, RunId, SessionId, TaskPlan, TerminationReason,
+};
 use rove_core::{CallId, ToolArtifactRef, ToolError, ToolExecutionMetadata, ToolResult};
 use rove_models::{AssistantTurn, ToolCallRef, Usage};
 
@@ -308,6 +310,75 @@ pub enum StreamEvent {
     MessageNeedsAttention { id: String, reason: String },
     /// The still-eligible message was revoked through the durable authority.
     MessageRevoked { id: String },
+}
+
+/// One durable trace line's payload, split the way Codex splits
+/// `ResponseItem` from `EventMsg`: model-visible history items are stored
+/// explicitly so resume can rebuild model context without heuristics, while
+/// every presentation/audit event stays in the existing [`StreamEvent`] shape.
+///
+/// Serde is untagged by design: [`HistoryItem`] serializes with a `kind` tag
+/// and [`StreamEvent`] with a `type` tag, so both generations are
+/// self-describing on disk and old envelope lines (Phase 1: bare events)
+/// remain readable.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum TraceEntry {
+    /// A model-visible, replayable conversation item (Codex ResponseItem).
+    History(rove_core::history::HistoryItem),
+    /// A UI/audit event (Codex EventMsg). Wire format is unchanged.
+    Ui(StreamEvent),
+    /// Provenance: this run continues an earlier one.
+    ///
+    /// Last in the untagged order because its `link` tag is the narrowest of
+    /// the three, so the two established generations are always tried first.
+    Link(TraceLink),
+    /// Run identity, written once as the trace's first line.
+    ///
+    /// Ordered after the three established generations so no existing line can
+    /// be captured by it; its `meta` tag is disjoint from `kind`/`type`/`link`.
+    Meta(RunMeta),
+}
+
+/// The identity a run directory needs to describe itself (Codex `SessionMeta`).
+///
+/// `StreamEvent::RunStarted` carries only `run_id` and `job_id`, and nothing
+/// else on disk records the owning session — so a run whose process died
+/// before its first `task_state.json` was unrecoverable from the filesystem
+/// alone: rebuilding the index could not satisfy the `runs.session_id` foreign
+/// key. Writing identity as the trace's first line closes that gap and makes
+/// the file, not SQLite, the place a run's identity lives.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "meta", rename_all = "snake_case")]
+pub enum RunMeta {
+    /// Opening line: which run this file belongs to, and who owns it.
+    RunIdentity {
+        session_id: SessionId,
+        job_id: JobId,
+        run_id: RunId,
+        /// RFC3339 UTC time the run directory was opened.
+        started_at: String,
+    },
+}
+
+/// Records that a run's history begins where another run's history ended.
+///
+/// rove keeps one trace file per run (a run also owns its report, artifacts and
+/// event index), so a resumed run cannot simply append to its predecessor's
+/// file the way a single-file rollout would. This marker is what makes the
+/// chain walkable from the files alone: the resumed run's trace opens with the
+/// run it continues, and following the links backwards reconstructs the whole
+/// conversation without consulting SQLite.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "link", rename_all = "snake_case")]
+pub enum TraceLink {
+    /// History continues from `from_run`, which keeps running its own lifecycle.
+    ResumedFrom {
+        from_run: RunId,
+        /// Sequence reached in `from_run` when this run took over. Lets a
+        /// replay stop at the exact hand-off point.
+        through_seq: u64,
+    },
 }
 
 impl StreamEvent {

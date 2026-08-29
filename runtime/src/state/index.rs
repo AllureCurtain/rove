@@ -9,7 +9,7 @@ use crate::events::StreamEvent;
 use crate::types::{JobId, RunId, SessionId, TaskState};
 use rove_core::CallId;
 
-pub const CURRENT_SCHEMA_VERSION: i64 = 3;
+pub const CURRENT_SCHEMA_VERSION: i64 = 4;
 const DEFAULT_BUSY_TIMEOUT_MS: u64 = 5_000;
 const MAX_SNAPSHOT_EVENTS: usize = 2_000;
 const MAX_SNAPSHOT_EVENT_JSON_BYTES: usize = 1_048_576;
@@ -97,13 +97,6 @@ CREATE TABLE IF NOT EXISTS events (
     FOREIGN KEY(run_id) REFERENCES runs(run_id)
 );
 
-CREATE TABLE IF NOT EXISTS event_offsets (
-    run_id TEXT PRIMARY KEY,
-    last_seq INTEGER NOT NULL,
-    updated_at TEXT NOT NULL,
-    FOREIGN KEY(run_id) REFERENCES runs(run_id)
-);
-
 CREATE TABLE IF NOT EXISTS pending_approvals (
     call_id TEXT PRIMARY KEY,
     job_id TEXT NOT NULL,
@@ -169,10 +162,23 @@ CREATE INDEX IF NOT EXISTS idx_conversation_messages_delivery
     ON conversation_messages(session_id, status, sequence);
 "#;
 
+/// Codex alignment Phase 5: `event_offsets` held exactly what
+/// `runs.last_event_seq` holds.
+///
+/// Both were written in the same transaction, from the same `seq`, under the
+/// same `MAX(...)` rule, and both carry a foreign key to `runs(run_id)` with
+/// `PRAGMA foreign_keys = ON` — so neither could ever record a sequence the
+/// other missed. One high-water mark per run is enough; keeping two invited a
+/// silent divergence that no reader could arbitrate.
+const MIGRATION_004: &str = r#"
+DROP TABLE IF EXISTS event_offsets;
+"#;
+
 const MIGRATIONS: &[(i64, &str, &str)] = &[
     (1, "runtime_state_index", MIGRATION_001),
     (2, "runs_by_job_index", MIGRATION_002),
     (3, "conversation_messages", MIGRATION_003),
+    (4, "drop_event_offsets", MIGRATION_004),
 ];
 
 #[derive(Debug, Clone)]
@@ -545,6 +551,61 @@ impl StateIndex {
                 job_id.to_string(),
                 run_dir.to_string_lossy().as_ref(),
                 trace_path.to_string_lossy().as_ref(),
+                now,
+            ],
+        )
+        .map_err(io_other)?;
+        Ok(())
+    }
+
+    /// Recreate the identity rows a run needs, without asserting it is live.
+    ///
+    /// Codex alignment Phase 5: index repair learns a run's identity from its
+    /// trace header, which says who owns the run but nothing about how it
+    /// ended. [`Self::record_run_started`] would stamp `'running'` over a
+    /// status that report import already recovered, so recovery inserts only
+    /// what is missing and leaves every existing row alone.
+    pub fn recover_run_identity(
+        &self,
+        session_id: SessionId,
+        job_id: JobId,
+        run_id: RunId,
+        run_dir: &Path,
+        trace_path: &Path,
+        started_at: &str,
+    ) -> std::io::Result<()> {
+        let conn = self.connect()?;
+        let now = now_rfc3339();
+        upsert_session(&conn, session_id, &now)?;
+        conn.execute(
+            r#"
+            INSERT INTO jobs(job_id, session_id, status, run_id, created_at, updated_at)
+            VALUES (?1, ?2, 'interrupted', ?3, ?4, ?4)
+            ON CONFLICT(job_id) DO NOTHING
+            "#,
+            params![
+                job_id.to_string(),
+                session_id.to_string(),
+                run_id.to_string(),
+                started_at,
+            ],
+        )
+        .map_err(io_other)?;
+        conn.execute(
+            r#"
+            INSERT INTO runs(
+                run_id, session_id, job_id, status, run_dir, trace_path, started_at, updated_at
+            )
+            VALUES (?1, ?2, ?3, 'interrupted', ?4, ?5, ?6, ?7)
+            ON CONFLICT(run_id) DO NOTHING
+            "#,
+            params![
+                run_id.to_string(),
+                session_id.to_string(),
+                job_id.to_string(),
+                run_dir.to_string_lossy().as_ref(),
+                trace_path.to_string_lossy().as_ref(),
+                started_at,
                 now,
             ],
         )
@@ -1619,6 +1680,36 @@ impl StateIndex {
         Ok(jobs)
     }
 
+    /// Every run the index currently knows.
+    ///
+    /// Codex alignment Phase 5: startup backfill compares this against the run
+    /// directories on disk so it only repairs what is actually missing. Reading
+    /// identifiers alone keeps the comparison cheap regardless of how much
+    /// history each run holds.
+    pub fn indexed_run_ids(&self) -> std::io::Result<std::collections::HashSet<RunId>> {
+        let conn = self.connect()?;
+        let mut statement = conn.prepare("SELECT run_id FROM runs").map_err(io_other)?;
+        let rows = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(io_other)?;
+        let mut ids = std::collections::HashSet::new();
+        for row in rows {
+            let raw = row.map_err(io_other)?;
+            match raw.parse::<RunId>() {
+                Ok(run_id) => {
+                    ids.insert(run_id);
+                }
+                // A row the index cannot parse is treated as absent: backfill
+                // will re-derive it from disk rather than silently skip it.
+                Err(_) => tracing::warn!(
+                    run_id = %raw,
+                    "Skipping unparsable run identifier while listing indexed runs"
+                ),
+            }
+        }
+        Ok(ids)
+    }
+
     pub fn run_record(&self, run_id: RunId) -> std::io::Result<Option<RunIndexRecord>> {
         let conn = self.connect()?;
         conn.query_row(
@@ -1826,7 +1917,7 @@ impl StateIndex {
         let conn = self.connect()?;
         let seq: Option<i64> = conn
             .query_row(
-                "SELECT last_seq FROM event_offsets WHERE run_id = ?1",
+                "SELECT last_event_seq FROM runs WHERE run_id = ?1",
                 params![run_id.to_string()],
                 |row| row.get(0),
             )
@@ -1862,23 +1953,26 @@ impl StateIndex {
             .map_err(io_other)?;
         transaction
             .execute(
-                r#"
-            INSERT INTO event_offsets(run_id, last_seq, updated_at)
-            VALUES (?1, ?2, ?3)
-            ON CONFLICT(run_id) DO UPDATE SET
-                last_seq = MAX(last_seq, excluded.last_seq),
-                updated_at = excluded.updated_at
-            "#,
-                params![run_id.to_string(), seq as i64, now],
-            )
-            .map_err(io_other)?;
-        transaction
-            .execute(
                 "UPDATE runs SET last_event_seq = MAX(last_event_seq, ?2), updated_at = ?3 WHERE run_id = ?1",
                 params![run_id.to_string(), seq as i64, now],
             )
             .map_err(io_other)?;
         transaction.commit().map_err(io_other)?;
+        Ok(())
+    }
+
+    /// Advance the durable sequence high-water mark without inserting an
+    /// event row. Trace history lines (Phase 2) consume the run's monotonic
+    /// sequence space but never project into SSE/transcript replays, so only
+    /// `runs.last_event_seq` must move forward to keep a restarted writer from
+    /// reusing a written sequence number.
+    pub fn advance_event_seq(&self, run_id: RunId, seq: u64) -> std::io::Result<()> {
+        let conn = self.connect()?;
+        conn.execute(
+            "UPDATE runs SET last_event_seq = MAX(last_event_seq, ?2), updated_at = ?3 WHERE run_id = ?1",
+            params![run_id.to_string(), seq as i64, now_rfc3339()],
+        )
+        .map_err(io_other)?;
         Ok(())
     }
 
@@ -1962,16 +2056,15 @@ impl StateIndex {
         if let Some(parent) = self.db_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let conn = Connection::open(self.db_path.as_ref()).map_err(io_other)?;
+        let mut conn = Connection::open(self.db_path.as_ref()).map_err(io_other)?;
         conn.busy_timeout(Duration::from_millis(self.busy_timeout_ms))
             .map_err(io_other)?;
         conn.pragma_update(None, "foreign_keys", "ON")
             .map_err(io_other)?;
-        conn.pragma_update(None, "journal_mode", "WAL")
-            .map_err(io_other)?;
+        enable_wal(&conn, Duration::from_millis(self.busy_timeout_ms))?;
         conn.pragma_update(None, "synchronous", "NORMAL")
             .map_err(io_other)?;
-        apply_migrations(&conn)?;
+        apply_migrations(&mut conn, self.db_path.as_ref())?;
         Ok(conn)
     }
 
@@ -2079,7 +2172,21 @@ impl StateIndex {
     }
 }
 
-fn apply_migrations(conn: &Connection) -> std::io::Result<()> {
+/// Bring the state index up to [`CURRENT_SCHEMA_VERSION`].
+///
+/// rove's two entry points (resident desktop API, transient CLI/TUI) can reach
+/// this at the same instant, so the sequence is guarded on two levels:
+///
+/// - a cross-process file barrier around the whole sequence, because a
+///   migration is several statements and "is it applied?" is a read followed by
+///   a write — SQLite's own locking cannot make that atomic;
+/// - an `IMMEDIATE` transaction per migration, so a process killed mid-migration
+///   leaves either nothing or the migration *and* its bookkeeping row, never DDL
+///   without the row that records it.
+///
+/// The already-current case is checked before the barrier is taken, so the
+/// common path (this runs on every connection) stays lock-free.
+fn apply_migrations(conn: &mut Connection, db_path: &Path) -> std::io::Result<()> {
     conn.execute_batch(
         r#"
         CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -2090,6 +2197,80 @@ fn apply_migrations(conn: &Connection) -> std::io::Result<()> {
         "#,
     )
     .map_err(io_other)?;
+    if schema_is_current(conn)? {
+        return Ok(());
+    }
+
+    let _barrier = crate::state::migration_lock::acquire_migration_lock(db_path)?;
+    // Double-checked locking: a peer may have completed the whole sequence
+    // while this process waited on the barrier.
+    if schema_is_current(conn)? {
+        return Ok(());
+    }
+
+    for (version, name, sql) in MIGRATIONS {
+        apply_one_migration(conn, *version, name, sql)?;
+    }
+    Ok(())
+}
+
+/// Put the database into WAL mode, tolerating a peer doing the same thing.
+///
+/// Switching the journal mode needs an exclusive lock, and SQLite reports that
+/// conflict as a bare `SQLITE_BUSY` *without* consulting the busy handler — so
+/// the connection's `busy_timeout` does not cover this one statement. Several
+/// processes reaching a fresh state index at the same moment would therefore
+/// have one of them fail to open at all. The switch is a one-time, idempotent
+/// property of the file, so retrying within the same budget the rest of the
+/// connection uses is enough: whoever wins, everyone ends up in WAL.
+fn enable_wal(conn: &Connection, budget: Duration) -> std::io::Result<()> {
+    let deadline = std::time::Instant::now() + budget;
+    loop {
+        match conn.pragma_update(None, "journal_mode", "WAL") {
+            Ok(()) => return Ok(()),
+            Err(error) if is_busy(&error) => {
+                // A peer may have already completed the switch we were denied.
+                if journal_mode_is_wal(conn)? {
+                    return Ok(());
+                }
+                if std::time::Instant::now() >= deadline {
+                    return Err(io_other(error));
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => return Err(io_other(error)),
+        }
+    }
+}
+
+fn is_busy(error: &rusqlite::Error) -> bool {
+    matches!(
+        error.sqlite_error_code(),
+        Some(ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked)
+    )
+}
+
+fn journal_mode_is_wal(conn: &Connection) -> std::io::Result<bool> {
+    let mode: String = conn
+        .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+        .map_err(io_other)?;
+    Ok(mode.eq_ignore_ascii_case("wal"))
+}
+
+/// Wait on the migration barrier without applying anything.
+///
+/// A derived-index backfill must not read a half-migrated schema, so it takes
+/// the same barrier a migrator would and releases it before doing its own work.
+/// Phase 5's startup backfill is the intended caller.
+pub fn wait_for_migrations(db_path: &Path) -> std::io::Result<()> {
+    let _barrier = crate::state::migration_lock::acquire_migration_lock(db_path)?;
+    Ok(())
+}
+
+/// True when the recorded version is already current. A version *newer* than
+/// this build is an error rather than a no-op: running old code against a new
+/// schema would silently misread it.
+fn schema_is_current(conn: &Connection) -> std::io::Result<bool> {
     let newest: Option<i64> = conn
         .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
             row.get(0)
@@ -2101,25 +2282,40 @@ fn apply_migrations(conn: &Connection) -> std::io::Result<()> {
             "state index schema is newer than this runtime",
         ));
     }
-    for (version, name, sql) in MIGRATIONS {
-        let applied: Option<i64> = conn
-            .query_row(
-                "SELECT version FROM schema_migrations WHERE version = ?1",
-                params![version],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(io_other)?;
-        if applied.is_some() {
-            continue;
-        }
-        conn.execute_batch(sql).map_err(io_other)?;
-        conn.execute(
+    Ok(newest == Some(CURRENT_SCHEMA_VERSION))
+}
+
+/// Apply one migration and record it in the same transaction, so DDL and its
+/// bookkeeping row commit together or not at all.
+fn apply_one_migration(
+    conn: &mut Connection,
+    version: i64,
+    name: &str,
+    sql: &str,
+) -> std::io::Result<()> {
+    let transaction = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(io_other)?;
+    let applied: Option<i64> = transaction
+        .query_row(
+            "SELECT version FROM schema_migrations WHERE version = ?1",
+            params![version],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(io_other)?;
+    if applied.is_some() {
+        transaction.commit().map_err(io_other)?;
+        return Ok(());
+    }
+    transaction.execute_batch(sql).map_err(io_other)?;
+    transaction
+        .execute(
             "INSERT INTO schema_migrations(version, name, applied_at) VALUES (?1, ?2, ?3)",
             params![version, name, now_rfc3339()],
         )
         .map_err(io_other)?;
-    }
+    transaction.commit().map_err(io_other)?;
     Ok(())
 }
 
@@ -2273,11 +2469,6 @@ fn delete_expired_jobs(conn: &Connection, records: &[ExpiredJobRecord]) -> std::
             .map_err(io_other)?;
             conn.execute(
                 "DELETE FROM events WHERE run_id = ?1",
-                params![run_id.to_string()],
-            )
-            .map_err(io_other)?;
-            conn.execute(
-                "DELETE FROM event_offsets WHERE run_id = ?1",
                 params![run_id.to_string()],
             )
             .map_err(io_other)?;
@@ -2968,6 +3159,327 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    /// rove's desktop API and a transient CLI invocation can reach a fresh
+    /// state index at the same moment. Every one of them must succeed, and the
+    /// schema bookkeeping must record each migration exactly once — a duplicate
+    /// row would mean two racers both believed they were the first to apply it.
+    #[test]
+    fn concurrent_first_start_migrates_once_and_no_starter_fails() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let state_dir = temp.path().to_path_buf();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+
+        let starters: Vec<_> = (0..8)
+            .map(|_| {
+                let state_dir = state_dir.clone();
+                let barrier = std::sync::Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    let index = StateIndex::new(&state_dir);
+                    // Release all starters at the same instant so they contend
+                    // on the very first migration rather than arriving serially.
+                    barrier.wait();
+                    index.initialize()
+                })
+            })
+            .collect();
+
+        for starter in starters {
+            starter
+                .join()
+                .expect("no starter should panic")
+                .expect("every concurrent starter should reach a usable schema");
+        }
+
+        let index = StateIndex::new(&state_dir);
+        let connection = Connection::open(index.path()).unwrap();
+        let rows: i64 = connection
+            .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            rows,
+            MIGRATIONS.len() as i64,
+            "each migration must be recorded exactly once across concurrent starts"
+        );
+        let newest: i64 = connection
+            .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(newest, CURRENT_SCHEMA_VERSION);
+        ensure_runs_by_job_index(&connection).unwrap();
+    }
+
+    /// A process killed part-way through the sequence must not leave DDL that
+    /// no bookkeeping row describes, because the next start would then try to
+    /// create an object that already exists. Applying only a prefix stands in
+    /// for the kill; the next start must finish the rest and succeed.
+    #[test]
+    fn a_migration_interrupted_after_a_prefix_resumes_on_the_next_start() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let index = StateIndex::new(temp.path());
+        let mut connection = Connection::open(index.path()).unwrap();
+        connection
+            .execute_batch(
+                r#"
+                CREATE TABLE IF NOT EXISTS schema_migrations (
+                    version INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    applied_at TEXT NOT NULL
+                );
+                "#,
+            )
+            .unwrap();
+        let (version, name, sql) = MIGRATIONS[0];
+        apply_one_migration(&mut connection, version, name, sql).unwrap();
+        drop(connection);
+
+        index
+            .initialize()
+            .expect("an interrupted migration must be resumable");
+
+        let connection = Connection::open(index.path()).unwrap();
+        let newest: i64 = connection
+            .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(newest, CURRENT_SCHEMA_VERSION);
+        let rows: i64 = connection
+            .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(rows, MIGRATIONS.len() as i64);
+    }
+
+    /// A single migration is all-or-nothing: a failure inside it must leave no
+    /// bookkeeping row, so the next start retries it rather than skipping DDL
+    /// that never landed.
+    #[test]
+    fn a_failed_migration_records_no_version_row() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let index = StateIndex::new(temp.path());
+        let mut connection = Connection::open(index.path()).unwrap();
+        connection
+            .execute_batch(
+                r#"
+                CREATE TABLE IF NOT EXISTS schema_migrations (
+                    version INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    applied_at TEXT NOT NULL
+                );
+                "#,
+            )
+            .unwrap();
+
+        apply_one_migration(
+            &mut connection,
+            99,
+            "deliberately_broken",
+            "SELECT abort_me();",
+        )
+        .expect_err("invalid migration SQL must fail");
+
+        let recorded: Option<i64> = connection
+            .query_row(
+                "SELECT version FROM schema_migrations WHERE version = 99",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .unwrap();
+        assert_eq!(
+            recorded, None,
+            "a failed migration must not leave a version row behind"
+        );
+        drop(connection);
+
+        index
+            .initialize()
+            .expect("a clean index must still migrate after an unrelated failure");
+    }
+
+    /// Codex alignment Phase 5: upgrading a real v3 database must drop the
+    /// redundant high-water table while leaving the surviving one untouched.
+    ///
+    /// Built by replaying migrations 1..=3 — the same SQL a v3 install ran — so
+    /// the fixture is the shape actually on disk, not a hand-written stand-in.
+    #[test]
+    fn upgrading_a_populated_v3_index_drops_event_offsets_and_keeps_the_run_high_water() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let index = StateIndex::new(temp.path());
+        let mut connection = Connection::open(index.path()).unwrap();
+        connection
+            .execute_batch(
+                r#"
+                CREATE TABLE IF NOT EXISTS schema_migrations (
+                    version INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    applied_at TEXT NOT NULL
+                );
+                "#,
+            )
+            .unwrap();
+        for (version, name, sql) in MIGRATIONS.iter().take_while(|(version, ..)| *version <= 3) {
+            apply_one_migration(&mut connection, *version, name, sql).unwrap();
+        }
+        // v3 had no `event_offsets` in migration 1 anymore, so recreate exactly
+        // the DDL that shipped with it to prove the DROP handles a live table.
+        connection
+            .execute_batch(
+                r#"
+                CREATE TABLE IF NOT EXISTS event_offsets (
+                    run_id TEXT PRIMARY KEY,
+                    last_seq INTEGER NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(run_id) REFERENCES runs(run_id)
+                );
+                "#,
+            )
+            .unwrap();
+
+        let session_id = SessionId::new();
+        let job_id = JobId::new();
+        let run_id = RunId::new();
+        let now = now_rfc3339();
+        connection
+            .execute(
+                "INSERT INTO sessions(session_id, created_at, updated_at) VALUES (?1, ?2, ?2)",
+                params![session_id.to_string(), now],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO jobs(job_id, session_id, status, created_at, updated_at)
+                 VALUES (?1, ?2, 'running', ?3, ?3)",
+                params![job_id.to_string(), session_id.to_string(), now],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO runs(run_id, session_id, job_id, status, run_dir, trace_path,
+                                  started_at, updated_at, last_event_seq)
+                 VALUES (?1, ?2, ?3, 'running', ?4, ?5, ?6, ?6, 41)",
+                params![
+                    run_id.to_string(),
+                    session_id.to_string(),
+                    job_id.to_string(),
+                    temp.path().join("run").to_string_lossy(),
+                    temp.path().join("run/trace.jsonl").to_string_lossy(),
+                    now,
+                ],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO event_offsets(run_id, last_seq, updated_at) VALUES (?1, 41, ?2)",
+                params![run_id.to_string(), now],
+            )
+            .unwrap();
+        drop(connection);
+
+        index
+            .initialize()
+            .expect("a populated v3 index must upgrade in place");
+
+        let connection = Connection::open(index.path()).unwrap();
+        let newest: i64 = connection
+            .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(newest, CURRENT_SCHEMA_VERSION);
+        let surviving: Option<String> = connection
+            .query_row(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'event_offsets'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .unwrap();
+        assert_eq!(
+            surviving, None,
+            "the redundant high-water table must be gone after the upgrade"
+        );
+
+        // The fact the dropped table carried has to survive on the row that
+        // stays, and it has to be readable through the public accessor.
+        assert_eq!(
+            index.last_event_seq(run_id).unwrap(),
+            41,
+            "the run's high-water mark must survive the migration"
+        );
+    }
+
+    /// Removing the second high-water table must not weaken the guarantee that
+    /// a restarted writer never reuses a sequence number.
+    #[test]
+    fn the_high_water_mark_only_moves_forward_after_the_double_write_is_gone() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let index = StateIndex::new(temp.path());
+        index.initialize().unwrap();
+        let session_id = SessionId::new();
+        let job_id = JobId::new();
+        let run_id = RunId::new();
+        index
+            .record_run_started(
+                session_id,
+                job_id,
+                run_id,
+                &temp.path().join("run"),
+                &temp.path().join("run/trace.jsonl"),
+            )
+            .unwrap();
+
+        index.advance_event_seq(run_id, 7).unwrap();
+        assert_eq!(index.last_event_seq(run_id).unwrap(), 7);
+
+        // A stale writer replaying an older sequence must not roll it back.
+        index.advance_event_seq(run_id, 3).unwrap();
+        assert_eq!(
+            index.last_event_seq(run_id).unwrap(),
+            7,
+            "an older sequence must never lower the high-water mark"
+        );
+
+        index
+            .append_event(
+                run_id,
+                9,
+                &StreamEvent::RunStarted {
+                    run_id,
+                    job_id,
+                    user_message: "probe".to_string(),
+                },
+                "{}",
+            )
+            .unwrap();
+        assert_eq!(
+            index.last_event_seq(run_id).unwrap(),
+            9,
+            "appending an event must still advance the surviving high-water mark"
+        );
+    }
+
+    /// The barrier must not be taken when there is nothing to do: this runs on
+    /// every connection, so an already-current index has to stay lock-free.
+    #[test]
+    fn an_already_current_index_does_not_take_the_migration_barrier() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let index = StateIndex::new(temp.path());
+        index.initialize().unwrap();
+
+        // Hold the barrier. If the current-schema fast path did not come first,
+        // this connect would block until the timeout and then fail.
+        let held = crate::state::migration_lock::acquire_migration_lock(index.path()).unwrap();
+        index
+            .initialize()
+            .expect("an already-migrated index must not need the barrier");
+        drop(held);
     }
 
     #[test]

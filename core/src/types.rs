@@ -1,27 +1,11 @@
 use serde::{Deserialize, Serialize};
-use ulid::Ulid;
 
 /// Unique identity for one tool invocation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct CallId(pub Ulid);
-
-impl CallId {
-    pub fn new() -> Self {
-        Self(Ulid::new())
-    }
-}
-
-impl Default for CallId {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl std::fmt::Display for CallId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
+///
+/// Defined in `rove-protocol` and re-exported here so existing
+/// `rove_core::CallId` imports keep resolving. See that crate for the
+/// generation, `Display`, and `FromStr` behaviour.
+pub use rove_protocol::CallId;
 
 /// Action normalized from one completed model turn.
 #[derive(Debug, Clone)]

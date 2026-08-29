@@ -131,7 +131,15 @@ export interface ProductApiClient {
     request: CreateProductWorkspaceRequest,
   ): Promise<ProductWorkspace>;
   deleteWorkspace(workspaceId: string): Promise<void>;
-  listSessions(workspaceId: string): Promise<ProductSessionsResponse>;
+  listSessions(
+    workspaceId: string,
+    query?: {
+      cursor?: string;
+      limit?: number;
+      q?: string;
+      includeArchived?: boolean;
+    },
+  ): Promise<ProductSessionsResponse>;
   createSession(request: CreateProductSessionRequest): Promise<ProductSession>;
   updateSession(
     sessionId: string,
@@ -438,13 +446,17 @@ export function createProductApiClient(
       );
     },
 
-    listSessions(workspaceId) {
+    listSessions(workspaceId, query) {
+      const params = new URLSearchParams({ workspace_id: workspaceId });
+      if (query?.cursor) params.set("cursor", query.cursor);
+      if (query?.limit !== undefined) params.set("limit", String(query.limit));
+      if (query?.q) params.set("q", query.q);
+      if (query?.includeArchived !== undefined) {
+        params.set("include_archived", String(query.includeArchived));
+      }
       return requestJson(
         fetchImpl,
-        productUrl(
-          apiPrefix,
-          `/product/sessions?workspace_id=${encodeURIComponent(workspaceId)}`,
-        ),
+        productUrl(apiPrefix, `/product/sessions?${params.toString()}`),
         undefined,
         parseProductSessionsResponse,
       );

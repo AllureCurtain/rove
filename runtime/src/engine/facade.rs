@@ -16,7 +16,9 @@ use crate::agents::{
     ResolvedRuntimeFacts, procedure_prompt_for_target,
 };
 use crate::capability::CapabilitySnapshot;
-use crate::compaction::CompactionRuntime;
+use crate::compaction::{
+    CompactionRuntime, CompactionTrigger, CompactionUpdate, maybe_compact_history,
+};
 use crate::context::{ContextManager, durable_memory_message, session_summary_message};
 use crate::engine::control::{RunControlHandle, SteerLifecycle, control_channel};
 use crate::environment::{ExecutionEnvironment, local_environment};
@@ -34,13 +36,12 @@ use crate::runtime_identity::{
     RunModelSnapshot, RuntimeIdentity, RuntimeIdentityInput, RuntimeIdentityStatus,
     build_runtime_identity,
 };
-use crate::session::CHECKPOINT_SESSION_TAIL_ENTRIES;
 use crate::state::tool_artifacts::ToolArtifactStore;
 use crate::state::trace::TraceWriter;
 use crate::tools::mcp_proxy::{McpLifecycleFact, McpRuntimeState, McpServerRuntimeSnapshot};
 use crate::types::{
     ApprovalDecision, ApprovalPolicy, JobId, Message, RunId, RunMode, RunRequest, SessionId,
-    TerminationReason, ToolApprovalProvider, ToolDescriptor, UserInputProvider,
+    TaskState, TerminationReason, ToolApprovalProvider, ToolDescriptor, UserInputProvider,
 };
 use crate::workspace::Workspace;
 use rove_core::ToolRegistry;
@@ -397,6 +398,65 @@ impl Engine {
         self.model.model_id()
     }
 
+    /// Compact the model-visible history held in a resume snapshot, in place.
+    ///
+    /// This is the `/compact` path. It deliberately does *not* start a run: no
+    /// `RunId` is allocated, no trace is opened, and no `PromptCompacted` event
+    /// is emitted, because there is no run for such an event to belong to.
+    /// Compaction here is an edit to state the caller already owns — the caller
+    /// decides whether to keep or persist the result.
+    ///
+    /// Because no trace is written, the original history stays exactly where it
+    /// already was: in the trace files of the runs that produced it. Compaction
+    /// changes what the *next* prompt will contain, never the audit record.
+    ///
+    /// Returns `Ok(None)` when there was nothing to compact, or when the circuit
+    /// breaker is open. The `enabled` switch is bypassed: an operator asking for
+    /// this has already given consent.
+    pub async fn compact_resume_state(
+        &self,
+        state: &mut TaskState,
+        cancel: CancellationToken,
+    ) -> Result<Option<CompactionUpdate>, crate::session::SessionError> {
+        let history = state.replayable_history(&self.model.history_protocol())?;
+        // A prior summary is part of what the next prompt would carry, so it
+        // has to be folded into the new one. Dropping it would silently lose
+        // everything the earlier compaction stood for.
+        let mut compacted = Vec::with_capacity(history.len() + 1);
+        if let Some(previous) = state
+            .checkpoint
+            .as_ref()
+            .and_then(|checkpoint| checkpoint.summary.as_ref())
+        {
+            compacted.push(Message::assistant(previous.clone()));
+        }
+        compacted.extend(history);
+
+        let mut runtime = CompactionRuntime::new(
+            self.model_compaction_enabled,
+            self.compaction_failure_threshold,
+        );
+        let update = maybe_compact_history(
+            &mut runtime,
+            self.model.as_ref(),
+            &compacted,
+            Vec::new(),
+            CompactionTrigger::Manual,
+            cancel,
+        )
+        .await;
+
+        if let Some(update) = update.as_ref()
+            && let Some(summary) = update.summary.clone()
+        {
+            state.continue_from_summary(summary);
+            if let Some(checkpoint) = state.checkpoint.as_mut() {
+                checkpoint.compaction = update.state.clone();
+            }
+        }
+        Ok(update)
+    }
+
     /// Return the host-selected execution profile for this Engine.
     pub fn run_mode(&self) -> RunMode {
         self.run_mode
@@ -625,6 +685,13 @@ impl Engine {
             inner: Box::pin(stream! {
                 let mut run_summary = RunSummary::new(user_message.clone());
 
+                // Codex alignment Phase 2: derive model-visible history items
+                // once, at the durable write choke point. Every event that
+                // reaches the trace also yields its explicit history items so
+                // resume no longer reclassifies audit events heuristically.
+                let mut history_projector =
+                    crate::engine::history_projection::HistoryProjector::new();
+
                 macro_rules! complete_run {
                     ($reason:expr, $output:expr) => {{
                         let reason = $reason;
@@ -645,14 +712,14 @@ impl Engine {
                                 "run completed before the steer reached a safe point".to_string(),
                             );
                             run_summary.record_event(&dropped);
-                            append_trace(&trace_writer, &dropped, review_mode);
+                            append_trace(&mut history_projector, &trace_writer, &dropped, review_mode);
                             yield dropped;
                         }
                         drop(pending_steers);
                         message_event_rx.close();
                         while let Ok(message_event) = message_event_rx.try_recv() {
                             run_summary.record_event(&message_event);
-                            append_trace(&trace_writer, &message_event, review_mode);
+                            append_trace(&mut history_projector, &trace_writer, &message_event, review_mode);
                             yield message_event;
                         }
                         for accepted in steer_lifecycle.take_unapplied().await {
@@ -662,14 +729,14 @@ impl Engine {
                                 "run completed before the accepted steer reached a model turn".to_string(),
                             );
                             run_summary.record_event(&dropped);
-                            append_trace(&trace_writer, &dropped, review_mode);
+                            append_trace(&mut history_projector, &trace_writer, &dropped, review_mode);
                             yield dropped;
                         }
                         let event = StreamEvent::RunCompleted {
                             reason: reason.clone(),
                             output: output.clone(),
                         };
-                        append_trace(&trace_writer, &event, review_mode);
+                        append_trace(&mut history_projector, &trace_writer, &event, review_mode);
                         yield event;
                         self.run_post_run_hooks(CompletedRunContext {
                             session_id,
@@ -687,7 +754,7 @@ impl Engine {
                 macro_rules! yield_traced {
                     ($event:expr) => {{
                         let event = $event;
-                        append_trace(&trace_writer, &event, review_mode);
+                        append_trace(&mut history_projector, &trace_writer, &event, review_mode);
                         yield event;
                     }};
                 }
@@ -697,7 +764,7 @@ impl Engine {
                     job_id,
                     user_message: user_message.clone(),
                 };
-                append_trace(&trace_writer, &start_event, review_mode);
+                append_trace(&mut history_projector, &trace_writer, &start_event, review_mode);
                 yield start_event;
 
                 for fact in mcp_lifecycle_facts {
@@ -814,39 +881,111 @@ impl Engine {
                 let resume_checkpoint = resume_state
                     .as_ref()
                     .and_then(|state| state.checkpoint.as_ref());
-                let history: Vec<Message> = if let Some(checkpoint) = resume_checkpoint {
-                    if let Some(session) = checkpoint.session.as_ref() {
-                        let mut session = session.clone();
-                        let projection = session
-                            .close_unresolved_tool_calls()
-                            .and_then(|_| {
-                                session
-                                    .suffix(CHECKPOINT_SESSION_TAIL_ENTRIES)
-                                    .messages_for_provider(&self.model.history_protocol())
-                            });
-                        match projection {
-                            Ok(messages) => messages,
-                            Err(error) => {
-                                let message = StreamEvent::ModelStatus {
-                                    status: "resume_rejected".to_string(),
-                                    message: format!("canonical session cannot be projected safely: {error}"),
-                                };
-                                yield_traced!(message);
-                                complete_run!(
-                                    TerminationReason::Error,
-                                    Some("resume rejected due to invalid canonical session history".to_string())
-                                );
+                // The precedence between the three stored history sources lives
+                // on TaskState, so anything else that has to reconstruct what a
+                // resumed run would see (the REPL's `/compact`) agrees with the
+                // resume path by construction instead of by review.
+                let history: Vec<Message> = match resume_state
+                    .as_ref()
+                    .map(|state| state.replayable_history(&self.model.history_protocol()))
+                {
+                    Some(Ok(messages)) => messages,
+                    Some(Err(error)) => {
+                        let message = StreamEvent::ModelStatus {
+                            status: "resume_rejected".to_string(),
+                            message: format!("canonical session cannot be projected safely: {error}"),
+                        };
+                        yield_traced!(message);
+                        complete_run!(
+                            TerminationReason::Error,
+                            Some("resume rejected due to invalid canonical session history".to_string())
+                        );
+                    }
+                    None => Vec::new(),
+                };
+                // Codex alignment Phase 6: the trace is the durable record of
+                // model-visible history, the snapshot is a cache. A run killed
+                // before its checkpoint landed has an empty snapshot but a
+                // complete trace, so fall back to the trace rather than
+                // resuming with no context at all. The snapshot still wins when
+                // it has content: it is already protocol-projected, and
+                // preferring it keeps every existing resume path byte-identical.
+                //
+                // Phase 8 carves out the one case where empty is the answer: a
+                // compacted session holds a summary *instead of* its history, so
+                // refilling it from the trace would restore exactly what the
+                // compaction just dropped and leave the prompt larger than
+                // before. Only a compacted checkpoint is exempt; a missing
+                // checkpoint still falls back.
+                let compacted_away = resume_state
+                    .as_ref()
+                    .is_some_and(|state| state.history_was_compacted_away());
+                let history = if history.is_empty() && !compacted_away {
+                    match resume_state.as_ref().map(|state| state.run_id) {
+                        Some(source_run) => {
+                            let runs_dir = self.workspace.state_dir.join("runs");
+                            match crate::state::initial_history::read_history_chain(
+                                source_run,
+                                |run| runs_dir.join(run.to_string()),
+                                crate::state::initial_history::DEFAULT_HISTORY_TAIL_ITEMS,
+                            ) {
+                                Ok(chain) => {
+                                    let messages = chain.to_messages();
+                                    if !messages.is_empty() {
+                                        tracing::info!(
+                                            %source_run,
+                                            segments = chain.segments.len(),
+                                            items = chain.items.len(),
+                                            complete = chain.is_complete(),
+                                            "recovered resume history from trace",
+                                        );
+                                    }
+                                    messages
+                                }
+                                Err(error) => {
+                                    // Losing the fallback is not fatal: the run
+                                    // proceeds with the (empty) snapshot, which
+                                    // is exactly the pre-Phase-6 behavior.
+                                    tracing::warn!(
+                                        %source_run,
+                                        "could not read resume history from trace: {error}",
+                                    );
+                                    Vec::new()
+                                }
                             }
                         }
-                    } else {
-                        checkpoint.preserved_tail.clone()
+                        None => history,
                     }
                 } else {
+                    history
+                };
+                // Record the hand-off explicitly. rove owns a directory per run,
+                // so a resumed run writes its own trace instead of appending to
+                // its predecessor's; without this marker the two files would
+                // look like unrelated runs and the chain could not be walked.
+                if let (Some(tw), Some(source_run)) = (
+                    trace_writer.as_ref(),
                     resume_state
                         .as_ref()
-                        .map(|state| state.history.clone())
-                        .unwrap_or_default()
-                };
+                        .map(|state| state.run_id)
+                        .filter(|source_run| *source_run != run_id),
+                ) {
+                    let source_trace = self
+                        .workspace
+                        .state_dir
+                        .join("runs")
+                        .join(source_run.to_string())
+                        .join("trace.jsonl");
+                    let through_seq =
+                        crate::state::initial_history::read_trace_high_water_seq(&source_trace)
+                            .unwrap_or(0);
+                    if let Err(error) = tw.append_resume_link(source_run, through_seq) {
+                        tracing::warn!(
+                            %source_run,
+                            "could not record the resume link: {error}",
+                        );
+                    }
+                }
                 let compact_summary = resume_checkpoint
                     .and_then(|checkpoint| checkpoint.summary.clone());
                 let resume_summary = resume_state
@@ -1104,14 +1243,34 @@ fn composed_prompt(base: &str, slot: Option<&str>, role: &str) -> String {
     )
 }
 
-fn append_trace(trace_writer: &Option<TraceWriter>, event: &StreamEvent, review_mode: bool) {
-    if let Some(tw) = trace_writer {
-        let persisted = if review_mode {
-            event.redacted_for_review_persistence()
-        } else {
-            event.clone()
-        };
-        let _ = tw.append(&persisted);
+/// Persist one canonical event plus its derived model-visible history items.
+///
+/// Codex alignment Phase 2: the trace file records two kinds of facts — the
+/// lifecycle event itself (`TraceEntry::Ui`, unchanged wire format for
+/// SSE/transcript consumers) and, when the event carries model-visible
+/// content, explicit `TraceEntry::History` items so resume can rebuild the
+/// kernel conversation without heuristically reclassifying events. Review
+/// mode persists redacted events only; redaction is not history-safe, so no
+/// history items are derived from them.
+fn append_trace(
+    history_projector: &mut crate::engine::history_projection::HistoryProjector,
+    trace_writer: &Option<TraceWriter>,
+    event: &StreamEvent,
+    review_mode: bool,
+) {
+    let Some(tw) = trace_writer else {
+        return;
+    };
+    let persisted = if review_mode {
+        event.redacted_for_review_persistence()
+    } else {
+        event.clone()
+    };
+    let _ = tw.append(&persisted);
+    if !review_mode {
+        for item in history_projector.project(event) {
+            let _ = tw.append_history(&item);
+        }
     }
 }
 

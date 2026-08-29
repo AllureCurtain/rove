@@ -193,7 +193,9 @@ pub(crate) async fn product_provider_capability_selector(
         "workspace_config:{}",
         provider_capability_selector_for_workspace(root)
     ));
-    for session in store.list_sessions(workspace_id).await? {
+    // Every session contributes to the digest, so this is one of the few reads
+    // that must span the whole workspace rather than one page.
+    for session in store.list_all_sessions(workspace_id).await? {
         let model_config = store.get_session_model_config(&session.id).await?;
         let selector = if let Some(profile_id) = &model_config.profile_id {
             let catalog_profile_id = ProviderProfileId::new(profile_id.to_string())

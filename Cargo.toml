@@ -1,8 +1,10 @@
 [workspace]
 members = [
+    "protocol",
     "models",
     "core",
     "runtime",
+    "tools-text",
     "apps/bootstrap",
     "apps/bench",
     "apps/api",
@@ -12,6 +14,17 @@ members = [
 ]
 default-members = ["apps/cli"]
 resolver = "3"
+
+# Full debuginfo on this workspace produces tens of gigabytes of Windows PDBs
+# and has hit the linker's PDB size ceiling (LNK1318) on test targets. Line
+# tables keep what development actually uses — backtraces with file and line —
+# while dropping the type and variable records that account for the bulk of the
+# size. Raise this locally if you need a stepping debugger.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
 
 [workspace.package]
 version = "0.1.0"
@@ -40,7 +53,9 @@ regex = "1"
 reqwest = { version = "0.13.3", features = ["json", "stream"] }
 rove-core = { path = "core" }
 rove-models = { path = "models" }
+rove-protocol = { path = "protocol" }
 rove-runtime = { path = "runtime" }
+rove-tools-text = { path = "tools-text" }
 rove-app-bootstrap = { path = "apps/bootstrap" }
 rove-bench = { path = "apps/bench" }
 rove-api = { path = "apps/api" }

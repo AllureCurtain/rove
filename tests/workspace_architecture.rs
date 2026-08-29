@@ -58,49 +58,97 @@ fn local_package_dependencies_follow_the_modular_workspace_direction() {
     );
     assert_eq!(
         local_dependencies
+            .get("rove-protocol")
+            .cloned()
+            .unwrap_or_default(),
+        BTreeSet::new(),
+        "rove-protocol must stay the workspace leaf: wire vocabulary with no local dependencies"
+    );
+    assert_eq!(
+        local_dependencies
             .get("rove-core")
             .cloned()
             .unwrap_or_default(),
-        BTreeSet::from(["rove-models".to_string()]),
-        "rove-core must depend only on rove-models among local packages"
+        BTreeSet::from(["rove-models".to_string(), "rove-protocol".to_string()]),
+        "rove-core must depend only on rove-models and rove-protocol among local packages"
     );
     assert_eq!(
         local_dependencies
             .get("rove-runtime")
             .cloned()
             .unwrap_or_default(),
-        BTreeSet::from(["rove-core".to_string(), "rove-models".to_string()]),
-        "rove-runtime must depend only on rove-models and rove-core among local packages"
+        BTreeSet::from([
+            "rove-core".to_string(),
+            "rove-models".to_string(),
+            "rove-protocol".to_string(),
+            "rove-tools-text".to_string(),
+        ]),
+        "rove-runtime must depend only on rove-models, rove-core, rove-protocol and rove-tools-text among local packages"
+    );
+    assert_eq!(
+        local_dependencies
+            .get("rove-tools-text")
+            .cloned()
+            .unwrap_or_default(),
+        BTreeSet::new(),
+        "rove-tools-text must stay a leaf: pure text kernels with no local dependencies"
     );
 
+    assert_dependency_tree_excludes(
+        "rove-core",
+        &["rusqlite", "axum", "clap", "ratatui", "lancedb"],
+    );
+
+    // The point of the protocol crate is that a consumer which only needs to
+    // parse a run id or match a run status can link it alone. An async runtime
+    // or an HTTP framework leaking in here would silently undo that.
+    assert_dependency_tree_excludes(
+        "rove-protocol",
+        &[
+            "tokio", "axum", "utoipa", "reqwest", "hyper", "rusqlite", "clap", "ratatui", "lancedb",
+        ],
+    );
+}
+
+fn assert_dependency_tree_excludes(package: &str, forbidden_packages: &[&str]) {
     let tree = Command::new(env!("CARGO"))
-        .args(["tree", "-p", "rove-core", "--prefix", "none"])
+        .args(["tree", "-p", package, "--prefix", "none"])
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .output()
-        .expect("cargo tree for rove-core should run");
+        .unwrap_or_else(|error| panic!("cargo tree for {package} should run: {error}"));
     assert!(
         tree.status.success(),
         "cargo tree failed: {}",
         String::from_utf8_lossy(&tree.stderr)
     );
     let tree = String::from_utf8(tree.stdout).unwrap();
-    for forbidden in ["rusqlite", "axum", "clap", "ratatui", "lancedb"] {
+    for forbidden in forbidden_packages {
         assert!(
             !tree
                 .lines()
-                .any(|line| line.split_whitespace().next() == Some(forbidden)),
-            "rove-core dependency tree must exclude {forbidden}:\n{tree}"
+                .any(|line| line.split_whitespace().next() == Some(*forbidden)),
+            "{package} dependency tree must exclude {forbidden}:\n{tree}"
         );
     }
 }
 
 fn local_dependency_is_allowed(package: &str, dependency: &str) -> bool {
+    // The wire vocabulary sits below everything. Any crate may name it, so it is
+    // never itself a direction violation.
+    if dependency == "rove-protocol" {
+        return package != "rove-protocol";
+    }
+
     match package {
         // Temporary compatibility facade during physical extraction.
         "rove" => true,
+        // The workspace leaf: serde and ulid only, no local dependencies.
+        "rove-protocol" => false,
         "rove-models" => false,
         "rove-core" => dependency == "rove-models",
-        "rove-runtime" => matches!(dependency, "rove-models" | "rove-core"),
+        // Pure text kernels: no IO, no async, no local dependencies.
+        "rove-tools-text" => false,
+        "rove-runtime" => matches!(dependency, "rove-models" | "rove-core" | "rove-tools-text"),
         "rove-app-bootstrap" => {
             matches!(dependency, "rove-models" | "rove-core" | "rove-runtime")
         }

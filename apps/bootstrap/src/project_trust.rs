@@ -1684,12 +1684,24 @@ max_selected = 2
         if !create_directory_junction(&first, &junction) {
             return;
         }
+        // Some Windows policies refuse to traverse a junction as an untrusted
+        // mount point (os error 448), so no capability digest can be computed
+        // and the grant this test needs as its precondition cannot exist. The
+        // refusal is itself the safe outcome; the retargeting scenario simply
+        // cannot be hosted here.
+        let granting_digests = capability_digest_map(&junction, None, None);
+        if granting_digests
+            .values()
+            .any(|digest| digest.starts_with(UNAVAILABLE_CAPABILITY_DIGEST_PREFIX))
+        {
+            return;
+        }
         store
             .decide(
                 &junction,
                 WorkspaceKind::Folder,
                 ProjectTrustDecision::Grant,
-                capability_digest_map(&junction, None, None),
+                granting_digests,
             )
             .unwrap();
 

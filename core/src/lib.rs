@@ -1,6 +1,7 @@
 mod agent;
 mod error;
 mod events;
+pub mod history;
 pub mod kernel;
 pub mod model_turn;
 mod parser;

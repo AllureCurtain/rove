@@ -35,10 +35,18 @@ fn pre_lifecycle_report_fixture_keeps_additive_defaults() {
 
 #[test]
 fn pre_lifecycle_trace_fixture_remains_readable() {
-    let events = include_str!("fixtures/artifacts/pre-lifecycle-trace.jsonl")
-        .lines()
-        .map(|line| serde_json::from_str::<StreamEvent>(line).unwrap())
-        .collect::<Vec<_>>();
+    let outcome = rove_runtime::state::trace_reader::read_trace_content(include_str!(
+        "fixtures/artifacts/pre-lifecycle-trace.jsonl"
+    ));
+    assert_eq!(outcome.corrupt_line_count, 0);
+    let events: Vec<StreamEvent> = outcome
+        .entries
+        .into_iter()
+        .map(|entry| match entry.entry {
+            rove_runtime::foundation::TraceEntry::Ui(event) => event,
+            other => panic!("unexpected non-event trace line: {other:?}"),
+        })
+        .collect();
 
     assert!(matches!(
         &events[0],

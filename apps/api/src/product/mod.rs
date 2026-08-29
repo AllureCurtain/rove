@@ -5,12 +5,14 @@
 
 pub(crate) mod artifacts;
 mod contracts;
+pub(crate) mod cursor;
 pub(crate) mod diff;
 pub(crate) mod export;
 pub(crate) mod files;
 pub(crate) mod mcp;
 pub(crate) mod message_adapter;
 pub(crate) mod migration;
+pub(crate) mod ownership;
 pub(crate) mod platform;
 pub(crate) mod provider_catalog;
 pub(crate) mod review;
@@ -25,6 +27,9 @@ pub use artifacts::{
     ProductArtifactSourceKind, ProductArtifactView, ProductArtifactsResponse,
 };
 pub use contracts::*;
+pub use cursor::{
+    ProductCursorError, ProductSessionCursor, SESSION_RANK_ARCHIVED, SESSION_RANK_LIVE,
+};
 pub use diff::{ProductDiffEntry, ProductDiffOp, ProductDiffSource, ProductSessionDiffResponse};
 pub use export::{
     ProductExportChild, ProductExportFormat, ProductExportLineage, ProductExportPartialReasons,

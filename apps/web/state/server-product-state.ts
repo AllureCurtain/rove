@@ -1,4 +1,5 @@
 import { webPlatform } from "../platform/web";
+import { MAX_PRODUCT_SESSION_PAGE_LIMIT } from "../product/product-api-types";
 import type {
   ProductPreferences,
   ProductSession,
@@ -53,6 +54,39 @@ export function resolveProductTheme(
     : preference;
 }
 
+/**
+ * Pages the API can serve for one workspace before we stop asking.
+ *
+ * At the maximum page size this covers more sessions than a workspace can hold,
+ * so reaching it means a cursor stopped advancing. Stopping there turns that
+ * into a short list rather than a request loop that never ends.
+ */
+const MAX_SESSION_PAGES_PER_WORKSPACE = 64;
+
+async function listWorkspaceSessions(
+  client: ProductApiClient,
+  workspaceId: string,
+): Promise<ProductSession[]> {
+  const sessions: ProductSession[] = [];
+  let cursor: string | undefined;
+  for (let page = 0; page < MAX_SESSION_PAGES_PER_WORKSPACE; page += 1) {
+    // Archived sessions are dropped by every consumer of this catalog, so we
+    // ask the server not to send them rather than paying to transfer and
+    // discard them.
+    const response = await client.listSessions(workspaceId, {
+      cursor,
+      limit: MAX_PRODUCT_SESSION_PAGE_LIMIT,
+      includeArchived: false,
+    });
+    sessions.push(...response.sessions);
+    if (!response.next_cursor) {
+      return sessions;
+    }
+    cursor = response.next_cursor;
+  }
+  return sessions;
+}
+
 export async function listSessionsBounded(
   client: ProductApiClient,
   workspaceIds: string[],
@@ -61,11 +95,11 @@ export async function listSessionsBounded(
   const concurrency = 6;
   for (let index = 0; index < workspaceIds.length; index += concurrency) {
     const batch = workspaceIds.slice(index, index + concurrency);
-    const responses = await Promise.all(
-      batch.map((workspaceId) => client.listSessions(workspaceId)),
+    const perWorkspace = await Promise.all(
+      batch.map((workspaceId) => listWorkspaceSessions(client, workspaceId)),
     );
-    for (const response of responses) {
-      sessions.push(...response.sessions);
+    for (const workspaceSessions of perWorkspace) {
+      sessions.push(...workspaceSessions);
     }
   }
   return sessions;

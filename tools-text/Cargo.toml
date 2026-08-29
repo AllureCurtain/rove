@@ -1,0 +1,13 @@
+[package]
+name = "rove-tools-text"
+version.workspace = true
+edition.workspace = true
+description = "Pure text-editing and patch-application kernel for Rove tools (no IO, no async runtime)"
+publish = false
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]

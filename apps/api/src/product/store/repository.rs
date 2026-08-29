@@ -28,10 +28,12 @@ use crate::product::{
     ProductProviderSelection, ProductProviderType, ProductReasoningPreference, ProductResumeHealth,
     ProductResumeHealthStatus, ProductReview, ProductReviewFinding, ProductReviewFindingsQuery,
     ProductReviewFindingsResponse, ProductReviewId, ProductReviewStatus, ProductRuntimeBinding,
-    ProductSession, ProductSessionContext, ProductSessionId, ProductSessionModelConfig,
+    ProductSession, ProductSessionContext, ProductSessionCursor, ProductSessionId,
+    ProductSessionModelConfig, ProductSessionPage, ProductSessionPageQuery, ProductSessionRecovery,
     ProductSessionRunBinding, ProductSessionRunModelView, ProductSessionStatus, ProductStoreError,
     ProductThemePreference, ProductTurnClaim, ProductTurnClaimId, ProductTurnControlFinish,
-    ProductWorkspace, ProductWorkspaceId, ProductWorkspaceKind, UpdateProductPreferencesRequest,
+    ProductWorkspace, ProductWorkspaceId, ProductWorkspaceKind, RecoverProductSessionOwnership,
+    SESSION_RANK_ARCHIVED, SESSION_RANK_LIVE, UpdateProductPreferencesRequest,
     UpdateProductProviderProfileRequest, UpdateProductSessionModelConfigRequest,
     UpdateProductSessionRequest, VerifiedM1SessionRunBinding, VerifiedProductForkBoundary,
     m1_browser_migration_digest,
@@ -388,46 +390,81 @@ impl ProductRepository {
         Ok(())
     }
 
+    /// Read one page of a workspace's sessions.
+    ///
+    /// Codex alignment Phase 7. The sort key is
+    /// `(archived_rank, updated_at DESC, product_session_id ASC)`, which
+    /// `idx_product_sessions_workspace_page` covers end to end. A cursor names
+    /// the last row already delivered, so resuming is a range scan rather than
+    /// an offset that has to count past everything skipped.
+    ///
+    /// The chain validation that runs per session is why paging matters beyond
+    /// response size: it used to run once per session in the workspace on every
+    /// request, and now runs at most `limit` times.
+    ///
+    /// The page is assembled one rank group at a time rather than by one query
+    /// spanning both. A keyset predicate that let the rank vary has to be a
+    /// three-way disjunction, and SQLite cannot prove such a scan is already
+    /// ordered — it materialises the matches and sorts them, at a cost that grows
+    /// with the workspace, which is the cost paging exists to remove. Pinning the
+    /// rank as an equality keeps the index scan itself ordered. Rank has two
+    /// values, so a page costs at most two seeks.
     pub(super) fn list_sessions(
         &self,
-        workspace_id: &ProductWorkspaceId,
-    ) -> Result<Vec<ProductSession>, ProductStoreError> {
+        query: &ProductSessionPageQuery,
+    ) -> Result<ProductSessionPage, ProductStoreError> {
         let mut connection = self.database.connect()?;
         let transaction = connection.transaction().map_err(storage_error)?;
-        require_workspace(&transaction, workspace_id)?;
-        let sessions = {
+        require_workspace(&transaction, &query.workspace_id)?;
+        // One row past the page: its existence is what distinguishes "the page
+        // is full" from "there is more", without a second COUNT query that
+        // could disagree with the page under concurrent writes.
+        let probe_limit = limit_i64(query.limit.saturating_add(1))?;
+        let ranks: &[i64] = if query.include_archived {
+            &[SESSION_RANK_LIVE, SESSION_RANK_ARCHIVED]
+        } else {
+            &[SESSION_RANK_LIVE]
+        };
+        let mut sessions: Vec<ProductSession> = Vec::new();
+        for &rank in ranks {
+            // A cursor from a later group means this one is already fully
+            // delivered; a cursor from an earlier group leaves this one untouched.
+            let resume = match &query.cursor {
+                Some(cursor) if cursor.archived_rank > rank => continue,
+                Some(cursor) if cursor.archived_rank == rank => Some(cursor),
+                _ => None,
+            };
+            let remaining = probe_limit - sessions.len() as i64;
+            if remaining <= 0 {
+                break;
+            }
             let mut statement = transaction
-                .prepare(
-                    r#"
-                    SELECT product_session_id, workspace_id, title, status, latest_ordinal,
-                           runtime_session_id, latest_job_id, latest_run_id,
-                           parent_session_id, fork_point_run_id, fork_point_seq,
-                           created_at, updated_at
-                    FROM product_sessions
-                    WHERE workspace_id = ?1
-                    ORDER BY CASE WHEN status = 'archived' THEN 1 ELSE 0 END ASC,
-                             updated_at DESC, created_at DESC, product_session_id ASC
-                    LIMIT ?2
-                    "#,
-                )
+                .prepare(&rank_page_sql(query, resume.is_some()))
                 .map_err(storage_error)?;
+            let owned = rank_page_params(query, rank, resume, remaining);
+            let bound: Vec<&dyn rusqlite::ToSql> =
+                owned.iter().map(|value| value.as_ref()).collect();
             let rows = statement
-                .query_map(
-                    params![workspace_id.to_string(), limit_i64(MAX_PRODUCT_SESSIONS)?],
-                    raw_session_from_row,
-                )
+                .query_map(bound.as_slice(), raw_session_from_row)
                 .map_err(storage_error)?;
-            let mut sessions = Vec::new();
             for row in rows {
                 sessions.push(row.map_err(storage_error)?.into_product()?);
             }
-            sessions
+        }
+        let next_cursor = if sessions.len() > query.limit {
+            sessions.truncate(query.limit);
+            sessions.last().map(cursor_for_session)
+        } else {
+            None
         };
         for session in &sessions {
             validate_binding_integrity(&transaction, session)?;
         }
         transaction.commit().map_err(storage_error)?;
-        Ok(sessions)
+        Ok(ProductSessionPage {
+            sessions,
+            next_cursor,
+        })
     }
 
     pub(super) fn create_session(
@@ -1516,6 +1553,255 @@ impl ProductRepository {
         }
         transaction.commit().map_err(storage_error)?;
         Ok(created)
+    }
+
+    /// Reinsert the catalog rows one session's ownership records describe.
+    ///
+    /// Codex alignment Phase 5: the counterpart to the runtime index backfill.
+    /// A session the catalog still knows is left completely alone — recovery is
+    /// for holes, and a half-merge of on-disk records into a live chain is how
+    /// you get a session that reads as corrupt. Everything lands in one
+    /// transaction: a session without its workspace, or a binding without its
+    /// ownership rows, would fail a foreign key on the next write and be worse
+    /// than no recovery at all.
+    ///
+    /// The chain is renumbered from 1 and relinked as it is inserted, because
+    /// every read of `product_session_runs` requires contiguous ordinals whose
+    /// `resumed_from_run_id` points at the previous run. A lost record therefore
+    /// shifts later ordinals rather than leaving a gap that makes the whole
+    /// session unreadable. Runs that would break the chain's runtime identity —
+    /// a different runtime session or job than the first run — are dropped,
+    /// since the reader rejects those outright.
+    pub(super) fn recover_session_ownership(
+        &self,
+        ownership: &RecoverProductSessionOwnership,
+    ) -> Result<ProductSessionRecovery, ProductStoreError> {
+        let mut connection = self.database.connect()?;
+        let transaction = immediate_transaction(&mut connection)?;
+        let now = now_rfc3339();
+
+        // A session the catalog already holds is authoritative. On-disk records
+        // are a snapshot from when the run started and know nothing about
+        // renames, archiving, or later turns, so merging them in would undo
+        // live state.
+        let session_exists = transaction
+            .query_row(
+                "SELECT 1 FROM product_sessions WHERE product_session_id = ?1",
+                params![ownership.product_session_id.to_string()],
+                |_| Ok(()),
+            )
+            .optional()
+            .map_err(storage_error)?
+            .is_some();
+        if session_exists {
+            return Ok(ProductSessionRecovery::AlreadyPresent);
+        }
+
+        // The chain's runtime identity comes from its first run, and the reader
+        // requires every later run to share it.
+        let Some(first_run) = ownership.runs.iter().min_by_key(|run| run.recorded_ordinal) else {
+            return Ok(ProductSessionRecovery::Skipped);
+        };
+        let chain_session_id = first_run.runtime_session_id;
+        let chain_job_id = first_run.runtime_job_id;
+
+        // `runtime_session_id` and `runtime_job_id` are primary keys of their
+        // owner tables, so a runtime identity already owned by a different
+        // product session cannot be re-owned here. That means the records on
+        // disk lost their claim — most likely the session was deleted and its
+        // runtime ids reused by a migration — and the whole record is stale.
+        if runtime_owner_conflicts(
+            &transaction,
+            "SELECT product_session_id FROM product_runtime_session_owners WHERE runtime_session_id = ?1",
+            &chain_session_id.to_string(),
+            &ownership.product_session_id,
+        )? || runtime_owner_conflicts(
+            &transaction,
+            "SELECT product_session_id FROM product_runtime_job_owners WHERE runtime_job_id = ?1",
+            &chain_job_id.to_string(),
+            &ownership.product_session_id,
+        )? {
+            return Ok(ProductSessionRecovery::Skipped);
+        }
+
+        // The canonical key is unique, so a workspace re-registered under a new
+        // id since the run wrote its record must win over the recorded id;
+        // inserting the stale id would duplicate the root under two ids.
+        let workspace_id = match find_workspace_by_key(&transaction, &ownership.canonical_key)? {
+            Some(existing) => existing.id,
+            None => {
+                transaction
+                    .execute(
+                        r#"
+                        INSERT INTO product_workspaces(
+                            workspace_id, canonical_root, canonical_key, kind, display_name,
+                            pinned, last_opened_at, created_at, updated_at
+                        ) VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, ?6, ?7)
+                        ON CONFLICT(workspace_id) DO NOTHING
+                        "#,
+                        params![
+                            ownership.workspace_id.to_string(),
+                            ownership.canonical_root_text,
+                            ownership.canonical_key,
+                            workspace_kind_to_db(ownership.workspace_kind),
+                            ownership.workspace_display_name,
+                            ownership.session_created_at,
+                            now,
+                        ],
+                    )
+                    .map_err(storage_error)?;
+                ownership.workspace_id.clone()
+            }
+        };
+
+        transaction
+            .execute(
+                r#"
+                INSERT INTO product_sessions(
+                    product_session_id, workspace_id, title, status,
+                    created_at, updated_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                "#,
+                params![
+                    ownership.product_session_id.to_string(),
+                    workspace_id.to_string(),
+                    ownership.session_title,
+                    session_status_to_db(ownership.status),
+                    ownership.session_created_at,
+                    now,
+                ],
+            )
+            .map_err(storage_error)?;
+        // Without a model config row the session cannot be opened, so a
+        // recovered session gets the current defaults rather than a
+        // half-usable row.
+        let (profile_id, model, max_steps) = default_session_model_values(&transaction)?;
+        insert_session_model_config(
+            &transaction,
+            SessionModelConfigWrite {
+                session_id: &ownership.product_session_id,
+                profile_id: profile_id.as_deref(),
+                model: &model,
+                reasoning: ProductReasoningPreference::Default,
+                max_steps,
+                revision: 1,
+                updated_at: &now,
+            },
+        )?;
+
+        transaction
+            .execute(
+                r#"
+                INSERT INTO product_runtime_session_owners(runtime_session_id, product_session_id)
+                VALUES (?1, ?2)
+                ON CONFLICT(runtime_session_id) DO NOTHING
+                "#,
+                params![
+                    chain_session_id.to_string(),
+                    ownership.product_session_id.to_string(),
+                ],
+            )
+            .map_err(storage_error)?;
+        transaction
+            .execute(
+                r#"
+                INSERT INTO product_runtime_job_owners(
+                    runtime_job_id, runtime_session_id, product_session_id
+                ) VALUES (?1, ?2, ?3)
+                ON CONFLICT(runtime_job_id) DO NOTHING
+                "#,
+                params![
+                    chain_job_id.to_string(),
+                    chain_session_id.to_string(),
+                    ownership.product_session_id.to_string(),
+                ],
+            )
+            .map_err(storage_error)?;
+
+        let mut runs = ownership.runs.clone();
+        runs.sort_by_key(|run| run.recorded_ordinal);
+
+        let mut ordinal: i64 = 0;
+        let mut previous_run_id: Option<RunId> = None;
+        for run in &runs {
+            // The reader rejects a chain whose runs disagree on their runtime
+            // session or job, so a record that disagrees with the first run is
+            // not something this session can hold.
+            if run.runtime_session_id != chain_session_id || run.runtime_job_id != chain_job_id {
+                continue;
+            }
+            // A run bound to a different session means this record is stale, not
+            // that the catalog is wrong. Skip it rather than fight the live row
+            // for the `runtime_run_id` unique index.
+            let bound_elsewhere = transaction
+                .query_row(
+                    "SELECT 1 FROM product_session_runs WHERE runtime_run_id = ?1",
+                    params![run.runtime_run_id.to_string()],
+                    |_| Ok(()),
+                )
+                .optional()
+                .map_err(storage_error)?
+                .is_some();
+            if bound_elsewhere {
+                continue;
+            }
+
+            ordinal += 1;
+            transaction
+                .execute(
+                    r#"
+                    INSERT INTO product_session_runs(
+                        product_session_id, ordinal, runtime_session_id, runtime_job_id,
+                        runtime_run_id, resumed_from_run_id, bound_at
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                    "#,
+                    params![
+                        ownership.product_session_id.to_string(),
+                        ordinal,
+                        chain_session_id.to_string(),
+                        chain_job_id.to_string(),
+                        run.runtime_run_id.to_string(),
+                        previous_run_id.map(|id| id.to_string()),
+                        run.bound_at,
+                    ],
+                )
+                .map_err(storage_error)?;
+            previous_run_id = Some(run.runtime_run_id);
+        }
+
+        // A session with no runs cannot be opened and cannot be resumed, so
+        // there is nothing to recover — better to leave the hole than to add a
+        // row every listing has to explain.
+        if ordinal == 0 {
+            transaction.rollback().map_err(storage_error)?;
+            return Ok(ProductSessionRecovery::Skipped);
+        }
+
+        transaction
+            .execute(
+                r#"
+                UPDATE product_sessions SET
+                    latest_ordinal = latest.ordinal,
+                    runtime_session_id = latest.runtime_session_id,
+                    latest_job_id = latest.runtime_job_id,
+                    latest_run_id = latest.runtime_run_id,
+                    updated_at = ?2
+                FROM (
+                    SELECT ordinal, runtime_session_id, runtime_job_id, runtime_run_id
+                    FROM product_session_runs
+                    WHERE product_session_id = ?1
+                    ORDER BY ordinal DESC LIMIT 1
+                ) AS latest
+                WHERE product_session_id = ?1
+                "#,
+                params![ownership.product_session_id.to_string(), now],
+            )
+            .map_err(storage_error)?;
+
+        transaction.commit().map_err(storage_error)?;
+        Ok(ProductSessionRecovery::Recovered {
+            runs: usize::try_from(ordinal).unwrap_or(usize::MAX),
+        })
     }
 
     pub(super) fn finish_session_turn(
@@ -4378,6 +4664,114 @@ fn get_fork_context(
     }))
 }
 
+/// The listing's rank for a session: live sessions sort before archived ones.
+///
+/// This mirrors the `CASE` expression in the SQL and in
+/// `idx_product_sessions_workspace_page`. All three must agree, or a cursor
+/// minted from a row would not find that row again.
+fn archived_rank(status: ProductSessionStatus) -> i64 {
+    match status {
+        ProductSessionStatus::Archived => SESSION_RANK_ARCHIVED,
+        _ => SESSION_RANK_LIVE,
+    }
+}
+
+/// Mint the cursor that resumes immediately after `session`.
+fn cursor_for_session(session: &ProductSession) -> ProductSessionCursor {
+    ProductSessionCursor::after(
+        archived_rank(session.status),
+        &session.updated_at,
+        session.id.clone(),
+    )
+}
+
+/// Escape a user-supplied search term for use inside a `LIKE` pattern.
+///
+/// Without this, a title search for `100%` would match every title, and `_`
+/// would match any character — the user would get results they did not ask for
+/// and could not explain. The escape character is declared by `ESCAPE` in the
+/// SQL, and the backslash itself must be escaped first or escaping the other
+/// two would be reversible by the input.
+fn like_pattern(term: &str) -> String {
+    let mut pattern = String::with_capacity(term.len() + 2);
+    pattern.push('%');
+    for character in term.chars() {
+        if matches!(character, '\\' | '%' | '_') {
+            pattern.push('\\');
+        }
+        pattern.push(character);
+    }
+    pattern.push('%');
+    pattern
+}
+
+/// Build the query for one rank group of the page.
+///
+/// The rank is bound as an equality and is therefore *absent* from `ORDER BY`:
+/// it is constant across every row the query can return. That is what lets
+/// `idx_product_sessions_workspace_page` satisfy the ordering by scan position
+/// alone, with no sorting step. Writing `ORDER BY rank, updated_at DESC, id`
+/// here instead — the more obvious form — reintroduces the temp B-tree, because
+/// SQLite matches `ORDER BY` against the index prefix textually and the leading
+/// `CASE` expression is not something it will simplify away.
+///
+/// Within a group the keyset predicate is a plain two-term disjunction: an
+/// *earlier* timestamp, or the same timestamp and a *greater* id. The middle
+/// sort term is `DESC`, so "after" is `<`.
+pub(super) fn rank_page_sql(query: &ProductSessionPageQuery, resuming: bool) -> String {
+    const RANK: &str = "CASE WHEN status = 'archived' THEN 1 ELSE 0 END";
+    let mut sql = format!(
+        r#"
+        SELECT product_session_id, workspace_id, title, status, latest_ordinal,
+               runtime_session_id, latest_job_id, latest_run_id,
+               parent_session_id, fork_point_run_id, fork_point_seq,
+               created_at, updated_at
+        FROM product_sessions
+        WHERE workspace_id = ?1 AND {RANK} = ?2
+        "#
+    );
+    let mut next_index = 3;
+    if resuming {
+        let updated_at = next_index;
+        let session_id = next_index + 1;
+        sql.push_str(&format!(
+            " AND (updated_at < ?{updated_at}
+                   OR (updated_at = ?{updated_at}
+                       AND product_session_id > ?{session_id}))\n"
+        ));
+        next_index += 2;
+    }
+    if query.search.is_some() {
+        sql.push_str(&format!(" AND title LIKE ?{next_index} ESCAPE '\\'\n"));
+        next_index += 1;
+    }
+    sql.push_str(&format!(
+        " ORDER BY updated_at DESC, product_session_id ASC
+          LIMIT ?{next_index}"
+    ));
+    sql
+}
+
+/// Bind the parameters in the same order [`rank_page_sql`] numbered them.
+fn rank_page_params(
+    query: &ProductSessionPageQuery,
+    rank: i64,
+    resume: Option<&ProductSessionCursor>,
+    limit: i64,
+) -> Vec<Box<dyn rusqlite::ToSql>> {
+    let mut params: Vec<Box<dyn rusqlite::ToSql>> =
+        vec![Box::new(query.workspace_id.to_string()), Box::new(rank)];
+    if let Some(cursor) = resume {
+        params.push(Box::new(cursor.updated_at.clone()));
+        params.push(Box::new(cursor.session_id.to_string()));
+    }
+    if let Some(term) = &query.search {
+        params.push(Box::new(like_pattern(term)));
+    }
+    params.push(Box::new(limit));
+    params
+}
+
 fn list_and_validate_bindings(
     connection: &Connection,
     session: &ProductSession,
@@ -6788,6 +7182,24 @@ fn bool_from_i64(value: i64) -> Result<bool, ProductStoreError> {
         1 => Ok(true),
         _ => Err(storage_error("persisted product boolean is invalid")),
     }
+}
+
+/// Whether a runtime id is already owned by a product session other than `expected`.
+///
+/// The owner tables key on the runtime id alone, so an id held by another
+/// session cannot be re-owned. Recovery uses this to tell "not yet recorded"
+/// apart from "someone else's", since only the first is recoverable.
+fn runtime_owner_conflicts(
+    transaction: &Transaction<'_>,
+    query: &str,
+    runtime_id: &str,
+    expected: &ProductSessionId,
+) -> Result<bool, ProductStoreError> {
+    let owner = transaction
+        .query_row(query, params![runtime_id], |row| row.get::<_, String>(0))
+        .optional()
+        .map_err(storage_error)?;
+    Ok(owner.is_some_and(|owner| owner != expected.to_string()))
 }
 
 fn workspace_kind_to_db(kind: ProductWorkspaceKind) -> &'static str {

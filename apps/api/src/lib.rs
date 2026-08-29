@@ -386,6 +386,7 @@ pub async fn serve_with_shutdown(
     if config.state_dir_is_contract_managed() {
         config.ensure_contract_layout()?;
     }
+    rove_app_bootstrap::ensure_home_legacy_run_migration(workspace.root.as_path());
     let addr: SocketAddr = config.api.bind_addr.parse()?;
     let state = ApiState::with_shutdown(workspace, config, shutdown.clone());
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -422,6 +423,7 @@ pub fn embedded_api_state(
     workspace.state_dir = config.state_dir();
     workspace.ensure_state_dir()?;
     config.ensure_contract_layout()?;
+    rove_app_bootstrap::ensure_home_legacy_run_migration(cwd);
     Ok(ApiState::with_shutdown(workspace, config, shutdown))
 }
 
@@ -505,6 +507,7 @@ impl ApiState {
         if let Err(err) = state_store.index.mark_running_jobs_interrupted() {
             tracing::warn!("failed to mark stale API jobs interrupted: {err}");
         }
+        spawn_state_index_backfill(&workspace, &config);
         let product_store_path = config.product_sqlite_path();
         let provider_catalog = ProviderCatalogService::new(UserConfigPaths::for_config_file(
             &config.source_summary.user_config_path,
@@ -540,6 +543,9 @@ impl ApiState {
                 }
             }
         });
+        if let Some(store) = product_store.as_ref() {
+            spawn_product_ownership_recovery(Arc::clone(store), &workspace, &config);
+        }
         let model_health = Arc::new(ModelHealthStore::new(HealthConfig {
             failure_threshold: config.routing.failure_threshold,
             open_cooldown: Duration::from_millis(config.routing.open_cooldown_ms),
@@ -786,7 +792,7 @@ async fn test_provider(
         ("after" = Option<u64>, Query, description = "Replay only events with seq greater than this value")
     ),
     responses(
-        (status = 200, description = "Server-Sent Events stream of JobStreamEvent payloads", body = JobStreamEvent, content_type = "text/event-stream"),
+        (status = 200, description = "Server-Sent Events stream. Each frame carries `seq` in the SSE `id:` field, the variant name in `event:`, and a `data:` body of `{\"v\": PROTOCOL_VERSION, ...StreamEvent}` — the protocol version first, then the event's own fields flattened alongside `type`.", body = JobStreamEvent, content_type = "text/event-stream"),
         (status = 400, description = "Invalid Last-Event-ID header", body = serde_json::Value, content_type = "application/json"),
         (status = 500, description = "Failed to load persisted events", body = serde_json::Value, content_type = "application/json")
     )
@@ -1550,6 +1556,7 @@ async fn prepare_claimed_product_job_launch(
     let claim_id = claim.claim_id.clone();
     let previous_product_status = claim.previous_status;
     let product_model_config = claim.model_config.clone();
+    let owning_context = claim.context.clone();
 
     let (workspace, config, run_model_snapshot) = match workspace_and_config_for_product_job(
         state,
@@ -1778,7 +1785,7 @@ async fn prepare_claimed_product_job_launch(
     };
     let _ = resume_claim.take();
 
-    if let Err(error) = store
+    let committed_binding = match store
         .commit_run_binding(CommitProductRunBinding {
             claim_id: claim_id.clone(),
             product_session_id: product_session_id.clone(),
@@ -1797,33 +1804,70 @@ async fn prepare_claimed_product_job_launch(
         })
         .await
     {
-        finalize_prestarted_run(
-            &record,
-            &engine,
-            run,
-            "product run binding was not committed",
-        )
-        .await;
-        if let Some(control_id) = &followup_control_id {
-            release_failed_followup_start(
-                &store,
-                &claim_id,
-                control_id,
-                true,
-                "runtime binding commit",
+        Ok(binding) => binding,
+        Err(error) => {
+            finalize_prestarted_run(
+                &record,
+                &engine,
+                run,
+                "product run binding was not committed",
             )
             .await;
-        } else {
-            finish_failed_product_start(
-                &store,
-                &claim_id,
-                Some(record.run_id),
-                ProductSessionStatus::NeedsAttention,
-                "runtime binding commit",
-            )
-            .await;
+            if let Some(control_id) = &followup_control_id {
+                release_failed_followup_start(
+                    &store,
+                    &claim_id,
+                    control_id,
+                    true,
+                    "runtime binding commit",
+                )
+                .await;
+            } else {
+                finish_failed_product_start(
+                    &store,
+                    &claim_id,
+                    Some(record.run_id),
+                    ProductSessionStatus::NeedsAttention,
+                    "runtime binding commit",
+                )
+                .await;
+            }
+            return Err(error.into());
         }
-        return Err(error.into());
+    };
+
+    // Codex alignment Phase 5: the binding now exists in the catalog, so record
+    // it in the run directory too. Written after the commit and never before —
+    // a sidecar for a binding that failed would resurrect a session that never
+    // owned this run. A write failure is logged, not propagated: the run is
+    // already bound and running, and losing durability of the catalog is a
+    // smaller harm than failing a turn the user asked for.
+    if let Err(error) = product::ownership::write_ownership(
+        &run.run_dir,
+        &product::ownership::ProductRunOwnership {
+            product_session_id: product_session_id.clone(),
+            workspace_id: owning_context.workspace.id.clone(),
+            workspace_root: owning_context.workspace.canonical_root.clone(),
+            workspace_kind: owning_context.workspace.kind,
+            workspace_display_name: owning_context.workspace.display_name.clone(),
+            session_title: owning_context.session.title.clone(),
+            ordinal: committed_binding.ordinal,
+            runtime_session_id: record.session_id,
+            runtime_job_id: record.job_id,
+            runtime_run_id: record.run_id,
+            resumed_from_run_id: record.resumed_from_run_id,
+            parent_session_id: owning_context.session.parent_session_id.clone(),
+            fork_point_run_id: owning_context.session.fork_point_run_id,
+            fork_point_seq: owning_context.session.fork_point_seq,
+            session_created_at: owning_context.session.created_at.clone(),
+            bound_at: committed_binding.bound_at.clone(),
+        },
+    ) {
+        tracing::warn!(
+            product_session_id = %product_session_id,
+            run_id = %record.run_id,
+            "failed to record product ownership in the run directory: {error}"
+        );
     }
 
     Ok(JobLaunch {
@@ -4151,6 +4195,114 @@ fn state_store_for_parts(workspace: &Workspace, config: &AppConfig) -> StateStor
     )
 }
 
+/// How long a startup backfill may run before the API stops waiting on it.
+///
+/// The bound exists for the pathological case — an index locked by another
+/// process, or a rebuild over a run history far larger than anything we test.
+/// Import is idempotent and per-artifact, so abandoning a partial rebuild is
+/// safe: the next boot resumes from whatever landed.
+const STATE_INDEX_BACKFILL_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Put back product sessions whose runs survived but whose catalog rows did not.
+///
+/// Codex alignment Phase 5: the product half of startup recovery. Shares the
+/// index backfill's shape — off the boot path, bounded, warn-on-failure — for
+/// the same reason: a session list that is briefly incomplete is recoverable,
+/// an API that refuses to start is not.
+fn spawn_product_ownership_recovery(
+    store: Arc<dyn ProductStore>,
+    workspace: &Workspace,
+    config: &AppConfig,
+) {
+    let Ok(handle) = tokio::runtime::Handle::try_current() else {
+        tracing::debug!(
+            "no async runtime at API construction; skipping product ownership recovery"
+        );
+        return;
+    };
+    let runs_dirs = product::ownership::candidate_runs_dirs(
+        config.user_state_roots.as_ref().map(|roots| roots.root()),
+        &workspace.state_dir,
+    );
+    if runs_dirs.is_empty() {
+        return;
+    }
+    handle.spawn(async move {
+        let sweep = product::ownership::recover_product_ownership(&store, &runs_dirs);
+        match tokio::time::timeout(STATE_INDEX_BACKFILL_TIMEOUT, sweep).await {
+            Ok(summary) if summary.sessions_recovered > 0 || summary.sessions_failed > 0 => {
+                tracing::info!(
+                    records_found = summary.records_found,
+                    sessions_found = summary.sessions_found,
+                    sessions_recovered = summary.sessions_recovered,
+                    runs_recovered = summary.runs_recovered,
+                    sessions_failed = summary.sessions_failed,
+                    "recovered product sessions from run directories"
+                );
+            }
+            Ok(summary) => tracing::debug!(
+                records_found = summary.records_found,
+                sessions_found = summary.sessions_found,
+                "product catalog already covers every run on disk"
+            ),
+            Err(_) => tracing::warn!(
+                timeout_secs = STATE_INDEX_BACKFILL_TIMEOUT.as_secs(),
+                "product ownership recovery did not finish in time; the session list may be \
+                 incomplete until the next start"
+            ),
+        }
+    });
+}
+
+/// Heal the runtime index from the run directories, off the boot path.
+///
+/// Codex alignment Phase 5: the filesystem is the record and the index is a
+/// rebuildable cache, so a deleted or truncated `state.sqlite` has to recover
+/// on its own rather than wait for someone to notice and run `rove repair`.
+/// Deliberately fire-and-forget: a failed or slow rebuild degrades history
+/// lookups, and serving requests without history beats refusing to boot.
+fn spawn_state_index_backfill(workspace: &Workspace, config: &AppConfig) {
+    // The constructor is synchronous and is also called from tests that never
+    // enter a runtime, so the spawn is conditional rather than assumed.
+    let Ok(handle) = tokio::runtime::Handle::try_current() else {
+        tracing::debug!("no async runtime at API construction; skipping state index backfill");
+        return;
+    };
+    let state_dir = workspace.state_dir.clone();
+    let db_path = config.sqlite_path();
+    let busy_timeout_ms = config.state.sqlite_busy_timeout_ms;
+    handle.spawn(async move {
+        let store = StateStore::with_index_path(&state_dir, db_path, busy_timeout_ms);
+        match tokio::time::timeout(STATE_INDEX_BACKFILL_TIMEOUT, store.backfill_missing_runs())
+            .await
+        {
+            Ok(Ok(result)) => match result.repair {
+                Some(repair) => tracing::info!(
+                    runs_on_disk = result.runs_on_disk,
+                    runs_missing = result.runs_missing,
+                    task_states = repair.task_state_count,
+                    events = repair.event_count,
+                    reports = repair.report_count,
+                    corrupt_trace_lines = repair.corrupt_trace_line_count,
+                    "rebuilt state index entries missing for runs on disk"
+                ),
+                None => tracing::debug!(
+                    runs_on_disk = result.runs_on_disk,
+                    "state index already covers every run on disk"
+                ),
+            },
+            Ok(Err(err)) => {
+                tracing::warn!("state index backfill failed: {err}");
+            }
+            Err(_) => tracing::warn!(
+                timeout_secs = STATE_INDEX_BACKFILL_TIMEOUT.as_secs(),
+                "state index backfill did not finish in time; history may be incomplete \
+                 until the next start"
+            ),
+        }
+    });
+}
+
 async fn live_job(state: &ApiState, job_id: JobId) -> Option<Arc<JobRecord>> {
     state.inner.jobs.read().await.get(&job_id).cloned()
 }
@@ -4502,10 +4654,14 @@ fn approval_status(decision: ApprovalDecision) -> &'static str {
 
 fn sse_event(event: JobStreamEvent) -> Result<Event, serde_json::Error> {
     let name = event.event.event_name();
+    // Every frame carries the protocol version as its first field. The payload
+    // is flattened, so a client written before versioning still finds `type`
+    // and the event fields exactly where they were.
+    let versioned = rove_protocol::Versioned::now(&event.event);
     Ok(Event::default()
         .id(event.seq.to_string())
         .event(name)
-        .data(serde_json::to_string(&event.event)?))
+        .data(serde_json::to_string(&versioned)?))
 }
 
 fn parse_last_event_id(headers: &HeaderMap) -> Result<Option<u64>, ApiError> {
@@ -5350,7 +5506,10 @@ mod tests {
             .await
             .expect("tracked job start and supervisor should drain after the database unlock");
 
-        let sessions = store.list_sessions(&product_workspace.id).await.unwrap();
+        let sessions = store
+            .list_all_sessions(&product_workspace.id)
+            .await
+            .unwrap();
         let session = sessions
             .into_iter()
             .find(|session| session.id == product_session.id)
