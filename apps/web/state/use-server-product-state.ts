@@ -857,6 +857,17 @@ export function useServerProductState() {
     [persistPreferences],
   );
 
+  const refreshProviderProfiles = useCallback(async (): Promise<
+    ProviderProfileRecord[]
+  > => {
+    const refreshed = await productClient.listProviderProfiles();
+    const records = refreshed.provider_profiles.map(fromProductProviderProfile);
+    providerCatalogRevisionRef.current = refreshed.catalog_revision;
+    setProfiles(records);
+    setCatalogError(null);
+    return records;
+  }, [productClient]);
+
   const createProviderProfile = useCallback(
     async (input: ProviderProfileInput): Promise<ProviderProfileRecord> => {
       const saved = await productClient.createProviderProfile({
@@ -967,6 +978,7 @@ export function useServerProductState() {
     createProviderProfile,
     updateProviderProfile,
     deleteProviderProfile,
+    refreshProviderProfiles,
     selection,
     changeSelection,
     changeDefaultApprovalPolicy,

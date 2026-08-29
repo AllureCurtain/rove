@@ -85,6 +85,9 @@ pub fn run() -> Result<()> {
         .invoke_handler(tauri::generate_handler![
             commands::get_app_paths,
             commands::workspace_select,
+            commands::provider_credential_prompt,
+            commands::provider_profile_probe,
+            commands::provider_profile_use,
             commands::open_external,
             commands::show_in_folder,
         ])
@@ -140,9 +143,11 @@ async fn setup_async(bearer_token: String) -> Result<ApiServerState> {
     info!("API server started at {}", api_handle.base_url);
 
     let base_url = api_handle.base_url.clone();
+    let api_state = api_handle.api_state.clone();
     Ok(ApiServerState {
         base_url: Some(base_url),
         inner: Arc::new(tokio::sync::Mutex::new(Some(api_handle))),
+        api_state,
         closing: Arc::new(AtomicBool::new(false)),
     })
 }
@@ -152,7 +157,15 @@ async fn setup_async(bearer_token: String) -> Result<ApiServerState> {
 pub struct ApiServerState {
     pub(crate) base_url: Option<String>,
     pub(crate) inner: Arc<tokio::sync::Mutex<Option<api_server::ApiServerHandle>>>,
+    pub(crate) api_state: rove_api::ApiState,
     pub(crate) closing: Arc<AtomicBool>,
+}
+
+pub fn startup_failure_message(log_path: &std::path::Path) -> String {
+    format!(
+        "Rove could not start its local API. Close any other Rove instances and try again. A redacted startup marker was written to {}.",
+        log_path.display()
+    )
 }
 
 #[cfg(test)]
@@ -175,5 +188,14 @@ mod tests {
         assert!(script.contains("value: \"token-value\""));
         assert!(script.contains("value: \"http://127.0.0.1:49152\""));
         assert!(script.contains("writable: false"));
+    }
+
+    #[test]
+    fn startup_failure_message_is_actionable_without_error_payloads() {
+        let message =
+            startup_failure_message(std::path::Path::new("C:/Rove/logs/desktop-startup.log"));
+        assert!(message.contains("local API"));
+        assert!(message.contains("desktop-startup.log"));
+        assert!(!message.contains("provider credential"));
     }
 }

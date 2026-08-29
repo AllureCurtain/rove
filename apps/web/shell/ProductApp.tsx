@@ -366,6 +366,7 @@ function ServerProductApp({ uiVersion }: { uiVersion: ProductUiVersion }) {
             onCreateProfile={server.createProviderProfile}
             onUpdateProfile={server.updateProviderProfile}
             onDeleteProfile={server.deleteProviderProfile}
+            onRefreshProviderProfiles={server.refreshProviderProfiles}
             onSelectionChange={server.changeSelection}
             onDefaultApprovalPolicyChange={
               server.changeDefaultApprovalPolicy

@@ -80,3 +80,4 @@ utoipa = { version = "5.5.0", features = ["chrono"] }
 utoipa-axum = "0.2.0"
 utoipa-swagger-ui = { version = "9.0.2", features = ["axum"] }
 walkdir = "2"
+zeroize = "1.8.2"

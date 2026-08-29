@@ -1,8 +1,10 @@
 # Rove TUI 与 Desktop 真实可用最终实现规范
 
-> Status: **Partially Implemented / F4 and T7 integrated on `main`; Desktop D6 and final A Gate pending**
+> Status: **Partially Implemented / F4 and T7 integrated on `main`; Desktop
+> D1-D6 complete on Windows against the real SiliconFlow provider; final A Gate
+> pending on merged `main`**
 >
-> Date: 2026-08-18
+> Date: 2026-08-18 (updated 2026-08-26)
 >
 > Scope: 完整交付一条使用真实 Provider、真实仓库工具和共享 Harness 的
 > TUI 与 Windows Desktop 产品路径。本文是该范围的最终实施合同，不是分析报告、
@@ -632,17 +634,52 @@ Desktop 必须展示与 TUI 同源的事实：
 
 ### D6. Desktop 完成定义
 
-- [ ] 干净构建产生可安装的 Windows 包；
-- [ ] 安装和卸载成功，启动不要求开发工具；
-- [ ] 开始菜单启动后 Provider 凭据可解析；
-- [ ] 原生目录选择创建正确 Workspace；
-- [ ] 真实模型完成与 TUI 相同的两轮只读任务；
-- [ ] Chat/Inspector 展示真实 Tool Call 和结果依据；
-- [ ] 一次修改任务展示审批、变更、测试和 diff；
-- [ ] SSE 断连/重连不重复提交任务；
-- [ ] 重启 Desktop 后恢复 Workspace、Session 和终态；
-- [ ] 日志、截图、trace、report 和 ProductStore 不含 raw secret；
-- [ ] 证据明确标注 Windows-only，未验证平台不做发布声明。
+代码实现状态（2026-08-25，确定性证据）：
+
+- [x] 干净构建产生可安装的 Windows 包（MSI + NSIS 构建通过）；
+- [x] 原生目录选择创建正确 Workspace（现有 picker + Product Workspace 路径）；
+- [x] 共享 onboarding 集成：开始菜单启动的 Desktop 通过共享
+      `ProviderOnboardingService` 创建/探测/启用 Provider，无需终端或 TOML；
+- [x] 日志、截图、trace、report 和 ProductStore 不含 raw secret（负向测试覆盖：
+      `secure_onboarding_projects_catalog_identity_without_serializing_the_secret`、
+      `probe_and_use_metadata_are_bounded_and_secret_free`）；
+- [x] 证据明确标注 Windows-only，未验证平台不做发布声明。
+
+真实安装态验收（2026-08-26 已通过，证据见
+`C:\rove-evidence\d6-desktop\manifest.json`）：
+
+- [x] 安装和卸载成功，启动不要求开发工具；
+- [x] 开始菜单启动后 Provider 凭据可解析（安装态实测）；
+- [x] 真实模型完成与 TUI 相同的两轮只读任务；
+- [x] Chat/Inspector 展示真实 Tool Call 和结果依据；
+- [x] 一次修改任务展示审批、变更、测试和 diff；
+- [x] SSE 断连/重连不重复提交任务（安装态实测）；
+- [x] 重启 Desktop 后恢复 Workspace、Session 和终态。
+
+验收条件：Provider 为真实 SiliconFlow（`openai` / `https://api.siliconflow.cn/v1`
+/ `deepseek-ai/DeepSeek-V3.2`），密钥仅取自 Windows keyring，无临时环境变量；
+Desktop 由开始菜单快捷方式启动，每次启动绑定新的随机 loopback 端口。
+
+关键实测结果：
+
+- 卸载/重装往返 10/10 通过。两个 NSIS 包均为 `perMachine`，两个方向都以提升子
+  进程执行（`Start-Process -Verb RunAs -Wait -PassThru`），退出码取自安装器本身；
+  未提升会话直接驱动卸载器会得到 `WinError 740`。`%APPDATA%\Rove` 在三个阶段
+  始终为 146 文件 / 11204219 字节，用户数据未被卸载删除。
+- 重装后由快捷方式启动，持久 bearer token 仍被接受，Workspace、4 个 Session 及
+  其状态、Provider 档案（keyring 引用，无密钥）全部恢复，成功真实运行
+  `01M0XY978K8X0MQ8036SBVHK53` 的终态绑定仍可解析。
+- SSE 断连重连 5/5：40 事件后断开 socket，`after=40` 精确从 41 续传至 seq 1148，
+  无重复 seq、仅一个 `run_completed`、无空洞、job 只对应一个 run，无重复提交。
+- 重启恢复 10/10：强杀进程（含 WebView2 子进程）后由快捷方式重启，Workspace、
+  Session 集合与状态、diff、artifact 数量与 sha256 摘要全部恢复；终态由持久
+  report 恢复。`/jobs/{id}/state` 返回 404，属设计内的 ephemeral job registry。
+- 41 次 Tool Call 全部带 Provider 侧 `tool_use_id`（真实原生调用，非文本内嵌
+  JSON），涉及 8 个工具、6 个审批事件。
+
+已知缺口：截图未采集，按缺口记录，不以合成图片充当证据。本节仅覆盖 Windows；
+不替代 §10.1 A Gate（须在两个分支合并后的 final main 上运行）和 A3 安装态 TUI
+Gate。
 
 ## 8. 测试与验证合同
 
