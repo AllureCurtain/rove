@@ -11,7 +11,7 @@ pub use rove_models::{Message, ModelToolSchema, Role, ToolCallRef, Usage};
 use serde::{Deserialize, Serialize};
 use ulid::Ulid;
 
-use crate::session::Session;
+use crate::session::{Session, SessionError};
 
 /// Unique identifier for a session (user-level, spans multiple jobs).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -68,6 +68,80 @@ pub struct TaskState {
     pub execution_lifecycle: crate::execution::ExecutionLifecycleState,
 }
 
+impl TaskState {
+    /// The model-visible history a resumed run would start from.
+    ///
+    /// Three sources can hold it and they are not equivalent, so the order
+    /// matters: the canonical session is authoritative for anything written
+    /// since it was introduced, `preserved_tail` is the compatibility
+    /// projection older writers left behind, and the flat `history` is the
+    /// pre-checkpoint format. Whoever needs this history has to agree with the
+    /// resume path about the precedence or the two will drift, which is why it
+    /// lives on the state rather than at each call site.
+    ///
+    /// Fails only when a stored canonical session cannot be projected for the
+    /// given protocol; callers decide whether that is fatal.
+    pub fn replayable_history(&self, protocol: &str) -> Result<Vec<Message>, SessionError> {
+        let Some(checkpoint) = self.checkpoint.as_ref() else {
+            return Ok(self.history.clone());
+        };
+        let Some(session) = checkpoint.session.as_ref() else {
+            return Ok(checkpoint.preserved_tail.clone());
+        };
+        let mut session = session.clone();
+        session.close_unresolved_tool_calls()?;
+        session
+            .suffix(crate::session::CHECKPOINT_SESSION_TAIL_ENTRIES)
+            .messages_for_provider(protocol)
+    }
+
+    /// Whether an empty replayable history is the deliberate result of a
+    /// compaction rather than a snapshot that never got written.
+    ///
+    /// The distinction matters because the two are indistinguishable by size
+    /// alone and want opposite handling: a crashed run's empty snapshot should
+    /// be refilled from its trace, while a compacted one must stay empty or the
+    /// summary ends up sitting next to the very history it replaced.
+    ///
+    /// This is the exact shape [`Self::continue_from_summary`] leaves behind: a
+    /// checkpoint that carries a summary and holds no history in either the
+    /// canonical session or the compatibility tail. A run that died before
+    /// writing a checkpoint has no checkpoint at all, so it cannot match.
+    pub fn history_was_compacted_away(&self) -> bool {
+        self.checkpoint.as_ref().is_some_and(|checkpoint| {
+            checkpoint.summary.is_some()
+                && checkpoint.session.is_none()
+                && checkpoint.preserved_tail.is_empty()
+        })
+    }
+
+    /// Replace the accumulated history with `summary`, so the next run starts
+    /// from the summary instead of the messages it stands for.
+    ///
+    /// All three history sources are cleared. Clearing only one would leave the
+    /// summary coexisting with the messages it replaces — the next prompt would
+    /// get *larger*, which is the opposite of what a compaction is for.
+    ///
+    /// The summary is written to `checkpoint.summary` even when there was no
+    /// checkpoint before, because that field — not `TaskState::summary` — is the
+    /// one a resumed run reads as its compaction summary. `TaskState::summary`
+    /// is a different slot that every completed run fills with a truncated
+    /// final output, so it cannot be used to carry a compaction forward without
+    /// making ordinary resumes look like compacted ones.
+    pub fn continue_from_summary(&mut self, summary: String) {
+        self.history.clear();
+        let checkpoint = self
+            .checkpoint
+            .get_or_insert_with(|| PromptCheckpoint::carrying_summary(self.step));
+        checkpoint.preserved_tail.clear();
+        checkpoint.session = None;
+        checkpoint.summary = Some(summary.clone());
+        checkpoint.compacted_history_messages = 0;
+        checkpoint.token_estimate = summary.chars().count().div_ceil(4);
+        self.summary = Some(summary);
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MessageDeliveryRecord {
     pub id: String,
@@ -107,6 +181,35 @@ pub struct PromptCheckpoint {
     pub execution_lifecycle: crate::execution::ExecutionLifecycleCheckpoint,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub message_deliveries: Vec<MessageDeliveryRecord>,
+}
+
+impl PromptCheckpoint {
+    /// A checkpoint whose only job is to carry a compaction summary forward.
+    ///
+    /// Used when a session is compacted before it ever produced a checkpoint of
+    /// its own: there is no preserved tail or canonical session to keep, and the
+    /// summary is filled in by the caller. Pointers are left unset rather than
+    /// guessed, since nothing here knows the memory layout the run used.
+    pub(crate) fn carrying_summary(last_step: u32) -> Self {
+        Self {
+            summary: None,
+            preserved_tail: Vec::new(),
+            session: None,
+            plan: None,
+            session_memory_pointer: None,
+            durable_memory_pointer: None,
+            last_step,
+            last_event_seq: None,
+            token_estimate: 0,
+            compacted_history_messages: 0,
+            compaction: PromptCompactionState::default(),
+            runtime_identity: None,
+            agent_profile: None,
+            step_ledger: crate::execution::StepLedgerCheckpoint::default(),
+            execution_lifecycle: crate::execution::ExecutionLifecycleCheckpoint::default(),
+            message_deliveries: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -444,5 +547,67 @@ pub trait UserInputProvider: Send + Sync {
             reason: "input provider must implement begin_input for registered input events"
                 .to_string(),
         })
+    }
+}
+
+#[cfg(test)]
+mod compaction_state_tests {
+    use super::*;
+
+    fn state_with_history(history: Vec<Message>) -> TaskState {
+        TaskState {
+            schema_version: 1,
+            session_id: SessionId::new(),
+            job_id: JobId::new(),
+            run_id: RunId::new(),
+            goal: "goal".to_string(),
+            step: 3,
+            history,
+            summary: None,
+            checkpoint: None,
+            plan: None,
+            runtime_identity: None,
+            agent_profile: None,
+            step_ledger: Default::default(),
+            execution_lifecycle: Default::default(),
+        }
+    }
+
+    /// A session compacted before it ever wrote a checkpoint still has to carry
+    /// its summary forward. The resume path reads `checkpoint.summary`, so
+    /// leaving `checkpoint` as `None` would drop the summary on the floor and
+    /// the compaction would amount to deleting the history.
+    #[test]
+    fn compacting_a_checkpointless_session_still_carries_the_summary() {
+        let mut state = state_with_history(vec![Message::user("dropped")]);
+        assert!(state.checkpoint.is_none());
+
+        state.continue_from_summary("THE SUMMARY".to_string());
+
+        let checkpoint = state
+            .checkpoint
+            .as_ref()
+            .expect("compaction must leave a checkpoint to carry the summary");
+        assert_eq!(checkpoint.summary.as_deref(), Some("THE SUMMARY"));
+        assert_eq!(checkpoint.last_step, 3, "the step must survive compaction");
+        assert!(state.replayable_history("openai").unwrap().is_empty());
+    }
+
+    /// The discriminator that keeps Phase 6's trace fallback from refilling a
+    /// deliberately emptied history. A compacted state must be recognisable;
+    /// an empty one that was never compacted must not be.
+    #[test]
+    fn only_a_compacted_state_reports_its_history_as_compacted_away() {
+        let mut compacted = state_with_history(vec![Message::user("dropped")]);
+        compacted.continue_from_summary("THE SUMMARY".to_string());
+        assert!(compacted.history_was_compacted_away());
+
+        // A run killed before writing a checkpoint: empty for a different
+        // reason, and its history is still recoverable from the trace.
+        let crashed = state_with_history(Vec::new());
+        assert!(
+            !crashed.history_was_compacted_away(),
+            "a checkpointless empty snapshot is a crash, not a compaction"
+        );
     }
 }

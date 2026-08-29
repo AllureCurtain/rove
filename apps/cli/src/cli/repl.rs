@@ -23,6 +23,7 @@ pub enum SlashCommand {
     Exit,
     Clear,
     Sessions,
+    Compact,
     ResumeLatest,
     ResumeRun(String),
     Unknown(String),
@@ -39,6 +40,7 @@ impl SlashCommand {
             "/exit" | "/quit" => Self::Exit,
             "/clear" => Self::Clear,
             "/sessions" => Self::Sessions,
+            "/compact" => Self::Compact,
             "/resume" => match parts.next() {
                 Some("latest") => Self::ResumeLatest,
                 Some(run_id) if !run_id.is_empty() => Self::ResumeRun(run_id.to_string()),
@@ -57,6 +59,7 @@ impl SlashCommand {
             Self::Exit => TerminalAction::Exit,
             Self::Clear => TerminalAction::Clear,
             Self::Sessions => TerminalAction::ShowSessions,
+            Self::Compact => TerminalAction::Compact,
             Self::ResumeLatest => TerminalAction::ResumeLatest,
             Self::ResumeRun(run_id) => TerminalAction::ResumeRun(run_id.clone()),
             Self::Unknown(command) => TerminalAction::Unknown(command.clone()),
@@ -284,6 +287,7 @@ async fn handle_slash_command(
             let states = runtime.state_store.list_task_states().await?;
             print!("{}", sessions::format_task_states(&states));
         }
+        SlashCommand::Compact => compact_active_state(runtime, state).await,
         SlashCommand::ResumeLatest => {
             match resolve_resume_state(&runtime.state_store, Some("latest")).await {
                 Ok(Some(resume_state)) => {
@@ -310,6 +314,58 @@ async fn handle_slash_command(
     }
     save_history(editor, history_path);
     Ok(false)
+}
+
+/// Compact the REPL's active resume snapshot in place.
+///
+/// Only in-memory state is touched. Nothing is persisted here: the compacted
+/// snapshot becomes the resume state the *next* prompt starts from, and that
+/// prompt's own run writes it to disk through the normal checkpoint path. That
+/// keeps `/compact` cheap and abandonable — quitting without another prompt
+/// leaves the stored session exactly as it was.
+async fn compact_active_state(runtime: &CliRuntime, state: &mut ReplState) {
+    let Some(mut resume_state) = state.active_resume_state().cloned() else {
+        eprintln!("nothing to compact: no active session history yet");
+        return;
+    };
+
+    // Empty prompt: assembling a run needs a message, but no run is started and
+    // the summary is generated from history rather than from this string.
+    let assembly = match runtime
+        .assemble_run("", None, Some(&resume_state), false)
+        .await
+    {
+        Ok(assembly) => assembly,
+        Err(err) => {
+            eprintln!("compaction failed: {err}");
+            return;
+        }
+    };
+
+    let cancel = CancellationToken::new();
+    match assembly
+        .engine
+        .compact_resume_state(&mut resume_state, cancel)
+        .await
+    {
+        Ok(Some(update)) => {
+            let mode = if update.state.degraded {
+                "deterministic fallback"
+            } else {
+                "model-generated"
+            };
+            eprintln!(
+                "compacted {} message(s) into a {mode} summary",
+                update.state.source_message_count
+            );
+            if let Some(error) = update.state.last_error.as_deref() {
+                eprintln!("note: summary model call failed, used fallback: {error}");
+            }
+            state.set_active_resume_state(Some(resume_state));
+        }
+        Ok(None) => eprintln!("nothing to compact: history is already empty"),
+        Err(err) => eprintln!("compaction failed: {err}"),
+    }
 }
 
 fn clear_screen() {
@@ -384,6 +440,7 @@ mod tests {
         assert_eq!(SlashCommand::parse("/quit"), SlashCommand::Exit);
         assert_eq!(SlashCommand::parse("/clear"), SlashCommand::Clear);
         assert_eq!(SlashCommand::parse("/sessions"), SlashCommand::Sessions);
+        assert_eq!(SlashCommand::parse("/compact"), SlashCommand::Compact);
         assert_eq!(
             SlashCommand::parse("/resume latest"),
             SlashCommand::ResumeLatest
@@ -415,6 +472,10 @@ mod tests {
         assert_eq!(
             SlashCommand::parse("/sessions").to_action(),
             TerminalAction::ShowSessions
+        );
+        assert_eq!(
+            SlashCommand::parse("/compact").to_action(),
+            TerminalAction::Compact
         );
         assert_eq!(
             SlashCommand::parse("/resume latest").to_action(),

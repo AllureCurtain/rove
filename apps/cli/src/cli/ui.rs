@@ -102,6 +102,7 @@ Commands:
   /exit, /quit      exit the REPL
   /clear            clear the terminal
   /sessions         list resumable task states
+  /compact          replace the active session history with a summary
   /resume latest    resume the latest task state
   /resume <run_id>  resume a specific task state
 "
@@ -109,7 +110,7 @@ Commands:
 }
 
 pub fn command_hint_line() -> &'static str {
-    "/help  /sessions  /resume latest  /status  /clear  /exit"
+    "/help  /sessions  /compact  /resume latest  /status  /clear  /exit"
 }
 
 pub fn short_id(value: impl AsRef<str>) -> String {

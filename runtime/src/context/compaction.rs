@@ -304,6 +304,17 @@ impl CompactionRuntime {
     pub fn circuit_open(&self) -> bool {
         self.enabled && self.consecutive_failures >= self.failure_threshold
     }
+
+    /// Whether the failure count has reached the threshold, ignoring `enabled`.
+    ///
+    /// [`Self::circuit_open`] is the reported state and stays `false` while
+    /// compaction is switched off, which is right for what the UI shows. It is
+    /// wrong as a gate for manual compaction: that path runs even when the
+    /// switch is off, so gating it on `circuit_open` would let it retry a
+    /// failing model forever. Consent and breaker are separate concerns.
+    fn breaker_tripped(&self) -> bool {
+        self.consecutive_failures >= self.failure_threshold
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -313,15 +324,41 @@ pub struct CompactionUpdate {
     pub state: PromptCompactionState,
 }
 
+/// What caused a compaction to run.
+///
+/// This is not cosmetic: the two triggers are gated differently. `Automatic`
+/// respects the `enabled` switch, because that switch is exactly the operator
+/// saying "do not compact behind my back". `Manual` bypasses it, because the
+/// operator asking for a compaction has already made that decision and being
+/// silently ignored would be worse than being disobeyed. Both honour the
+/// circuit breaker, which is about the model failing rather than about consent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompactionTrigger {
+    /// The turn crossed the token budget.
+    Automatic,
+    /// The operator asked for it (`/compact`).
+    Manual,
+}
+
+impl CompactionTrigger {
+    fn is_automatic(self) -> bool {
+        matches!(self, Self::Automatic)
+    }
+}
+
 #[doc(hidden)]
 pub async fn maybe_compact_history(
     runtime: &mut CompactionRuntime,
     model: &dyn ModelClient,
     compacted: &[Message],
     flush_notes: Vec<String>,
+    trigger: CompactionTrigger,
     cancel_token: CancellationToken,
 ) -> Option<CompactionUpdate> {
-    if compacted.is_empty() || !runtime.enabled || runtime.circuit_open() {
+    if compacted.is_empty() || runtime.breaker_tripped() {
+        return None;
+    }
+    if trigger.is_automatic() && !runtime.enabled {
         return None;
     }
 
@@ -342,7 +379,7 @@ pub async fn maybe_compact_history(
                 summary: Some(prompt_text),
                 state: PromptCompactionState {
                     mode: PromptCompactionMode::ModelGenerated,
-                    auto_triggered: true,
+                    auto_triggered: trigger.is_automatic(),
                     degraded: false,
                     consecutive_failures: 0,
                     circuit_open: false,
@@ -370,7 +407,7 @@ pub async fn maybe_compact_history(
                 summary: Some(prompt_text),
                 state: PromptCompactionState {
                     mode: PromptCompactionMode::Degraded,
-                    auto_triggered: true,
+                    auto_triggered: trigger.is_automatic(),
                     degraded: true,
                     consecutive_failures: runtime.consecutive_failures,
                     circuit_open: runtime.circuit_open(),
@@ -588,6 +625,7 @@ mod tests {
             &model,
             &compacted,
             Vec::new(),
+            CompactionTrigger::Automatic,
             CancellationToken::new(),
         )
         .await
@@ -596,6 +634,73 @@ mod tests {
         assert_eq!(update.state.mode, PromptCompactionMode::ModelGenerated);
         assert!(!update.state.degraded);
         assert_eq!(runtime.consecutive_failures, 0);
+    }
+
+    /// The switch means "do not compact behind my back", not "never compact".
+    /// A disabled runtime must still honour an explicit `/compact`, and must
+    /// record it as operator-triggered rather than automatic.
+    #[tokio::test]
+    async fn manual_compaction_runs_while_the_automatic_switch_is_off() {
+        let compacted = incomplete_native_round();
+        let model = FakeModelClient::new("Goal: preserve context".to_string());
+        let mut runtime = CompactionRuntime::new(false, 3);
+
+        assert!(
+            maybe_compact_history(
+                &mut runtime,
+                &model,
+                &compacted,
+                Vec::new(),
+                CompactionTrigger::Automatic,
+                CancellationToken::new(),
+            )
+            .await
+            .is_none(),
+            "the automatic path must respect the switch"
+        );
+
+        let update = maybe_compact_history(
+            &mut runtime,
+            &model,
+            &compacted,
+            Vec::new(),
+            CompactionTrigger::Manual,
+            CancellationToken::new(),
+        )
+        .await
+        .expect("manual compaction ignores the automatic switch");
+
+        assert!(
+            !update.state.auto_triggered,
+            "a manual compaction must not be reported as automatic"
+        );
+    }
+
+    /// The breaker is about the model failing, not about consent, so it stops
+    /// the manual path too. It has to be checked independently of `enabled`:
+    /// `circuit_open` reports `false` while compaction is switched off, which
+    /// would otherwise let `/compact` retry a broken model without limit.
+    #[tokio::test]
+    async fn a_tripped_breaker_stops_manual_compaction_even_when_disabled() {
+        let compacted = incomplete_native_round();
+        let model = FakeModelClient::new("Goal: preserve context".to_string());
+        let mut runtime = CompactionRuntime::new(false, 2);
+        runtime.consecutive_failures = 2;
+
+        assert!(!runtime.circuit_open(), "reported state stays closed");
+        assert!(
+            maybe_compact_history(
+                &mut runtime,
+                &model,
+                &compacted,
+                Vec::new(),
+                CompactionTrigger::Manual,
+                CancellationToken::new(),
+            )
+            .await
+            .is_none(),
+            "the breaker must gate the manual path"
+        );
     }
 
     #[test]

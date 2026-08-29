@@ -4,7 +4,7 @@ use futures::future::BoxFuture;
 use futures::stream::BoxStream;
 use tokio_util::sync::CancellationToken;
 
-use crate::compaction::maybe_compact_history;
+use crate::compaction::{CompactionTrigger, maybe_compact_history};
 use crate::engine::control::{AcceptedSteer, steer_accepted_event};
 use crate::events::StreamEvent;
 use crate::execution::ExecutionBudgetDimension;
@@ -349,6 +349,7 @@ impl AgentKernelHost for StepKernelHost<'_> {
                     self.ctx.model,
                     &self.history[..compacted_count],
                     flush_notes,
+                    CompactionTrigger::Automatic,
                     cancel_token,
                 )
                 .await

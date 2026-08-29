@@ -16,7 +16,9 @@ use crate::agents::{
     ResolvedRuntimeFacts, procedure_prompt_for_target,
 };
 use crate::capability::CapabilitySnapshot;
-use crate::compaction::CompactionRuntime;
+use crate::compaction::{
+    CompactionRuntime, CompactionTrigger, CompactionUpdate, maybe_compact_history,
+};
 use crate::context::{ContextManager, durable_memory_message, session_summary_message};
 use crate::engine::control::{RunControlHandle, SteerLifecycle, control_channel};
 use crate::environment::{ExecutionEnvironment, local_environment};
@@ -34,13 +36,12 @@ use crate::runtime_identity::{
     RunModelSnapshot, RuntimeIdentity, RuntimeIdentityInput, RuntimeIdentityStatus,
     build_runtime_identity,
 };
-use crate::session::CHECKPOINT_SESSION_TAIL_ENTRIES;
 use crate::state::tool_artifacts::ToolArtifactStore;
 use crate::state::trace::TraceWriter;
 use crate::tools::mcp_proxy::{McpLifecycleFact, McpRuntimeState, McpServerRuntimeSnapshot};
 use crate::types::{
     ApprovalDecision, ApprovalPolicy, JobId, Message, RunId, RunMode, RunRequest, SessionId,
-    TerminationReason, ToolApprovalProvider, ToolDescriptor, UserInputProvider,
+    TaskState, TerminationReason, ToolApprovalProvider, ToolDescriptor, UserInputProvider,
 };
 use crate::workspace::Workspace;
 use rove_core::ToolRegistry;
@@ -395,6 +396,65 @@ impl Engine {
 
     pub fn model_id(&self) -> &str {
         self.model.model_id()
+    }
+
+    /// Compact the model-visible history held in a resume snapshot, in place.
+    ///
+    /// This is the `/compact` path. It deliberately does *not* start a run: no
+    /// `RunId` is allocated, no trace is opened, and no `PromptCompacted` event
+    /// is emitted, because there is no run for such an event to belong to.
+    /// Compaction here is an edit to state the caller already owns — the caller
+    /// decides whether to keep or persist the result.
+    ///
+    /// Because no trace is written, the original history stays exactly where it
+    /// already was: in the trace files of the runs that produced it. Compaction
+    /// changes what the *next* prompt will contain, never the audit record.
+    ///
+    /// Returns `Ok(None)` when there was nothing to compact, or when the circuit
+    /// breaker is open. The `enabled` switch is bypassed: an operator asking for
+    /// this has already given consent.
+    pub async fn compact_resume_state(
+        &self,
+        state: &mut TaskState,
+        cancel: CancellationToken,
+    ) -> Result<Option<CompactionUpdate>, crate::session::SessionError> {
+        let history = state.replayable_history(&self.model.history_protocol())?;
+        // A prior summary is part of what the next prompt would carry, so it
+        // has to be folded into the new one. Dropping it would silently lose
+        // everything the earlier compaction stood for.
+        let mut compacted = Vec::with_capacity(history.len() + 1);
+        if let Some(previous) = state
+            .checkpoint
+            .as_ref()
+            .and_then(|checkpoint| checkpoint.summary.as_ref())
+        {
+            compacted.push(Message::assistant(previous.clone()));
+        }
+        compacted.extend(history);
+
+        let mut runtime = CompactionRuntime::new(
+            self.model_compaction_enabled,
+            self.compaction_failure_threshold,
+        );
+        let update = maybe_compact_history(
+            &mut runtime,
+            self.model.as_ref(),
+            &compacted,
+            Vec::new(),
+            CompactionTrigger::Manual,
+            cancel,
+        )
+        .await;
+
+        if let Some(update) = update.as_ref()
+            && let Some(summary) = update.summary.clone()
+        {
+            state.continue_from_summary(summary);
+            if let Some(checkpoint) = state.checkpoint.as_mut() {
+                checkpoint.compaction = update.state.clone();
+            }
+        }
+        Ok(update)
     }
 
     /// Return the host-selected execution profile for this Engine.
@@ -821,38 +881,27 @@ impl Engine {
                 let resume_checkpoint = resume_state
                     .as_ref()
                     .and_then(|state| state.checkpoint.as_ref());
-                let history: Vec<Message> = if let Some(checkpoint) = resume_checkpoint {
-                    if let Some(session) = checkpoint.session.as_ref() {
-                        let mut session = session.clone();
-                        let projection = session
-                            .close_unresolved_tool_calls()
-                            .and_then(|_| {
-                                session
-                                    .suffix(CHECKPOINT_SESSION_TAIL_ENTRIES)
-                                    .messages_for_provider(&self.model.history_protocol())
-                            });
-                        match projection {
-                            Ok(messages) => messages,
-                            Err(error) => {
-                                let message = StreamEvent::ModelStatus {
-                                    status: "resume_rejected".to_string(),
-                                    message: format!("canonical session cannot be projected safely: {error}"),
-                                };
-                                yield_traced!(message);
-                                complete_run!(
-                                    TerminationReason::Error,
-                                    Some("resume rejected due to invalid canonical session history".to_string())
-                                );
-                            }
-                        }
-                    } else {
-                        checkpoint.preserved_tail.clone()
+                // The precedence between the three stored history sources lives
+                // on TaskState, so anything else that has to reconstruct what a
+                // resumed run would see (the REPL's `/compact`) agrees with the
+                // resume path by construction instead of by review.
+                let history: Vec<Message> = match resume_state
+                    .as_ref()
+                    .map(|state| state.replayable_history(&self.model.history_protocol()))
+                {
+                    Some(Ok(messages)) => messages,
+                    Some(Err(error)) => {
+                        let message = StreamEvent::ModelStatus {
+                            status: "resume_rejected".to_string(),
+                            message: format!("canonical session cannot be projected safely: {error}"),
+                        };
+                        yield_traced!(message);
+                        complete_run!(
+                            TerminationReason::Error,
+                            Some("resume rejected due to invalid canonical session history".to_string())
+                        );
                     }
-                } else {
-                    resume_state
-                        .as_ref()
-                        .map(|state| state.history.clone())
-                        .unwrap_or_default()
+                    None => Vec::new(),
                 };
                 // Codex alignment Phase 6: the trace is the durable record of
                 // model-visible history, the snapshot is a cache. A run killed
@@ -861,7 +910,17 @@ impl Engine {
                 // resuming with no context at all. The snapshot still wins when
                 // it has content: it is already protocol-projected, and
                 // preferring it keeps every existing resume path byte-identical.
-                let history = if history.is_empty() {
+                //
+                // Phase 8 carves out the one case where empty is the answer: a
+                // compacted session holds a summary *instead of* its history, so
+                // refilling it from the trace would restore exactly what the
+                // compaction just dropped and leave the prompt larger than
+                // before. Only a compacted checkpoint is exempt; a missing
+                // checkpoint still falls back.
+                let compacted_away = resume_state
+                    .as_ref()
+                    .is_some_and(|state| state.history_was_compacted_away());
+                let history = if history.is_empty() && !compacted_away {
                     match resume_state.as_ref().map(|state| state.run_id) {
                         Some(source_run) => {
                             let runs_dir = self.workspace.state_dir.join("runs");

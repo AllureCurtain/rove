@@ -13,7 +13,7 @@ use crate::agents::{
     scoped_instruction_prompt,
 };
 use crate::capability::CapabilitySnapshot;
-use crate::compaction::{CompactionRuntime, maybe_compact_history};
+use crate::compaction::{CompactionRuntime, CompactionTrigger, maybe_compact_history};
 use crate::context::ContextManager;
 use crate::engine::control::{
     AcceptedSteer, SteerLifecycle, SteerMessage, steer_accepted_event, steer_applied_event,
@@ -605,20 +605,12 @@ impl AgentKernelHost for UnplannedKernelHost<'_> {
             let mut turn_working_memory = self.working_memory.clone();
             turn_working_memory.push(runtime_guidance(&self.ctx));
             turn_working_memory.extend(scoped.messages);
-            let context = self.ctx.context_manager.build_with_checkpoint(
+            let mut context = self.ctx.context_manager.build_with_checkpoint(
                 &self.user_message,
                 &turn_working_memory,
                 self.compact_summary.as_deref(),
                 &state.history,
             );
-            let tool_schemas = self.ctx.descriptors();
-            yield KernelBeforeModelTurnItem::Event(StreamEvent::PromptBuilt {
-                metadata: enrich_prompt_metadata(
-                    &self.ctx,
-                    context.metadata.clone(),
-                    &tool_schemas,
-                ),
-            });
             if context.over_hard_limit {
                 yield KernelBeforeModelTurnItem::Stop {
                     reason: RuntimeKernelStop::TokenLimit,
@@ -656,6 +648,7 @@ impl AgentKernelHost for UnplannedKernelHost<'_> {
                     self.ctx.model,
                     &state.history[..compacted_count],
                     flush_notes,
+                    CompactionTrigger::Automatic,
                     cancel_token,
                 )
                 .await
@@ -669,8 +662,38 @@ impl AgentKernelHost for UnplannedKernelHost<'_> {
                         state: update.state,
                     });
                 }
+
+                // Rebuilt so the summary reaches the model on the turn that
+                // dropped the history it stands for. Without this the turn goes
+                // out with the history gone and nothing in its place, and the
+                // summary only lands on the next one. PlanReact already
+                // rebuilds here; the two loops now agree.
+                context = self.ctx.context_manager.build_with_checkpoint(
+                    &self.user_message,
+                    &turn_working_memory,
+                    self.compact_summary.as_deref(),
+                    &state.history,
+                );
+                if context.over_hard_limit {
+                    yield KernelBeforeModelTurnItem::Stop {
+                        reason: RuntimeKernelStop::TokenLimit,
+                        output: Some(
+                            "context exceeds configured hard token budget after compaction"
+                                .to_string(),
+                        ),
+                    };
+                    return;
+                }
             }
 
+            let tool_schemas = self.ctx.descriptors();
+            yield KernelBeforeModelTurnItem::Event(StreamEvent::PromptBuilt {
+                metadata: enrich_prompt_metadata(
+                    &self.ctx,
+                    context.metadata.clone(),
+                    &tool_schemas,
+                ),
+            });
             yield KernelBeforeModelTurnItem::Ready(context.messages);
         })
     }
