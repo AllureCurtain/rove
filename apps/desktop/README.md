@@ -39,6 +39,8 @@ Security-hardened commands exposed to the WebView:
 
 - `workspace_select()`: Native folder picker dialog, wired into both shared-Web
   workspace forms through `@tauri-apps/api`
+- `provider_credential_prompt()`: Opens the Windows credential UI, writes the
+  API key directly to the OS keyring, and returns only a bounded receipt
 - `get_app_paths()`: Returns config/state/logs directory paths
 - `open_external(url)`: Opens URLs in default browser (http/https only)
 - `show_in_folder(path)`: Shows file in native file manager (with path validation)
@@ -96,7 +98,10 @@ cargo test -p rove-desktop --all-targets
 
 ### Windows
 
-- Installer format: `.msi`
+- Installer formats: `.msi` and NSIS `.exe`
+- Install scope: per-machine under `Program Files`; this avoids the existing
+  `%LOCALAPPDATA%\rove` user-state root
+- Start menu shortcut: `Rove\Rove`
 - Paths use backslashes (`\`)
 - Config: `%APPDATA%\Rove`
 - State: `%APPDATA%\Rove\state`
@@ -104,8 +109,12 @@ cargo test -p rove-desktop --all-targets
 
 Build command from `apps/desktop`:
 ```bash
-pnpm dlx @tauri-apps/cli@2 build --target x86_64-pc-windows-msvc
+pnpm dlx @tauri-apps/cli@2 build --bundles "msi,nsis" --ci
 ```
+
+The Tauri hook runs with `apps/` as its working directory, so the checked-in
+`pnpm --dir web build:desktop` command is intentional. Generated installers
+remain under `target/release/bundle/` and are not committed.
 
 ### macOS
 
@@ -163,6 +172,9 @@ pnpm dlx @tauri-apps/cli@2 build --target x86_64-unknown-linux-gnu
 - **URLs**: Only `http://` and `https://` schemes allowed in `open_external()`
 - **Paths**: Must be absolute, must exist, no `..` traversal in `show_in_folder()`
 - **Workspace selection**: Validated against filesystem before returning to WebView
+- **Provider credentials**: Profile ids use the shared catalog character set;
+  labels reject control characters; receipts contain only keyring metadata.
+  The in-memory secret is zeroized after the keyring write.
 
 ### Content Security Policy
 

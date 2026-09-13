@@ -10,6 +10,14 @@ import type {
   ProviderTestResponse,
   ProviderType,
 } from "../lib/rove-types";
+import {
+  desktopProviderCredentialPromptAvailable,
+  probeDesktopProvider,
+  promptDesktopProviderCredential,
+  useDesktopProvider,
+  type DesktopProviderProbe,
+} from "../platform/desktop-commands";
+import { createProductApiClient } from "../product/product-client";
 import type { ProductApprovalPreference } from "../product/product-api-types";
 import {
   providerDefaultApiBase,
@@ -38,6 +46,22 @@ import type { SettingsPlatformClient } from "./settings-platform-client";
 
 type MaybePromise = void | Promise<unknown>;
 
+const SILICONFLOW_PROFILE_ID = "siliconflow-deepseek-v3-2";
+const SILICONFLOW_LABEL = "SiliconFlow DeepSeek V3.2";
+const SILICONFLOW_API_BASE = "https://api.siliconflow.cn/v1";
+const SILICONFLOW_MODEL = "deepseek-ai/DeepSeek-V3.2";
+
+type NativeCredentialProviderType = Extract<
+  ProviderType,
+  "openai" | "openai-responses" | "anthropic"
+>;
+
+function isNativeCredentialProvider(
+  providerType: ProviderType,
+): providerType is NativeCredentialProviderType {
+  return providerRequiresKey(providerType);
+}
+
 export interface SettingsShellProps {
   section: SettingsSectionId;
   onSectionChange: (section: SettingsSectionId) => void;
@@ -53,7 +77,8 @@ export interface SettingsShellProps {
     profile: ProviderProfileInput,
   ) => Promise<ProviderProfileRecord>;
   onDeleteProfile: (profileId: string) => Promise<void>;
-  onSelectionChange: (selection: ActiveProviderSelection) => void;
+  onRefreshProviderProfiles: () => Promise<ProviderProfileRecord[]>;
+  onSelectionChange: (selection: ActiveProviderSelection) => Promise<boolean>;
   onDefaultApprovalPolicyChange: (
     policy: ProductApprovalPreference,
   ) => Promise<void>;
@@ -84,6 +109,7 @@ export function SettingsShell(props: SettingsShellProps) {
     onCreateProfile,
     onUpdateProfile,
     onDeleteProfile,
+    onRefreshProviderProfiles,
     onSelectionChange,
     onDefaultApprovalPolicyChange,
     workspaces,
@@ -143,6 +169,7 @@ export function SettingsShell(props: SettingsShellProps) {
             onCreateProfile={onCreateProfile}
             onUpdateProfile={onUpdateProfile}
             onDeleteProfile={onDeleteProfile}
+            onRefreshProviderProfiles={onRefreshProviderProfiles}
             onSelectionChange={onSelectionChange}
           />
         ) : null}
@@ -259,7 +286,7 @@ function ToolsSettings({
   workspaceId: string | null;
   selection: ActiveProviderSelection;
   defaultApprovalPolicy: ProductApprovalPreference;
-  onSelectionChange: (selection: ActiveProviderSelection) => void;
+  onSelectionChange: (selection: ActiveProviderSelection) => Promise<boolean>;
   onDefaultApprovalPolicyChange: (
     policy: ProductApprovalPreference,
   ) => Promise<void>;
@@ -296,7 +323,7 @@ function ToolsSettings({
       return;
     }
     setError(null);
-    onSelectionChange({ ...selection, maxSteps: parsed });
+    void onSelectionChange({ ...selection, maxSteps: parsed });
   }
 
   return (
@@ -405,14 +432,7 @@ function AdvancedSettings() {
   );
 }
 
-function ProvidersSettings({
-  profiles,
-  selection,
-  onCreateProfile,
-  onUpdateProfile,
-  onDeleteProfile,
-  onSelectionChange,
-}: {
+interface ProviderSettingsProps {
   profiles: ProviderProfileRecord[];
   selection: ActiveProviderSelection;
   onCreateProfile: (
@@ -423,8 +443,26 @@ function ProvidersSettings({
     profile: ProviderProfileInput,
   ) => Promise<ProviderProfileRecord>;
   onDeleteProfile: (profileId: string) => Promise<void>;
-  onSelectionChange: (selection: ActiveProviderSelection) => void;
-}) {
+  onRefreshProviderProfiles: () => Promise<ProviderProfileRecord[]>;
+  onSelectionChange: (selection: ActiveProviderSelection) => Promise<boolean>;
+}
+
+function ProvidersSettings(props: ProviderSettingsProps) {
+  return desktopProviderCredentialPromptAvailable() ? (
+    <DesktopProvidersSettings {...props} />
+  ) : (
+    <BrowserProvidersSettings {...props} />
+  );
+}
+
+function BrowserProvidersSettings({
+  profiles,
+  selection,
+  onCreateProfile,
+  onUpdateProfile,
+  onDeleteProfile,
+  onSelectionChange,
+}: ProviderSettingsProps) {
   const [label, setLabel] = useState("Local OpenAI");
   const [providerType, setProviderType] = useState<ProviderType>("openai");
   const [apiBase, setApiBase] = useState(providerDefaultApiBase("openai"));
@@ -778,6 +816,482 @@ function ProvidersSettings({
                 </div>
               </div>
             ))}
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function providerCredentialLabel(profile: ProviderProfileRecord): string {
+  switch (profile.credentialSource?.source) {
+    case "keyring":
+      return "OS keyring";
+    case "env":
+      return "Environment reference";
+    case "file":
+      return "File reference";
+    default:
+      return "No credential";
+  }
+}
+
+function DesktopProvidersSettings({
+  profiles,
+  selection,
+  onDeleteProfile,
+  onRefreshProviderProfiles,
+  onSelectionChange,
+}: ProviderSettingsProps) {
+  const client = useMemo(() => createProductApiClient(), []);
+  const [label, setLabel] = useState(SILICONFLOW_LABEL);
+  const [providerType, setProviderType] =
+    useState<NativeCredentialProviderType>("openai");
+  const [apiBase, setApiBase] = useState(SILICONFLOW_API_BASE);
+  const [defaultModel, setDefaultModel] = useState(SILICONFLOW_MODEL);
+  const [editingProfileId, setEditingProfileId] = useState<string | null>(null);
+  const [confirmingDeleteId, setConfirmingDeleteId] = useState<string | null>(null);
+  const [busyAction, setBusyAction] = useState<string | null>(null);
+  const [probeResult, setProbeResult] = useState<{
+    profileId: string;
+    probe: DesktopProviderProbe;
+  } | null>(null);
+  const [modelResult, setModelResult] = useState<{
+    profileId: string;
+    models: string[];
+  } | null>(null);
+  const [status, setStatus] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const busy = busyAction !== null;
+
+  const activeProfile = useMemo(
+    () => profiles.find((profile) => profile.id === selection.profileId) ?? null,
+    [profiles, selection.profileId],
+  );
+
+  function clearFeedback(): void {
+    setProbeResult(null);
+    setModelResult(null);
+    setStatus(null);
+    setError(null);
+  }
+
+  function applySiliconFlowPreset(): void {
+    setEditingProfileId(null);
+    setLabel(SILICONFLOW_LABEL);
+    setProviderType("openai");
+    setApiBase(SILICONFLOW_API_BASE);
+    setDefaultModel(SILICONFLOW_MODEL);
+    clearFeedback();
+  }
+
+  function startReconfigure(profile: ProviderProfileRecord): void {
+    if (!isNativeCredentialProvider(profile.providerType)) {
+      return;
+    }
+    setEditingProfileId(profile.id);
+    setLabel(profile.label);
+    setProviderType(profile.providerType);
+    setApiBase(profile.apiBase);
+    setDefaultModel(profile.defaultModel ?? selection.model);
+    clearFeedback();
+  }
+
+  async function persistProductSelection(
+    profileId: string,
+    model: string,
+  ): Promise<void> {
+    const persisted = await onSelectionChange({
+      ...selection,
+      mode: "profile",
+      profileId,
+      model,
+    });
+    if (!persisted) {
+      throw new Error("Provider was selected in the shared Catalog, but Product preferences did not persist.");
+    }
+  }
+
+  async function handleSecureSave(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    setBusyAction("save");
+    clearFeedback();
+    try {
+      const normalizedBase = apiBase.trim().replace(/\/+$/u, "");
+      const normalizedModel = defaultModel.trim();
+      const isSiliconFlowPreset =
+        providerType === "openai" &&
+        normalizedBase === SILICONFLOW_API_BASE &&
+        normalizedModel === SILICONFLOW_MODEL;
+      const receipt = await promptDesktopProviderCredential({
+        profileId:
+          editingProfileId ?? (isSiliconFlowPreset ? SILICONFLOW_PROFILE_ID : undefined),
+        label: label.trim(),
+        providerType,
+        apiBase: normalizedBase,
+        model: normalizedModel,
+        makeDefault: true,
+        expectedRevision:
+          editingProfileId === null
+            ? undefined
+            : profiles.find((profile) => profile.id === editingProfileId)
+                ?.catalogRevision,
+      });
+      await onRefreshProviderProfiles();
+      await persistProductSelection(receipt.profileId, receipt.model);
+      setEditingProfileId(null);
+      setProbeResult({ profileId: receipt.profileId, probe: receipt.probe });
+      setStatus(
+        `Verified ${receipt.label}, published revision ${receipt.catalogRevision}, and selected ${receipt.model}.`,
+      );
+    } catch (saveError) {
+      setError(describeProviderProbeFailure(saveError));
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function handleProbe(profile: ProviderProfileRecord): Promise<void> {
+    setBusyAction(`probe:${profile.id}`);
+    clearFeedback();
+    try {
+      const probe = await probeDesktopProvider({
+        profileId: profile.id,
+        model: profile.defaultModel,
+      });
+      setProbeResult({ profileId: profile.id, probe });
+      setStatus(`${profile.label} credential and model inventory are available.`);
+    } catch (probeError) {
+      setError(describeProviderProbeFailure(probeError));
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function handleListModels(profile: ProviderProfileRecord): Promise<void> {
+    setBusyAction(`models:${profile.id}`);
+    clearFeedback();
+    try {
+      const response = await client.listProviderModels(profile.id);
+      setModelResult({
+        profileId: profile.id,
+        models: response.models.map((model) => model.id),
+      });
+      setStatus(`Loaded ${response.models.length} models for ${profile.label}.`);
+    } catch (modelsError) {
+      setError(describeProviderProbeFailure(modelsError));
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function handleUse(profile: ProviderProfileRecord): Promise<void> {
+    setBusyAction(`use:${profile.id}`);
+    clearFeedback();
+    try {
+      const receipt = await useDesktopProvider({
+        profileId: profile.id,
+        model: profile.defaultModel,
+        expectedRevision: profile.catalogRevision,
+      });
+      await onRefreshProviderProfiles();
+      await persistProductSelection(receipt.profileId, receipt.model);
+      setStatus(`Selected ${profile.label} · ${receipt.model}.`);
+    } catch (useError) {
+      setError(describeProviderProbeFailure(useError));
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function handleDelete(profileId: string): Promise<void> {
+    setBusyAction(`delete:${profileId}`);
+    clearFeedback();
+    try {
+      await onDeleteProfile(profileId);
+      setConfirmingDeleteId(null);
+      if (editingProfileId === profileId) {
+        applySiliconFlowPreset();
+      }
+      setStatus("Provider profile removed from the shared Catalog.");
+    } catch (deleteError) {
+      setError(deleteError instanceof Error ? deleteError.message : String(deleteError));
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  return (
+    <section className="settings-panel" aria-labelledby="providers-settings-title">
+      <h1 id="providers-settings-title">Providers &amp; Models</h1>
+      <p className="lede">
+        Rove Desktop stores remote credentials in the Windows credential vault and
+        publishes only a keyring reference to the shared Provider Catalog.
+      </p>
+
+      <div className="settings-card">
+        <h2>Active selection</h2>
+        <div className="field-grid">
+          <div className="field">
+            <label htmlFor="provider-mode">Mode</label>
+            <select
+              id="provider-mode"
+              value={selection.mode}
+              disabled={busy}
+              onChange={(event) => {
+                if (event.target.value === "default") {
+                  void onSelectionChange({
+                    ...selection,
+                    mode: "default",
+                    profileId: undefined,
+                  });
+                  return;
+                }
+                const profile = activeProfile ?? profiles[0];
+                if (profile) {
+                  void handleUse(profile);
+                }
+              }}
+            >
+              <option value="default">Runtime default</option>
+              <option value="profile">Saved profile</option>
+            </select>
+          </div>
+          <div className="field">
+            <label htmlFor="provider-profile">Profile</label>
+            <select
+              id="provider-profile"
+              value={selection.profileId ?? ""}
+              disabled={busy || selection.mode !== "profile"}
+              onChange={(event) => {
+                const profile = profiles.find((item) => item.id === event.target.value);
+                if (profile) {
+                  void handleUse(profile);
+                }
+              }}
+            >
+              <option value="">Select profile…</option>
+              {profiles.map((profile) => (
+                <option key={profile.id} value={profile.id}>
+                  {profile.label}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="field">
+            <label htmlFor="provider-model">Model</label>
+            <input
+              id="provider-model"
+              value={selection.model}
+              disabled={busy}
+              onChange={(event) =>
+                void onSelectionChange({ ...selection, model: event.target.value })
+              }
+            />
+          </div>
+        </div>
+        <p className="settings-inline-note">
+          {selection.mode === "profile" && activeProfile
+            ? `${activeProfile.label} · ${activeProfile.apiBase} · ${providerCredentialLabel(activeProfile)}`
+            : "Using the shared Runtime default Provider selection."}
+        </p>
+      </div>
+
+      <form className="settings-card" onSubmit={(event) => void handleSecureSave(event)}>
+        <div className="settings-card__heading">
+          <div>
+            <h2>{editingProfileId ? "Reconfigure secure profile" : "Secure onboarding"}</h2>
+            <p className="settings-inline-note">
+              Saving opens a native masked prompt, probes the real model inventory, and
+              publishes the profile only after the probe succeeds.
+            </p>
+          </div>
+          <button
+            type="button"
+            className="secondary"
+            disabled={busy}
+            onClick={applySiliconFlowPreset}
+          >
+            SiliconFlow preset
+          </button>
+        </div>
+        <div className="field-grid">
+          <div className="field">
+            <label htmlFor="profile-label">Label</label>
+            <input
+              id="profile-label"
+              value={label}
+              disabled={busy}
+              onChange={(event) => setLabel(event.target.value)}
+            />
+          </div>
+          <div className="field">
+            <label htmlFor="profile-type">Type</label>
+            <select
+              id="profile-type"
+              value={providerType}
+              disabled={busy}
+              onChange={(event) => {
+                const next = event.target.value as NativeCredentialProviderType;
+                setProviderType(next);
+                setApiBase(providerDefaultApiBase(next));
+                clearFeedback();
+              }}
+            >
+              <option value="openai">OpenAI-compatible</option>
+              <option value="openai-responses">OpenAI Responses</option>
+              <option value="anthropic">Anthropic</option>
+            </select>
+          </div>
+          <div className="field">
+            <label htmlFor="profile-base">API base</label>
+            <input
+              id="profile-base"
+              value={apiBase}
+              disabled={busy}
+              onChange={(event) => setApiBase(event.target.value)}
+            />
+          </div>
+          <div className="field">
+            <label htmlFor="profile-default-model">Model</label>
+            <input
+              id="profile-default-model"
+              value={defaultModel}
+              disabled={busy}
+              onChange={(event) => setDefaultModel(event.target.value)}
+            />
+          </div>
+        </div>
+        <div className="placeholder-note">
+          The API key is requested by Windows after you continue. It is not an HTML
+          field and never enters React state, localStorage, or an HTTP request body.
+        </div>
+        <div className="field-actions">
+          <button type="submit" disabled={busy}>
+            <CheckIcon /> {busyAction === "save" ? "Verifying…" : "Save & verify"}
+          </button>
+          {editingProfileId ? (
+            <button
+              type="button"
+              className="secondary"
+              disabled={busy}
+              onClick={applySiliconFlowPreset}
+            >
+              <Cross2Icon /> Cancel
+            </button>
+          ) : null}
+        </div>
+      </form>
+
+      {error ? <div className="chat-error" role="alert">{error}</div> : null}
+      {status ? <div className="placeholder-note" role="status">{status}</div> : null}
+      {probeResult ? (
+        <div className="placeholder-note">
+          Probe for {probeResult.profileId}: {probeResult.probe.inventoryCount} models ·
+          streaming {probeResult.probe.streamingSupported ? "yes" : "no"} · native tools {" "}
+          {probeResult.probe.nativeToolCallsSupported ? "yes" : "no"} · usage {" "}
+          {probeResult.probe.usageSupported ? "yes" : "no"}
+        </div>
+      ) : null}
+      {modelResult ? (
+        <div className="placeholder-note">
+          Models for {modelResult.profileId}: {modelResult.models.slice(0, 12).join(", ") || "(none)"}
+          {modelResult.models.length > 12 ? "…" : ""}
+        </div>
+      ) : null}
+
+      <div className="settings-card">
+        <h2>Shared Catalog profiles</h2>
+        {profiles.length === 0 ? (
+          <p className="settings-inline-note">
+            No Provider profiles are configured. Use secure onboarding above.
+          </p>
+        ) : (
+          <div className="profile-list">
+            {profiles.map((profile) => {
+              const deleting = busyAction === `delete:${profile.id}`;
+              return (
+                <div className="profile-row" key={profile.id}>
+                  <div>
+                    <strong>
+                      {profile.label}
+                      {selection.profileId === profile.id ? " (active)" : ""}
+                    </strong>
+                    <span>
+                      {providerDisplayName(profile.providerType)} · {profile.apiBase} · {" "}
+                      {profile.defaultModel ?? "No default model"} · {providerCredentialLabel(profile)}
+                    </span>
+                    {confirmingDeleteId === profile.id ? (
+                      <div className="settings-inline-confirm" role="alert">
+                        <span>Remove this profile from the shared Catalog?</span>
+                        <div className="field-actions">
+                          <button
+                            type="button"
+                            className="secondary"
+                            disabled={busy}
+                            onClick={() => setConfirmingDeleteId(null)}
+                          >
+                            <Cross2Icon /> Cancel
+                          </button>
+                          <button
+                            type="button"
+                            className="danger"
+                            disabled={busy}
+                            onClick={() => void handleDelete(profile.id)}
+                          >
+                            <TrashIcon /> {deleting ? "Removing…" : "Confirm remove"}
+                          </button>
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                  <div className="field-actions">
+                    <button
+                      type="button"
+                      className="secondary"
+                      disabled={busy}
+                      onClick={() => void handleProbe(profile)}
+                    >
+                      {busyAction === `probe:${profile.id}` ? "Testing…" : "Test"}
+                    </button>
+                    <button
+                      type="button"
+                      className="secondary"
+                      disabled={busy}
+                      onClick={() => void handleListModels(profile)}
+                    >
+                      {busyAction === `models:${profile.id}` ? "Loading…" : "List models"}
+                    </button>
+                    <button
+                      type="button"
+                      className="secondary"
+                      disabled={busy}
+                      onClick={() => void handleUse(profile)}
+                    >
+                      {busyAction === `use:${profile.id}` ? "Selecting…" : "Use"}
+                    </button>
+                    {isNativeCredentialProvider(profile.providerType) ? (
+                      <button
+                        type="button"
+                        className="secondary"
+                        disabled={busy}
+                        onClick={() => startReconfigure(profile)}
+                      >
+                        <Pencil2Icon /> Reconfigure
+                      </button>
+                    ) : null}
+                    <button
+                      type="button"
+                      className="danger"
+                      disabled={busy || confirmingDeleteId === profile.id}
+                      onClick={() => setConfirmingDeleteId(profile.id)}
+                    >
+                      <TrashIcon /> Remove
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         )}
       </div>

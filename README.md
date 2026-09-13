@@ -272,6 +272,15 @@ cd D:\path\to\workspace
 rove
 ~~~
 
+On Windows Desktop you do not need a terminal or a hand-edited TOML file.
+**Settings -> Providers** in the installed Desktop app opens a native masked
+credential prompt, stores the value in the Windows credential vault, probes the
+real model inventory, and publishes the profile into the same user catalog the
+CLI and TUI read. The credential never reaches the WebView, React state,
+`localStorage`, ProductStore, or an HTTP request body. Desktop installation and
+the credentialed Desktop run remain unverified; see
+[`docs/runtime/desktop-real-use.md`](docs/runtime/desktop-real-use.md).
+
 The credentialed TUI gate uses isolated fixture and data/config roots. Its
 secret-free evidence is kept outside the repository under
 `<evidence-root>/tui-gate-10`; the Windows ConPTY/manual terminal gate remains

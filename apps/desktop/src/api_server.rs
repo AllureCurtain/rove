@@ -19,6 +19,7 @@ pub struct ApiServerHandle {
     pub base_url: String,
     pub port: u16,
     shutdown: CancellationToken,
+    pub(crate) api_state: rove_api::ApiState,
     task_handle: Option<tokio::task::JoinHandle<Result<()>>>,
 }
 
@@ -92,6 +93,7 @@ pub async fn start_api_server(config: ApiServerConfig) -> Result<ApiServerHandle
         shutdown.clone(),
     )
     .context("failed to assemble embedded Rove API state")?;
+    let api_state = state.clone();
     let task_handle = tokio::spawn(async move {
         let result = serve_state_listener(listener, state).await;
         info!("embedded API server task stopped");
@@ -151,6 +153,7 @@ pub async fn start_api_server(config: ApiServerConfig) -> Result<ApiServerHandle
         base_url,
         port: addr.port(),
         shutdown,
+        api_state,
         task_handle: Some(task_handle),
     })
 }

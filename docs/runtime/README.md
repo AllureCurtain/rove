@@ -73,6 +73,7 @@ installed-Desktop, and broader stress/soak evidence remain unverified.
 | [release-readiness.md](release-readiness.md) | MVP release checklist covering verification, provider smoke, packaging, security posture, and out-of-scope reminders. |
 | [browser-workspace-spec.md](browser-workspace-spec.md) | Future Browser workspace design note; not a current runtime implementation. |
 | [desktop-workspace-spec.md](desktop-workspace-spec.md) | Future Desktop workspace design note; not a current runtime implementation. |
+| [desktop-real-use.md](desktop-real-use.md) | Current Windows Desktop D1-D5 evidence, packaging/runbook, and explicit D6 dependency boundary. |
 
 ## Source Design
 
